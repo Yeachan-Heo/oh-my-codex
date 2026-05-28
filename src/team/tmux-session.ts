@@ -1220,7 +1220,6 @@ export function buildWorkerProcessLaunchSpec(
     OMX_TEAM_INTERNAL_WORKER: internalWorkerIdentity,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
     [OMX_LEADER_CLI_PATH_ENV]: resolvedLauncherPath,
-    [OMX_TMUX_HUD_OWNER_ENV]: '1',
     ...(workerCli === 'codex' && workerCodexHomeOverride
       ? { CODEX_HOME: workerCodexHomeOverride }
       : {}),
@@ -1233,6 +1232,8 @@ export function buildWorkerProcessLaunchSpec(
     if (typeof value !== 'string' || value.trim() === '') continue;
     workerEnv[key] = value;
   }
+  delete workerEnv[OMX_TMUX_HUD_OWNER_ENV];
+  delete workerEnv[OMX_TMUX_HUD_LEADER_PANE_ENV];
 
   return {
     workerCli,

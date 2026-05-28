@@ -2246,6 +2246,34 @@ describe('team worker launch mode helpers', () => {
       assert.deepEqual(spec.args, ['--model', 'gpt-5.3-codex', '--dangerously-bypass-approvals-and-sandbox']);
       assert.equal(spec.env.OMX_TEAM_WORKER, 'alpha-team/worker-2');
       assert.equal(spec.env.OMX_TEAM_STATE_ROOT, '/tmp/workspace/.omx/state');
+      assert.equal(spec.env.OMX_TMUX_HUD_OWNER, undefined);
+      assert.equal(spec.env.OMX_TMUX_HUD_LEADER_PANE, undefined);
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('buildWorkerProcessLaunchSpec scrubs HUD ownership env from worker launches', () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const spec = buildWorkerProcessLaunchSpec(
+        'alpha-team',
+        1,
+        [],
+        '/tmp/workspace',
+        {
+          OMX_TEAM_STATE_ROOT: '/tmp/workspace/.omx/state',
+          OMX_TMUX_HUD_OWNER: '1',
+          OMX_TMUX_HUD_LEADER_PANE: '%leader',
+        },
+        'codex',
+      );
+      assert.equal(spec.env.OMX_TEAM_WORKER, 'alpha-team/worker-1');
+      assert.equal(spec.env.OMX_TEAM_STATE_ROOT, '/tmp/workspace/.omx/state');
+      assert.equal(spec.env.OMX_TMUX_HUD_OWNER, undefined);
+      assert.equal(spec.env.OMX_TMUX_HUD_LEADER_PANE, undefined);
     } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
