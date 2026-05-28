@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
+import { AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV } from '../autopilot-wait.js';
 import { evaluateQuestionPolicy } from '../policy.js';
 
 const tempDirs: string[] = [];
@@ -200,6 +201,31 @@ describe('evaluateQuestionPolicy autopilot deep-interview wait', { concurrency: 
     });
     assert.equal(duplicateQuestion.allowed, false);
     assert.equal(duplicateQuestion.code, 'active_execution_mode_blocked');
+
+    const owningQuestion = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto',
+      questionSource: 'deep-interview',
+      env: {
+        ...process.env,
+        OMX_TEAM_WORKER: '',
+        [AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV]: 'obligation-1',
+      },
+    });
+    assert.equal(owningQuestion.allowed, true);
+
+    const wrongOwnerQuestion = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto',
+      questionSource: 'deep-interview',
+      env: {
+        ...process.env,
+        OMX_TEAM_WORKER: '',
+        [AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV]: 'obligation-other',
+      },
+    });
+    assert.equal(wrongOwnerQuestion.allowed, false);
+    assert.equal(wrongOwnerQuestion.code, 'active_execution_mode_blocked');
 
     const unrelatedSource = await evaluateQuestionPolicy({
       cwd,

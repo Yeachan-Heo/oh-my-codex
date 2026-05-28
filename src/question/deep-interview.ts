@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getStateFilePath, readCurrentSessionId } from '../mcp/state-paths.js';
 import {
+  OmxQuestionError,
   runOmxQuestion,
   type OmxQuestionClientOptions,
   type OmxQuestionSuccessPayload,
@@ -15,7 +16,9 @@ import type { TerminalLifecycleOutcome } from '../runtime/terminal-lifecycle.js'
 import type { QuestionInput, QuestionRecord } from './types.js';
 import type { DownstreamAuthority } from '../state/workflow-transition.js';
 import {
+  AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV,
   markAutopilotDeepInterviewQuestionWaiting,
+  readAutopilotDeepInterviewQuestionWaitState,
   resolveAutopilotDeepInterviewQuestionWaiting,
 } from './autopilot-wait.js';
 
@@ -273,13 +276,21 @@ export async function runDeepInterviewQuestion(
   const cwd = options.cwd ?? process.cwd();
   const sessionId = safeString(input.session_id).trim() || await readCurrentSessionId(cwd);
   const obligation = createDeepInterviewQuestionObligation();
+  const existingAutopilotWait = await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId);
+
+  if (existingAutopilotWait) {
+    throw new OmxQuestionError(
+      'active_execution_mode_blocked',
+      'Autopilot already has a pending deep-interview question.',
+    );
+  }
 
   await updateDeepInterviewQuestionEnforcement(
     cwd,
     sessionId,
     () => obligation,
   );
-  await markAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation);
+  const autopilotWaitStarted = await markAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation);
 
   try {
     const result = await runOmxQuestion(
@@ -288,7 +299,15 @@ export async function runDeepInterviewQuestion(
         source: input.source ?? 'deep-interview',
         ...(sessionId ? { session_id: sessionId } : {}),
       },
-      options,
+      autopilotWaitStarted
+        ? {
+            ...options,
+            env: {
+              ...(options.env ?? process.env),
+              [AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV]: obligation.obligation_id,
+            },
+          }
+        : options,
     );
 
     await updateDeepInterviewQuestionEnforcement(

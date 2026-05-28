@@ -9,6 +9,8 @@ import { getStateFilePath } from '../mcp/state-paths.js';
 import type { DeepInterviewQuestionEnforcementState } from './deep-interview.js';
 
 const AUTOPILOT_STATE_FILE = 'autopilot-state.json';
+export const AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV =
+  'OMX_AUTOPILOT_DEEP_INTERVIEW_QUESTION_OBLIGATION_ID';
 
 export interface AutopilotDeepInterviewQuestionWaitState {
   obligationId: string;
@@ -77,11 +79,17 @@ export async function readAutopilotDeepInterviewQuestionWaitState(
 export async function canStartAutopilotDeepInterviewQuestion(
   cwd: string,
   sessionId?: string,
+  options: { ownerObligationId?: string } = {},
 ): Promise<boolean> {
   const state = await readAutopilotState(cwd, sessionId);
   if (!isAutopilotSupervisingChild(state, 'deep-interview')) return false;
   const nestedState = safeObject(state?.state);
-  return !isPendingAutopilotQuestionWait(safeObject(nestedState.deep_interview_question));
+  const wait = safeObject(nestedState.deep_interview_question);
+  if (!isPendingAutopilotQuestionWait(wait)) return true;
+
+  const ownerObligationId = safeString(options.ownerObligationId);
+  return ownerObligationId.length > 0
+    && safeString(wait.obligation_id) === ownerObligationId;
 }
 
 export async function markAutopilotDeepInterviewQuestionWaiting(

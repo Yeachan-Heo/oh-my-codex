@@ -8,7 +8,9 @@ import {
   type DeepInterviewQuestionEnforcementState,
 } from '../question/deep-interview.js';
 import {
+  AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV,
   markAutopilotDeepInterviewQuestionWaiting,
+  readAutopilotDeepInterviewQuestionWaitState,
   resolveAutopilotDeepInterviewQuestionWaiting,
 } from '../question/autopilot-wait.js';
 import {
@@ -187,6 +189,26 @@ function isDeepInterviewQuestionSource(source: unknown): boolean {
   return typeof source === 'string' && source.trim() === 'deep-interview';
 }
 
+async function readOwningAutopilotDeepInterviewObligation(
+  cwd: string,
+  sessionId: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<DeepInterviewQuestionEnforcementState | null> {
+  const ownerObligationId = String(env[AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV] ?? '').trim();
+  if (!ownerObligationId || !sessionId) return null;
+
+  const waitState = await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId);
+  if (waitState?.obligationId !== ownerObligationId) return null;
+
+  return {
+    obligation_id: waitState.obligationId,
+    source: 'omx-question',
+    status: 'pending',
+    lifecycle_outcome: 'askuserQuestion',
+    requested_at: waitState.requestedAt ?? new Date().toISOString(),
+  };
+}
+
 async function finalizeDirectDeepInterviewObligation(
   cwd: string,
   sessionId: string | undefined,
@@ -297,17 +319,23 @@ export async function questionCommand(args: string[]): Promise<void> {
 
   let directDeepInterviewObligation: DeepInterviewQuestionEnforcementState | null = null;
   if (isDeepInterviewQuestionSource(input.source) && policy.sessionId) {
-    directDeepInterviewObligation = createDeepInterviewQuestionObligation();
-    await updateDeepInterviewQuestionEnforcement(
+    directDeepInterviewObligation = await readOwningAutopilotDeepInterviewObligation(
       cwd,
       policy.sessionId,
-      () => directDeepInterviewObligation ?? undefined,
     );
-    await markAutopilotDeepInterviewQuestionWaiting(
-      cwd,
-      policy.sessionId,
-      directDeepInterviewObligation,
-    );
+    if (!directDeepInterviewObligation) {
+      directDeepInterviewObligation = createDeepInterviewQuestionObligation();
+      await updateDeepInterviewQuestionEnforcement(
+        cwd,
+        policy.sessionId,
+        () => directDeepInterviewObligation ?? undefined,
+      );
+      await markAutopilotDeepInterviewQuestionWaiting(
+        cwd,
+        policy.sessionId,
+        directDeepInterviewObligation,
+      );
+    }
   }
 
   const waitTimeoutMs = parseQuestionWaitTimeoutMs();
