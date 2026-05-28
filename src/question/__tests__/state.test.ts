@@ -6,6 +6,8 @@ import { afterEach, describe, it } from 'node:test';
 import {
   createQuestionRecord,
   getQuestionRecordPath,
+  getQuestionRecordPathForStateDir,
+  getQuestionStateDirForStateDir,
   markQuestionAnswered,
   markQuestionPrompting,
   markQuestionTerminalError,
@@ -29,6 +31,19 @@ afterEach(async () => {
 });
 
 describe('question state', () => {
+  it('resolves question records under the session questions directory for explicit state roots', () => {
+    const stateDir = join('/tmp', 'omx-state-root');
+
+    assert.equal(
+      getQuestionStateDirForStateDir(stateDir, 'sess-questions'),
+      join(stateDir, 'sessions', 'sess-questions', 'questions'),
+    );
+    assert.equal(
+      getQuestionRecordPathForStateDir(stateDir, 'question-1', 'sess-questions'),
+      join(stateDir, 'sessions', 'sess-questions', 'questions', 'question-1.json'),
+    );
+  });
+
   it('creates records under session-scoped question state and reads them back', async () => {
     const cwd = await makeRepo();
     const { record, recordPath } = await createQuestionRecord(cwd, {

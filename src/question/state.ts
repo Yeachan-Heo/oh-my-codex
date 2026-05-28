@@ -56,7 +56,8 @@ export function getQuestionStateDir(cwd: string, sessionId?: string): string {
 }
 
 export function getQuestionStateDirForStateDir(stateDir: string, sessionId?: string): string {
-  return join(sessionId ? join(stateDir, 'sessions', sessionId) : stateDir, QUESTION_NAMESPACE);
+  const scopedStateDir = sessionId ? join(stateDir, 'sessions', sessionId) : stateDir;
+  return join(scopedStateDir, QUESTION_NAMESPACE);
 }
 
 export function getQuestionRecordPath(cwd: string, questionId: string, sessionId?: string): string {
