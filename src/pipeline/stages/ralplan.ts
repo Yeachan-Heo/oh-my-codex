@@ -22,6 +22,7 @@ import {
 export interface CreateRalplanStageOptions {
   executor?: RalplanConsensusExecutor;
   maxIterations?: number;
+  requireNativeSubagents?: boolean;
 }
 
 /**
@@ -44,7 +45,8 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
         return false;
       }
       const planningArtifacts = readPlanningArtifacts(ctx.cwd);
-      return isPlanningComplete(planningArtifacts) && hasDurableRalplanConsensusEvidence(ctx);
+      return isPlanningComplete(planningArtifacts)
+        && hasDurableRalplanConsensusEvidence(ctx, options.requireNativeSubagents);
     },
 
     async run(ctx: StageContext): Promise<StageResult> {
@@ -55,10 +57,16 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
             task: ctx.task,
             cwd: ctx.cwd,
             maxIterations: options.maxIterations,
+            sessionId: ctx.sessionId,
+            requireNativeSubagents: options.requireNativeSubagents,
           });
 
           const planningArtifacts = readPlanningArtifacts(ctx.cwd);
-          const consensusGate = buildRalplanConsensusGate(runtimeResult);
+          const consensusGate = buildRalplanConsensusGate(
+            runtimeResult,
+            ctx,
+            options.requireNativeSubagents,
+          );
           const consensusComplete = consensusGate.complete === true;
           return {
             status: runtimeResult.status === 'completed' && consensusComplete ? 'completed' : 'failed',
@@ -89,6 +97,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
         const consensusGate = buildRalplanConsensusGateForCwd(ctx.cwd, {
           artifacts: ctx.artifacts,
           sessionId: ctx.sessionId,
+          requireNativeSubagents: options.requireNativeSubagents,
         });
         const planningComplete = isPlanningComplete(planningArtifacts);
         const consensusComplete = consensusGate.complete === true;
@@ -139,17 +148,25 @@ function buildRalplanConsensusGate(runtimeResult: {
   ralplanConsensusGate?: unknown;
   architectReviews: unknown[];
   criticReviews: unknown[];
-}): RalplanConsensusGateEvidence {
+}, ctx: StageContext, requireNativeSubagents?: boolean): RalplanConsensusGateEvidence {
   return buildRalplanConsensusGateFromSources([{
     source: 'runtime-result',
     value: runtimeResult,
-  }]);
+  }], {
+    cwd: ctx.cwd,
+    sessionId: ctx.sessionId,
+    requireNativeSubagents,
+  });
 }
 
-function hasDurableRalplanConsensusEvidence(ctx: StageContext): boolean {
+function hasDurableRalplanConsensusEvidence(
+  ctx: StageContext,
+  requireNativeSubagents?: boolean,
+): boolean {
   return hasDurableRalplanConsensusEvidenceForCwd(ctx.cwd, {
     artifacts: ctx.artifacts,
     sessionId: ctx.sessionId,
+    requireNativeSubagents,
   });
 }
 

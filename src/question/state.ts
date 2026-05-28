@@ -55,8 +55,16 @@ export function getQuestionStateDir(cwd: string, sessionId?: string): string {
   return join(getStateDir(cwd, sessionId), QUESTION_NAMESPACE);
 }
 
+export function getQuestionStateDirForStateDir(stateDir: string, sessionId?: string): string {
+  return join(sessionId ? join(stateDir, 'sessions', sessionId) : stateDir, QUESTION_NAMESPACE);
+}
+
 export function getQuestionRecordPath(cwd: string, questionId: string, sessionId?: string): string {
   return join(getQuestionStateDir(cwd, sessionId), `${questionId}.json`);
+}
+
+export function getQuestionRecordPathForStateDir(stateDir: string, questionId: string, sessionId?: string): string {
+  return join(getQuestionStateDirForStateDir(stateDir, sessionId), `${questionId}.json`);
 }
 
 export async function writeQuestionRecord(recordPath: string, record: QuestionRecord): Promise<void> {

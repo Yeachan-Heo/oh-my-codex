@@ -131,7 +131,6 @@ const ALLOWED_OVERLAP_PAIRS = new Set([
 ]);
 
 const AUTO_COMPLETE_TRANSITIONS = new Set([
-  'deep-interview->ralplan',
   'deep-interview->autopilot',
   'deep-interview->autoresearch',
   'deep-interview->ralph',
@@ -142,7 +141,10 @@ const AUTO_COMPLETE_TRANSITIONS = new Set([
   'ralplan->ralph',
   'ralplan->autopilot',
   'ralplan->autoresearch',
-  'autopilot->ralplan',
+]);
+
+const EVIDENCE_GATED_AUTO_COMPLETE_TRANSITIONS = new Set([
+  'deep-interview->ralplan',
 ]);
 
 const PLANNING_LIKE_MODES = new Set<TrackedWorkflowMode>([
@@ -189,6 +191,10 @@ function buildAutoCompleteKey(a: TrackedWorkflowMode, b: TrackedWorkflowMode): s
 
 function isAutoCompleteTransition(a: TrackedWorkflowMode, b: TrackedWorkflowMode): boolean {
   return AUTO_COMPLETE_TRANSITIONS.has(buildAutoCompleteKey(a, b));
+}
+
+function isEvidenceGatedAutoCompleteTransition(a: TrackedWorkflowMode, b: TrackedWorkflowMode): boolean {
+  return EVIDENCE_GATED_AUTO_COMPLETE_TRANSITIONS.has(buildAutoCompleteKey(a, b));
 }
 
 function isRollbackTransition(
@@ -256,7 +262,10 @@ export function evaluateWorkflowTransition(
     };
   }
 
-  const autoCompleteModes = currentModes.filter((mode) => isAutoCompleteTransition(mode, requestedMode));
+  const autoCompleteModes = currentModes.filter((mode) => (
+    isAutoCompleteTransition(mode, requestedMode)
+    || isEvidenceGatedAutoCompleteTransition(mode, requestedMode)
+  ));
   const survivableModes = currentModes.filter((mode) => !autoCompleteModes.includes(mode));
 
   if (autoCompleteModes.length > 0 && survivableModes.every((mode) => isAllowedOverlap(mode, requestedMode))) {

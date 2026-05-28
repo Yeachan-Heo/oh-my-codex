@@ -37,7 +37,7 @@ export function buildDeepInterviewConfigInstruction(cwd: string, skillState?: Sk
     return [
       `Deep-interview config override active${sourcePath ? ` from ${sourcePath}` : ''}:`,
       `profile=${profile}, threshold=${threshold}, max_rounds=${maxRounds}, enableChallengeModes=${enableChallengeModes !== false}.`,
-      'Use these values instead of SKILL.md defaults for ambiguity scoring, challenge-mode gating, and round caps.',
+      'Use these values instead of SKILL.md defaults for ambiguity scoring, challenge-mode gating, and round caps. Treat max_rounds as a cap, not a target; once ambiguity is at or below threshold and readiness gates pass, crystallize instead of asking another ordinary question.',
     ].join(' ');
   } catch {
     return null;

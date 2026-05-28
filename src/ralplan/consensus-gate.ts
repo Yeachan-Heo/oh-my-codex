@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { subagentTrackingPath } from '../subagents/tracker.js';
 
 export interface RalplanConsensusGateEvidence {
   complete: boolean;
@@ -10,6 +11,12 @@ export interface RalplanConsensusGateEvidence {
   blockedReason: string | null;
 }
 
+export interface RalplanNativeSubagentConsensusOptions {
+  requireNativeSubagents?: boolean;
+  cwd?: string;
+  sessionId?: string;
+}
+
 export interface RalplanConsensusSource {
   source: string;
   value: unknown;
@@ -17,10 +24,24 @@ export interface RalplanConsensusSource {
 
 export function buildRalplanConsensusGateFromSources(
   sources: RalplanConsensusSource[],
+  options: RalplanNativeSubagentConsensusOptions = {},
 ): RalplanConsensusGateEvidence {
+  let nativeBlockedEvidence: {
+    ralplan_architect_review: Record<string, unknown>;
+    ralplan_critic_review: Record<string, unknown>;
+    source: string;
+  } | null = null;
+
   for (const candidate of sources) {
     const evidence = extractSequentialConsensusEvidence(candidate.value);
     if (evidence) {
+      if (
+        options.requireNativeSubagents
+        && !hasTrackerBackedNativeRalplanLanes(evidence, options)
+      ) {
+        nativeBlockedEvidence ??= { ...evidence, source: candidate.source };
+        continue;
+      }
       return {
         complete: true,
         sequence: ['architect-review', 'critic-review'],
@@ -30,6 +51,17 @@ export function buildRalplanConsensusGateFromSources(
         blockedReason: null,
       };
     }
+  }
+
+  if (nativeBlockedEvidence) {
+    return {
+      complete: false,
+      sequence: ['architect-review', 'critic-review'],
+      ralplan_architect_review: nativeBlockedEvidence.ralplan_architect_review,
+      ralplan_critic_review: nativeBlockedEvidence.ralplan_critic_review,
+      source: nativeBlockedEvidence.source,
+      blockedReason: 'native_subagent_consensus_evidence_missing',
+    };
   }
 
   return {
@@ -44,7 +76,7 @@ export function buildRalplanConsensusGateFromSources(
 
 export function buildRalplanConsensusGateForCwd(
   cwd: string,
-  options: { artifacts?: Record<string, unknown>; sessionId?: string } = {},
+  options: { artifacts?: Record<string, unknown>; sessionId?: string; requireNativeSubagents?: boolean } = {},
 ): RalplanConsensusGateEvidence {
   return buildRalplanConsensusGateFromSources([
     ...(options.artifacts ? [
@@ -52,12 +84,16 @@ export function buildRalplanConsensusGateForCwd(
       { source: 'stage-context-ralplan-artifact', value: options.artifacts.ralplan },
     ] : []),
     ...readLocalRalplanConsensusStateCandidates(cwd, options.sessionId),
-  ]);
+  ], {
+    cwd,
+    sessionId: options.sessionId,
+    requireNativeSubagents: options.requireNativeSubagents,
+  });
 }
 
 export function hasDurableRalplanConsensusEvidenceForCwd(
   cwd: string,
-  options: { artifacts?: Record<string, unknown>; sessionId?: string } = {},
+  options: { artifacts?: Record<string, unknown>; sessionId?: string; requireNativeSubagents?: boolean } = {},
 ): boolean {
   return buildRalplanConsensusGateForCwd(cwd, options).complete === true;
 }
@@ -212,6 +248,51 @@ function reviewOrderValue(review: Record<string, unknown>): number | null {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+}
+
+function hasTrackerBackedNativeRalplanLanes(
+  evidence: {
+    ralplan_architect_review: Record<string, unknown>;
+    ralplan_critic_review: Record<string, unknown>;
+  },
+  options: RalplanNativeSubagentConsensusOptions,
+): boolean {
+  const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
+  const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
+  if (!architectThreadId || !criticThreadId || architectThreadId === criticThreadId) return false;
+  return isTrackerBackedNativeReview(evidence.ralplan_architect_review, 'architect', options)
+    && isTrackerBackedNativeReview(evidence.ralplan_critic_review, 'critic', options);
+}
+
+function nativeReviewThreadId(review: Record<string, unknown> | null): string {
+  return typeof review?.thread_id === 'string' ? review.thread_id.trim() : '';
+}
+
+function isTrackerBackedNativeReview(
+  review: Record<string, unknown> | null,
+  agentRole: 'architect' | 'critic',
+  options: RalplanNativeSubagentConsensusOptions,
+): boolean {
+  if (!review) return false;
+  if (review.agent_role !== agentRole) return false;
+  if (review.provenance_kind !== 'native_subagent') return false;
+  const sessionId = typeof options.sessionId === 'string' && options.sessionId.trim()
+    ? options.sessionId.trim()
+    : typeof review.session_id === 'string'
+      ? review.session_id.trim()
+      : '';
+  const reviewSessionId = typeof review.session_id === 'string' ? review.session_id.trim() : '';
+  const threadId = typeof review.thread_id === 'string' ? review.thread_id.trim() : '';
+  const artifactPath = typeof review.artifact_path === 'string' ? review.artifact_path.trim() : '';
+  const trackerPath = typeof review.tracker_path === 'string' ? review.tracker_path.trim() : '';
+  if (!sessionId || !reviewSessionId || reviewSessionId !== sessionId) return false;
+  if (!threadId || !artifactPath || !trackerPath || !trackerPath.endsWith('subagent-tracking.json')) return false;
+  if (!options.cwd) return false;
+
+  const tracking = readJsonState(subagentTrackingPath(options.cwd));
+  const session = asRecord(asRecord(tracking?.sessions)?.[sessionId]);
+  const thread = asRecord(asRecord(session?.threads)?.[threadId]);
+  return thread?.kind === 'subagent';
 }
 
 function validateLocalSessionId(sessionId: string): string[] {

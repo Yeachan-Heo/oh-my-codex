@@ -264,6 +264,10 @@ describe('state-server directory initialization', () => {
             mode: 'deep-interview',
             active: true,
             current_phase: 'interviewing',
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'Requirements are clarified and ready for ralplan consensus.',
+            },
           },
         },
       });
@@ -1179,7 +1183,15 @@ describe('state-server directory initialization', () => {
       await mkdir(join(wd, '.omx', 'state', 'sessions', 'sess-handoff'), { recursive: true });
       await writeFile(
         join(wd, '.omx', 'state', 'sessions', 'sess-handoff', 'deep-interview-state.json'),
-        JSON.stringify({ active: true, mode: 'deep-interview', current_phase: 'intent-first' }, null, 2),
+        JSON.stringify({
+          active: true,
+          mode: 'deep-interview',
+          current_phase: 'intent-first',
+          deep_interview_gate: {
+            status: 'complete',
+            rationale: 'Requirements are clarified and ready for ralplan consensus.',
+          },
+        }, null, 2),
       );
 
       const response = await handleStateToolCall({

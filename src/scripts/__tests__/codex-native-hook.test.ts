@@ -2769,6 +2769,8 @@ standardMaxRounds = 15
       assert.match(message, /Autopilot protocol:/);
       assert.match(message, /deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
       assert.match(message, /structured question chain, not a one-question gate/);
+      assert.match(message, /re-score ambiguity against the active threshold/);
+      assert.match(message, /max_rounds as a cap/);
       assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
       assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
       assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
@@ -3324,6 +3326,8 @@ ${JSON.stringify({
       assert.match(message, /"keep going" -> ralph/);
       assert.match(message, /Autopilot protocol:/);
       assert.match(message, /structured question chain, not a one-question gate/);
+      assert.match(message, /re-score ambiguity against the active threshold/);
+      assert.match(message, /max_rounds as a cap/);
       assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
       assert.doesNotMatch(message, /denied workflow keyword/i);
       assert.doesNotMatch(message, /Unsupported workflow overlap: autopilot \+ ralph\./);
@@ -3384,8 +3388,9 @@ ${JSON.stringify({
       assert.match(message, /Autopilot protocol:/);
       assert.match(message, /structured question chain, not a one-question gate/);
       assert.match(message, /This turn is a marked omx question answer/);
-      assert.match(message, /do not close the interview, write ralplan artifacts, or set current_phase=ralplan in the same turn/);
-      assert.match(message, /Ask the next deep-interview follow-up instead/);
+      assert.match(message, /then re-score/);
+      assert.match(message, /write interview_complete evidence and hand off/);
+      assert.match(message, /readiness gate remains unresolved and the answer would materially change execution/);
       assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
       assert.doesNotMatch(message, /denied workflow keyword/i);
       assert.equal(existsSync(join(sessionDir, "ralplan-state.json")), false);
@@ -3970,6 +3975,10 @@ export async function onHookEvent(event) {
         active: true,
         mode: "deep-interview",
         current_phase: "intent-first",
+        deep_interview_gate: {
+          status: "complete",
+          rationale: "Requirements are clarified and ready for ralplan consensus.",
+        },
       });
       await writeJson(join(sessionDir, "skill-active-state.json"), {
         active: true,

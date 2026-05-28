@@ -24,10 +24,16 @@ describe('modes/base deep-interview contract integration', () => {
 });
 
 describe('modes/base autoresearch contract integration', () => {
-  it('startMode auto-completes deep-interview when starting ralplan', async () => {
+  it('startMode auto-completes deep-interview when starting ralplan with completion gate evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-mode-interview-ralplan-handoff-'));
     try {
       await startMode('deep-interview', 'clarify contract', 3, wd);
+      await updateModeState('deep-interview', {
+        deep_interview_gate: {
+          status: 'complete',
+          rationale: 'Requirements are clarified and ready for ralplan consensus.',
+        },
+      }, wd);
       const started = await startMode('ralplan', 'plan contract', 5, wd);
       assert.equal(started.mode, 'ralplan');
       assert.equal(started.active, true);

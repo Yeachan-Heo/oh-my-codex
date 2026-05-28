@@ -305,6 +305,7 @@ export async function runDeepInterviewQuestion(
       sessionId,
       obligation.obligation_id,
       'satisfied',
+      { questionId: result.question_id },
     );
 
     return result;
@@ -323,6 +324,7 @@ export async function runDeepInterviewQuestion(
       sessionId,
       obligation.obligation_id,
       'cleared',
+      { clearReason: 'error' },
     );
     throw error;
   }

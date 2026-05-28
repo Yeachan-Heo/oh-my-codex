@@ -176,11 +176,24 @@ export function parseDeepInterviewProfileFromText(text: string | undefined): Dee
 export function getDeepInterviewConfigCandidatePaths(options: Pick<DeepInterviewConfigOptions, 'cwd' | 'homeDir'>): DeepInterviewConfigCandidate[] {
   const home = options.homeDir || homedir();
   const projectRoot = findGitLayout(options.cwd)?.worktreeRoot ?? options.cwd;
-  return [
-    { path: join(projectRoot, '.omx', 'config.toml'), precedence: 'project-omx' },
-    { path: join(projectRoot, 'omx.toml'), precedence: 'project-root' },
-    { path: join(home, '.omx', 'config.toml'), precedence: 'user' },
+  const candidates: DeepInterviewConfigCandidate[] = [
+    { path: join(options.cwd, '.omx', 'config.toml'), precedence: 'project-omx' },
+    { path: join(options.cwd, 'omx.toml'), precedence: 'project-root' },
   ];
+  if (projectRoot !== options.cwd) {
+    candidates.push(
+      { path: join(projectRoot, '.omx', 'config.toml'), precedence: 'project-omx' },
+      { path: join(projectRoot, 'omx.toml'), precedence: 'project-root' },
+    );
+  }
+  candidates.push({ path: join(home, '.omx', 'config.toml'), precedence: 'user' });
+
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate.path)) return false;
+    seen.add(candidate.path);
+    return true;
+  });
 }
 
 export function resolveDeepInterviewRuntimeConfig(options: DeepInterviewConfigOptions): DeepInterviewRuntimeConfig | null {

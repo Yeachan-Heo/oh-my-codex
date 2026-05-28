@@ -376,12 +376,14 @@ describe('runDeepInterviewQuestion autopilot wait bridge', { concurrency: false 
       current_phase?: string;
       run_outcome?: string;
       lifecycle_outcome?: string;
-      state?: { deep_interview_question?: { status?: string } };
+      state?: { deep_interview_question?: { status?: string; question_id?: string; satisfied_at?: string } };
     };
     assert.equal(finalAutopilot.active, true);
     assert.equal(finalAutopilot.current_phase, 'deep-interview');
     assert.equal(finalAutopilot.run_outcome, undefined);
     assert.equal(finalAutopilot.lifecycle_outcome, undefined);
     assert.equal(finalAutopilot.state?.deep_interview_question?.status, 'satisfied');
+    assert.equal(finalAutopilot.state?.deep_interview_question?.question_id, 'question-autopilot-1');
+    assert.ok(finalAutopilot.state?.deep_interview_question?.satisfied_at);
   });
 });

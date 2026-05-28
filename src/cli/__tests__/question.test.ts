@@ -237,12 +237,14 @@ describe('omx question CLI', () => {
       current_phase?: string;
       run_outcome?: string;
       lifecycle_outcome?: string;
-      state?: { deep_interview_question?: { status?: string } };
+      state?: { deep_interview_question?: { status?: string; question_id?: string; satisfied_at?: string } };
     };
     assert.equal(finalAutopilot.current_phase, 'deep-interview');
     assert.equal(finalAutopilot.run_outcome, 'interviewing');
     assert.equal(finalAutopilot.lifecycle_outcome, 'running');
     assert.equal(finalAutopilot.state?.deep_interview_question?.status, 'satisfied');
+    assert.equal(finalAutopilot.state?.deep_interview_question?.question_id, record?.question_id);
+    assert.ok(finalAutopilot.state?.deep_interview_question?.satisfied_at);
   });
 
   it('omits legacy prompt and answer projections for batch payloads', async () => {

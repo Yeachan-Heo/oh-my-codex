@@ -1095,7 +1095,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('keeps ralplan as an allowlisted deep-interview forward handoff', async () => {
+  it('denies ralplan handoff from deep-interview without completion or explicit skip evidence', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ralplan-handoff-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -1123,11 +1123,60 @@ describe('keyword detector skill-active-state lifecycle', () => {
         nowIso: '2026-04-10T00:00:00.000Z',
       });
 
+      assert.equal(result?.skill, 'deep-interview');
+      assert.match(String(result?.transition_error), /missing deep-interview completion\/skip gate/i);
+      const preserved = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ralplan-handoff', 'deep-interview-state.json'), 'utf-8'),
+      ) as { active?: boolean; current_phase?: string };
+      assert.equal(preserved.active, true);
+      assert.equal(preserved.current_phase, 'intent-first');
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-ralplan-handoff', 'ralplan-state.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows ralplan handoff from deep-interview with a durable completion gate', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ralplan-handoff-complete-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(stateDir, 'sessions', 'sess-ralplan-handoff-complete'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ralplan-handoff-complete', SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'deep-interview',
+          phase: 'planning',
+          session_id: 'sess-ralplan-handoff-complete',
+          active_skills: [{ skill: 'deep-interview', phase: 'planning', active: true, session_id: 'sess-ralplan-handoff-complete' }],
+        }, null, 2),
+      );
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ralplan-handoff-complete', 'deep-interview-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'deep-interview',
+          current_phase: 'intent-first',
+          deep_interview_gate: {
+            status: 'complete',
+            rationale: 'Requirements are clarified and ready for ralplan consensus.',
+          },
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ralplan implement the approved contract',
+        sessionId: 'sess-ralplan-handoff-complete',
+        nowIso: '2026-04-10T00:00:00.000Z',
+      });
+
       assert.equal(result?.transition_error, undefined);
       assert.equal(result?.skill, 'ralplan');
       assert.equal(result?.transition_message, 'mode transiting: deep-interview -> ralplan');
       const completed = JSON.parse(
-        await readFile(join(stateDir, 'sessions', 'sess-ralplan-handoff', 'deep-interview-state.json'), 'utf-8'),
+        await readFile(join(stateDir, 'sessions', 'sess-ralplan-handoff-complete', 'deep-interview-state.json'), 'utf-8'),
       ) as { active?: boolean; current_phase?: string };
       assert.equal(completed.active, false);
       assert.equal(completed.current_phase, 'completed');
@@ -1959,21 +2008,29 @@ deepMaxRounds = 21
   });
 
   it('emits a warning when skill-active-state persistence fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-persist-fail-'));
     const warnings: unknown[][] = [];
     mock.method(console, 'warn', (...args: unknown[]) => {
       warnings.push(args);
     });
 
-    const result = await recordSkillActivation({
-      stateDir: join('/definitely-missing', 'nested', 'state-dir'),
-        text: 'please run $autopilot',
-      nowIso: '2026-02-25T00:00:00.000Z',
-    });
+    try {
+      const blockingFile = join(cwd, 'state-root-file');
+      await writeFile(blockingFile, 'not a directory');
 
-    assert.ok(result);
-    assert.equal(result.skill, 'autopilot');
-    assert.equal(warnings.length, 1);
-    assert.match(String(warnings[0][0]), /failed to persist keyword activation state/);
+      const result = await recordSkillActivation({
+        stateDir: join(blockingFile, 'nested', 'state-dir'),
+        text: 'please run $autopilot',
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'autopilot');
+      assert.equal(warnings.length, 1);
+      assert.match(String(warnings[0][0]), /failed to persist keyword activation state/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('preserves activated_at for same-skill continuation', async () => {
@@ -2639,6 +2696,47 @@ describe('applyRalplanGate', () => {
       const result = applyRalplanGate(['team'], 'team으로 해줘', { cwd });
       assert.equal(result.gateApplied, false);
       assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps native-proof execution follow-ups gated when consensus is artifact-only', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-native-required-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-833.md'),
+        '# Approved plan\n\nLaunch hint: omx team 3:executor "Execute approved issue 833 plan"\n',
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-833.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            verdict: 'approve',
+            iteration: 1,
+            provenance_kind: 'codex_exec',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            verdict: 'approve',
+            iteration: 1,
+            provenance_kind: 'codex_exec',
+          },
+        },
+      }));
+
+      const result = applyRalplanGate(['team'], 'team', { cwd, requireNativeSubagents: true });
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

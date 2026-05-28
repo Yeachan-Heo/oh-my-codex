@@ -1,5 +1,10 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import {
+  deriveAutopilotChildPhase,
+  isAutopilotSupervisingChild,
+  normalizeAutopilotPhase,
+} from '../autopilot/fsm.js';
 import { getStateFilePath } from '../mcp/state-paths.js';
 import type { DeepInterviewQuestionEnforcementState } from './deep-interview.js';
 
@@ -17,10 +22,6 @@ function safeString(value: unknown): string {
 
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
-}
-
-function normalizePhase(value: unknown): string {
-  return safeString(value).toLowerCase().replace(/_/g, '-');
 }
 
 async function readAutopilotState(cwd: string, sessionId?: string): Promise<Record<string, unknown> | null> {
@@ -52,16 +53,18 @@ export async function readAutopilotDeepInterviewQuestionWaitState(
   if (safeString(wait.status) !== 'waiting_for_user') return null;
   if (safeString(wait.source) !== 'omx-question') return null;
 
-  const phase = normalizePhase(state.current_phase);
+  const phase = normalizeAutopilotPhase(state.current_phase);
   const runOutcome = safeString(state.run_outcome);
   const lifecycleOutcome = safeString(state.lifecycle_outcome);
   if (phase !== 'waiting-for-user') return null;
   if (runOutcome && runOutcome !== 'blocked_on_user') return null;
   if (lifecycleOutcome && lifecycleOutcome !== 'askuserQuestion') return null;
+  const previousPhase = deriveAutopilotChildPhase(state);
+  if (previousPhase !== 'deep-interview') return null;
 
   return {
     obligationId,
-    previousPhase: safeString(wait.previous_phase) || 'deep-interview',
+    previousPhase,
     requestedAt: safeString(wait.requested_at) || undefined,
   };
 }
@@ -71,8 +74,7 @@ export async function canStartAutopilotDeepInterviewQuestion(
   sessionId?: string,
 ): Promise<boolean> {
   const state = await readAutopilotState(cwd, sessionId);
-  if (!state || safeString(state.mode) !== 'autopilot' || state.active !== true) return false;
-  return normalizePhase(state.current_phase) === 'deep-interview';
+  return isAutopilotSupervisingChild(state, 'deep-interview');
 }
 
 export async function markAutopilotDeepInterviewQuestionWaiting(
@@ -84,8 +86,8 @@ export async function markAutopilotDeepInterviewQuestionWaiting(
   const state = await readAutopilotState(cwd, sessionId);
   if (!state || safeString(state.mode) !== 'autopilot' || state.active !== true) return false;
 
-  const currentPhase = safeString(state.current_phase) || 'deep-interview';
-  if (normalizePhase(currentPhase) !== 'deep-interview') return false;
+  if (!isAutopilotSupervisingChild(state, 'deep-interview')) return false;
+  const currentPhase = normalizeAutopilotPhase(state.current_phase) || 'deep-interview';
 
   const nestedState = safeObject(state.state);
   const wait = {
@@ -121,6 +123,7 @@ export async function resolveAutopilotDeepInterviewQuestionWaiting(
   sessionId: string | undefined,
   obligationId: string,
   status: 'satisfied' | 'cleared',
+  options: { questionId?: string; clearReason?: 'handoff' | 'abort' | 'error'; now?: Date } = {},
 ): Promise<boolean> {
   if (!safeString(sessionId) || !safeString(obligationId)) return false;
   const state = await readAutopilotState(cwd, sessionId);
@@ -133,6 +136,8 @@ export async function resolveAutopilotDeepInterviewQuestionWaiting(
 
   const previousRunOutcome = wait.previous_run_outcome;
   const previousLifecycleOutcome = wait.previous_lifecycle_outcome;
+  const resolvedAt = (options.now ?? new Date()).toISOString();
+  const questionId = safeString(options.questionId);
   const nextState: Record<string, unknown> = {
     ...state,
     active: true,
@@ -143,7 +148,20 @@ export async function resolveAutopilotDeepInterviewQuestionWaiting(
       deep_interview_question: {
         ...wait,
         status,
-        resolved_at: new Date().toISOString(),
+        resolved_at: resolvedAt,
+        ...(status === 'satisfied'
+          ? {
+              question_id: questionId || undefined,
+              satisfied_at: resolvedAt,
+              clear_reason: undefined,
+              cleared_at: undefined,
+            }
+          : {
+              clear_reason: options.clearReason ?? 'error',
+              cleared_at: resolvedAt,
+              question_id: undefined,
+              satisfied_at: undefined,
+            }),
       },
     },
   };

@@ -209,6 +209,9 @@ async function finalizeDirectDeepInterviewObligation(
     sessionId,
     obligation.obligation_id,
     outcome.status,
+    outcome.status === 'satisfied'
+      ? { questionId: outcome.questionId }
+      : { clearReason: 'error' },
   );
 }
 
