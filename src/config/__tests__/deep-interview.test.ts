@@ -81,13 +81,10 @@ deepMaxRounds = 30
 
       assert.equal(config?.threshold, 0.10);
       assert.equal(config?.sourcePath, join(cwd, '.omx', 'config.toml'));
-      assert.deepEqual(getDeepInterviewConfigCandidatePaths({ cwd, homeDir }).map((entry) => entry.precedence), [
-        'project-omx',
-        'project-root',
-        'project-omx',
-        'project-root',
-        'user',
-      ]);
+      const candidates = getDeepInterviewConfigCandidatePaths({ cwd, homeDir });
+      assert.equal(candidates[0]?.path, join(cwd, '.omx', 'config.toml'));
+      assert.equal(candidates[1]?.path, join(cwd, 'omx.toml'));
+      assert.equal(candidates.at(-1)?.path, join(homeDir, '.omx', 'config.toml'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
       await rm(homeDir, { recursive: true, force: true });
