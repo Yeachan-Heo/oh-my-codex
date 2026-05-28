@@ -728,6 +728,79 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('allows Autopilot ralplan handoff when duplicated deep-interview gate copies include one stale required gate', async () => {
+    const cases = [
+      {
+        name: 'top-level stale, nested complete',
+        topLevelGate: {
+          status: 'required',
+          skip_reason: null,
+          rationale: 'Default Autopilot start gate.',
+        },
+        nestedGate: {
+          status: 'complete',
+          rationale: 'Interview complete and ready for ralplan.',
+        },
+      },
+      {
+        name: 'top-level complete, nested stale',
+        topLevelGate: {
+          status: 'complete',
+          rationale: 'Interview complete and ready for ralplan.',
+        },
+        nestedGate: {
+          status: 'required',
+          skip_reason: null,
+          rationale: 'Default Autopilot start gate.',
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-duplicated-gate-'));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-duplicated-gate-${testCase.name.replace(/\W+/g, '-')}`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+              deep_interview_gate: testCase.topLevelGate,
+              state: {
+                deep_interview_gate: testCase.nestedGate,
+                handoff_artifacts: {
+                  deep_interview: {
+                    summary: 'Autopilot may proceed to ralplan.',
+                  },
+                },
+              },
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+          });
+
+          assert.equal(response.isError, undefined, testCase.name);
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, 'ralplan', testCase.name);
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('denies Autopilot deep-interview to ralplan self-write when only a satisfied question exists', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-child-phase-deny-'));
     try {

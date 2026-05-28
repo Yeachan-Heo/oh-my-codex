@@ -68,8 +68,13 @@ function deepInterviewHandoff(state: JsonObject | null | undefined): unknown {
   return handoffArtifacts(state)?.deep_interview;
 }
 
-function deepInterviewGate(state: JsonObject | null | undefined): JsonObject | null {
-  return safeObject(state?.deep_interview_gate) ?? safeObject(nestedState(state)?.deep_interview_gate);
+function deepInterviewGates(state: JsonObject | null | undefined): JsonObject[] {
+  const gates: JsonObject[] = [];
+  const topLevelGate = safeObject(state?.deep_interview_gate);
+  const nestedGate = safeObject(nestedState(state)?.deep_interview_gate);
+  if (topLevelGate) gates.push(topLevelGate);
+  if (nestedGate && nestedGate !== topLevelGate) gates.push(nestedGate);
+  return gates;
 }
 
 function questionEnforcement(state: JsonObject | null | undefined): DeepInterviewQuestionEnforcementState | undefined {
@@ -105,11 +110,16 @@ function firstGate(
   input: AutopilotDeepInterviewRalplanGateInput,
   deepState: JsonObject | null,
 ): JsonObject | null {
+  const fallback: JsonObject[] = [];
   for (const state of allCandidateStates(input, deepState)) {
-    const gate = deepInterviewGate(state);
-    if (gate) return gate;
+    for (const gate of deepInterviewGates(state)) {
+      if (isCompletionGate(gate, input, deepState) || isSkipGate(gate, input.sessionId)) {
+        return gate;
+      }
+      fallback.push(gate);
+    }
   }
-  return null;
+  return fallback[0] ?? null;
 }
 
 function hasNonEmptyObjectSummary(value: unknown): boolean {
