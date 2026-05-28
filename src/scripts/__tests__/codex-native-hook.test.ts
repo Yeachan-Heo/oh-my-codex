@@ -1201,6 +1201,66 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("keeps a self-parented native role thread as subagent evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-self-parented-subagent-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-autopilot-session";
+      const nativeRoleThreadId = "codex-architect-thread";
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId, {
+        nativeSessionId: nativeRoleThreadId,
+      });
+
+      const transcriptPath = join(cwd, "architect-subagent-rollout.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: nativeRoleThreadId,
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: nativeRoleThreadId,
+                  depth: 1,
+                  agent_nickname: "Architect",
+                  agent_role: "architect",
+                },
+              },
+            },
+            agent_nickname: "Architect",
+            agent_role: "architect",
+          },
+        })}\n`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: nativeRoleThreadId,
+          transcript_path: transcriptPath,
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const tracking = JSON.parse(
+        await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"),
+      ) as {
+        sessions?: Record<string, {
+          leader_thread_id?: string;
+          threads?: Record<string, { kind?: string; mode?: string }>;
+        }>;
+      };
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.leader_thread_id, undefined);
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[nativeRoleThreadId]?.kind, "subagent");
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[nativeRoleThreadId]?.mode, "architect");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not attach a subagent SessionStart to an unrelated canonical leader", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-session-start-mismatch-"));
     try {
