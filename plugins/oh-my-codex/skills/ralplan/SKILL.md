@@ -64,6 +64,18 @@ The consensus workflow:
 
 > **Important:** Steps 3 and 4 MUST run sequentially as role-specific subagents. Do NOT issue both agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking the subsequent `Critic`; only a completed, role-specific `Critic` approval can satisfy the durable gate.
 
+## Planning/Execution Boundary
+
+`$ralplan` is a planning mode. While ralplan is active and no explicit execution handoff is active, implementation-focused write tools are out of scope. Ralplan may inspect the repository and may write only planning artifacts such as `.omx/context/`, `.omx/plans/`, `.omx/specs/`, and required `.omx/state/` records.
+
+The canonical flow is:
+
+```
+$ralplan -> durable consensus artifact -> explicit execution lane -> $ultragoal | $team | $ralph
+```
+
+Before any execution lane begins, ralplan must emit terminal planning state (complete, paused, failed, or waiting for input) and the durable handoff record below. Do not continue from consensus planning into direct code edits in the same ralplan session.
+
 ## Durable Consensus Handoff Contract
 
 Ralplan is not complete, skippable, or ready for execution merely because `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist. Those files are planning artifacts, not consensus evidence.

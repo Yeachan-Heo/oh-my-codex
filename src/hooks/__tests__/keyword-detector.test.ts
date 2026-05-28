@@ -1348,6 +1348,71 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+  it('emits terminal ralplan state before explicit ultragoal execution handoff', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ralplan-ultragoal-handoff-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(stateDir, 'sessions', 'sess-ralplan-ultragoal'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ralplan-ultragoal', SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'ralplan',
+          keyword: '$ralplan',
+          phase: 'planning',
+          session_id: 'sess-ralplan-ultragoal',
+          active_skills: [{ skill: 'ralplan', phase: 'planning', active: true, session_id: 'sess-ralplan-ultragoal' }],
+        }, null, 2),
+      );
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ralplan-ultragoal', 'ralplan-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'ralplan',
+          current_phase: 'complete',
+          planning_complete: true,
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', approved: true },
+            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', approved: true },
+          },
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$ultragoal execute the approved ralplan',
+        sessionId: 'sess-ralplan-ultragoal',
+        nowIso: '2026-04-10T00:20:00.000Z',
+      });
+
+      assert.equal(result?.transition_error, undefined);
+      assert.equal(result?.skill, 'ultragoal');
+      assert.equal(result?.transition_message, 'mode transiting: ralplan -> ultragoal');
+      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ultragoal']);
+
+      const ralplan = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ralplan-ultragoal', 'ralplan-state.json'), 'utf-8'),
+      ) as { active?: boolean; current_phase?: string; completed_at?: string; auto_completed_reason?: string };
+      assert.equal(ralplan.active, false);
+      assert.equal(ralplan.current_phase, 'completed');
+      assert.equal(ralplan.auto_completed_reason, 'mode transiting: ralplan -> ultragoal');
+      assert.ok(ralplan.completed_at);
+
+      const ultragoal = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ralplan-ultragoal', 'ultragoal-state.json'), 'utf-8'),
+      ) as { active?: boolean; mode?: string; current_phase?: string };
+      assert.equal(ultragoal.active, true);
+      assert.equal(ultragoal.mode, 'ultragoal');
+      assert.equal(ultragoal.current_phase, 'planning');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps root team state out of the session-scoped Ralph canonical state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-ralph-'));
     const stateDir = join(cwd, '.omx', 'state');

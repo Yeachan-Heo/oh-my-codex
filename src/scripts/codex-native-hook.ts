@@ -2434,12 +2434,32 @@ const DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES = [
   ".omx/state",
 ] as const;
 
-const DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES = new Set([
+const RALPLAN_ALLOWED_WRITE_PREFIXES = [
+  ".omx/context",
+  ".omx/plans",
+  ".omx/specs",
+  ".omx/state",
+] as const;
+
+const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
   "Write",
   "Edit",
   "MultiEdit",
+  "NotebookEdit",
   "apply_patch",
   "ApplyPatch",
+]);
+
+const DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES = PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES;
+
+const RALPLAN_EXECUTION_HANDOFF_SKILLS = new Set([
+  "autopilot",
+  "autoresearch",
+  "ralph",
+  "team",
+  "ultragoal",
+  "ultrawork",
+  "ultraqa",
 ]);
 
 function isActiveDeepInterviewPhase(state: Record<string, unknown> | null): boolean {
@@ -2451,7 +2471,31 @@ function isActiveDeepInterviewPhase(state: Record<string, unknown> | null): bool
   return true;
 }
 
-function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boolean {
+function isActiveRalplanPhase(state: Record<string, unknown> | null): boolean {
+  if (!state || state.active !== true) return false;
+  const mode = safeString(state.mode).trim();
+  if (mode && mode !== "ralplan") return false;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  if (phase && (TERMINAL_MODE_PHASES.has(phase) || phase === "completing")) return false;
+  return true;
+}
+
+function hasExplicitExecutionHandoffSkill(
+  state: SkillActiveStateLike | null,
+  sessionId: string,
+  threadId: string,
+): boolean {
+  return listActiveSkills(state ?? {}).some((entry) => (
+    RALPLAN_EXECUTION_HANDOFF_SKILLS.has(entry.skill)
+    && matchesSkillStopContext(entry, state ?? {}, sessionId, threadId)
+  ));
+}
+
+function isAllowedPlanningArtifactPath(
+  cwd: string,
+  rawPath: string,
+  allowedPrefixes: readonly string[],
+): boolean {
   const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
   if (!trimmed || trimmed.includes("\0")) return false;
   let relativePath: string;
@@ -2462,9 +2506,17 @@ function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boole
     return false;
   }
   if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith("/")) return false;
-  return DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.some((prefix) => (
+  return allowedPrefixes.some((prefix) => (
     relativePath === prefix || relativePath.startsWith(`${prefix}/`)
   ));
+}
+
+function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boolean {
+  return isAllowedPlanningArtifactPath(cwd, rawPath, DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES);
+}
+
+function isAllowedRalplanArtifactPath(cwd: string, rawPath: string): boolean {
+  return isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
 }
 
 function readPreToolUseCommand(payload: CodexHookPayload): string {
@@ -2534,6 +2586,73 @@ async function readActiveDeepInterviewStateForPreToolUse(
     && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
   ));
   return hasActiveDeepInterviewSkill ? modeState : null;
+}
+
+async function readActiveRalplanStateForPreToolUse(
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId: string,
+): Promise<Record<string, unknown> | null> {
+  const modeState = sessionId
+    ? await readStopSessionPinnedState("ralplan-state.json", cwd, sessionId, stateDir)
+    : await readJsonIfExists(join(stateDir, "ralplan-state.json"));
+  if (!isActiveRalplanPhase(modeState) || !modeState) return null;
+  if (!modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) return null;
+
+  const canonicalState = sessionId
+    ? await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)
+    : await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
+  if (hasExplicitExecutionHandoffSkill(canonicalState, sessionId, threadId)) return null;
+  if (!canonicalState) return modeState;
+  const hasActiveRalplanSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "ralplan"
+    && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  return hasActiveRalplanSkill ? modeState : null;
+}
+
+function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
+  if (!commandHasDeepInterviewWriteIntent(command)) return true;
+  if (/\bomx\s+(?:state\s+(?:write|read|clear)|question)\b/.test(command)) return true;
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  return targets.length > 0 && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+}
+
+async function buildRalplanPreToolUseBoundaryOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+): Promise<Record<string, unknown> | null> {
+  const sessionId = readPayloadSessionId(payload);
+  const threadId = readPayloadThreadId(payload);
+  const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
+  if (!activeState) return null;
+
+  const toolName = safeString(payload.tool_name).trim();
+  const command = readPreToolUseCommand(payload);
+  const pathCandidates = readPreToolUsePathCandidates(payload);
+  let blocked = false;
+
+  if (toolName === "Bash") {
+    blocked = !isAllowedRalplanBashWrite(cwd, command);
+  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+    blocked = pathCandidates.length === 0
+      || !pathCandidates.every((candidate) => isAllowedRalplanArtifactPath(cwd, candidate));
+  }
+
+  if (!blocked) return null;
+
+  const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
+  return {
+    decision: "block",
+    reason: `Ralplan is active (phase: ${phase}); implementation/write tools are blocked until an explicit execution handoff workflow is activated.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        "Ralplan is consensus-planning mode. Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, or required `.omx/state/` files. Do not edit implementation files or run implementation-focused writes from ralplan. To execute, first process an explicit handoff such as `$ultragoal`, `$team`, or `$ralph`, which must emit terminal ralplan state before implementation begins.",
+    },
+  };
 }
 
 async function buildDeepInterviewPreToolUseBoundaryOutput(
@@ -2861,15 +2980,15 @@ function buildRalplanContinuationStatus(
   }
 
   const completeHint = blocker.planningComplete
-    ? " The planning artifacts are present; if consensus is approved, emit the final complete/approved handoff instead of stopping here."
+    ? " The planning artifacts are present; if consensus is approved, emit terminal ralplan complete/approved handoff state and stop planning. Implementation must wait for an explicit $ultragoal, $team, or $ralph handoff."
     : "";
 
   return {
     reason:
-      `Status: continue_from_artifact — ralplan is still active (phase: ${phase}) and has not emitted a terminal complete/paused/waiting status. Continue from the current ralplan artifact, resolve any review ambiguity conservatively or ask the user if needed, and proceed to the next planning/review step before stopping.${artifact}${completeHint}`,
+      `Status: continue_from_artifact — ralplan is still active (phase: ${phase}) and has not emitted a terminal complete/paused/waiting status. Continue from the current ralplan artifact, resolve any review ambiguity conservatively or ask the user if needed, and proceed to the next planning/review step before stopping; do not begin implementation from ralplan.${artifact}${completeHint}`,
     stopReasonSuffix: "continue_artifact",
     systemMessage:
-      `OMX ralplan status: continue_from_artifact at phase ${phase}; continue from the current ralplan artifact and finish by stating whether ralplan is complete, paused for review, waiting for input, or still continuing.`,
+      `OMX ralplan status: continue_from_artifact at phase ${phase}; continue from the current ralplan artifact and finish by stating whether ralplan is complete, paused for review, waiting for input, or still continuing; do not begin implementation from ralplan.`,
   };
 }
 
@@ -4021,6 +4140,7 @@ export async function dispatchCodexNativeHook(
     }
   } else if (hookEventName === "PreToolUse") {
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir)
+      ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir)
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
     if (detectMcpTransportFailure(payload)) {

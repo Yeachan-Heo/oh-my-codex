@@ -261,6 +261,8 @@ Most users should think of OMX as **better task routing + better workflow + bett
 2. `$ralplan` — turn that clarified scope into an approved architecture and implementation plan.
 3. `$ultragoal` — make the approved plan durable as sequential Codex goals with `.omx/ultragoal` ledger checkpoints.
 
+`$ralplan` stops at planning artifacts and a durable consensus handoff. Code changes require an explicit execution lane (`$ultragoal`, `$team`, or an intentional `$ralph` fallback); ralplan does not implement directly.
+
 Inside an Ultragoal story, use `$team` only when that story benefits from coordinated parallel execution. Use `$ralph` as an intentional alternate completion loop when you do not need a durable multi-goal ledger.
 
 ## Common in-session surfaces
