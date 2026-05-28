@@ -15,7 +15,7 @@ describe('autopilot supervisor FSM helpers', () => {
     assert.equal(normalizeAutopilotPhase('team'), 'team');
     assert.equal(normalizeAutopilotPhase('ralph'), 'ralph');
     assert.equal(normalizeAutopilotPhase('completed'), 'complete');
-    assert.equal(normalizeAutopilotPhase('planning'), null);
+    assert.equal(normalizeAutopilotPhase('planning'), 'ralplan');
   });
 
   it('derives child-stage labels only from Autopilot supervisor state', () => {
@@ -60,6 +60,11 @@ describe('autopilot supervisor FSM helpers', () => {
       active: true,
       current_phase: 'ralph',
     }), 'autopilot:ralph');
+    assert.equal(deriveAutopilotStageLabel({
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'planning',
+    }), 'autopilot:ralplan');
   });
 
   it('does not derive standalone workflow states as Autopilot stage labels', () => {
