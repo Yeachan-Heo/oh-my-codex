@@ -465,6 +465,60 @@ describe('runWatchMode', () => {
     assert.ok(writes.some((chunk) => chunk.includes('frame')));
   });
 
+  it('keeps rendering when the authority tick fails after a frame', async () => {
+    const writes: string[] = [];
+    const errors: string[] = [];
+    let sigintHandler: (() => void) | undefined;
+    let timerTick: (() => void) | undefined;
+    let renderCount = 0;
+    let authorityCalls = 0;
+    const firstAuthorityAttempted = deferred();
+    const secondReadStarted = deferred();
+
+    const promise = runWatchMode('/tmp', WATCH_FLAGS, {
+      isTTY: true,
+      env: {},
+      readAllStateFn: async () => {
+        renderCount += 1;
+        if (renderCount === 2) secondReadStarted.resolve();
+        return emptyCtx();
+      },
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
+      renderHudFn: () => 'frame',
+      writeStdout: (text) => { writes.push(text); },
+      writeStderr: (text) => { errors.push(text); },
+      registerSigint: (handler) => { sigintHandler = handler; },
+      setIntervalFn: (handler) => {
+        timerTick = handler;
+        return ({}) as ReturnType<typeof setInterval>;
+      },
+      clearIntervalFn: () => {},
+      runAuthorityTickFn: async () => {
+        authorityCalls += 1;
+        if (authorityCalls === 1) {
+          firstAuthorityAttempted.resolve();
+          throw new Error('dist is rebuilding');
+        }
+      },
+    });
+
+    await withTimeout(firstAuthorityAttempted.promise, 'first authority tick should run');
+    await flush();
+    assert.equal(process.exitCode, undefined);
+    assert.ok(errors.some((line) => line.includes('HUD watch authority tick failed: dist is rebuilding')));
+
+    timerTick?.();
+    await withTimeout(secondReadStarted.promise, 'watch should render again after authority tick failure');
+    sigintHandler?.();
+    await promise;
+
+    assert.equal(renderCount, 2);
+    assert.equal(authorityCalls, 2);
+    assert.equal(process.exitCode, undefined);
+    assert.equal((writes.join('').match(/frame/g) ?? []).length, 2);
+    assert.ok(!errors.some((line) => line.includes('HUD watch render failed')));
+  });
+
   it('handles render failures gracefully and restores terminal state', async () => {
     const writes: string[] = [];
     const errors: string[] = [];

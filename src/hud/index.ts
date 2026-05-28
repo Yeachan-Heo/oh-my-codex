@@ -236,7 +236,12 @@ export async function runWatchMode(
         maxLines,
       });
       dependencies.writeStdout(line + '\x1b[K\x1b[J');
-      await dependencies.runAuthorityTickFn({ cwd: frameCwd });
+      try {
+        await dependencies.runAuthorityTickFn({ cwd: frameCwd });
+      } catch (authorityError) {
+        const message = authorityError instanceof Error ? authorityError.message : String(authorityError);
+        dependencies.writeStderr(`HUD watch authority tick failed: ${message}\n`);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       dependencies.writeStderr(`HUD watch render failed: ${message}\n`);
