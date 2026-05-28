@@ -17,7 +17,7 @@ import type { QuestionInput, QuestionRecord } from './types.js';
 import type { DownstreamAuthority } from '../state/workflow-transition.js';
 import {
   AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV,
-  markAutopilotDeepInterviewQuestionWaiting,
+  claimAutopilotDeepInterviewQuestionWaiting,
   readAutopilotDeepInterviewQuestionWaitState,
   resolveAutopilotDeepInterviewQuestionWaiting,
 } from './autopilot-wait.js';
@@ -285,13 +285,14 @@ export async function runDeepInterviewQuestion(
     );
   }
 
-  const autopilotWaitStarted = await markAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation);
-  if (!autopilotWaitStarted && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
+  const autopilotWaitClaim = await claimAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation);
+  if (autopilotWaitClaim === 'blocked') {
     throw new OmxQuestionError(
       'active_execution_mode_blocked',
-      'Autopilot already has a pending deep-interview question.',
+      'Autopilot cannot start a new deep-interview question until the existing wait claim is resolved.',
     );
   }
+  const autopilotWaitStarted = autopilotWaitClaim === 'started';
 
   await updateDeepInterviewQuestionEnforcement(
     cwd,

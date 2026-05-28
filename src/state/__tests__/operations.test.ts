@@ -847,6 +847,46 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('denies Autopilot deep-interview completion before the ralplan gate', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-di-complete-deny-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-di-complete-deny';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+            state: {
+              deep_interview_gate: { status: 'required' },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: false,
+          current_phase: 'complete',
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /Cannot complete Autopilot before ralplan gate/i);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'deep-interview');
+        assert.equal(state.active, true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('denies Autopilot direct deep-interview to ultragoal skip even with deep-interview evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-direct-di-complete-deny-'));
     try {
@@ -1384,6 +1424,51 @@ describe('state operations directory initialization', () => {
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
         assert.equal(state.current_phase, 'ralplan');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies Autopilot ralplan completion before the ultragoal gate', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-complete-deny-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-complete-deny';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'ralplan',
+            state: {
+              handoff_artifacts: {
+                ralplan: {
+                  plan_path: '.omx/plans/prd.md',
+                  test_spec_path: '.omx/plans/test-spec.md',
+                },
+              },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: false,
+          current_phase: 'complete',
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /Cannot complete Autopilot before ultragoal gate/i);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+        assert.equal(state.active, true);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });

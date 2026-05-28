@@ -33,7 +33,11 @@ import {
   buildAutopilotDeepInterviewRalplanGateError,
   canAdvanceAutopilotDeepInterviewToRalplan,
 } from '../autopilot/deep-interview-gate.js';
-import { type AutopilotChildPhase, deriveAutopilotChildPhase } from '../autopilot/fsm.js';
+import {
+  type AutopilotChildPhase,
+  deriveAutopilotChildPhase,
+  normalizeAutopilotPhase,
+} from '../autopilot/fsm.js';
 import {
   buildAutopilotRalplanUltragoalGateError,
   canAdvanceAutopilotRalplanToUltragoal,
@@ -70,6 +74,10 @@ function isNextAutopilotPhase(
   const currentOrder = autopilotPhaseOrder(currentPhase);
   const nextOrder = autopilotPhaseOrder(nextPhase);
   return currentOrder >= 0 && nextOrder === currentOrder + 1;
+}
+
+function isAutopilotCompletePhase(state: Record<string, unknown>): boolean {
+  return normalizeAutopilotPhase(state.current_phase) === 'complete';
 }
 
 export const SUPPORTED_STATE_READ_MODES = [
@@ -372,6 +380,24 @@ export async function executeStateOperation(
           const nextAutopilotChildPhase = mode === 'autopilot'
             ? deriveAutopilotChildPhase({ mode: 'autopilot', ...mergedRaw })
             : null;
+
+          if (
+            mode === 'autopilot'
+            && currentAutopilotChildPhase === 'deep-interview'
+            && isAutopilotCompletePhase(mergedRaw)
+          ) {
+            validationError = 'Cannot complete Autopilot before ralplan gate: deep-interview may only advance to ralplan.';
+            return;
+          }
+
+          if (
+            mode === 'autopilot'
+            && currentAutopilotChildPhase === 'ralplan'
+            && isAutopilotCompletePhase(mergedRaw)
+          ) {
+            validationError = 'Cannot complete Autopilot before ultragoal gate: ralplan may only advance to ultragoal.';
+            return;
+          }
 
           if (
             mode === 'autopilot'

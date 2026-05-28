@@ -18,6 +18,7 @@ const tempDirs: string[] = [];
 const originalOmxRoot = process.env.OMX_ROOT;
 const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
 const originalOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+const originalQuestionWaitLockTimeout = process.env.OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
 
 async function makeRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-deep-interview-question-'));
@@ -51,6 +52,8 @@ after(async () => {
   else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
   if (originalOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
   else process.env.OMX_TEAM_STATE_ROOT = originalOmxTeamStateRoot;
+  if (originalQuestionWaitLockTimeout === undefined) delete process.env.OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
+  else process.env.OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = originalQuestionWaitLockTimeout;
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -407,6 +410,52 @@ describe('runDeepInterviewQuestion autopilot wait bridge', { concurrency: false 
       autopilotState.state?.deep_interview_question?.obligation_id,
       winningObligationIds[0],
     );
+  });
+
+  it('blocks instead of prompting when the Autopilot wait claim cannot acquire its lock', { concurrency: false }, async () => {
+    const previousTimeout = process.env.OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
+    process.env.OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = '1';
+    try {
+      const cwd = await makeRepo();
+      const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-di');
+      const autopilotPath = join(sessionDir, 'autopilot-state.json');
+      await writeFile(autopilotPath, JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+        session_id: 'sess-di',
+        state: { deep_interview_gate: { status: 'required' } },
+      }, null, 2));
+      await mkdir(`${autopilotPath}.deep-interview-question.lock`);
+
+      let runnerCalled = false;
+      await assert.rejects(
+        runDeepInterviewQuestion(
+          { session_id: 'sess-di', question: 'Clarify?', allow_other: true },
+          {
+            cwd,
+            argv1: '/repo/dist/cli/omx.js',
+            runner: async () => {
+              runnerCalled = true;
+              return { code: 1, stdout: '', stderr: '' };
+            },
+          },
+        ),
+        (error: unknown) => error instanceof OmxQuestionError
+          && error.code === 'active_execution_mode_blocked',
+      );
+
+      assert.equal(runnerCalled, false);
+      assert.equal(await readAutopilotDeepInterviewQuestionWaitState(cwd, 'sess-di'), null);
+      const deepInterviewState = JSON.parse(await readFile(
+        join(sessionDir, 'deep-interview-state.json'),
+        'utf-8',
+      )) as { question_enforcement?: unknown };
+      assert.equal(deepInterviewState.question_enforcement, undefined);
+    } finally {
+      if (previousTimeout === undefined) delete process.env.OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
+      else process.env.OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = previousTimeout;
+    }
   });
 
   it('fails terminally instead of replacing another pending Autopilot question owner', { concurrency: false }, async () => {

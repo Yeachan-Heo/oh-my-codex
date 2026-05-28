@@ -10,8 +10,12 @@ import { sleep } from '../utils/sleep.js';
 import type { DeepInterviewQuestionEnforcementState } from './deep-interview.js';
 
 const AUTOPILOT_STATE_FILE = 'autopilot-state.json';
+const AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_ENV =
+  'OMX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS';
 const AUTOPILOT_QUESTION_WAIT_LOCK_STALE_MS = 30_000;
-const AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = 10_000;
+const DEFAULT_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = 10_000;
+const MIN_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = 1;
+const MAX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = 120_000;
 export const AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV =
   'OMX_AUTOPILOT_DEEP_INTERVIEW_QUESTION_OBLIGATION_ID';
 
@@ -21,12 +25,30 @@ export interface AutopilotDeepInterviewQuestionWaitState {
   requestedAt?: string;
 }
 
+export type AutopilotDeepInterviewQuestionWaitClaim =
+  | 'started'
+  | 'blocked'
+  | 'not_applicable';
+
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+export function resolveAutopilotQuestionWaitLockTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_ENV];
+  if (raw === undefined || raw === '') return DEFAULT_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
+  return Math.max(
+    MIN_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS,
+    Math.min(MAX_AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS, Math.floor(parsed)),
+  );
 }
 
 function isPendingAutopilotQuestionWait(wait: Record<string, unknown>): boolean {
@@ -76,7 +98,8 @@ async function withAutopilotQuestionWaitLock<T>(
   const lockDir = `${statePath}.deep-interview-question.lock`;
   const ownerPath = join(lockDir, 'owner');
   const ownerToken = lockOwnerToken();
-  const deadline = Date.now() + AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
+  const timeoutMs = resolveAutopilotQuestionWaitLockTimeoutMs(process.env);
+  const deadline = Date.now() + timeoutMs;
   await mkdir(dirname(lockDir), { recursive: true });
   while (true) {
     try {
@@ -155,25 +178,29 @@ export async function canStartAutopilotDeepInterviewQuestion(
     && safeString(wait.obligation_id) === ownerObligationId;
 }
 
-export async function markAutopilotDeepInterviewQuestionWaiting(
+export async function claimAutopilotDeepInterviewQuestionWaiting(
   cwd: string,
   sessionId: string | undefined,
   obligation: DeepInterviewQuestionEnforcementState,
-): Promise<boolean> {
+): Promise<AutopilotDeepInterviewQuestionWaitClaim> {
   const normalizedSessionId = safeString(sessionId);
-  if (!normalizedSessionId) return false;
+  if (!normalizedSessionId) return 'not_applicable';
   return await withAutopilotQuestionWaitLock(
     cwd,
     normalizedSessionId,
     async () => {
       const state = await readAutopilotState(cwd, normalizedSessionId);
-      if (!state || safeString(state.mode) !== 'autopilot' || state.active !== true) return false;
+      if (!state || safeString(state.mode) !== 'autopilot' || state.active !== true) {
+        return 'not_applicable';
+      }
 
-      if (!isAutopilotSupervisingChild(state, 'deep-interview')) return false;
+      if (!isAutopilotSupervisingChild(state, 'deep-interview')) return 'not_applicable';
       const currentPhase = normalizeAutopilotPhase(state.current_phase) || 'deep-interview';
 
       const nestedState = safeObject(state.state);
-      if (isPendingAutopilotQuestionWait(safeObject(nestedState.deep_interview_question))) return false;
+      if (isPendingAutopilotQuestionWait(safeObject(nestedState.deep_interview_question))) {
+        return 'blocked';
+      }
 
       const wait = {
         status: 'waiting_for_user',
@@ -200,10 +227,18 @@ export async function markAutopilotDeepInterviewQuestionWaiting(
       };
 
       await writeAutopilotState(cwd, normalizedSessionId, nextState);
-      return true;
+      return 'started';
     },
-    () => false,
+    () => 'blocked',
   );
+}
+
+export async function markAutopilotDeepInterviewQuestionWaiting(
+  cwd: string,
+  sessionId: string | undefined,
+  obligation: DeepInterviewQuestionEnforcementState,
+): Promise<boolean> {
+  return await claimAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation) === 'started';
 }
 
 export async function resolveAutopilotDeepInterviewQuestionWaiting(
