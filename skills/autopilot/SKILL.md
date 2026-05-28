@@ -31,7 +31,8 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 
 1. **Phase `deep-interview`** — Socratic requirements clarification gate
    - Run or resume `$deep-interview` to clarify intent, scope, non-goals, constraints, and decision boundaries.
-   - Deep-interview is a structured question chain, not a one-question gate; after a user answers an `omx question`, ask the next useful question unless requirements are explicitly complete.
+   - Deep-interview is a structured question chain, not a one-question gate; `max_rounds` is a cap, not a target.
+   - After a user answers an `omx question`, re-score ambiguity against the active profile threshold. Ask another question only when a readiness gate is still unresolved and the answer would materially change execution; otherwise crystallize the spec and hand off.
    - Required handoff artifact: a clarified spec or concise requirements summary suitable for `$ralplan`, including an explicit interview-complete rationale when leaving deep-interview.
 
 2. **Phase `ralplan`** — consensus planning gate

@@ -133,6 +133,17 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /decision-bearing question to the user as `\[from-user\]`/i);
 	});
 
+	it("prevents continuing ordinary questions after ambiguity falls below threshold", () => {
+		assert.match(deepInterviewSkill, /Profile `max rounds` is a hard cap, not a target/i);
+		assert.match(deepInterviewSkill, /Do not continue only to reach a numbered round count/i);
+		assert.match(deepInterviewSkill, /Extra Socratic rigor does not override the active threshold/i);
+		assert.match(deepInterviewSkill, /stop ordinary questioning/i);
+		assert.match(deepInterviewSkill, /crystallize\/handoff when readiness gates pass/i);
+		assert.match(deepInterviewSkill, /<= 0\.10.*final closure question/i);
+		assert.match(autopilotSkill, /not a one-question gate; `max_rounds` is a cap, not a target/i);
+		assert.match(autopilotSkill, /Ask another question only when a readiness gate is still unresolved/i);
+	});
+
 	it("adds Ouroboros-style rhythm, breadth, and practical closure guards", () => {
 		assert.match(deepInterviewSkill, /Breadth Ledger/i);
 		assert.match(deepInterviewSkill, /scope, constraints, outputs, verification, brownfield integration/i);
