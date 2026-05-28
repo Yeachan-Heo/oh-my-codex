@@ -59,7 +59,7 @@ function questionEnforcement(state: JsonObject | null | undefined): DeepIntervie
 function autopilotQuestionEnforcement(
   state: JsonObject | null | undefined,
 ): DeepInterviewQuestionEnforcementState | undefined {
-  const wait = safeObject(nestedState(state)?.deep_interview_question);
+  const wait = safeObject(state?.deep_interview_question) ?? safeObject(nestedState(state)?.deep_interview_question);
   if (!wait) return undefined;
   if (safeString(wait.source) !== 'omx-question') return undefined;
   const obligationId = safeString(wait.obligation_id);
@@ -178,18 +178,47 @@ function isSkipGate(gate: JsonObject, sessionId?: string): boolean {
     && sessionMatches;
 }
 
-function collectQuestionEnforcements(
-  input: AutopilotDeepInterviewRalplanGateInput,
-  deepState: JsonObject | null,
+function collectQuestionEnforcementsFromStates(
+  states: Array<JsonObject | null | undefined>,
 ): DeepInterviewQuestionEnforcementState[] {
   const enforcements: DeepInterviewQuestionEnforcementState[] = [];
-  for (const state of allCandidateStates(input, deepState)) {
+  for (const state of states) {
     const standalone = questionEnforcement(state);
     if (standalone) enforcements.push(standalone);
     const autopilotWait = autopilotQuestionEnforcement(state);
     if (autopilotWait) enforcements.push(autopilotWait);
   }
   return enforcements;
+}
+
+function questionEnforcementKey(enforcement: DeepInterviewQuestionEnforcementState): string | null {
+  const obligationId = safeString(enforcement.obligation_id);
+  if (obligationId) return `obligation:${obligationId}`;
+  const questionId = safeString(enforcement.question_id);
+  if (questionId) return `question:${questionId}`;
+  return null;
+}
+
+function collectResultingQuestionEnforcements(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): DeepInterviewQuestionEnforcementState[] {
+  if (!input.nextState) return collectQuestionEnforcementsFromStates([input.currentState, deepState]);
+
+  const resulting = collectQuestionEnforcementsFromStates([input.nextState, deepState]);
+  const resultingKeys = new Set(
+    resulting
+      .map((enforcement) => questionEnforcementKey(enforcement))
+      .filter((key): key is string => Boolean(key)),
+  );
+
+  for (const current of collectQuestionEnforcementsFromStates([input.currentState])) {
+    const key = questionEnforcementKey(current);
+    if (key && resultingKeys.has(key)) continue;
+    resulting.push(current);
+  }
+
+  return resulting;
 }
 
 function hasPendingQuestion(enforcements: readonly DeepInterviewQuestionEnforcementState[]): boolean {
@@ -244,7 +273,7 @@ export async function canAdvanceAutopilotDeepInterviewToRalplan(
   input: AutopilotDeepInterviewRalplanGateInput,
 ): Promise<AutopilotDeepInterviewRalplanGateDecision> {
   const deepState = await readDeepInterviewState(input);
-  const enforcements = collectQuestionEnforcements(input, deepState);
+  const enforcements = collectResultingQuestionEnforcements(input, deepState);
   if (hasPendingQuestion(enforcements)) {
     return {
       allowed: false,

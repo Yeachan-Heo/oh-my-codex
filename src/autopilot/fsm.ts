@@ -29,7 +29,9 @@ function safeObject(value: unknown): Record<string, unknown> {
 
 function normalizePhaseText(value: unknown): string {
   const normalized = safeString(value).toLowerCase().replace(/_/g, '-');
-  return normalized === 'completed' ? 'complete' : normalized;
+  if (normalized === 'completed') return 'complete';
+  if (normalized === 'planning') return 'ralplan';
+  return normalized;
 }
 
 export function isAutopilotChildPhase(value: unknown): value is AutopilotChildPhase {
