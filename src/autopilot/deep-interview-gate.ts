@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getStatePath } from '../mcp/state-paths.js';
-import { getQuestionRecordPath, readQuestionRecord } from '../question/state.js';
+import { getQuestionRecordPath, getQuestionRecordPathForStateDir, readQuestionRecord } from '../question/state.js';
 import type { QuestionRecord } from '../question/types.js';
 import type { DeepInterviewQuestionEnforcementState } from '../question/deep-interview.js';
 
@@ -190,7 +190,10 @@ async function satisfiedQuestionHasAnsweredRecord(
   const questionId = safeString(enforcement.question_id);
   const satisfiedAt = safeString(enforcement.satisfied_at);
   if (!questionId || !satisfiedAt) return false;
-  const record = await readQuestionRecord(getQuestionRecordPath(input.cwd, questionId, input.sessionId));
+  const recordPath = input.baseStateDir
+    ? getQuestionRecordPathForStateDir(input.baseStateDir, questionId, input.sessionId)
+    : getQuestionRecordPath(input.cwd, questionId, input.sessionId);
+  const record = await readQuestionRecord(recordPath);
   return isSameSessionAnsweredDeepInterviewRecord(record, input.sessionId);
 }
 
