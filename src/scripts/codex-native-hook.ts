@@ -320,6 +320,19 @@ async function isNativeSubagentHook(
 
   const sessionId = canonicalSessionId.trim();
   const currentLeaderNativeSessionId = canonicalLeaderNativeSessionId.trim();
+  const summary = sessionId
+    ? await readSubagentSessionSummary(cwd, sessionId).catch(() => null)
+    : null;
+  const currentLeaderIds = new Set([
+    currentLeaderNativeSessionId,
+    summary?.leaderThreadId?.trim(),
+  ].filter(Boolean));
+  if (
+    summary
+    && candidateIds.some((id) => !currentLeaderIds.has(id) && summary.allSubagentThreadIds.includes(id))
+  ) {
+    return true;
+  }
   // Native UserPromptSubmit can carry a per-turn thread_id that differs from
   // the long-lived native session id.  Treat the current canonical native
   // session as the leader before consulting stale/global tracker state.
@@ -334,22 +347,16 @@ async function isNativeSubagentHook(
     return false;
   }
 
-  if (sessionId) {
-    const summary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
-    if (summary) {
-      const leaderThreadId = summary.leaderThreadId?.trim();
-      if (
-        leaderThreadId
-        && (
-          nativeId === leaderThreadId
-          || (!nativeId && promptThreadId === leaderThreadId)
-        )
-      ) {
-        return false;
-      }
-      if (candidateIds.some((id) => summary.allSubagentThreadIds.includes(id))) {
-        return true;
-      }
+  if (summary) {
+    const leaderThreadId = summary.leaderThreadId?.trim();
+    if (
+      leaderThreadId
+      && (
+        nativeId === leaderThreadId
+        || (!nativeId && promptThreadId === leaderThreadId)
+      )
+    ) {
+      return false;
     }
   }
 

@@ -527,6 +527,39 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
+  it('canSkip returns false when Critic timestamp predates Architect while Scholastic has no order metadata', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            sequence: ['architect-review', 'scholastic-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              completed_at: '2026-05-21T10:00:00.000Z',
+            },
+            ralplan_scholastic_review: {
+              agent_role: 'scholastic',
+              verdict: 'approve',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-05-21T09:55:00.000Z',
+            },
+          },
+        },
+      },
+    })), false);
+  });
+
   it('canSkip ignores ambient OMX_ROOT consensus state for local PRD/test-spec-only artifacts', async () => {
     const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-ralplan-ambient-'));
     const previousOmxRoot = process.env.OMX_ROOT;

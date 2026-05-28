@@ -3096,6 +3096,24 @@ standardMaxRounds = 15
       assert.equal(result.outputJson, null);
       assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "ralplan-state.json")), false);
       assert.equal(existsSync(join(stateDir, "sessions", childNativeSessionId, "ralplan-state.json")), false);
+
+      const reversedResult = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: leaderNativeSessionId,
+          thread_id: childNativeSessionId,
+          turn_id: "turn-mixed-leader-child",
+          prompt: "$autopilot review this as delegated text",
+        },
+        { cwd },
+      );
+
+      assert.equal(reversedResult.omxEventName, "keyword-detector");
+      assert.equal(reversedResult.skillState, null);
+      assert.equal(reversedResult.outputJson, null);
+      assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "autopilot-state.json")), false);
+      assert.equal(existsSync(join(stateDir, "sessions", childNativeSessionId, "autopilot-state.json")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

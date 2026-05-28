@@ -283,7 +283,8 @@ function isSequentialReviewOrder(
   const scholasticOrder = reviewOrderValue(scholasticReview);
   const criticOrder = reviewOrderValue(criticReview);
   return (architectOrder === null || scholasticOrder === null || scholasticOrder >= architectOrder)
-    && (scholasticOrder === null || criticOrder === null || criticOrder >= scholasticOrder);
+    && (scholasticOrder === null || criticOrder === null || criticOrder >= scholasticOrder)
+    && (architectOrder === null || criticOrder === null || criticOrder >= architectOrder);
 }
 
 function reviewOrderValue(review: Record<string, unknown>): number | null {
