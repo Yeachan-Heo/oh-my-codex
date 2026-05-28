@@ -594,6 +594,7 @@ enabled = true
 					HOME: home,
 					CODEX_HOME: join(home, ".codex"),
 					PATH: fakeBin,
+					OMX_EXPLORE_BIN: "",
 				});
 				if (shouldSkipForSpawnPermissions(res.error)) return;
 				assert.equal(res.status, 0, res.stderr || res.stdout);
@@ -664,6 +665,7 @@ enabled = true
 						HOME: home,
 						CODEX_HOME: join(home, ".codex"),
 						PATH: fakeBin,
+						OMX_EXPLORE_BIN: "",
 					});
 					if (shouldSkipForSpawnPermissions(res.error)) return;
 					assert.equal(res.status, 0, res.stderr || res.stdout);

@@ -4,6 +4,9 @@ import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcil
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES } from '../constants.js';
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
 
+const noOpRegisterHudResizeHook = () => true;
+const noOpUnregisterHudResizeHook = () => true;
+
 describe('reconcileHudForPromptSubmit', () => {
   it('skips reconciliation outside tmux', async () => {
     const result = await reconcileHudForPromptSubmit('/tmp', {
@@ -55,6 +58,8 @@ describe('reconcileHudForPromptSubmit', () => {
         resized.push({ paneId, heightLines });
         return true;
       },
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -255,6 +260,8 @@ describe('reconcileHudForPromptSubmit', () => {
         return '%9';
       },
       resizeTmuxPane: () => true,
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -286,6 +293,8 @@ describe('reconcileHudForPromptSubmit', () => {
         return '%9';
       },
       resizeTmuxPane: () => true,
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -399,6 +408,8 @@ describe('reconcileHudForPromptSubmit', () => {
         return '%hud';
       },
       resizeTmuxPane: () => true,
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -708,6 +719,8 @@ describe('reconcileHudForPromptSubmit', () => {
         resized.push({ paneId, heightLines });
         return true;
       },
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -918,6 +931,8 @@ describe('reconcileHudForPromptSubmit', () => {
         created.push({ cmd, options });
         return '%4';
       },
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -964,6 +979,8 @@ describe('reconcileHudForPromptSubmit', () => {
       },
       createHudWatchPane: () => '%9',
       resizeTmuxPane: () => true,
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -1042,6 +1059,7 @@ describe('reconcileHudForPromptSubmit', () => {
         resized.push({ paneId, heightLines });
         return true;
       },
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -1225,6 +1243,7 @@ describe('reconcileHudForPromptSubmit', () => {
         resized.push({ paneId, heightLines });
         return true;
       },
+      registerHudResizeHook: noOpRegisterHudResizeHook,
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
@@ -1490,6 +1509,7 @@ describe('reconcileHudForPromptSubmit', () => {
       ],
       createHudWatchPane: () => '%9',
       resizeTmuxPane: () => true,
+      unregisterHudResizeHook: noOpUnregisterHudResizeHook,
       registerHudResizeHook: (hudPaneId, leaderPaneId, heightLines) => {
         registered.push({ hudPaneId, leaderPaneId, heightLines });
         return true;

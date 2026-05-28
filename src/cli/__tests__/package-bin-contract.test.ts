@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync } from 'node:fs';
-import { arch, platform } from 'node:os';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { arch, platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getInstallableNativeAgentNames } from '../../agents/policy.js';
@@ -167,10 +167,22 @@ describe('package bin contract', () => {
 
     rmSync(packagedSparkShellPath, { force: true });
 
-    const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
-      cwd: process.cwd(),
-      encoding: 'utf-8',
-    });
+    const packed = (() => {
+      const npmCache = mkdtempSync(join(tmpdir(), 'omx-npm-pack-cache-'));
+      try {
+        return spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+          cwd: process.cwd(),
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            npm_config_cache: npmCache,
+            npm_config_update_notifier: 'false',
+          },
+        });
+      } finally {
+        rmSync(npmCache, { recursive: true, force: true });
+      }
+    })();
 
     assert.equal(packed.status, 0, packed.stderr || packed.stdout);
 

@@ -166,6 +166,7 @@ async function runNodeCli(
   options: {
     cwd: string;
     env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
   },
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
   return await new Promise((resolve, reject) => {
@@ -174,6 +175,17 @@ async function runNodeCli(
       env: options.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let hardKillTimer: NodeJS.Timeout | null = null;
+    const timeoutTimer = typeof options.timeoutMs === 'number' && options.timeoutMs > 0
+      ? setTimeout(() => {
+        child.kill('SIGTERM');
+        hardKillTimer = setTimeout(() => {
+          child.kill('SIGKILL');
+        }, 1_000);
+        hardKillTimer.unref();
+      }, options.timeoutMs)
+      : null;
+    timeoutTimer?.unref();
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf-8');
@@ -184,8 +196,14 @@ async function runNodeCli(
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (hardKillTimer) clearTimeout(hardKillTimer);
+      reject(error);
+    });
     child.on('close', (code, signal) => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (hardKillTimer) clearTimeout(hardKillTimer);
       resolve({ code, signal, stdout, stderr });
     });
   });
@@ -1697,6 +1715,7 @@ esac
             TMUX: fixture.env.TMUX,
             TMUX_PANE: fixture.leaderPaneId,
           },
+          timeoutMs: 12_000,
         });
 
         assert.equal(result.signal, null, `shutdown CLI received signal ${result.signal ?? 'none'}\n${result.stderr}`);

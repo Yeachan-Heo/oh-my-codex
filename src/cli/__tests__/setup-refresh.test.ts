@@ -14,6 +14,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setup } from "../setup.js";
 
+const TEST_CODEX_PROBES = {
+  codexFeaturesProbe: () => null,
+  codexVersionProbe: () => null,
+} satisfies Parameters<typeof setup>[0];
+
 const EXPECTED_PROJECT_GITIGNORE = [
   ".omx/",
   ".codex/*",
@@ -49,7 +54,7 @@ async function runSetupWithCapturedLogs(
     logs.push(args.map((arg) => String(arg)).join(" "));
   };
   try {
-    await setup(options);
+    await setup({ ...TEST_CODEX_PROBES, ...options });
     return logs.join("\n");
   } finally {
     console.log = originalLog;
@@ -65,7 +70,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     const previousCwd = process.cwd();
     process.chdir(wd);
     try {
-      await setup(options);
+      await setup({ ...TEST_CODEX_PROBES, ...options });
     } finally {
       process.chdir(previousCwd);
     }

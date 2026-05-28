@@ -12,6 +12,7 @@ function skipUnlessTmux(t: TestContext): void {
 function runAmbientTmux(args: string[]): string {
   return execFileSync('tmux', args, {
     encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       ...process.env,
       TMUX: undefined,

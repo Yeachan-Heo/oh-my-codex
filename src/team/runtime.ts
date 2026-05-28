@@ -3681,12 +3681,9 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       worker: 'leader-fixed',
       reason: 'force_bypass',
     }, cwd).catch(() => {});
-  }
 
-  if (force && config.worker_launch_mode === 'prompt') {
-    // Prompt-mode workers are raw CLI children, not team-runtime workers that
-    // participate in the shutdown-ack handshake. Waiting the full ack window
-    // before force-killing them only adds deterministic suite slowness.
+    // Explicit force means teardown now. Do not spend the graceful ack window
+    // waiting for interactive panes or prompt workers that will be killed below.
     skipWorkerAcks = true;
   }
 

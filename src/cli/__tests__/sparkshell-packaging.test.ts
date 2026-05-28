@@ -1,9 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { arch, platform } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
@@ -27,8 +27,12 @@ describe('sparkshell packaging scaffold', () => {
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as PackageJson;
     const binaryName = platform() === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell';
     const stagedRoot = mkdtempSync(join(tmpdir(), 'omx-sparkshell-stage-'));
+    const fakeBin = mkdtempSync(join(tmpdir(), 'omx-sparkshell-cargo-'));
+    const npmCache = mkdtempSync(join(tmpdir(), 'omx-sparkshell-npm-cache-'));
     const packagedBinaryRelativePath = join(`${platform()}-${arch()}`, binaryName);
     const packagedBinaryPath = join(stagedRoot, packagedBinaryRelativePath);
+    const releaseBinaryPath = join(process.cwd(), 'target', 'release', binaryName);
+    const originalReleaseBinary = existsSync(releaseBinaryPath) ? readFileSync(releaseBinaryPath) : null;
 
     assert.deepEqual(pkg.bin, { omx: 'dist/cli/omx.js' });
     assert.equal(pkg.scripts?.['build:sparkshell'], 'node dist/scripts/build-sparkshell.js');
@@ -50,6 +54,34 @@ describe('sparkshell packaging scaffold', () => {
 
     try {
       rmSync(packagedBinaryPath, { force: true });
+      rmSync(releaseBinaryPath, { force: true });
+      mkdirSync(dirname(releaseBinaryPath), { recursive: true });
+      const fakeCargoPath = join(fakeBin, platform() === 'win32' ? 'cargo.cmd' : 'cargo');
+      if (platform() === 'win32') {
+        writeFileSync(
+          fakeCargoPath,
+          [
+            '@echo off',
+            'if not exist "%OMX_FAKE_RELEASE_DIR%" mkdir "%OMX_FAKE_RELEASE_DIR%"',
+            '> "%OMX_FAKE_RELEASE_BINARY%" echo fake sparkshell',
+            'exit /b 0',
+            '',
+          ].join('\r\n'),
+        );
+      } else {
+        writeFileSync(
+          fakeCargoPath,
+          [
+            '#!/bin/sh',
+            'mkdir -p "$OMX_FAKE_RELEASE_DIR"',
+            'printf "%s\\n" "#!/bin/sh" "echo fake sparkshell" > "$OMX_FAKE_RELEASE_BINARY"',
+            'chmod +x "$OMX_FAKE_RELEASE_BINARY"',
+            '',
+          ].join('\n'),
+        );
+        chmodSync(fakeCargoPath, 0o755);
+      }
+
       const buildResult = spawnSync(process.execPath, [buildScriptPath], {
         cwd: process.cwd(),
         encoding: 'utf-8',
@@ -57,6 +89,9 @@ describe('sparkshell packaging scaffold', () => {
           ...process.env,
           OMX_SPARKSHELL_MANIFEST: join(process.cwd(), 'crates', 'omx-sparkshell', 'Cargo.toml'),
           OMX_SPARKSHELL_STAGE_DIR: stagedRoot,
+          OMX_FAKE_RELEASE_BINARY: releaseBinaryPath,
+          OMX_FAKE_RELEASE_DIR: dirname(releaseBinaryPath),
+          PATH: `${fakeBin}${delimiter}${process.env.PATH || ''}`,
         },
       });
       assert.equal(buildResult.status, 0, buildResult.stderr || buildResult.stdout);
@@ -65,6 +100,10 @@ describe('sparkshell packaging scaffold', () => {
       const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
         cwd: process.cwd(),
         encoding: 'utf-8',
+        env: {
+          ...process.env,
+          npm_config_cache: npmCache,
+        },
       });
       assert.equal(packed.status, 0, packed.stderr || packed.stdout);
 
@@ -76,6 +115,14 @@ describe('sparkshell packaging scaffold', () => {
       assert.equal(packedFiles.has(packagedBinaryRelativePath.replaceAll('\\', '/')), false);
     } finally {
       rmSync(stagedRoot, { force: true, recursive: true });
+      rmSync(fakeBin, { force: true, recursive: true });
+      rmSync(npmCache, { force: true, recursive: true });
+      if (originalReleaseBinary) {
+        writeFileSync(releaseBinaryPath, originalReleaseBinary);
+        if (platform() !== 'win32') chmodSync(releaseBinaryPath, 0o755);
+      } else {
+        rmSync(releaseBinaryPath, { force: true });
+      }
     }
   });
 });

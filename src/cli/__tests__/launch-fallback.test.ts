@@ -9,7 +9,27 @@ import { fileURLToPath } from 'node:url';
 import { HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
 import { DETACHED_TMUX_HISTORY_LIMIT } from '../index.js';
 
-const CLI_SPAWN_TIMEOUT_MS = 15_000;
+const CLI_SPAWN_TIMEOUT_MS = 60_000;
+
+function buildRunOmxEnv(envOverrides: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (
+      key.startsWith('OMX_') ||
+      key.startsWith('CODEX_') ||
+      key === 'TMUX' ||
+      key === 'TMUX_PANE' ||
+      key === 'NODE_OPTIONS' ||
+      key === 'NODE_TEST_CONTEXT'
+    ) {
+      delete env[key];
+    }
+  }
+  return {
+    ...env,
+    ...envOverrides,
+  };
+}
 
 function runOmx(
   cwd: string,
@@ -24,10 +44,7 @@ function runOmx(
     encoding: 'utf-8',
     timeout: CLI_SPAWN_TIMEOUT_MS,
     killSignal: 'SIGKILL',
-    env: {
-      ...process.env,
-      ...envOverrides,
-    },
+    env: buildRunOmxEnv(envOverrides),
   });
   return {
     status: result.status,

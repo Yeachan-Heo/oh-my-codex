@@ -3,6 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const TMUX_COMMAND_TIMEOUT_MS = 5_000;
+const NULL_TMUX_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null';
+
 interface TmuxEnvSnapshot {
   TMUX?: string;
   TMUX_PANE?: string;
@@ -43,15 +46,21 @@ function applyTmuxEnv(snapshot: TmuxEnvSnapshot): void {
 
 function runTmux(
   args: string[],
-  options: { ignoreTmuxEnv?: boolean; env?: NodeJS.ProcessEnv; serverName?: string } = {},
+  options: { ignoreTmuxEnv?: boolean; env?: NodeJS.ProcessEnv; serverName?: string; configFile?: string } = {},
 ): string {
   const env = options.env
     ?? (options.ignoreTmuxEnv ? { ...process.env, TMUX: undefined, TMUX_PANE: undefined } : process.env);
-  const argv = options.serverName ? ['-L', options.serverName, ...args] : args;
+  const argv = [
+    ...(options.configFile ? ['-f', options.configFile] : []),
+    ...(options.serverName ? ['-L', options.serverName] : []),
+    ...args,
+  ];
   const result = spawnSync('tmux', argv, {
     encoding: 'utf-8',
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: TMUX_COMMAND_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
   if (result.error) {
     throw result.error;
@@ -106,7 +115,11 @@ export async function withTempTmuxSession<T>(
   const sessionName = uniqueTmuxIdentifier('omx-test');
   const serverName = options.useAmbientServer ? '' : uniqueTmuxIdentifier('omx-fixture');
   const serverKind: TempTmuxSessionFixture['serverKind'] = options.useAmbientServer ? 'ambient' : 'synthetic';
-  const tmuxOptions = { ignoreTmuxEnv: true, serverName: serverName || undefined } as const;
+  const tmuxOptions = {
+    ignoreTmuxEnv: true,
+    serverName: serverName || undefined,
+    configFile: serverKind === 'synthetic' ? NULL_TMUX_CONFIG : undefined,
+  } as const;
 
   const created = runTmux([
     'new-session',
