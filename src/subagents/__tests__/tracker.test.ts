@@ -51,6 +51,34 @@ describe('subagents/tracker', () => {
     assert.deepEqual(drained?.activeSubagentThreadIds, []);
   });
 
+  it('can record an explicitly spawned subagent as subagent even when it is the first seen thread', () => {
+    let state = createSubagentTrackingState();
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-ralplan',
+      threadId: 'thread-architect',
+      timestamp: '2026-05-28T17:59:43.270Z',
+      mode: 'architect',
+      kind: 'subagent',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-ralplan',
+      threadId: 'thread-critic',
+      timestamp: '2026-05-28T18:01:49.547Z',
+      mode: 'critic',
+      kind: 'subagent',
+    });
+
+    const summary = summarizeSubagentSession(state, 'sess-ralplan', {
+      now: '2026-05-28T18:02:00.000Z',
+      activeWindowMs: 120_000,
+    });
+
+    assert.equal(state.sessions['sess-ralplan']?.leader_thread_id, undefined);
+    assert.equal(state.sessions['sess-ralplan']?.threads['thread-architect']?.kind, 'subagent');
+    assert.equal(state.sessions['sess-ralplan']?.threads['thread-critic']?.kind, 'subagent');
+    assert.deepEqual(summary?.allSubagentThreadIds, ['thread-architect', 'thread-critic']);
+  });
+
   it('reconciles completed subagent threads before reporting active wait state', () => {
     let state = createSubagentTrackingState();
     state = recordSubagentTurn(state, {

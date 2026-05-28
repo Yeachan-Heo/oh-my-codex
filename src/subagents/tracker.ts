@@ -37,6 +37,8 @@ export interface RecordSubagentTurnInput {
   turnId?: string;
   timestamp?: string;
   mode?: string;
+  kind?: 'leader' | 'subagent';
+  leaderThreadId?: string;
   completed?: boolean;
   completionSource?: string;
 }
@@ -164,11 +166,16 @@ export function recordSubagentTurn(
     threads: {},
   };
 
-  const leaderThreadId = existingSession.leader_thread_id || threadId;
+  const requestedKind = input.kind === 'leader' || input.kind === 'subagent' ? input.kind : undefined;
+  const requestedLeaderThreadId = input.leaderThreadId?.trim();
+  const leaderThreadId = existingSession.leader_thread_id
+    || requestedLeaderThreadId
+    || (requestedKind === 'subagent' ? undefined : threadId);
   const existingThread = existingSession.threads[threadId];
+  const kind = requestedKind ?? (threadId === leaderThreadId ? 'leader' : 'subagent');
   const nextThread: TrackedSubagentThread = {
     thread_id: threadId,
-    kind: threadId === leaderThreadId ? 'leader' : 'subagent',
+    kind,
     first_seen_at: existingThread?.first_seen_at ?? timestamp,
     last_seen_at: timestamp,
     turn_count: (existingThread?.turn_count ?? 0) + 1,
@@ -196,7 +203,7 @@ export function recordSubagentTurn(
 
   normalized.sessions[sessionId] = {
     session_id: sessionId,
-    leader_thread_id: leaderThreadId,
+    ...(leaderThreadId ? { leader_thread_id: leaderThreadId } : {}),
     updated_at: timestamp,
     threads,
   };

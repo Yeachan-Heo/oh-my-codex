@@ -76,5 +76,8 @@ export function canAdvanceAutopilotRalplanToUltragoal(
 export function buildAutopilotRalplanUltragoalGateError(
   decision: AutopilotRalplanUltragoalGateDecision,
 ): string {
-  return `Cannot transition ralplan -> ultragoal: ${decision.reason}.`;
+  const details = decision.evidence?.blockedDetails?.length
+    ? ` Details: ${decision.evidence.blockedDetails.join('; ')}.`
+    : '';
+  return `Cannot transition ralplan -> ultragoal: ${decision.reason}.${details}`;
 }
