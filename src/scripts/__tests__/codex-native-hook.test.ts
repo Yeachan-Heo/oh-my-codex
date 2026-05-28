@@ -2831,7 +2831,7 @@ standardMaxRounds = 15
     }
   });
 
-  it("lets the current canonical leader boundary beat stale global subagent tracking", async () => {
+  it("lets the current canonical leader boundary beat stale global subagent tracking with a distinct prompt thread id", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-current-leader-stale-global-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -2892,7 +2892,7 @@ standardMaxRounds = 15
           hook_event_name: "UserPromptSubmit",
           cwd,
           session_id: leaderNativeSessionId,
-          thread_id: leaderNativeSessionId,
+          thread_id: "thread-current-turn-not-native-session",
           turn_id: "turn-current-leader",
           prompt: "$autopilot continue",
         },
@@ -2914,7 +2914,7 @@ standardMaxRounds = 15
     }
   });
 
-  it("lets the current session native leader beat stale global subagent tracking without a canonical summary", async () => {
+  it("lets the current session native leader beat stale global subagent tracking without a canonical summary and with a distinct prompt thread id", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-current-native-leader-stale-global-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -2961,7 +2961,7 @@ standardMaxRounds = 15
           hook_event_name: "UserPromptSubmit",
           cwd,
           session_id: leaderNativeSessionId,
-          thread_id: leaderNativeSessionId,
+          thread_id: "thread-current-turn-not-native-session",
           turn_id: "turn-current-native-leader",
           prompt: "$autopilot continue",
         },
