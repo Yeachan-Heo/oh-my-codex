@@ -77,6 +77,7 @@ import {
   withTmuxExtendedKeys,
   serializeDetachedSessionParentEnv,
   CODEX_SQLITE_HOME_ENV,
+  DETACHED_TMUX_HISTORY_LIMIT,
 } from "../index.js";
 import { mergeConfig, repairConfigIfNeeded } from "../../config/generator.js";
 import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
@@ -4221,6 +4222,9 @@ exit 0
       "%12",
       "3",
       true,
+      false,
+      true,
+      "%leader",
     );
     const names = steps.map((step) => step.name);
     const attachedIndex = names.indexOf("register-client-attached-reconcile");
@@ -4232,6 +4236,15 @@ exit 0
     assert.equal(attachIndex > scheduleIndex, true);
     assert.equal(names.includes("register-resize-hook"), true);
     assert.equal(names.includes("reconcile-hud-resize"), true);
+    assert.equal(DETACHED_TMUX_HISTORY_LIMIT, 500);
+    const historyHook = steps.find((step) => step.name === "register-detached-history-prune-hook");
+    assert.ok(historyHook);
+    assert.deepEqual(historyHook.args.slice(0, 3), ["set-hook", "-t", "omx-demo"]);
+    assert.match(historyHook.args[3] || "", /^client-detached\[[0-9]+\]$/);
+    assert.equal(
+      historyHook.args[4],
+      "if-shell -F '#{==:#{session_attached},0}' 'clear-history -t %leader'",
+    );
   });
 
   it("buildDetachedSessionFinalizeSteps skips attach for Hermes MCP bridge launches", () => {
