@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { OmxQuestionError, type OmxQuestionProcessRunner } from '../client.js';
 import {
+  AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV,
   markAutopilotDeepInterviewQuestionWaiting,
   readAutopilotDeepInterviewQuestionWaitState,
 } from '../autopilot-wait.js';
@@ -373,10 +374,14 @@ describe('runDeepInterviewQuestion autopilot wait bridge', { concurrency: false 
     }, null, 2));
 
     let observedWait = false;
-    const runner: OmxQuestionProcessRunner = async () => {
+    const runner: OmxQuestionProcessRunner = async (_command, _args, runnerOptions) => {
       const waitState = await readAutopilotDeepInterviewQuestionWaitState(cwd, 'sess-di');
       assert.ok(waitState);
       assert.equal(waitState.previousPhase, 'deep-interview');
+      assert.equal(
+        runnerOptions.env[AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV],
+        waitState.obligationId,
+      );
       const autopilotState = JSON.parse(await readFile(autopilotPath, 'utf-8')) as {
         active?: boolean;
         current_phase?: string;
