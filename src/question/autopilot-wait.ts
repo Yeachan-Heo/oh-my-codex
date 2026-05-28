@@ -1,14 +1,17 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import {
   deriveAutopilotChildPhase,
   isAutopilotSupervisingChild,
   normalizeAutopilotPhase,
 } from '../autopilot/fsm.js';
 import { getStateFilePath } from '../mcp/state-paths.js';
+import { sleep } from '../utils/sleep.js';
 import type { DeepInterviewQuestionEnforcementState } from './deep-interview.js';
 
 const AUTOPILOT_STATE_FILE = 'autopilot-state.json';
+const AUTOPILOT_QUESTION_WAIT_LOCK_STALE_MS = 30_000;
+const AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS = 10_000;
 export const AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV =
   'OMX_AUTOPILOT_DEEP_INTERVIEW_QUESTION_OBLIGATION_ID';
 
@@ -45,6 +48,66 @@ async function writeAutopilotState(cwd: string, sessionId: string | undefined, s
   const statePath = getStateFilePath(AUTOPILOT_STATE_FILE, cwd, sessionId);
   await mkdir(dirname(statePath), { recursive: true });
   await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+function lockOwnerToken(): string {
+  return `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+}
+
+async function maybeRecoverStaleAutopilotQuestionWaitLock(lockDir: string): Promise<boolean> {
+  try {
+    const info = await stat(lockDir);
+    if (Date.now() - info.mtimeMs > AUTOPILOT_QUESTION_WAIT_LOCK_STALE_MS) {
+      await rm(lockDir, { recursive: true, force: true });
+      return true;
+    }
+  } catch {
+  }
+  return false;
+}
+
+async function withAutopilotQuestionWaitLock<T>(
+  cwd: string,
+  sessionId: string,
+  fn: () => Promise<T>,
+  onTimeout: () => Promise<T> | T,
+): Promise<T> {
+  const statePath = getStateFilePath(AUTOPILOT_STATE_FILE, cwd, sessionId);
+  const lockDir = `${statePath}.deep-interview-question.lock`;
+  const ownerPath = join(lockDir, 'owner');
+  const ownerToken = lockOwnerToken();
+  const deadline = Date.now() + AUTOPILOT_QUESTION_WAIT_LOCK_TIMEOUT_MS;
+  await mkdir(dirname(lockDir), { recursive: true });
+  while (true) {
+    try {
+      await mkdir(lockDir);
+      try {
+        await writeFile(ownerPath, ownerToken, 'utf8');
+      } catch (error) {
+        await rm(lockDir, { recursive: true, force: true });
+        throw error;
+      }
+      break;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== 'EEXIST') throw error;
+      if (await maybeRecoverStaleAutopilotQuestionWaitLock(lockDir)) continue;
+      if (Date.now() > deadline) return await onTimeout();
+      await sleep(25);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      const currentOwner = await readFile(ownerPath, 'utf8');
+      if (currentOwner.trim() === ownerToken) {
+        await rm(lockDir, { recursive: true, force: true });
+      }
+    } catch {
+    }
+  }
 }
 
 export async function readAutopilotDeepInterviewQuestionWaitState(
@@ -97,42 +160,50 @@ export async function markAutopilotDeepInterviewQuestionWaiting(
   sessionId: string | undefined,
   obligation: DeepInterviewQuestionEnforcementState,
 ): Promise<boolean> {
-  if (!safeString(sessionId)) return false;
-  const state = await readAutopilotState(cwd, sessionId);
-  if (!state || safeString(state.mode) !== 'autopilot' || state.active !== true) return false;
+  const normalizedSessionId = safeString(sessionId);
+  if (!normalizedSessionId) return false;
+  return await withAutopilotQuestionWaitLock(
+    cwd,
+    normalizedSessionId,
+    async () => {
+      const state = await readAutopilotState(cwd, normalizedSessionId);
+      if (!state || safeString(state.mode) !== 'autopilot' || state.active !== true) return false;
 
-  if (!isAutopilotSupervisingChild(state, 'deep-interview')) return false;
-  const currentPhase = normalizeAutopilotPhase(state.current_phase) || 'deep-interview';
+      if (!isAutopilotSupervisingChild(state, 'deep-interview')) return false;
+      const currentPhase = normalizeAutopilotPhase(state.current_phase) || 'deep-interview';
 
-  const nestedState = safeObject(state.state);
-  if (isPendingAutopilotQuestionWait(safeObject(nestedState.deep_interview_question))) return false;
+      const nestedState = safeObject(state.state);
+      if (isPendingAutopilotQuestionWait(safeObject(nestedState.deep_interview_question))) return false;
 
-  const wait = {
-    status: 'waiting_for_user',
-    source: 'omx-question',
-    obligation_id: obligation.obligation_id,
-    previous_phase: currentPhase,
-    previous_run_outcome: state.run_outcome ?? null,
-    previous_lifecycle_outcome: state.lifecycle_outcome ?? null,
-    requested_at: obligation.requested_at,
-    updated_at: new Date().toISOString(),
-  };
+      const wait = {
+        status: 'waiting_for_user',
+        source: 'omx-question',
+        obligation_id: obligation.obligation_id,
+        previous_phase: currentPhase,
+        previous_run_outcome: state.run_outcome ?? null,
+        previous_lifecycle_outcome: state.lifecycle_outcome ?? null,
+        requested_at: obligation.requested_at,
+        updated_at: new Date().toISOString(),
+      };
 
-  const nextState = {
-    ...state,
-    active: true,
-    current_phase: 'waiting-for-user',
-    run_outcome: 'blocked_on_user',
-    lifecycle_outcome: 'askuserQuestion',
-    updated_at: new Date().toISOString(),
-    state: {
-      ...nestedState,
-      deep_interview_question: wait,
+      const nextState = {
+        ...state,
+        active: true,
+        current_phase: 'waiting-for-user',
+        run_outcome: 'blocked_on_user',
+        lifecycle_outcome: 'askuserQuestion',
+        updated_at: new Date().toISOString(),
+        state: {
+          ...nestedState,
+          deep_interview_question: wait,
+        },
+      };
+
+      await writeAutopilotState(cwd, normalizedSessionId, nextState);
+      return true;
     },
-  };
-
-  await writeAutopilotState(cwd, sessionId, nextState);
-  return true;
+    () => false,
+  );
 }
 
 export async function resolveAutopilotDeepInterviewQuestionWaiting(

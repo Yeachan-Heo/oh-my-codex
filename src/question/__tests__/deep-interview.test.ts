@@ -359,6 +359,56 @@ describe('runDeepInterviewQuestion autopilot wait bridge', { concurrency: false 
     assert.equal(autopilotState.state?.deep_interview_question?.requested_at, '2026-04-19T00:00:00.000Z');
   });
 
+  it('serializes concurrent Autopilot deep-interview question ownership claims', { concurrency: false }, async () => {
+    const cwd = await makeRepo();
+    const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-di');
+    const autopilotPath = join(sessionDir, 'autopilot-state.json');
+    await writeFile(autopilotPath, JSON.stringify({
+      active: true,
+      mode: 'autopilot',
+      current_phase: 'deep-interview',
+      session_id: 'sess-di',
+      state: { deep_interview_gate: { status: 'required' } },
+    }, null, 2));
+
+    const obligations = Array.from({ length: 24 }, (_, index) => ({
+      obligation_id: `obligation-${index}`,
+      source: 'omx-question' as const,
+      status: 'pending' as const,
+      lifecycle_outcome: 'askuserQuestion' as const,
+      requested_at: `2026-04-19T00:00:${String(index).padStart(2, '0')}.000Z`,
+    }));
+
+    const results = await Promise.all(
+      obligations.map((obligation) => markAutopilotDeepInterviewQuestionWaiting(
+        cwd,
+        'sess-di',
+        obligation,
+      )),
+    );
+
+    assert.equal(results.filter(Boolean).length, 1);
+    const winningObligationIds = obligations
+      .filter((_, index) => results[index])
+      .map((obligation) => obligation.obligation_id);
+    assert.equal(winningObligationIds.length, 1);
+
+    const autopilotState = JSON.parse(await readFile(autopilotPath, 'utf-8')) as {
+      current_phase?: string;
+      run_outcome?: string;
+      lifecycle_outcome?: string;
+      state?: { deep_interview_question?: { obligation_id?: string; status?: string } };
+    };
+    assert.equal(autopilotState.current_phase, 'waiting-for-user');
+    assert.equal(autopilotState.run_outcome, 'blocked_on_user');
+    assert.equal(autopilotState.lifecycle_outcome, 'askuserQuestion');
+    assert.equal(autopilotState.state?.deep_interview_question?.status, 'waiting_for_user');
+    assert.equal(
+      autopilotState.state?.deep_interview_question?.obligation_id,
+      winningObligationIds[0],
+    );
+  });
+
   it('fails terminally instead of replacing another pending Autopilot question owner', { concurrency: false }, async () => {
     const cwd = await makeRepo();
     const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-di');
