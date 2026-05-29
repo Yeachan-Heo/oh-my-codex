@@ -954,7 +954,7 @@ fn raw_mode_preserves_non_utf8_bytes() {
     write_executable(
         &script,
         r#"#!/usr/bin/env bash
-printf '\xff\xfe\n'
+printf '%b' '\377\376\n'
 "#,
     );
 
@@ -963,7 +963,13 @@ printf '\xff\xfe\n'
         .output()
         .expect("run sparkshell");
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "sparkshell exited {:?}; stdout={:?}; stderr={}",
+        output.status.code(),
+        output.stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(output.stdout, vec![0xff, 0xfe, b'\n']);
     let _ = fs::remove_dir_all(temp);
 }
