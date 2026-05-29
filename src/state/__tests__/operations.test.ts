@@ -1521,6 +1521,50 @@ describe('state operations directory initialization', () => {
   });
 
 
+  it('explains when native ralplan reviews are not present in subagent tracking', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-native-missing-tracker-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-native-missing-tracker';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'ralplan',
+            state: {
+              handoff_artifacts: {
+                ralplan: {
+                  plan_path: '.omx/plans/prd.md',
+                  test_spec_path: '.omx/plans/test-spec.md',
+                },
+                ralplan_consensus_gate: ralplanConsensusGate(sessionId, 'native_subagent'),
+              },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ultragoal',
+        });
+
+        assert.equal(response.isError, true);
+        const error = String((response.payload as { error?: string }).error || '');
+        assert.match(error, /subagent-tracking\.json/);
+        assert.match(error, /only reviews recorded in OMX subagent-tracking\.json count as native lanes/i);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+
   it('denies Autopilot ralplan to ultragoal self-write when native reviews reuse one subagent thread', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-same-thread-deny-'));
     try {

@@ -305,11 +305,12 @@ function trackerBackedNativeReviewProblem(
   if (!trackerPath || !trackerPath.endsWith('subagent-tracking.json')) return `${agentRole} review missing subagent-tracking.json tracker_path`;
   if (!options.cwd) return `${agentRole} review cannot resolve cwd for tracker lookup`;
 
-  const tracking = readJsonState(subagentTrackingPath(options.cwd));
+  const expectedTrackerPath = subagentTrackingPath(options.cwd);
+  const tracking = readJsonState(expectedTrackerPath);
   const session = asRecord(asRecord(tracking?.sessions)?.[sessionId]);
   const thread = asRecord(asRecord(session?.threads)?.[threadId]);
-  if (!session) return `${agentRole} tracker session ${sessionId} is missing`;
-  if (!thread) return `${agentRole} tracker thread ${threadId} is missing`;
+  if (!session) return `${agentRole} tracker session ${sessionId} is missing in ${expectedTrackerPath}; only reviews recorded in OMX subagent-tracking.json count as native lanes`;
+  if (!thread) return `${agentRole} tracker thread ${threadId} is missing in ${expectedTrackerPath}; external/collab subagent reviews are not tracker-backed native lanes`;
   const leaderThreadId = typeof session.leader_thread_id === 'string' ? session.leader_thread_id.trim() : '';
   if (leaderThreadId && leaderThreadId === threadId) return `${agentRole} tracker thread ${threadId} is the session leader`;
   if (thread.kind !== 'subagent') return `${agentRole} tracker thread ${threadId} has kind=${String(thread.kind || 'missing')}`;
