@@ -41,6 +41,7 @@ import {
   resolveDeepInterviewRuntimeConfig,
   type DeepInterviewRuntimeConfig,
 } from '../config/deep-interview.js';
+import { inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 
 export interface KeywordMatch {
   keyword: string;
@@ -345,6 +346,22 @@ function resolveSeedStateFilePath(
   };
 }
 
+function isResettableTerminalModeState(state: Record<string, unknown> | null, expectedMode: string): boolean {
+  if (!state || safeString(state.mode).trim() !== expectedMode) return false;
+
+  const phase = safeString(state.current_phase).trim().toLowerCase().replace(/_/g, '-');
+  const terminalPhases = expectedMode === 'ralph'
+    ? ['blocked-on-user', 'complete', 'completed', 'failed', 'cancelled', 'canceled', 'stopped', 'user-stopped']
+    : ['complete', 'completed', 'failed', 'cancelled', 'canceled', 'stopped', 'user-stopped'];
+  if (terminalPhases.includes(phase)) return true;
+
+  const lifecycleOutcome = inferTerminalLifecycleOutcome(state, { includeQuestionEnforcement: false });
+  return lifecycleOutcome === 'finished'
+    || lifecycleOutcome === 'failed'
+    || lifecycleOutcome === 'userinterlude'
+    || (expectedMode === 'ralph' && lifecycleOutcome === 'blocked');
+}
+
 async function persistStatefulSkillSeedState(
   stateDir: string,
   nextSkill: SkillActiveState,
@@ -364,13 +381,16 @@ async function persistStatefulSkillSeedState(
   const sameActiveSkill = previousSkill?.skill === nextSkill.skill && previousSkill.active;
   const existingModeMatches = safeString(existingModeState?.mode).trim() === config.mode;
   const existingPhase = safeString(existingModeState?.current_phase).trim();
+  const existingModeTerminal = existingModeMatches
+    && isResettableTerminalModeState(existingModeState as Record<string, unknown>, config.mode);
   const preserveExistingModeState = existingModeMatches
     && existingPhase !== ''
+    && !existingModeTerminal
     && (
       sameActiveSkill
       || (config.mode === 'team' && existingModeState?.active === true)
     );
-  const startedAt = previousSkill?.skill === nextSkill.skill && previousSkill.active
+  const startedAt = previousSkill?.skill === nextSkill.skill && previousSkill.active && !existingModeTerminal
     ? safeString(existingModeState?.started_at).trim() || previousSkill.activated_at || nowIso
     : preserveExistingModeState
       ? safeString(existingModeState?.started_at).trim() || nowIso
@@ -399,8 +419,9 @@ async function persistStatefulSkillSeedState(
   if (config.includeIteration) {
     const defaultIteration = config.mode === 'autopilot' ? 1 : 0;
     const defaultMaxIterations = config.mode === 'autopilot' ? 10 : 50;
-    baseState.iteration = typeof existingModeState?.iteration === 'number' ? existingModeState.iteration : defaultIteration;
-    baseState.max_iterations = typeof existingModeState?.max_iterations === 'number' ? existingModeState.max_iterations : defaultMaxIterations;
+    const reusableModeState = preserveExistingModeState ? existingModeState : null;
+    baseState.iteration = typeof reusableModeState?.iteration === 'number' ? reusableModeState.iteration : defaultIteration;
+    baseState.max_iterations = typeof reusableModeState?.max_iterations === 'number' ? reusableModeState.max_iterations : defaultMaxIterations;
   }
 
   if (config.mode === 'deep-interview') {
@@ -408,13 +429,14 @@ async function persistStatefulSkillSeedState(
   }
 
   if (config.mode === 'autopilot') {
-    const existingState = (existingModeState?.state && typeof existingModeState.state === 'object')
-      ? existingModeState.state as Record<string, unknown>
+    const reusableModeState = preserveExistingModeState ? existingModeState : null;
+    const existingState = (reusableModeState?.state && typeof reusableModeState.state === 'object')
+      ? reusableModeState.state as Record<string, unknown>
       : {};
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
-    baseState.review_cycle = typeof existingModeState?.review_cycle === 'number' ? existingModeState.review_cycle : 0;
+    baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
     baseState.state = {
       ...existingState,
       phase_cycle: Array.isArray(existingState.phase_cycle) ? existingState.phase_cycle : ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
@@ -870,7 +892,19 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const sameSkill = previous?.active === true && previous.skill === match.skill;
   const sameKeyword = previous?.keyword?.toLowerCase() === match.keyword.toLowerCase();
   const sameSkillContinuation = sameSkill && shouldReusePreviousSkillForContinuation(input.text, previous);
-  const preserveActivatedAt = sameSkill && (sameKeyword || sameSkillContinuation);
+  const matchedSeedConfig = STATEFUL_SKILL_SEED_CONFIG[match.skill as StatefulSkillMode];
+  const matchedModeState = matchedSeedConfig
+    ? await readJsonStateIfExists(resolveSeedStateFilePath(
+      input.stateDir,
+      matchedSeedConfig.mode,
+      input.sessionId,
+      matchedSeedConfig.scope,
+    ).absolutePath)
+    : null;
+  const matchedModeTerminal = matchedSeedConfig
+    ? isResettableTerminalModeState(matchedModeState as Record<string, unknown> | null, matchedSeedConfig.mode)
+    : false;
+  const preserveActivatedAt = sameSkill && !matchedModeTerminal && (sameKeyword || sameSkillContinuation);
   const previousEntries = listActiveSkills(previous ?? {});
   const previousWorkflowEntries = previousEntries.filter((entry) => (
     isTrackedWorkflowMode(entry.skill)
@@ -989,7 +1023,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
 
       const existingEntry = nextWorkflowEntries.find((entry) => entry.skill === requestedMode);
       if (existingEntry) {
-        existingEntry.phase = requestedMode === match.skill && !sameSkill
+        existingEntry.phase = requestedMode === match.skill && (!sameSkill || matchedModeTerminal)
           ? initialWorkflowPhaseForMode(requestedMode)
           : existingEntry.phase;
         existingEntry.active = true;
