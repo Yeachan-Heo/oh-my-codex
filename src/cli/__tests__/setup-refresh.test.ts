@@ -211,6 +211,30 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
+  it("creates .gitignore without .omx/ when global Git excludes already ignore it", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-global-ignore-"));
+    const excludesFile = join(wd, "global-ignore");
+    try {
+      const initResult = spawnSync("git", ["init", "-q"], { cwd: wd });
+      assert.equal(initResult.status, 0);
+      await writeFile(excludesFile, ".omx/\n");
+      const configResult = spawnSync(
+        "git",
+        ["config", "core.excludesfile", excludesFile],
+        { cwd: wd },
+      );
+      assert.equal(configResult.status, 0);
+
+      await runSetupInTempDir(wd, { scope: "project" });
+
+      const gitignore = await readFile(join(wd, ".gitignore"), "utf-8");
+      assert.equal(gitignore, EXPECTED_PROJECT_GITIGNORE_WITHOUT_OMX);
+      assert.equal(gitignore.match(/^\.omx\/$/gm)?.length ?? 0, 0);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("ignores project-local config while keeping .codex agents, skills, and prompts trackable", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
