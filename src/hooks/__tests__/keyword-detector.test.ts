@@ -2258,6 +2258,65 @@ deepMaxRounds = 21
     }
   });
 
+  it('keeps tracked Autopilot child keywords supervised and completes stale child mode state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autopilot-child-ultraqa-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-autopilot-child-ultraqa';
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: '$autopilot',
+          phase: 'ultraqa',
+          activated_at: '2026-05-30T00:00:00.000Z',
+          updated_at: '2026-05-30T00:01:00.000Z',
+          source: 'keyword-detector',
+          session_id: sessionId,
+          active_skills: [{ skill: 'autopilot', phase: 'ultraqa', active: true, session_id: sessionId }],
+        }, null, 2),
+      );
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'ultragoal-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'ultragoal',
+          current_phase: 'planning',
+          session_id: sessionId,
+          started_at: '2026-05-29T23:00:00.000Z',
+          updated_at: '2026-05-29T23:05:00.000Z',
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ultraqa run adversarial checks',
+        sessionId,
+        threadId: 'thread-autopilot-child-ultraqa',
+        turnId: 'turn-autopilot-child-ultraqa',
+        nowIso: '2026-05-30T00:02:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'autopilot');
+      assert.equal(result.phase, 'ultraqa');
+      assert.equal(result.supervised_child_skill, 'ultraqa');
+      assert.equal(result.transition_error, undefined);
+      assert.equal(existsSync(join(stateDir, 'sessions', sessionId, 'ultraqa-state.json')), false);
+      const ultragoal = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, 'ultragoal-state.json'), 'utf-8'),
+      ) as { active?: boolean; current_phase?: string; auto_completed_reason?: string };
+      assert.equal(ultragoal.active, false);
+      assert.equal(ultragoal.current_phase, 'completed');
+      assert.match(ultragoal.auto_completed_reason || '', /autopilot supervised child handoff: ultragoal -> ultraqa/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('records ultragoal as a prompt skill with first-class mode state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ultragoal-'));
     const stateDir = join(cwd, '.omx', 'state');
