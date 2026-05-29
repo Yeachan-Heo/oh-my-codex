@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -175,6 +175,73 @@ describe('skill-active state helpers', () => {
       const rootState = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(rootState.initialized_mode, 'ralph');
       assert.equal(rootState.initialized_state_path, '.omx/state/sessions/old-session/ralph-state.json');
+    });
+  });
+
+  it('does not synthesize session root mirror fallback from top-level skill fields', async () => {
+    await withTempRepo('omx-skill-active-root-top-level-only-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        session_id: 'current-session',
+      }));
+
+      const sessionState = await readVisibleSkillActiveState(cwd, 'current-session');
+
+      assert.equal(sessionState, null);
+    });
+  });
+
+  it('sanitizes root mirror metadata when session skill-active file is missing', async () => {
+    await withTempRepo('omx-skill-active-root-mirror-sanitize-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        initialized_mode: 'ralph',
+        initialized_state_path: '.omx/state/sessions/stale-session/ralph-state.json',
+        owner_omx_session_id: 'stale-session',
+        owner_codex_session_id: 'stale-codex-session',
+        owner_codex_thread_id: 'stale-thread',
+        task_slug: 'stale-task',
+        context_snapshot_path: '.omx/context/stale.md',
+        session_id: 'stale-session',
+        active_skills: [{
+          skill: 'autopilot',
+          phase: 'deep-interview',
+          active: true,
+          session_id: 'current-session',
+          thread_id: 'current-thread',
+          turn_id: 'current-turn',
+        }],
+      }));
+
+      const sessionState = await readVisibleSkillActiveState(cwd, 'current-session') as Record<string, unknown> | null;
+
+      assert.ok(sessionState);
+      assert.equal(sessionState.skill, 'autopilot');
+      assert.equal(sessionState.phase, 'deep-interview');
+      assert.equal(sessionState.session_id, 'current-session');
+      assert.equal(sessionState.thread_id, 'current-thread');
+      assert.equal(sessionState.turn_id, 'current-turn');
+      assert.equal(sessionState.initialized_mode, undefined);
+      assert.equal(sessionState.initialized_state_path, undefined);
+      assert.equal(sessionState.owner_omx_session_id, undefined);
+      assert.equal(sessionState.owner_codex_session_id, undefined);
+      assert.equal(sessionState.owner_codex_thread_id, undefined);
+      assert.equal(sessionState.task_slug, undefined);
+      assert.equal(sessionState.context_snapshot_path, undefined);
+      assert.deepEqual(
+        listActiveSkills(sessionState).map(({ skill, phase, session_id }) => ({ skill, phase, session_id })),
+        [{ skill: 'autopilot', phase: 'deep-interview', session_id: 'current-session' }],
+      );
     });
   });
 

@@ -751,6 +751,95 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('surfaces session-mirrored root autopilot state when the HUD session file has not been materialized yet', async () => {
+    await withTempRepo('omx-hud-root-mirror-autopilot-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-autopilot-root-mirror';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(rootStateDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+        session_id: sessionId,
+      }));
+
+      const state = await readAllState(cwd);
+
+      assert.equal(state.autopilot?.active, true);
+      assert.equal(state.autopilot?.current_phase, 'deep-interview');
+    });
+  });
+
+  it('does not resurrect root terminal autopilot detail when session file is missing', async () => {
+    await withTempRepo('omx-hud-root-terminal-autopilot-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-autopilot-root-terminal';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(rootStateDir, 'autopilot-state.json'), JSON.stringify({
+        active: false,
+        mode: 'autopilot',
+        current_phase: 'complete',
+        session_id: sessionId,
+        completed_at: '2026-05-30T00:00:00.000Z',
+      }));
+
+      const state = await readAllState(cwd);
+
+      assert.equal(state.autopilot, null);
+    });
+  });
+
+  it('does not surface root canonical workflow entries without current-session ownership', async () => {
+    await withTempRepo('omx-hud-root-stale-owner-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-current-hud';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        active_skills: [
+          { skill: 'autopilot', phase: 'deep-interview', active: true },
+          { skill: 'ralplan', phase: 'planning', active: true, session_id: 'sess-other-hud' },
+        ],
+      }));
+      await writeFile(join(rootStateDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+      }));
+      await writeFile(join(rootStateDir, 'ralplan-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'planning',
+      }));
+
+      const state = await readAllState(cwd);
+
+      assert.equal(state.autopilot, null);
+      assert.equal(state.ralplan, null);
+    });
+  });
+
   it('does not resurrect terminal autopilot from stale canonical skill-active phase', async () => {
     await withTempRepo('omx-hud-canonical-autopilot-terminal-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

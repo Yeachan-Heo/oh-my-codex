@@ -45,13 +45,24 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
   }
 }
 
+function rootModeStateBelongsToSession(state: unknown, sessionId: string): boolean {
+  if (!state || typeof state !== 'object') return false;
+  return sanitizeOptionalString((state as { session_id?: unknown }).session_id) === sessionId;
+}
+
 async function readSessionAwareModeState<T>(cwd: string, mode: string): Promise<T | null> {
   const candidates = await getReadScopedStatePaths(mode, cwd);
   const sessionId = await readCurrentSessionId(cwd);
 
   if (sessionId) {
     if (candidates.length === 0) return null;
-    return readJsonFile<T>(candidates[0]);
+    const sessionState = await readJsonFile<T>(candidates[0]);
+    if (sessionState) return sessionState;
+
+    const rootCandidate = candidates[1];
+    if (!rootCandidate) return null;
+    const rootState = await readJsonFile<T>(rootCandidate);
+    return rootModeStateBelongsToSession(rootState, sessionId) ? rootState : null;
   }
 
   for (const candidate of candidates) {
@@ -457,6 +468,8 @@ function shouldSurfaceCanonicalSkill(
   detail: { active?: boolean; current_phase?: string } | null,
   useCompatibilityFallback: boolean,
 ): boolean {
+  const canonicalPhase = canonicalPhaseForSkill(canonicalSkills, skill);
+  if (canonicalSkills.has(skill) && !detail && canonicalPhase) return true;
   if (!canonicalSkills.has(skill) && !useCompatibilityFallback) return false;
   return !isMissingTerminalOrInactiveDetail(detail);
 }
