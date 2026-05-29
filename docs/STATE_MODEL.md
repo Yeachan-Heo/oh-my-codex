@@ -173,7 +173,7 @@ entering its `ralplan` child stage. Review/QA loopbacks should keep
 starting standalone `ralplan` over Autopilot.
 
 Inside Autopilot, `ralplan` consensus also requires tracker-backed native
-subagent lane evidence for the Architect and Critic approvals. `codex_exec`
+subagent lane evidence for the Architect, Scholastic, and Critic approvals. `codex_exec`
 outputs and authored planning artifacts remain trace evidence, but they do not
 prove that visible native subagent lanes ran.
 

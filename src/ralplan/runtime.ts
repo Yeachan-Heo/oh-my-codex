@@ -5,6 +5,7 @@ import { buildRalplanConsensusGateFromSources } from './consensus-gate.js';
 export const RALPLAN_ACTIVE_PHASES = [
   'draft',
   'architect-review',
+  'scholastic-review',
   'critic-review',
   'complete',
 ] as const;
@@ -28,19 +29,21 @@ export interface RalplanReviewResult {
   thread_id?: string;
   native_session_id?: string;
   artifact_path?: string;
-  agent_role?: 'architect' | 'critic';
+  agent_role?: 'architect' | 'scholastic' | 'critic';
   tracker_path?: string;
 }
 
 export interface RalplanConsensusGate {
   required: true;
   complete: boolean;
-  sequence: ['architect-review', 'critic-review'];
+  sequence: ['architect-review', 'scholastic-review', 'critic-review'];
   planning_artifacts_are_not_consensus: true;
-  required_review_roles: ['architect', 'critic'];
+  required_review_roles: ['architect', 'scholastic', 'critic'];
   ralplan_architect_review: (RalplanReviewResult & { agent_role: 'architect'; iteration: number }) | null;
+  ralplan_scholastic_review: (RalplanReviewResult & { agent_role: 'scholastic'; iteration: number }) | null;
   ralplan_critic_review: (RalplanReviewResult & { agent_role: 'critic'; iteration: number }) | null;
   architect_review: (RalplanReviewResult & { agent_role: 'architect'; iteration: number }) | null;
+  scholastic_review: (RalplanReviewResult & { agent_role: 'scholastic'; iteration: number }) | null;
   critic_review: (RalplanReviewResult & { agent_role: 'critic'; iteration: number }) | null;
   blocked_reason: string | null;
 }
@@ -51,6 +54,7 @@ export interface RalplanConsensusIterationContext {
   iteration: number;
   priorDrafts: RalplanDraftResult[];
   architectReviews: RalplanReviewResult[];
+  scholasticReviews: RalplanReviewResult[];
   criticReviews: RalplanReviewResult[];
 }
 
@@ -59,10 +63,17 @@ export interface RalplanConsensusExecutor {
   architectReview(
     ctx: RalplanConsensusIterationContext & { draft: RalplanDraftResult },
   ): Promise<RalplanReviewResult>;
+  scholasticReview(
+    ctx: RalplanConsensusIterationContext & {
+      draft: RalplanDraftResult;
+      architectReview: RalplanReviewResult;
+    },
+  ): Promise<RalplanReviewResult>;
   criticReview(
     ctx: RalplanConsensusIterationContext & {
       draft: RalplanDraftResult;
       architectReview: RalplanReviewResult;
+      scholasticReview: RalplanReviewResult;
     },
   ): Promise<RalplanReviewResult>;
 }
@@ -82,6 +93,7 @@ export interface RalplanRuntimeResult {
   planningComplete: boolean;
   drafts: RalplanDraftResult[];
   architectReviews: RalplanReviewResult[];
+  scholasticReviews: RalplanReviewResult[];
   criticReviews: RalplanReviewResult[];
   ralplanConsensusGate: RalplanConsensusGate;
   latestPlanPath?: string;
@@ -100,6 +112,8 @@ interface RalplanModeUpdates {
   latest_draft_summary?: string;
   latest_architect_verdict?: RalplanReviewVerdict;
   latest_architect_summary?: string;
+  latest_scholastic_verdict?: RalplanReviewVerdict;
+  latest_scholastic_summary?: string;
   latest_critic_verdict?: RalplanReviewVerdict;
   latest_critic_summary?: string;
   ralplan_consensus_gate?: RalplanConsensusGate;
@@ -111,15 +125,17 @@ interface RalplanModeUpdates {
 function buildReviewHistory(
   drafts: RalplanDraftResult[],
   architectReviews: RalplanReviewResult[],
+  scholasticReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
 ): Array<Record<string, unknown>> {
   const entries: Array<Record<string, unknown>> = [];
-  const total = Math.max(drafts.length, architectReviews.length, criticReviews.length);
+  const total = Math.max(drafts.length, architectReviews.length, scholasticReviews.length, criticReviews.length);
   for (let index = 0; index < total; index++) {
     entries.push({
       iteration: index + 1,
       draft: drafts[index] ?? null,
       architect_review: architectReviews[index] ?? null,
+      scholastic_review: scholasticReviews[index] ?? null,
       critic_review: criticReviews[index] ?? null,
     });
   }
@@ -128,20 +144,29 @@ function buildReviewHistory(
 
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
+  scholasticReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
   options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean } = {},
 ): RalplanConsensusGate {
   const latestArchitect = architectReviews.at(-1);
+  const latestScholastic = scholasticReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
   if (
     latestArchitect?.verdict === 'approve'
+    && latestScholastic?.verdict === 'approve'
     && latestCritic?.verdict === 'approve'
+    && architectReviews.length === scholasticReviews.length
     && architectReviews.length === criticReviews.length
   ) {
     const ralplanArchitectReview = {
       ...latestArchitect,
       agent_role: 'architect' as const,
       iteration: architectReviews.length,
+    };
+    const ralplanScholasticReview = {
+      ...latestScholastic,
+      agent_role: 'scholastic' as const,
+      iteration: scholasticReviews.length,
     };
     const ralplanCriticReview = {
       ...latestCritic,
@@ -151,12 +176,14 @@ function buildRalplanConsensusGate(
     const gate: RalplanConsensusGate = {
       required: true,
       complete: true,
-      sequence: ['architect-review', 'critic-review'],
+      sequence: ['architect-review', 'scholastic-review', 'critic-review'],
       planning_artifacts_are_not_consensus: true,
-      required_review_roles: ['architect', 'critic'],
+      required_review_roles: ['architect', 'scholastic', 'critic'],
       ralplan_architect_review: ralplanArchitectReview,
+      ralplan_scholastic_review: ralplanScholasticReview,
       ralplan_critic_review: ralplanCriticReview,
       architect_review: ralplanArchitectReview,
+      scholastic_review: ralplanScholasticReview,
       critic_review: ralplanCriticReview,
       blocked_reason: null,
     };
@@ -178,11 +205,16 @@ function buildRalplanConsensusGate(
 
   const blockedReason = latestArchitect?.verdict !== 'approve'
     ? 'architect_review_missing_or_not_approved'
+    : latestScholastic?.verdict !== 'approve'
+      ? 'scholastic_review_missing_or_not_approved'
     : latestCritic?.verdict !== 'approve'
       ? 'critic_review_missing_or_not_approved'
-      : 'missing_sequential_architect_then_critic_approval';
+      : 'missing_sequential_architect_scholastic_critic_approval';
   const ralplanArchitectReview = latestArchitect
     ? { ...latestArchitect, agent_role: 'architect' as const, iteration: architectReviews.length }
+    : null;
+  const ralplanScholasticReview = latestScholastic
+    ? { ...latestScholastic, agent_role: 'scholastic' as const, iteration: scholasticReviews.length }
     : null;
   const ralplanCriticReview = latestCritic
     ? { ...latestCritic, agent_role: 'critic' as const, iteration: criticReviews.length }
@@ -191,12 +223,14 @@ function buildRalplanConsensusGate(
   return {
     required: true,
     complete: false,
-    sequence: ['architect-review', 'critic-review'],
+    sequence: ['architect-review', 'scholastic-review', 'critic-review'],
     planning_artifacts_are_not_consensus: true,
-    required_review_roles: ['architect', 'critic'],
+    required_review_roles: ['architect', 'scholastic', 'critic'],
     ralplan_architect_review: ralplanArchitectReview,
+    ralplan_scholastic_review: ralplanScholasticReview,
     ralplan_critic_review: ralplanCriticReview,
     architect_review: ralplanArchitectReview,
+    scholastic_review: ralplanScholasticReview,
     critic_review: ralplanCriticReview,
     blocked_reason: blockedReason,
   };
@@ -222,6 +256,7 @@ export async function runRalplanConsensus(
   };
   const drafts: RalplanDraftResult[] = [];
   const architectReviews: RalplanReviewResult[] = [];
+  const scholasticReviews: RalplanReviewResult[] = [];
   const criticReviews: RalplanReviewResult[] = [];
   const aggregatedArtifacts: Record<string, unknown> = {};
   let latestPlanPath: string | undefined;
@@ -242,6 +277,7 @@ export async function runRalplanConsensus(
         iteration,
         priorDrafts: [...drafts],
         architectReviews: [...architectReviews],
+        scholasticReviews: [...scholasticReviews],
         criticReviews: [...criticReviews],
       };
 
@@ -249,8 +285,8 @@ export async function runRalplanConsensus(
         iteration,
         current_phase: 'draft',
         planning_complete: false,
-        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
-        review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
+        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
+        review_history: buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews),
       });
       const draft = await executor.draft(iterationContext);
       drafts.push(draft);
@@ -262,8 +298,8 @@ export async function runRalplanConsensus(
         current_phase: 'architect-review',
         latest_plan_path: latestPlanPath,
         latest_draft_summary: draft.summary,
-        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
-        review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
+        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
+        review_history: buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews),
       });
       const architectReview = await executor.architectReview({
         ...iterationContext,
@@ -273,8 +309,8 @@ export async function runRalplanConsensus(
       if (architectReview.artifacts) Object.assign(aggregatedArtifacts, architectReview.artifacts);
 
       if (architectReview.verdict !== 'approve') {
-        const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);
-        const consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions);
+        const reviewHistory = buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews);
+        const consensusGate = buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions);
         await updateRalplanState(cwd, {
           iteration,
           current_phase: 'architect-review',
@@ -307,6 +343,71 @@ export async function runRalplanConsensus(
             planningComplete: false,
             drafts,
             architectReviews,
+            scholasticReviews,
+            criticReviews,
+            ralplanConsensusGate: consensusGate,
+            latestPlanPath,
+            artifacts: aggregatedArtifacts,
+            error,
+          };
+        }
+
+        iteration += 1;
+        continue;
+      }
+
+      await updateRalplanState(cwd, {
+        iteration,
+        current_phase: 'scholastic-review',
+        latest_architect_verdict: architectReview.verdict,
+        latest_architect_summary: architectReview.summary,
+        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
+        review_history: buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews),
+      });
+      const scholasticReview = await executor.scholasticReview({
+        ...iterationContext,
+        draft,
+        architectReview,
+      });
+      scholasticReviews.push(scholasticReview);
+      if (scholasticReview.artifacts) Object.assign(aggregatedArtifacts, scholasticReview.artifacts);
+
+      if (scholasticReview.verdict !== 'approve') {
+        const reviewHistory = buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews);
+        const consensusGate = buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions);
+        await updateRalplanState(cwd, {
+          iteration,
+          current_phase: 'scholastic-review',
+          latest_scholastic_verdict: scholasticReview.verdict,
+          latest_scholastic_summary: scholasticReview.summary,
+          ralplan_consensus_gate: consensusGate,
+          review_history: reviewHistory,
+        });
+
+        if (iteration >= maxIterations) {
+          const error = `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
+          await updateRalplanState(cwd, {
+            active: false,
+            iteration,
+            current_phase: 'failed',
+            completed_at: new Date().toISOString(),
+            planning_complete: false,
+            latest_plan_path: latestPlanPath,
+            latest_scholastic_verdict: scholasticReview.verdict,
+            latest_scholastic_summary: scholasticReview.summary,
+            ralplan_consensus_gate: consensusGate,
+            review_history: reviewHistory,
+            status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without Scholastic approval; continue from the best current artifact or ask the user how to proceed.`,
+            error,
+          });
+          return {
+            status: 'failed',
+            iteration,
+            phase: 'failed',
+            planningComplete: false,
+            drafts,
+            architectReviews,
+            scholasticReviews,
             criticReviews,
             ralplanConsensusGate: consensusGate,
             latestPlanPath,
@@ -322,21 +423,22 @@ export async function runRalplanConsensus(
       await updateRalplanState(cwd, {
         iteration,
         current_phase: 'critic-review',
-        latest_architect_verdict: architectReview.verdict,
-        latest_architect_summary: architectReview.summary,
-        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
-        review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
+        latest_scholastic_verdict: scholasticReview.verdict,
+        latest_scholastic_summary: scholasticReview.summary,
+        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
+        review_history: buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews),
       });
       const criticReview = await executor.criticReview({
         ...iterationContext,
         draft,
         architectReview,
+        scholasticReview,
       });
       criticReviews.push(criticReview);
       if (criticReview.artifacts) Object.assign(aggregatedArtifacts, criticReview.artifacts);
 
-      const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);
-      const consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions);
+      const reviewHistory = buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews);
+      const consensusGate = buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions);
       await updateRalplanState(cwd, {
         iteration,
         current_phase: 'critic-review',
@@ -370,6 +472,7 @@ export async function runRalplanConsensus(
             planningComplete: false,
             drafts,
             architectReviews,
+            scholasticReviews,
             criticReviews,
             ralplanConsensusGate: consensusGate,
             latestPlanPath,
@@ -396,6 +499,7 @@ export async function runRalplanConsensus(
           planningComplete: true,
           drafts,
           architectReviews,
+          scholasticReviews,
           criticReviews,
           ralplanConsensusGate: consensusGate,
           latestPlanPath,
@@ -424,9 +528,10 @@ export async function runRalplanConsensus(
           iteration,
           phase: 'failed',
           planningComplete: false,
-          drafts,
-          architectReviews,
-          criticReviews,
+        drafts,
+        architectReviews,
+        scholasticReviews,
+        criticReviews,
           ralplanConsensusGate: consensusGate,
           latestPlanPath,
           artifacts: aggregatedArtifacts,
@@ -445,8 +550,8 @@ export async function runRalplanConsensus(
       completed_at: new Date().toISOString(),
       planning_complete: false,
       latest_plan_path: latestPlanPath,
-      ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
-      review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
+      ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
+      review_history: buildReviewHistory(drafts, architectReviews, scholasticReviews, criticReviews),
       status_message: 'Status: failed — ralplan encountered an error and cannot continue without inspecting the failure.',
       error: message,
     });
@@ -457,8 +562,9 @@ export async function runRalplanConsensus(
       planningComplete: false,
       drafts,
       architectReviews,
+      scholasticReviews,
       criticReviews,
-      ralplanConsensusGate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
+      ralplanConsensusGate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
       latestPlanPath,
       artifacts: aggregatedArtifacts,
       error: message,
@@ -472,7 +578,7 @@ export async function runRalplanConsensus(
     current_phase: 'failed',
     completed_at: new Date().toISOString(),
     planning_complete: false,
-    ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
+    ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
     status_message: 'Status: failed — ralplan reached an unexpected runtime state.',
     error: unreachableError,
   });
@@ -483,8 +589,9 @@ export async function runRalplanConsensus(
     planningComplete: false,
     drafts,
     architectReviews,
+    scholasticReviews,
     criticReviews,
-    ralplanConsensusGate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
+    ralplanConsensusGate: buildRalplanConsensusGate(architectReviews, scholasticReviews, criticReviews, gateOptions),
     latestPlanPath,
     artifacts: aggregatedArtifacts,
     error: unreachableError,

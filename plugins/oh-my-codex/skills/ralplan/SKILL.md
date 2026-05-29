@@ -5,7 +5,7 @@ description: Alias for $plan --consensus
 
 # Ralplan (Consensus Planning Alias)
 
-Ralplan is a shorthand alias for `$plan --consensus`. It triggers iterative planning with Planner, Architect, and Critic agents until consensus is reached, with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). Scholastic is available as a separate advisory native agent/persona for ontology-heavy planning evidence, but it is not part of the durable consensus gate.
+Ralplan is a shorthand alias for `$plan --consensus`. It triggers iterative planning with Planner, Architect, Scholastic, and Critic agents until consensus is reached, with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). Scholastic is the ontology-first gate between Architect and Critic: it checks category mistakes, hidden assumptions, modality separation, and minimal repairs before Critic evaluates execution quality.
 
 ## Usage
 
@@ -15,12 +15,12 @@ $ralplan "task description"
 
 ## Flags
 
-- `--interactive`: Enables user prompts at key decision points (draft review in step 2 and final approval in step 6). Without this flag the workflow runs fully automated — Planner → Architect → Critic loop — and outputs the final plan without asking for confirmation.
+- `--interactive`: Enables user prompts at key decision points (draft review in step 2 and final approval in step 7). Without this flag the workflow runs fully automated — Planner → Architect → Scholastic → Critic loop — and outputs the final plan without asking for confirmation.
 - `--deliberate`: Forces deliberate mode for high-risk work. Adds pre-mortem (3 scenarios) and expanded test planning (unit/integration/e2e/observability). Without this flag, deliberate mode can still auto-enable when the request explicitly signals high risk (auth/security, migrations, destructive changes, production incidents, compliance/PII, public API breakage).
 
 ## Ontology-heavy review
 
-For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, subagent `Scholastic` may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself remains the Planner → Architect → Critic consensus workflow and the durable gate remains Architect→Critic only.
+For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, subagent `Scholastic` is the required ontology reviewer in the consensus chain. Its findings must be resolved or explicitly recorded before the Critic gate runs.
 
 ## Usage with interactive mode
 
@@ -50,19 +50,21 @@ The consensus workflow:
    - Deliberate mode only: pre-mortem (3 scenarios) + expanded test plan (unit/integration/e2e/observability)
 2. **User feedback** *(--interactive only)*: If `--interactive` is set, use the structured question UI (`omx question` in attached tmux; native structured input outside tmux when available) to present the draft plan **plus the Principles / Drivers / Options summary** before review (Proceed to review / Request changes / Skip review). Otherwise, automatically proceed to review.
 3. **Architect** reviews for architectural soundness and must provide the strongest steelman antithesis, at least one real tradeoff tension, and (when possible) synthesis — **await completion before step 4**. Launch this as a subsequent `Architect` subagent (`agent_type: "architect"`) and pass the full task statement, context snapshot, PRD/test-spec paths, and relevant prior findings; do not use a default subagent with only a short improvised reviewer prompt. In deliberate mode, Architect should explicitly flag principle violations.
-4. **Critic** evaluates against quality criteria — run only after step 3 completes. Launch this as a subsequent `Critic` subagent (`agent_type: "critic"`) with the full task statement, context snapshot, PRD/test-spec paths, and the completed Architect review; do not ask the Architect subagent to perform the Critic gate and do not substitute a default subagent fantasy prompt for the packaged Critic role. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
-5. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Critic verdict (`ITERATE` or `REJECT`) MUST run the same full closed loop:
-   a. Collect Architect and Critic feedback
+4. **Scholastic** checks ontology — run only after step 3 completes and before Critic. Launch this as a subsequent `Scholastic` subagent (`agent_type: "scholastic"`) with the full task statement, context snapshot, PRD/test-spec paths, RALPLAN-DR summary, and completed Architect review. Scholastic must define key terms when needed, reject category mistakes, surface hidden assumptions, separate modalities, and propose minimal repairs.
+5. **Critic** evaluates against quality criteria — run only after step 4 completes. Launch this as a subsequent `Critic` subagent (`agent_type: "critic"`) with the full task statement, context snapshot, PRD/test-spec paths, and the completed Architect and Scholastic reviews; do not ask the Architect or Scholastic subagents to perform the Critic gate and do not substitute a default subagent fantasy prompt for the packaged Critic role. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
+6. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Scholastic or Critic verdict (`ITERATE` or `REJECT`) MUST run the same full closed loop:
+   a. Collect Architect, Scholastic, and Critic feedback
    b. Revise the plan with Planner
    c. Return to Architect review
-   d. Return to Critic evaluation
-   e. Repeat this loop until Critic returns `APPROVE` or 5 iterations are reached
-   f. If 5 iterations are reached without `APPROVE`, present the best version to the user
-6. On Critic approval *(--interactive only)*: If `--interactive` is set, use the structured question UI to present the plan with approval options (Approve durable goal execution via ultragoal / Approve and implement via team / Explicit Ralph fallback / Start specialized goal-mode follow-up / Request changes / Reject). Final plan must include ADR (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups), an explicit available-agent-types roster, concrete follow-up staffing guidance for `$ultragoal` and `$team`, plus an explicit `$ralph` fallback note when persistent single-owner verification is intentionally selected, suggested reasoning levels by lane, explicit `omx team` / `$team` launch hints, a concrete **team verification** path, and a product-facing **Goal-Mode Follow-up Suggestions** section. Recommend `$ultragoal` by default for goal-mode follow-up, use `$autoresearch-goal` instead when the context is a research project, and use `$performance-goal` instead when the context is an optimization or performance project. Otherwise, output the final plan and stop.
-7. *(--interactive only)* User chooses: Approve (`$ultragoal` durable goal execution, `$team`, explicit `$ralph` fallback, or a specialized goal-mode follow-up), Request changes, or Reject
-8. *(--interactive only)* On approval: invoke `$ultragoal` for default durable sequential execution, `$team` for parallel team execution, the selected specialized goal-mode follow-up (`$autoresearch-goal` or `$performance-goal`), or `$ralph` only when the user explicitly selects that fallback with the approved plan and matching success/evaluator context -- never implement directly. Preserve the explicit available-agent-types roster, reasoning-by-lane guidance, role/staffing allocation guidance, launch hints, and verification-path guidance from the approved plan for Ultragoal/team paths and any explicit Ralph fallback.
+   d. Return to Scholastic ontology review
+   e. Return to Critic evaluation
+   f. Repeat this loop until Scholastic and Critic return `APPROVE` or 5 iterations are reached
+   g. If 5 iterations are reached without `APPROVE`, present the best version to the user
+7. On Critic approval *(--interactive only)*: If `--interactive` is set, use the structured question UI to present the plan with approval options (Approve durable goal execution via ultragoal / Approve and implement via team / Explicit Ralph fallback / Start specialized goal-mode follow-up / Request changes / Reject). Final plan must include ADR (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups), an explicit available-agent-types roster, concrete follow-up staffing guidance for `$ultragoal` and `$team`, plus an explicit `$ralph` fallback note when persistent single-owner verification is intentionally selected, suggested reasoning levels by lane, explicit `omx team` / `$team` launch hints, a concrete **team verification** path, and a product-facing **Goal-Mode Follow-up Suggestions** section. Recommend `$ultragoal` by default for goal-mode follow-up, use `$autoresearch-goal` instead when the context is a research project, and use `$performance-goal` instead when the context is an optimization or performance project. Otherwise, output the final plan and stop.
+8. *(--interactive only)* User chooses: Approve (`$ultragoal` durable goal execution, `$team`, explicit `$ralph` fallback, or a specialized goal-mode follow-up), Request changes, or Reject
+9. *(--interactive only)* On approval: invoke `$ultragoal` for default durable sequential execution, `$team` for parallel team execution, the selected specialized goal-mode follow-up (`$autoresearch-goal` or `$performance-goal`), or `$ralph` only when the user explicitly selects that fallback with the approved plan and matching success/evaluator context -- never implement directly. Preserve the explicit available-agent-types roster, reasoning-by-lane guidance, role/staffing allocation guidance, launch hints, and verification-path guidance from the approved plan for Ultragoal/team paths and any explicit Ralph fallback.
 
-> **Important:** Steps 3 and 4 MUST run sequentially as role-specific subagents. Do NOT issue both agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking the subsequent `Critic`; only a completed, role-specific `Critic` approval can satisfy the durable gate.
+> **Important:** Steps 3, 4, and 5 MUST run sequentially as role-specific subagents. Do NOT issue those agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking `Scholastic`, then await `Scholastic` before invoking the subsequent `Critic`; only completed, role-specific `Scholastic` and `Critic` approvals can satisfy the durable gate.
 
 ## Planning/Execution Boundary
 
@@ -84,10 +86,11 @@ Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handof
 
 - `planning_artifacts`: PRD/test-spec paths.
 - `ralplan_architect_review`: the completed Architect review with an approving verdict.
-- `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Architect review.
-- `ralplan_consensus_gate.complete:true` only when both reviews are present, approving, and in the required Architect→Critic order.
+- `ralplan_scholastic_review`: the completed Scholastic ontology review with an approving verdict, recorded only after the Architect review.
+- `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Scholastic review.
+- `ralplan_consensus_gate.complete:true` only when all three reviews are present, approving, and in the required Architect→Scholastic→Critic order.
 
-If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Do not treat existing plan/test-spec files as permission to skip ralplan or start execution.
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Scholastic is missing/blocked/non-approving, keep the workflow in Scholastic review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Do not treat existing plan/test-spec files as permission to skip ralplan or start execution.
 
 Follow the Plan skill's full documentation for consensus mode details.
 
@@ -129,7 +132,7 @@ Execution modes (ralph, autopilot, team, ultrawork) spin up heavy multi-agent or
 The ralplan-first gate intercepts underspecified execution requests and redirects them through the ralplan consensus planning workflow. This ensures:
 - **Explicit scope**: A PRD defines exactly what will be built
 - **Test specification**: Acceptance criteria are testable before code is written
-- **Consensus**: Planner, Architect, and Critic agree on the approach
+- **Consensus**: Planner, Architect, Scholastic, and Critic agree on the approach, with Scholastic checking ontology after Architect and before Critic
 - **No wasted execution**: Agents start with a clear, bounded task
 
 ### Good vs Bad Prompts

@@ -4,8 +4,9 @@ import { subagentTrackingPath } from '../subagents/tracker.js';
 
 export interface RalplanConsensusGateEvidence {
   complete: boolean;
-  sequence: ['architect-review', 'critic-review'];
+  sequence: ['architect-review', 'scholastic-review', 'critic-review'];
   ralplan_architect_review: Record<string, unknown> | null;
+  ralplan_scholastic_review: Record<string, unknown> | null;
   ralplan_critic_review: Record<string, unknown> | null;
   source: string | null;
   blockedReason: string | null;
@@ -29,6 +30,7 @@ export function buildRalplanConsensusGateFromSources(
 ): RalplanConsensusGateEvidence {
   let nativeBlockedEvidence: {
     ralplan_architect_review: Record<string, unknown>;
+    ralplan_scholastic_review: Record<string, unknown>;
     ralplan_critic_review: Record<string, unknown>;
     source: string;
   } | null = null;
@@ -45,8 +47,9 @@ export function buildRalplanConsensusGateFromSources(
       }
       return {
         complete: true,
-        sequence: ['architect-review', 'critic-review'],
+        sequence: ['architect-review', 'scholastic-review', 'critic-review'],
         ralplan_architect_review: evidence.ralplan_architect_review,
+        ralplan_scholastic_review: evidence.ralplan_scholastic_review,
         ralplan_critic_review: evidence.ralplan_critic_review,
         source: candidate.source,
         blockedReason: null,
@@ -57,13 +60,15 @@ export function buildRalplanConsensusGateFromSources(
   if (nativeBlockedEvidence) {
     return {
       complete: false,
-      sequence: ['architect-review', 'critic-review'],
+      sequence: ['architect-review', 'scholastic-review', 'critic-review'],
       ralplan_architect_review: nativeBlockedEvidence.ralplan_architect_review,
+      ralplan_scholastic_review: nativeBlockedEvidence.ralplan_scholastic_review,
       ralplan_critic_review: nativeBlockedEvidence.ralplan_critic_review,
       source: nativeBlockedEvidence.source,
       blockedReason: 'native_subagent_consensus_evidence_missing',
       blockedDetails: [
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_architect_review, 'architect', options),
+        trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_scholastic_review, 'scholastic', options),
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_critic_review, 'critic', options),
       ].filter((detail): detail is string => Boolean(detail)),
     };
@@ -71,11 +76,12 @@ export function buildRalplanConsensusGateFromSources(
 
   return {
     complete: false,
-    sequence: ['architect-review', 'critic-review'],
+    sequence: ['architect-review', 'scholastic-review', 'critic-review'],
     ralplan_architect_review: null,
+    ralplan_scholastic_review: null,
     ralplan_critic_review: null,
     source: null,
-    blockedReason: 'missing_sequential_architect_then_critic_approval',
+    blockedReason: 'missing_sequential_architect_scholastic_critic_approval',
   };
 }
 
@@ -128,6 +134,7 @@ export function readLocalRalplanConsensusStateCandidates(
 
 function extractSequentialConsensusEvidence(value: unknown): {
   ralplan_architect_review: Record<string, unknown>;
+  ralplan_scholastic_review: Record<string, unknown>;
   ralplan_critic_review: Record<string, unknown>;
 } | null {
   if (!value || typeof value !== 'object') return null;
@@ -139,17 +146,25 @@ function extractSequentialConsensusEvidence(value: unknown): {
     const architectReview = asRecord(
       gateRecord.ralplan_architect_review ?? gateRecord.architectReview ?? gateRecord.architect_review,
     );
+    const scholasticReview = asRecord(
+      gateRecord.ralplan_scholastic_review ?? gateRecord.scholasticReview ?? gateRecord.scholastic_review,
+    );
     const criticReview = asRecord(
       gateRecord.ralplan_critic_review ?? gateRecord.criticReview ?? gateRecord.critic_review,
     );
     if (
       gateRecord.complete === true
-      && hasArchitectThenCriticSequence(gateRecord)
+      && hasArchitectScholasticCriticSequence(gateRecord)
       && isApproveReview(architectReview, 'architect')
+      && isApproveReview(scholasticReview, 'scholastic')
       && isApproveReview(criticReview, 'critic')
-      && isCriticNotBeforeArchitect(architectReview, criticReview)
+      && isSequentialReviewOrder(architectReview, scholasticReview, criticReview)
     ) {
-      return { ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
+      return {
+        ralplan_architect_review: architectReview,
+        ralplan_scholastic_review: scholasticReview,
+        ralplan_critic_review: criticReview,
+      };
     }
   }
 
@@ -160,15 +175,18 @@ function extractSequentialConsensusEvidence(value: unknown): {
   }
 
   const directArchitectReview = asRecord(record.ralplan_architect_review);
+  const directScholasticReview = asRecord(record.ralplan_scholastic_review);
   const directCriticReview = asRecord(record.ralplan_critic_review);
   if (
-    hasArchitectThenCriticSequence(record)
+    hasArchitectScholasticCriticSequence(record)
     && isApproveReview(directArchitectReview, 'architect')
+    && isApproveReview(directScholasticReview, 'scholastic')
     && isApproveReview(directCriticReview, 'critic')
-    && isCriticNotBeforeArchitect(directArchitectReview, directCriticReview)
+    && isSequentialReviewOrder(directArchitectReview, directScholasticReview, directCriticReview)
   ) {
     return {
       ralplan_architect_review: directArchitectReview,
+      ralplan_scholastic_review: directScholasticReview,
       ralplan_critic_review: directCriticReview,
     };
   }
@@ -179,29 +197,50 @@ function extractSequentialConsensusEvidence(value: unknown): {
     const architectReview = asRecord(
       latestReviewEntry.ralplan_architect_review ?? latestReviewEntry.architect_review ?? latestReviewEntry.architectReview,
     );
+    const scholasticReview = asRecord(
+      latestReviewEntry.ralplan_scholastic_review ?? latestReviewEntry.scholastic_review ?? latestReviewEntry.scholasticReview,
+    );
     const criticReview = asRecord(
       latestReviewEntry.ralplan_critic_review ?? latestReviewEntry.critic_review ?? latestReviewEntry.criticReview,
     );
     if (
       isApproveReview(architectReview, 'architect')
+      && isApproveReview(scholasticReview, 'scholastic')
       && isApproveReview(criticReview, 'critic')
-      && isCriticNotBeforeArchitect(architectReview, criticReview)
+      && isSequentialReviewOrder(architectReview, scholasticReview, criticReview)
     ) {
-      return { ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
+      return {
+        ralplan_architect_review: architectReview,
+        ralplan_scholastic_review: scholasticReview,
+        ralplan_critic_review: criticReview,
+      };
     }
   }
 
   const architectReviews = Array.isArray(record.architectReviews) ? record.architectReviews : [];
+  const scholasticReviews = Array.isArray(record.scholasticReviews) ? record.scholasticReviews : [];
   const criticReviews = Array.isArray(record.criticReviews) ? record.criticReviews : [];
-  if (architectReviews.length > 0 && criticReviews.length > 0 && architectReviews.length === criticReviews.length) {
+  if (
+    architectReviews.length > 0
+    && scholasticReviews.length > 0
+    && criticReviews.length > 0
+    && architectReviews.length === scholasticReviews.length
+    && scholasticReviews.length === criticReviews.length
+  ) {
     const architectReview = asRecord(architectReviews.at(-1));
+    const scholasticReview = asRecord(scholasticReviews.at(-1));
     const criticReview = asRecord(criticReviews.at(-1));
     if (
       isApproveReview(architectReview, 'architect')
+      && isApproveReview(scholasticReview, 'scholastic')
       && isApproveReview(criticReview, 'critic')
-      && isCriticNotBeforeArchitect(architectReview, criticReview)
+      && isSequentialReviewOrder(architectReview, scholasticReview, criticReview)
     ) {
-      return { ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
+      return {
+        ralplan_architect_review: architectReview,
+        ralplan_scholastic_review: scholasticReview,
+        ralplan_critic_review: criticReview,
+      };
     }
   }
 
@@ -212,7 +251,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null;
 }
 
-function isApproveReview(value: Record<string, unknown> | null, agentRole: 'architect' | 'critic'): value is Record<string, unknown> {
+type ConsensusReviewRole = 'architect' | 'scholastic' | 'critic';
+
+function isApproveReview(value: Record<string, unknown> | null, agentRole: ConsensusReviewRole): value is Record<string, unknown> {
   if (!value || value.agent_role !== agentRole) return false;
   if (value.verdict !== undefined && value.verdict !== 'approve') return false;
   if (value.status !== undefined && !['approve', 'approved', 'clear', 'pass', 'passed'].includes(String(value.status).toLowerCase())) {
@@ -225,19 +266,25 @@ function isApproveReview(value: Record<string, unknown> | null, agentRole: 'arch
   return value.verdict === 'approve' || value.approved === true || value.clean === true;
 }
 
-function hasArchitectThenCriticSequence(value: Record<string, unknown>): boolean {
+function hasArchitectScholasticCriticSequence(value: Record<string, unknown>): boolean {
   if (!Array.isArray(value.sequence)) return true;
-  return value.sequence[0] === 'architect-review' && value.sequence[1] === 'critic-review';
+  return value.sequence[0] === 'architect-review'
+    && value.sequence[1] === 'scholastic-review'
+    && value.sequence[2] === 'critic-review';
 }
 
-function isCriticNotBeforeArchitect(
+function isSequentialReviewOrder(
   architectReview: Record<string, unknown> | null,
+  scholasticReview: Record<string, unknown> | null,
   criticReview: Record<string, unknown> | null,
 ): boolean {
-  if (!architectReview || !criticReview) return false;
+  if (!architectReview || !scholasticReview || !criticReview) return false;
   const architectOrder = reviewOrderValue(architectReview);
+  const scholasticOrder = reviewOrderValue(scholasticReview);
   const criticOrder = reviewOrderValue(criticReview);
-  return architectOrder === null || criticOrder === null || criticOrder >= architectOrder;
+  return (architectOrder === null || scholasticOrder === null || scholasticOrder >= architectOrder)
+    && (scholasticOrder === null || criticOrder === null || criticOrder >= scholasticOrder)
+    && (architectOrder === null || criticOrder === null || criticOrder >= architectOrder);
 }
 
 function reviewOrderValue(review: Record<string, unknown>): number | null {
@@ -258,14 +305,22 @@ function reviewOrderValue(review: Record<string, unknown>): number | null {
 function hasTrackerBackedNativeRalplanLanes(
   evidence: {
     ralplan_architect_review: Record<string, unknown>;
+    ralplan_scholastic_review: Record<string, unknown>;
     ralplan_critic_review: Record<string, unknown>;
   },
   options: RalplanNativeSubagentConsensusOptions,
 ): boolean {
   const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
+  const scholasticThreadId = nativeReviewThreadId(evidence.ralplan_scholastic_review);
   const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
-  if (!architectThreadId || !criticThreadId || architectThreadId === criticThreadId) return false;
+  if (
+    !architectThreadId
+    || !scholasticThreadId
+    || !criticThreadId
+    || new Set([architectThreadId, scholasticThreadId, criticThreadId]).size !== 3
+  ) return false;
   return isTrackerBackedNativeReview(evidence.ralplan_architect_review, 'architect', options)
+    && isTrackerBackedNativeReview(evidence.ralplan_scholastic_review, 'scholastic', options)
     && isTrackerBackedNativeReview(evidence.ralplan_critic_review, 'critic', options);
 }
 
@@ -275,7 +330,7 @@ function nativeReviewThreadId(review: Record<string, unknown> | null): string {
 
 function isTrackerBackedNativeReview(
   review: Record<string, unknown> | null,
-  agentRole: 'architect' | 'critic',
+  agentRole: ConsensusReviewRole,
   options: RalplanNativeSubagentConsensusOptions,
 ): boolean {
   return trackerBackedNativeReviewProblem(review, agentRole, options) === null;
@@ -283,7 +338,7 @@ function isTrackerBackedNativeReview(
 
 function trackerBackedNativeReviewProblem(
   review: Record<string, unknown> | null,
-  agentRole: 'architect' | 'critic',
+  agentRole: ConsensusReviewRole,
   options: RalplanNativeSubagentConsensusOptions,
 ): string | null {
   if (!review) return `${agentRole} review is missing`;

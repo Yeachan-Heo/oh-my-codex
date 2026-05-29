@@ -628,10 +628,11 @@ describe('keyword detector skill-active-state lifecycle', () => {
         ralplan: null,
         ralplan_consensus_gate: {
           required: true,
-          sequence: ['architect-review', 'critic-review'],
+          sequence: ['architect-review', 'scholastic-review', 'critic-review'],
           planning_artifacts_are_not_consensus: true,
-          required_review_roles: ['architect', 'critic'],
+          required_review_roles: ['architect', 'scholastic', 'critic'],
           ralplan_architect_review: null,
+          ralplan_scholastic_review: null,
           ralplan_critic_review: null,
           complete: false,
         },
@@ -2752,8 +2753,9 @@ describe('applyRalplanGate', () => {
         planning_complete: true,
         ralplan_consensus_gate: {
           complete: true,
-          sequence: ['architect-review', 'critic-review'],
+          sequence: ['architect-review', 'scholastic-review', 'critic-review'],
           ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve', iteration: 1 },
           ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
         },
       }));
@@ -2783,9 +2785,15 @@ describe('applyRalplanGate', () => {
         planning_complete: true,
         ralplan_consensus_gate: {
           complete: true,
-          sequence: ['architect-review', 'critic-review'],
+          sequence: ['architect-review', 'scholastic-review', 'critic-review'],
           ralplan_architect_review: {
             agent_role: 'architect',
+            verdict: 'approve',
+            iteration: 1,
+            provenance_kind: 'codex_exec',
+          },
+          ralplan_scholastic_review: {
+            agent_role: 'scholastic',
             verdict: 'approve',
             iteration: 1,
             provenance_kind: 'codex_exec',
@@ -2824,8 +2832,9 @@ describe('applyRalplanGate', () => {
         planning_complete: true,
         ralplan_consensus_gate: {
           complete: true,
-          sequence: ['architect-review', 'critic-review'],
+          sequence: ['architect-review', 'scholastic-review', 'critic-review'],
           ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve', iteration: 1 },
           ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
         },
       }));

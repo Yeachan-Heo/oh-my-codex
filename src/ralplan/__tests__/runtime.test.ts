@@ -44,6 +44,14 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
             completed_at: now,
             turn_count: 1,
           },
+          'thread-scholastic': {
+            thread_id: 'thread-scholastic',
+            kind: 'subagent',
+            first_seen_at: now,
+            last_seen_at: now,
+            completed_at: now,
+            turn_count: 1,
+          },
           'thread-critic': {
             thread_id: 'thread-critic',
             kind: 'subagent',
@@ -111,6 +119,13 @@ describe('ralplan runtime', () => {
           assert.equal(state.iteration, 1);
           return { verdict: 'approve', summary: 'architect-ok', artifacts: { architected: true } };
         },
+        async scholasticReview() {
+          const state = await readScopedRalplanState(cwd, sessionId);
+          seenPhases.push(String(state.current_phase));
+          assert.equal(state.current_phase, 'scholastic-review');
+          assert.equal(state.iteration, 1);
+          return { verdict: 'approve', summary: 'scholastic-ok', artifacts: { scholastic: true } };
+        },
         async criticReview() {
           const state = await readScopedRalplanState(cwd, sessionId);
           seenPhases.push(String(state.current_phase));
@@ -124,7 +139,7 @@ describe('ralplan runtime', () => {
       assert.equal(result.phase, 'complete');
       assert.equal(result.iteration, 1);
       assert.equal(result.planningComplete, true);
-      assert.deepEqual(seenPhases, ['draft', 'architect-review', 'critic-review']);
+      assert.deepEqual(seenPhases, ['draft', 'architect-review', 'scholastic-review', 'critic-review']);
       assert.equal(existsSync(join(cwd, '.omx', 'state', 'ralplan-state.json')), false);
       assert.equal(existsSync(sessionStatePath(cwd, sessionId)), true);
 
@@ -135,19 +150,27 @@ describe('ralplan runtime', () => {
       assert.equal(finalState?.planning_complete, true);
       assert.match(String(finalState?.status_message || ''), /Status: complete/);
       assert.equal(finalState?.latest_architect_verdict, 'approve');
+      assert.equal(finalState?.latest_scholastic_verdict, 'approve');
       assert.equal(finalState?.latest_critic_verdict, 'approve');
       assert.deepEqual(finalState?.ralplan_consensus_gate, {
         required: true,
         complete: true,
-        sequence: ['architect-review', 'critic-review'],
+        sequence: ['architect-review', 'scholastic-review', 'critic-review'],
         planning_artifacts_are_not_consensus: true,
-        required_review_roles: ['architect', 'critic'],
+        required_review_roles: ['architect', 'scholastic', 'critic'],
         ralplan_architect_review: {
           agent_role: 'architect',
           iteration: 1,
           verdict: 'approve',
           summary: 'architect-ok',
           artifacts: { architected: true },
+        },
+        ralplan_scholastic_review: {
+          agent_role: 'scholastic',
+          iteration: 1,
+          verdict: 'approve',
+          summary: 'scholastic-ok',
+          artifacts: { scholastic: true },
         },
         ralplan_critic_review: {
           agent_role: 'critic',
@@ -162,6 +185,13 @@ describe('ralplan runtime', () => {
           verdict: 'approve',
           summary: 'architect-ok',
           artifacts: { architected: true },
+        },
+        scholastic_review: {
+          agent_role: 'scholastic',
+          iteration: 1,
+          verdict: 'approve',
+          summary: 'scholastic-ok',
+          artifacts: { scholastic: true },
         },
         critic_review: {
           agent_role: 'critic',
@@ -197,6 +227,9 @@ describe('ralplan runtime', () => {
         async architectReview() {
           return { verdict: 'approve', summary: 'artifact-only architect ok' };
         },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic-ok' };
+        },
         async criticReview() {
           return { verdict: 'approve', summary: 'artifact-only critic ok' };
         },
@@ -217,7 +250,7 @@ describe('ralplan runtime', () => {
     }
   });
 
-  it('accepts Autopilot-required consensus with tracker-backed native architect and critic lanes', async () => {
+  it('accepts Autopilot-required consensus with tracker-backed native architect, scholastic, and critic lanes', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-native-required-ok-'));
     const sessionId = 'sess-ralplan-native-required-ok';
     try {
@@ -246,6 +279,18 @@ describe('ralplan runtime', () => {
             tracker_path: '.omx/state/subagent-tracking.json',
           };
         },
+        async scholasticReview() {
+          return {
+            verdict: 'approve',
+            summary: 'native scholastic ok',
+            provenance_kind: 'native_subagent',
+            session_id: sessionId,
+            thread_id: 'thread-scholastic',
+            artifact_path: '.omx/artifacts/scholastic.md',
+            agent_role: 'scholastic',
+            tracker_path: '.omx/state/subagent-tracking.json',
+          };
+        },
         async criticReview() {
           return {
             verdict: 'approve',
@@ -270,6 +315,7 @@ describe('ralplan runtime', () => {
       assert.equal(result.ralplanConsensusGate.complete, true);
       assert.equal(result.ralplanConsensusGate.blocked_reason, null);
       assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.thread_id, 'thread-architect');
+      assert.equal(result.ralplanConsensusGate.ralplan_scholastic_review?.thread_id, 'thread-scholastic');
       assert.equal(result.ralplanConsensusGate.ralplan_critic_review?.thread_id, 'thread-critic');
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -303,6 +349,18 @@ describe('ralplan runtime', () => {
             thread_id: 'thread-architect',
             artifact_path: '.omx/artifacts/architect.md',
             agent_role: 'architect',
+            tracker_path: '.omx/state/subagent-tracking.json',
+          };
+        },
+        async scholasticReview() {
+          return {
+            verdict: 'approve',
+            summary: 'native scholastic ok',
+            provenance_kind: 'native_subagent',
+            session_id: sessionId,
+            thread_id: 'thread-scholastic',
+            artifact_path: '.omx/artifacts/scholastic.md',
+            agent_role: 'scholastic',
             tracker_path: '.omx/state/subagent-tracking.json',
           };
         },
@@ -354,6 +412,9 @@ describe('ralplan runtime', () => {
         },
         async architectReview() {
           return { verdict: 'iterate', summary: 'architect needs changes' };
+        },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic-ok' };
         },
         async criticReview() {
           criticCalls += 1;
@@ -407,6 +468,9 @@ describe('ralplan runtime', () => {
           assert.equal(state.current_phase, 'architect-review');
           return { verdict: 'approve', summary: `architect-${ctx.iteration}` };
         },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic-ok' };
+        },
         async criticReview(ctx) {
           const state = await readScopedRalplanState(cwd, sessionId);
           assert.equal(state.current_phase, 'critic-review');
@@ -449,6 +513,9 @@ describe('ralplan runtime', () => {
         async architectReview() {
           return { verdict: 'reject', summary: 'architect rejects' };
         },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic-ok' };
+        },
         async criticReview() {
           return { verdict: 'approve', summary: 'critic approves malformed flow' };
         },
@@ -483,6 +550,9 @@ describe('ralplan runtime', () => {
         async architectReview() {
           return { verdict: 'approve', summary: 'architect ok' };
         },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic-ok' };
+        },
         async criticReview() {
           return { verdict: 'approve', summary: 'critic ok' };
         },
@@ -511,6 +581,9 @@ describe('ralplan runtime', () => {
         },
         async architectReview() {
           return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic-ok' };
         },
         async criticReview() {
           return { verdict: 'approve', summary: 'critic ok' };
@@ -545,6 +618,9 @@ describe('ralplan runtime', () => {
         },
         async architectReview() {
           throw new Error('architect blew up');
+        },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic-ok' };
         },
         async criticReview() {
           throw new Error('should not run');

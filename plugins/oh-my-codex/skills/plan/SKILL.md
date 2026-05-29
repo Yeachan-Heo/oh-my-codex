@@ -4,7 +4,7 @@ description: Strategic planning with optional interview workflow
 ---
 
 <Purpose>
-Plan creates comprehensive, actionable work plans through intelligent interaction. It auto-detects whether to interview the user (broad requests) or plan directly (detailed requests), and supports consensus mode (iterative Planner/Architect/Critic loop with RALPLAN-DR structured deliberation) and review mode (Critic evaluation of existing plans).
+Plan creates comprehensive, actionable work plans through intelligent interaction. It auto-detects whether to interview the user (broad requests) or plan directly (detailed requests), and supports consensus mode (iterative Planner/Architect/Scholastic/Critic loop with RALPLAN-DR structured deliberation) and review mode (Critic evaluation of existing plans).
 </Purpose>
 
 <Use_When>
@@ -46,7 +46,7 @@ Jumping into code without understanding requirements leads to rework, scope cree
 |------|---------|----------|
 | Interview | Default for broad requests | Interactive requirements gathering |
 | Direct | `--direct`, or detailed request | Skip interview, generate plan directly |
-| Consensus | `--consensus`, "ralplan" | Planner -> Architect -> Critic loop until agreement with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk); outputs plan by default |
+| Consensus | `--consensus`, "ralplan" | Planner -> Architect -> Scholastic -> Critic loop until agreement with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk); outputs plan by default |
 | Consensus Interactive | `--consensus --interactive` | Same as Consensus but pauses for user feedback at draft and approval steps, then hands off to execution |
 | Review | `--review`, "review this plan" | Critic evaluation of existing plan |
 
@@ -67,7 +67,7 @@ Jumping into code without understanding requirements leads to rework, scope cree
 
 ### Consensus Mode (`--consensus` / "ralplan")
 
-**RALPLAN-DR modes**: **Short** (default, bounded structure) and **Deliberate** (for `--deliberate` or explicit high-risk requests). Both modes keep the same Planner -> Architect -> Critic sequence. The workflow auto-proceeds through planning steps (Planner/Architect/Critic) but outputs the final plan without executing.
+**RALPLAN-DR modes**: **Short** (default, bounded structure) and **Deliberate** (for `--deliberate` or explicit high-risk requests). Both modes keep the same Planner -> Architect -> Scholastic -> Critic sequence. The workflow auto-proceeds through planning steps (Planner/Architect/Scholastic/Critic) but outputs the final plan without executing.
 
 1. **Planner** creates initial plan and a compact **RALPLAN-DR summary** before any Architect review. The summary **MUST** include:
    - **Principles** (3-5)
@@ -76,21 +76,23 @@ Jumping into code without understanding requirements leads to rework, scope cree
    - If only one viable option remains, an explicit **invalidation rationale** for the alternatives that were rejected
    - In **deliberate mode**: a **pre-mortem** (3 failure scenarios) and an **expanded test plan** covering **unit / integration / e2e / observability**
 2. **User feedback** *(--interactive only)*: If running with `--interactive`, **MUST** use `AskUserQuestion` / the structured question UI (`omx question` in attached tmux; native structured input outside tmux when available) to present the draft plan **plus the RALPLAN-DR Principles / Decision Drivers / Options summary for early direction alignment** with these options:
-   - **Proceed to review** — send to Architect and Critic for evaluation
+   - **Proceed to review** — send to Architect, Scholastic, and Critic for evaluation
    - **Request changes** — return to step 1 with user feedback incorporated
    - **Skip review** — go directly to final approval (step 7)
    If NOT running with `--interactive`, automatically proceed to review (step 3).
-3. **Architect** reviews for architectural soundness as a dedicated subsequent `Architect` subagent with the full task, current plan text/path, RALPLAN-DR summary, and relevant artifact context. Architect review **MUST** include: strongest steelman counterargument (antithesis) against the favored option, at least one meaningful tradeoff tension, and (when possible) a synthesis path. In deliberate mode, Architect should explicitly flag principle violations. **Wait for this step to complete before proceeding to step 4.** Do NOT run steps 3 and 4 in parallel. Do NOT substitute a default/improvised subagent prompt for the role-specific `Architect` prompt.
-4. **Critic** evaluates against quality criteria as a dedicated subsequent `Critic` subagent with the full task, current plan text/path, RALPLAN-DR summary, artifact context, and the completed `Architect` result. Critic **MUST** verify principle-option consistency, fair alternative exploration, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. Critic **MUST** explicitly reject shallow alternatives, driver contradictions, vague risks, or weak verification. In deliberate mode, Critic **MUST** reject missing/weak pre-mortem or missing/weak expanded test plan. Run only after step 3 is complete. Do NOT let the `Architect` response self-approve the Critic gate.
-5. **Re-review loop** (max 5 iterations): If Critic rejects or iterates, execute this closed loop:
-   a. Collect all feedback from Architect + Critic
+3. **Architect** reviews for architectural soundness as a dedicated subsequent `Architect` subagent with the full task, current plan text/path, RALPLAN-DR summary, and relevant artifact context. Architect review **MUST** include: strongest steelman counterargument (antithesis) against the favored option, at least one meaningful tradeoff tension, and (when possible) a synthesis path. In deliberate mode, Architect should explicitly flag principle violations. **Wait for this step to complete before proceeding to step 4.** Do NOT run steps 3, 4, and 5 in parallel. Do NOT substitute a default/improvised subagent prompt for the role-specific `Architect` prompt.
+4. **Scholastic** checks ontology as a dedicated subsequent `Scholastic` subagent with the full task, current plan text/path, RALPLAN-DR summary, artifact context, and the completed `Architect` result. Scholastic **MUST** define key terms where useful, reject category mistakes, surface hidden assumptions, separate modalities, and propose minimal repairs. Run only after step 3 is complete.
+5. **Critic** evaluates against quality criteria as a dedicated subsequent `Critic` subagent with the full task, current plan text/path, RALPLAN-DR summary, artifact context, and the completed `Architect` and `Scholastic` results. Critic **MUST** verify principle-option consistency, fair alternative exploration, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. Critic **MUST** explicitly reject shallow alternatives, driver contradictions, vague risks, or weak verification. In deliberate mode, Critic **MUST** reject missing/weak pre-mortem or missing/weak expanded test plan. Run only after step 4 is complete. Do NOT let the `Architect` or `Scholastic` response self-approve the Critic gate.
+6. **Re-review loop** (max 5 iterations): If Scholastic or Critic rejects or iterates, execute this closed loop:
+   a. Collect all feedback from Architect + Scholastic + Critic
    b. Pass feedback to Planner to produce a revised plan
    c. **Return to Step 3** — Architect reviews the revised plan
-   d. **Return to Step 4** — Critic evaluates the revised plan
-   e. Repeat until Critic approves OR max 5 iterations reached
-   f. If max iterations reached without approval, present the best version to user via the structured question UI with note that expert consensus was not reached
-6. **Apply improvements**: When reviewers approve with improvement suggestions, merge all accepted improvements into the plan file before proceeding. Final consensus output **MUST** include an **ADR** section with: **Decision**, **Drivers**, **Alternatives considered**, **Why chosen**, **Consequences**, **Follow-ups**. Specifically:
-   a. Collect all improvement suggestions from Architect and Critic responses
+   d. **Return to Step 4** — Scholastic reviews the revised plan
+   e. **Return to Step 5** — Critic evaluates the revised plan
+   f. Repeat until Scholastic and Critic approve OR max 5 iterations reached
+   g. If max iterations reached without approval, present the best version to user via the structured question UI with note that expert consensus was not reached
+7. **Apply improvements**: When reviewers approve with improvement suggestions, merge all accepted improvements into the plan file before proceeding. Final consensus output **MUST** include an **ADR** section with: **Decision**, **Drivers**, **Alternatives considered**, **Why chosen**, **Consequences**, **Follow-ups**. Specifically:
+   a. Collect all improvement suggestions from Architect, Scholastic, and Critic responses
    b. Deduplicate and categorize the suggestions
    c. Update the plan file in `.omx/plans/` with the accepted improvements (add missing details, refine steps, strengthen acceptance criteria, ADR updates, etc.)
    d. Note which improvements were applied in a brief changelog section at the end of the plan
@@ -142,9 +144,9 @@ Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 - Use the `explore` agent (LOW tier, bounded quick pass) to gather codebase facts before asking the user
 - Use `ask_codex` with `agent_role: "planner"` for planning validation on large-scope plans
 - Use `ask_codex` with `agent_role: "analyst"` for requirements analysis
-- Use `ask_codex` with `agent_role: "critic"` for standalone review mode. In consensus mode, use the dedicated sequential role-specific `Architect` and `Critic` subagents described in steps 3-4 instead of a single critic-only review call.
+- Use `ask_codex` with `agent_role: "critic"` for standalone review mode. In consensus mode, use the dedicated sequential role-specific `Architect`, `Scholastic`, and `Critic` subagents described in steps 3-5 instead of a single critic-only review call.
 - If optional MCP compatibility tools or Codex consultation are unavailable, fall back to equivalent OMX prompt/native agents -- never block on external tools
-- **CRITICAL — Consensus mode agent calls MUST be sequential, never parallel.** Always await the subsequent role-specific `Architect` result before issuing the subsequent role-specific `Critic` call.
+- **CRITICAL — Consensus mode agent calls MUST be sequential, never parallel.** Always await the subsequent role-specific `Architect` result before issuing the subsequent role-specific `Scholastic` call, then await `Scholastic` before issuing the subsequent role-specific `Critic` call.
 - In consensus mode, default to RALPLAN-DR short mode; enable deliberate mode on `--deliberate` or explicit high-risk signals (auth/security, migrations, destructive changes, production incidents, compliance/PII, public API breakage)
 - In consensus mode with `--interactive`: use `AskUserQuestion` / the structured question UI for the user feedback step (step 2) and the final approval step (step 7) -- never ask for approval in plain text when a structured surface is available. Without `--interactive`, auto-proceed through planning steps without pausing. Output the final plan without execution.
 - In consensus mode with `--interactive`, on user approval **MUST** invoke the selected follow-up lane from step 9 (`$ultragoal`, `$team`, `$autoresearch-goal`, `$performance-goal`, or explicit `$ralph` fallback) -- never implement directly in the planning agent
@@ -211,7 +213,7 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 
 <Escalation_And_Stop_Conditions>
 - Stop interviewing when requirements are clear enough to plan -- do not over-interview
-- In consensus mode, stop after 5 Planner/Architect/Critic iterations and present the best version
+- In consensus mode, stop after 5 Planner/Architect/Scholastic/Critic iterations and present the best version
 - Consensus mode outputs the plan by default; with `--interactive`, user can approve and hand off to ultragoal/team, with Ralph only as an explicit legacy/persistent single-owner lane
 - If the user says "just do it" or "skip planning", **MUST** invoke `$ultragoal` to transition to durable goal execution mode by default; use `$ralph` only when the user explicitly asks for that fallback. Do NOT implement directly in the planning agent.
 - Escalate to the user when there are irreconcilable trade-offs that require a business decision
