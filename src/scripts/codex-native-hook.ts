@@ -142,6 +142,7 @@ const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
 const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH = 240;
+const OMX_OWNER_SESSION_ID_PATTERN = /^omx-[A-Za-z0-9_-]{1,60}$/;
 const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
   /^\s*(?:launch|release|ship)-?ready\s*:\s*(?:yes|no)\b[^\n\r]*/im,
   /^\s*ready to release\s*:\s*(?:yes|no)\b[^\n\r]*/im,
@@ -170,6 +171,16 @@ function safeString(value: unknown): string {
 
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function resolveHudReconcileSessionId(
+  currentSessionState: SessionState | null,
+  canonicalSessionId: string | null,
+  sessionIdForState: string | null,
+): string | undefined {
+  const ownerOmxSessionId = safeString(currentSessionState?.owner_omx_session_id).trim();
+  if (OMX_OWNER_SESSION_ID_PATTERN.test(ownerOmxSessionId)) return ownerOmxSessionId;
+  return canonicalSessionId || sessionIdForState || undefined;
 }
 
 function safeContextSnippet(value: unknown, maxLength = 300): string {
@@ -4079,7 +4090,12 @@ export async function dispatchCodexNativeHook(
       && await isConfirmedTeamWorkerPromptSubmitPane(cwd).catch(() => false);
     if (!skipHudReconcileForTeamWorkerPane) {
       const reconcileHudForPromptSubmitFn = options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
-      await reconcileHudForPromptSubmitFn(cwd, { sessionId: canonicalSessionId || sessionIdForState || undefined }).catch(() => {});
+      const hudSessionId = resolveHudReconcileSessionId(
+        currentSessionState,
+        canonicalSessionId,
+        sessionIdForState,
+      );
+      await reconcileHudForPromptSubmitFn(cwd, { sessionId: hudSessionId }).catch(() => {});
     }
   }
 

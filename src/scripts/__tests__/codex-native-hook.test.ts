@@ -1329,6 +1329,109 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("prefers the OMX owner session id when a native new session revives HUD", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-owner-session-revive-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const ownerSessionId = "omx-launch-owner-hud";
+      const oldNativeSessionId = "codex-native-hud-old";
+      const nativeSessionId = "codex-native-hud-new";
+      await mkdir(stateDir, { recursive: true });
+      await writeSessionStart(cwd, ownerSessionId, {
+        nativeSessionId: oldNativeSessionId,
+        pid: process.pid,
+      });
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: nativeSessionId,
+        },
+        {
+          cwd,
+          sessionOwnerPid: process.pid,
+        },
+      );
+
+      const sessionState = JSON.parse(await readFile(join(stateDir, "session.json"), "utf-8")) as {
+        session_id?: string;
+        native_session_id?: string;
+        previous_native_session_id?: string;
+        owner_omx_session_id?: string;
+      };
+      assert.equal(sessionState.session_id, nativeSessionId);
+      assert.equal(sessionState.native_session_id, nativeSessionId);
+      assert.equal(sessionState.previous_native_session_id, oldNativeSessionId);
+      assert.equal(sessionState.owner_omx_session_id, ownerSessionId);
+
+      let reconcileCall: { cwd: string; sessionId?: string } | null = null;
+      const promptResult = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: nativeSessionId,
+          thread_id: "thread-hud-owner",
+          turn_id: "turn-hud-owner",
+          prompt: "$ralplan fix native new hud owner handoff",
+        },
+        {
+          cwd,
+          reconcileHudForPromptSubmitFn: async (hookCwd, deps = {}) => {
+            reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId };
+            return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
+          },
+        },
+      );
+
+      assert.equal(promptResult.omxEventName, "keyword-detector");
+      assert.deepEqual(reconcileCall, { cwd, sessionId: ownerSessionId });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the canonical session id for malformed HUD owner ids", async () => {
+    for (const [index, invalidOwnerSessionId] of ["codex-native-hud-owner", "omx-../../stale"].entries()) {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-invalid-owner-revive-"));
+      try {
+        const stateDir = join(cwd, ".omx", "state");
+        const canonicalSessionId = "omx-launch-hud-safe";
+        const nativeSessionId = "codex-native-hud-safe";
+        await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+        await writeSessionStart(cwd, canonicalSessionId);
+
+        const sessionStatePath = join(stateDir, "session.json");
+        const sessionState = JSON.parse(await readFile(sessionStatePath, "utf-8")) as Record<string, unknown>;
+        sessionState.owner_omx_session_id = invalidOwnerSessionId;
+        await writeJson(sessionStatePath, sessionState);
+
+        let reconcileCall: { cwd: string; sessionId?: string } | null = null;
+        const promptResult = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "UserPromptSubmit",
+            cwd,
+            session_id: nativeSessionId,
+            thread_id: `thread-hud-invalid-owner-${index}`,
+            turn_id: "turn-hud-invalid-owner",
+            prompt: "$ralplan fix malformed hud owner handoff",
+          },
+          {
+            cwd,
+            reconcileHudForPromptSubmitFn: async (hookCwd, deps = {}) => {
+              reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId };
+              return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
+            },
+          },
+        );
+
+        assert.equal(promptResult.omxEventName, "keyword-detector");
+        assert.deepEqual(reconcileCall, { cwd, sessionId: canonicalSessionId });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("passes the canonical OMX session id when UserPromptSubmit revives HUD", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-session-revive-"));
     try {
