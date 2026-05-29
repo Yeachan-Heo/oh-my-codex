@@ -27,6 +27,7 @@ import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { ultragoalCommand } from "./ultragoal.js";
 import { performanceGoalCommand } from "./performance-goal.js";
+import { goalHarnessCommand } from "./goal-harness.js";
 import { askCommand } from "./ask.js";
 import { questionCommand } from "./question.js";
 import { stateCommand } from "./state.js";
@@ -223,6 +224,8 @@ Usage:
   omx ultragoal Create, resume, and checkpoint durable multi-goal plans over Codex goal mode
   omx performance-goal
                 Create, hand off, and gate evaluator-backed performance goals
+  omx goal-harness
+                Refine, hand off, and gate a single-goal OMX-derived autonomy harness
   omx autoresearch-goal
                 Create, hand off, and gate professor-critic research goals
   omx autoresearch [DEPRECATED] Use $autoresearch; direct CLI launch removed
@@ -408,6 +411,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ralph",
   "ultragoal",
   "performance-goal",
+  "goal-harness",
   "resume",
   "session",
   "api",
@@ -1624,6 +1628,7 @@ export async function main(args: string[]): Promise<void> {
     "ralph",
     "ultragoal",
     "performance-goal",
+    "goal-harness",
     "session",
     "resume",
     "version",
@@ -1763,6 +1768,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "performance-goal":
         await performanceGoalCommand(args.slice(1));
+        break;
+      case "goal-harness":
+        await goalHarnessCommand(args.slice(1));
         break;
       case "version":
         version();

@@ -55,6 +55,12 @@
       "core": false
     },
     {
+      "name": "goal-harness",
+      "category": "execution",
+      "status": "active",
+      "core": false
+    },
+    {
       "name": "pipeline",
       "category": "execution",
       "status": "active",

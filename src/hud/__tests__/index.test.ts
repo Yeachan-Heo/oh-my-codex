@@ -24,6 +24,7 @@ function emptyCtx(): HudRenderContext {
     autopilot: null,
     ralplan: null,
     deepInterview: null,
+    goalHarness: null,
     autoresearch: null,
     ultraqa: null,
     team: null,

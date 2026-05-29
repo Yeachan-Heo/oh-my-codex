@@ -81,6 +81,15 @@ npm install -g oh-my-codex
 omx setup
 ```
 
+The same npm package also exposes **OMG / Oh My Goal**, a sibling product surface for the goal-native autonomy harness:
+
+```bash
+npx -p oh-my-codex omg --help
+npx -p oh-my-codex omg refine --objective "Ship this safely"
+```
+
+After a global install, use `omg ...` directly. `omg` maps to the same engine as `omx goal-harness ...`, but starts at the harness product layer: one Codex goal, deep interview, ralplan-style critique, lightweight leader state, optional Team evidence lanes, annealing backpressure, and strict completion gates.
+
 Do not run a combined `npm install -g @openai/codex oh-my-codex` over an existing Homebrew-owned `codex` binary such as `/opt/homebrew/bin/codex`; npm may fail with `EEXIST` when `@openai/codex` tries to create the same binary. OMX only needs a working, authenticated `codex` command on `PATH`; it does not require Codex to be installed through npm.
 
 On a real `oh-my-codex` version bump, the global npm install now prints an explicit reminder instead of launching `omx setup` automatically. When you're ready, run `omx setup` manually or use `omx update` to check npm and then run the same setup refresh path.

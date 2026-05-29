@@ -23,6 +23,7 @@ import type {
   AutopilotStateForHud,
   RalplanStateForHud,
   DeepInterviewStateForHud,
+  GoalHarnessStateForHud,
   AutoresearchStateForHud,
   UltraqaStateForHud,
   TeamStateForHud,
@@ -249,6 +250,11 @@ export async function readDeepInterviewState(cwd: string): Promise<DeepInterview
     ...state,
     input_lock_active: state.input_lock_active ?? state.input_lock?.active === true,
   };
+}
+
+export async function readGoalHarnessState(cwd: string): Promise<GoalHarnessStateForHud | null> {
+  const state = await readSessionAwareModeState<GoalHarnessStateForHud>(cwd, 'goal-harness');
+  return state?.active ? state : null;
 }
 
 export async function readAutoresearchState(cwd: string): Promise<AutoresearchStateForHud | null> {
@@ -524,6 +530,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     autopilotDetail,
     ralplanDetail,
     deepInterviewDetail,
+    goalHarnessDetail,
     autoresearchDetail,
     ultraqaDetail,
     teamDetail,
@@ -534,6 +541,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     readSessionAwareModeState<AutopilotStateForHud>(cwd, 'autopilot'),
     readSessionAwareModeState<RalplanStateForHud>(cwd, 'ralplan'),
     readSessionAwareModeState<DeepInterviewRawState>(cwd, 'deep-interview'),
+    readSessionAwareModeState<GoalHarnessStateForHud>(cwd, 'goal-harness'),
     readSessionAwareModeState<AutoresearchStateForHud>(cwd, 'autoresearch'),
     readSessionAwareModeState<UltraqaStateForHud>(cwd, 'ultraqa'),
     readSessionAwareModeState<TeamStateForHud>(cwd, 'team'),
@@ -565,6 +573,9 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     : null;
   const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail, useCompatibilityFallback)
     ? mergePhase(ultraqaDetail?.active === true ? ultraqaDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'))
+    : null;
+  const goalHarness = shouldSurfaceCanonicalSkill(canonicalSkills, 'goal-harness', goalHarnessDetail, useCompatibilityFallback)
+    ? mergePhase(goalHarnessDetail?.active === true ? goalHarnessDetail : null, canonicalPhaseForSkill(canonicalSkills, 'goal-harness'))
     : null;
   const canonicalTeamPhase = await readCanonicalTeamPhase(cwd, teamDetail?.active === true ? teamDetail : null);
   const team = shouldSurfaceCanonicalSkill(canonicalSkills, 'team', teamDetail, useCompatibilityFallback)
@@ -598,6 +609,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     autopilot,
     ralplan,
     deepInterview,
+    goalHarness,
     autoresearch,
     ultraqa,
     team,

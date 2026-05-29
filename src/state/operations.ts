@@ -32,6 +32,7 @@ import { reconcileWorkflowTransition } from './workflow-transition-reconcile.js'
 export const SUPPORTED_STATE_READ_MODES = [
   'autopilot',
   'autoresearch',
+  'goal-harness',
   'team',
   'ralph',
   'ultrawork',

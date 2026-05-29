@@ -17,3 +17,4 @@ export { mergeConfig } from './config/generator.js';
 export { AGENT_DEFINITIONS, type AgentDefinition } from './agents/definitions.js';
 export { generateAgentToml, installNativeAgentConfigs } from './agents/native-config.js';
 export { hudCommand } from './hud/index.js';
+export { goalHarnessCommand } from './cli/goal-harness.js';

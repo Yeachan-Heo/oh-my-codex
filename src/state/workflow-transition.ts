@@ -113,6 +113,7 @@ export function buildPlanningGateLogEvent(
 export const TRACKED_WORKFLOW_MODES = [
   'autopilot',
   'autoresearch',
+  'goal-harness',
   'team',
   'ultragoal',
   'ralph',
@@ -127,6 +128,7 @@ export type WorkflowTransitionAction = 'activate' | 'start' | 'write';
 export type WorkflowTransitionKind = 'allow' | 'overlap' | 'auto-complete' | 'deny';
 
 const ALLOWED_OVERLAP_PAIRS = new Set([
+  'goal-harness|team',
   'ralph|team',
 ]);
 
@@ -134,6 +136,7 @@ const AUTO_COMPLETE_TRANSITIONS = new Set([
   'deep-interview->ralplan',
   'deep-interview->autopilot',
   'deep-interview->autoresearch',
+  'deep-interview->goal-harness',
   'deep-interview->ralph',
   'deep-interview->team',
   'deep-interview->ultragoal',
@@ -142,6 +145,7 @@ const AUTO_COMPLETE_TRANSITIONS = new Set([
   'ralplan->ralph',
   'ralplan->autopilot',
   'ralplan->autoresearch',
+  'ralplan->goal-harness',
   'autopilot->ralplan',
 ]);
 
@@ -153,6 +157,7 @@ const PLANNING_LIKE_MODES = new Set<TrackedWorkflowMode>([
 const EXECUTION_LIKE_MODES = new Set<TrackedWorkflowMode>([
   'autopilot',
   'autoresearch',
+  'goal-harness',
   'team',
   'ultragoal',
   'ralph',

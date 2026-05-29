@@ -66,6 +66,13 @@
       "internalRequired": false
     },
     {
+      "name": "goal-harness",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "pipeline",
       "category": "execution",
       "status": "active",

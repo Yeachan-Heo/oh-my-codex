@@ -115,7 +115,7 @@ export const DEEP_INTERVIEW_STATE_FILE = 'deep-interview-state.json';
 export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'] as const;
 export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
 
-type StatefulSkillMode = 'deep-interview' | 'autopilot' | 'ralph' | 'ralplan' | 'ultragoal' | 'ultrawork' | 'ultraqa' | 'team' | 'autoresearch';
+type StatefulSkillMode = 'deep-interview' | 'autopilot' | 'goal-harness' | 'ralph' | 'ralplan' | 'ultragoal' | 'ultrawork' | 'ultraqa' | 'team' | 'autoresearch';
 
 interface StatefulSkillSeedConfig {
   mode: StatefulSkillMode;
@@ -132,6 +132,7 @@ const PLANNING_LIKE_WORKFLOW_SKILLS = new Set<TrackedWorkflowMode>([
 const EXECUTION_LIKE_WORKFLOW_SKILLS = new Set<TrackedWorkflowMode>([
   'autopilot',
   'autoresearch',
+  'goal-harness',
   'ralph',
   'team',
   'ultragoal',
@@ -143,6 +144,7 @@ const STATEFUL_SKILL_SEED_CONFIG: Record<StatefulSkillMode, StatefulSkillSeedCon
   'deep-interview': { mode: 'deep-interview', initialPhase: 'intent-first' },
   autopilot: { mode: 'autopilot', initialPhase: 'deep-interview', includeIteration: true },
   autoresearch: { mode: 'autoresearch', initialPhase: 'executing' },
+  'goal-harness': { mode: 'goal-harness', initialPhase: 'intake' },
   ralph: { mode: 'ralph', initialPhase: 'starting', includeIteration: true },
   ralplan: { mode: 'ralplan', initialPhase: 'planning' },
   team: { mode: 'team', initialPhase: 'starting', scope: 'root' },

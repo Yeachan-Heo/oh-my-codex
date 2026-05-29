@@ -14,6 +14,7 @@ export const SKILL_ACTIVE_STATE_FILE = `${SKILL_ACTIVE_STATE_MODE}-state.json`;
 export const CANONICAL_WORKFLOW_SKILLS = [
   'autopilot',
   'autoresearch',
+  'goal-harness',
   'team',
   'ralph',
   'ultrawork',

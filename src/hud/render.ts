@@ -99,6 +99,13 @@ function renderDeepInterview(ctx: HudRenderContext): string | null {
   return yellow(`interview:${phase}${lockSuffix}`);
 }
 
+function renderGoalHarness(ctx: HudRenderContext): string | null {
+  if (!ctx.goalHarness) return null;
+  const phase = sanitizeDynamicText(ctx.goalHarness.current_phase || 'active') || 'active';
+  const slug = ctx.goalHarness.slug ? sanitizeDynamicText(ctx.goalHarness.slug) : '';
+  return yellow(slug ? `harness:${slug}:${phase}` : `harness:${phase}`);
+}
+
 function renderAutoresearch(ctx: HudRenderContext): string | null {
   if (!ctx.autoresearch) return null;
   const phase = sanitizeDynamicText(ctx.autoresearch.current_phase || 'active') || 'active';
@@ -255,6 +262,7 @@ const MINIMAL_ELEMENTS: ElementRenderer[] = [
   renderUltrawork,
   renderRalplan,
   renderDeepInterview,
+  renderGoalHarness,
   renderAutoresearch,
   renderUltraqa,
   renderExecutionSummary,
@@ -268,6 +276,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderAutopilot,
   renderRalplan,
   renderDeepInterview,
+  renderGoalHarness,
   renderAutoresearch,
   renderUltraqa,
   renderExecutionSummary,
@@ -285,6 +294,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderAutopilot,
   renderRalplan,
   renderDeepInterview,
+  renderGoalHarness,
   renderAutoresearch,
   renderUltraqa,
   renderExecutionSummary,

@@ -28,6 +28,7 @@ function emptyCtx(): HudRenderContext {
     autopilot: null,
     ralplan: null,
     deepInterview: null,
+    goalHarness: null,
     autoresearch: null,
     ultraqa: null,
     team: null,
@@ -182,6 +183,22 @@ describe('renderHud – deepInterview', () => {
     const ctx = { ...emptyCtx(), deepInterview: { active: true, current_phase: 'deep-interview', input_lock_active: true } };
     const result = renderHud(ctx, 'focused');
     assert.ok(result.includes('interview:deep-interview:lock'));
+  });
+});
+
+// ── Goal Harness ─────────────────────────────────────────────────────────────
+
+describe('renderHud – goalHarness', () => {
+  it('renders goal-harness with the current phase', () => {
+    const ctx = { ...emptyCtx(), goalHarness: { active: true, current_phase: 'middle' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${YELLOW}harness:middle${RESET}`));
+  });
+
+  it('renders a compact slug when provided', () => {
+    const ctx = { ...emptyCtx(), goalHarness: { active: true, current_phase: 'late', slug: 'safe-feature' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes('harness:safe-feature:late'));
   });
 });
 

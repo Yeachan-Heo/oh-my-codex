@@ -61,6 +61,13 @@ export interface DeepInterviewStateForHud {
   input_lock_active?: boolean;
 }
 
+/** Goal Harness state for HUD display */
+export interface GoalHarnessStateForHud {
+  active: boolean;
+  current_phase?: string;
+  slug?: string;
+}
+
 /** Autoresearch state for HUD display */
 export interface AutoresearchStateForHud {
   active: boolean;
@@ -116,6 +123,7 @@ export interface HudRenderContext {
   autopilot: AutopilotStateForHud | null;
   ralplan: RalplanStateForHud | null;
   deepInterview: DeepInterviewStateForHud | null;
+  goalHarness: GoalHarnessStateForHud | null;
   autoresearch: AutoresearchStateForHud | null;
   ultraqa: UltraqaStateForHud | null;
   team: TeamStateForHud | null;

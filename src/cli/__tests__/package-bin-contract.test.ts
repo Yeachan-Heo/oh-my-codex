@@ -25,7 +25,7 @@ type NpmPackDryRunResult = {
 };
 
 describe('package bin contract', () => {
-  it('declares omx with an explicit relative bin path and avoids packaging platform-specific native binaries', () => {
+  it('declares omx and omg with explicit relative bin paths and avoids packaging platform-specific native binaries', () => {
     const packageJsonPath = join(process.cwd(), 'package.json');
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as PackageJson;
     const binaryName = platform() === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell';
@@ -37,7 +37,7 @@ describe('package bin contract', () => {
       binaryName,
     );
 
-    assert.deepEqual(pkg.bin, { omx: 'dist/cli/omx.js' });
+    assert.deepEqual(pkg.bin, { omx: 'dist/cli/omx.js', omg: 'dist/cli/omg.js' });
     assert.equal(pkg.scripts?.['build:explore'], 'cargo build -p omx-explore-harness');
     assert.equal(pkg.scripts?.['build:explore:release'], 'node dist/scripts/build-explore-harness.js');
     assert.equal(pkg.scripts?.['build:full'], 'npm run build && npm run build:explore:release && npm run build:sparkshell && npm run build:api');
@@ -47,6 +47,7 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['sync:plugin:check'], 'node dist/scripts/sync-plugin-mirror.js --check');
     assert.equal(pkg.scripts?.['verify:plugin-bundle'], 'node dist/scripts/sync-plugin-mirror.js --check');
     assert.equal(pkg.scripts?.['verify:native-agents'], 'node dist/scripts/verify-native-agents.js');
+    assert.equal(pkg.scripts?.build, 'node -e "const fs=require(\'fs\'); fs.rmSync(\'dist\',{recursive:true,force:true});" && tsc && node -e "const fs=require(\'fs\'); for (const bin of [\'dist/cli/omx.js\',\'dist/cli/omg.js\']) fs.chmodSync(bin, 0o755);"');
     assert.equal(pkg.scripts?.prepack, 'npm run build && npm run verify:native-agents && npm run sync:plugin && npm run verify:plugin-bundle && npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.postinstall, 'node src/scripts/postinstall-bootstrap.js');
     assert.equal(pkg.scripts?.postpack, 'npm run clean:native-package-assets');
@@ -98,11 +99,22 @@ describe('package bin contract', () => {
     assert.ok(pkg.files?.includes('.agents/plugins/marketplace.json'));
 
     const binPath = join(process.cwd(), 'dist', 'cli', 'omx.js');
+    const goalBinPath = join(process.cwd(), 'dist', 'cli', 'omg.js');
     const compiledCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
 
     const binSource = readFileSync(binPath, 'utf-8');
+    const goalBinSource = readFileSync(goalBinPath, 'utf-8');
     const compiledCliSource = readFileSync(compiledCliPath, 'utf-8');
     assert.match(binSource, /^#!\/usr\/bin\/env node/);
+    assert.match(goalBinSource, /^#!\/usr\/bin\/env node/);
+    const goalHelp = spawnSync(process.execPath, [goalBinPath, '--help'], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+      timeout: 5_000,
+    });
+    assert.equal(goalHelp.status, 0, goalHelp.stderr || goalHelp.stdout);
+    assert.match(goalHelp.stdout, /Oh My Goal/);
+    assert.match(goalHelp.stdout, /npx -p oh-my-codex omg/);
     const mcpInitialize = JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
@@ -161,7 +173,9 @@ describe('package bin contract', () => {
     assert.equal(Array.isArray(results), true, 'expected npm pack --json array output');
 
     const binEntry = results[0]?.files?.find((file) => file.path === 'dist/cli/omx.js');
+    const goalBinEntry = results[0]?.files?.find((file) => file.path === 'dist/cli/omg.js');
     assert.ok(binEntry, 'expected npm pack output to include dist/cli/omx.js');
+    assert.ok(goalBinEntry, 'expected npm pack output to include dist/cli/omg.js');
 
     const packagedHarnessPath = process.platform === 'win32' ? 'bin/omx-explore-harness.exe' : 'bin/omx-explore-harness';
     const packagedHarnessEntry = results[0]?.files?.find((file) => file.path === packagedHarnessPath);

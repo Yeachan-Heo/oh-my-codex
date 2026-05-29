@@ -25,6 +25,11 @@ export const PACKED_INSTALL_SMOKE_CORE_COMMANDS = [
   ['sparkshell', '--help'],
 ] as const;
 
+export const PACKED_INSTALL_SMOKE_GOAL_COMMANDS = [
+  ['--help'],
+  ['version'],
+] as const;
+
 export const PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS = [
   'SessionStart',
   'PreToolUse',
@@ -39,7 +44,7 @@ function usage(): string {
   return [
     'Usage: node scripts/smoke-packed-install.mjs',
     '',
-    'Creates an npm tarball, installs it into an isolated prefix, and smoke tests the installed omx CLI.',
+    'Creates an npm tarball, installs it into an isolated prefix, and smoke tests the installed omx/omg CLIs.',
     'Release smoke stays intentionally minimal: install + boot + 1-2 core commands only.',
   ].join('\n');
 }
@@ -250,6 +255,10 @@ async function main(): Promise<void> {
     const omxPath = join(prefixDir, process.platform === 'win32' ? '' : 'bin', npmBinName('omx'));
     for (const argv of PACKED_INSTALL_SMOKE_CORE_COMMANDS) {
       run(omxPath, argv, { cwd: repoRoot });
+    }
+    const omgPath = join(prefixDir, process.platform === 'win32' ? '' : 'bin', npmBinName('omg'));
+    for (const argv of PACKED_INSTALL_SMOKE_GOAL_COMMANDS) {
+      run(omgPath, argv, { cwd: repoRoot });
     }
     smokeInstalledNativeHookDist(prefixDir);
 

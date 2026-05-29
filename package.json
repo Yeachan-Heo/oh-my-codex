@@ -5,10 +5,11 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "omx": "dist/cli/omx.js"
+    "omx": "dist/cli/omx.js",
+    "omg": "dist/cli/omg.js"
   },
   "scripts": {
-    "build": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true});\" && tsc && node -e \"require('fs').chmodSync('dist/cli/omx.js', 0o755)\"",
+    "build": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true});\" && tsc && node -e \"const fs=require('fs'); for (const bin of ['dist/cli/omx.js','dist/cli/omg.js']) fs.chmodSync(bin, 0o755);\"",
     "build:explore": "cargo build -p omx-explore-harness",
     "build:full": "npm run build && npm run build:explore:release && npm run build:sparkshell && npm run build:api",
     "build:explore:release": "node dist/scripts/build-explore-harness.js",

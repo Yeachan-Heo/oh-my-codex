@@ -14,6 +14,7 @@ import {
   readRalplanState,
   readUltragoalState,
   readDeepInterviewState,
+  readGoalHarnessState,
   readAutoresearchState,
   readUltraqaState,
 } from '../state.js';
@@ -492,6 +493,13 @@ describe('additional HUD mode state readers', () => {
       await writeModeState(cwd, 'deep-interview', { active: true, current_phase: 'intent-first', input_lock: { active: true } });
       const state = await readDeepInterviewState(cwd);
       assert.deepEqual(state, { active: true, current_phase: 'intent-first', input_lock: { active: true }, input_lock_active: true });
+    });
+  });
+
+  it('reads active goal-harness state', async () => {
+    await withTempRepo('omx-hud-goal-harness-', async (cwd) => {
+      await writeModeState(cwd, 'goal-harness', { active: true, current_phase: 'middle', slug: 'safe-feature' });
+      assert.deepEqual(await readGoalHarnessState(cwd), { active: true, current_phase: 'middle', slug: 'safe-feature' });
     });
   });
 
