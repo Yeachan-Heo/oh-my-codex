@@ -35,7 +35,7 @@ import { resolveOmxCliEntryPath } from '../utils/paths.js';
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
 import { OMX_TMUX_HUD_OWNER_ENV } from '../hud/reconcile.js';
-import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../hud/tmux.js';
+import { findHudWatchPaneIds, OMX_TMUX_HUD_LEADER_PANE_ENV } from '../hud/tmux.js';
 
 const OMX_INSTANCE_OPTION = '@omx_instance_id';
 const OMX_PANE_INSTANCE_OPTION = '@omx_pane_instance_id';
@@ -317,6 +317,10 @@ function findHudPaneIds(target: string, leaderPaneId: string): string[] {
     .filter((pane) => pane.paneId !== leaderPaneId)
     .filter((pane) => isHudWatchPane(pane))
     .map((pane) => pane.paneId);
+}
+
+function findOwnedHudPaneIds(target: string, leaderPaneId: string): string[] {
+  return findHudWatchPaneIds(listPanes(target), leaderPaneId, { leaderPaneId });
 }
 
 const MAX_FRACTIONAL_SLEEP_MS = 60_000;
@@ -1418,6 +1422,24 @@ export function restoreStandaloneHudPane(
 
   const omxEntry = resolveOmxCliEntryPath();
   if (!omxEntry || omxEntry.trim() === '') return null;
+
+  const [existingHudPaneId, ...duplicateHudPaneIds] = findOwnedHudPaneIds(
+    normalizedLeaderPaneId,
+    normalizedLeaderPaneId,
+  );
+  for (const paneId of duplicateHudPaneIds) {
+    runTmux(['kill-pane', '-t', paneId]);
+  }
+  if (existingHudPaneId) {
+    if (isNativeWindows()) {
+      runTmux(buildHudResizeArgs(existingHudPaneId));
+    } else {
+      runTmux(buildScheduleDelayedHudResizeArgs(existingHudPaneId));
+      runTmux(buildReconcileHudResizeArgs(existingHudPaneId));
+    }
+    runTmux(['select-pane', '-t', normalizedLeaderPaneId]);
+    return existingHudPaneId;
+  }
 
   const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { leaderPaneId: normalizedLeaderPaneId })} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
   const hudCwd = translatePathForMsys(cwd);
