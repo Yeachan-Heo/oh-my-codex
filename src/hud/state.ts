@@ -457,6 +457,8 @@ function shouldSurfaceCanonicalSkill(
   detail: { active?: boolean; current_phase?: string } | null,
   useCompatibilityFallback: boolean,
 ): boolean {
+  const canonicalPhase = canonicalPhaseForSkill(canonicalSkills, skill);
+  if (canonicalSkills.has(skill) && !detail && canonicalPhase) return true;
   if (!canonicalSkills.has(skill) && !useCompatibilityFallback) return false;
   return !isMissingTerminalOrInactiveDetail(detail);
 }
