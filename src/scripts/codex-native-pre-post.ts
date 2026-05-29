@@ -1223,6 +1223,10 @@ function hasActionableBashHardFailure(normalized: NormalizedPostToolUsePayload):
   return containsHardFailure(`${normalized.stderrText}\n${normalized.stdoutText}`);
 }
 
+function isReviewableNonZeroBashCommand(command: string): boolean {
+  return /(?:^|[;&|]\s*)gh\s+pr\s+checks(?:\s|$)/.test(command);
+}
+
 export function buildNativePostToolUseOutput(
   payload: CodexHookPayload,
 ): Record<string, unknown> | null {
@@ -1264,6 +1268,7 @@ export function buildNativePostToolUseOutput(
     && normalized.exitCode !== 0
     && combined.length > 0
     && !containsHardFailure(combined)
+    && isReviewableNonZeroBashCommand(normalized.normalizedCommand)
   ) {
     return {
       decision: "block",

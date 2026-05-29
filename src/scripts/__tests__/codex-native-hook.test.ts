@@ -431,6 +431,32 @@ describe("codex native hook dispatch", () => {
     );
   });
 
+  it("logs a bounded raw stdin prefix when CLI stdin is malformed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-malformed-log-prefix-"));
+    try {
+      const malformed = '{hook_event_name:"PostToolUse", tool_name:"Bash",';
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: malformed,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+
+      const log = await readFile(join(cwd, ".omx", "logs", `native-hook-${new Date().toISOString().split("T")[0]}.jsonl`), "utf-8");
+      const entry = JSON.parse(log.trim()) as Record<string, unknown>;
+      assert.equal(entry.type, "native_hook_stdin_parse_error");
+      assert.equal(entry.raw_input_length, Buffer.byteLength(malformed, "utf-8"));
+      assert.equal(entry.raw_input_prefix, malformed);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("emits Stop-schema-safe block JSON when malformed stdin still identifies Stop", () => {
     const stdout = runNativeHookCli('{hook_event_name:"Stop",');
 
@@ -7752,6 +7778,50 @@ exit 0
       assert.equal(attention?.leader_session_id, canonicalSessionId);
     } finally {
       process.chdir(previousCwd);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block ordinary non-zero grep output in PostToolUse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-grep-nonzero-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-grep-nonzero",
+          tool_input: { command: "grep -R missing-pattern src | head -20" },
+          tool_response: "{\"exit_code\":1,\"stdout\":\"src/example.ts:TODO\",\"stderr\":\"\"}",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block ordinary non-zero diagnostic output in PostToolUse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-diagnostic-nonzero-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-diagnostic-nonzero",
+          tool_input: { command: "find src -name nope -print" },
+          tool_response: "{\"exit_code\":1,\"stdout\":\"searched 10 files\",\"stderr\":\"\"}",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
