@@ -3832,6 +3832,58 @@ esac
     }
   });
 
+  it('reuses an existing standalone HUD pane across repeated restore calls', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-reuse-hud-'));
+
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-reuse-standalone-hud-',
+        (logPath) => {
+          const statePath = `${logPath}.state`;
+          return `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  list-panes)
+    printf '%%11\\tzsh\\tzsh\\n'
+    if [ -f "${statePath}" ]; then
+      printf "%%44\\tnode\\texec env OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%%11' /node /omx.js hud --watch\\n"
+    fi
+    exit 0
+    ;;
+  split-window)
+    : > "${statePath}"
+    echo "%44"
+    exit 0
+    ;;
+  run-shell|select-pane|resize-pane|set-hook|kill-pane)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`;
+        },
+        async ({ logPath }) => {
+          const firstPaneId = restoreStandaloneHudPane('%11', cwd);
+          const secondPaneId = restoreStandaloneHudPane('%11', cwd);
+
+          assert.equal(firstPaneId, '%44');
+          assert.equal(secondPaneId, '%44');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          const splitCount = (tmuxLog.match(/(^|\n)split-window /g) ?? []).length;
+          assert.equal(splitCount, 1);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %44/);
+          assert.match(tmuxLog, /list-panes -t %11 -F #\{pane_id\}\t#\{pane_current_command\}\t#\{pane_start_command\}/);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('restores standalone HUD panes with an absolute OMX entry path after cwd drift', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-relative-hud-'));
     const startupCwd = await mkdtemp(join(tmpdir(), 'omx-standalone-relative-start-'));
