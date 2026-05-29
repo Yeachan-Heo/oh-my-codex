@@ -188,6 +188,28 @@ async function completeSourceModeState(
   return completedPaths;
 }
 
+export async function completeWorkflowModeState(
+  cwd: string,
+  sourceMode: TrackedWorkflowMode,
+  destinationMode: TrackedWorkflowMode,
+  options: {
+    sessionId?: string;
+    nowIso?: string;
+    source?: string;
+    baseStateDir?: string;
+  } = {},
+): Promise<string[]> {
+  return completeSourceModeState(
+    cwd,
+    options.baseStateDir,
+    sourceMode,
+    destinationMode,
+    options.sessionId,
+    options.nowIso ?? new Date().toISOString(),
+    options.source ?? 'workflow-transition',
+  );
+}
+
 export async function reconcileWorkflowTransition(
   cwd: string,
   requestedMode: TrackedWorkflowMode,
