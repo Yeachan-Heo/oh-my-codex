@@ -111,3 +111,177 @@ export function extractRawCodexHookEventName(rawInput: string): RawCodexHookEven
     ? raw as RawCodexHookEventName
     : null;
 }
+
+export const MAX_NOTIFY_COMPACT_SCAN_BYTES = 2 * 1024 * 1024;
+export const MAX_NOTIFY_RETAINED_TEXT_BYTES = 16 * 1024;
+
+export interface OversizedNotifyLogSummary {
+  cwd: string;
+  type: string;
+  threadId: string;
+  turnId: string;
+  latestInputText: string;
+  inputMessageCount: number | null;
+  inputMessageCountPartial: boolean;
+  inputMessagesTruncated: boolean;
+  outputPreview: string;
+  rawPayloadBytes: number;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (utf8ByteLength(value) <= maxBytes) return value;
+  return Buffer.from(value, "utf-8").subarray(0, maxBytes).toString("utf-8").replace(/\uFFFD$/u, "");
+}
+
+function skipJsonValue(raw: string, index: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let cursor = index; cursor < raw.length; cursor += 1) {
+    const char = raw[cursor];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{" || char === "[") depth += 1;
+    else if (char === "}" || char === "]") {
+      if (depth === 0) return cursor;
+      depth -= 1;
+    } else if (char === "," && depth === 0) {
+      return cursor + 1;
+    }
+  }
+  return raw.length;
+}
+
+function readInputMessagesSummary(raw: string, arrayStart: number): {
+  endIndex: number;
+  latest: string;
+  count: number;
+  partial: boolean;
+  truncated: boolean;
+} {
+  let index = skipJsonWhitespace(raw, arrayStart);
+  if (raw[index] !== "[") return { endIndex: index, latest: "", count: 0, partial: false, truncated: true };
+  index += 1;
+  let count = 0;
+  let latest = "";
+  let partial = true;
+  let truncated = false;
+  while (index < raw.length) {
+    index = skipJsonWhitespace(raw, index);
+    const char = raw[index];
+    if (char === "]") {
+      partial = false;
+      index += 1;
+      break;
+    }
+    if (char === '"') {
+      const item = readJsonStringLiteral(raw, index);
+      if (!item) {
+        truncated = true;
+        break;
+      }
+      count += 1;
+      const retained = truncateUtf8(item.value, MAX_NOTIFY_RETAINED_TEXT_BYTES);
+      latest = retained;
+      truncated = truncated || retained !== item.value;
+      index = skipJsonWhitespace(raw, item.endIndex);
+      if (raw[index] === ",") index += 1;
+      continue;
+    }
+    truncated = true;
+    index = skipJsonValue(raw, index);
+  }
+  return { endIndex: index, latest, count, partial, truncated: truncated || partial };
+}
+
+export function extractOversizedNotifyLogSummary(rawPayload: string): OversizedNotifyLogSummary {
+  const rawPayloadBytes = utf8ByteLength(rawPayload);
+  const scanBuffer = Buffer.from(rawPayload, "utf-8").subarray(0, MAX_NOTIFY_COMPACT_SCAN_BYTES);
+  const raw = scanBuffer.toString("utf-8");
+  const summary: OversizedNotifyLogSummary = {
+    cwd: "",
+    type: "",
+    threadId: "",
+    turnId: "",
+    latestInputText: "",
+    inputMessageCount: null,
+    inputMessageCountPartial: rawPayloadBytes > scanBuffer.byteLength,
+    inputMessagesTruncated: rawPayloadBytes > MAX_NOTIFY_ARGV_JSON_BYTES,
+    outputPreview: "",
+    rawPayloadBytes,
+  };
+
+  let depth = 0;
+  let index = 0;
+  while (index < raw.length) {
+    const char = raw[index];
+    if (char === '"') {
+      const key = readJsonStringLiteral(raw, index);
+      if (!key) break;
+      index = key.endIndex;
+      const afterKey = skipJsonWhitespace(raw, index);
+      if (depth !== 1 || raw[afterKey] !== ":") continue;
+      const valueStart = skipJsonWhitespace(raw, afterKey + 1);
+      switch (key.value) {
+        case "cwd":
+        case "type": {
+          const value = readJsonStringLiteral(raw, valueStart);
+          if (value) {
+            summary[key.value] = truncateUtf8(value.value, MAX_NOTIFY_RETAINED_TEXT_BYTES);
+            index = value.endIndex;
+          }
+          break;
+        }
+        case "thread-id":
+        case "thread_id": {
+          const value = readJsonStringLiteral(raw, valueStart);
+          if (value) {
+            summary.threadId = truncateUtf8(value.value, MAX_NOTIFY_RETAINED_TEXT_BYTES);
+            index = value.endIndex;
+          }
+          break;
+        }
+        case "turn-id":
+        case "turn_id": {
+          const value = readJsonStringLiteral(raw, valueStart);
+          if (value) {
+            summary.turnId = truncateUtf8(value.value, MAX_NOTIFY_RETAINED_TEXT_BYTES);
+            index = value.endIndex;
+          }
+          break;
+        }
+        case "last-assistant-message":
+        case "last_assistant_message": {
+          const value = readJsonStringLiteral(raw, valueStart);
+          if (value) {
+            summary.outputPreview = truncateUtf8(value.value, MAX_NOTIFY_RETAINED_TEXT_BYTES);
+            index = value.endIndex;
+          }
+          break;
+        }
+        case "input-messages":
+        case "input_messages": {
+          const input = readInputMessagesSummary(raw, valueStart);
+          summary.latestInputText = input.latest;
+          summary.inputMessageCount = input.count;
+          summary.inputMessageCountPartial = input.partial || rawPayloadBytes > scanBuffer.byteLength;
+          summary.inputMessagesTruncated = input.truncated || rawPayloadBytes > MAX_NOTIFY_ARGV_JSON_BYTES;
+          index = input.endIndex;
+          break;
+        }
+        default:
+          index = skipJsonValue(raw, valueStart);
+      }
+      continue;
+    }
+    if (char === "{") depth += 1;
+    else if (char === "}") depth = Math.max(0, depth - 1);
+    index += 1;
+  }
+  return summary;
+}
