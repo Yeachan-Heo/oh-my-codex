@@ -70,6 +70,7 @@ import { DEFAULT_MARKER } from './tmux-hook-engine.js';
 import { sameFilePath } from '../utils/paths.js';
 import {
   MAX_NOTIFY_ARGV_JSON_BYTES,
+  extractCompactNotifyPayloadView,
   extractRawJsonStringField,
   utf8ByteLength,
 } from './hook-payload-guard.js';
@@ -291,6 +292,27 @@ async function main() {
     process.exit(0);
   }
   if (utf8ByteLength(rawPayload) > MAX_NOTIFY_ARGV_JSON_BYTES) {
+    const compact = extractCompactNotifyPayloadView(rawPayload);
+    const compactCwd = compact.cwd || process.cwd();
+    if (!compact.cwd || !(await isOmxManagedCwd(compactCwd))) {
+      process.exit(0);
+    }
+    const logsDir = join(compactCwd, '.omx', 'logs');
+    await mkdir(logsDir, { recursive: true }).catch(() => {});
+    const logFile = join(logsDir, `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+    await appendFile(logFile, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: compact.type || 'agent-turn-complete',
+      thread_id: compact.threadId || undefined,
+      turn_id: compact.turnId || undefined,
+      input_preview: compact.latestInputText.slice(0, 200),
+      input_message_count: compact.inputMessageCount,
+      input_message_count_partial: compact.inputMessageCountPartial,
+      input_messages_truncated: compact.inputMessagesTruncated,
+      output_preview: compact.outputPreview.slice(0, 200),
+      payload_compacted: true,
+      raw_payload_bytes: compact.rawPayloadBytes,
+    }) + '\n').catch(() => {});
     process.exit(0);
   }
 
