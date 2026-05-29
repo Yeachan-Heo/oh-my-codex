@@ -647,6 +647,84 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+
+  it('resets Autopilot mode state when reactivated after a terminal phase', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-terminal-reset-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-autopilot-terminal-reset';
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        keyword: '$autopilot',
+        phase: 'complete',
+        activated_at: '2026-05-29T00:00:00.000Z',
+        updated_at: '2026-05-29T00:00:00.000Z',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', active: true, phase: 'complete', session_id: sessionId }],
+      }, null, 2));
+      await writeFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'complete',
+        completed_at: '2026-05-29T00:00:00.000Z',
+        handoff_artifacts: {
+          code_review: { verdict: 'APPROVE / CLEAR' },
+          ultraqa: { verdict: 'pass' },
+        },
+        state: {
+          handoff_artifacts: {
+            ralplan_consensus_gate: { complete: false },
+            code_review: { verdict: 'stale' },
+          },
+        },
+      }, null, 2));
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$autopilot investigate the next issue',
+        sessionId,
+        threadId: 'thread-reactivated',
+        turnId: 'turn-reactivated',
+        nowIso: '2026-05-30T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'autopilot');
+      const modeState = JSON.parse(await readFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), 'utf-8')) as {
+        active?: boolean;
+        current_phase?: string;
+        completed_at?: string;
+        handoff_artifacts?: Record<string, unknown>;
+        state?: { handoff_artifacts?: Record<string, unknown> };
+      };
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, 'deep-interview');
+      assert.equal(modeState.completed_at, undefined);
+      assert.equal(modeState.handoff_artifacts, undefined);
+      assert.deepEqual(modeState.state?.handoff_artifacts, {
+        deep_interview: null,
+        ralplan: null,
+        ralplan_consensus_gate: {
+          required: true,
+          sequence: ['architect-review', 'critic-review'],
+          planning_artifacts_are_not_consensus: true,
+          required_review_roles: ['architect', 'critic'],
+          ralplan_architect_review: null,
+          ralplan_critic_review: null,
+          complete: false,
+        },
+        ultragoal: null,
+        code_review: null,
+        ultraqa: null,
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('adds approved workflow overlaps without deleting the existing canonical state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-overlap-'));
     const stateDir = join(cwd, '.omx', 'state');

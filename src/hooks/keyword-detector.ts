@@ -364,8 +364,11 @@ async function persistStatefulSkillSeedState(
   const sameActiveSkill = previousSkill?.skill === nextSkill.skill && previousSkill.active;
   const existingModeMatches = safeString(existingModeState?.mode).trim() === config.mode;
   const existingPhase = safeString(existingModeState?.current_phase).trim();
+  const existingPhaseNormalized = existingPhase.toLowerCase().replace(/_/g, '-');
+  const existingModeTerminal = ['complete', 'completed', 'failed', 'cancelled', 'canceled'].includes(existingPhaseNormalized);
   const preserveExistingModeState = existingModeMatches
     && existingPhase !== ''
+    && !existingModeTerminal
     && (
       sameActiveSkill
       || (config.mode === 'team' && existingModeState?.active === true)
@@ -408,13 +411,14 @@ async function persistStatefulSkillSeedState(
   }
 
   if (config.mode === 'autopilot') {
-    const existingState = (existingModeState?.state && typeof existingModeState.state === 'object')
-      ? existingModeState.state as Record<string, unknown>
+    const reusableModeState = preserveExistingModeState ? existingModeState : null;
+    const existingState = (reusableModeState?.state && typeof reusableModeState.state === 'object')
+      ? reusableModeState.state as Record<string, unknown>
       : {};
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
-    baseState.review_cycle = typeof existingModeState?.review_cycle === 'number' ? existingModeState.review_cycle : 0;
+    baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
     baseState.state = {
       ...existingState,
       phase_cycle: Array.isArray(existingState.phase_cycle) ? existingState.phase_cycle : ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
