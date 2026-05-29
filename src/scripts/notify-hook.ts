@@ -68,6 +68,11 @@ import {
 } from './notify-hook/team-worker.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
 import { sameFilePath } from '../utils/paths.js';
+import {
+  MAX_NOTIFY_ARGV_JSON_BYTES,
+  extractRawJsonStringField,
+  utf8ByteLength,
+} from './hook-payload-guard.js';
 
 const RALPH_ACTIVE_PROGRESS_PHASES = new Set([
   'start',
@@ -283,6 +288,9 @@ function isNotifyFallbackTaskCompletePayload(payload: Record<string, unknown>): 
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
+    process.exit(0);
+  }
+  if (utf8ByteLength(rawPayload) > MAX_NOTIFY_ARGV_JSON_BYTES) {
     process.exit(0);
   }
 
@@ -909,8 +917,12 @@ async function logFatalNotifyHookError(err: unknown): Promise<void> {
   try {
     const rawPayload = process.argv[process.argv.length - 1];
     if (rawPayload && !rawPayload.startsWith('-')) {
-      const payload = JSON.parse(rawPayload) as Record<string, unknown>;
-      cwd = safeString(payload.cwd || payload['cwd'] || cwd) || cwd;
+      if (utf8ByteLength(rawPayload) <= MAX_NOTIFY_ARGV_JSON_BYTES) {
+        const payload = JSON.parse(rawPayload) as Record<string, unknown>;
+        cwd = safeString(payload.cwd || payload['cwd'] || cwd) || cwd;
+      } else {
+        cwd = extractRawJsonStringField(rawPayload, ['cwd']) || cwd;
+      }
     }
   } catch {
     // Keep notification hook failures silent in Codex TUI surfaces.

@@ -34,6 +34,7 @@ import { WIKI_SCHEMA_VERSION } from "../../wiki/types.js";
 import { createUltragoalPlan, readUltragoalPlan } from "../../ultragoal/artifacts.js";
 import { getBaseStateDir } from "../../state/paths.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker-stop.js";
+import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
 
 function nativeHookScriptPath(): string {
   return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
@@ -467,6 +468,48 @@ describe("codex native hook dispatch", () => {
       const output = parseSingleJsonStdout(stdout);
 
       assert.deepEqual(output, {});
+      assert.equal(existsSync(join(cwd, ".omx", "state")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty JSON for oversized Stop stdin without parsing or creating inactive state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-"));
+    try {
+      const oversizedStop = JSON.stringify({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-cli-stop-oversized",
+        transcript: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1),
+      });
+
+      const stdout = runNativeHookCli(oversizedStop, { cwd });
+      assert.deepEqual(parseSingleJsonStdout(stdout), {});
+      assert.equal(existsSync(join(cwd, ".omx", "state")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for oversized non-Stop stdin before parsing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-nonstop-oversized-"));
+    try {
+      const oversizedPrompt = JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        cwd,
+        session_id: "sess-cli-prompt-oversized",
+        prompt: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1),
+      });
+
+      const output = parseSingleJsonStdout(runNativeHookCli(oversizedPrompt, { cwd })) as {
+        continue?: boolean;
+        stopReason?: string;
+        systemMessage?: string;
+      };
+      assert.equal(output.continue, false);
+      assert.equal(output.stopReason, "native_hook_stdin_oversized");
+      assert.match(String(output.systemMessage ?? ""), /rejected oversized stdin JSON before parsing/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

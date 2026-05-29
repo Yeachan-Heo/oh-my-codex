@@ -109,6 +109,10 @@ import {
   isFinalHandoffDocumentRefreshCandidate,
 } from "../document-refresh/enforcer.js";
 import { buildExecFollowupStopOutput } from "../exec/followup.js";
+import {
+  MAX_NATIVE_STDIN_JSON_BYTES,
+  extractRawCodexHookEventName,
+} from "./hook-payload-guard.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -3941,6 +3945,14 @@ export async function dispatchCodexNativeHook(
 ): Promise<NativeHookDispatchResult> {
   const hookEventName = readHookEventName(payload);
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
+  if (hookEventName === "Stop" && !hasNativeStopRuntimeSurface(cwd)) {
+    return {
+      hookEventName,
+      omxEventName: mapCodexHookEventToOmxEvent(hookEventName),
+      skillState: null,
+      outputJson: null,
+    };
+  }
   // Native hooks must use the same authoritative runtime state root as HUD/MCP
   // when boxed/team roots are active; do not bypass it with cwd/.omx/state.
   const stateDir = getBaseStateDir(cwd);
@@ -4237,10 +4249,31 @@ export async function dispatchCodexNativeHook(
   };
 }
 
+function hasNativeStopRuntimeSurface(cwd: string): boolean {
+  if (existsSync(join(cwd, ".omx"))) return true;
+  if (findGitLayout(cwd)) return true;
+  const omxRoot = safeString(process.env.OMX_ROOT).trim();
+  if (omxRoot && existsSync(join(omxRoot, ".omx"))) return true;
+  const stateRoot = safeString(process.env.OMX_STATE_ROOT).trim();
+  if (stateRoot && existsSync(stateRoot)) return true;
+  return [
+    process.env.OMX_SESSION_ID,
+    process.env.OMX_TEAM_INTERNAL_WORKER,
+    process.env.OMX_TEAM_WORKER,
+    process.env.OMX_TEAM_STATE_ROOT,
+    process.env.OMX_TEAM_LEADER_CWD,
+    process.env.OMX_NOTIFY_HOOK_TRUSTED_MANAGED_CWD,
+    process.env.OMX_TMUX_HUD_OWNER,
+    process.env.OMX_TMUX_HUD_LEADER_PANE,
+  ].some((value) => safeString(value).trim() !== "");
+}
+
 interface NativeHookCliReadResult {
   payload: CodexHookPayload;
   parseError: Error | null;
   rawInput: string;
+  oversized: boolean;
+  rawHookEventName: CodexHookEventName | null;
 }
 
 export function isCodexNativeHookMainModule(
@@ -4253,12 +4286,33 @@ export function isCodexNativeHookMainModule(
 
 async function readStdinJson(): Promise<NativeHookCliReadResult> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  let oversized = false;
   for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    totalBytes += buffer.byteLength;
+    if (totalBytes > MAX_NATIVE_STDIN_JSON_BYTES) {
+      const remaining = Math.max(0, MAX_NATIVE_STDIN_JSON_BYTES - (totalBytes - buffer.byteLength));
+      if (remaining > 0) chunks.push(Buffer.from(buffer.subarray(0, remaining)));
+      oversized = true;
+      process.stdin.destroy();
+      break;
+    }
+    chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  const rawHookEventName = extractRawCodexHookEventName(raw);
+  if (oversized) {
+    return {
+      payload: {},
+      parseError: null,
+      rawInput: raw,
+      oversized: true,
+      rawHookEventName,
+    };
+  }
   if (!raw) {
-    return { payload: {}, parseError: null, rawInput: raw };
+    return { payload: {}, parseError: null, rawInput: raw, oversized: false, rawHookEventName };
   }
 
   try {
@@ -4266,12 +4320,16 @@ async function readStdinJson(): Promise<NativeHookCliReadResult> {
       payload: safeObject(JSON.parse(raw)),
       parseError: null,
       rawInput: raw,
+      oversized: false,
+      rawHookEventName,
     };
   } catch (error) {
     return {
       payload: {},
       parseError: error instanceof Error ? error : new Error(String(error)),
       rawInput: raw,
+      oversized: false,
+      rawHookEventName,
     };
   }
 }
@@ -4299,6 +4357,17 @@ function buildMalformedStdinHookOutput(parseError: Error, rawInput: string): Rec
   return {
     continue: false,
     stopReason: "native_hook_stdin_parse_error",
+    systemMessage,
+  };
+}
+
+function buildOversizedStdinHookOutput(rawHookEventName: CodexHookEventName | null): Record<string, unknown> {
+  if (rawHookEventName === "Stop") return {};
+  const systemMessage =
+    `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
+  return {
+    continue: false,
+    stopReason: "native_hook_stdin_oversized",
     systemMessage,
   };
 }
@@ -4354,7 +4423,11 @@ function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown>
 }
 
 export async function runCodexNativeHookCli(): Promise<void> {
-  const { payload, parseError, rawInput } = await readStdinJson();
+  const { payload, parseError, rawInput, oversized, rawHookEventName } = await readStdinJson();
+  if (oversized) {
+    writeNativeHookJsonStdout(buildOversizedStdinHookOutput(rawHookEventName));
+    return;
+  }
   if (parseError) {
     await logNativeHookCliError(process.cwd(), "native_hook_stdin_parse_error", parseError);
     writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput));
