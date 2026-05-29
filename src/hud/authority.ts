@@ -37,12 +37,23 @@ async function defaultRunProcess(
     cwd: options.cwd,
     env: options.env,
     encoding: 'utf-8',
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
     timeout: options.timeoutMs,
     windowsHide: true,
   });
   if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || '').trim() || `hud authority tick failed with status ${result.status ?? 'unknown'}`);
+    const output = [result.error?.message, result.stderr, result.stdout]
+      .map((value) => value?.trim() ?? '')
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    const suffix = result.signal
+      ? `signal ${result.signal}`
+      : `status ${result.status ?? 'unknown'}`;
+    throw new Error(output ? `hud authority tick failed with ${suffix}: ${output}` : `hud authority tick failed with ${suffix}`);
+  }
+  if (result.error) {
+    throw new Error(`hud authority tick failed: ${result.error.message}`);
   }
 }
 

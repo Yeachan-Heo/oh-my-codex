@@ -3570,6 +3570,79 @@ exit 0
     }
   });
 
+  it('prints notify script missing errors to stderr for authority-only ticks', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-authority-missing-script-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-authority-missing-home-'));
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const missingNotifyHook = join(wd, 'dist', 'scripts', 'missing-notify-hook.js');
+    try {
+      const run = spawnSync(
+        process.execPath,
+        [
+          watcherScript,
+          '--once',
+          '--authority-only',
+          '--cwd',
+          wd,
+          '--notify-script',
+          missingNotifyHook,
+          '--poll-ms',
+          '50',
+        ],
+        {
+          cwd: wd,
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({ HOME: tempHome }),
+        },
+      );
+
+      assert.equal(run.status, 1);
+      assert.match(run.stderr, /notify-fallback-watcher: notify script missing:/);
+      assert.match(run.stderr, /missing-notify-hook\.js/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('prints fatal watcher errors to stderr for authority-only ticks', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-authority-fatal-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-authority-fatal-home-'));
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    try {
+      const run = spawnSync(
+        process.execPath,
+        [
+          watcherScript,
+          '--once',
+          '--authority-only',
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+        ],
+        {
+          cwd: wd,
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({
+            HOME: tempHome,
+            NODE_ENV: 'test',
+            OMX_NOTIFY_FALLBACK_TEST_FATAL: '1',
+          }),
+        },
+      );
+
+      assert.equal(run.status, 1);
+      assert.match(run.stderr, /notify-fallback-watcher: fatal: test fatal notify fallback failure/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
 
   it('ignores stale session-scoped Ralph state when the current session identity is stale', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-session-ralph-'));

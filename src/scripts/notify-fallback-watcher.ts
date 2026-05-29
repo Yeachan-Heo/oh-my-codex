@@ -1963,10 +1963,15 @@ function shutdown(signal: string): void {
 }
 
 async function main(): Promise<void> {
+  if (process.env.NODE_ENV === 'test' && process.env.OMX_NOTIFY_FALLBACK_TEST_FATAL === '1') {
+    throw new Error('test fatal notify fallback failure');
+  }
   await mkdir(logsDir, { recursive: true }).catch(() => {});
   await mkdir(stateDir, { recursive: true }).catch(() => {});
   if (!existsSync(notifyScript)) {
+    const reason = `notify script missing: ${notifyScript}`;
     await eventLog({ type: 'watcher_error', reason: 'notify_script_missing', notify_script: notifyScript });
+    process.stderr.write(`notify-fallback-watcher: ${reason}\n`);
     process.exit(1);
   }
 
@@ -2006,10 +2011,12 @@ async function main(): Promise<void> {
 
 main().catch(async (err) => {
   await mkdir(dirname(logPath), { recursive: true }).catch(() => {});
+  const message = err instanceof Error ? err.message : safeString(err);
   await eventLog({
     type: 'watcher_error',
     reason: 'fatal',
-    error: err instanceof Error ? err.message : safeString(err),
+    error: message,
   });
+  process.stderr.write(`notify-fallback-watcher: fatal: ${message || 'unknown error'}\n`);
   process.exit(1);
 });
