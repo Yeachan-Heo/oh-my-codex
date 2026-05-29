@@ -9,6 +9,7 @@ export interface RalplanConsensusGateEvidence {
   ralplan_critic_review: Record<string, unknown> | null;
   source: string | null;
   blockedReason: string | null;
+  blockedDetails?: string[];
 }
 
 export interface RalplanNativeSubagentConsensusOptions {
@@ -61,6 +62,10 @@ export function buildRalplanConsensusGateFromSources(
       ralplan_critic_review: nativeBlockedEvidence.ralplan_critic_review,
       source: nativeBlockedEvidence.source,
       blockedReason: 'native_subagent_consensus_evidence_missing',
+      blockedDetails: [
+        trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_architect_review, 'architect', options),
+        trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_critic_review, 'critic', options),
+      ].filter((detail): detail is string => Boolean(detail)),
     };
   }
 
@@ -273,9 +278,17 @@ function isTrackerBackedNativeReview(
   agentRole: 'architect' | 'critic',
   options: RalplanNativeSubagentConsensusOptions,
 ): boolean {
-  if (!review) return false;
-  if (review.agent_role !== agentRole) return false;
-  if (review.provenance_kind !== 'native_subagent') return false;
+  return trackerBackedNativeReviewProblem(review, agentRole, options) === null;
+}
+
+function trackerBackedNativeReviewProblem(
+  review: Record<string, unknown> | null,
+  agentRole: 'architect' | 'critic',
+  options: RalplanNativeSubagentConsensusOptions,
+): string | null {
+  if (!review) return `${agentRole} review is missing`;
+  if (review.agent_role !== agentRole) return `${agentRole} review has agent_role=${String(review.agent_role || 'missing')}`;
+  if (review.provenance_kind !== 'native_subagent') return `${agentRole} review has provenance_kind=${String(review.provenance_kind || 'missing')}`;
   const sessionId = typeof options.sessionId === 'string' && options.sessionId.trim()
     ? options.sessionId.trim()
     : typeof review.session_id === 'string'
@@ -285,14 +298,22 @@ function isTrackerBackedNativeReview(
   const threadId = typeof review.thread_id === 'string' ? review.thread_id.trim() : '';
   const artifactPath = typeof review.artifact_path === 'string' ? review.artifact_path.trim() : '';
   const trackerPath = typeof review.tracker_path === 'string' ? review.tracker_path.trim() : '';
-  if (!sessionId || !reviewSessionId || reviewSessionId !== sessionId) return false;
-  if (!threadId || !artifactPath || !trackerPath || !trackerPath.endsWith('subagent-tracking.json')) return false;
-  if (!options.cwd) return false;
+  if (!sessionId) return `${agentRole} review cannot resolve session_id`;
+  if (!reviewSessionId || reviewSessionId !== sessionId) return `${agentRole} review session_id=${reviewSessionId || 'missing'} does not match ${sessionId}`;
+  if (!threadId) return `${agentRole} review missing thread_id`;
+  if (!artifactPath) return `${agentRole} review missing artifact_path`;
+  if (!trackerPath || !trackerPath.endsWith('subagent-tracking.json')) return `${agentRole} review missing subagent-tracking.json tracker_path`;
+  if (!options.cwd) return `${agentRole} review cannot resolve cwd for tracker lookup`;
 
   const tracking = readJsonState(subagentTrackingPath(options.cwd));
   const session = asRecord(asRecord(tracking?.sessions)?.[sessionId]);
   const thread = asRecord(asRecord(session?.threads)?.[threadId]);
-  return thread?.kind === 'subagent';
+  if (!session) return `${agentRole} tracker session ${sessionId} is missing`;
+  if (!thread) return `${agentRole} tracker thread ${threadId} is missing`;
+  const leaderThreadId = typeof session.leader_thread_id === 'string' ? session.leader_thread_id.trim() : '';
+  if (leaderThreadId && leaderThreadId === threadId) return `${agentRole} tracker thread ${threadId} is the session leader`;
+  if (thread.kind !== 'subagent') return `${agentRole} tracker thread ${threadId} has kind=${String(thread.kind || 'missing')}`;
+  return null;
 }
 
 function validateLocalSessionId(sessionId: string): string[] {

@@ -14,6 +14,7 @@ import {
   type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import {
+  isTrustedSubagentThread,
   readSubagentSessionSummary,
   readSubagentTrackingState,
   recordSubagentTurnForSession,
@@ -259,18 +260,25 @@ async function recordNativeSubagentSessionStart(
   metadata: NativeSubagentSessionStartMetadata,
   transcriptPath: string,
 ): Promise<void> {
+  const parentThreadId = metadata.parentThreadId.trim();
+  const childThreadId = childSessionId.trim();
   const trackingSessionIds = [...new Set([
     canonicalSessionId.trim(),
-    metadata.parentThreadId.trim(),
+    parentThreadId,
   ].filter(Boolean))];
   for (const sessionId of trackingSessionIds) {
+    if (parentThreadId && parentThreadId !== childThreadId) {
+      await recordSubagentTurnForSession(cwd, {
+        sessionId,
+        threadId: parentThreadId,
+        kind: 'leader',
+      }).catch(() => {});
+    }
     await recordSubagentTurnForSession(cwd, {
       sessionId,
-      threadId: metadata.parentThreadId,
-    }).catch(() => {});
-    await recordSubagentTurnForSession(cwd, {
-      sessionId,
-      threadId: childSessionId,
+      threadId: childThreadId,
+      kind: 'subagent',
+      ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
       mode: metadata.agentRole,
     }).catch(() => {});
   }
@@ -312,17 +320,54 @@ async function isNativeSubagentHook(
   canonicalSessionId: string,
   nativeSessionId: string,
   threadId: string,
+  canonicalLeaderNativeSessionId = "",
 ): Promise<boolean> {
-  const candidateIds = [nativeSessionId, threadId]
+  const nativeId = nativeSessionId.trim();
+  const promptThreadId = threadId.trim();
+  const candidateIds = [nativeId, promptThreadId]
     .map((value) => value.trim())
     .filter(Boolean);
   if (candidateIds.length === 0) return false;
 
   const sessionId = canonicalSessionId.trim();
-  if (sessionId) {
-    const summary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
-    if (summary && candidateIds.some((id) => summary.allSubagentThreadIds.includes(id))) {
-      return true;
+  const currentLeaderNativeSessionId = canonicalLeaderNativeSessionId.trim();
+  const summary = sessionId
+    ? await readSubagentSessionSummary(cwd, sessionId).catch(() => null)
+    : null;
+  const currentLeaderIds = new Set([
+    currentLeaderNativeSessionId,
+    summary?.leaderThreadId?.trim(),
+  ].filter(Boolean));
+  if (
+    summary
+    && candidateIds.some((id) => !currentLeaderIds.has(id) && summary.allSubagentThreadIds.includes(id))
+  ) {
+    return true;
+  }
+  // Native UserPromptSubmit can carry a per-turn thread_id that differs from
+  // the long-lived native session id.  Treat the current canonical native
+  // session as the leader before consulting stale/global tracker state.
+  if (
+    sessionId
+    && currentLeaderNativeSessionId
+    && (
+      nativeId === currentLeaderNativeSessionId
+      || (!nativeId && promptThreadId === currentLeaderNativeSessionId)
+    )
+  ) {
+    return false;
+  }
+
+  if (summary) {
+    const leaderThreadId = summary.leaderThreadId?.trim();
+    if (
+      leaderThreadId
+      && (
+        nativeId === leaderThreadId
+        || (!nativeId && promptThreadId === leaderThreadId)
+      )
+    ) {
+      return false;
     }
   }
 
@@ -337,7 +382,7 @@ async function isNativeSubagentHook(
   if (!trackingState) return false;
 
   return Object.values(trackingState.sessions).some((session) => (
-    candidateIds.some((id) => session.threads[id]?.kind === "subagent")
+    candidateIds.some((id) => isTrustedSubagentThread(session, id))
   ));
 }
 
@@ -3978,7 +4023,13 @@ export async function dispatchCodexNativeHook(
   const sessionIdForState = canonicalSessionId || nativeSessionId;
   let outputJson: Record<string, unknown> | null = null;
   const isSubagentPromptSubmit = hookEventName === "UserPromptSubmit"
-    ? await isNativeSubagentHook(cwd, canonicalSessionId, nativeSessionId, threadId)
+    ? await isNativeSubagentHook(
+      cwd,
+      canonicalSessionId,
+      nativeSessionId,
+      threadId,
+      safeString(currentSessionState?.native_session_id).trim(),
+    )
     : false;
   const isSubagentStop = hookEventName === "Stop"
     ? (await Promise.all(
@@ -3986,7 +4037,15 @@ export async function dispatchCodexNativeHook(
         canonicalSessionId,
         safeString(currentSessionState?.session_id).trim(),
       ].filter(Boolean))]
-        .map((candidateSessionId) => isNativeSubagentHook(cwd, candidateSessionId, nativeSessionId, threadId)),
+        .map((candidateSessionId) => isNativeSubagentHook(
+          cwd,
+          candidateSessionId,
+          nativeSessionId,
+          threadId,
+          candidateSessionId === safeString(currentSessionState?.session_id).trim()
+            ? safeString(currentSessionState?.native_session_id).trim()
+            : "",
+        )),
     )).some(Boolean)
     : false;
   const suppressNoisySubagentLifecycleDispatch =
