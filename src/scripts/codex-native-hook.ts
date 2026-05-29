@@ -4361,8 +4361,36 @@ function buildMalformedStdinHookOutput(parseError: Error, rawInput: string): Rec
   };
 }
 
-function buildOversizedStdinHookOutput(rawHookEventName: CodexHookEventName | null): Record<string, unknown> {
-  if (rawHookEventName === "Stop") return {};
+async function buildOversizedStopActiveWorkflowOutput(cwd: string): Promise<Record<string, unknown> | null> {
+  const currentSession = await readUsableSessionState(cwd);
+  const currentSessionId = safeString(currentSession?.session_id).trim()
+    || safeString(process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID).trim();
+  if (!currentSessionId) return null;
+
+  if (await readCanonicalTerminalRunStateForStop(cwd, currentSessionId, "autopilot")) return null;
+
+  const autopilotState = await readModeStateForActiveDecision("autopilot", currentSessionId, cwd);
+  if (!autopilotState || !shouldContinueRun(autopilotState)) return null;
+
+  const phase = formatPhase(autopilotState.current_phase);
+  const reason =
+    `OMX native Stop received oversized stdin before parsing while the current session has active OMX autopilot state (phase: ${phase}); continue once with a compact response or reduce hook payload size so normal Stop gates can run.`;
+  return {
+    decision: "block",
+    reason,
+    stopReason: "native_stop_stdin_oversized_active_workflow",
+    systemMessage:
+      "OMX native Stop rejected oversized stdin before parsing; active current-session workflow state is present, so Stop is blocked instead of silently allowing termination.",
+  };
+}
+
+async function buildOversizedStdinHookOutput(
+  rawHookEventName: CodexHookEventName | null,
+  cwd: string,
+): Promise<Record<string, unknown>> {
+  if (rawHookEventName === "Stop") {
+    return await buildOversizedStopActiveWorkflowOutput(cwd) ?? {};
+  }
   const systemMessage =
     `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
   return {
@@ -4425,7 +4453,7 @@ function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown>
 export async function runCodexNativeHookCli(): Promise<void> {
   const { payload, parseError, rawInput, oversized, rawHookEventName } = await readStdinJson();
   if (oversized) {
-    writeNativeHookJsonStdout(buildOversizedStdinHookOutput(rawHookEventName));
+    writeNativeHookJsonStdout(await buildOversizedStdinHookOutput(rawHookEventName, process.cwd()));
     return;
   }
   if (parseError) {

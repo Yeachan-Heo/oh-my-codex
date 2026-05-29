@@ -492,6 +492,83 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("blocks oversized Stop stdin when current session autopilot is active", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-active-"));
+    try {
+      await writeActiveAutopilotSession(cwd, "sess-cli-stop-oversized-active");
+      const oversizedStop = JSON.stringify({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "native-session-hidden-by-oversized-payload",
+        transcript: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1),
+      });
+
+      const output = parseSingleJsonStdout(runNativeHookCli(oversizedStop, { cwd })) as {
+        decision?: string;
+        stopReason?: string;
+        systemMessage?: string;
+      };
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "native_stop_stdin_oversized_active_workflow");
+      assert.match(String(output.systemMessage ?? ""), /active current-session workflow state/);
+      assert.equal(existsSync(join(cwd, ".omx", "logs")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block oversized Stop stdin for unrelated root autopilot state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-stale-root-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "session.json"), {
+        session_id: "sess-current-without-active-autopilot",
+        cwd,
+      });
+      await writeJson(join(cwd, ".omx", "state", "autopilot-state.json"), {
+        active: true,
+        current_phase: "execution",
+      });
+      const oversizedStop = JSON.stringify({
+        hook_event_name: "Stop",
+        cwd,
+        transcript: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1),
+      });
+
+      assert.deepEqual(parseSingleJsonStdout(runNativeHookCli(oversizedStop, { cwd })), {});
+      assert.equal(existsSync(join(cwd, ".omx", "logs")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block oversized Stop stdin when terminal run-state shadows stale autopilot state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-terminal-run-"));
+    try {
+      const sessionId = "sess-cli-stop-oversized-terminal-run";
+      await writeActiveAutopilotSession(cwd, sessionId);
+      await writeJson(join(cwd, ".omx", "state", "sessions", sessionId, "run-state.json"), {
+        version: 1,
+        active: false,
+        mode: "autopilot",
+        outcome: "finish",
+        lifecycle_outcome: "finished",
+        current_phase: "complete",
+        completed_at: "2026-05-20T11:00:00.000Z",
+        updated_at: "2026-05-20T11:00:00.000Z",
+      });
+      const oversizedStop = JSON.stringify({
+        hook_event_name: "Stop",
+        cwd,
+        transcript: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1),
+      });
+
+      assert.deepEqual(parseSingleJsonStdout(runNativeHookCli(oversizedStop, { cwd })), {});
+      assert.equal(existsSync(join(cwd, ".omx", "logs")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed for oversized non-Stop stdin before parsing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-nonstop-oversized-"));
     try {
