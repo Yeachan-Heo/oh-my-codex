@@ -431,6 +431,32 @@ describe("codex native hook dispatch", () => {
     );
   });
 
+  it("logs a bounded raw stdin prefix when CLI stdin is malformed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-malformed-log-prefix-"));
+    try {
+      const malformed = '{hook_event_name:"PostToolUse", tool_name:"Bash",';
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: malformed,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+
+      const log = await readFile(join(cwd, ".omx", "logs", `native-hook-${new Date().toISOString().split("T")[0]}.jsonl`), "utf-8");
+      const entry = JSON.parse(log.trim()) as Record<string, unknown>;
+      assert.equal(entry.type, "native_hook_stdin_parse_error");
+      assert.equal(entry.raw_input_length, Buffer.byteLength(malformed, "utf-8"));
+      assert.equal(entry.raw_input_prefix, malformed);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("emits Stop-schema-safe block JSON when malformed stdin still identifies Stop", () => {
     const stdout = runNativeHookCli('{hook_event_name:"Stop",');
 
@@ -7756,6 +7782,51 @@ exit 0
     }
   });
 
+
+  it("does not block ordinary non-zero grep output in PostToolUse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-grep-nonzero-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-grep-nonzero",
+          tool_input: { command: "grep -R missing-pattern src | head -20" },
+          tool_response: "{\"exit_code\":1,\"stdout\":\"src/example.ts:TODO\",\"stderr\":\"\"}",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block ordinary non-zero diagnostic output in PostToolUse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-diagnostic-nonzero-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-diagnostic-nonzero",
+          tool_input: { command: "find src -name nope -print" },
+          tool_response: "{\"exit_code\":1,\"stdout\":\"searched 10 files\",\"stderr\":\"\"}",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("treats stderr-only informative non-zero output as reviewable instead of a generic failure", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-informative-stderr-"));
     try {
@@ -13607,6 +13678,55 @@ exit 0
         String((result.outputJson?.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? ""),
         /\$ultragoal.*\$team.*\$ralph/i,
       );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
+  it("allows read-only Bash diagnostics while Autopilot is supervising ralplan", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-readonly-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-autopilot-ralplan-readonly";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "autopilot",
+        phase: "ralplan",
+        session_id: sessionId,
+        active_skills: [{ skill: "autopilot", phase: "ralplan", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        session_id: sessionId,
+      });
+
+      for (const command of [
+        "pwd",
+        "git diff -- src/scripts/codex-native-pre-post.ts",
+        "grep -R PostToolUse src/scripts | head -20",
+        "find src -name '*hook*' -maxdepth 3 -print",
+        "omx state read --input '{\"mode\":\"autopilot\"}' --json",
+      ]) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-autopilot-ralplan-readonly",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+
+        assert.equal(result.omxEventName, "pre-tool-use");
+        assert.equal(result.outputJson, null, command);
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
