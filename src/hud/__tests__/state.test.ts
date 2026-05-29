@@ -751,6 +751,36 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('surfaces session-mirrored root autopilot state when the HUD session file has not been materialized yet', async () => {
+    await withTempRepo('omx-hud-root-mirror-autopilot-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-autopilot-root-mirror';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(rootStateDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+        session_id: sessionId,
+      }));
+
+      const state = await readAllState(cwd);
+
+      assert.deepEqual(state.autopilot, {
+        active: true,
+        current_phase: 'deep-interview',
+      });
+    });
+  });
+
   it('does not resurrect terminal autopilot from stale canonical skill-active phase', async () => {
     await withTempRepo('omx-hud-canonical-autopilot-terminal-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

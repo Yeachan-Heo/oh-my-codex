@@ -312,9 +312,23 @@ async function readVisibleSkillActiveStateFromPaths(
   if (sessionPath && existsSync(sessionPath)) {
     return readSkillActiveState(sessionPath);
   }
-  if (sessionPath) return null;
+
   if (!existsSync(rootPath)) return null;
-  return readSkillActiveState(rootPath);
+  const rootState = await readSkillActiveState(rootPath);
+  if (!sessionPath) return rootState;
+
+  const normalizedSessionId = sessionPath.replace(/\\/g, '/').match(/(?:^|\/)sessions\/([^/]+)\/skill-active-state\.json$/)?.[1];
+  const visibleRootEntries = filterRootEntriesForSession(listActiveSkills(rootState ?? {}), normalizedSessionId);
+  if (visibleRootEntries.length === 0) return null;
+
+  return normalizeSkillActiveState({
+    ...(rootState ?? {}),
+    active_skills: visibleRootEntries,
+    active: true,
+    skill: visibleRootEntries[0]?.skill,
+    phase: visibleRootEntries[0]?.phase ?? '',
+    session_id: visibleRootEntries[0]?.session_id,
+  });
 }
 
 export function tracksCanonicalWorkflowSkill(mode: string): mode is CanonicalWorkflowSkill {
