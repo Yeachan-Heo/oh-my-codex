@@ -2211,6 +2211,53 @@ deepMaxRounds = 21
     }
   });
 
+  it('keeps Autopilot visible when a supervised code-review child keyword appears', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autopilot-child-code-review-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-autopilot-child-code-review';
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: '$autopilot',
+          phase: 'ralplan',
+          activated_at: '2026-05-30T00:00:00.000Z',
+          updated_at: '2026-05-30T00:01:00.000Z',
+          source: 'keyword-detector',
+          session_id: sessionId,
+          active_skills: [{ skill: 'autopilot', phase: 'ralplan', active: true, session_id: sessionId }],
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'CODE REVIEW the current diff before continuing',
+        sessionId,
+        threadId: 'thread-autopilot-child-code-review',
+        turnId: 'turn-autopilot-child-code-review',
+        nowIso: '2026-05-30T00:02:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'autopilot');
+      assert.equal(result.phase, 'ralplan');
+      assert.equal(result.supervised_child_skill, 'code-review');
+      const persisted = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), 'utf-8'),
+      ) as { skill?: string; phase?: string; active_skills?: Array<{ skill?: string }> };
+      assert.equal(persisted.skill, 'autopilot');
+      assert.equal(persisted.phase, 'ralplan');
+      assert.deepEqual(persisted.active_skills?.map((entry) => entry.skill), ['autopilot']);
+      assert.equal(existsSync(join(stateDir, 'sessions', sessionId, 'code-review-state.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('records ultragoal as a prompt skill with first-class mode state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ultragoal-'));
     const stateDir = join(cwd, '.omx', 'state');

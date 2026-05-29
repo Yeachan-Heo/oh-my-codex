@@ -2540,6 +2540,14 @@ function isActiveRalplanPhase(state: Record<string, unknown> | null): boolean {
   return true;
 }
 
+function isActiveAutopilotRalplanPhase(state: Record<string, unknown> | null): boolean {
+  if (!state || state.active !== true) return false;
+  const mode = safeString(state.mode).trim();
+  if (mode && mode !== "autopilot") return false;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  return phase === "ralplan";
+}
+
 function hasExplicitExecutionHandoffSkill(
   state: SkillActiveStateLike | null,
   sessionId: string,
@@ -2657,19 +2665,32 @@ async function readActiveRalplanStateForPreToolUse(
   const modeState = sessionId
     ? await readStopSessionPinnedState("ralplan-state.json", cwd, sessionId, stateDir)
     : await readJsonIfExists(join(stateDir, "ralplan-state.json"));
-  if (!isActiveRalplanPhase(modeState) || !modeState) return null;
-  if (!modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) return null;
-
   const canonicalState = sessionId
     ? await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)
     : await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
-  if (hasExplicitExecutionHandoffSkill(canonicalState, sessionId, threadId)) return null;
-  if (!canonicalState) return modeState;
-  const hasActiveRalplanSkill = listActiveSkills(canonicalState).some((entry) => (
-    entry.skill === "ralplan"
+  if (isActiveRalplanPhase(modeState) && modeState && modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) {
+    if (hasExplicitExecutionHandoffSkill(canonicalState, sessionId, threadId)) return null;
+    if (!canonicalState) return modeState;
+    const hasActiveRalplanSkill = listActiveSkills(canonicalState).some((entry) => (
+      entry.skill === "ralplan"
+      && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+    ));
+    if (hasActiveRalplanSkill) return modeState;
+  }
+
+  const autopilotState = sessionId
+    ? await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir)
+    : await readJsonIfExists(join(stateDir, "autopilot-state.json"));
+  if (!isActiveAutopilotRalplanPhase(autopilotState) || !autopilotState) return null;
+  if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId)) return null;
+  const terminalAutopilotRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, "autopilot");
+  if (terminalAutopilotRunState) return null;
+  if (!canonicalState) return autopilotState;
+  const hasActiveAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "autopilot"
     && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
   ));
-  return hasActiveRalplanSkill ? modeState : null;
+  return hasActiveAutopilotSkill ? autopilotState : null;
 }
 
 function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
