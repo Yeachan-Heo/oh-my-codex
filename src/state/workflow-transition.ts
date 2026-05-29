@@ -138,6 +138,7 @@ const AUTO_COMPLETE_TRANSITIONS = new Set([
   'deep-interview->ultragoal',
   'deep-interview->ultrawork',
   'ralplan->team',
+  'ralplan->ultragoal',
   'ralplan->ralph',
   'ralplan->autopilot',
   'ralplan->autoresearch',

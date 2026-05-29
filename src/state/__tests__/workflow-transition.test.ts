@@ -105,6 +105,13 @@ describe('workflow transition rules', () => {
     assert.deepEqual(ralplanToRalph.autoCompleteModes, ['ralplan']);
     assert.deepEqual(ralplanToRalph.resultingModes, ['ultrawork', 'ralph']);
 
+    const ralplanToUltragoal = evaluateWorkflowTransition(['ralplan'], 'ultragoal');
+    assert.equal(ralplanToUltragoal.allowed, true);
+    assert.equal(ralplanToUltragoal.kind, 'auto-complete');
+    assert.deepEqual(ralplanToUltragoal.autoCompleteModes, ['ralplan']);
+    assert.deepEqual(ralplanToUltragoal.resultingModes, ['ultragoal']);
+    assert.equal(ralplanToUltragoal.transitionMessage, 'mode transiting: ralplan -> ultragoal');
+
     const ralplanToAutoresearch = evaluateWorkflowTransition(['ralplan'], 'autoresearch');
     assert.equal(ralplanToAutoresearch.allowed, true);
     assert.equal(ralplanToAutoresearch.kind, 'auto-complete');
