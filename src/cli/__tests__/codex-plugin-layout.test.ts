@@ -57,6 +57,7 @@ const pluginManifestPath = join(pluginRoot, '.codex-plugin', 'plugin.json');
 const pluginMcpPath = join(pluginRoot, '.mcp.json');
 const pluginAppsPath = join(pluginRoot, '.app.json');
 const pluginHooksPath = join(pluginRoot, 'hooks', 'hooks.json');
+const pluginHookLauncherPath = join(pluginRoot, 'hooks', 'codex-native-hook.mjs');
 const marketplacePath = join(root, '.agents', 'plugins', 'marketplace.json');
 const omxBin = join(root, 'dist', 'cli', 'omx.js');
 
@@ -115,6 +116,193 @@ async function writeOmxShim(binDir: string): Promise<void> {
     'utf-8',
   );
   await chmod(shimPath, 0o755);
+}
+
+async function createPluginMirrorFixtureRoot(): Promise<string> {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'omx-plugin-mirror-fixture-'));
+  await Promise.all([
+    mkdir(join(fixtureRoot, 'plugins'), { recursive: true }),
+    mkdir(join(fixtureRoot, 'src', 'catalog'), { recursive: true }),
+  ]);
+  await Promise.all([
+    cp(join(root, 'package.json'), join(fixtureRoot, 'package.json')),
+    cp(join(root, 'plugins', pluginName), join(fixtureRoot, 'plugins', pluginName), { recursive: true }),
+    cp(join(root, 'skills'), join(fixtureRoot, 'skills'), { recursive: true }),
+    cp(join(root, 'src', 'catalog', 'manifest.json'), join(fixtureRoot, 'src', 'catalog', 'manifest.json')),
+  ]);
+  return fixtureRoot;
+}
+
+async function assertSyncPluginRepairsMissingHooksPointer(): Promise<void> {
+  const fixtureRoot = await createPluginMirrorFixtureRoot();
+  try {
+    const fixtureManifestPath = join(fixtureRoot, 'plugins', pluginName, '.codex-plugin', 'plugin.json');
+    const fixtureHooksPath = join(fixtureRoot, 'plugins', pluginName, 'hooks', 'hooks.json');
+    const originalManifest = await readFile(fixtureManifestPath, 'utf-8');
+    const manifest = JSON.parse(originalManifest) as PluginManifest;
+    delete manifest.hooks;
+    await writeFile(fixtureManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
+
+    const result = spawnSync(process.execPath, [join(root, 'dist', 'scripts', 'sync-plugin-mirror.js')], {
+      cwd: fixtureRoot,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        OMX_AUTO_UPDATE: '0',
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const repairedManifest = await readJson<PluginManifest>(fixtureManifestPath);
+    assert.equal(repairedManifest.hooks, './hooks/hooks.json');
+
+    const hooksManifest = await readJson<{ hooks?: Record<string, Array<{ matcher?: string }>> }>(fixtureHooksPath);
+    const preToolUseEntries = hooksManifest.hooks?.PreToolUse ?? [];
+    assert.notEqual(preToolUseEntries.length, 0, 'fixture sync should keep PreToolUse hook entries');
+    assert.deepEqual(
+      preToolUseEntries.map((entry) => entry.matcher).filter((matcher): matcher is string => typeof matcher === 'string'),
+      [],
+      'fixture sync must not reintroduce a Bash-only PreToolUse matcher',
+    );
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertSyncPluginCheckRejectsLauncherWithoutContract(): Promise<void> {
+  const fixtureRoot = await createPluginMirrorFixtureRoot();
+  try {
+    const fixtureHookLauncherPath = join(fixtureRoot, 'plugins', pluginName, 'hooks', 'codex-native-hook.mjs');
+    const launcher = await readFile(fixtureHookLauncherPath, 'utf-8');
+    await writeFile(
+      fixtureHookLauncherPath,
+      launcher.replace('omx-plugin-hook-launcher:v1', 'omx-plugin-hook-launcher:missing'),
+      'utf-8',
+    );
+
+    const result = spawnSync(process.execPath, [join(root, 'dist', 'scripts', 'sync-plugin-mirror.js'), '--check'], {
+      cwd: fixtureRoot,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        OMX_AUTO_UPDATE: '0',
+      },
+    });
+
+    assert.notEqual(result.status, 0, 'sync-plugin-mirror --check should reject launcher contract drift');
+    assert.match(result.stderr, /plugin_bundle_metadata_out_of_sync/);
+    assert.match(result.stderr, /kind=hook-launcher/);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertPluginHookEventsAlignWithLauncher(): Promise<void> {
+  const hooksManifest = await readJson<{ hooks?: Record<string, unknown> }>(pluginHooksPath);
+  const launcher = await readFile(pluginHookLauncherPath, 'utf-8');
+  const eventSetMatch = launcher.match(/const CODEX_HOOK_EVENT_NAMES = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(eventSetMatch, 'plugin hook launcher should declare a CODEX_HOOK_EVENT_NAMES set');
+  const launcherEvents = Array.from(eventSetMatch[1].matchAll(/'([^']+)'/g), (match) => match[1]).sort();
+  assert.deepEqual(
+    launcherEvents,
+    Object.keys(hooksManifest.hooks ?? {}).sort(),
+    'plugin hook launcher event allowlist must stay aligned with generated plugin hooks manifest',
+  );
+}
+
+async function assertPluginHookLaunchesPostCompactFromCache(): Promise<void> {
+  const cacheRoot = await mkdtemp(join(tmpdir(), 'omx-plugin-hook-cache-'));
+  const cachePluginRoot = join(cacheRoot, pluginName, 'local');
+  const shimDir = join(cacheRoot, 'bin');
+  await cp(pluginRoot, cachePluginRoot, { recursive: true });
+  await writeOmxShim(shimDir);
+
+  try {
+    const payload = JSON.stringify({
+      hook_event_name: 'PostCompact',
+      session_id: 'omx-plugin-hook-postcompact-smoke',
+      transcript_path: join(cacheRoot, 'missing-transcript.jsonl'),
+      cwd: cacheRoot,
+    });
+    const result = spawnSync(process.execPath, [join(cachePluginRoot, 'hooks', 'codex-native-hook.mjs')], {
+      cwd: cachePluginRoot,
+      encoding: 'utf-8',
+      input: payload,
+      env: {
+        ...process.env,
+        PATH: `${shimDir}${delimiter}${process.env.PATH || ''}`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_ROOT: join(cacheRoot, '.omx-root'),
+        OMX_SESSION_ID: 'omx-plugin-hook-postcompact-smoke',
+        OMX_SOURCE_CWD: cacheRoot,
+        OMX_STARTUP_CWD: cacheRoot,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout, '', 'PostCompact plugin hook launcher should emit no stdout');
+    assert.doesNotMatch(result.stderr, /MODULE_NOT_FOUND|Cannot find module/);
+  } finally {
+    await rm(cacheRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertPluginHookDelegatesPostCompactToPinnedCommand(): Promise<void> {
+  const cacheRoot = await mkdtemp(join(tmpdir(), 'omx-plugin-hook-delegate-'));
+  const cachePluginRoot = join(cacheRoot, pluginName, 'local');
+  const recorderPath = join(cacheRoot, 'record-hook.mjs');
+  const argsPath = join(cacheRoot, 'recorded-args.json');
+  const stdinPath = join(cacheRoot, 'recorded-stdin.json');
+  await cp(pluginRoot, cachePluginRoot, { recursive: true });
+  await writeFile(
+    recorderPath,
+    [
+      "import { writeFileSync } from 'node:fs';",
+      "const chunks = [];",
+      "for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));",
+      `writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));`,
+      `writeFileSync(${JSON.stringify(stdinPath)}, Buffer.concat(chunks));`,
+      "",
+    ].join('\n'),
+    'utf-8',
+  );
+  await writeJson(join(cachePluginRoot, 'hooks', 'omx-command.json'), {
+    command: process.execPath,
+    argsPrefix: [recorderPath],
+  });
+
+  try {
+    const payload = JSON.stringify({
+      hook_event_name: 'PostCompact',
+      session_id: 'omx-plugin-hook-postcompact-delegate',
+      transcript_path: join(cacheRoot, 'missing-transcript.jsonl'),
+      cwd: cacheRoot,
+    });
+    const result = spawnSync(process.execPath, [join(cachePluginRoot, 'hooks', 'codex-native-hook.mjs')], {
+      cwd: cachePluginRoot,
+      encoding: 'utf-8',
+      input: payload,
+      env: {
+        ...process.env,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_ROOT: join(cacheRoot, '.omx-root'),
+        OMX_SESSION_ID: 'omx-plugin-hook-postcompact-delegate',
+        OMX_SOURCE_CWD: cacheRoot,
+        OMX_STARTUP_CWD: cacheRoot,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout, '', 'PostCompact plugin hook launcher should emit no stdout when delegate is quiet');
+    assert.deepEqual(JSON.parse(await readFile(argsPath, 'utf-8')), ['codex-native-hook']);
+    assert.deepEqual(JSON.parse(await readFile(stdinPath, 'utf-8')), JSON.parse(payload));
+  } finally {
+    await rm(cacheRoot, { recursive: true, force: true });
+  }
 }
 
 async function assertPluginCacheLaunchable(entrypoint: string): Promise<void> {
@@ -205,11 +393,23 @@ describe('official Codex plugin layout', () => {
     assert.ok(manifest.interface?.developerName, 'expected developerName');
   });
 
+  it('repairs a missing plugin hooks manifest pointer during plugin sync', async () => {
+    await assertSyncPluginRepairsMissingHooksPointer();
+  });
+
+  it('rejects plugin hook launcher drift during plugin sync check', async () => {
+    await assertSyncPluginCheckRejectsLauncherWithoutContract();
+  });
+
+  it('keeps generated plugin hook events aligned with the launcher allowlist', async () => {
+    await assertPluginHookEventsAlignWithLauncher();
+  });
+
   it('ships plugin-scoped hooks and disabled-by-default MCP compatibility metadata', async () => {
     const [mcpManifest, appsManifest, hooksManifest] = await Promise.all([
       readJson<PluginMcpManifest>(pluginMcpPath),
       readJson<PluginAppsManifest>(pluginAppsPath),
-      readJson<{ hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }>(pluginHooksPath),
+      readJson<{ hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>> }>(pluginHooksPath),
     ]);
     const expectedPluginMcpManifest = buildOmxPluginMcpManifest();
 
@@ -225,6 +425,11 @@ describe('official Codex plugin layout', () => {
     assert.ok(
       hookCommands.every((command) => command === 'node "${PLUGIN_ROOT}/hooks/codex-native-hook.mjs"'),
       'plugin hooks should use Codex PLUGIN_ROOT instead of setup-owned .codex/hooks.json',
+    );
+    assert.equal(
+      hooksManifest.hooks?.PreToolUse?.some((entry) => typeof entry.matcher === 'string'),
+      false,
+      'plugin PreToolUse hooks must cover non-Bash tools just like setup-owned native hooks',
     );
     assert.deepEqual(mcpManifest, expectedPluginMcpManifest);
 
@@ -649,6 +854,14 @@ process.stdin.on('end', () => {
     }
   });
 
+  it('launches the plugin-scoped native hook for PostCompact from a cache-style plugin root', async () => {
+    await assertPluginHookLaunchesPostCompactFromCache();
+  });
+
+  it('delegates PostCompact plugin hook payloads to the pinned launcher command', async () => {
+    await assertPluginHookDelegatesPostCompactToPinnedCommand();
+  });
+
   it('does not stage setup-owned hook or runtime directories inside the plugin', async () => {
     const pluginEntries = await readdir(pluginRoot);
 
@@ -656,6 +869,7 @@ process.stdin.on('end', () => {
     assert.equal(pluginEntries.includes('.omx'), false, 'official plugin should not ship runtime hook directories');
     assert.equal(pluginEntries.includes('hooks.json'), false, 'official plugin hook metadata should stay under hooks/');
     assert.equal(pluginEntries.includes('hooks'), true, 'official plugin should ship plugin-scoped lifecycle hooks');
+    await stat(pluginHookLauncherPath);
   });
 
   it('registers the plugin in the repo marketplace with explicit source, policy, and category', async () => {

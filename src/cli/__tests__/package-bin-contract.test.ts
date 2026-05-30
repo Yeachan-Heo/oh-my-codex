@@ -175,6 +175,8 @@ describe('package bin contract', () => {
     const pluginManifestEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.codex-plugin/plugin.json');
     const pluginMcpEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.mcp.json');
     const pluginAppsEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.app.json');
+    const pluginHooksManifestEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/hooks/hooks.json');
+    const pluginHookLauncherEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/hooks/codex-native-hook.mjs');
     const stateServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/state-server.js');
     const memoryServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/memory-server.js');
     const codeIntelServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/code-intel-server.js');
@@ -202,6 +204,8 @@ describe('package bin contract', () => {
     assert.ok(pluginManifestEntry, 'expected npm pack output to include plugins/oh-my-codex/.codex-plugin/plugin.json');
     assert.ok(pluginMcpEntry, 'expected npm pack output to include plugins/oh-my-codex/.mcp.json');
     assert.ok(pluginAppsEntry, 'expected npm pack output to include plugins/oh-my-codex/.app.json');
+    assert.ok(pluginHooksManifestEntry, 'expected npm pack output to include plugins/oh-my-codex/hooks/hooks.json');
+    assert.ok(pluginHookLauncherEntry, 'expected npm pack output to include plugins/oh-my-codex/hooks/codex-native-hook.mjs');
     assert.ok(stateServerEntry, 'expected npm pack output to include dist/mcp/state-server.js for omx mcp-serve');
     assert.ok(memoryServerEntry, 'expected npm pack output to include dist/mcp/memory-server.js for omx mcp-serve');
     assert.ok(codeIntelServerEntry, 'expected npm pack output to include dist/mcp/code-intel-server.js for omx mcp-serve');

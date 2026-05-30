@@ -5,6 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const hookDir = dirname(fileURLToPath(import.meta.url));
+// sync-plugin-mirror verifies this stable marker; runtime behavior is tested separately.
+const OMX_PLUGIN_HOOK_LAUNCHER_CONTRACT_MARKER = 'omx-plugin-hook-launcher:v1';
 const MAX_WRAPPER_STDIN_BYTES = 1024 * 1024;
 const RAW_EVENT_SCAN_BYTES = 64 * 1024;
 const CODEX_HOOK_EVENT_NAMES = new Set([

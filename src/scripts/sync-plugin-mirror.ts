@@ -13,6 +13,7 @@ import {
 	assertSkillMirror,
 	compareSkillMirror,
 } from "../catalog/skill-mirror.js";
+import { MANAGED_HOOK_EVENTS } from "../config/codex-hooks.js";
 import { buildOmxPluginMcpManifest } from "../config/omx-first-party-mcp.js";
 
 export interface SyncPluginMirrorOptions {
@@ -56,6 +57,15 @@ const SETUP_OWNED_PLUGIN_MANIFEST_FIELDS = [
 	"agents",
 	"prompts",
 ] as const;
+const OMX_PLUGIN_HOOK_COMMAND =
+	'node "${PLUGIN_ROOT}/hooks/codex-native-hook.mjs"';
+const OMX_PLUGIN_HOOK_LAUNCHER_CONTRACT_MARKER =
+	"omx-plugin-hook-launcher:v1";
+// Plugin-scoped Codex hooks intentionally mirror the setup-managed lifecycle
+// roster today while using PLUGIN_ROOT-local launch commands. If plugin and
+// setup hook coverage diverge, split this alias into a plugin-owned roster.
+const PLUGIN_HOOK_EVENTS = MANAGED_HOOK_EVENTS;
+type PluginHookEventName = (typeof PLUGIN_HOOK_EVENTS)[number];
 
 async function readJsonFile<T>(path: string): Promise<T> {
 	return JSON.parse(await readFile(path, "utf-8")) as T;
@@ -63,6 +73,35 @@ async function readJsonFile<T>(path: string): Promise<T> {
 
 function stringifyJson(value: unknown): string {
 	return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function commandHook(timeout?: number): JsonValue {
+	return {
+		type: "command",
+		command: OMX_PLUGIN_HOOK_COMMAND,
+		...(typeof timeout === "number" ? { timeout } : {}),
+	};
+}
+
+function pluginHookEntry(eventName: PluginHookEventName): JsonValue {
+	const base = {
+		hooks: [commandHook(eventName === "Stop" ? 30 : undefined)],
+	};
+	if (eventName === "SessionStart") {
+		return { ...base, matcher: "startup|resume|clear" };
+	}
+	return base;
+}
+
+function buildOmxPluginHooksManifest(): JsonValue {
+	return {
+		hooks: Object.fromEntries(
+			PLUGIN_HOOK_EVENTS.map((eventName) => [
+				eventName,
+				[pluginHookEntry(eventName)],
+			]),
+		),
+	};
 }
 
 function assertDeepJsonEqual(
@@ -84,12 +123,36 @@ function assertDeepJsonEqual(
 	}
 }
 
+function assertPluginHookLauncherContractMarkerPresent(
+	path: string,
+	content: string,
+): void {
+	const requiredMarkers = [
+		OMX_PLUGIN_HOOK_LAUNCHER_CONTRACT_MARKER,
+	];
+	const missingMarkers = requiredMarkers.filter(
+		(marker) => !content.includes(marker),
+	);
+	if (missingMarkers.length > 0) {
+		throw new Error(
+			[
+				"plugin_bundle_metadata_out_of_sync",
+				"kind=hook-launcher",
+				`path=${path}`,
+				`missingMarkers=${JSON.stringify(missingMarkers)}`,
+			].join("\n"),
+		);
+	}
+}
+
 function getPluginPaths(root: string): {
 	pluginRoot: string;
 	pluginSkillsDir: string;
 	pluginMcpPath: string;
 	pluginAppsPath: string;
 	pluginManifestPath: string;
+	pluginHooksPath: string;
+	pluginHookLauncherPath: string;
 } {
 	const pluginRoot = join(root, "plugins", PLUGIN_NAME);
 	return {
@@ -98,6 +161,8 @@ function getPluginPaths(root: string): {
 		pluginMcpPath: join(pluginRoot, ".mcp.json"),
 		pluginAppsPath: join(pluginRoot, ".app.json"),
 		pluginManifestPath: join(pluginRoot, ".codex-plugin", "plugin.json"),
+		pluginHooksPath: join(pluginRoot, "hooks", "hooks.json"),
+		pluginHookLauncherPath: join(pluginRoot, "hooks", "codex-native-hook.mjs"),
 	};
 }
 
@@ -188,6 +253,7 @@ async function buildExpectedPluginManifest(
 		skills: "./skills/",
 		mcpServers: "./.mcp.json",
 		apps: "./.app.json",
+		hooks: "./hooks/hooks.json",
 	};
 }
 
@@ -237,16 +303,29 @@ async function assertPluginManifestPolicy(
 }
 
 async function assertPluginMetadata(root: string): Promise<void> {
-	const { pluginMcpPath, pluginAppsPath, pluginManifestPath } =
-		getPluginPaths(root);
-	const [actualMcp, actualApps, actualManifest] = await Promise.all([
-		readJsonFile<unknown>(pluginMcpPath),
-		readJsonFile<unknown>(pluginAppsPath),
-		readJsonFile<PluginManifest>(pluginManifestPath),
-	]);
+	const {
+		pluginMcpPath,
+		pluginAppsPath,
+		pluginManifestPath,
+		pluginHooksPath,
+		pluginHookLauncherPath,
+	} = getPluginPaths(root);
+	const [actualMcp, actualApps, actualManifest, actualHooks, actualHookLauncher] =
+		await Promise.all([
+			readJsonFile<unknown>(pluginMcpPath),
+			readJsonFile<unknown>(pluginAppsPath),
+			readJsonFile<PluginManifest>(pluginManifestPath),
+			readJsonFile<unknown>(pluginHooksPath),
+			readFile(pluginHookLauncherPath, "utf-8"),
+		]);
 
 	assertDeepJsonEqual(actualMcp, buildOmxPluginMcpManifest(), "mcp-manifest");
 	assertDeepJsonEqual(actualApps, { apps: {} }, "apps-manifest");
+	assertDeepJsonEqual(actualHooks, buildOmxPluginHooksManifest(), "hooks-manifest");
+	assertPluginHookLauncherContractMarkerPresent(
+		pluginHookLauncherPath,
+		actualHookLauncher,
+	);
 	await assertPluginManifestPolicy(root, actualManifest);
 }
 
@@ -254,11 +333,16 @@ async function writePluginMetadata(
 	root: string,
 	verbose = false,
 ): Promise<boolean> {
-	const { pluginMcpPath, pluginAppsPath, pluginManifestPath } =
-		getPluginPaths(root);
+	const {
+		pluginMcpPath,
+		pluginAppsPath,
+		pluginManifestPath,
+		pluginHooksPath,
+	} = getPluginPaths(root);
 	const expectedMcp = buildOmxPluginMcpManifest();
 	const expectedApps = { apps: {} };
 	const expectedManifest = await buildExpectedPluginManifest(root);
+	const expectedHooks = buildOmxPluginHooksManifest();
 	const writes = [
 		{
 			path: pluginMcpPath,
@@ -274,6 +358,11 @@ async function writePluginMetadata(
 			path: pluginManifestPath,
 			content: stringifyJson(expectedManifest),
 			label: "plugin manifest",
+		},
+		{
+			path: pluginHooksPath,
+			content: stringifyJson(expectedHooks),
+			label: "plugin hooks manifest",
 		},
 	];
 	let changed = false;
