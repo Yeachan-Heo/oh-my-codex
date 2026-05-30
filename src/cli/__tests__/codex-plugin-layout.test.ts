@@ -57,6 +57,7 @@ const pluginManifestPath = join(pluginRoot, '.codex-plugin', 'plugin.json');
 const pluginMcpPath = join(pluginRoot, '.mcp.json');
 const pluginAppsPath = join(pluginRoot, '.app.json');
 const pluginHooksPath = join(pluginRoot, 'hooks', 'hooks.json');
+const pluginHookLauncherPath = join(pluginRoot, 'hooks', 'codex-native-hook.mjs');
 const marketplacePath = join(root, '.agents', 'plugins', 'marketplace.json');
 const omxBin = join(root, 'dist', 'cli', 'omx.js');
 
@@ -112,6 +113,71 @@ async function writeOmxShim(binDir: string): Promise<void> {
   await chmod(shimPath, 0o755);
 }
 
+
+
+async function assertSyncPluginRepairsMissingHooksPointer(): Promise<void> {
+  const originalManifest = await readFile(pluginManifestPath, 'utf-8');
+  try {
+    const manifest = JSON.parse(originalManifest) as PluginManifest;
+    delete manifest.hooks;
+    await writeFile(pluginManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
+
+    const result = spawnSync(process.execPath, [join(root, 'dist', 'scripts', 'sync-plugin-mirror.js')], {
+      cwd: root,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        OMX_AUTO_UPDATE: '0',
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const repairedManifest = await readJson<PluginManifest>(pluginManifestPath);
+    assert.equal(repairedManifest.hooks, './hooks/hooks.json');
+  } finally {
+    await writeFile(pluginManifestPath, originalManifest, 'utf-8');
+  }
+}
+
+async function assertPluginHookLaunchesPostCompactFromCache(): Promise<void> {
+  const cacheRoot = await mkdtemp(join(tmpdir(), 'omx-plugin-hook-cache-'));
+  const cachePluginRoot = join(cacheRoot, pluginName, 'local');
+  const shimDir = join(cacheRoot, 'bin');
+  await cp(pluginRoot, cachePluginRoot, { recursive: true });
+  await writeOmxShim(shimDir);
+
+  try {
+    const payload = JSON.stringify({
+      hook_event_name: 'PostCompact',
+      session_id: 'omx-plugin-hook-postcompact-smoke',
+      transcript_path: join(cacheRoot, 'missing-transcript.jsonl'),
+      cwd: cacheRoot,
+    });
+    const result = spawnSync(process.execPath, [join(cachePluginRoot, 'hooks', 'codex-native-hook.mjs')], {
+      cwd: cachePluginRoot,
+      encoding: 'utf-8',
+      input: payload,
+      env: {
+        ...process.env,
+        PATH: `${shimDir}${delimiter}${process.env.PATH || ''}`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_ROOT: join(cacheRoot, '.omx-root'),
+        OMX_SESSION_ID: 'omx-plugin-hook-postcompact-smoke',
+        OMX_SOURCE_CWD: cacheRoot,
+        OMX_STARTUP_CWD: cacheRoot,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout, '', 'PostCompact plugin hook launcher should emit no stdout');
+    assert.doesNotMatch(result.stderr, /MODULE_NOT_FOUND|Cannot find module/);
+  } finally {
+    await rm(cacheRoot, { recursive: true, force: true });
+  }
+}
+
 async function assertPluginCacheLaunchable(entrypoint: string): Promise<void> {
   const cacheRoot = await mkdtemp(join(tmpdir(), 'omx-plugin-cache-'));
   const cachePluginRoot = join(cacheRoot, pluginName, 'local');
@@ -158,6 +224,10 @@ describe('official Codex plugin layout', () => {
     assert.ok(manifest.interface?.shortDescription, 'expected short interface description');
     assert.ok(manifest.interface?.longDescription, 'expected long interface description');
     assert.ok(manifest.interface?.developerName, 'expected developerName');
+  });
+
+  it('repairs a missing plugin hooks manifest pointer during plugin sync', async () => {
+    await assertSyncPluginRepairsMissingHooksPointer();
   });
 
   it('ships plugin-scoped hooks and disabled-by-default MCP compatibility metadata', async () => {
@@ -239,6 +309,10 @@ describe('official Codex plugin layout', () => {
     }
   });
 
+  it('launches the plugin-scoped native hook for PostCompact from a cache-style plugin root', async () => {
+    await assertPluginHookLaunchesPostCompactFromCache();
+  });
+
   it('does not stage setup-owned hook or runtime directories inside the plugin', async () => {
     const pluginEntries = await readdir(pluginRoot);
 
@@ -246,6 +320,7 @@ describe('official Codex plugin layout', () => {
     assert.equal(pluginEntries.includes('.omx'), false, 'official plugin should not ship runtime hook directories');
     assert.equal(pluginEntries.includes('hooks.json'), false, 'official plugin hook metadata should stay under hooks/');
     assert.equal(pluginEntries.includes('hooks'), true, 'official plugin should ship plugin-scoped lifecycle hooks');
+    await stat(pluginHookLauncherPath);
   });
 
   it('registers the plugin in the repo marketplace with explicit source, policy, and category', async () => {
