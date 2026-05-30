@@ -58,6 +58,15 @@ The matrix must include normal-path coverage plus adversarial dynamic e2e scenar
 - Validate exit codes and output semantics; do not trust success-looking text alone.
 - Do not delete, rewrite, or mask unrelated user work. Capture dirty-worktree evidence before and after generated harness work.
 
+### Temporary Harness Generation Guardrails
+
+Generated harnesses are part of the QA evidence chain; until setup succeeds, they are evidence about the harness apparatus, not product behavior.
+
+- **Use absolute repo imports for built artifacts.** When a harness runs from `/tmp` or another scratch directory but imports repository code, resolve the repository root explicitly from the verified repo cwd and import built modules with an absolute path or `pathToFileURL(join(repoRoot, "dist", ...)).href`. Never rely on `./dist/...` from the harness file's temporary directory.
+- **Use a safe file writer for JS/TS harness bodies.** Prefer a small Node/Python writer or another non-interpolating file-write mechanism for harness source that contains backticks, `${...}`, shell metacharacters, or prompt-injection strings. If a shell heredoc is unavoidable, quote the delimiter and verify the written file before execution; do not use interpolating heredocs for JavaScript assertions.
+- **Sanitize OMX runtime env for isolated probes.** When the scenario creates a temporary repo/state tree or intentionally checks local isolation, run the probe with `OMX_ROOT` and `OMX_STATE_ROOT` unset (for example `env -u OMX_ROOT -u OMX_STATE_ROOT ...`) so ambient boxed runtime state cannot redirect reads/writes away from the scenario fixture.
+- **Classify harness setup failures separately.** If a generated harness fails before exercising product behavior because of import paths, shell interpolation, environment leakage, or fixture construction, record it as harness debris, fix the harness, and rerun the scenario before declaring a product defect.
+
 ## Cycle Workflow
 
 ### Cycle N (Max 5)

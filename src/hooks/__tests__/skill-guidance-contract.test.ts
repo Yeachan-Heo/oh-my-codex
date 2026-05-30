@@ -56,6 +56,54 @@ describe('execution-heavy skill guidance contract', () => {
     }
   });
 
+  it('ultraqa harness guardrail patterns require intended semantics and reject inverted phrasing', () => {
+    const ultraqa = SKILL_CONTRACTS.find((contract) => contract.id === 'ultraqa');
+    assert.ok(ultraqa, 'ultraqa contract must exist');
+
+    const findPattern = (needle: string): RegExp => {
+      const pattern = ultraqa.requiredPatterns.find((candidate) => candidate.source.includes(needle));
+      assert.ok(pattern, `missing ultraqa guardrail pattern containing: ${needle}`);
+      return pattern;
+    };
+
+    const absoluteImports = findPattern('Use absolute repo imports');
+    assert.match(
+      'Use absolute repo imports and pathToFileURL(join(repoRoot, "dist", ...)).href. Never rely on ./dist from /tmp.',
+      absoluteImports,
+    );
+    assert.doesNotMatch(
+      'Absolute repo imports are forbidden. Rely on ./dist paths from /tmp harnesses.',
+      absoluteImports,
+    );
+
+    const safeWriter = findPattern('Use a safe file writer');
+    assert.match(
+      'Use a safe file writer with a non-interpolating file-write mechanism and do not use interpolating heredocs.',
+      safeWriter,
+    );
+    assert.doesNotMatch(
+      'Use interpolating heredocs for JavaScript assertions instead of a safe writer.',
+      safeWriter,
+    );
+
+    const sanitizedEnv = findPattern('Sanitize OMX runtime env for isolated probes');
+    assert.match(
+      'Sanitize OMX runtime env for isolated probes: keep OMX_ROOT and OMX_STATE_ROOT unset and run env -u OMX_ROOT -u OMX_STATE_ROOT.',
+      sanitizedEnv,
+    );
+    assert.doesNotMatch(
+      'Keep OMX_ROOT and OMX_STATE_ROOT set for isolated probes; avoid env -u OMX_ROOT -u OMX_STATE_ROOT.',
+      sanitizedEnv,
+    );
+
+    const harnessDebris = findPattern('Classify harness setup failures separately');
+    assert.match(
+      'Classify harness setup failures separately: record it as harness debris, fix the harness, and rerun the scenario before declaring a product defect.',
+      harnessDebris,
+    );
+    assert.doesNotMatch('Harness debris noted.', harnessDebris);
+  });
+
   it('ultrawork guidance stays OMX-native and avoids upstream-only runtime taxonomy', () => {
     const content = loadSurface('skills/ultrawork/SKILL.md');
     assert.doesNotMatch(content, /@opencode-ai\/plugin|bun:sqlite|\.sisyphus/i);
