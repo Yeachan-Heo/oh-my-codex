@@ -13,6 +13,7 @@ export interface TmuxPaneSnapshot {
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
 const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 export const TMUX_PANE_FIELD_SEPARATOR = '\x1f';
+const TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE = '\\037';
 
 export interface HudPaneOwner {
   sessionId?: string;
@@ -37,7 +38,11 @@ export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const fieldSeparator = line.includes(TMUX_PANE_FIELD_SEPARATOR) ? TMUX_PANE_FIELD_SEPARATOR : '\t';
+      const fieldSeparator = line.includes(TMUX_PANE_FIELD_SEPARATOR)
+        ? TMUX_PANE_FIELD_SEPARATOR
+        : line.includes(TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE)
+          ? TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE
+          : '\t';
       const parts = line.split(fieldSeparator);
       const [paneId = '', currentCommand = ''] = parts;
       const hasCurrentPathColumn = parts.length >= 4;
