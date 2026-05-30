@@ -3489,6 +3489,16 @@ standardMaxRounds = 15
       assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
       assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
       assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
+
+      const autopilotState = JSON.parse(await readFile(
+        join(cwd, ".omx", "state", "sessions", "sess-autopilot-ralplan-gate", "autopilot-state.json"),
+        "utf-8",
+      )) as { state?: { handoff_artifacts?: { context_snapshot_path?: string } } };
+      const snapshotPath = autopilotState.state?.handoff_artifacts?.context_snapshot_path || "";
+      assert.match(snapshotPath, /^\.omx\/context\/implement-issue-2430-\d{8}T\d{6}Z\.md$/);
+      const snapshot = await readFile(join(cwd, snapshotPath), "utf-8");
+      assert.match(snapshot, /task statement: \$autopilot implement issue #2430/);
+      assert.match(snapshot, /constraints: follow deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
