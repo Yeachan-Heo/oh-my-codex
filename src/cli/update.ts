@@ -168,6 +168,27 @@ export function resolveSetupRefreshArgs(cwd: string): string[] {
   return args;
 }
 
+function quotePosixShellArg(value: string): string {
+  if (value === '') return "''";
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function quotePowerShellArg(value: string): string {
+  return `'${value.replace(/'/g, `''`)}'`;
+}
+
+export function formatDeferredSetupCommand(
+  platform: NodeJS.Platform,
+  command: string,
+  args: string[],
+): string {
+  const argv = [command, ...args];
+  if (platform === 'win32') {
+    return `& ${argv.map(quotePowerShellArg).join(' ')}`;
+  }
+  return argv.map(quotePosixShellArg).join(' ');
+}
+
 function formatUpdateLogPath(date = new Date()): string {
   return `update-${date.toISOString().replace(/[:.]/g, '-')}.log`;
 }
@@ -179,8 +200,11 @@ export function runDeferredGlobalUpdate(
   parentPid = process.pid,
 ): RunDeferredUpdateResult {
   const logPath = join(cwd, '.omx', 'logs', formatUpdateLogPath());
+  // Snapshot the current setup delivery mode when the update is scheduled.
+  // The detached process runs after this CLI exits, so the refresh should replay
+  // the setup mode that was active when the user accepted/scheduled the update.
   const setupArgs = resolveSetupRefreshArgs(cwd);
-  const setupCommand = ['omx', ...setupArgs].join(' ');
+  const setupCommand = formatDeferredSetupCommand(platform, 'omx', setupArgs);
 
   try {
     mkdirSync(dirname(logPath), { recursive: true });
