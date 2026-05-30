@@ -4,6 +4,7 @@ import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promis
 import { extname, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
 import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
+import { redactAuthSecrets } from "../auth/redact.js";
 import {
   SKILL_ACTIVE_STATE_FILE,
   extractSessionIdFromInitializedStatePath,
@@ -4425,11 +4426,29 @@ function writeNativeHookJsonStdout(output: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 
+function redactMalformedHookPreview(rawInput: string): string {
+  const withoutControls = rawInput.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  const withoutAuthSecrets = redactAuthSecrets(withoutControls);
+  return withoutAuthSecrets
+    .replace(
+      /(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(["'])(?:\\.|(?!\2)[^\\])*\2/gi,
+      "$1$2[REDACTED]$2",
+    )
+    .replace(
+      /(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(["'])(?:\\.|[^\\])*$/gi,
+      "$1$2[REDACTED]$2",
+    )
+    .replace(
+      /(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(?!["'])[^,}]*/gi,
+      "$1[REDACTED]",
+    );
+}
+
 function buildRawInputLogFields(rawInput: string): Record<string, unknown> {
   if (!rawInput) return {};
   return {
     raw_input_length: Buffer.byteLength(rawInput, "utf-8"),
-    raw_input_prefix: rawInput.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, 240),
+    raw_input_prefix: redactMalformedHookPreview(rawInput).slice(0, 240),
   };
 }
 

@@ -1223,8 +1223,83 @@ function hasActionableBashHardFailure(normalized: NormalizedPostToolUsePayload):
   return containsHardFailure(`${normalized.stderrText}\n${normalized.stdoutText}`);
 }
 
+function isShellEnvAssignment(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token);
+}
+
+function shellCommandBasename(token: string): string {
+  const normalized = token.replace(/\\/g, "/");
+  return (normalized.split("/").pop() || normalized).toLowerCase();
+}
+
+function skipEnvWrapper(tokens: string[]): number {
+  let index = 0;
+  while (isShellEnvAssignment(tokens[index] || "")) index += 1;
+  if (tokens[index] !== "env") return index;
+
+  index += 1;
+  while (index < tokens.length) {
+    const token = tokens[index] || "";
+    if (isShellEnvAssignment(token)) {
+      index += 1;
+      continue;
+    }
+    if (token === "-i" || token === "--ignore-environment") {
+      index += 1;
+      continue;
+    }
+    if (token === "-u" || token === "--unset") {
+      index += 2;
+      continue;
+    }
+    if (token.startsWith("-u") && token.length > 2) {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
+function skipGhGlobalOptions(tokens: string[], startIndex: number): number {
+  let index = startIndex;
+  const optionsWithValue = new Set(["--repo", "-R", "--hostname", "--config-dir"]);
+  while (index < tokens.length) {
+    const token = tokens[index] || "";
+    if (optionsWithValue.has(token)) {
+      index += 2;
+      continue;
+    }
+    if (/^(?:--repo|--hostname|--config-dir)=/.test(token)) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("-") && token !== "-") {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
+function isReviewableGhPrChecksTokens(tokens: string[]): boolean {
+  const commandIndex = skipEnvWrapper(tokens);
+  const basename = shellCommandBasename(tokens[commandIndex] || "");
+  if (basename !== "gh" && basename !== "gh.exe") return false;
+  const subcommandIndex = skipGhGlobalOptions(tokens, commandIndex + 1);
+  return tokens[subcommandIndex] === "pr" && tokens[subcommandIndex + 1] === "checks";
+}
+
 function isReviewableNonZeroBashCommand(command: string): boolean {
-  return /(?:^|[;&|]\s*)gh\s+pr\s+checks(?:\s|$)/.test(command);
+  const boundaryTokens = tokenizeShellCommandWithBoundaries(removeHereDocBodies(command));
+  if (!boundaryTokens) return false;
+  for (let commandStart = 0; commandStart < boundaryTokens.length; commandStart = nextCommandStart(boundaryTokens, commandStart)) {
+    const commandEnd = nextCommandStart(boundaryTokens, commandStart);
+    const commandTokens = boundaryTokens.slice(commandStart, commandEnd).map((candidate) => candidate.value);
+    if (isReviewableGhPrChecksTokens(commandTokens)) return true;
+  }
+  return false;
 }
 
 export function buildNativePostToolUseOutput(
