@@ -280,7 +280,16 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /skip the mandatory ai-slop-cleaner final pass/i);
     assert.match(instructions, /latest successful pre-deslop verification evidence/i);
   });
-
+  it('requires explicit agent_type for native subagent dispatch guidance', () => {
+    const instructions = buildRalphAppendInstructions('fix issue 920', {
+      changedFilesPath: '.omx/ralph/changed-files.txt',
+      noDeslop: false,
+      approvedHint: null,
+    });
+    assert.match(instructions, /MUST set `agent_type` to an installed OMX role/);
+    assert.match(instructions, /never omit `agent_type`/);
+    assert.match(instructions, /<ralph_native_subagents>/);
+  });
 
 
   it('seeds the changed-files artifact with bounded-scope guidance', () => {

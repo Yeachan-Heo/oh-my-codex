@@ -313,6 +313,14 @@ async function readProjectMemorySummary(cwd: string): Promise<string> {
   }
 }
 
+function getNativeSubagentRoutingInstructions(): string {
+  return [
+    "When spawning Codex native subagents, always set `agent_type` to an installed OMX role.",
+    "Use the most specific role (`architect`, `code-reviewer`, `critic`, `planner`, `debugger`, etc.); use `executor` only for generic implementation work.",
+    "Never omit `agent_type` for OMX work: untyped Task subagents appear as default subagents and lose role-specific prompts/routing.",
+  ].join("\n");
+}
+
 function getCompactionInstructions(): string {
   return [
     "Before context compaction, preserve critical state:",
@@ -405,6 +413,12 @@ export async function generateOverlay(
     optional: false,
   });
 
+  sections.push({
+    key: "native_subagent_routing",
+    text: `**Native Subagent Routing:**\n${truncate(getNativeSubagentRoutingInstructions(), 520)}`,
+    optional: false,
+  });
+
   // Codebase map (max 1000 chars) - optional, injected at session start for token-efficient exploration
   if (codebaseMap) {
     sections.push({
@@ -493,6 +507,11 @@ export async function generateOverlay(
   const safeBody = capBodyToMax(
     [
       { key: "session", text: truncate(sessionMeta, 200), optional: false },
+      {
+        key: "native_subagent_routing",
+        text: `**Native Subagent Routing:**\n${truncate(getNativeSubagentRoutingInstructions(), 520)}`,
+        optional: false,
+      },
       {
         key: "compaction",
         text: `**Compaction Protocol:**\n${truncate(getCompactionInstructions(), 380)}`,

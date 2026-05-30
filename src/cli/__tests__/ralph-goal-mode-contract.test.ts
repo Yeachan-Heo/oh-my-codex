@@ -9,6 +9,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ralphSkill = readFileSync(join(__dirname, '../../../skills/ralph/SKILL.md'), 'utf-8');
 
 describe('ralph goal mode integration contract', () => {
+  it('uses agent_type-based native subagent examples instead of legacy delegate role syntax', () => {
+    assert.match(ralphSkill, /task\(agent_type="executor"/);
+    assert.doesNotMatch(ralphSkill, /delegate\(role=/);
+  });
+
   it('documents Codex goal-mode audit and completion semantics in the Ralph skill', () => {
     assert.match(ralphSkill, /Goal Mode Integration/i);
     assert.match(ralphSkill, /get_goal/i);

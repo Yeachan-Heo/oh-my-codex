@@ -64,6 +64,14 @@ describe("generateOverlay", () => {
     assert.ok(overlay.includes("Compaction Protocol"));
   });
 
+  it("injects mandatory native subagent agent_type routing guidance", async () => {
+    const overlay = await generateOverlay(tempDir, "native-subagent-routing");
+    assert.match(overlay, /\*\*Native Subagent Routing:\*\*/);
+    assert.match(overlay, /always set `agent_type` to an installed OMX role/i);
+    assert.match(overlay, /Never omit `agent_type`/i);
+    assert.match(overlay, /default subagents/i);
+  });
+
   it("includes the team orchestrator overlay only when orchestration mode is team", async () => {
     const overlay = await generateOverlay(tempDir, "team-session", {
       orchestrationMode: "team",
