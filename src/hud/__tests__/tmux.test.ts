@@ -11,6 +11,7 @@ import {
   hudPaneMatchesOwner,
   listCurrentWindowHudPaneIds,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
+  TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE,
   parseTmuxPaneSnapshot,
   readActiveTmuxPaneId,
   readHudPaneOwner,
@@ -150,7 +151,7 @@ describe('HUD pane ownership helpers', () => {
   });
 
   it('splits tmux octal-escaped control separators from live list-panes output', () => {
-    const escapedSeparator = '\\037';
+    const escapedSeparator = TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE;
     const panes = parseTmuxPaneSnapshot(
       [
         ['%140', 'node', '', '/home/tools/oh-my-codex'].join(escapedSeparator),

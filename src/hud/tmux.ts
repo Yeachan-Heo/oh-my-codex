@@ -13,7 +13,7 @@ export interface TmuxPaneSnapshot {
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
 const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 export const TMUX_PANE_FIELD_SEPARATOR = '\x1f';
-const TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE = '\\037';
+export const TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE = '\\037';
 
 export interface HudPaneOwner {
   sessionId?: string;
