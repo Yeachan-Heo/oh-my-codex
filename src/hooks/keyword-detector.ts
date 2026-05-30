@@ -172,6 +172,49 @@ export interface DeepInterviewModeState {
   [key: string]: unknown;
 }
 
+function slugifyAutopilotTask(text: string): string {
+  const withoutWorkflow = text
+    .replace(/(?:^|\s)\$?(?:oh-my-codex:)?autopilot\b/gi, ' ')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  return (withoutWorkflow || 'autopilot-task').slice(0, 48).replace(/-+$/g, '') || 'autopilot-task';
+}
+
+function utcCompactTimestamp(nowIso: string): string {
+  return nowIso.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+async function ensureAutopilotContextSnapshot(
+  sourceCwd: string,
+  nowIso: string,
+  activationText: string,
+  existingPath?: unknown,
+): Promise<string> {
+  const existing = safeString(existingPath).trim();
+  if (existing) return existing;
+
+  const slug = slugifyAutopilotTask(activationText);
+  const contextDir = join(sourceCwd, '.omx', 'context');
+  await mkdir(contextDir, { recursive: true });
+  const relativePath = `.omx/context/${slug}-${utcCompactTimestamp(nowIso)}.md`;
+  const absolutePath = join(sourceCwd, relativePath);
+  const taskStatement = activationText.trim() || '$autopilot';
+  const body = [
+    `# Autopilot context: ${slug}`,
+    '',
+    `- task statement: ${taskStatement}`,
+    '- desired outcome: complete the requested Autopilot workflow correctly with durable gate evidence.',
+    '- known facts/evidence: Autopilot was activated from a UserPromptSubmit keyword.',
+    '- constraints: follow deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa; do not skip gates without persisted evidence.',
+    '- unknowns/open questions: to be resolved by the deep-interview gate.',
+    '- likely codebase touchpoints: to be discovered during pre-context intake and planning.',
+    '',
+  ].join('\n');
+  await writeFile(absolutePath, body, 'utf-8');
+  return relativePath;
+}
+
 function createDeepInterviewInputLock(nowIso: string, previous?: DeepInterviewInputLock): DeepInterviewInputLock {
   return {
     active: true,
@@ -368,6 +411,8 @@ async function persistStatefulSkillSeedState(
   nextSkill: SkillActiveState,
   nowIso: string,
   previousSkill: SkillActiveState | null,
+  activationText = '',
+  sourceCwd = dirname(dirname(stateDir)),
 ): Promise<SkillActiveState> {
   const config = STATEFUL_SKILL_SEED_CONFIG[nextSkill.skill as StatefulSkillMode];
   if (!config) return nextSkill;
@@ -437,11 +482,18 @@ async function persistStatefulSkillSeedState(
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
+    const contextSnapshotPath = await ensureAutopilotContextSnapshot(
+      sourceCwd,
+      nowIso,
+      activationText || safeString(nextSkill.keyword) || '$autopilot',
+      existingHandoffs.context_snapshot_path,
+    );
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
     baseState.state = {
       ...existingState,
       phase_cycle: Array.isArray(existingState.phase_cycle) ? existingState.phase_cycle : ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
       handoff_artifacts: {
+        context_snapshot_path: contextSnapshotPath,
         deep_interview: null,
         ralplan: null,
         ralplan_consensus_gate: {
@@ -1203,6 +1255,8 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           },
           nowIso,
           previous,
+          input.text,
+          sourceCwd,
         );
         if (requestedEntry.skill === workflowState.skill) {
           nextState = {
@@ -1255,7 +1309,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   };
 
   try {
-    const nextState = await persistStatefulSkillSeedState(input.stateDir, state, nowIso, previous);
+    const nextState = await persistStatefulSkillSeedState(input.stateDir, state, nowIso, previous, input.text, sourceCwd);
     nextState.active_skills = buildActiveSkills(nextState);
     await writeSkillActiveStateCopiesForStateDir(
       input.stateDir,
