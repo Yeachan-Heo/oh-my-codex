@@ -26,14 +26,14 @@ Ralph is a persistence loop that keeps working on a task until it is fully compl
 </Do_Not_Use_When>
 
 <Why_This_Exists>
-Complex tasks often fail silently: partial implementations get declared "done", tests get skipped, edge cases get forgotten. Ralph prevents this by looping until work is genuinely complete, requiring fresh verification evidence before allowing completion, and using tiered architect review to confirm quality.
+Complex tasks often fail silently: partial implementations get declared "done", tests get skipped, edge cases get forgotten. Ralph prevents this by looping until work is genuinely complete, requiring fresh verification evidence before allowing completion, and using explicit architect native-subagent verification to confirm quality.
 </Why_This_Exists>
 
 <Execution_Policy>
 - Fire independent agent calls simultaneously -- never wait sequentially for independent work
 - Use `run_in_background: true` for long operations (installs, builds, test suites)
-- Always pass the `model` parameter explicitly when delegating to agents
-- Read `docs/shared/agent-tiers.md` before first delegation to select correct agent tiers
+- Always set `agent_type` when spawning native subagents; use `reasoning_effort` for per-dispatch intensity when needed
+- Preserve legacy Ralph tier intent through native reasoning effort: LOW -> `low`, STANDARD -> `medium`, THOROUGH -> `xhigh`
 - Deliver the full implementation: no scope reduction, no partial completion, no deleting tests to make them pass
 - Apply the shared workflow guidance pattern: outcome-first framing, concise visible updates for multi-step execution, local overrides for the active workflow branch, validation proportional to risk, explicit stop rules, and automatic continuation for safe reversible steps. Ask only for material, destructive, credentialed, external-production, or preference-dependent branches.
 - Integrate with Codex goal mode when goal tools are available: inspect the active thread goal with `get_goal`, preserve it as the top-level stop condition, and only call `update_goal({status: "complete"})` after a Ralph completion audit proves the objective is actually achieved.
@@ -54,10 +54,10 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - Do not begin Ralph execution work (delegation, implementation, or verification loops) until snapshot grounding exists. If forced to proceed quickly, note explicit risk tradeoffs.
 1. **Review progress**: Check TODO list and any prior iteration state
 2. **Continue from where you left off**: Pick up incomplete tasks
-3. **Delegate in parallel**: Route tasks to specialist agents at appropriate tiers
-   - Simple lookups: LOW tier -- "What does this function return?"
-   - Standard work: STANDARD tier -- "Add error handling to this module"
-   - Complex analysis: THOROUGH tier -- "Debug this race condition"
+3. **Delegate in parallel**: Route tasks to specialist native agents with explicit `agent_type` and appropriate `reasoning_effort`
+   - Simple lookups: `reasoning_effort="low"` -- "What does this function return?"
+   - Standard work: `reasoning_effort="medium"` -- "Add error handling to this module"
+   - Complex analysis: `reasoning_effort="xhigh"` -- "Debug this race condition"
    - When Ralph is entered as a ralplan follow-up, start from the approved **available-agent-types roster** and make the delegation plan explicit: implementation lane, evidence/regression lane, and final sign-off lane using only known agent types
 4. **Run long operations in background**: Builds, installs, test suites use `run_in_background: true`
 5. **Visual task gate (when screenshot/reference images are present)**:
@@ -72,11 +72,11 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    b. Run verification (test, build, lint)
    c. Read the output -- confirm it actually passed
    d. Check: zero pending/in_progress TODO items
-7. **Architect verification** (tiered):
-   - <5 files, <100 lines with full tests: STANDARD tier minimum (architect role)
-   - Standard changes: STANDARD tier (architect role)
-   - >20 files or security/architectural changes: THOROUGH tier (architect role)
-   - Ralph floor: always at least STANDARD, even for small changes
+7. **Architect verification** (native role):
+   - <5 files, <100 lines with full tests: `task(agent_type="architect", reasoning_effort="medium", prompt="...")` minimum
+   - Standard changes: `task(agent_type="architect", reasoning_effort="medium", prompt="...")`
+   - >20 files or security/architectural changes: `task(agent_type="architect", reasoning_effort="xhigh", prompt="...")`
+   - Ralph floor: always run an explicit `architect` native subagent, even for small changes
 7.5 **Mandatory Deslop Pass**:
    - After Step 7 passes, run `oh-my-codex:ai-slop-cleaner` on **all files changed during the Ralph session**.
    - Scope the cleaner to **changed files only**; do not widen the pass beyond Ralph-owned edits.
@@ -87,7 +87,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - If post-deslop regression fails, roll back cleaner changes or fix and retry. Then rerun Step 7.5 and Step 7.6 until the regression is green.
    - Do not proceed to completion until post-deslop regression is green (unless `--no-deslop` explicitly skipped the deslop pass).
 8. **On approval**: If Codex goal mode is active, call `update_goal({status: "complete"})` before `/cancel`; report final elapsed time and token-budget usage when the tool returns it. Then run `/cancel` to cleanly exit and clean up all state files.
-9. **On rejection**: Fix the issues raised, then re-verify at the same tier
+9. **On rejection**: Fix the issues raised, then re-verify with the same `agent_type` and `reasoning_effort` profile
 </Steps>
 
 <Tool_Usage>
@@ -163,7 +163,7 @@ Correct verification before completion:
 1. Run: npm test           → Output: "42 passed, 0 failed"
 2. Run: npm run build      → Output: "Build succeeded"
 3. Run: lsp_diagnostics    → Output: 0 errors
-4. Delegate to architect at STANDARD tier  → Verdict: "APPROVED"
+4. task(agent_type="architect", reasoning_effort="medium", prompt="verify completion") → Verdict: "APPROVED"
 5. Run /cancel
 ```
 Why good: Fresh evidence at each step, architect verification, then clean exit.
@@ -178,9 +178,9 @@ Why bad: Uses "should" and "look good" -- no fresh test/build output, no archite
 <Bad>
 Sequential execution of independent tasks:
 ```
-delegate(executor, LOW, "Add type export") → wait →
-delegate(executor, STANDARD, "Implement caching") → wait →
-delegate(executor, THOROUGH, "Refactor auth")
+task(agent_type="executor", reasoning_effort="low", prompt="Add type export") → wait →
+task(agent_type="executor", reasoning_effort="medium", prompt="Implement caching") → wait →
+task(agent_type="executor", reasoning_effort="xhigh", prompt="Refactor auth")
 ```
 Why bad: These are independent tasks that should run in parallel, not sequentially.
 </Bad>
@@ -200,7 +200,7 @@ Why bad: These are independent tasks that should run in parallel, not sequential
 - [ ] Fresh test run output shows all tests pass
 - [ ] Fresh build output shows success
 - [ ] lsp_diagnostics shows 0 errors on affected files
-- [ ] Architect verification passed (STANDARD tier minimum)
+- [ ] Architect verification passed through explicit `task(agent_type="architect", reasoning_effort="medium"...)` minimum
 - [ ] Codex goal-mode completion audit passed, and `update_goal({status: "complete"})` was called when an active goal exists
 - [ ] ai-slop-cleaner pass completed on changed files (or --no-deslop specified)
 - [ ] Post-deslop regression tests pass
