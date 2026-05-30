@@ -1,37 +1,38 @@
-# oh-my-codex 0.18.6
+# oh-my-codex 0.18.7
 
-`0.18.6` is a patch release after `0.18.5` for the Ultragoal/HUD rendering follow-up that landed on `dev`. It focuses on keeping the runtime HUD compact without hiding the active Ultragoal context: non-Ultragoal sessions stay at the smaller line budget, active Ultragoal sessions can use up to three lines, tmux panes are resized from the same policy, and the current Ultragoal receives a distinct accent.
+`0.18.7` is a patch release after `0.18.6` for the runtime reliability train that landed on `dev`. It focuses on preventing duplicate UI/HUD panes, preserving HUD ownership across native tmux session replacement, hardening question and Stop-hook duplicate suppression, and tightening planning/autopilot gates without changing published APIs.
 
 ## Highlights
 
-- **Ultragoal HUD line budget is adaptive** — the HUD keeps the compact default for ordinary sessions while allowing active Ultragoal state to use the larger, bounded display.
-- **tmux HUD pane sizing follows render policy** — pane reconcile and resize behavior now derives from the same Ultragoal-aware line-budget helper used by rendering.
-- **Current Ultragoal context is clearer** — the active Ultragoal is highlighted with a magenta accent, and compact HUD output drops lower-priority next-goal text to avoid mixed summaries.
-- **ANSI and watch-mode rendering are safer** — constrained-width truncation preserves ANSI styling, and watch mode avoids extra-row output.
-- **Regression coverage protects the HUD contract** — render, watch, reconcile, live tmux resize, and terminal row-budget tests cover the adaptive behavior.
+- **Duplicate HUD pane fixes are release-blocker covered** — attached tmux HUD rendering now reuses an existing same-owner HUD instead of splitting duplicates, standalone HUD restore reuses the correct pane, and native session replacement preserves HUD ownership metadata.
+- **Question and Stop-hook duplication is safer** — answered question renderer panes close correctly, duplicate question renderer panes are prevented, and duplicate worker Stop nudges preserve the evidence needed for recovery.
+- **Autopilot and ralplan gates are stricter** — Autopilot completion requires gate evidence, command-style Autopilot invocations route correctly, and ralplan remains a planning-only boundary.
+- **Team and MCP routing are more robust** — lightweight team coordination protocol docs/code landed, Hermes MCP tmux bridge pane routing was fixed, and detached tmux history growth is constrained.
+- **Regression coverage protects changed surfaces** — focused HUD duplicate/tmux suites and broader changed-surface tests cover the release-critical paths.
 
 ## Fixes / compatibility
 
-- Existing Ultragoal aggregate plans and HUD state files remain compatible; this release changes rendering and pane sizing behavior only.
+- Existing HUD state and Ultragoal state remain compatible; this release tightens pane ownership and dedupe behavior.
+- No compatibility-breaking CLI or package layout changes are intended.
 - No separately closed GitHub issues were found for this release window; the scope is represented by the merged PR inventory.
 
 ## Merged PR inventory
 
-#2555.
+#2571, #2573, #2574, #2583, #2593, #2594, #2595, #2605, #2608, #2609, #2611.
 
 ## Validation
 
-Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.6.md`.
+Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.7.md`.
 
 Local gates completed before tagging:
 
 - release workflow version-sync probe
 - `npm run build`
-- `node --test dist/hud/__tests__/render.test.js dist/hud/__tests__/index.test.js dist/hud/__tests__/reconcile.test.js dist/hud/__tests__/hud-tmux-injection.test.js`
+- focused duplicate HUD/tmux regression suite
+- changed-surface compiled regression suite
 - `npm run lint`
 - `npm run check:no-unused`
 - `npm run verify:native-agents`
-- `npm run sync:plugin`
 - `npm run verify:plugin-bundle`
 - `node dist/scripts/generate-catalog-docs.js --check`
 - `git diff --check`
@@ -41,8 +42,8 @@ The GitHub release workflow remains the authoritative cross-platform native asse
 
 ## Contributors
 
-Thanks to the contributor who landed the `v0.18.5...v0.18.6` delta:
+Thanks to the contributor who landed the `v0.18.6...v0.18.7` delta:
 
-- [@Yeachan-Heo](https://github.com/Yeachan-Heo) — #2555
+- [@Yeachan-Heo](https://github.com/Yeachan-Heo)
 
-**Full Changelog**: [`v0.18.5...v0.18.6`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.5...v0.18.6)
+**Full Changelog**: [`v0.18.6...v0.18.7`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.6...v0.18.7)
