@@ -31,7 +31,7 @@ Delegates to the `code-reviewer` and `architect` agents in parallel for a two-la
 2. **Launch Parallel Review Lanes**
    - **`code-reviewer` lane** - owns spec compliance, security, code quality, performance, and maintainability findings
    - **`architect` lane** - owns the devil's-advocate / design-tradeoff perspective
-   - Both lanes run in parallel and produce distinct outputs before final synthesis
+   - Both lanes run in parallel on a clean context with explicit scope and artifacts, and produce distinct outputs before final synthesis
    - If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
 
 3. **Review Categories**

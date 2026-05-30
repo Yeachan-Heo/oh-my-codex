@@ -14,6 +14,8 @@ describe('code-review skill contract', () => {
   it('requires parallel code-reviewer and architect lanes', () => {
     assert.match(codeReviewSkill, /`code-reviewer` and `architect` agents in parallel/i);
     assert.match(codeReviewSkill, /Both lanes run in parallel/i);
+    assert.match(codeReviewSkill, /clean context/i);
+    assert.match(codeReviewSkill, /explicit scope and artifacts/i);
     assert.match(codeReviewSkill, /`code-reviewer` lane/i);
     assert.match(codeReviewSkill, /`architect` lane/i);
     assert.match(codeReviewSkill, /If either lane cannot be launched or does not return evidence/i);
