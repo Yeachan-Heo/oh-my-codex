@@ -1235,24 +1235,24 @@ function shellCommandBasename(token: string): string {
 function skipEnvWrapper(tokens: string[]): number {
   let index = 0;
   while (isShellEnvAssignment(tokens[index] || "")) index += 1;
-  if (tokens[index] !== "env") return index;
+  if (!isEnvExecutableToken(tokens[index] || "")) return index;
 
   index += 1;
   while (index < tokens.length) {
     const token = tokens[index] || "";
+    if (token === "--") {
+      index += 1;
+      break;
+    }
     if (isShellEnvAssignment(token)) {
       index += 1;
       continue;
     }
-    if (token === "-i" || token === "--ignore-environment") {
-      index += 1;
-      continue;
-    }
-    if (token === "-u" || token === "--unset") {
+    if (envOptionConsumesNextValue(token)) {
       index += 2;
       continue;
     }
-    if (token.startsWith("-u") && token.length > 2) {
+    if (token === "-i" || token === "--ignore-environment" || token.startsWith("-u") && token.length > 2) {
       index += 1;
       continue;
     }

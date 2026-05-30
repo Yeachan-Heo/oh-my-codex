@@ -7926,6 +7926,9 @@ exit 0
       for (const command of [
         "GH_PAGER=cat gh pr checks",
         "env GH_TOKEN=ghp_testtoken gh pr checks",
+        "/usr/bin/env gh pr checks",
+        "env -- gh pr checks",
+        "env -C repo gh pr checks",
         "/usr/bin/gh pr checks",
         "gh --repo owner/repo pr checks",
         "echo a; gh pr checks",
