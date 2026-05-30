@@ -125,6 +125,7 @@ describe('config generator', () => {
       assert.match(toml, /AGENTS\.md is the orchestration brain and main control surface/);
       assert.match(toml, /Follow AGENTS\.md for skill\/keyword routing, \$name workflow invocation, and role-specialized subagents/);
       assert.match(toml, /Native subagents live in \.codex\/agents/);
+      assert.match(toml, /set `agent_type` to an installed role and never omit it for OMX work/);
       assert.match(toml, /Treat installed prompts as narrower execution surfaces under AGENTS\.md authority/);
       assert.match(toml, new RegExp(`^developer_instructions = "${OMX_DEVELOPER_INSTRUCTIONS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"$`, 'm'));
     } finally {
