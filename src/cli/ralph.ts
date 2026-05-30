@@ -245,6 +245,7 @@ export function buildRalphAppendInstructions(
     'Parallelism guidance:',
     '- Prefer Codex native subagents for independent parallel subtasks.',
     '- Every Codex native subagent dispatch MUST set `agent_type` to an installed OMX role; choose the narrowest role (for example `executor`, `architect`, `code-reviewer`, `debugger`, or `test-engineer`) and never omit `agent_type` for generic OMX work.',
+    '- When preserving legacy Ralph tier intent on a native subagent dispatch, use `reasoning_effort` instead of `tier`: LOW -> `low`, STANDARD -> `medium`, THOROUGH -> `xhigh`.',
     '- Treat `.omx/state/subagent-tracking.json` as the native subagent activity ledger for this session.',
     '- Do not declare the task complete, and do not transition into final verification/completion, while active native subagent threads are still running.',
     '- Before closing a verification wave, confirm that active native subagent threads have drained.',
