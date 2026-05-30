@@ -288,6 +288,10 @@ describe('ralph deslop launch wiring', () => {
     });
     assert.match(instructions, /MUST set `agent_type` to an installed OMX role/);
     assert.match(instructions, /never omit `agent_type`/);
+    assert.match(instructions, /use `reasoning_effort` instead of `tier`/);
+    assert.match(instructions, /LOW -> `low`/);
+    assert.match(instructions, /STANDARD -> `medium`/);
+    assert.match(instructions, /THOROUGH -> `xhigh`/);
     assert.match(instructions, /<ralph_native_subagents>/);
   });
 

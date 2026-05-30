@@ -150,11 +150,11 @@ Use the CLI-first state surface for Ralph lifecycle state (`omx state write/read
 <Good>
 Correct parallel delegation:
 ```
-task(agent_type="executor", prompt="Add type export for UserConfig")
-task(agent_type="executor", prompt="Implement the caching layer for API responses")
-task(agent_type="executor", prompt="Refactor auth module to support OAuth2 flow")
+task(agent_type="executor", reasoning_effort="low", prompt="Add type export for UserConfig")
+task(agent_type="executor", reasoning_effort="medium", prompt="Implement the caching layer for API responses")
+task(agent_type="executor", reasoning_effort="xhigh", prompt="Refactor auth module to support OAuth2 flow")
 ```
-Why good: Three independent tasks fired simultaneously while explicitly selecting the installed `executor` native role, so the UI/tracker does not show default subagents.
+Why good: Three independent tasks fired simultaneously while explicitly selecting the installed `executor` native role, so the UI/tracker does not show default subagents; legacy tier intent is preserved through native reasoning effort (`LOW` -> `low`, `STANDARD` -> `medium`, `THOROUGH` -> `xhigh`).
 </Good>
 
 <Good>
