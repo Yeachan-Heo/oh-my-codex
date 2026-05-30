@@ -71,16 +71,16 @@ function planOwnedHudPaneDedupe(
   panes: TmuxPaneSnapshot[],
   currentPaneId: string | undefined,
   owner: { sessionId?: string; leaderPaneId?: string },
-  keepPaneId: string,
+  preferredPaneId: string,
 ): { paneId: string; duplicatePaneIds: string[] } {
   const ownedPaneIds = findHudWatchPaneIds(panes, currentPaneId, owner);
-  const paneIds = ownedPaneIds.includes(keepPaneId)
-    ? ownedPaneIds
-    : [...ownedPaneIds, keepPaneId];
-  const keeperPaneId = paneIds.includes(keepPaneId) ? keepPaneId : (paneIds[0] ?? keepPaneId);
+  const keeperPaneId = ownedPaneIds.includes(preferredPaneId)
+    ? preferredPaneId
+    : (ownedPaneIds[0] ?? preferredPaneId);
+
   return {
     paneId: keeperPaneId,
-    duplicatePaneIds: paneIds.filter((paneId) => paneId !== keeperPaneId),
+    duplicatePaneIds: ownedPaneIds.filter((paneId) => paneId !== keeperPaneId),
   };
 }
 

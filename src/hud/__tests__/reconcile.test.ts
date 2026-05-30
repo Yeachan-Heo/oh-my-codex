@@ -223,6 +223,38 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(resized, [{ paneId: '%9', heightLines: HUD_TMUX_HEIGHT_LINES }]);
   });
 
+  it('keeps an observed same-owner HUD when the returned create pane is absent from the post-create scan', async () => {
+    const killed: string[] = [];
+    const resized: Array<{ paneId: string; heightLines: number }> = [];
+    let listCount = 0;
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-race', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => {
+        listCount += 1;
+        if (listCount === 1) return [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }];
+        return [
+          { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+          {
+            paneId: '%8',
+            currentCommand: 'node',
+            startCommand: `exec env OMX_SESSION_ID='sess-race' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+          },
+        ];
+      },
+      createHudWatchPane: () => '%9',
+      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      resizeTmuxPane: (paneId, heightLines) => { resized.push({ paneId, heightLines }); return true; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%8');
+    assert.equal(result.duplicateCount, 0);
+    assert.deepEqual(killed, []);
+    assert.deepEqual(resized, [{ paneId: '%8', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+  });
+
   it('reports failure when the post-create keeper cannot be resized', async () => {
     const killed: string[] = [];
     const registered: string[] = [];
