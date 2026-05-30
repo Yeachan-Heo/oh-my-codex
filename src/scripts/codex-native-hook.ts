@@ -2464,8 +2464,11 @@ function readPayloadTurnId(payload: CodexHookPayload): string {
 async function resolveInternalSessionIdForPayload(
   cwd: string,
   payloadSessionId: string,
+  stateDir?: string,
 ): Promise<string> {
-  const currentSession = await readUsableSessionState(cwd);
+  const currentSession = stateDir
+    ? await readUsableSessionStateFromStateDir(cwd, stateDir)
+    : await readUsableSessionState(cwd);
   const canonicalSessionId = safeString(currentSession?.session_id).trim();
   if (!canonicalSessionId) return payloadSessionId;
 
@@ -2474,6 +2477,22 @@ async function resolveInternalSessionIdForPayload(
   if (payloadSessionId === canonicalSessionId) return canonicalSessionId;
   if (nativeSessionId && payloadSessionId === nativeSessionId) return canonicalSessionId;
   return payloadSessionId;
+}
+
+async function readUsableSessionStateFromStateDir(
+  cwd: string,
+  stateDir: string,
+): Promise<SessionState | null> {
+  const sessionPath = join(stateDir, "session.json");
+  if (!existsSync(sessionPath)) return null;
+
+  try {
+    const content = await readFile(sessionPath, "utf-8");
+    const state = JSON.parse(content) as SessionState;
+    return isSessionStateUsable(state, cwd) ? state : null;
+  } catch {
+    return null;
+  }
 }
 
 async function readStopSessionPinnedState(
@@ -2514,7 +2533,8 @@ const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
 const DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES = PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES;
 
 const RALPLAN_EXECUTION_HANDOFF_SKILLS = new Set([
-  "autopilot",
+  // Autopilot is intentionally excluded: it supervises planning phases such as
+  // ralplan/replan and is not by itself an execution authorization.
   "autoresearch",
   "ralph",
   "team",
@@ -2546,7 +2566,7 @@ function isActiveAutopilotRalplanPhase(state: Record<string, unknown> | null): b
   const mode = safeString(state.mode).trim();
   if (mode && mode !== "autopilot") return false;
   const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
-  return phase === "ralplan";
+  return phase === "ralplan" || phase === "replan" || phase === "autopilot:replan";
 }
 
 function hasExplicitExecutionHandoffSkill(
@@ -2705,8 +2725,9 @@ async function buildRalplanPreToolUseBoundaryOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
+  resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-  const sessionId = readPayloadSessionId(payload);
+  const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
@@ -2726,13 +2747,21 @@ async function buildRalplanPreToolUseBoundaryOutput(
   if (!blocked) return null;
 
   const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
+  const activeMode = safeString(activeState.mode).trim().toLowerCase();
+  const planningModeLabel = activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
+  const planningModeDescription = activeMode === "autopilot"
+    ? "Autopilot is supervising a planning phase"
+    : "Ralplan is consensus-planning mode";
   return {
     decision: "block",
-    reason: `Ralplan is active (phase: ${phase}); implementation/write tools are blocked until an explicit execution handoff workflow is activated.`,
+    reason: `${planningModeLabel} is active (phase: ${phase}); implementation/write tools are blocked until an explicit execution handoff workflow is activated.`,
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
-        "Ralplan is consensus-planning mode. Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, or required `.omx/state/` files. Do not edit implementation files or run implementation-focused writes from ralplan. To execute, first process an explicit handoff such as `$ultragoal`, `$team`, or `$ralph`, which must emit terminal ralplan state before implementation begins.",
+        `${planningModeDescription}. `
+        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, or required `.omx/state/` files. "
+        + "Do not edit implementation files or run implementation-focused writes from planning phases. "
+        + "To execute, first process an explicit handoff such as `$ultragoal`, `$team`, or `$ralph`, which must emit terminal planning state before implementation begins.",
     },
   };
 }
@@ -2741,8 +2770,9 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
+  resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-  const sessionId = readPayloadSessionId(payload);
+  const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveDeepInterviewStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
@@ -4248,8 +4278,12 @@ export async function dispatchCodexNativeHook(
       };
     }
   } else if (hookEventName === "PreToolUse") {
-    outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir)
-      ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir)
+    const payloadSessionId = readPayloadSessionId(payload);
+    const preToolUseSessionId = payloadSessionId
+      ? await resolveInternalSessionIdForPayload(cwd, payloadSessionId, stateDir)
+      : "";
+    outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
     if (detectMcpTransportFailure(payload)) {
