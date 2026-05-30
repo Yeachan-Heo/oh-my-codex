@@ -19,6 +19,8 @@ import {
   buildUnregisterClientAttachedReconcileArgs,
   buildUnregisterResizeHookArgs,
   buildWorkerStartupCommand,
+  trustWorkerMiseConfigIfAvailable,
+  writeWorkerStartupScriptCommand,
   shouldSourceTeamWorkerShellRc,
   buildHudPaneTarget,
   chooseTeamLeaderPaneId,
@@ -27,6 +29,7 @@ import {
   isMsysOrGitBash,
   isNativeWindows,
   isTmuxAvailable,
+  isWorkerPaneOpen,
   restoreStandaloneHudPane,
   translatePathForMsys,
   isWsl2,
@@ -1188,6 +1191,99 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.SHELL;
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('does not use startup scripts on win32/MSYS so existing tmux path translation remains in force', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const prevMsystem = process.env.MSYSTEM;
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      process.env.MSYSTEM = 'MINGW64';
+      assert.equal(
+        writeWorkerStartupScriptCommand(
+          'alpha',
+          1,
+          ['--model', 'gpt-5'],
+          'C:\\repo',
+          { OMX_TEAM_STATE_ROOT: 'C:\\repo\\.omx\\state' },
+        ),
+        null,
+      );
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+    }
+  });
+
+  it('writes a short worker startup script under team runtime state when available', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-worker-startup-script-'));
+    const stateRoot = join(wd, '.omx', 'state');
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = writeWorkerStartupScriptCommand(
+        'alpha',
+        1,
+        ['--model', 'gpt-5'],
+        wd,
+        {
+          OMX_TEAM_STATE_ROOT: stateRoot,
+          OMX_TEAM_LEADER_CWD: wd,
+        },
+        'gemini',
+      );
+      assert.equal(cmd, `exec /bin/sh '${stateRoot}/team/alpha/runtime/worker-1-startup.sh'`);
+      const script = await readFile(join(stateRoot, 'team', 'alpha', 'runtime', 'worker-1-startup.sh'), 'utf-8');
+      assert.match(script, /^#!\/bin\/sh/m);
+      assert.match(script, new RegExp(`cd '${wd.replace(/'/g, `'\\\\''`)}'`));
+      assert.match(script, /export OMX_TEAM_STATE_ROOT=/);
+      assert.match(script, /exec '\/bin\/bash' -c /);
+      assert.doesNotMatch(cmd ?? '', /OMX_TEAM_STATE_ROOT=/, 'tmux command should point at script instead of inlining env');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('trusts worktree .mise.toml before worker launch when mise is available', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-worker-mise-trust-'));
+    const fakeBin = join(wd, 'bin');
+    const logPath = join(wd, 'mise.log');
+    const previousPath = process.env.PATH;
+    try {
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(wd, '.mise.toml'), '[tools]\nnode = "latest"\n');
+      await writeFile(
+        join(fakeBin, 'mise'),
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${logPath}'\nexit 0\n`,
+      );
+      await chmod(join(fakeBin, 'mise'), 0o755);
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+      assert.equal(trustWorkerMiseConfigIfAvailable(wd), true);
+      assert.match(await readFile(logPath, 'utf-8'), new RegExp(`trust --yes ${wd.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\/\\.mise\\.toml`));
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails soft when .mise.toml exists but mise is unavailable', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-worker-mise-missing-'));
+    try {
+      await writeFile(join(wd, '.mise.toml'), '[tools]\nnode = "latest"\n');
+      withEmptyPath(() => {
+        assert.equal(trustWorkerMiseConfigIfAvailable(wd), false);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
     }
   });
 
@@ -3426,6 +3522,90 @@ esac
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('degrades HUD run-shell resize failures to warnings during team startup', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-runshell-fallback-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevWarn = console.warn;
+    const warnings: string[] = [];
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-runshell-fallback-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*) echo "120" ;;
+      *) echo "leader:0 %1" ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"pane_current_command"*) printf "%%1\\tnode\\t'codex'\\n" ;;
+      *) printf "%%1\\n" ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*) echo "%2" ;;
+      *) echo "%3" ;;
+    esac
+    exit 0
+    ;;
+  run-shell)
+    echo "Unsupported tmux compatibility command: run-shell" >&2
+    exit 1
+    ;;
+  set-option|resize-pane|select-layout|set-window-option|select-pane|set-hook|send-keys)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          const fakeBinDir = join(logPath, '..');
+          const geminiPath = join(fakeBinDir, 'gemini');
+          await writeFile(geminiPath, '#!/bin/sh\nexit 0\n');
+          await chmod(geminiPath, 0o755);
+
+          process.env.TMUX = 'leader-session,stub,0';
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+          console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+          const session = createTeamSession('Run Shell Fallback', 1, cwd);
+          assert.equal(session.hudPaneId, '%3');
+          assert.match(warnings.join('\n'), /HUD resize/);
+          assert.match(warnings.join('\n'), /Unsupported tmux compatibility command: run-shell/);
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /run-shell -b sleep/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %2/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %3/);
+        },
+      );
+    } finally {
+      console.warn = prevWarn;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('native Windows HUD reconciliation', () => {
@@ -3513,7 +3693,7 @@ esac
           assert.equal(session.hudPaneId, '%3');
 
           const tmuxLog = await readFile(logPath, 'utf-8');
-          assert.match(tmuxLog, /display-message -p #S:#I #{pane_id}/);
+          assert.match(tmuxLog, /display-message -p #\{session_name\}:#\{window_index\} #\{pane_id\}/);
           assert.match(tmuxLog, /powershell\.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand/);
           assert.doesNotMatch(tmuxLog, /\/bin\/sh -lc/);
           assert.match(tmuxLog, new RegExp(`resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
@@ -4103,6 +4283,37 @@ describe('isWorkerAlive', () => {
     withEmptyPath(() => {
       assert.equal(isWorkerAlive('omx-team-x', 1), false);
     });
+  });
+
+  it('treats an existing non-dead pane id as live even when pane_pid is unavailable', async () => {
+    await withMockTmuxFixture(
+      'omx-pane-id-liveness-',
+      (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  list-panes)
+    if [ "$2" = "-a" ]; then
+      printf "%%77 0 \\n%%88 1 \\n"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`,
+      async () => {
+        assert.equal(isWorkerAlive('ignored-session', 1, '%77'), true);
+        assert.equal(isWorkerPaneOpen('ignored-session', 1, '%77'), true);
+        assert.equal(isWorkerAlive('ignored-session', 2, '%88'), false);
+      },
+    );
   });
 });
 

@@ -274,8 +274,13 @@ process.on('SIGTERM', () => process.exit(0));
       assert.doesNotMatch(workerAgents, /Sisyphus-lite/);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /gpt-5\.3-codex-spark/);
-      assert.match(tmuxLog, /model_reasoning_effort.*low/);
+      assert.match(tmuxLog, /runtime\/worker-2-startup\.sh/);
+      const startupScript = await readFile(
+        join(cwd, '.omx', 'state', 'team', 'low-role-scale', 'runtime', 'worker-2-startup.sh'),
+        'utf-8',
+      );
+      assert.match(startupScript, /gpt-5\.3-codex-spark/);
+      assert.match(startupScript, /model_reasoning_effort.*low/);
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;

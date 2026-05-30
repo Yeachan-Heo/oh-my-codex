@@ -22,6 +22,8 @@ import {
   getWorkerPanePid,
   teardownWorkerPanes,
   buildWorkerStartupCommand,
+  trustWorkerMiseConfigIfAvailable,
+  writeWorkerStartupScriptCommand,
   resolveTeamWorkerCliPlan,
 } from './tmux-session.js';
 import { execFileSync, spawnSync } from 'child_process';
@@ -467,7 +469,17 @@ export async function scaleUp(
         }
         extraEnv.OMX_TEAM_WORKTREE_DETACHED = workerWorkspace.detached ? '1' : '0';
       }
-      const cmd = buildWorkerStartupCommand(
+      trustWorkerMiseConfigIfAvailable(workerCwd);
+      const cmd = writeWorkerStartupScriptCommand(
+        sanitized,
+        workerIndex,
+        workerLaunchArgs,
+        workerCwd,
+        extraEnv,
+        workerCliPlan[i],
+        undefined,
+        runtimeRole,
+      ) ?? buildWorkerStartupCommand(
         sanitized,
         workerIndex,
         workerLaunchArgs,
