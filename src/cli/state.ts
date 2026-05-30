@@ -16,6 +16,10 @@ export interface StateCommandDependencies {
   execute?: typeof executeStateOperation;
 }
 
+function isHelpArg(arg: string | undefined): boolean {
+  return arg === '--help' || arg === '-h' || arg === 'help';
+}
+
 function parseStateInput(input: string | undefined): Record<string, unknown> {
   if (!input) return {};
   let parsed: unknown;
@@ -39,7 +43,7 @@ export async function stateCommand(
   const execute = deps.execute ?? executeStateOperation;
 
   const subcommand = args[0];
-  if (!subcommand || subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
+  if (!subcommand || isHelpArg(subcommand)) {
     stdout(STATE_HELP);
     return;
   }
@@ -47,6 +51,11 @@ export async function stateCommand(
   const operation = STATE_OPERATION_MAP[subcommand];
   if (!operation) {
     throw new Error(`Unknown state subcommand: ${subcommand}\n${STATE_HELP}`);
+  }
+
+  if (isHelpArg(args[1])) {
+    stdout(STATE_HELP);
+    return;
   }
 
   let inputValue: string | undefined;

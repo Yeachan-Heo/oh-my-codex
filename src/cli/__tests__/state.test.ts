@@ -13,6 +13,31 @@ describe('stateCommand', () => {
     assert.match(out.join('\n'), /Usage: omx state/);
   });
 
+
+  it('prints help for operation-level help forms without executing state operations', async () => {
+    const operations = ['read', 'write', 'clear', 'list-active', 'get-status'];
+    const helpForms = ['--help', '-h', 'help'];
+
+    for (const operation of operations) {
+      for (const helpForm of helpForms) {
+        const out: string[] = [];
+        let executed = false;
+        await stateCommand([operation, helpForm], {
+          stdout: (line) => out.push(line),
+          stderr: () => undefined,
+          execute: async () => {
+            executed = true;
+            return { payload: { error: 'should not execute' }, isError: true };
+          },
+        });
+
+        assert.equal(executed, false, `${operation} ${helpForm} should not execute state operation`);
+        assert.match(out.join('\n'), /Usage: omx state/);
+        assert.doesNotMatch(out.join('\n'), /Unknown state argument/);
+      }
+    }
+  });
+
   it('emits a frozen compact JSON envelope when --json is set', async () => {
     const out: string[] = [];
     await stateCommand(['read', '--input', '{"mode":"ralph"}', '--json'], {
