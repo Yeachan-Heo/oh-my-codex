@@ -3,6 +3,34 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
+## [0.18.7] - 2026-05-29
+
+Patch release for the post-`0.18.6` runtime reliability train: duplicate HUD and question-renderer pane prevention, HUD ownership preservation across native tmux session replacement, Stop-hook duplicate suppression safety, Autopilot/ralplan gate hardening, Hermes MCP pane routing, and Team coordination protocol updates.
+
+### Changed
+
+- **HUD ownership is more durable** — native session replacement preserves HUD ownership metadata, attached tmux HUD rendering stays singleton, and HUD watch remains bound to its live tmux cwd.
+- **Planning and automation gates are stricter** — ralplan remains a planning-only boundary, Autopilot completion requires gate evidence, and command-style Autopilot invocations route through the intended path.
+- **Team coordination is documented and typed** — lightweight team coordination protocol docs, state, and tests landed for the worker runtime surface.
+
+### Fixed
+
+- **Duplicate HUD panes are prevented** — standalone HUD restore and attached tmux rendering reuse existing same-owner panes instead of spawning duplicates.
+- **Duplicate question/Stop UI paths are safer** — question renderer panes close after answers, duplicate renderer panes are prevented, and duplicate worker Stop nudges preserve recovery evidence.
+- **Hermes MCP and detached tmux behavior are safer** — Hermes MCP tmux bridge pane routing is fixed and detached tmux history growth is constrained.
+- **Gitignore handling is protected** — effective gitignore regression coverage was added for release-critical file discovery.
+
+### PRs
+
+- #2571, #2573, #2574, #2583, #2593, #2594, #2595, #2605, #2608, #2609, #2611
+
+### Issues
+
+- No separately closed GitHub issues were found for the `v0.18.6..HEAD` release range; the release scope is represented by the merged PR inventory above.
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.7.md`.
 
 ## [0.18.6] - 2026-05-27
 

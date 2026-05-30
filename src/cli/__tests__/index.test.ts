@@ -2846,7 +2846,7 @@ describe("tmux HUD pane helpers", () => {
       "-t",
       "%leader",
       "-F",
-      "#{pane_id}\t#{pane_current_command}\t#{pane_start_command}",
+      "#{pane_id}\x1f#{pane_current_command}\x1f#{pane_start_command}\x1f#{pane_current_path}",
     ]);
   });
 

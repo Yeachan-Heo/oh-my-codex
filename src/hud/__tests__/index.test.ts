@@ -594,7 +594,7 @@ exit 0
       await hudCommand(['--tmux']);
 
       const tmuxLog = await readFile(logPath, 'utf8');
-      assert.match(tmuxLog, /list-panes -t %1 -F #\{pane_id\}\t#\{pane_current_command\}\t#\{pane_start_command\}/);
+      assert.match(tmuxLog, /list-panes -t %1 -F #\{pane_id\}\x1f#\{pane_current_command\}\x1f#\{pane_start_command\}\x1f#\{pane_current_path\}/);
       assert.match(tmuxLog, /kill-pane -t %3/);
       assert.match(tmuxLog, /resize-pane -t %2 -y \d+/);
       assert.doesNotMatch(tmuxLog, /split-window/);
@@ -659,7 +659,7 @@ exit 0
 
       const tmuxLog = await readFile(logPath, 'utf8');
       assert.match(tmuxLog, /display-message -p #\{pane_id\}/);
-      assert.match(tmuxLog, /list-panes -t %1 -F #\{pane_id\}\t#\{pane_current_command\}\t#\{pane_start_command\}/);
+      assert.match(tmuxLog, /list-panes -t %1 -F #\{pane_id\}\x1f#\{pane_current_command\}\x1f#\{pane_start_command\}\x1f#\{pane_current_path\}/);
       assert.match(tmuxLog, /resize-pane -t %2 -y \d+/);
       assert.doesNotMatch(tmuxLog, /split-window/);
       assert.ok(logs.some((line) => line.includes('Reused existing HUD pane')));
