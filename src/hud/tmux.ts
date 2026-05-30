@@ -6,6 +6,7 @@ export interface TmuxPaneSnapshot {
   paneId: string;
   currentCommand: string;
   startCommand: string;
+  currentPath?: string;
 }
 
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
@@ -34,11 +35,17 @@ export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [paneId = '', currentCommand = '', ...startCommandParts] = line.split('\t');
+      const parts = line.split('\t');
+      const [paneId = '', currentCommand = ''] = parts;
+      const hasCurrentPathColumn = parts.length >= 4;
+      const currentPath = hasCurrentPathColumn ? (parts.at(-1) ?? '') : '';
+      const startCommandParts = hasCurrentPathColumn ? parts.slice(2, -1) : parts.slice(2);
+      const trimmedCurrentPath = currentPath.trim();
       return {
         paneId: paneId.trim(),
         currentCommand: currentCommand.trim(),
         startCommand: startCommandParts.join('\t').trim(),
+        ...(trimmedCurrentPath ? { currentPath: trimmedCurrentPath } : {}),
       };
     })
     .filter((pane) => pane.paneId.startsWith('%'));
@@ -113,6 +120,10 @@ export function findHudWatchPaneIds(
     .map((pane) => pane.paneId);
 }
 
+function isDeletedTmuxPanePath(path: string | undefined): boolean {
+  return /(?:^|\s)\(deleted\)\s*$/.test(path ?? '');
+}
+
 export function reapDeadHudPanes(
   panes: TmuxPaneSnapshot[],
   opts: {
@@ -131,7 +142,11 @@ export function reapDeadHudPanes(
 
     const leaderPaneId = readHudPaneOwner(pane).leaderPaneId;
     if (!leaderPaneId) {
-      preserved.push(pane.paneId);
+      if (isDeletedTmuxPanePath(pane.currentPath) && killPane(pane.paneId)) {
+        reaped.push(pane.paneId);
+      } else {
+        preserved.push(pane.paneId);
+      }
       continue;
     }
 
@@ -278,7 +293,7 @@ export function listCurrentWindowPanes(
         'list-panes',
         ...(currentPaneId ? ['-t', currentPaneId] : []),
         '-F',
-        '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}',
+        '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}\t#{pane_current_path}',
       ]),
     );
   } catch {
