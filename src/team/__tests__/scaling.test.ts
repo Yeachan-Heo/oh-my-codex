@@ -63,6 +63,11 @@ function buildContextPackOutcome(relativePackPath: string): string {
   ].join('\n');
 }
 
+
+function workerStartupScriptPath(cwd: string, teamName: string, workerName: string): string {
+  return join(cwd, '.omx', 'state', 'team', teamName, 'runtime', `${workerName}-startup.sh`);
+}
+
 type ContextPackRole = 'scope' | 'build' | 'verify';
 
 type ScaleUpApprovedBindingState =
@@ -1236,10 +1241,15 @@ describe('scaleUp', () => {
       if (!result.ok) return;
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /CODEX_HOME=.*\.codex/);
-      assert.match(tmuxLog, /model_reasoning_effort="xhigh"/);
-      assert.match(tmuxLog, /--model/);
-      assert.match(tmuxLog, /project-standard-model/);
+      const startupScript = await readFile(
+        workerStartupScriptPath(cwd, 'scale-up-project-reasoning', 'worker-2'),
+        'utf-8',
+      );
+      assert.match(tmuxLog, /worker-2-startup\.sh/);
+      assert.match(startupScript, /CODEX_HOME=.*\.codex/);
+      assert.match(startupScript, /model_reasoning_effort="xhigh"/);
+      assert.match(startupScript, /--model/);
+      assert.match(startupScript, /project-standard-model/);
 
       const workerAgents = await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-project-reasoning', 'workers', 'worker-2', 'AGENTS.md'), 'utf-8');
       assert.match(workerAgents, /You are operating as the \*\*writer\*\* role/);
