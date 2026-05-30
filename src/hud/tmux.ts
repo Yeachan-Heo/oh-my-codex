@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
@@ -6,10 +7,12 @@ export interface TmuxPaneSnapshot {
   paneId: string;
   currentCommand: string;
   startCommand: string;
+  currentPath?: string;
 }
 
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
 const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
+export const TMUX_PANE_FIELD_SEPARATOR = '\x1f';
 
 export interface HudPaneOwner {
   sessionId?: string;
@@ -34,11 +37,18 @@ export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [paneId = '', currentCommand = '', ...startCommandParts] = line.split('\t');
+      const fieldSeparator = line.includes(TMUX_PANE_FIELD_SEPARATOR) ? TMUX_PANE_FIELD_SEPARATOR : '\t';
+      const parts = line.split(fieldSeparator);
+      const [paneId = '', currentCommand = ''] = parts;
+      const hasCurrentPathColumn = parts.length >= 4;
+      const currentPath = hasCurrentPathColumn ? (parts.at(-1) ?? '') : '';
+      const startCommandParts = hasCurrentPathColumn ? parts.slice(2, -1) : parts.slice(2);
+      const trimmedCurrentPath = currentPath.trim();
       return {
         paneId: paneId.trim(),
         currentCommand: currentCommand.trim(),
         startCommand: startCommandParts.join('\t').trim(),
+        ...(trimmedCurrentPath ? { currentPath: trimmedCurrentPath } : {}),
       };
     })
     .filter((pane) => pane.paneId.startsWith('%'));
@@ -113,6 +123,11 @@ export function findHudWatchPaneIds(
     .map((pane) => pane.paneId);
 }
 
+function isDeletedTmuxPanePath(path: string | undefined): boolean {
+  const currentPath = path?.trim();
+  return Boolean(currentPath && /(?:^|\s)\(deleted\)\s*$/.test(currentPath) && !existsSync(currentPath));
+}
+
 export function reapDeadHudPanes(
   panes: TmuxPaneSnapshot[],
   opts: {
@@ -128,6 +143,11 @@ export function reapDeadHudPanes(
 
   for (const pane of panes) {
     if (!isHudWatchPane(pane)) continue;
+
+    if (isDeletedTmuxPanePath(pane.currentPath) && killPane(pane.paneId)) {
+      reaped.push(pane.paneId);
+      continue;
+    }
 
     const leaderPaneId = readHudPaneOwner(pane).leaderPaneId;
     if (!leaderPaneId) {
@@ -278,7 +298,7 @@ export function listCurrentWindowPanes(
         'list-panes',
         ...(currentPaneId ? ['-t', currentPaneId] : []),
         '-F',
-        '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}',
+        `#{pane_id}${TMUX_PANE_FIELD_SEPARATOR}#{pane_current_command}${TMUX_PANE_FIELD_SEPARATOR}#{pane_start_command}${TMUX_PANE_FIELD_SEPARATOR}#{pane_current_path}`,
       ]),
     );
   } catch {
