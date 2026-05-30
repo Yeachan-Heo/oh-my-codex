@@ -2415,6 +2415,54 @@ deepMaxRounds = 21
     }
   });
 
+  it('ignores stale root child mode state during session-scoped Autopilot child reconciliation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autopilot-child-session-root-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-autopilot-child-session-root';
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: '$autopilot',
+          phase: 'deep-interview',
+          session_id: sessionId,
+          active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: sessionId }],
+        }, null, 2),
+      );
+      await writeFile(
+        join(stateDir, 'ultragoal-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'ultragoal',
+          current_phase: 'executing',
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$deep-interview continue scoped interview',
+        sessionId,
+        nowIso: '2026-05-30T00:05:00.000Z',
+      });
+
+      assert.equal(result?.skill, 'autopilot');
+      assert.equal(result?.supervised_child_skill, 'deep-interview');
+      assert.equal(result?.transition_error, undefined);
+      const rootUltragoal = JSON.parse(
+        await readFile(join(stateDir, 'ultragoal-state.json'), 'utf-8'),
+      ) as { active?: boolean; current_phase?: string };
+      assert.equal(rootUltragoal.active, true);
+      assert.equal(rootUltragoal.current_phase, 'executing');
+      assert.equal(existsSync(join(stateDir, 'sessions', sessionId, 'deep-interview-state.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('records ultragoal as a prompt skill with first-class mode state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ultragoal-'));
     const stateDir = join(cwd, '.omx', 'state');

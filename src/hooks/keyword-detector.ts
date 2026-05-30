@@ -785,7 +785,6 @@ async function reconcileAutopilotSupervisedChildModeStates(
   for (const mode of AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS) {
     const candidatePaths = [
       resolveSeedStateFilePath(stateDir, mode as StatefulSkillMode, sessionId).absolutePath,
-      ...(sessionId?.trim() ? [resolveSeedStateFilePath(stateDir, mode as StatefulSkillMode, undefined).absolutePath] : []),
     ];
     for (const candidatePath of candidatePaths) {
       const existing = await readJsonStateIfExists(candidatePath);
