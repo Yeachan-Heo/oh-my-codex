@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildHudResizeHookName,
   buildHudResizeHookSlot,
@@ -146,6 +149,13 @@ describe('HUD pane ownership helpers', () => {
     });
   });
 
+  it('preserves tab-containing start commands when reading the optional cwd column', () => {
+    const [pane] = parseTmuxPaneSnapshot('%9\tnode\tnode\t/omx.js hud --watch\t/tmp/repo');
+
+    assert.equal(pane?.startCommand, 'node\t/omx.js hud --watch');
+    assert.equal(pane?.currentPath, '/tmp/repo');
+  });
+
   it('keeps independent leaders in one tmux window from matching each other HUD panes', () => {
     const panes = parseTmuxPaneSnapshot(
       [
@@ -233,7 +243,7 @@ describe('HUD pane ownership helpers', () => {
 
     assert.deepEqual(listCurrentWindowHudPaneIds(undefined, execTmuxSync, { sessionId: 'sess-a' }), ['%2']);
     assert.deepEqual(calls, [
-      ['list-panes', '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}'],
+      ['list-panes', '-F', '#{pane_id}\x1f#{pane_current_command}\x1f#{pane_start_command}\x1f#{pane_current_path}'],
     ]);
   });
 
@@ -326,6 +336,164 @@ describe('dead HUD pane reaper', () => {
     const result = reapDeadHudPanes(panes, {
       killPane: () => {
         throw new Error('legacy untagged HUD should not be killed');
+      },
+    });
+
+    assert.deepEqual(result, { reaped: [], preserved: ['%2'] });
+  });
+
+  it('kills untagged HUD panes whose tmux cwd has been deleted', () => {
+    const deletedPath = join(tmpdir(), `omx-doctor-native-hook-dist-${process.pid}-${Date.now()} (deleted)`);
+    rmSync(deletedPath, { recursive: true, force: true });
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex\t/repo',
+        `%2\tnode\texec env OMX_TMUX_HUD_OWNER='1' /tmp/bin/omx.js hud --watch\t${deletedPath}`,
+      ].join('\n'),
+    );
+    const killed: string[] = [];
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+    });
+
+    assert.deepEqual(killed, ['%2']);
+    assert.deepEqual(result, { reaped: ['%2'], preserved: [] });
+  });
+
+  it('kills deleted-cwd doctor-smoke HUD panes even when an old owner tag points at a live leader', () => {
+    const deletedPath = join(tmpdir(), `omx-doctor-plugin-hook-${process.pid}-${Date.now()} (deleted)`);
+    rmSync(deletedPath, { recursive: true, force: true });
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex\t/repo',
+        `%2\tnode\texec env OMX_SESSION_ID='doctor-smoke' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch\t${deletedPath}`,
+      ].join('\n'),
+    );
+    const killed: string[] = [];
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+    });
+
+    assert.deepEqual(killed, ['%2']);
+    assert.deepEqual(result, { reaped: ['%2'], preserved: [] });
+  });
+
+  it('preserves non-doctor deleted-cwd HUD panes while their leader is still live', () => {
+    const deletedPath = join(tmpdir(), `omx-live-leader-deleted-cwd-${process.pid}-${Date.now()} (deleted)`);
+    rmSync(deletedPath, { recursive: true, force: true });
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex\t/repo',
+        `%2\tnode\texec env OMX_SESSION_ID='sess-live' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch\t${deletedPath}`,
+      ].join('\n'),
+    );
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: () => {
+        throw new Error('live leader HUD with stale launch cwd should not be killed');
+      },
+    });
+
+    assert.deepEqual(result, { reaped: [], preserved: ['%2'] });
+  });
+
+  it('kills deleted-cwd HUD panes when their owner leader is no longer live', () => {
+    const deletedPath = join(tmpdir(), `omx-dead-leader-deleted-cwd-${process.pid}-${Date.now()} (deleted)`);
+    rmSync(deletedPath, { recursive: true, force: true });
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex\t/repo',
+        `%2\tnode\texec env OMX_SESSION_ID='sess-stale' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%9' /node /omx.js hud --watch\t${deletedPath}`,
+      ].join('\n'),
+    );
+    const killed: string[] = [];
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+    });
+
+    assert.deepEqual(killed, ['%2']);
+    assert.deepEqual(result, { reaped: ['%2'], preserved: [] });
+  });
+
+  it('preserves HUD panes in an existing cwd whose name ends with the deleted marker text', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'omx-live-cwd-'));
+    const liveDeletedSuffixPath = join(parent, 'live (deleted)');
+    mkdirSync(liveDeletedSuffixPath);
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex\t/repo',
+        `%2\tnode\texec env OMX_SESSION_ID='live' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch\t${liveDeletedSuffixPath}`,
+      ].join('\n'),
+    );
+
+    try {
+      const result = reapDeadHudPanes(panes, {
+        killPane: () => {
+          throw new Error('live cwd with literal marker suffix should not be killed');
+        },
+      });
+
+      assert.deepEqual(result, { reaped: [], preserved: ['%2'] });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves live deleted-marker cwd paths containing tabs from the tmux list separator', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'omx-tab-live-cwd-'));
+    const liveDeletedSuffixPath = join(parent, 'left\tlive (deleted)');
+    mkdirSync(liveDeletedSuffixPath);
+    const separator = '\x1f';
+    const panes = parseTmuxPaneSnapshot(
+      [
+        ['%1', 'codex', 'codex', '/repo'].join(separator),
+        [
+          '%2',
+          'node',
+          `exec env OMX_SESSION_ID='live' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+          liveDeletedSuffixPath,
+        ].join(separator),
+      ].join('\n'),
+    );
+
+    try {
+      const result = reapDeadHudPanes(panes, {
+        killPane: () => {
+          throw new Error('live tab cwd with literal marker suffix should not be killed');
+        },
+      });
+
+      assert.deepEqual(result, { reaped: [], preserved: ['%2'] });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves deleted-cwd panes with misleading HUD text but no OMX owner metadata', () => {
+    const deletedPath = join(tmpdir(), `omx-misleading-hud-text-${process.pid}-${Date.now()} (deleted)`);
+    rmSync(deletedPath, { recursive: true, force: true });
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex\t/repo',
+        `%2\tnode\tSUCCESS but not an OMX pane: hud --watch\t${deletedPath}`,
+      ].join('\n'),
+    );
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: () => {
+        throw new Error('misleading non-OMX HUD text should not be killed');
       },
     });
 
