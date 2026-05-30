@@ -12,7 +12,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
@@ -182,7 +182,20 @@ function slugifyAutopilotTask(text: string): string {
 }
 
 function utcCompactTimestamp(nowIso: string): string {
-  return nowIso.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const parsed = new Date(nowIso);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid Autopilot context timestamp: ${nowIso}`);
+  }
+  return parsed.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function isSafeAutopilotContextSnapshotPath(value: unknown): value is string {
+  const path = safeString(value).trim();
+  return path.startsWith('.omx/context/')
+    && path.endsWith('.md')
+    && !isAbsolute(path)
+    && !path.split('/').includes('..')
+    && !path.includes('\\');
 }
 
 async function ensureAutopilotContextSnapshot(
@@ -192,7 +205,10 @@ async function ensureAutopilotContextSnapshot(
   existingPath?: unknown,
 ): Promise<string> {
   const existing = safeString(existingPath).trim();
-  if (existing) return existing;
+  if (existing) {
+    if (isSafeAutopilotContextSnapshotPath(existing)) return existing;
+    throw new Error(`Unsafe Autopilot context snapshot path: ${existing}`);
+  }
 
   const slug = slugifyAutopilotTask(activationText);
   const contextDir = join(sourceCwd, '.omx', 'context');
@@ -486,14 +502,15 @@ async function persistStatefulSkillSeedState(
       sourceCwd,
       nowIso,
       activationText || safeString(nextSkill.keyword) || '$autopilot',
-      existingHandoffs.context_snapshot_path,
+      isSafeAutopilotContextSnapshotPath(existingHandoffs.context_snapshot_path)
+        ? existingHandoffs.context_snapshot_path
+        : reusableModeState?.context_snapshot_path,
     );
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
     baseState.state = {
       ...existingState,
       phase_cycle: Array.isArray(existingState.phase_cycle) ? existingState.phase_cycle : ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
       handoff_artifacts: {
-        context_snapshot_path: contextSnapshotPath,
         deep_interview: null,
         ralplan: null,
         ralplan_consensus_gate: {
@@ -509,6 +526,7 @@ async function persistStatefulSkillSeedState(
         code_review: null,
         ultraqa: null,
         ...existingHandoffs,
+        context_snapshot_path: contextSnapshotPath,
       },
       review_verdict: Object.prototype.hasOwnProperty.call(existingState, 'review_verdict')
         ? existingState.review_verdict
