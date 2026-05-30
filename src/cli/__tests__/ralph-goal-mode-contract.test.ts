@@ -16,8 +16,11 @@ describe('ralph goal mode integration contract', () => {
     assert.match(ralphSkill, /`LOW` -> `low`/);
     assert.match(ralphSkill, /`STANDARD` -> `medium`/);
     assert.match(ralphSkill, /`THOROUGH` -> `xhigh`/);
+    assert.match(ralphSkill, /task\(agent_type="architect", reasoning_effort="medium"/);
     assert.doesNotMatch(ralphSkill, /delegate\(role=/);
+    assert.doesNotMatch(ralphSkill, /delegate\(executor/);
     assert.doesNotMatch(ralphSkill, /tier="/);
+    assert.doesNotMatch(ralphSkill, /Always pass the `model` parameter explicitly/);
   });
 
   it('documents Codex goal-mode audit and completion semantics in the Ralph skill', () => {

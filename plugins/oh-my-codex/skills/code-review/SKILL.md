@@ -72,9 +72,9 @@ Delegates to the `code-reviewer` and `architect` agents in parallel for a two-la
 Do not self-review as a fallback. If the `code-reviewer` or `architect` agent path is missing, unavailable, skipped, or fails, emit a clear unavailable-review result and block approval until the independent lane evidence exists.
 
 ```
-delegate(
-  role="code-reviewer",
-  tier="THOROUGH",
+task(
+  agent_type="code-reviewer",
+  reasoning_effort="xhigh",
   prompt="CODE REVIEW TASK
 
 Review code changes for quality, security, and maintainability.
@@ -98,9 +98,9 @@ Output: Code review report with:
 - Approval recommendation (APPROVE / REQUEST CHANGES / COMMENT)"
 )
 
-delegate(
-  role="architect",
-  tier="THOROUGH",
+task(
+  agent_type="architect",
+  reasoning_effort="xhigh",
   prompt="ARCHITECTURE / DEVIL'S-ADVOCATE REVIEW TASK
 
 Review the same code changes from the architecture/tradeoff perspective.

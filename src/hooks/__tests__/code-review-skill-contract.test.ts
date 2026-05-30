@@ -20,6 +20,13 @@ describe('code-review skill contract', () => {
     assert.match(codeReviewSkill, /do \*\*not\*\* substitute the current\/authoring lane/i);
   });
 
+  it('uses native task agent_type examples instead of legacy delegate role/tier syntax', () => {
+    assert.match(codeReviewSkill, /task\(\s*agent_type="code-reviewer",\s*reasoning_effort="xhigh"/s);
+    assert.match(codeReviewSkill, /task\(\s*agent_type="architect",\s*reasoning_effort="xhigh"/s);
+    assert.doesNotMatch(codeReviewSkill, /delegate\(\s*role=/s);
+    assert.doesNotMatch(codeReviewSkill, /tier="/);
+  });
+
   it('frames architect as the devil’s-advocate lane with deterministic blocker status', () => {
     assert.match(codeReviewSkill, /devil['’]s-advocate/i);
     assert.match(codeReviewSkill, /Architectural Status Contract/i);
