@@ -31,10 +31,7 @@ import {
   type DownstreamAuthority,
   type TrackedWorkflowMode,
 } from '../state/workflow-transition.js';
-import {
-  completeWorkflowModeState,
-  reconcileWorkflowTransition,
-} from '../state/workflow-transition-reconcile.js';
+import { reconcileWorkflowTransition } from '../state/workflow-transition-reconcile.js';
 import {
   clearDeepInterviewQuestionObligation,
   type DeepInterviewQuestionEnforcementState,
@@ -775,27 +772,38 @@ const AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS: TrackedWorkflowMode[] = [
   'ultraqa',
 ];
 
-async function completeAutopilotSupervisedChildModeStates(
+async function reconcileAutopilotSupervisedChildModeStates(
   cwd: string,
   stateDir: string,
   sessionId: string | undefined,
   childSkill: string,
   nowIso: string,
-): Promise<void> {
-  if (!isTrackedWorkflowMode(childSkill)) return;
+): Promise<string[]> {
+  if (!isTrackedWorkflowMode(childSkill)) return [];
 
+  const activeChildModes: TrackedWorkflowMode[] = [];
   for (const mode of AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS) {
-    if (mode === childSkill) continue;
-    const { absolutePath } = resolveSeedStateFilePath(stateDir, mode as StatefulSkillMode, sessionId);
-    const existing = await readJsonStateIfExists(absolutePath);
-    if (!existing || existing.active !== true || safeString(existing.mode).trim() !== mode) continue;
-    await completeWorkflowModeState(cwd, mode, childSkill, {
-      baseStateDir: stateDir,
-      sessionId,
-      nowIso,
-      source: 'autopilot-supervised-child',
-    });
+    const candidatePaths = [
+      resolveSeedStateFilePath(stateDir, mode as StatefulSkillMode, sessionId).absolutePath,
+      ...(sessionId?.trim() ? [resolveSeedStateFilePath(stateDir, mode as StatefulSkillMode, undefined).absolutePath] : []),
+    ];
+    for (const candidatePath of candidatePaths) {
+      const existing = await readJsonStateIfExists(candidatePath);
+      if (!existing || existing.active !== true || safeString(existing.mode).trim() !== mode) continue;
+      activeChildModes.push(mode);
+      break;
+    }
   }
+
+  const transition = await reconcileWorkflowTransition(cwd, childSkill, {
+    action: 'activate',
+    baseStateDir: stateDir,
+    currentModes: activeChildModes,
+    nowIso,
+    sessionId,
+    source: 'autopilot-supervised-child',
+  });
+  return transition.completedPaths;
 }
 
 function isDeepInterviewRuntimeConfig(value: unknown): value is DeepInterviewRuntimeConfig {
@@ -1013,7 +1021,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       supervised_child_skill: match.skill,
     };
     try {
-      await completeAutopilotSupervisedChildModeStates(sourceCwd, input.stateDir, input.sessionId ?? previous.session_id, match.skill, nowIso);
+      await reconcileAutopilotSupervisedChildModeStates(sourceCwd, input.stateDir, input.sessionId ?? previous.session_id, match.skill, nowIso);
       await writeSkillActiveStateCopiesForStateDir(
         input.stateDir,
         nextState,
@@ -1021,7 +1029,18 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
         selectRootSkillStateCopy(previousRoot, nextState, input.sessionId),
       );
     } catch (error) {
-      console.warn('[omx] warning: failed to persist keyword activation state', error);
+      return {
+        ...previous,
+        version: 1,
+        active: true,
+        updated_at: nowIso,
+        source: 'keyword-detector',
+        session_id: input.sessionId ?? previous.session_id,
+        thread_id: input.threadId ?? previous.thread_id,
+        turn_id: input.turnId ?? previous.turn_id,
+        active_skills: listActiveSkills(previous),
+        transition_error: error instanceof Error ? error.message : String(error),
+      };
     }
     return nextState;
   }

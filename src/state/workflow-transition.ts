@@ -142,6 +142,7 @@ const AUTO_COMPLETE_TRANSITIONS = new Set([
   'ralplan->ralph',
   'ralplan->autopilot',
   'ralplan->autoresearch',
+  'ultragoal->ultraqa',
 ]);
 
 const EVIDENCE_GATED_AUTO_COMPLETE_TRANSITIONS = new Set([
