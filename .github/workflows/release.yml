@@ -19,7 +19,8 @@ env:
 jobs:
   verify-version-sync:
     name: Verify Version Sync
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -150,7 +151,8 @@ jobs:
 
   publish-native-assets:
     name: Publish Native Assets
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     needs: [build-native]
     steps:
       - uses: actions/checkout@v4
@@ -214,7 +216,8 @@ jobs:
 
   smoke-verify-native:
     name: Smoke Verify Native Assets
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     needs: [publish-native-assets]
     steps:
       - uses: actions/checkout@v4
@@ -233,7 +236,8 @@ jobs:
 
   smoke-packed-install:
     name: Smoke Test Packed Global Install
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     needs: [smoke-verify-native]
     steps:
       - uses: actions/checkout@v4
@@ -248,7 +252,8 @@ jobs:
 
   publish-npm:
     name: Publish npm Package
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     needs: [smoke-packed-install]
     steps:
       - uses: actions/checkout@v4

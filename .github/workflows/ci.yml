@@ -13,7 +13,8 @@ concurrency:
 jobs:
   changes:
     name: Detect CI lanes
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 10
     outputs:
       full_suite: ${{ steps.classify.outputs.full_suite }}
@@ -213,7 +214,7 @@ jobs:
 
   docs-check:
     name: Docs Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 10
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.docs_changed == 'true' }}
@@ -224,7 +225,7 @@ jobs:
 
   rustfmt:
     name: Rust Format
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 20
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
@@ -240,7 +241,7 @@ jobs:
 
   clippy:
     name: Rust Clippy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 30
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
@@ -258,7 +259,7 @@ jobs:
 
   rust-tests:
     name: Rust Tests + Coverage Signal
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 45
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
@@ -299,7 +300,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 20
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
@@ -314,7 +315,7 @@ jobs:
 
   typecheck:
     name: Typecheck
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 25
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
@@ -330,7 +331,7 @@ jobs:
 
   build-dist:
     name: Build dist artifact
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 25
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
@@ -351,7 +352,7 @@ jobs:
 
   test:
     name: Test (Node ${{ matrix.node-version }} / ${{ matrix.lane }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 60
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
@@ -445,7 +446,7 @@ jobs:
 
   coverage-team-critical:
     name: Coverage Gate (Team Critical)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 45
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
@@ -489,7 +490,7 @@ jobs:
 
   ralph-persistence-gate:
     name: Ralph Persistence Gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 30
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
@@ -510,7 +511,7 @@ jobs:
 
   build:
     name: Build (Full Source Build)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 45
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
@@ -539,7 +540,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 10
     needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, ralph-persistence-gate, build]
     steps:
