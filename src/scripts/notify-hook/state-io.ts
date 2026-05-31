@@ -25,7 +25,11 @@ function isSafeStateFileName(fileName: string): boolean {
 
 async function readSessionIdFromBaseStateDir(baseStateDir: string): Promise<string | undefined> {
   const session = await readJsonIfExists(join(baseStateDir, 'session.json'), null);
-  return validateSessionId(session?.session_id);
+  try {
+    return validateSessionId(session?.session_id);
+  } catch {
+    return undefined;
+  }
 }
 
 function readSessionIdFromEnvironment(): string | undefined {
@@ -33,7 +37,12 @@ function readSessionIdFromEnvironment(): string | undefined {
     if (typeof candidate !== 'string') continue;
     const trimmed = candidate.trim();
     if (!trimmed) continue;
-    return validateSessionId(trimmed);
+    try {
+      const sessionId = validateSessionId(trimmed);
+      if (sessionId) return sessionId;
+    } catch {
+      continue;
+    }
   }
   return undefined;
 }

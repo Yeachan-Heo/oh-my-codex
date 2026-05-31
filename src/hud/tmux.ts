@@ -384,10 +384,9 @@ function buildEnvPrefix(env: Record<string, string | undefined>): string {
 export function buildHudRuntimeEnv(input: HudRuntimeEnvInput = {}): HudRuntimeEnvOutput {
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   const leaderPaneId = typeof input.leaderPaneId === 'string' ? input.leaderPaneId.trim() : '';
-  const env: Record<string, string> = {
-    [OMX_TMUX_HUD_OWNER_ENV]: '1',
-  };
+  const env: Record<string, string> = {};
   if (sessionId) env.OMX_SESSION_ID = sessionId;
+  env[OMX_TMUX_HUD_OWNER_ENV] = '1';
   if (leaderPaneId) env[OMX_TMUX_HUD_LEADER_PANE_ENV] = leaderPaneId;
   if (input.rootSource === 'team-env' && input.omxTeamStateRoot?.trim()) {
     env.OMX_TEAM_STATE_ROOT = input.omxTeamStateRoot.trim();

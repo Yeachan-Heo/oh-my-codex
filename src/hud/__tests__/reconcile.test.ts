@@ -116,7 +116,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(created.length, 1);
     assert.match(
       created[0]?.cmd || '',
-      /^exec env OMX_TMUX_HUD_OWNER='1' OMX_SESSION_ID='sess-canonical' OMX_TMUX_HUD_LEADER_PANE='%1' '.*' '.*omx\.js' hud --watch/,
+      /^exec env OMX_SESSION_ID='sess-canonical' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' '.*' '.*omx\.js' hud --watch/,
     );
     assert.doesNotMatch(created[0]?.cmd || '', /sess-stale/);
   });
@@ -147,7 +147,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(created.length, 1);
     assert.match(
       created[0]?.cmd || '',
-      /^exec env OMX_TMUX_HUD_OWNER='1' OMX_SESSION_ID='sess boxed' OMX_TMUX_HUD_LEADER_PANE='%1' OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' '.*' '.*omx\.js' hud --watch/,
+      /^exec env OMX_SESSION_ID='sess boxed' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' '.*' '.*omx\.js' hud --watch/,
     );
   });
 

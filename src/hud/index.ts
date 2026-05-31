@@ -378,7 +378,7 @@ export function buildTmuxSplitArgs(
     leaderPaneId,
     omxRoot,
     ...(rootEnv ?? { rootSource: 'omx-root-env' }),
-  }).env).map(([key, value]) => `${key}=${shellEscape(value)}`);
+  }).env).map(([key, value]) => `${key}=${key === OMX_TMUX_HUD_OWNER_ENV ? value : shellEscape(value)}`);
   const envPrefix = envAssignments.length > 0 ? `env ${envAssignments.join(' ')} ` : '';
   const cmd = `exec ${envPrefix}${shellEscape(process.execPath)} ${shellEscape(omxBin)} hud --watch${presetArg}`;
   const height = Number.isFinite(heightLines) && (heightLines ?? 0) > 0
