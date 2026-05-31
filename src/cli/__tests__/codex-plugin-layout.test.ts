@@ -140,6 +140,38 @@ async function assertPluginCacheLaunchable(entrypoint: string): Promise<void> {
   }
 }
 
+function parseSingleJsonStdout(stdout: string): Record<string, unknown> {
+  const trimmed = stdout.trim();
+  assert.notEqual(trimmed, '');
+  assert.equal(trimmed.split('\n').length, 1);
+  return JSON.parse(trimmed) as Record<string, unknown>;
+}
+
+async function withPluginCacheCopy<T>(run: (cachePluginRoot: string, cacheRoot: string) => Promise<T>): Promise<T> {
+  const cacheRoot = await mkdtemp(join(tmpdir(), 'omx-plugin-hook-cache-'));
+  const cachePluginRoot = join(cacheRoot, pluginName, 'local');
+  await cp(pluginRoot, cachePluginRoot, { recursive: true });
+  try {
+    return await run(cachePluginRoot, cacheRoot);
+  } finally {
+    await rm(cacheRoot, { recursive: true, force: true });
+  }
+}
+
+function runPluginNativeHook(
+  cachePluginRoot: string,
+  input: string,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  return spawnSync(process.execPath, [join(cachePluginRoot, 'hooks', 'codex-native-hook.mjs')], {
+    cwd: cachePluginRoot,
+    input,
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+  });
+}
+
 describe('official Codex plugin layout', () => {
   it('defines a plugin manifest under a plugin root and keeps .codex-plugin limited to plugin.json', async () => {
     const pkg = await readJson<PackageJson>(join(root, 'package.json'));
@@ -195,6 +227,238 @@ describe('official Codex plugin layout', () => {
       assert.equal(OMX_FIRST_PARTY_MCP_PLUGIN_TARGETS.includes(target ?? ''), true, `${serverName} should use a stable public OMX MCP target`);
       assert.equal(target?.endsWith('-server.js'), false, `${serverName} should not expose internal dist filenames in plugin metadata`);
     }
+  });
+
+  it('emits Stop JSON when the plugin hook pinned launcher is invalid', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'Stop',
+        session_id: 'sess-plugin-invalid-launcher-stop',
+      }));
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /invalid plugin hook launcher/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_failure');
+    });
+  });
+
+  it('emits Stop JSON when the plugin hook command cannot spawn', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-missing-command-stop' }),
+        {
+          ...process.env,
+          OMX_NATIVE_HOOK_COMMAND: join(cacheRoot, 'bin', 'missing-omx-command'),
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_spawn_error');
+    });
+  });
+
+  it('emits Stop JSON when the launched plugin hook command exits before producing stdout', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-false-command-stop' }),
+        {
+          ...process.env,
+          OMX_NATIVE_HOOK_COMMAND: process.platform === 'win32' ? 'cmd.exe /c exit 1' : '/bin/false',
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.match(String(output.stopReason ?? ''), /plugin_stop_hook_launcher_(?:exit|stdin_error)/);
+    });
+  });
+
+  it('emits Stop JSON when the launched plugin hook command exits successfully without stdout', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'empty-ok.cmd' : 'empty-ok.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, '#!/bin/sh\nexit 0\n', 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-empty-ok-stop' }),
+        { ...process.env, OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_empty_stdout');
+    });
+  });
+
+  it('does not append fallback Stop JSON after partial child stdout', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'partial.cmd' : 'partial.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\n<nul set /p=PARTIAL\r\nexit /b 2\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, '#!/bin/sh\nprintf PARTIAL\nexit 2\n', 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-partial-stop' }),
+        { ...process.env, OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 2, result.stderr || result.stdout);
+      assert.equal(result.stdout, 'PARTIAL');
+      assert.doesNotMatch(result.stdout, /plugin_stop_hook_launcher/);
+    });
+  });
+
+  it('emits Stop JSON for malformed Stop-looking stdin before invalid launcher failure', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(cachePluginRoot, '{"hook_event_name":"Stop",');
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_failure');
+    });
+  });
+
+  it('emits Stop JSON for the core-supported name alias before invalid launcher failure', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(cachePluginRoot, '{"name":"Stop",');
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_failure');
+    });
+  });
+
+  it('keeps non-Stop plugin hook launcher failures fail-closed without Stop JSON', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'hello',
+      }));
+
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /invalid plugin hook launcher/);
+    });
+  });
+
+  it('does not classify valid non-Stop plugin JSON with nested Stop text as Stop', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_input: { name: 'Stop' },
+      }));
+
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /invalid plugin hook launcher/);
+    });
+  });
+
+  it('does not classify malformed non-Stop plugin JSON with nested Stop text as Stop', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        '{"hook_event_name":"PreToolUse","tool_input":{"name":"Stop"},',
+      );
+
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /invalid plugin hook launcher/);
+    });
+  });
+
+  it('fails oversized plugin Stop stdin with one schema-safe JSON object', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      const oversizedStop = `{"hook_event_name":"Stop","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized');
+    });
+  });
+
+  it('fails oversized non-Stop plugin stdin without Stop JSON', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      const result = runPluginNativeHook(cachePluginRoot, 'x'.repeat(1024 * 1024 + 1));
+
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /plugin hook stdin exceeded/);
+    });
+  });
+
+  it('forwards under-cap plugin hook stdin bytes unchanged to the delegated command', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const capturePath = join(cacheRoot, 'captured-stdin.json');
+      const commandPath = join(cacheRoot, 'capture-hook.mjs');
+      const launcherPath = join(cacheRoot, process.platform === 'win32' ? 'capture-hook.cmd' : 'capture-hook.sh');
+      await writeFile(
+        commandPath,
+        `import { writeFileSync } from 'node:fs';
+const chunks = [];
+process.stdin.on('data', (chunk) => chunks.push(chunk));
+process.stdin.on('end', () => {
+  writeFileSync(process.env.CAPTURE_PATH, Buffer.concat(chunks));
+  process.stdout.write('{}\\n');
+});
+`,
+        'utf-8',
+      );
+      if (process.platform === 'win32') {
+        await writeFile(launcherPath, `@echo off\r\n"${process.execPath}" "${commandPath}" %*\r\n`, 'utf-8');
+      } else {
+        await writeFile(launcherPath, `#!/bin/sh\nexec "${process.execPath}" "${commandPath}" "$@"\n`, 'utf-8');
+        await chmod(launcherPath, 0o755);
+      }
+
+      const input = JSON.stringify({
+        hook_event_name: 'Stop',
+        session_id: 'sess-plugin-forward-stdin',
+        payload: 'keep these bytes unchanged',
+      });
+      const result = runPluginNativeHook(cachePluginRoot, input, {
+        ...process.env,
+        OMX_NATIVE_HOOK_COMMAND: launcherPath,
+        CAPTURE_PATH: capturePath,
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      assert.equal(await readFile(capturePath, 'utf-8'), input);
+    });
   });
 
   it('keeps plugin MCP metadata aligned with the explicit compat setup-managed MCP roster', async () => {
