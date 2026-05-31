@@ -3494,7 +3494,7 @@ standardMaxRounds = 15
         join(cwd, ".omx", "state", "sessions", "sess-autopilot-ralplan-gate", "autopilot-state.json"),
         "utf-8",
       )) as { state?: { handoff_artifacts?: { context_snapshot_path?: string } } };
-      const snapshotPath = autopilotState.state?.handoff_artifacts?.context_snapshot_path || "";
+      const snapshotPath = autopilotState.state?.handoff_artifacts?.context_snapshot_path ?? "";
       assert.match(snapshotPath, /^\.omx\/context\/implement-issue-2430-\d{8}T\d{6}Z\.md$/);
       const snapshot = await readFile(join(cwd, snapshotPath), "utf-8");
       assert.match(snapshot, /task statement: \$autopilot implement issue #2430/);

@@ -649,9 +649,6 @@ describe('keyword detector skill-active-state lifecycle', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
-
-
-
   it('migrates legacy Autopilot context snapshot paths into handoff artifacts', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-legacy-context-'));
     const stateDir = join(cwd, '.omx', 'state');
