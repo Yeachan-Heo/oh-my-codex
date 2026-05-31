@@ -485,21 +485,6 @@ export async function handleTmuxInjection({
     }
   };
   try {
-    if (!canonicalModeState.canonicalPresent && canonicalModeState.sessionScoped) {
-      await logTmuxHookEvent(logsDir, {
-        timestamp: nowIso,
-        type: 'tmux_hook',
-        mode: null,
-        reason: 'missing_canonical_session_skill_state',
-        turn_id: turnId,
-        thread_id: threadId,
-        target: config.target,
-        dry_run: config.dry_run,
-        sent: false,
-        event: 'injection_skipped',
-      });
-      return;
-    }
     const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir, undefined, {
       includeRootFallback: !canonicalModeState.canonicalPresent && !canonicalModeState.sessionScoped,
     });

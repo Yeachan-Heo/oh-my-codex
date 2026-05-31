@@ -27,7 +27,12 @@ import {
   syncCanonicalSkillStateForMode,
   writeSkillActiveStateCopiesForStateDir,
 } from './skill-active.js';
-import { isTrackedWorkflowMode } from './workflow-transition.js';
+import {
+  buildWorkflowTransitionError,
+  evaluateWorkflowTransition,
+  isTrackedWorkflowMode,
+  readActiveWorkflowModes,
+} from './workflow-transition.js';
 import { reconcileWorkflowTransition } from './workflow-transition-reconcile.js';
 import {
   buildAutopilotDeepInterviewRalplanGateError,
@@ -455,12 +460,22 @@ export async function executeStateOperation(
           }
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
+            const activeDetailModes = await readActiveWorkflowModes(cwd, effectiveSessionId);
+            const detailDecision = evaluateWorkflowTransition(activeDetailModes, mode);
+            if (!detailDecision.allowed && detailDecision.denialReason === 'rollback') {
+              validationError = buildWorkflowTransitionError(activeDetailModes, mode, 'write');
+              return;
+            }
+            const transitionCurrentModes = mode === 'ralplan' && activeDetailModes.includes('deep-interview')
+              ? activeDetailModes
+              : undefined;
             try {
               const transition = await reconcileWorkflowTransition(cwd, mode, {
                 action: 'write',
                 sessionId: effectiveSessionId,
                 source: 'state-operations',
                 baseStateDir,
+                ...(transitionCurrentModes ? { currentModes: transitionCurrentModes } : {}),
               });
               transitionMessage ??= transition.transitionMessage;
             } catch (error) {

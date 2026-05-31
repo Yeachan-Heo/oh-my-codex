@@ -6,6 +6,7 @@ import {
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
   isTrackedWorkflowMode,
+  TRACKED_WORKFLOW_MODES,
   type TrackedWorkflowMode,
   type WorkflowTransitionAction,
   type WorkflowTransitionDecision,
@@ -70,6 +71,18 @@ function modeStatePathForRoot(
       : join(baseStateDir, `${mode}-state.json`);
   }
   return getStatePath(mode, cwd, sessionId);
+}
+
+
+async function assertAuthoritativeWorkflowStateReadable(
+  cwd: string,
+  sessionId?: string,
+  baseStateDir?: string,
+): Promise<void> {
+  for (const mode of TRACKED_WORKFLOW_MODES) {
+    const candidatePath = modeStatePathForRoot(mode, cwd, sessionId, baseStateDir);
+    await readJsonIfExists(candidatePath, { mode, throwOnParseError: true });
+  }
 }
 
 async function visibleTrackedModes(
@@ -214,6 +227,9 @@ export async function reconcileWorkflowTransition(
     source = 'workflow-transition',
     baseStateDir,
   } = options;
+  if (!options.currentModes) {
+    await assertAuthoritativeWorkflowStateReadable(cwd, sessionId, baseStateDir);
+  }
   const currentModes = options.currentModes
     ? [...options.currentModes].filter(isTrackedWorkflowMode)
     : await visibleTrackedModes(cwd, sessionId, baseStateDir);
