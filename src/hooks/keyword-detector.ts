@@ -10,9 +10,9 @@
  * rather than the full keyword/state table.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
@@ -200,23 +200,121 @@ function isSafeAutopilotContextSnapshotPath(value: unknown): value is string {
     && !path.includes('\\');
 }
 
+async function isReadableAutopilotContextSnapshotPath(sourceCwd: string, value: unknown): Promise<boolean> {
+  if (!isSafeAutopilotContextSnapshotPath(value)) return false;
+  await ensureSafeAutopilotContextDir(sourceCwd);
+  const absolutePath = join(sourceCwd, value);
+  try {
+    const snapshotStat = await lstat(absolutePath);
+    if (!snapshotStat.isFile() || snapshotStat.isSymbolicLink()) return false;
+    await readFile(absolutePath, 'utf-8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findReusableAutopilotContextSnapshotPath(
+  sourceCwd: string,
+  candidates: unknown[],
+): Promise<string | undefined> {
+  for (const candidate of candidates) {
+    if (!isSafeAutopilotContextSnapshotPath(candidate)) continue;
+    if (await isReadableAutopilotContextSnapshotPath(sourceCwd, candidate)) return candidate;
+  }
+  return undefined;
+}
+
+interface AutopilotContextSnapshotResult {
+  path: string;
+  recovery?: Record<string, unknown>;
+}
+
+async function ensureSafeAutopilotContextDir(sourceCwd: string): Promise<string> {
+  const rootRealPath = await realpath(sourceCwd);
+  const omxDir = join(sourceCwd, '.omx');
+  await mkdir(omxDir, { recursive: true });
+  if ((await lstat(omxDir)).isSymbolicLink()) {
+    throw new Error('Unsafe Autopilot context directory: .omx is a symbolic link');
+  }
+
+  const contextDir = join(omxDir, 'context');
+  await mkdir(contextDir, { recursive: true });
+  if ((await lstat(contextDir)).isSymbolicLink()) {
+    throw new Error('Unsafe Autopilot context directory: .omx/context is a symbolic link');
+  }
+
+  const contextRealPath = await realpath(contextDir);
+  const relativeToRoot = relative(rootRealPath, contextRealPath);
+  if (relativeToRoot === '' || relativeToRoot.startsWith('..') || isAbsolute(relativeToRoot)) {
+    throw new Error('Unsafe Autopilot context directory: resolved path escapes repository root');
+  }
+  return contextDir;
+}
+
+async function writeUniqueAutopilotContextSnapshot(
+  sourceCwd: string,
+  slug: string,
+  nowIso: string,
+  body: string,
+): Promise<string> {
+  const contextDir = await ensureSafeAutopilotContextDir(sourceCwd);
+  const timestamp = utcCompactTimestamp(nowIso);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const suffix = attempt === 0 ? '' : `-${attempt + 1}`;
+    const filename = `${slug}-${timestamp}${suffix}.md`;
+    const relativePath = `.omx/context/${filename}`;
+    const absolutePath = resolve(contextDir, filename);
+    try {
+      await writeFile(absolutePath, body, { encoding: 'utf-8', flag: 'wx' });
+      return relativePath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+  throw new Error(`Unable to allocate unique Autopilot context snapshot for ${slug}`);
+}
+
 async function ensureAutopilotContextSnapshot(
   sourceCwd: string,
   nowIso: string,
   activationText: string,
   existingPath?: unknown,
-): Promise<string> {
+  options: { allowTaskSnapshotCreation?: boolean } = {},
+): Promise<AutopilotContextSnapshotResult> {
   const existing = safeString(existingPath).trim();
   if (existing) {
-    if (isSafeAutopilotContextSnapshotPath(existing)) return existing;
+    if (isSafeAutopilotContextSnapshotPath(existing)) return { path: existing };
     throw new Error(`Unsafe Autopilot context snapshot path: ${existing}`);
   }
 
+  if (options.allowTaskSnapshotCreation === false) {
+    const slug = 'autopilot-recovery';
+    const continuationInput = activationText.trim() || '<empty>';
+    const body = [
+      '# Autopilot context recovery',
+      '',
+      '- recovery status: degraded',
+      '- reason: no safe legacy Autopilot context snapshot path was available during continuation.',
+      `- continuation input: ${continuationInput}`,
+      '- original task statement: unavailable; do not treat the continuation input as the task statement.',
+      '- required follow-up: re-establish or confirm the intended task context before downstream handoff.',
+      '',
+    ].join('\n');
+    const path = await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body);
+    return {
+      path,
+      recovery: {
+        status: 'degraded',
+        reason: 'missing-or-unsafe-legacy-context-snapshot',
+        recovered_at: nowIso,
+        source: 'keyword-detector',
+      },
+    };
+  }
+
   const slug = slugifyAutopilotTask(activationText);
-  const contextDir = join(sourceCwd, '.omx', 'context');
-  await mkdir(contextDir, { recursive: true });
-  const relativePath = `.omx/context/${slug}-${utcCompactTimestamp(nowIso)}.md`;
-  const absolutePath = join(sourceCwd, relativePath);
   const taskStatement = activationText.trim() || '$autopilot';
   const body = [
     `# Autopilot context: ${slug}`,
@@ -229,8 +327,7 @@ async function ensureAutopilotContextSnapshot(
     '- likely codebase touchpoints: to be discovered during pre-context intake and planning.',
     '',
   ].join('\n');
-  await writeFile(absolutePath, body, 'utf-8');
-  return relativePath;
+  return { path: await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body) };
 }
 
 function createDeepInterviewInputLock(nowIso: string, previous?: DeepInterviewInputLock): DeepInterviewInputLock {
@@ -497,21 +594,27 @@ async function persistStatefulSkillSeedState(
     const existingStateRaw = (reusableModeState?.state && typeof reusableModeState.state === 'object')
       ? reusableModeState.state as Record<string, unknown>
       : {};
-    const { context_snapshot_path: legacyStateContextSnapshotPath, ...existingState } = existingStateRaw;
+    const {
+      context_snapshot_path: legacyStateContextSnapshotPath,
+      context_snapshot_recovery: _legacyContextSnapshotRecovery,
+      ...existingState
+    } = existingStateRaw;
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
-    const existingContextSnapshotPath = [
+    const existingContextSnapshotPath = await findReusableAutopilotContextSnapshotPath(sourceCwd, [
       existingHandoffs.context_snapshot_path,
       legacyStateContextSnapshotPath,
       reusableModeState?.context_snapshot_path,
-    ].find(isSafeAutopilotContextSnapshotPath);
-    const contextSnapshotPath = await ensureAutopilotContextSnapshot(
+    ]);
+    const contextSnapshot = await ensureAutopilotContextSnapshot(
       sourceCwd,
       nowIso,
       activationText || safeString(nextSkill.keyword) || '$autopilot',
       existingContextSnapshotPath,
+      { allowTaskSnapshotCreation: !preserveExistingModeState },
     );
+    const contextSnapshotPath = contextSnapshot.path;
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
     delete baseState.context_snapshot_path;
     baseState.state = {
@@ -544,6 +647,7 @@ async function persistStatefulSkillSeedState(
       return_to_ralplan_reason: Object.prototype.hasOwnProperty.call(existingState, 'return_to_ralplan_reason')
         ? existingState.return_to_ralplan_reason
         : null,
+      ...(contextSnapshot.recovery ? { context_snapshot_recovery: contextSnapshot.recovery } : {}),
       deep_interview_gate: (existingState.deep_interview_gate && typeof existingState.deep_interview_gate === 'object')
         ? existingState.deep_interview_gate
         : {
