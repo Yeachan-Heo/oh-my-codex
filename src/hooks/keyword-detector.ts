@@ -498,13 +498,15 @@ async function persistStatefulSkillSeedState(
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
+    const existingContextSnapshotPath = [
+      existingHandoffs.context_snapshot_path,
+      reusableModeState?.context_snapshot_path,
+    ].find(isSafeAutopilotContextSnapshotPath);
     const contextSnapshotPath = await ensureAutopilotContextSnapshot(
       sourceCwd,
       nowIso,
       activationText || safeString(nextSkill.keyword) || '$autopilot',
-      isSafeAutopilotContextSnapshotPath(existingHandoffs.context_snapshot_path)
-        ? existingHandoffs.context_snapshot_path
-        : reusableModeState?.context_snapshot_path,
+      existingContextSnapshotPath,
     );
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
     baseState.state = {

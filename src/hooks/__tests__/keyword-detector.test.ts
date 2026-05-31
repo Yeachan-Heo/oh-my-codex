@@ -719,7 +719,8 @@ describe('keyword detector skill-active-state lifecycle', () => {
         mode: 'autopilot',
         current_phase: 'deep-interview',
         started_at: '2026-05-29T00:00:00.000Z',
-        state: { handoff_artifacts: { context_snapshot_path: '.omx/context/../../escape.md' } },
+        context_snapshot_path: '.omx/context/../../escape.md',
+        state: { handoff_artifacts: { deep_interview: null } },
       }, null, 2));
 
       const result = await recordSkillActivation({
