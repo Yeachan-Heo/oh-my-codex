@@ -247,6 +247,12 @@ jobs:
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install self-hosted Rust build prerequisites
+        run: |
+          if ! command -v cc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential
+          fi
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -265,6 +271,12 @@ jobs:
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install self-hosted Rust build prerequisites
+        run: |
+          if ! command -v cc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential
+          fi
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -404,6 +416,12 @@ jobs:
             catalog-check: false
     steps:
       - uses: actions/checkout@v4
+      - name: Install self-hosted test prerequisites
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y tmux
+          fi
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
@@ -452,6 +470,12 @@ jobs:
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install self-hosted test prerequisites
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y tmux
+          fi
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -517,6 +541,12 @@ jobs:
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install self-hosted Rust build prerequisites
+        run: |
+          if ! command -v cc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential
+          fi
       - uses: actions/setup-node@v6
         with:
           node-version: 20
