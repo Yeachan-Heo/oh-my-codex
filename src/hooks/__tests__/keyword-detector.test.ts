@@ -1,7 +1,7 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -674,6 +674,8 @@ describe('keyword detector skill-active-state lifecycle', () => {
         context_snapshot_path: '.omx/context/legacy-task-20260529T000000Z.md',
         state: { handoff_artifacts: { deep_interview: null } },
       }, null, 2));
+      await mkdir(join(cwd, '.omx', 'context'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'context', 'legacy-task-20260529T000000Z.md'), '# legacy task');
 
       await recordSkillActivation({
         stateDir,
@@ -733,10 +735,87 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(existsSync(join(cwd, '.omx', 'escape.md')), false);
       const modeState = JSON.parse(await readFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), 'utf-8')) as {
         context_snapshot_path?: string;
-        state?: { handoff_artifacts?: { context_snapshot_path?: string } };
+        state?: { handoff_artifacts?: { context_snapshot_path?: string }; context_snapshot_recovery?: { status?: string; reason?: string } };
       };
       assert.equal(modeState.context_snapshot_path, undefined);
-      assert.equal(modeState.state?.handoff_artifacts?.context_snapshot_path, '.omx/context/continue-20260530T000000Z.md');
+      assert.equal(modeState.state?.handoff_artifacts?.context_snapshot_path, '.omx/context/autopilot-recovery-20260530T000000Z.md');
+      assert.equal(modeState.state?.context_snapshot_recovery?.status, 'degraded');
+      assert.equal(modeState.state?.context_snapshot_recovery?.reason, 'missing-or-unsafe-legacy-context-snapshot');
+      const recoverySnapshot = await readFile(join(cwd, '.omx', 'context', 'autopilot-recovery-20260530T000000Z.md'), 'utf-8');
+      assert.match(recoverySnapshot, /recovery status: degraded/);
+      assert.match(recoverySnapshot, /do not treat the continuation input as the task statement/);
+      assert.doesNotMatch(recoverySnapshot, /task statement: continue/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not follow symlinked Autopilot context directories when writing snapshots', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-symlink-context-'));
+    const outside = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-symlink-outside-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await symlink(outside, join(cwd, '.omx', 'context'));
+      await mkdir(stateDir, { recursive: true });
+
+      const warnings: unknown[][] = [];
+      mock.method(console, 'warn', (...args: unknown[]) => {
+        warnings.push(args);
+      });
+      await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$autopilot symlink escape',
+        sessionId: 'sess-autopilot-symlink-context',
+        threadId: 'thread-symlink-context',
+        turnId: 'turn-symlink-context',
+        nowIso: '2026-05-30T00:00:00.000Z',
+      });
+
+      assert.equal(warnings.length, 1);
+      assert.match(String(warnings[0][1]), /symbolic link/);
+      assert.equal(existsSync(join(outside, 'symlink-escape-20260530T000000Z.md')), false);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autopilot-symlink-context', 'autopilot-state.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('allocates unique Autopilot context snapshot paths for same-second matching slugs', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-context-collision-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+
+      await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$autopilot same task',
+        sessionId: 'sess-autopilot-collision-a',
+        threadId: 'thread-collision',
+        turnId: 'turn-collision-a',
+        nowIso: '2026-05-30T00:00:00.000Z',
+      });
+      await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$autopilot same task',
+        sessionId: 'sess-autopilot-collision-b',
+        threadId: 'thread-collision',
+        turnId: 'turn-collision-b',
+        nowIso: '2026-05-30T00:00:00.000Z',
+      });
+
+      const first = JSON.parse(await readFile(join(stateDir, 'sessions', 'sess-autopilot-collision-a', 'autopilot-state.json'), 'utf-8')) as {
+        state?: { handoff_artifacts?: { context_snapshot_path?: string } };
+      };
+      const second = JSON.parse(await readFile(join(stateDir, 'sessions', 'sess-autopilot-collision-b', 'autopilot-state.json'), 'utf-8')) as {
+        state?: { handoff_artifacts?: { context_snapshot_path?: string } };
+      };
+      assert.equal(first.state?.handoff_artifacts?.context_snapshot_path, '.omx/context/same-task-20260530T000000Z.md');
+      assert.equal(second.state?.handoff_artifacts?.context_snapshot_path, '.omx/context/same-task-20260530T000000Z-2.md');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2770,6 +2849,8 @@ deepMaxRounds = 21
           state: { context_snapshot_path: '.omx/context/existing.md' },
         }),
       );
+      await mkdir(join(cwd, '.omx', 'context'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'context', 'existing.md'), '# existing context');
 
       const result = await recordSkillActivation({
         stateDir,
@@ -2993,6 +3074,8 @@ deepMaxRounds = 21
           state: { context_snapshot_path: '.omx/context/autopilot.md' },
         }, null, 2),
       );
+      await mkdir(join(cwd, '.omx', 'context'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'context', 'autopilot.md'), '# autopilot context');
 
       const result = await recordSkillActivation({
         stateDir,
