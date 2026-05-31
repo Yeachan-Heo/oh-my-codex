@@ -749,12 +749,13 @@ function hasPersistedSetupPreferences(
 function formatPersistedSetupPreferenceSummary(
 	preferences: Partial<PersistedSetupScope>,
 ): string {
-	return [
+	const summary = [
 		`scope=${preferences.scope ?? "not recorded"}`,
 		`installMode=${preferences.installMode ?? "not recorded"}`,
 		`mcpMode=${preferences.mcpMode ?? "not recorded"}`,
-		`teamMode=${preferences.teamMode ?? "enabled"}`,
-	].join(", ");
+	];
+	if (preferences.teamMode) summary.push(`teamMode=${preferences.teamMode}`);
+	return summary.join(", ");
 }
 
 async function promptForPersistedSetupReview(
@@ -1976,7 +1977,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const setupPreferencesToPersist: PersistedSetupScope = {
 		scope: resolvedScope.scope,
 		mcpMode: resolvedMcpMode.mcpMode,
-		teamMode: resolvedTeamMode,
+		...(requestedTeamMode || persistedPreferences?.teamMode || resolvedTeamMode === "disabled"
+			? { teamMode: resolvedTeamMode }
+			: {}),
 		...(resolvedInstallMode &&
 		(resolvedScope.scope === "user" ||
 			resolvedInstallMode.installMode === "plugin")

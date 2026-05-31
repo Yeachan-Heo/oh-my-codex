@@ -3324,8 +3324,10 @@ async function maybeBuildOrdinaryStopNoProgressOutput(
   stateDir: string,
   canonicalSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-  const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
-  if (!stopHookActive) return null;
+  const lastAssistantMessage = safeString(
+    payload.last_assistant_message ?? payload.lastAssistantMessage,
+  ).trim();
+  if (!lastAssistantMessage) return null;
 
   const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
   const state = await readJsonIfExists(statePath) ?? {};
