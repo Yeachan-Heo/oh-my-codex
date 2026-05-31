@@ -48,6 +48,12 @@ describe('HUD resize hook helpers', () => {
     });
   });
 
+  it('rejects malformed tmux ids in hook context output', () => {
+    assert.equal(parseHudResizeHookContext('$7; touch /tmp/owned\t@3\n', '%1'), null);
+    assert.equal(parseHudResizeHookContext('$7\t@3$(touch /tmp/owned)\n', '%1'), null);
+    assert.equal(parseHudResizeHookContext('$7\t@3\n', '%1; touch /tmp/owned'), null);
+  });
+
   it('registers a client-resized hook at session scope with exact HUD pane targeting', () => {
     const calls: string[][] = [];
 
@@ -60,17 +66,17 @@ describe('HUD resize hook helpers', () => {
     const hookSlot = buildHudResizeHookSlot('omx_hud_resize_7_3_1');
     assert.equal(result, true);
     assert.deepEqual(calls[0], ['display-message', '-p', '-t', '%1', '#{session_id}\t#{window_id}']);
-    assert.deepEqual(calls[1], ['set-hook', '-u', '-t', '$7', buildHudResizeHookSlot('omx_hud_resize_7_3')]);
-    assert.equal(calls[2]?.[0], 'set-hook');
-    assert.equal(calls[2]?.[1], '-t');
-    assert.equal(calls[2]?.[2], '$7');
-    assert.equal(calls[2]?.[3], hookSlot);
-    assert.match(calls[2]?.[4] ?? '', /^run-shell -b /);
-    assert.match(calls[2]?.[4] ?? '', /resize-pane/);
-    assert.match(calls[2]?.[4] ?? '', /set-hook/);
-    assert.doesNotMatch(calls[2]?.[4] ?? '', /'-w'/);
-    assert.match(calls[2]?.[4] ?? '', new RegExp(`sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}`));
-    assert.match(calls[2]?.[4] ?? '', new RegExp(hookSlot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(calls[1]?.[0], 'set-hook');
+    assert.equal(calls[1]?.[1], '-t');
+    assert.equal(calls[1]?.[2], '$7');
+    assert.equal(calls[1]?.[3], hookSlot);
+    assert.match(calls[1]?.[4] ?? '', /^run-shell -b /);
+    assert.match(calls[1]?.[4] ?? '', /resize-pane/);
+    assert.match(calls[1]?.[4] ?? '', /set-hook/);
+    assert.doesNotMatch(calls[1]?.[4] ?? '', /'-w'/);
+    assert.match(calls[1]?.[4] ?? '', new RegExp(`sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}`));
+    assert.match(calls[1]?.[4] ?? '', new RegExp(hookSlot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.deepEqual(calls[2], ['set-hook', '-u', '-t', '$7', buildHudResizeHookSlot('omx_hud_resize_7_3')]);
   });
 
   it('unregisters the same per-window hook slot', () => {
@@ -106,8 +112,8 @@ describe('HUD resize hook helpers', () => {
     assert.equal(registerHudResizeHook('%9', '%1', 3, execFor('@3')), true);
     assert.equal(registerHudResizeHook('%10', '%2', 3, execFor('@4')), true);
 
-    const firstSlot = registered[1]?.[3];
-    const secondSlot = registered[3]?.[3];
+    const firstSlot = registered[0]?.[3];
+    const secondSlot = registered[2]?.[3];
     assert.match(firstSlot ?? '', /^client-resized\[\d+\]$/);
     assert.match(secondSlot ?? '', /^client-resized\[\d+\]$/);
     assert.notEqual(firstSlot, secondSlot);
@@ -124,8 +130,8 @@ describe('HUD resize hook helpers', () => {
     assert.equal(registerHudResizeHook('%9', '%1', 3, execTmuxSync), true);
     assert.equal(registerHudResizeHook('%10', '%2', 3, execTmuxSync), true);
 
-    const firstSlot = registered[1]?.[3];
-    const secondSlot = registered[3]?.[3];
+    const firstSlot = registered[0]?.[3];
+    const secondSlot = registered[2]?.[3];
     assert.match(firstSlot ?? '', /^client-resized\[\d+\]$/);
     assert.match(secondSlot ?? '', /^client-resized\[\d+\]$/);
     assert.notEqual(firstSlot, secondSlot);
@@ -142,7 +148,40 @@ describe('HUD resize hook helpers', () => {
     assert.equal(registerHudResizeHook('%9', '%1', 3, execTmuxSync), true);
     assert.equal(registerHudResizeHook('%10', '%1', 3, execTmuxSync), true);
 
-    assert.equal(registered[1]?.[3], registered[3]?.[3]);
+    assert.equal(registered[0]?.[3], registered[2]?.[3]);
+  });
+
+  it('does not unregister the legacy hook when installing the leader-scoped hook fails', () => {
+    const calls: string[][] = [];
+
+    const result = registerHudResizeHook('%9', '%1', 3, (args) => {
+      calls.push(args);
+      if (args[0] === 'display-message') return '$7\t@3\n';
+      if (args[0] === 'set-hook' && args[1] === '-t') throw new Error('transient tmux failure');
+      return '';
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(calls.map((args) => args.slice(0, 2)), [
+      ['display-message', '-p'],
+      ['set-hook', '-t'],
+    ]);
+  });
+
+  it('keeps registration successful when legacy cleanup fails after installing the leader-scoped hook', () => {
+    const calls: string[][] = [];
+
+    const result = registerHudResizeHook('%9', '%1', 3, (args) => {
+      calls.push(args);
+      if (args[0] === 'display-message') return '$7\t@3\n';
+      if (args[0] === 'set-hook' && args[1] === '-u') throw new Error('stale legacy cleanup failure');
+      return '';
+    });
+
+    assert.equal(result, true);
+    assert.equal(calls[1]?.[0], 'set-hook');
+    assert.equal(calls[1]?.[1], '-t');
+    assert.deepEqual(calls[2], ['set-hook', '-u', '-t', '$7', buildHudResizeHookSlot('omx_hud_resize_7_3')]);
   });
 
   it('unregisters only the leader-scoped hook slot for the selected leader', () => {

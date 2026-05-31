@@ -50,18 +50,18 @@ export interface ReconcileHudForPromptSubmitDeps {
   readHudConfig?: typeof readHudConfig;
   readAllState?: typeof readAllState;
   resolveOmxCliEntryPath?: typeof resolveOmxCliEntryPath;
-  registerHudResizeHook?: (hudPaneId: string, currentPaneId: string | undefined, heightLines: number) => boolean;
-  unregisterHudResizeHook?: (currentPaneId: string | undefined) => boolean;
+  registerHudResizeHook?: (hudPaneId: string, leaderPaneId: string | undefined, heightLines: number) => boolean;
+  unregisterHudResizeHook?: (leaderPaneId: string | undefined) => boolean;
 }
 
 function ensureHudResizeHook(
   hudPaneId: string,
-  currentPaneId: string | undefined,
+  leaderPaneId: string | undefined,
   desiredHeight: number,
   deps: ReconcileHudForPromptSubmitDeps,
 ): void {
   try {
-    (deps.registerHudResizeHook ?? registerHudResizeHook)(hudPaneId, currentPaneId, desiredHeight);
+    (deps.registerHudResizeHook ?? registerHudResizeHook)(hudPaneId, leaderPaneId, desiredHeight);
   } catch {
     // Non-critical — hook registration failure does not break HUD lifecycle.
   }

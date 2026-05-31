@@ -665,7 +665,7 @@ describe('reconcileHudForPromptSubmit', () => {
   });
 
   it('registers client-resized hook scoped from the emitting pane after resizing an existing HUD pane', async () => {
-    const registered: Array<{ hudPaneId: string; currentPaneId: string | undefined; heightLines: number }> = [];
+    const registered: Array<{ hudPaneId: string; leaderPaneId: string | undefined; heightLines: number }> = [];
 
     await reconcileHudForPromptSubmit('/repo', {
       env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
@@ -678,8 +678,8 @@ describe('reconcileHudForPromptSubmit', () => {
         },
       ],
       resizeTmuxPane: () => true,
-      registerHudResizeHook: (hudPaneId, currentPaneId, heightLines) => {
-        registered.push({ hudPaneId, currentPaneId, heightLines });
+      registerHudResizeHook: (hudPaneId, leaderPaneId, heightLines) => {
+        registered.push({ hudPaneId, leaderPaneId, heightLines });
         return true;
       },
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
@@ -687,12 +687,12 @@ describe('reconcileHudForPromptSubmit', () => {
 
     assert.equal(registered.length, 1);
     assert.equal(registered[0]?.hudPaneId, '%2');
-    assert.equal(registered[0]?.currentPaneId, '%1');
+    assert.equal(registered[0]?.leaderPaneId, '%1');
     assert.equal(registered[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
   it('registers client-resized hook scoped from the emitting pane after creating a new HUD pane', async () => {
-    const registered: Array<{ hudPaneId: string; currentPaneId: string | undefined; heightLines: number }> = [];
+    const registered: Array<{ hudPaneId: string; leaderPaneId: string | undefined; heightLines: number }> = [];
 
     await reconcileHudForPromptSubmit('/repo', {
       env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
@@ -701,8 +701,8 @@ describe('reconcileHudForPromptSubmit', () => {
       ],
       createHudWatchPane: () => '%9',
       resizeTmuxPane: () => true,
-      registerHudResizeHook: (hudPaneId, currentPaneId, heightLines) => {
-        registered.push({ hudPaneId, currentPaneId, heightLines });
+      registerHudResizeHook: (hudPaneId, leaderPaneId, heightLines) => {
+        registered.push({ hudPaneId, leaderPaneId, heightLines });
         return true;
       },
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
@@ -710,13 +710,13 @@ describe('reconcileHudForPromptSubmit', () => {
 
     assert.equal(registered.length, 1);
     assert.equal(registered[0]?.hudPaneId, '%9');
-    assert.equal(registered[0]?.currentPaneId, '%1');
+    assert.equal(registered[0]?.leaderPaneId, '%1');
     assert.equal(registered[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
   it('keeps the resize hook on the reused duplicate keeper pane', async () => {
     const unregistered: Array<string | undefined> = [];
-    const registered: Array<{ hudPaneId: string; currentPaneId: string | undefined }> = [];
+    const registered: Array<{ hudPaneId: string; leaderPaneId: string | undefined }> = [];
 
     await reconcileHudForPromptSubmit('/repo', {
       env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
@@ -728,14 +728,14 @@ describe('reconcileHudForPromptSubmit', () => {
       killTmuxPane: () => true,
       createHudWatchPane: () => '%9',
       resizeTmuxPane: () => true,
-      unregisterHudResizeHook: (currentPaneId) => { unregistered.push(currentPaneId); return true; },
-      registerHudResizeHook: (hudPaneId, currentPaneId) => { registered.push({ hudPaneId, currentPaneId }); return true; },
+      unregisterHudResizeHook: (leaderPaneId) => { unregistered.push(leaderPaneId); return true; },
+      registerHudResizeHook: (hudPaneId, leaderPaneId) => { registered.push({ hudPaneId, leaderPaneId }); return true; },
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
     assert.deepEqual(unregistered, []);
     assert.equal(registered.length, 1);
     assert.equal(registered[0]?.hudPaneId, '%2');
-    assert.equal(registered[0]?.currentPaneId, '%1');
+    assert.equal(registered[0]?.leaderPaneId, '%1');
   });
 });

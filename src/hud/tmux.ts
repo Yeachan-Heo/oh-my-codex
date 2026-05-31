@@ -217,6 +217,18 @@ function normalizeTmuxHookToken(value: string): string {
   return normalized || 'unknown';
 }
 
+function isTmuxSessionId(value: string): boolean {
+  return /^\$\d+$/.test(value);
+}
+
+function isTmuxWindowId(value: string): boolean {
+  return /^@\d+$/.test(value);
+}
+
+function isTmuxPaneId(value: string): boolean {
+  return /^%\d+$/.test(value);
+}
+
 export function buildHudResizeHookName(sessionId: string, windowId: string, leaderPaneId: string): string {
   return [
     'omx_hud_resize',
@@ -256,7 +268,7 @@ export function parseHudResizeHookContext(output: string, leaderPaneId: string):
     ?.split('\t')
     .map((part) => part.trim()) ?? [];
   const normalizedLeaderPaneId = leaderPaneId.trim();
-  if (!sessionId || !windowId || !normalizedLeaderPaneId.startsWith('%')) return null;
+  if (!isTmuxSessionId(sessionId) || !isTmuxWindowId(windowId) || !isTmuxPaneId(normalizedLeaderPaneId)) return null;
   const hookName = buildHudResizeHookName(sessionId, windowId, normalizedLeaderPaneId);
   return {
     sessionId,
@@ -268,20 +280,20 @@ export function parseHudResizeHookContext(output: string, leaderPaneId: string):
 }
 
 export function readHudResizeHookContext(
-  currentPaneId: string | undefined,
+  leaderPaneId: string | undefined,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): HudResizeHookContext | null {
-  if (!currentPaneId?.startsWith('%')) return null;
+  if (!leaderPaneId || !isTmuxPaneId(leaderPaneId)) return null;
   try {
     return parseHudResizeHookContext(
       execTmuxSync([
         'display-message',
         '-p',
         '-t',
-        currentPaneId,
+        leaderPaneId,
         '#{session_id}\t#{window_id}',
       ]),
-      currentPaneId,
+      leaderPaneId,
     );
   } catch {
     return null;
@@ -474,19 +486,19 @@ export function resizeTmuxPane(
 
 export function registerHudResizeHook(
   hudPaneId: string,
-  currentPaneId: string | undefined,
+  leaderPaneId: string | undefined,
   heightLines: number,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): boolean {
   if (!hudPaneId.startsWith('%')) return false;
-  const context = readHudResizeHookContext(currentPaneId, execTmuxSync);
+  const context = readHudResizeHookContext(leaderPaneId, execTmuxSync);
   if (!context) return false;
   const tmuxBin = resolveTmuxBinaryForPlatform() || 'tmux';
   const height = String(Math.max(1, Math.floor(heightLines)));
   const resizeCmd = shellEscapeSingle(buildHudResizeHookCommand(tmuxBin, hudPaneId, height, context));
   try {
-    unregisterLegacyHudResizeHook(context, execTmuxSync);
     execTmuxSync(['set-hook', '-t', context.sessionId, context.hookSlot, `run-shell -b ${resizeCmd}`]);
+    unregisterLegacyHudResizeHook(context, execTmuxSync);
     return true;
   } catch {
     return false;
@@ -494,10 +506,10 @@ export function registerHudResizeHook(
 }
 
 export function unregisterHudResizeHook(
-  currentPaneId: string | undefined,
+  leaderPaneId: string | undefined,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): boolean {
-  const context = readHudResizeHookContext(currentPaneId, execTmuxSync);
+  const context = readHudResizeHookContext(leaderPaneId, execTmuxSync);
   if (!context) return false;
   try {
     unregisterLegacyHudResizeHook(context, execTmuxSync);

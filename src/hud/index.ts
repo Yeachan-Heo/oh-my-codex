@@ -75,7 +75,7 @@ interface RunWatchModeDependencies {
   renderHudFn: (ctx: HudRenderContext, preset: HudPreset, options?: { maxWidth?: number; maxLines?: number }) => string;
   runAuthorityTickFn: (options: { cwd: string }) => Promise<void>;
   resizeTmuxPaneFn: (paneId: string, heightLines: number) => boolean;
-  registerHudResizeHookFn: (hudPaneId: string, currentPaneId: string | undefined, heightLines: number) => boolean;
+  registerHudResizeHookFn: (hudPaneId: string, leaderPaneId: string | undefined, heightLines: number) => boolean;
   writeStdout: (text: string) => void;
   writeStderr: (text: string) => void;
   registerSigint: (handler: () => void) => void | (() => void);
@@ -402,11 +402,12 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
   }
   const envPaneId = process.env.TMUX_PANE?.trim();
   const currentPaneId = envPaneId || readActiveTmuxPaneId() || undefined;
+  const leaderPaneId = currentPaneId;
   const sessionId = process.env.OMX_SESSION_ID?.trim() || undefined;
-  const existingHudPaneIds = currentPaneId || sessionId
-    ? listCurrentWindowHudPaneIds(currentPaneId, undefined, {
+  const existingHudPaneIds = leaderPaneId || sessionId
+    ? listCurrentWindowHudPaneIds(leaderPaneId, undefined, {
         sessionId,
-        leaderPaneId: currentPaneId,
+        leaderPaneId,
       })
     : [];
   if (existingHudPaneIds.length >= 1) {
@@ -418,7 +419,7 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
     const ctx = await readAllState(cwd, config);
     const desiredHeight = getHudRenderMaxLines(ctx);
     resizeTmuxPane(keeperPaneId, desiredHeight);
-    if (currentPaneId) registerHudResizeHook(keeperPaneId, currentPaneId, desiredHeight);
+    if (leaderPaneId) registerHudResizeHook(keeperPaneId, leaderPaneId, desiredHeight);
     console.log(duplicatePaneIds.length > 0
       ? 'HUD already running in tmux pane. Removed duplicate HUD panes and reused existing HUD pane.'
       : 'HUD already running in tmux pane. Reused existing HUD pane.');
