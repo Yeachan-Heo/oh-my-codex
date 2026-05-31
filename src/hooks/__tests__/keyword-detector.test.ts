@@ -42,6 +42,7 @@ interface TestAutopilotModeState {
       context_snapshot?: {
         path?: string;
         kind?: string;
+        original_task_status?: string;
         recovery?: { status?: string; reason?: string };
       };
     };
@@ -108,8 +109,8 @@ async function assertAutopilotRecoverySnapshot(
   const recoverySnapshot = await readFile(join(cwd, snapshotPath), 'utf-8');
   assert.match(recoverySnapshot, /recovery status: degraded/);
   assert.match(recoverySnapshot, new RegExp(`recovery reason: ${expectedReason}`));
-  assert.match(recoverySnapshot, /do not treat the continuation input as the task statement/);
-  assert.doesNotMatch(recoverySnapshot, /task statement: continue/);
+  assert.match(recoverySnapshot, /do not treat the continuation input as the task seed/);
+  assert.doesNotMatch(recoverySnapshot, /task seed: continue/);
   return snapshotPath;
 }
 
@@ -711,6 +712,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
         context_snapshot: {
           path: '.omx/context/please-run-and-keep-going-20260225T000000Z.md',
           kind: 'canonical',
+          original_task_status: 'activation-prompt',
         },
         deep_interview: null,
         ralplan: null,
@@ -731,7 +733,8 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.state.qa_verdict, null);
       assert.equal(modeState.state.return_to_ralplan_reason, null);
       const snapshot = await readFile(join(cwd, '.omx', 'context', 'please-run-and-keep-going-20260225T000000Z.md'), 'utf-8');
-      assert.match(snapshot, /task statement: please run \$autopilot and keep going/);
+      assert.match(snapshot, /activation prompt \/ task seed: please run \$autopilot and keep going/);
+      assert.match(snapshot, /scope note: this seed captures the Autopilot activation prompt/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -760,6 +763,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.deepEqual(modeState.state?.handoff_artifacts?.context_snapshot, {
         path: '.omx/context/legacy-task-20260529T000000Z.md',
         kind: 'legacy',
+        original_task_status: 'legacy-unverified',
       });
       assert.equal(existsSync(join(cwd, '.omx', 'context', 'continue-20260530T000000Z.md')), false);
     } finally {
@@ -984,10 +988,11 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.deepEqual(modeState.state?.handoff_artifacts?.context_snapshot, {
         path: '.omx/context/implement-the-real-task-20260530T000000Z.md',
         kind: 'canonical',
+        original_task_status: 'activation-prompt',
       });
       assert.equal(modeState.state?.context_snapshot_recovery, undefined);
       const snapshot = await readFile(join(cwd, '.omx', 'context', 'implement-the-real-task-20260530T000000Z.md'), 'utf-8');
-      assert.match(snapshot, /task statement: \$autopilot implement the real task/);
+      assert.match(snapshot, /activation prompt \/ task seed: \$autopilot implement the real task/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1156,6 +1161,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
         context_snapshot: {
           path: '.omx/context/investigate-the-next-issue-20260530T000000Z.md',
           kind: 'canonical',
+          original_task_status: 'activation-prompt',
         },
         deep_interview: null,
         ralplan: null,

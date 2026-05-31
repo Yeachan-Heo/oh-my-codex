@@ -283,6 +283,7 @@ async function findReusableAutopilotContextSnapshotPath(
 interface AutopilotContextSnapshotResult {
   path: string;
   kind: AutopilotContextSnapshotKind;
+  original_task_status?: 'activation-prompt' | 'legacy-unverified' | 'unavailable';
   recovery?: Record<string, unknown>;
 }
 
@@ -348,7 +349,11 @@ async function ensureAutopilotContextSnapshot(
 ): Promise<AutopilotContextSnapshotResult> {
   if (existingSnapshot) {
     if (isSafeAutopilotContextSnapshotPath(existingSnapshot.path)) {
-      return { path: existingSnapshot.path, kind: existingSnapshot.kind };
+      return {
+        path: existingSnapshot.path,
+        kind: existingSnapshot.kind,
+        original_task_status: existingSnapshot.kind === 'legacy' ? 'legacy-unverified' : 'activation-prompt',
+      };
     }
     throw new Error(`Unsafe Autopilot context snapshot path: ${existingSnapshot.path}`);
   }
@@ -364,7 +369,8 @@ async function ensureAutopilotContextSnapshot(
       `- recovery reason: ${reason}`,
       `- reason detail: ${AUTOPILOT_CONTEXT_RECOVERY_REASON_MESSAGES[reason]}`,
       `- continuation input: ${continuationInput}`,
-      '- original task statement: unavailable; do not treat the continuation input as the task statement.',
+      '- original task status: unavailable',
+      '- original task seed: unavailable; do not treat the continuation input as the task seed.',
       '- required follow-up: re-establish or confirm the intended task context before downstream handoff.',
       '',
     ].join('\n');
@@ -372,6 +378,7 @@ async function ensureAutopilotContextSnapshot(
     return {
       path,
       kind: 'recovery',
+      original_task_status: 'unavailable',
       recovery: {
         status: 'degraded',
         reason,
@@ -382,11 +389,13 @@ async function ensureAutopilotContextSnapshot(
   }
 
   const slug = slugifyAutopilotTask(activationText);
-  const taskStatement = activationText.trim() || '$autopilot';
+  const taskSeed = activationText.trim() || '$autopilot';
   const body = [
-    `# Autopilot context: ${slug}`,
+    `# Autopilot task seed: ${slug}`,
     '',
-    `- task statement: ${taskStatement}`,
+    `- activation prompt / task seed: ${taskSeed}`,
+    '- original task status: activation-prompt',
+    '- scope note: this seed captures the Autopilot activation prompt and is not guaranteed to include prior conversation context.',
     '- desired outcome: complete the requested Autopilot workflow correctly with durable gate evidence.',
     '- known facts/evidence: Autopilot was activated from a UserPromptSubmit keyword.',
     '- constraints: follow deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa; do not skip gates without persisted evidence.',
@@ -394,7 +403,11 @@ async function ensureAutopilotContextSnapshot(
     '- likely codebase touchpoints: to be discovered during pre-context intake and planning.',
     '',
   ].join('\n');
-  return { path: await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body), kind: 'canonical' };
+  return {
+    path: await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body),
+    kind: 'canonical',
+    original_task_status: 'activation-prompt',
+  };
 }
 
 function createDeepInterviewInputLock(nowIso: string, previous?: DeepInterviewInputLock): DeepInterviewInputLock {
@@ -735,6 +748,7 @@ async function persistStatefulSkillSeedState(
         context_snapshot: {
           path: contextSnapshotPath,
           kind: contextSnapshot.kind,
+          ...(contextSnapshot.original_task_status ? { original_task_status: contextSnapshot.original_task_status } : {}),
           ...(contextSnapshot.recovery ? { recovery: contextSnapshot.recovery } : {}),
         },
       },

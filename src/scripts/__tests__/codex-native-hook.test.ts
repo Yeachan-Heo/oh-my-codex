@@ -3497,7 +3497,8 @@ standardMaxRounds = 15
       const snapshotPath = autopilotState.state?.handoff_artifacts?.context_snapshot_path ?? "";
       assert.match(snapshotPath, /^\.omx\/context\/implement-issue-2430-\d{8}T\d{6}Z\.md$/);
       const snapshot = await readFile(join(cwd, snapshotPath), "utf-8");
-      assert.match(snapshot, /task statement: \$autopilot implement issue #2430/);
+      assert.match(snapshot, /activation prompt \/ task seed: \$autopilot implement issue #2430/);
+      assert.match(snapshot, /scope note: this seed captures the Autopilot activation prompt/);
       assert.match(snapshot, /constraints: follow deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
