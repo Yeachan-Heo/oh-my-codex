@@ -103,6 +103,10 @@ function defaultProcCwd(): string | null {
   return safeCallString(() => readlinkSync('/proc/self/cwd'));
 }
 
+function isDeletedCwdMarkerText(path: string | null): boolean {
+  return Boolean(path && /(?:^|\s)\(deleted\)\s*$/.test(path.trim()));
+}
+
 /**
  * Resolve the cwd a long-running HUD watch should read on this frame.
  *
@@ -121,9 +125,13 @@ export function resolveHudWatchCwd(
   const realpath = deps.realpath ?? ((path: string) => realpathSync.native(path));
   const readProcCwd = deps.readProcCwd ?? defaultProcCwd;
 
-  const launchPath = launchCwd.trim() || safeCallString(getCwd) || launchCwd;
-  const livePath = safeCallString(readProcCwd) || safeCallString(getCwd);
+  const processCwd = safeCallString(getCwd);
+  const launchPath = launchCwd.trim() || processCwd || launchCwd;
+  const livePath = safeCallString(readProcCwd) || processCwd;
   if (!livePath) return launchPath;
+  if (isDeletedCwdMarkerText(livePath) && !isDeletedCwdMarkerText(launchPath) && processCwd !== livePath) {
+    return launchPath;
+  }
 
   const launchReal = safeCallString(() => realpath(launchPath));
   const liveReal = safeCallString(() => realpath(livePath));

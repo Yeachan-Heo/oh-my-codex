@@ -141,6 +141,11 @@ function isDeletedTmuxPanePath(path: string | undefined): boolean {
   return Boolean(currentPath && /(?:^|\s)\(deleted\)\s*$/.test(currentPath) && !existsSync(currentPath));
 }
 
+function hasDeletedTmuxPaneMarker(path: string | undefined): boolean {
+  const currentPath = path?.trim();
+  return Boolean(currentPath && /(?:^|\s)\(deleted\)\s*$/.test(currentPath));
+}
+
 function isDoctorSmokeSessionId(sessionId: string | undefined): boolean {
   return /^(?:doctor-smoke|omx-doctor-[a-z0-9-]+-smoke)$/i.test(sessionId ?? '');
 }
@@ -149,9 +154,10 @@ function shouldReapDeletedCwdHudPane(pane: TmuxPaneSnapshot, isLivePane: (paneId
   // A deleted tmux launch cwd is not enough to prove a HUD is dead: watch mode can
   // keep serving from a resolved live cwd. Reap only explicit doctor smoke panes or
   // owner-tagged panes whose leader is gone.
-  if (!hasHudPaneOwnerMetadata(pane) || !isDeletedTmuxPanePath(pane.currentPath)) return false;
+  if (!hasHudPaneOwnerMetadata(pane) || !hasDeletedTmuxPaneMarker(pane.currentPath)) return false;
   const owner = readHudPaneOwner(pane);
   if (isDoctorSmokeSessionId(owner.sessionId)) return true;
+  if (!isDeletedTmuxPanePath(pane.currentPath)) return false;
   return !owner.leaderPaneId || !isLivePane(owner.leaderPaneId);
 }
 

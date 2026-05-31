@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,51 @@ describe('runHudAuthorityTick', () => {
       assert.ok(typeof lease.heartbeat_at === 'string' && lease.heartbeat_at.length > 0);
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not materialize authority state under a deleted cwd marker path', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'omx-hud-authority-deleted-marker-'));
+    const deletedMarkerCwd = join(parent, 'doctor-smoke (deleted)');
+    try {
+      let invoked = false;
+      await runHudAuthorityTick(
+        { cwd: deletedMarkerCwd, nodePath: '/node', packageRoot: '/pkg' },
+        {
+          runProcess: async () => {
+            invoked = true;
+          },
+        },
+      );
+
+      assert.equal(invoked, false);
+      assert.equal(existsSync(join(deletedMarkerCwd, '.omx', 'state')), false);
+      assert.equal(existsSync(deletedMarkerCwd), false);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('writes authority state under a real existing cwd that literally ends with the marker text', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'omx-hud-authority-live-marker-'));
+    const liveMarkerCwd = join(parent, 'real workspace (deleted)');
+    mkdirSync(liveMarkerCwd);
+    try {
+      let invoked = false;
+      await runHudAuthorityTick(
+        { cwd: liveMarkerCwd, nodePath: '/node', packageRoot: '/pkg' },
+        {
+          runProcess: async () => {
+            invoked = true;
+          },
+        },
+      );
+
+      assert.equal(invoked, true);
+      const lease = JSON.parse(readFileSync(join(liveMarkerCwd, '.omx', 'state', 'notify-fallback-authority-owner.json'), 'utf-8'));
+      assert.equal(lease.cwd, liveMarkerCwd);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 

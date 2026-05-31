@@ -422,6 +422,33 @@ describe('dead HUD pane reaper', () => {
     assert.deepEqual(result, { reaped: ['%2'], preserved: [] });
   });
 
+  it('kills doctor-smoke HUD panes even if a literal deleted-marker cwd was materialized', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'omx-doctor-plugin-hook-live-marker-'));
+    const materializedDeletedPath = join(parent, 'smoke (deleted)');
+    mkdirSync(materializedDeletedPath);
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex\t/repo',
+        `%2\tnode\texec env OMX_SESSION_ID='omx-doctor-plugin-hook-smoke' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch\t${materializedDeletedPath}`,
+      ].join('\n'),
+    );
+    const killed: string[] = [];
+
+    try {
+      const result = reapDeadHudPanes(panes, {
+        killPane: (paneId) => {
+          killed.push(paneId);
+          return true;
+        },
+      });
+
+      assert.deepEqual(killed, ['%2']);
+      assert.deepEqual(result, { reaped: ['%2'], preserved: [] });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('preserves non-doctor deleted-cwd HUD panes while their leader is still live', () => {
     const deletedPath = join(tmpdir(), `omx-live-leader-deleted-cwd-${process.pid}-${Date.now()} (deleted)`);
     rmSync(deletedPath, { recursive: true, force: true });

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getPackageRoot } from '../utils/package.js';
@@ -22,6 +23,11 @@ export interface RunHudAuthorityTickDeps {
       timeoutMs: number;
     },
   ) => Promise<void> | void;
+}
+
+function isDeletedCwdMarkerPath(path: string): boolean {
+  const currentPath = path.trim();
+  return /(?:^|\s)\(deleted\)\s*$/.test(currentPath) && !existsSync(currentPath);
 }
 
 async function defaultRunProcess(
@@ -62,6 +68,7 @@ export async function runHudAuthorityTick(
   deps: RunHudAuthorityTickDeps = {},
 ): Promise<void> {
   const cwd = options.cwd;
+  if (isDeletedCwdMarkerPath(cwd)) return;
   const nodePath = options.nodePath ?? process.execPath;
   const packageRoot = options.packageRoot ?? getPackageRoot();
   const pollMs = Math.max(1, options.pollMs ?? 75);
