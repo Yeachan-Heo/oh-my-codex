@@ -79,6 +79,108 @@ describe('run-test-files diagnostics', () => {
     }
   });
 
+
+  it('script-level force exit terminates a completed test child that blocks process exit', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      const testPath = join(testsDir, 'exit-block.test.js');
+      writeFileSync(
+        testPath,
+        [
+          "import { test } from 'node:test';",
+          `test(${JSON.stringify(testPath)}, () => { process.on('exit', () => { while (true) {} }); });`,
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(
+        wd,
+        {
+          OMX_NODE_TEST_FORCE_EXIT: '1',
+          OMX_NODE_TEST_FORCE_EXIT_GRACE_MS: '100',
+          OMX_NODE_TEST_RUNNER_TIMEOUT_MS: '2000',
+        },
+        4_000,
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /ok 1 - .*exit-block\.test\.js/);
+      assert.match(result.stderr, /TAP ok 1 with no later failures/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels script-level force exit when a later TAP failure appears', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'late-fail.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "import assert from 'node:assert/strict';",
+          "test('passes first', () => {});",
+          "test('fails shortly after the first ok line', async () => {",
+          "  await new Promise((resolve) => setTimeout(resolve, 25));",
+          "  assert.equal(1, 2);",
+          "});",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(
+        wd,
+        {
+          OMX_NODE_TEST_FORCE_EXIT: '1',
+          OMX_NODE_TEST_FORCE_EXIT_GRACE_MS: '200',
+          OMX_NODE_TEST_RUNNER_TIMEOUT_MS: '2000',
+        },
+        4_000,
+      );
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stdout, /not ok|# fail [1-9]/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves failing test status when script-level force exit is enabled', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'fail.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "import assert from 'node:assert/strict';",
+          "test('fails', () => { assert.equal(1, 2); });",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(
+        wd,
+        {
+          OMX_NODE_TEST_FORCE_EXIT: '1',
+          OMX_NODE_TEST_FORCE_EXIT_GRACE_MS: '100',
+          OMX_NODE_TEST_RUNNER_TIMEOUT_MS: '2000',
+        },
+        4_000,
+      );
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stdout, /not ok|# fail [1-9]/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
   it('logs that per-test timeout is disabled by default', () => {
     const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
     try {
