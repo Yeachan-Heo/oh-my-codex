@@ -1731,6 +1731,7 @@ function buildNativeOutsideTmuxTeamPromptBlockState(
   threadId?: string,
   turnId?: string,
 ): SkillActiveState | null {
+  if (!readTeamModeConfig(cwd).enabled) return null;
   const match = detectPrimaryKeyword(prompt);
   if (match?.skill !== "team") return null;
 

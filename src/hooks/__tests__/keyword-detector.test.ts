@@ -1459,6 +1459,36 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+  it('ignores disabled Team when selecting the primary workflow', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-disabled-primary-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'setup-scope.json'),
+        JSON.stringify({ scope: 'project', teamMode: 'disabled' }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$team $ralph ship this fix',
+        sessionId: 'sess-team-disabled-primary',
+        nowIso: '2026-04-10T01:00:00.000Z',
+      });
+
+      assert.equal(result?.skill, 'ralph');
+      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralph']);
+      assert.equal(existsSync(join(stateDir, 'team-state.json')), false);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-team-disabled-primary', 'ralph-state.json')),
+        true,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('filters deferred team handoffs when persisted Team mode is disabled', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-disabled-deferred-'));
     const stateDir = join(cwd, '.omx', 'state');

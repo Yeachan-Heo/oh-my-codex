@@ -725,6 +725,15 @@ export function detectPrimaryKeyword(text: string): KeywordMatch | null {
   return matches.length > 0 ? matches[0] : null;
 }
 
+function filterMatchesForTeamMode(matches: KeywordMatch[], teamEnabled: boolean): KeywordMatch[] {
+  return teamEnabled ? matches : matches.filter((entry) => entry.skill !== 'team');
+}
+
+function detectPrimaryKeywordForTeamMode(text: string, teamEnabled: boolean): KeywordMatch | null {
+  const matches = filterMatchesForTeamMode(detectKeywords(text), teamEnabled);
+  return matches[0] ?? null;
+}
+
 function isActiveSkillContinuationPrompt(text: string): boolean {
   const normalized = text.trim();
   if (!normalized) return false;
@@ -894,20 +903,17 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const previousRoot = await readExistingSkillState(rootStatePath);
   const previousSession = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
   const previous = input.sessionId ? previousSession : previousRoot;
+  const teamMode = readTeamModeConfig(sourceCwd);
   const match = resolveContinuationKeywordMatch(
     input.text,
     previous,
-    detectPrimaryKeyword(input.text),
+    detectPrimaryKeywordForTeamMode(input.text, teamMode.enabled),
   );
   if (!match) return null;
-  const teamMode = readTeamModeConfig(sourceCwd);
-  if (!teamMode.enabled && match.skill === 'team') {
-    return null;
-  }
 
   const nowIso = input.nowIso ?? new Date().toISOString();
   const hadDeepInterviewLock = previous?.skill === 'deep-interview' && previous?.input_lock?.active === true;
-  const matches = detectKeywords(input.text);
+  const matches = filterMatchesForTeamMode(detectKeywords(input.text), teamMode.enabled);
   const hasCancelIntent = matches.some((entry) => entry.skill === 'cancel');
 
   if (hasCancelIntent && hadDeepInterviewLock) {

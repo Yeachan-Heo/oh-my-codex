@@ -243,6 +243,7 @@ const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
 const HARD_DEPRECATED_SKILL_NAMES = new Set(["web-clone"]);
 const TEAM_MODE_SKILL_NAMES = new Set(["team", "worker"]);
+const TEAM_MODE_PROMPT_NAMES = new Set(["team-executor"]);
 const TEAM_MODE_NATIVE_AGENT_NAMES = new Set(["team-executor"]);
 
 function isCatalogInstallableStatus(status: string | undefined): boolean {
@@ -2034,7 +2035,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				promptsSrc,
 				promptsDst,
 				backupContext,
-				{ force, dryRun, verbose },
+				{ force, dryRun, verbose, teamMode: resolvedTeamMode },
 			);
 			const cleanedLegacyPromptShims = await cleanupLegacySkillPromptShims(
 				promptsSrc,
@@ -2128,6 +2129,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				dryRun,
 				verbose,
 				preserveUnmanagedObsoleteNativeAgents: true,
+				teamMode: resolvedTeamMode,
 			},
 		);
 		console.log(
@@ -2142,6 +2144,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				force,
 				dryRun,
 				verbose,
+				teamMode: resolvedTeamMode,
 			},
 		);
 		console.log(
@@ -2269,7 +2272,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		const pluginCacheMaterialize = await materializePackagedOmxPluginCache(
 			scopeDirs.codexHomeDir,
 			packagedMarketplace,
-			{ dryRun },
+			{ dryRun, teamMode: resolvedTeamMode },
 		);
 		if (pluginCacheMaterialize.status === "materialized") {
 			console.log(
@@ -2534,6 +2537,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			);
 			let changed = true;
 			let canApplyManagedModelRefresh = false;
+			let canApplyManagedRefreshDuringActiveSession = false;
 			let managedRefreshContent = "";
 			let canApplyManagedAgentsMerge = false;
 			let mergedAgentsContent = "";
@@ -2555,12 +2559,21 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					canApplyManagedAgentsMerge = mergedAgentsContent !== existing;
 				} else {
 					if (hasOmxManagedAgentsSections(existing)) {
-						managedRefreshContent = upsertAgentsModelTable(
-							existing,
-							modelTableContext,
-							modelTableDefinitions,
-						);
+						const existingIsGeneratedAgentsMd = isOmxGeneratedAgentsMd(existing);
+						managedRefreshContent = teamModeEnabled(resolvedTeamMode)
+							? upsertAgentsModelTable(
+									existing,
+									modelTableContext,
+									modelTableDefinitions,
+								)
+							: existingIsGeneratedAgentsMd
+								? rewritten
+								: upsertManagedAgentsBlock(existing, rewritten);
 						canApplyManagedModelRefresh = managedRefreshContent !== existing;
+						canApplyManagedRefreshDuringActiveSession =
+							canApplyManagedModelRefresh &&
+							!teamModeEnabled(resolvedTeamMode) &&
+							existingIsGeneratedAgentsMd;
 					}
 				}
 			}
@@ -2569,7 +2582,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				resolvedScope.scope === "project" &&
 				sessionIsActive &&
 				agentsMdExists &&
-				(changed || canApplyManagedAgentsMerge || canApplyManagedModelRefresh)
+				(changed || canApplyManagedAgentsMerge || canApplyManagedModelRefresh) &&
+				!canApplyManagedRefreshDuringActiveSession
 			) {
 				summary.agentsMd.skipped += 1;
 				console.log(
@@ -2987,6 +3001,13 @@ async function installPrompts(
 	for (const file of files) {
 		if (!file.endsWith(".md")) continue;
 		const promptName = file.slice(0, -3);
+		if (!teamModeEnabled(options.teamMode) && TEAM_MODE_PROMPT_NAMES.has(promptName)) {
+			summary.skipped += 1;
+			if (options.verbose) {
+				console.log(`  skipped ${file} (Team mode disabled)`);
+			}
+			continue;
+		}
 
 		const status = agentStatusByName?.get(promptName);
 		if (manifest && !isSetupPromptAssetName(promptName, manifest)) {
@@ -3012,13 +3033,15 @@ async function installPrompts(
 		);
 	}
 
-	if (options.force && manifest && existsSync(dstDir)) {
+	if (manifest && existsSync(dstDir)) {
 		const installedFiles = await readdir(dstDir);
 		for (const file of installedFiles) {
 			if (!file.endsWith(".md")) continue;
 			const promptName = file.slice(0, -3);
 			const status = agentStatusByName?.get(promptName);
-			if (isSetupPromptAssetName(promptName, manifest)) continue;
+			const disabledTeamPrompt = !teamModeEnabled(options.teamMode) && TEAM_MODE_PROMPT_NAMES.has(promptName);
+			if (isSetupPromptAssetName(promptName, manifest) && !disabledTeamPrompt) continue;
+			if (!options.force && !disabledTeamPrompt) continue;
 
 			const stalePromptPath = join(dstDir, file);
 			if (!existsSync(stalePromptPath)) continue;
@@ -3035,7 +3058,8 @@ async function installPrompts(
 					? "would remove stale prompt"
 					: "removed stale prompt";
 				const label = status ?? "unlisted";
-				console.log(`  ${prefix} ${file} (status: ${label})`);
+				const reason = disabledTeamPrompt ? ", Team mode disabled" : "";
+				console.log(`  ${prefix} ${file} (status: ${label}${reason})`);
 			}
 		}
 	}
@@ -3115,6 +3139,7 @@ async function refreshNativeAgentConfigs(
 	backupContext: SetupBackupContext,
 	options: Pick<SetupOptions, "dryRun" | "verbose" | "force"> & {
 		preserveUnmanagedObsoleteNativeAgents?: boolean;
+		teamMode?: SetupTeamMode;
 	},
 ): Promise<SetupCategorySummary> {
 	const summary = createEmptyCategorySummary();
@@ -3137,6 +3162,13 @@ async function refreshNativeAgentConfigs(
 
 	for (const name of nativeAgentNames) {
 		staleCandidateNativeAgentNames.add(name);
+		if (!teamModeEnabled(options.teamMode) && TEAM_MODE_NATIVE_AGENT_NAMES.has(name)) {
+			summary.skipped += 1;
+			if (options.verbose) {
+				console.log(`  skipped native agent ${name}.toml (Team mode disabled)`);
+			}
+			continue;
+		}
 		const agent = AGENT_DEFINITIONS[name];
 		if (!agent) {
 			if (options.verbose) {
@@ -3183,13 +3215,15 @@ async function refreshNativeAgentConfigs(
 		summary.removed += generatedCleanup.removed;
 	}
 
-	if (options.force && manifest && existsSync(agentsDir)) {
+	if (manifest && existsSync(agentsDir)) {
 		const installedFiles = await readdir(agentsDir);
 		for (const file of installedFiles) {
 			if (!file.endsWith(".toml")) continue;
 			const agentName = file.slice(0, -5);
 			const agentStatus = agentStatusByName?.get(agentName);
-			if (isNativeAgentInstallableStatus(agentStatus)) continue;
+			const disabledTeamAgent = !teamModeEnabled(options.teamMode) && TEAM_MODE_NATIVE_AGENT_NAMES.has(agentName);
+			if (isNativeAgentInstallableStatus(agentStatus) && !disabledTeamAgent) continue;
+			if (!options.force && !disabledTeamAgent) continue;
 			if (
 				!staleCandidateNativeAgentNames.has(agentName) &&
 				agentStatus === undefined
@@ -3211,7 +3245,8 @@ async function refreshNativeAgentConfigs(
 					? "would remove stale native agent"
 					: "removed stale native agent";
 				const label = agentStatus ?? "unlisted";
-				console.log(`  ${prefix} ${file} (status: ${label})`);
+				const reason = disabledTeamAgent ? ", Team mode disabled" : "";
+				console.log(`  ${prefix} ${file} (status: ${label}${reason})`);
 			}
 		}
 	}

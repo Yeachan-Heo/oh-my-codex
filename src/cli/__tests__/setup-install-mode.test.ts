@@ -869,6 +869,41 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("omits Team plugin skills and native team executor when plugin mode disables Team", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-no-team-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						teamMode: "disabled",
+					});
+				});
+
+				const pkg = JSON.parse(
+					await readFile(join(packageRoot, "package.json"), "utf-8"),
+				) as { version: string };
+				const cacheSkillsDir = join(
+					codexHomeDir,
+					"plugins",
+					"cache",
+					"oh-my-codex-local",
+					"oh-my-codex",
+					pkg.version,
+					"skills",
+				);
+				assert.equal(existsSync(join(cacheSkillsDir, "team", "SKILL.md")), false);
+				assert.equal(existsSync(join(cacheSkillsDir, "worker", "SKILL.md")), false);
+				assert.equal(existsSync(join(cacheSkillsDir, "ralph", "SKILL.md")), true);
+				assert.equal(existsSync(join(codexHomeDir, "agents", "team-executor.toml")), false);
+				assert.equal(existsSync(join(codexHomeDir, "agents", "executor.toml")), true);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps legacy-mode next steps describing native agent TOML output", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

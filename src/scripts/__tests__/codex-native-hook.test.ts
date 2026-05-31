@@ -15268,6 +15268,45 @@ describe("codex native hook triage integration", () => {
     }
   });
 
+  it("ignores disabled $team before outside-tmux Team blocking so later workflows can activate", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-disabled-team-primary-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeJson(join(cwd, ".omx", "setup-scope.json"), {
+        scope: "project",
+        teamMode: "disabled",
+      });
+      await writeSessionStart(cwd, "sess-disabled-team-primary");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-disabled-team-primary",
+          thread_id: "thread-disabled-team-primary",
+          turn_id: "turn-disabled-team-primary",
+          prompt: "$team $ralph fix this",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.skillState?.skill, "ralph");
+      assert.equal(result.skillState?.transition_error, undefined);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), false);
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "sessions", "sess-disabled-team-primary", "ralph-state.json")),
+        true,
+      );
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /detected workflow keyword "\$ralph" -> ralph/);
+      assert.doesNotMatch(additionalContext, /Codex App\/native outside-tmux sessions cannot activate/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("makes bare autopilot command activation observable in state and prompt guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-autopilot-bare-observable-"));
     try {
