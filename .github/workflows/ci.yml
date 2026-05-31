@@ -148,6 +148,17 @@ jobs:
               || path === 'dist-workspace.toml';
           }
 
+          function isGjcPlanningEvidence(path) {
+            return /^\.gjc\/(plans|ultragoal|quality-gates?|planning-evidence)\//.test(path)
+              || /^\.gjc\/[^/]+\/(quality-gates?|planning-evidence)\//.test(path)
+              || /^\.gjc\/[^/]+\/(prd|test-spec|plan|quality-gate)[^/]*\.(md|json|jsonl|txt)$/.test(path);
+          }
+
+          function isGjcRuntimeAffecting(path) {
+            return /^\.gjc\/(runtime|state|sessions|team|hooks|notifications)\//.test(path)
+              || /^\.gjc\/(config|settings|policy)\.(json|toml|ya?ml)$/.test(path);
+          }
+
           const paths = lines.flatMap(pathsFromNameStatus);
           if (paths.length === 0 && !out.full_suite) {
             out.full_suite = true;
@@ -160,13 +171,21 @@ jobs:
             if (isRust(path)) out.rust_changed = true;
             if (isNative(path)) out.native_changed = true;
             if (isSharedConfig(path)) out.shared_config_changed = true;
+            if (isGjcRuntimeAffecting(path)) out.ts_changed = true;
           }
 
           const allDocs = paths.length > 0 && paths.every(isDocs);
           out.docs_only = allDocs;
+          const allGjcPlanningEvidence = paths.length > 0 && paths.every(isGjcPlanningEvidence);
+          const gjcRuntimePaths = paths.filter(isGjcRuntimeAffecting);
+          if (!out.full_suite && allGjcPlanningEvidence) {
+            out.reason = 'gjc planning/evidence artifacts only';
+          } else if (!out.full_suite && gjcRuntimePaths.length > 0) {
+            out.reason = `gjc runtime-affecting artifact(s): ${gjcRuntimePaths.join(', ')}`;
+          }
 
           // Fail closed for shared config, workflow, version, lockfile, native packaging, or ambiguous repo assets.
-          const known = (path) => isDocs(path) || isTs(path) || isRust(path) || isNative(path) || isSharedConfig(path);
+          const known = (path) => isDocs(path) || isTs(path) || isRust(path) || isNative(path) || isSharedConfig(path) || isGjcPlanningEvidence(path) || isGjcRuntimeAffecting(path);
           const unknown = paths.filter((path) => !known(path));
           if (out.shared_config_changed || unknown.length > 0) {
             out.full_suite = true;
@@ -550,6 +569,8 @@ jobs:
           set -euo pipefail
 
           failures=0
+          failing_active_gates=()
+          unexpected_inactive_gates=()
           bool_any() {
             for value in "$@"; do
               [[ "$value" == "true" ]] && return 0
@@ -564,11 +585,13 @@ jobs:
             if [[ "$active" == "true" ]]; then
               if [[ "$result" != "success" ]]; then
                 echo "::error::$name must succeed when active, got $result"
+                failing_active_gates+=("$name=$result")
                 failures=$((failures + 1))
               fi
             else
               if [[ "$result" != "success" && "$result" != "skipped" ]]; then
                 echo "::error::$name inactive lane should be success or skipped, got $result"
+                unexpected_inactive_gates+=("$name=$result")
                 failures=$((failures + 1))
               fi
             fi
@@ -620,6 +643,13 @@ jobs:
           check_job build "$BUILD_RESULT" "$build_active"
 
           if (( failures > 0 )); then
+            if (( ${#failing_active_gates[@]} > 0 )); then
+              echo "::error::Actual failing active CI gate(s): ${failing_active_gates[*]}"
+            fi
+            if (( ${#unexpected_inactive_gates[@]} > 0 )); then
+              echo "::error::Unexpected inactive CI gate result(s): ${unexpected_inactive_gates[*]}"
+            fi
+            echo "::error::Lane-selection reason: ${REASON:-unknown}; full_suite=${FULL_SUITE:-unknown}"
             echo "::error::$failures CI status requirement(s) failed"
             exit 1
           fi

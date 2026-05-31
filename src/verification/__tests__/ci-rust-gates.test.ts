@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 function readCiWorkflow(): string {
   const workflowPath = join(process.cwd(), '.github', 'workflows', 'ci.yml');
@@ -22,6 +24,44 @@ function jobBlock(workflow: string, jobName: string): string {
 
 function assertJobIf(workflow: string, jobName: string, expected: RegExp): void {
   assert.match(jobBlock(workflow, jobName), expected, `${jobName} should have the expected lane predicate`);
+}
+
+function classifyChangedPaths(paths: string[]): Record<string, string> {
+  const workflow = readCiWorkflow();
+  const changesJob = jobBlock(workflow, 'changes');
+  const match = changesJob.match(/node <<'NODE'\n(?<script>[\s\S]*?)\n\s+NODE/);
+  assert.ok(match?.groups?.script, 'missing inline changed-path classifier script');
+
+  const cwd = mkdtempSync(join(tmpdir(), 'omx-ci-classifier-'));
+  const outputPath = join(cwd, 'github-output.txt');
+  try {
+    writeFileSync(
+      join(cwd, 'changed-files.tsv'),
+      paths.map((path) => `M\t${path}`).join('\n'),
+    );
+    execFileSync(process.execPath, ['-e', match.groups.script], {
+      cwd,
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        full_suite: 'false',
+        reason: 'targeted',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return Object.fromEntries(
+      readFileSync(outputPath, 'utf-8')
+        .trim()
+        .split(/\n/)
+        .filter(Boolean)
+        .map((line) => {
+          const index = line.indexOf('=');
+          return [line.slice(0, index), line.slice(index + 1)];
+        }),
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 }
 
 describe('CI Rust gates', () => {
@@ -70,7 +110,65 @@ describe('CI Rust gates', () => {
     assert.match(changesJob, /function isSharedConfig\(path\)/);
     assert.match(changesJob, /\^\\\.github\\\//);
     assert.match(changesJob, /package\(-lock\)\?\\\.json/);
+    assert.match(changesJob, /function isGjcPlanningEvidence\(path\)/);
+    assert.match(changesJob, /function isGjcRuntimeAffecting\(path\)/);
     assert.match(changesJob, /const unknown = paths\.filter/);
+  });
+
+  it('keeps benign .gjc planning and quality evidence artifacts out of full-suite CI', () => {
+    const result = classifyChangedPaths([
+      '.gjc/plans/prd-issue-2663.md',
+      '.gjc/ultragoal/ledger.jsonl',
+      '.gjc/quality-gates/final-quality-gate.json',
+      '.gjc/session-1/planning-evidence/test-spec.json',
+    ]);
+
+    assert.equal(result.full_suite, 'false');
+    assert.equal(result.ts_changed, 'false');
+    assert.equal(result.shared_config_changed, 'false');
+    assert.equal(result.reason, 'gjc planning/evidence artifacts only');
+  });
+
+  it('routes runtime-affecting .gjc artifacts to the focused TypeScript/runtime gate without full-suite fallback', () => {
+    const result = classifyChangedPaths(['.gjc/runtime/session-state.json']);
+
+    assert.equal(result.full_suite, 'false');
+    assert.equal(result.ts_changed, 'true');
+    assert.equal(result.shared_config_changed, 'false');
+    assert.match(result.reason, /gjc runtime-affecting artifact/);
+  });
+
+  it('keeps unknown .gjc paths fail-closed while preserving normal TS/config behavior', () => {
+    const unknownGjc = classifyChangedPaths(['.gjc/random/output.bin']);
+    assert.deepEqual(
+      {
+        full_suite: unknownGjc.full_suite,
+        reason: unknownGjc.reason,
+      },
+      {
+        full_suite: 'true',
+        reason: 'unclassified path(s): .gjc/random/output.bin',
+      },
+    );
+
+    const sourceChange = classifyChangedPaths(['src/verification/ci-status.ts']);
+    assert.equal(sourceChange.full_suite, 'false');
+    assert.equal(sourceChange.ts_changed, 'true');
+
+    const workflowChange = classifyChangedPaths(['.github/workflows/ci.yml']);
+    assert.equal(workflowChange.full_suite, 'true');
+    assert.equal(workflowChange.shared_config_changed, 'true');
+    assert.equal(workflowChange.reason, 'shared config, workflow, manifest, lockfile, or packaging change');
+  });
+
+  it('reports lane-selection reason and actual failing gates in CI status output', () => {
+    const statusJob = jobBlock(readCiWorkflow(), 'ci-status');
+
+    assert.match(statusJob, /CI lane reason: \$\{REASON:-unknown\}/);
+    assert.match(statusJob, /failing_active_gates=\(\)/);
+    assert.match(statusJob, /failing_active_gates\+=\("\$name=\$result"\)/);
+    assert.match(statusJob, /Actual failing active CI gate\(s\):/);
+    assert.match(statusJob, /Lane-selection reason: \$\{REASON:-unknown\}; full_suite=\$\{FULL_SUITE:-unknown\}/);
   });
 
   it('gates expensive jobs by lane while preserving full-suite fail-closed behavior', () => {
