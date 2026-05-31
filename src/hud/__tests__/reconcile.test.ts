@@ -364,6 +364,33 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(created, []);
   });
 
+  it('treats an extra legacy focused pane as stale when an owned HUD already exists', async () => {
+    const killed: string[] = [];
+    const resized: Array<{ paneId: string; heightLines: number }> = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        {
+          paneId: '%2',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch --preset=focused`,
+        },
+        { paneId: '%3', currentCommand: 'node', startCommand: 'node /tmp/bin/omx.js hud --watch --preset=focused' },
+      ],
+      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      resizeTmuxPane: (paneId, heightLines) => { resized.push({ paneId, heightLines }); return true; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'replaced_duplicates');
+    assert.equal(result.paneId, '%2');
+    assert.equal(result.duplicateCount, 1);
+    assert.deepEqual(killed, ['%3']);
+    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+  });
+
   it('deduplicates legacy focused panes that appear during the prompt-submit create race', async () => {
     const killed: string[] = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];

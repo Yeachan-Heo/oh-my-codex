@@ -345,6 +345,9 @@ describe('HUD pane ownership helpers', () => {
         `%4\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch --preset=focused`,
         '%5\tnode\tnode /tmp/bin/omx.js hud --tmux --preset=focused',
         `%6\tnode\t/bin/zsh -c 'exec '\\''node'\\'' '\\''/tmp/bin/omx.js'\\'' '\\''hud'\\'' '\\''--watch'\\'' '\\''--preset=focused'\\'''`,
+        '%7\tnode\tnode /tmp/bin/custom-hud.js hud --watch --preset=focused',
+        '%8\tnode\tnode /tmp/omx-pr2664/custom-hud.js hud --watch --preset=focused',
+        '%9\tnode\tnode /tmp/bin/omx.js hud --tmux --watch --preset=focused',
       ].join('\n'),
     );
 

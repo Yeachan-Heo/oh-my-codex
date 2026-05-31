@@ -101,10 +101,19 @@ function hasHudPaneOwnerMetadata(pane: TmuxPaneSnapshot): boolean {
     || Boolean(owner.sessionId || owner.leaderPaneId);
 }
 
+function hasOmxCliToken(command: string): boolean {
+  return /(?:^|[\s'"])(?:[^\s'"]*\/)?omx(?:\.js)?(?=$|[\s'"])/.test(command);
+}
+
 function isLegacyFocusedHudWatchPane(pane: TmuxPaneSnapshot): boolean {
+  // Migration-only heuristic for prompt-submit auto-HUD reconciliation: older
+  // focused auto-HUD panes lacked owner metadata, so keep this deliberately
+  // narrower than general HUD ownership/reaping.
   if (!isHudWatchPane(pane) || hasHudPaneOwnerMetadata(pane)) return false;
   const command = `${pane.startCommand} ${pane.currentCommand}`;
-  return /(?:^|[\s'"])--preset=focused(?:[\s'"]|$)/.test(command);
+  return hasOmxCliToken(command)
+    && !/(?:^|[\s'"])--tmux(?:[\s'"]|$)/.test(command)
+    && /(?:^|[\s'"])--preset=focused(?:[\s'"]|$)/.test(command);
 }
 
 export function findLegacyFocusedHudWatchPaneIds(
