@@ -173,12 +173,14 @@ export interface DeepInterviewModeState {
 }
 
 function slugifyAutopilotTask(text: string): string {
-  const withoutWorkflow = text
+  const slug = text
     .replace(/(?:^|\s)\$?(?:oh-my-codex:)?autopilot\b/gi, ' ')
     .replace(/[^A-Za-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .toLowerCase();
-  return (withoutWorkflow || 'autopilot-task').slice(0, 48).replace(/-+$/g, '') || 'autopilot-task';
+    .toLowerCase()
+    .slice(0, 48)
+    .replace(/-+$/g, '');
+  return slug || 'autopilot-task';
 }
 
 function utcCompactTimestamp(nowIso: string): string {
@@ -427,8 +429,8 @@ async function persistStatefulSkillSeedState(
   nextSkill: SkillActiveState,
   nowIso: string,
   previousSkill: SkillActiveState | null,
-  activationText = '',
-  sourceCwd = dirname(dirname(stateDir)),
+  activationText: string,
+  sourceCwd: string,
 ): Promise<SkillActiveState> {
   const config = STATEFUL_SKILL_SEED_CONFIG[nextSkill.skill as StatefulSkillMode];
   if (!config) return nextSkill;
