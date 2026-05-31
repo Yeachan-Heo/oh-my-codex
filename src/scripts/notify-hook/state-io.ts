@@ -28,12 +28,25 @@ async function readSessionIdFromBaseStateDir(baseStateDir: string): Promise<stri
   return validateSessionId(session?.session_id);
 }
 
+function readSessionIdFromEnvironment(): string | undefined {
+  for (const candidate of [process.env.OMX_SESSION_ID, process.env.CODEX_SESSION_ID, process.env.SESSION_ID]) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    return validateSessionId(trimmed);
+  }
+  return undefined;
+}
+
 async function resolveBaseScopedStateDir(
   baseStateDir: string,
   explicitSessionId?: string,
 ): Promise<string> {
-  const validatedExplicit = validateSessionId(explicitSessionId);
-  const sessionId = validatedExplicit ?? await readSessionIdFromBaseStateDir(baseStateDir);
+  const normalizedExplicit = typeof explicitSessionId === 'string' && explicitSessionId.trim()
+    ? explicitSessionId.trim()
+    : undefined;
+  const validatedExplicit = validateSessionId(normalizedExplicit);
+  const sessionId = validatedExplicit ?? readSessionIdFromEnvironment() ?? await readSessionIdFromBaseStateDir(baseStateDir);
   return sessionId ? join(baseStateDir, 'sessions', sessionId) : baseStateDir;
 }
 
@@ -52,7 +65,7 @@ async function resolveBaseScopedStateDirs(
 
 
 export async function readCurrentSessionId(baseStateDir: string): Promise<string | undefined> {
-  return readSessionIdFromBaseStateDir(baseStateDir);
+  return readSessionIdFromEnvironment() ?? readSessionIdFromBaseStateDir(baseStateDir);
 }
 
 export async function resolveScopedStateDir(

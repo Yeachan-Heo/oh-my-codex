@@ -125,6 +125,15 @@ describe("generateOverlay", () => {
         current_phase: "executing",
       }),
     );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "ralph",
+        phase: "executing",
+        session_id: sessionId,
+      }),
+    );
     const overlay = await generateOverlay(tempDir, sessionId);
     assert.ok(overlay.includes("ralph"));
     assert.ok(overlay.includes("iteration 3/10"));
@@ -141,6 +150,15 @@ describe("generateOverlay", () => {
         iteration: 1,
         max_iterations: 5,
         current_phase: "running",
+      }),
+    );
+    await writeFile(
+      join(tempDir, ".omx", "state", "sessions", "sess1", "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: "sess1",
       }),
     );
     const overlay = await generateOverlay(tempDir, "sess1");
@@ -269,6 +287,21 @@ describe("generateOverlay", () => {
         }),
       );
     }
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "mode-0",
+        phase: "run",
+        session_id: sessionId,
+        active_skills: Array.from({ length: 40 }, (_, i) => ({
+          skill: `mode-${i}`,
+          phase: "run",
+          active: true,
+          session_id: sessionId,
+        })),
+      }),
+    );
     await writeFile(
       join(tempDir, ".omx", "notepad.md"),
       `## PRIORITY\n${"N".repeat(8000)}`,

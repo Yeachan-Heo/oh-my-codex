@@ -6,6 +6,7 @@ import {
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
   isTrackedWorkflowMode,
+  TRACKED_WORKFLOW_MODES,
   type TrackedWorkflowMode,
   type WorkflowTransitionAction,
   type WorkflowTransitionDecision,
@@ -85,8 +86,18 @@ async function visibleTrackedModes(
     .map((entry) => entry.skill)
     .filter(isTrackedWorkflowMode);
 
+  const stateFileModes: TrackedWorkflowMode[] = [];
+  for (const mode of TRACKED_WORKFLOW_MODES) {
+    const state = await readJsonIfExists(modeStatePathForRoot(mode, cwd, sessionId, baseStateDir), {
+      mode,
+      throwOnParseError: true,
+    });
+    if (state?.active === true) {
+      stateFileModes.push(mode);
+    }
+  }
 
-  return [...new Set(canonicalModes)];
+  return [...new Set([...canonicalModes, ...stateFileModes])];
 }
 
 async function completeSourceModeState(

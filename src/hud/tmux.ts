@@ -41,10 +41,18 @@ type TmuxExecSync = (args: string[]) => string;
 const TMUX_HOOK_INDEX_MAX = 2147483647;
 
 function defaultExecTmuxSync(args: string[]): string {
-  return execFileSync(resolveTmuxBinaryForPlatform() || 'tmux', args, {
-    encoding: 'utf-8',
-    ...(process.platform === 'win32' ? { windowsHide: true } : {}),
-  });
+  try {
+    return execFileSync(resolveTmuxBinaryForPlatform() || 'tmux', args, {
+      encoding: 'utf-8',
+      ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+    });
+  } catch (error) {
+    const maybeSpawnError = error as { status?: unknown; stdout?: unknown };
+    if (maybeSpawnError.status === 0 && typeof maybeSpawnError.stdout === 'string') {
+      return maybeSpawnError.stdout;
+    }
+    throw error;
+  }
 }
 
 export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
