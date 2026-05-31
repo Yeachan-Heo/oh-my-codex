@@ -152,9 +152,9 @@ function assertTomlStructure(
   const leafGuardEnd = "</native_subagent_leaf_guard>";
   const allowedDelegation = "- native_subagent_delegation: allowed";
   const latestGeneratedPolicyIndex = Math.max(
-    instructions.indexOf("</posture_overlay>"),
-    instructions.indexOf("</model_class_guidance>"),
-    instructions.indexOf("</exact_model_guidance>"),
+    instructions.lastIndexOf("</posture_overlay>", metadataIndex),
+    instructions.lastIndexOf("</model_class_guidance>", metadataIndex),
+    instructions.lastIndexOf("</exact_model_guidance>", metadataIndex),
   );
   const leafGuardIndex = instructions.lastIndexOf(leafGuard);
   const leafGuardEndIndex = instructions.lastIndexOf(leafGuardEnd);
