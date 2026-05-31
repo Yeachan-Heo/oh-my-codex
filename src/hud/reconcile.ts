@@ -6,7 +6,6 @@ import {
   createHudWatchPane,
   findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
-  isHudWatchPane,
   killTmuxPane,
   listCurrentWindowPanes,
   registerHudResizeHook,
@@ -44,7 +43,7 @@ export interface ReconcileHudForPromptSubmitDeps {
   createHudWatchPane?: (
     cwd: string,
     hudCmd: string,
-    options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string },
+    options?: { heightLines?: number; targetPaneId?: string },
   ) => string | null;
   killTmuxPane?: (paneId: string) => boolean;
   resizeTmuxPane?: (paneId: string, heightLines: number) => boolean;

@@ -39,7 +39,7 @@ describe('reconcileHudForPromptSubmit', () => {
   });
 
   it('skips recreating a missing HUD in explicit OMX-owned tmux without a session id', async () => {
-    const created: Array<{ cwd: string; cmd: string; options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
+    const created: Array<{ cwd: string; cmd: string; options?: { heightLines?: number; targetPaneId?: string } }> = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
 
     const result = await reconcileHudForPromptSubmit('/repo', {
@@ -65,7 +65,7 @@ describe('reconcileHudForPromptSubmit', () => {
   });
 
   it('recreates a missing HUD in explicit OMX-owned tmux with a session id', async () => {
-    const created: Array<{ cwd: string; cmd: string; options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
+    const created: Array<{ cwd: string; cmd: string; options?: { heightLines?: number; targetPaneId?: string } }> = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
 
     const result = await reconcileHudForPromptSubmit('/repo', {
@@ -238,7 +238,7 @@ describe('reconcileHudForPromptSubmit', () => {
 
   it('targets the emitting pane window when listing and creating HUD panes', async () => {
     const listArgs: Array<string | undefined> = [];
-    const created: Array<{ options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
+    const created: Array<{ options?: { heightLines?: number; targetPaneId?: string } }> = [];
 
     const result = await reconcileHudForPromptSubmit('/repo', {
       env: { TMUX: '1', TMUX_PANE: '%leader', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
@@ -262,7 +262,7 @@ describe('reconcileHudForPromptSubmit', () => {
   });
 
   it('keeps prompt-submit HUD recreation scoped to the emitting pane in multi-pane windows', async () => {
-    const created: Array<{ options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
+    const created: Array<{ options?: { heightLines?: number; targetPaneId?: string } }> = [];
 
     const result = await reconcileHudForPromptSubmit('/repo', {
       env: { TMUX: '1', TMUX_PANE: '%right', OMX_SESSION_ID: 'sess-right', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
@@ -280,7 +280,7 @@ describe('reconcileHudForPromptSubmit', () => {
 
     assert.equal(result.status, 'recreated');
     assert.equal(created[0]?.options?.targetPaneId, '%right');
-    assert.notEqual(created[0]?.options?.fullWidth, true);
+    assert.equal(Object.hasOwn(created[0]?.options ?? {}, 'fullWidth'), false);
   });
 
   it('collapses same-owner HUD panes that appear during the create race window', async () => {
