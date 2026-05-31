@@ -751,8 +751,8 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
-  it('surfaces session-mirrored root autopilot state when the HUD session file has not been materialized yet', async () => {
-    await withTempRepo('omx-hud-root-mirror-autopilot-', async (cwd) => {
+  it('does not surface root autopilot detail when a session exists but has no session canonical or detail state', async () => {
+    await withTempRepo('omx-hud-root-mirror-autopilot-session-missing-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');
       const sessionId = 'sess-autopilot-root-mirror';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
@@ -774,8 +774,36 @@ describe('readAllState canonical skill precedence', () => {
 
       const state = await readAllState(cwd);
 
-      assert.equal(state.autopilot?.active, true);
-      assert.equal(state.autopilot?.current_phase, 'deep-interview');
+      assert.equal(state.autopilot, null);
+    });
+  });
+
+  it('surfaces root autopilot detail when no usable session exists', async () => {
+    await withTempRepo('omx-hud-root-autopilot-no-session-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      await mkdir(rootStateDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true }],
+      }));
+      await writeFile(join(rootStateDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+      }));
+
+      const previousSessionId = process.env.OMX_SESSION_ID;
+      delete process.env.OMX_SESSION_ID;
+      try {
+        const state = await readAllState(cwd);
+
+        assert.equal(state.autopilot?.active, true);
+        assert.equal(state.autopilot?.current_phase, 'deep-interview');
+      } finally {
+        if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+      }
     });
   });
 

@@ -5075,7 +5075,7 @@ esac
     }
   });
 
-  it("reuses an existing owner-tagged HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
+  it("recreates a leader-only HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-"));
     const originalTmux = process.env.TMUX;
     const originalTmuxPane = process.env.TMUX_PANE;
@@ -5131,8 +5131,8 @@ esac
       assert.equal(result.omxEventName, "keyword-detector");
       const tmuxCalls = await readFile(tmuxLog, "utf-8");
       assert.match(tmuxCalls, /list-panes -t %1 -F/);
-      assert.match(tmuxCalls, new RegExp(`resize-pane -t %2 -y ${HUD_TMUX_HEIGHT_LINES}`));
-      assert.doesNotMatch(tmuxCalls, /split-window/);
+      assert.match(tmuxCalls, /split-window/);
+      assert.match(tmuxCalls, new RegExp(`resize-pane -t %9 -y ${HUD_TMUX_HEIGHT_LINES}`));
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", canonicalSessionId, "ralplan-state.json")), true);
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", nativeSessionId, "ralplan-state.json")), false);
     } finally {

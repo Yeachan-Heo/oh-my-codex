@@ -146,7 +146,11 @@ export async function reconcileHudForPromptSubmit(
   const hudState = hudConfig ? await readAllStateFn(cwd, hudConfig).catch(() => null) : null;
   const desiredHeight = hudState ? getHudRenderMaxLines(hudState) : HUD_TMUX_HEIGHT_LINES;
   const preset = hudConfig?.preset;
-  const hudCmd = buildHudWatchCommand(omxBin, preset, resolvedSessionId, env.OMX_ROOT, currentPaneId);
+  const hudCmd = buildHudWatchCommand(omxBin, preset, resolvedSessionId, env.OMX_ROOT, currentPaneId, {
+    omxStateRoot: env.OMX_STATE_ROOT,
+    omxTeamStateRoot: env.OMX_TEAM_STATE_ROOT,
+    rootSource: env.OMX_TEAM_STATE_ROOT ? 'team-env' : env.OMX_ROOT ? 'omx-root-env' : env.OMX_STATE_ROOT ? 'omx-state-root-env' : 'cwd-default',
+  });
 
   if (hudPaneIds.length === 1) {
     const resized = resizePane(hudPaneIds[0], desiredHeight);

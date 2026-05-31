@@ -21,7 +21,7 @@ import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { resolveInvocationSessionId, resolveManagedCurrentPane, resolveManagedSessionContext, verifyManagedPaneTarget } from './managed-tmux.js';
 import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
-import { listActiveSkills, readVisibleSkillActiveState } from '../../state/skill-active.js';
+import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../../state/skill-active.js';
 import {
   normalizeTmuxHookConfig,
   pickActiveMode,
@@ -100,11 +100,7 @@ async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: 
 }
 
 async function resolvePreferredModePane(stateDir: string, allowedModes: string[]): Promise<{ mode: string; state: any; pane: string; stateDir: string } | null> {
-  const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir).catch(() => [stateDir]);
-  const dirs = [...scopedDirs];
-  if (!dirs.map((dir) => resolvePath(dir)).includes(resolvePath(stateDir))) {
-    dirs.push(stateDir);
-  }
+  const dirs = await getScopedStateDirsForCurrentSession(stateDir).catch(() => [stateDir]);
   for (const dir of dirs) {
     for (const mode of allowedModes || []) {
       const path = join(dir, `${mode}-state.json`);
@@ -189,7 +185,7 @@ async function validateResolvedInjectionOwnership({
   return { ok: true };
 }
 
-async function readVisibleAllowedModes(
+export async function readVisibleAllowedModes(
   cwd: string,
   stateDir: string,
   payload: any,
@@ -203,7 +199,7 @@ async function readVisibleAllowedModes(
     .filter(Boolean);
 
   for (const sessionId of candidateSessionIds) {
-    const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
+    const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
     if (!canonicalState) continue;
 
     const allowedSet = new Set(
@@ -219,7 +215,7 @@ async function readVisibleAllowedModes(
   }
 
   if (candidateSessionIds.length === 0) {
-    const rootCanonicalState = await readVisibleSkillActiveState(cwd).catch(() => null);
+    const rootCanonicalState = await readVisibleSkillActiveStateForStateDir(stateDir).catch(() => null);
     if (rootCanonicalState) {
       const allowedSet = new Set(
         listActiveSkills(rootCanonicalState)
@@ -470,10 +466,6 @@ export async function handleTmuxInjection({
   try {
     const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
     await scanActiveModeStateDirs(scopedDirs);
-
-    if (!pickActiveMode(activeModes, config.allowed_modes) && !scannedStateDirs.has(resolvePath(stateDir))) {
-      await scanActiveModeStateDirs([stateDir], true);
-    }
   } catch {
     // Non-fatal
   }

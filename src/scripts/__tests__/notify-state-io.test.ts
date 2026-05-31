@@ -70,4 +70,33 @@ describe('notify-hook state I/O session authority', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('resolves current session from authoritative team state root without cwd inference', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-state-io-team-root-'));
+    try {
+      const teamStateRoot = join(wd, 'team-state-root');
+      await mkdir(join(teamStateRoot, 'sessions', 'sess-team-root'), { recursive: true });
+      await writeFile(
+        join(teamStateRoot, 'session.json'),
+        JSON.stringify({ session_id: 'sess-team-root', cwd: join(wd, 'source-repo') }, null, 2),
+        'utf-8',
+      );
+      await writeFile(
+        join(teamStateRoot, 'hud-state.json'),
+        JSON.stringify({ turn_count: 99 }, null, 2),
+        'utf-8',
+      );
+      await writeFile(
+        join(teamStateRoot, 'sessions', 'sess-team-root', 'hud-state.json'),
+        JSON.stringify({ turn_count: 4 }, null, 2),
+        'utf-8',
+      );
+
+      assert.equal(await resolveScopedStateDir(teamStateRoot), join(teamStateRoot, 'sessions', 'sess-team-root'));
+      const value = await readScopedJsonIfExists(teamStateRoot, 'hud-state.json', undefined, null);
+      assert.equal(value?.turn_count, 4);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

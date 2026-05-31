@@ -380,6 +380,21 @@ describe('state paths', () => {
     }
   });
 
+  it('resolves OMX_SESSION_ID even before the session directory exists', async () => {
+    const wd = await mkRealTemp('omx-state-paths-');
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    try {
+      await mkdir(getBaseStateDir(wd), { recursive: true });
+      process.env.OMX_SESSION_ID = 'sess-not-yet-materialized';
+
+      assert.equal(await readCurrentSessionId(wd), 'sess-not-yet-materialized');
+    } finally {
+      if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('resolves current session from authoritative team state root without OMX_SESSION_ID', async () => {
     const wd = await mkRealTemp('omx-state-paths-team-root-session-');
     const teamStateRoot = join(wd, 'team-state-root');

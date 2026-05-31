@@ -2681,7 +2681,7 @@ async function readActiveDeepInterviewStateForPreToolUse(
   const canonicalState = sessionId
     ? await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)
     : await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
-  if (!canonicalState) return modeState;
+  if (!canonicalState) return null;
   const hasActiveDeepInterviewSkill = listActiveSkills(canonicalState).some((entry) => (
     entry.skill === "deep-interview"
     && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
@@ -2703,7 +2703,7 @@ async function readActiveRalplanStateForPreToolUse(
     : await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
   if (isActiveRalplanPhase(modeState) && modeState && modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) {
     if (hasExplicitExecutionHandoffSkill(canonicalState, sessionId, threadId)) return null;
-    if (!canonicalState) return modeState;
+    if (!canonicalState) return null;
     const hasActiveRalplanSkill = listActiveSkills(canonicalState).some((entry) => (
       entry.skill === "ralplan"
       && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)

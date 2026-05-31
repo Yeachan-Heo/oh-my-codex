@@ -3,12 +3,10 @@
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises';
-import { dirname, join, resolve } from 'path';
-import { existsSync } from 'fs';
-import { isSessionStateUsable } from '../../hooks/session.js';
+import { dirname, join } from 'path';
+import { validateSessionId } from '../../mcp/state-paths.js';
 import { asNumber, safeString } from './utils.js';
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export { readdir };
 
@@ -25,46 +23,43 @@ function isSafeStateFileName(fileName: string): boolean {
     && !fileName.includes('\\');
 }
 
-function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const candidates = [env.OMX_SESSION_ID, env.CODEX_SESSION_ID, env.SESSION_ID];
-  for (const candidate of candidates) {
-    const sessionId = safeString(candidate).trim();
-    if (!SESSION_ID_PATTERN.test(sessionId)) continue;
-    return sessionId;
-  }
-  return undefined;
+async function readSessionIdFromBaseStateDir(baseStateDir: string): Promise<string | undefined> {
+  const session = await readJsonIfExists(join(baseStateDir, 'session.json'), null);
+  return validateSessionId(session?.session_id);
 }
 
-export async function readCurrentSessionId(baseStateDir: string): Promise<string | undefined> {
-  const envSessionId = readSessionIdFromEnvironment();
-  if (envSessionId) {
-    const envScopedDir = join(baseStateDir, 'sessions', envSessionId);
-    if (existsSync(envScopedDir)) return envSessionId;
-  }
+async function resolveBaseScopedStateDir(
+  baseStateDir: string,
+  explicitSessionId?: string,
+): Promise<string> {
+  const validatedExplicit = validateSessionId(explicitSessionId);
+  const sessionId = validatedExplicit ?? await readSessionIdFromBaseStateDir(baseStateDir);
+  return sessionId ? join(baseStateDir, 'sessions', sessionId) : baseStateDir;
+}
 
-  const cwd = resolve(baseStateDir, '..', '..');
-  const session = await readJsonIfExists(join(baseStateDir, 'session.json'), null);
-  if (!session || typeof session !== 'object') return undefined;
-  if (!isSessionStateUsable(session, cwd)) return undefined;
-  const sessionId = safeString(session?.session_id);
-  return SESSION_ID_PATTERN.test(sessionId) ? sessionId : undefined;
+async function resolveBaseScopedStateDirs(
+  baseStateDir: string,
+  explicitSessionId?: string,
+  options: { includeRootFallback?: boolean } = {},
+): Promise<string[]> {
+  const scopedDir = await resolveBaseScopedStateDir(baseStateDir, explicitSessionId);
+  return options.includeRootFallback === true && scopedDir !== baseStateDir
+    ? [scopedDir, baseStateDir]
+    : [scopedDir];
+}
+
+
+
+
+export async function readCurrentSessionId(baseStateDir: string): Promise<string | undefined> {
+  return readSessionIdFromBaseStateDir(baseStateDir);
 }
 
 export async function resolveScopedStateDir(
   baseStateDir: string,
   explicitSessionId?: string,
 ): Promise<string> {
-  const normalizedExplicit = safeString(explicitSessionId).trim();
-  if (SESSION_ID_PATTERN.test(normalizedExplicit)) {
-    return join(baseStateDir, 'sessions', normalizedExplicit);
-  }
-
-  const currentSessionId = await readCurrentSessionId(baseStateDir);
-  if (currentSessionId) {
-    return join(baseStateDir, 'sessions', currentSessionId);
-  }
-
-  return baseStateDir;
+  return resolveBaseScopedStateDir(baseStateDir, explicitSessionId);
 }
 
 export async function getScopedStateDirsForCurrentSession(
@@ -72,11 +67,7 @@ export async function getScopedStateDirsForCurrentSession(
   explicitSessionId?: string,
   options: { includeRootFallback?: boolean } = {},
 ): Promise<string[]> {
-  const scopedDir = await resolveScopedStateDir(baseStateDir, explicitSessionId);
-  if (scopedDir === baseStateDir || options.includeRootFallback !== true) {
-    return [scopedDir];
-  }
-  return [scopedDir, baseStateDir];
+  return resolveBaseScopedStateDirs(baseStateDir, explicitSessionId, options);
 }
 
 export async function getScopedStatePath(
