@@ -266,11 +266,33 @@ async function readCanonicalActiveWorkflowModes(
   baseStateDir: string,
   sessionId?: string,
 ): Promise<TrackedWorkflowMode[]> {
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   const canonicalState = await readVisibleSkillActiveStateForStateDir(baseStateDir, sessionId);
   const activeModes = listActiveSkills(canonicalState ?? {})
+    .filter((entry) => {
+      const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
+      return normalizedSessionId ? entrySessionId === normalizedSessionId : entrySessionId.length === 0;
+    })
     .map((entry) => entry.skill)
     .filter(isTrackedWorkflowMode);
   return [...new Set(activeModes)];
+}
+
+async function readSessionDetailTransitionModes(
+  cwd: string,
+  sessionId: string | undefined,
+  requestedMode: TrackedWorkflowMode,
+): Promise<TrackedWorkflowMode[] | undefined> {
+  if (!sessionId || requestedMode !== 'ralplan') return undefined;
+  const deepInterviewPath = getStatePath('deep-interview', cwd, sessionId);
+  if (!existsSync(deepInterviewPath)) return undefined;
+
+  try {
+    const state = JSON.parse(await readFile(deepInterviewPath, 'utf-8')) as Record<string, unknown>;
+    return state.active === true ? ['deep-interview'] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function executeStateOperation(
@@ -481,7 +503,7 @@ export async function executeStateOperation(
             }
             const transitionCurrentModes = mode === 'ralplan' && activeCanonicalModes.includes('deep-interview')
               ? activeCanonicalModes
-              : undefined;
+              : await readSessionDetailTransitionModes(cwd, effectiveSessionId, mode);
             try {
               const transition = await reconcileWorkflowTransition(cwd, mode, {
                 action: 'write',
