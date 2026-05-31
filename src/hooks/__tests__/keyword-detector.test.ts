@@ -732,8 +732,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.ok(result);
       assert.equal(existsSync(join(cwd, '.omx', 'escape.md')), false);
       const modeState = JSON.parse(await readFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), 'utf-8')) as {
+        context_snapshot_path?: string;
         state?: { handoff_artifacts?: { context_snapshot_path?: string } };
       };
+      assert.equal(modeState.context_snapshot_path, undefined);
       assert.equal(modeState.state?.handoff_artifacts?.context_snapshot_path, '.omx/context/continue-20260530T000000Z.md');
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -2782,10 +2784,11 @@ deepMaxRounds = 21
       assert.equal(result.transition_error, undefined);
       const modeState = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-autopilot', 'autopilot-state.json'), 'utf-8'),
-      ) as { current_phase: string; started_at: string; state?: { context_snapshot_path?: string } };
+      ) as { current_phase: string; started_at: string; state?: { context_snapshot_path?: string; handoff_artifacts?: { context_snapshot_path?: string } } };
       assert.equal(modeState.current_phase, 'code-review');
       assert.equal(modeState.started_at, '2026-02-25T00:00:00.000Z');
-      assert.equal(modeState.state?.context_snapshot_path, '.omx/context/existing.md');
+      assert.equal(modeState.state?.context_snapshot_path, undefined);
+      assert.equal(modeState.state?.handoff_artifacts?.context_snapshot_path, '.omx/context/existing.md');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3004,9 +3007,10 @@ deepMaxRounds = 21
       assert.equal(result.transition_error, undefined);
       const modeState = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-autopilot-bare', 'autopilot-state.json'), 'utf-8'),
-      ) as { current_phase: string; state?: { context_snapshot_path?: string } };
+      ) as { current_phase: string; state?: { context_snapshot_path?: string; handoff_artifacts?: { context_snapshot_path?: string } } };
       assert.equal(modeState.current_phase, 'code-review');
-      assert.equal(modeState.state?.context_snapshot_path, '.omx/context/autopilot.md');
+      assert.equal(modeState.state?.context_snapshot_path, undefined);
+      assert.equal(modeState.state?.handoff_artifacts?.context_snapshot_path, '.omx/context/autopilot.md');
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autopilot-bare', 'ralph-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });

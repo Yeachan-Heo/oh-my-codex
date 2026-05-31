@@ -494,14 +494,16 @@ async function persistStatefulSkillSeedState(
 
   if (config.mode === 'autopilot') {
     const reusableModeState = preserveExistingModeState ? existingModeState : null;
-    const existingState = (reusableModeState?.state && typeof reusableModeState.state === 'object')
+    const existingStateRaw = (reusableModeState?.state && typeof reusableModeState.state === 'object')
       ? reusableModeState.state as Record<string, unknown>
       : {};
+    const { context_snapshot_path: legacyStateContextSnapshotPath, ...existingState } = existingStateRaw;
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
     const existingContextSnapshotPath = [
       existingHandoffs.context_snapshot_path,
+      legacyStateContextSnapshotPath,
       reusableModeState?.context_snapshot_path,
     ].find(isSafeAutopilotContextSnapshotPath);
     const contextSnapshotPath = await ensureAutopilotContextSnapshot(
@@ -511,6 +513,7 @@ async function persistStatefulSkillSeedState(
       existingContextSnapshotPath,
     );
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
+    delete baseState.context_snapshot_path;
     baseState.state = {
       ...existingState,
       phase_cycle: Array.isArray(existingState.phase_cycle) ? existingState.phase_cycle : ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
