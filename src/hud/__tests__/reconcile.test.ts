@@ -167,6 +167,7 @@ describe('reconcileHudForPromptSubmit', () => {
         return '%9';
       },
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      resizeTmuxPane: () => true,
       readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' }, statusLine: { preset: 'focused' } }),
       readAllState: async () => ({
         version: null,
@@ -209,6 +210,7 @@ describe('reconcileHudForPromptSubmit', () => {
         return '%9';
       },
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      resizeTmuxPane: () => true,
       readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' }, statusLine: { preset: 'focused' } }),
       readAllState: async () => ({
         version: null,
