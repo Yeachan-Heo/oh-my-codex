@@ -810,8 +810,9 @@ describe('keyword detector skill-active-state lifecycle', () => {
     const expectedReasons = {
       'missing-current-phase': 'nonpreservable-autopilot-mode-state-missing-current-phase',
       'malformed-json': 'malformed-autopilot-mode-state',
+      'array-json': 'malformed-autopilot-mode-state',
     } as const;
-    for (const fixture of ['missing-current-phase', 'malformed-json'] as const) {
+    for (const fixture of ['missing-current-phase', 'malformed-json', 'array-json'] as const) {
       const cwd = await mkdtemp(join(tmpdir(), `omx-keyword-autopilot-corrupt-continuation-${fixture}-`));
       const stateDir = join(cwd, '.omx', 'state');
       const sessionId = `sess-autopilot-corrupt-continuation-${fixture}`;
@@ -825,8 +826,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
             started_at: AUTOPILOT_TEST_STARTED_AT,
             state: { handoff_artifacts: {} },
           }, null, 2));
-        } else {
+        } else if (fixture === 'malformed-json') {
           await writeFile(modeStatePath, '{ "active": true, "mode": "autopilot",');
+        } else {
+          await writeFile(modeStatePath, '[]');
         }
 
         await continueAutopilotTestState(stateDir, cwd, sessionId, fixture);
@@ -874,6 +877,77 @@ describe('keyword detector skill-active-state lifecycle', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects typed canonical Autopilot recovery snapshot candidates during reuse', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-typed-recovery-context-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-autopilot-typed-recovery-context';
+    try {
+      await mkdir(join(cwd, '.omx', 'context'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'context', 'autopilot-recovery-20260529T000000Z.md'), '# stale degraded recovery');
+      await writeActiveAutopilotSkillState(stateDir, sessionId);
+      await writeFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ralplan',
+        started_at: AUTOPILOT_TEST_STARTED_AT,
+        state: {
+          handoff_artifacts: {
+            context_snapshot: {
+              path: '.omx/context/autopilot-recovery-20260529T000000Z.md',
+              kind: 'canonical',
+            },
+          },
+        },
+      }, null, 2));
+
+      await continueAutopilotTestState(stateDir, cwd, sessionId, 'typed-recovery');
+
+      await assertAutopilotRecoverySnapshot(
+        cwd,
+        await readAutopilotModeState(stateDir, sessionId),
+        '.omx/context/autopilot-recovery-20260530T000000Z.md',
+        'missing-or-unsafe-legacy-context-snapshot',
+      );
+      assert.equal(existsSync(join(cwd, '.omx', 'context', 'autopilot-recovery-20260529T000000Z.md')), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects oversized Autopilot context snapshot candidates during reuse', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-oversized-context-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-autopilot-oversized-context';
+    try {
+      await mkdir(join(cwd, '.omx', 'context'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'context', 'oversized-legacy-20260529T000000Z.md'), 'x'.repeat((1024 * 1024) + 1));
+      await writeActiveAutopilotSkillState(stateDir, sessionId);
+      await writeFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ralplan',
+        started_at: AUTOPILOT_TEST_STARTED_AT,
+        state: {
+          handoff_artifacts: {
+            context_snapshot_path: '.omx/context/oversized-legacy-20260529T000000Z.md',
+          },
+        },
+      }, null, 2));
+
+      await continueAutopilotTestState(stateDir, cwd, sessionId, 'oversized-context');
+
+      await assertAutopilotRecoverySnapshot(
+        cwd,
+        await readAutopilotModeState(stateDir, sessionId),
+        '.omx/context/autopilot-recovery-20260530T000000Z.md',
+        'missing-or-unsafe-legacy-context-snapshot',
+      );
+      assert.equal(existsSync(join(cwd, '.omx', 'context', 'oversized-legacy-20260529T000000Z.md')), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 

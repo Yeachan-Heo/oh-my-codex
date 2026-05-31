@@ -10,7 +10,8 @@
  * rather than the full keyword/state table.
  */
 
-import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
@@ -204,6 +205,12 @@ function isSafeAutopilotContextSnapshotPath(value: unknown): value is string {
     && !snapshotName.includes('/');
 }
 
+function isAutopilotRecoverySnapshotPath(path: string): boolean {
+  return path.startsWith('.omx/context/autopilot-recovery-');
+}
+
+const MAX_REUSABLE_AUTOPILOT_CONTEXT_SNAPSHOT_BYTES = 1024 * 1024;
+
 async function isReadableAutopilotContextSnapshotPath(sourceCwd: string, value: unknown): Promise<boolean> {
   if (!isSafeAutopilotContextSnapshotPath(value)) return false;
   const contextDir = await ensureSafeAutopilotContextDir(sourceCwd);
@@ -211,11 +218,12 @@ async function isReadableAutopilotContextSnapshotPath(sourceCwd: string, value: 
   try {
     const snapshotStat = await lstat(absolutePath);
     if (!snapshotStat.isFile() || snapshotStat.isSymbolicLink()) return false;
+    if (snapshotStat.size > MAX_REUSABLE_AUTOPILOT_CONTEXT_SNAPSHOT_BYTES) return false;
     const contextRealPath = await realpath(contextDir);
     const snapshotRealPath = await realpath(absolutePath);
     const relativeToContext = relative(contextRealPath, snapshotRealPath);
     if (relativeToContext === '' || relativeToContext.startsWith('..') || isAbsolute(relativeToContext)) return false;
-    await readFile(absolutePath, 'utf-8');
+    await access(absolutePath, fsConstants.R_OK);
     return true;
   } catch {
     return false;
@@ -250,13 +258,13 @@ function normalizeAutopilotContextSnapshotCandidate(candidate: AutopilotContextS
     const path = safeString(candidate.value.path).trim();
     const kind = safeString(candidate.value.kind).trim() as AutopilotContextSnapshotKind;
     if (!path || !['canonical', 'legacy', 'recovery'].includes(kind)) return null;
-    if (kind === 'recovery') return null;
+    if (kind === 'recovery' || isAutopilotRecoverySnapshotPath(path)) return null;
     return { path, kind };
   }
 
   const path = safeString(candidate.value).trim();
   if (!path) return null;
-  if (path.startsWith('.omx/context/autopilot-recovery-')) return null;
+  if (isAutopilotRecoverySnapshotPath(path)) return null;
   return { path, kind: candidate.kind ?? 'legacy' };
 }
 
@@ -266,7 +274,7 @@ async function findReusableAutopilotContextSnapshotPath(
 ): Promise<AutopilotContextSnapshotDescriptor | undefined> {
   for (const candidate of candidates) {
     const normalized = normalizeAutopilotContextSnapshotCandidate(candidate);
-    if (!normalized || !isSafeAutopilotContextSnapshotPath(normalized.path)) continue;
+    if (!normalized || isAutopilotRecoverySnapshotPath(normalized.path) || !isSafeAutopilotContextSnapshotPath(normalized.path)) continue;
     if (await isReadableAutopilotContextSnapshotPath(sourceCwd, normalized.path)) return normalized;
   }
   return undefined;
@@ -463,7 +471,9 @@ async function readJsonStateWithStatus(path: string): Promise<{
 }> {
   try {
     const raw = await readFile(path, 'utf-8');
-    return { state: JSON.parse(raw) as Record<string, unknown>, status: 'ok' };
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return { state: null, status: 'malformed' };
+    return { state: parsed, status: 'ok' };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return { state: null, status: 'missing' };
