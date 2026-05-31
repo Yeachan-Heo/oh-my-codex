@@ -115,6 +115,21 @@ describe('runWatchMode', () => {
     assert.equal(resolved, '/tmp/live workspace (deleted)');
   });
 
+  it('follows a live literal deleted-marker cwd when process cwd is an alias to the same directory', () => {
+    const resolved = resolveHudWatchCwd('/tmp/stale-launch', {
+      getCwd: () => '/tmp/link-to-live',
+      readProcCwd: () => '/tmp/live workspace (deleted)',
+      realpath: (path) => {
+        if (path === '/tmp/stale-launch') return '/dev/inode/stale-launch';
+        if (path === '/tmp/link-to-live') return '/dev/inode/live-literal-marker';
+        if (path === '/tmp/live workspace (deleted)') return '/dev/inode/live-literal-marker';
+        return path;
+      },
+    });
+
+    assert.equal(resolved, '/tmp/live workspace (deleted)');
+  });
+
   it('reads HUD state from the resolved live cwd on every watch frame', async () => {
     const seenConfigCwds: string[] = [];
     const seenStateCwds: string[] = [];

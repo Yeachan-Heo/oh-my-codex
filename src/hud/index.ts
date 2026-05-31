@@ -129,8 +129,11 @@ export function resolveHudWatchCwd(
   const launchPath = launchCwd.trim() || processCwd || launchCwd;
   const livePath = safeCallString(readProcCwd) || processCwd;
   if (!livePath) return launchPath;
-  if (isDeletedCwdMarkerText(livePath) && !isDeletedCwdMarkerText(launchPath) && processCwd !== livePath) {
-    return launchPath;
+  const liveMarkerMayBeProcDeleted = isDeletedCwdMarkerText(livePath) && !isDeletedCwdMarkerText(launchPath) && processCwd !== livePath;
+  if (liveMarkerMayBeProcDeleted) {
+    const processReal = processCwd ? safeCallString(() => realpath(processCwd)) : null;
+    const markerReal = safeCallString(() => realpath(livePath));
+    if (!processReal || !markerReal || processReal !== markerReal) return launchPath;
   }
 
   const launchReal = safeCallString(() => realpath(launchPath));
