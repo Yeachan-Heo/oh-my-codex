@@ -15233,6 +15233,41 @@ describe("codex native hook triage integration", () => {
     }
   });
 
+  it("omits Team handoff guidance from autopilot prompt context when Team mode is disabled", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-autopilot-observable-no-team-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeJson(join(cwd, ".omx", "setup-scope.json"), {
+        scope: "project",
+        teamMode: "disabled",
+      });
+      await writeSessionStart(cwd, "sess-autopilot-observable-no-team");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-autopilot-observable-no-team",
+          thread_id: "thread-autopilot-observable-no-team",
+          turn_id: "turn-autopilot-observable-no-team",
+          prompt: "$autopilot implement issue #2430",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.skillState?.skill, "autopilot");
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /detected workflow keyword "\$autopilot" -> autopilot/);
+      assert.match(additionalContext, /\$deep-interview -> \$ralplan -> \$ultragoal -> \$code-review -> \$ultraqa/);
+      assert.doesNotMatch(additionalContext, /\$team/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("makes bare autopilot command activation observable in state and prompt guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-autopilot-bare-observable-"));
     try {

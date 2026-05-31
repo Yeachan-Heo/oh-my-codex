@@ -18,6 +18,7 @@ import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
 import { hasDurableRalplanConsensusEvidenceForCwd } from '../ralplan/consensus-gate.js';
 import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
+import { readTeamModeConfig } from '../config/team-mode.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
   listActiveSkills,
@@ -899,6 +900,10 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     detectPrimaryKeyword(input.text),
   );
   if (!match) return null;
+  const teamMode = readTeamModeConfig(sourceCwd);
+  if (!teamMode.enabled && match.skill === 'team') {
+    return null;
+  }
 
   const nowIso = input.nowIso ?? new Date().toISOString();
   const hadDeepInterviewLock = previous?.skill === 'deep-interview' && previous?.input_lock?.active === true;
@@ -974,6 +979,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const workflowMatches: TrackedWorkflowMode[] = isTrackedWorkflowMatch && !markedQuestionAnswerContinuation
     ? parseExplicitSkillInvocations(normalizedInputText).matches
       .map((entry) => entry.skill)
+      .filter((skill) => teamMode.enabled || skill !== 'team')
       .filter(isTrackedWorkflowMode)
     : [];
   const resolvedWorkflowRequest = isTrackedWorkflowMatch

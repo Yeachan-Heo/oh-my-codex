@@ -13,9 +13,11 @@ import {
   setup,
   SETUP_MCP_MODES,
   SETUP_SCOPES,
+  SETUP_TEAM_MODES,
   type SetupInstallMode,
   type SetupMcpMode,
   type SetupScope,
+  type SetupTeamMode,
 } from "./setup.js";
 import { uninstall } from "./uninstall.js";
 import { version } from "./version.js";
@@ -287,6 +289,11 @@ Options:
                 Explicit setup MCP mode (default: none; compat enables first-party MCP compatibility and shared registry sync)
   --no-mcp      Alias for --mcp=none
   --with-mcp    Alias for --mcp=compat
+  --disable-team
+                Disable Team skill/context generation for setup (default remains enabled)
+  --enable-team Re-enable Team skill/context generation for setup
+  --team-mode <enabled|disabled>
+                Explicit Team setup mode
   --keep-config Skip config.toml cleanup during uninstall
   --purge       Remove .omx/ cache directory during uninstall
   --verbose     Show detailed output
@@ -549,6 +556,54 @@ export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
   throw new Error(
     `Invalid setup scope: ${value}. Expected one of: ${SETUP_SCOPES.join(", ")}`,
   );
+}
+
+export function resolveSetupTeamModeArg(args: string[]): SetupTeamMode | undefined {
+  let value: SetupTeamMode | undefined;
+  const setValue = (next: SetupTeamMode, source: string): void => {
+    if (value && value !== next) {
+      throw new Error(
+        `Conflicting setup Team mode flags: ${source} selects ${next}, but another flag already selected ${value}`,
+      );
+    }
+    value = next;
+  };
+  const parseValue = (next: string): SetupTeamMode => {
+    if (!SETUP_TEAM_MODES.includes(next as SetupTeamMode)) {
+      throw new Error(
+        `Invalid setup Team mode: ${next}. Expected one of: enabled, disabled`,
+      );
+    }
+    return next as SetupTeamMode;
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--disable-team" || arg === "--no-team") {
+      setValue("disabled", arg);
+      continue;
+    }
+    if (arg === "--enable-team" || arg === "--team") {
+      setValue("enabled", arg);
+      continue;
+    }
+    if (arg === "--team-mode") {
+      const next = args[index + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error(
+          `Missing setup Team mode value after --team-mode. Expected one of: enabled, disabled`,
+        );
+      }
+      setValue(parseValue(next), arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--team-mode=")) {
+      setValue(parseValue(arg.slice("--team-mode=".length)), "--team-mode");
+    }
+  }
+
+  return value;
 }
 
 export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
@@ -1785,6 +1840,7 @@ export async function main(args: string[]): Promise<void> {
           scope: resolveSetupScopeArg(args.slice(1)),
           installMode: resolveSetupInstallModeArg(args.slice(1)),
           mcpMode: resolveSetupMcpModeArg(args.slice(1)),
+          teamMode: resolveSetupTeamModeArg(args.slice(1)),
         });
         break;
       case "update":

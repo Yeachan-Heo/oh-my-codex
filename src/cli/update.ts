@@ -165,6 +165,11 @@ export function resolveSetupRefreshArgs(cwd: string): string[] {
   if (preferences?.mcpMode) {
     args.push('--mcp', preferences.mcpMode);
   }
+  if (preferences?.teamMode === 'disabled') {
+    args.push('--disable-team');
+  } else if (preferences?.teamMode === 'enabled') {
+    args.push('--enable-team');
+  }
   return args;
 }
 

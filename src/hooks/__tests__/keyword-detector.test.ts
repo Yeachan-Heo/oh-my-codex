@@ -1430,6 +1430,66 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+  it('does not activate team state when persisted Team mode is disabled', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-disabled-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'setup-scope.json'),
+        JSON.stringify({ scope: 'project', teamMode: 'disabled' }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$team coordinate the hotfix',
+        sessionId: 'sess-team-disabled',
+        nowIso: '2026-04-08T00:00:00.000Z',
+      });
+
+      assert.equal(result, null);
+      assert.equal(existsSync(join(stateDir, 'team-state.json')), false);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-team-disabled', SKILL_ACTIVE_STATE_FILE)),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('filters deferred team handoffs when persisted Team mode is disabled', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-disabled-deferred-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'setup-scope.json'),
+        JSON.stringify({ scope: 'project', teamMode: 'disabled' }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ralplan $team $ralph ship this fix',
+        sessionId: 'sess-team-disabled-deferred',
+        nowIso: '2026-04-10T00:00:00.000Z',
+      });
+
+      assert.equal(result?.skill, 'ralplan');
+      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralplan']);
+      assert.deepEqual(result?.deferred_skills, ['ralph']);
+      assert.equal(existsSync(join(stateDir, 'team-state.json')), false);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-team-disabled-deferred', 'team-state.json')),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves active team root state when $team is re-entered from prompt routing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-preserve-'));
     const stateDir = join(cwd, '.omx', 'state');

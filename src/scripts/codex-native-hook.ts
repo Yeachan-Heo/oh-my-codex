@@ -48,6 +48,7 @@ import {
   type SkillActiveState,
 } from "../hooks/keyword-detector.js";
 import { buildDeepInterviewConfigInstruction } from "../hooks/deep-interview-config-instruction.js";
+import { readTeamModeConfig } from "../config/team-mode.js";
 import {
   detectNativeStopStallPattern,
   loadAutoNudgeConfig,
@@ -1765,11 +1766,14 @@ function buildSkillStateCliInstruction(mode: string, statePath: string): string 
 
 function buildAutopilotPromptActivationNote(
   skillState?: SkillActiveState | null,
-  options: { markedQuestionAnswer?: boolean } = {},
+  options: { markedQuestionAnswer?: boolean; cwd?: string } = {},
 ): string | null {
   if (skillState?.initialized_mode !== "autopilot") return null;
+  const teamHandoff = readTeamModeConfig(options.cwd).enabled
+    ? " (+ $team if needed)"
+    : "";
   return [
-    "Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal (+ $team if needed) -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).",
+    `Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal${teamHandoff} -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).`,
     "Start/resume at current_phase=deep-interview unless the task is clear and bounded; if deep-interview is intentionally skipped, persist and state an explicit deep_interview_gate.skip_reason before moving to ralplan.",
     "Deep-interview is a structured question chain, not a one-question gate: after an omx question answer, re-score ambiguity against the active threshold, treat max_rounds as a cap, and crystallize once ambiguity is at or below threshold and readiness gates pass.",
     options.markedQuestionAnswer
@@ -1782,6 +1786,12 @@ function buildAutopilotPromptActivationNote(
   ].filter(Boolean).join(" ");
 }
 
+function formatExecutionHandoffList(cwd: string): string {
+  return readTeamModeConfig(cwd).enabled
+    ? "`$ultragoal`, `$team`, or `$ralph`"
+    : "`$ultragoal` or `$ralph`";
+}
+
 function buildAdditionalContextMessage(
   prompt: string,
   skillState?: SkillActiveState | null,
@@ -1790,8 +1800,9 @@ function buildAdditionalContextMessage(
 ): string | null {
   if (!prompt) return null;
   const promptPriorityMessage = buildPromptPriorityMessage(prompt);
-  const matches = detectKeywords(prompt);
-  const match = detectPrimaryKeyword(prompt);
+  const teamMode = readTeamModeConfig(cwd);
+  const matches = detectKeywords(prompt).filter((entry) => teamMode.enabled || entry.skill !== "team");
+  const match = matches[0] ?? null;
   if (!match) {
     const continuedSkill = safeString(skillState?.skill).trim();
     if (!continuedSkill) return promptPriorityMessage;
@@ -1800,7 +1811,7 @@ function buildAdditionalContextMessage(
       : null;
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
     const markedQuestionAnswer = /^\s*\[omx question answered\]/i.test(prompt);
-    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer });
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer, cwd });
     return [
       `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
       promptPriorityMessage,
@@ -1826,7 +1837,7 @@ function buildAdditionalContextMessage(
       ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
       : null;
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
-    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true });
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true, cwd });
     return [
       `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
       promptPriorityMessage,
@@ -1859,7 +1870,7 @@ function buildAdditionalContextMessage(
   const ultragoalPromptActivationNote = match.skill === "ultragoal"
     ? "Ultragoal protocol: use `omx ultragoal create-goals` / `complete-goals` / `checkpoint` for `.omx/ultragoal` artifacts, then use Codex goal model tools only from the active agent handoff (`get_goal`, `create_goal`, `update_goal`) and never overwrite a different active Codex goal. Ultragoal does not call `/goal clear`; for multiple sequential ultragoal runs in one Codex session/thread, manually clear the completed Codex goal in the UI before creating the next aggregate goal."
     : null;
-  const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState);
+  const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { cwd });
   const combinedTransitionMessage = (() => {
     if (!skillState?.transition_message) return null;
     if (matches.length <= 1 || activeSkills.length <= 1) return skillState.transition_message;
@@ -2761,7 +2772,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
         `${planningModeDescription}. `
         + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, or required `.omx/state/` files. "
         + "Do not edit implementation files or run implementation-focused writes from planning phases. "
-        + "To execute, first process an explicit handoff such as `$ultragoal`, `$team`, or `$ralph`, which must emit terminal planning state before implementation begins.",
+        + `To execute, first process an explicit handoff such as ${formatExecutionHandoffList(cwd)}, which must emit terminal planning state before implementation begins.`,
     },
   };
 }
@@ -2798,7 +2809,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
-        "Deep-interview is requirements/spec mode. Treat detailed user answers as interview/spec material, not implicit implementation authorization. You may write only deep-interview artifacts under `.omx/context/`, `.omx/interviews/`, `.omx/specs/`, or required `.omx/state/` files. To implement, first ask for or process an explicit transition such as `$ralplan`, `$autopilot`, `$ralph`, `$team`, or `$ultragoal`.",
+        `Deep-interview is requirements/spec mode. Treat detailed user answers as interview/spec material, not implicit implementation authorization. You may write only deep-interview artifacts under \`.omx/context/\`, \`.omx/interviews/\`, \`.omx/specs/\`, or required \`.omx/state/\` files. To implement, first ask for or process an explicit transition such as \`$ralplan\`, \`$autopilot\`, ${formatExecutionHandoffList(cwd)}.`,
     },
   };
 }
@@ -3057,6 +3068,7 @@ async function reconcileStaleRootSkillActiveStateForStop(
 function buildRalplanContinuationStatus(
   blocker: { phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string },
   activeSubagentCount: number,
+  cwd: string,
 ): { reason: string; systemMessage: string; stopReasonSuffix: string } {
   const phase = blocker.phase || "planning";
   const artifact = blocker.latestPlanPath
@@ -3092,7 +3104,7 @@ function buildRalplanContinuationStatus(
   }
 
   const completeHint = blocker.planningComplete
-    ? " The planning artifacts are present; if consensus is approved, emit terminal ralplan complete/approved handoff state and stop planning. Implementation must wait for an explicit $ultragoal, $team, or $ralph handoff."
+    ? ` The planning artifacts are present; if consensus is approved, emit terminal ralplan complete/approved handoff state and stop planning. Implementation must wait for an explicit ${formatExecutionHandoffList(cwd).replaceAll("`", "")} handoff.`
     : "";
 
   return {
@@ -3312,6 +3324,9 @@ async function maybeBuildOrdinaryStopNoProgressOutput(
   stateDir: string,
   canonicalSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
+  const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
+  if (!stopHookActive) return null;
+
   const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
   const state = await readJsonIfExists(statePath) ?? {};
   const sessions = safeObject(state.sessions);
@@ -3342,9 +3357,6 @@ async function maybeBuildOrdinaryStopNoProgressOutput(
   };
   await mkdir(stateDir, { recursive: true });
   await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
-
-  const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
-  if (!stopHookActive) return null;
 
   const maxRepeats = parseBoundedPositiveInteger(
     process.env.OMX_NATIVE_STOP_NO_PROGRESS_MAX_REPEATS,
@@ -3550,7 +3562,7 @@ async function buildSkillStopOutput(
   const activeSubagentCount = subagentSummary?.activeSubagentThreadIds.length ?? 0;
 
   if (blocker.skill === "ralplan") {
-    const status = buildRalplanContinuationStatus(blocker, activeSubagentCount);
+    const status = buildRalplanContinuationStatus(blocker, activeSubagentCount, cwd);
     return {
       decision: "block",
       reason: status.reason,
@@ -4008,7 +4020,9 @@ export async function dispatchCodexNativeHook(
   // Native hooks must use the same authoritative runtime state root as HUD/MCP
   // when boxed/team roots are active; do not bypass it with cwd/.omx/state.
   const stateDir = getBaseStateDir(cwd);
-  await mkdir(stateDir, { recursive: true });
+  if (hookEventName !== "Stop") {
+    await mkdir(stateDir, { recursive: true });
+  }
 
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
   let skillState: SkillActiveState | null = null;

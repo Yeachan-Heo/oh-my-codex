@@ -786,7 +786,7 @@ describe('runDeferredGlobalUpdate', () => {
       await mkdir(join(cwd, '.omx'), { recursive: true });
       await writeFile(
         join(cwd, '.omx', 'setup-scope.json'),
-        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none' }, null, 2),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
       );
 
       const result = runDeferredGlobalUpdate(
@@ -806,7 +806,7 @@ describe('runDeferredGlobalUpdate', () => {
 
       assert.equal(result.ok, true);
       assert.equal(calls.length, 1);
-      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none'/);
+      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none' '--disable-team'/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -821,7 +821,7 @@ describe('runDeferredGlobalUpdate', () => {
       const setupScopePath = join(cwd, '.omx', 'setup-scope.json');
       await writeFile(
         setupScopePath,
-        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none' }, null, 2),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
       );
 
       const result = runDeferredGlobalUpdate(
@@ -846,7 +846,7 @@ describe('runDeferredGlobalUpdate', () => {
 
       assert.equal(result.ok, true);
       assert.equal(calls.length, 1);
-      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none'/);
+      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none' '--disable-team'/);
       assert.doesNotMatch(calls[0].args[1], /compat/);
       assert.doesNotMatch(calls[0].args[1], /legacy/);
     } finally {
@@ -938,7 +938,7 @@ describe('post-update setup refresh handoff', () => {
       await mkdir(join(cwd, '.omx'), { recursive: true });
       await writeFile(
         join(cwd, '.omx', 'setup-scope.json'),
-        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none' }, null, 2),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
       );
 
       const result = spawnInstalledSetupRefresh(
@@ -959,6 +959,7 @@ describe('post-update setup refresh handoff', () => {
         '--plugin',
         '--mcp',
         'none',
+        '--disable-team',
       ]);
       assert.deepEqual(resolveSetupRefreshArgs(cwd), [
         'setup',
@@ -967,6 +968,7 @@ describe('post-update setup refresh handoff', () => {
         '--plugin',
         '--mcp',
         'none',
+        '--disable-team',
       ]);
     } finally {
       await rm(cwd, { recursive: true, force: true });

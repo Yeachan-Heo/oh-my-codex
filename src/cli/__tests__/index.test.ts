@@ -35,6 +35,7 @@ import {
   resolveSetupInstallModeArg,
   resolveSetupMcpModeArg,
   resolveSetupScopeArg,
+  resolveSetupTeamModeArg,
   resolveLaunchConfigRepairOptions,
   readPersistedSetupPreferences,
   readPersistedSetupScope,
@@ -1861,6 +1862,41 @@ describe("resolveSetupMcpModeArg", () => {
   });
 });
 
+describe("resolveSetupTeamModeArg", () => {
+  it("maps explicit setup Team mode flags", () => {
+    assert.equal(resolveSetupTeamModeArg(["--dry-run"]), undefined);
+    assert.equal(resolveSetupTeamModeArg(["--disable-team"]), "disabled");
+    assert.equal(resolveSetupTeamModeArg(["--no-team"]), "disabled");
+    assert.equal(resolveSetupTeamModeArg(["--enable-team"]), "enabled");
+    assert.equal(resolveSetupTeamModeArg(["--team"]), "enabled");
+    assert.equal(resolveSetupTeamModeArg(["--team-mode", "disabled"]), "disabled");
+    assert.equal(resolveSetupTeamModeArg(["--team-mode=enabled"]), "enabled");
+    assert.equal(
+      resolveSetupTeamModeArg(["--scope", "project", "--team-mode", "disabled"]),
+      "disabled",
+    );
+  });
+
+  it("rejects invalid or conflicting setup Team mode flags", () => {
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--team-mode"]),
+      /Missing setup Team mode value after --team-mode/,
+    );
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--team-mode", "minimal"]),
+      /Invalid setup Team mode: minimal/,
+    );
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--disable-team", "--enable-team"]),
+      /Conflicting setup Team mode flags/,
+    );
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--team-mode=enabled", "--no-team"]),
+      /Conflicting setup Team mode flags/,
+    );
+  });
+});
+
 describe("resolveSetupScopeArg", () => {
   it("returns undefined when scope is omitted", () => {
     assert.equal(resolveSetupScopeArg(["--dry-run"]), undefined);
@@ -1917,6 +1953,23 @@ describe("project launch scope helpers", () => {
       assert.deepEqual(readPersistedSetupPreferences(wd), {
         scope: "user",
         installMode: "plugin",
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads persisted setup Team mode when present", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project", teamMode: "disabled" }),
+      );
+      assert.deepEqual(readPersistedSetupPreferences(wd), {
+        scope: "project",
+        teamMode: "disabled",
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
