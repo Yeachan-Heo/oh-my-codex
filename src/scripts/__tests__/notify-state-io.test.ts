@@ -129,4 +129,40 @@ describe('notify-hook state I/O session authority', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('maps native Codex session aliases to the canonical OMX session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-state-io-native-alias-'));
+    const previousOmxSessionId = process.env.OMX_SESSION_ID;
+    const previousCodexSessionId = process.env.CODEX_SESSION_ID;
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(join(stateDir, 'sessions', 'omx-canonical'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'session.json'),
+        JSON.stringify({
+          session_id: 'omx-canonical',
+          native_session_id: 'codex-native',
+          cwd: wd,
+        }, null, 2),
+        'utf-8',
+      );
+      delete process.env.OMX_SESSION_ID;
+      process.env.CODEX_SESSION_ID = 'codex-native';
+
+      assert.equal(await readCurrentSessionId(stateDir), 'omx-canonical');
+      assert.equal(await resolveScopedStateDir(stateDir), join(stateDir, 'sessions', 'omx-canonical'));
+
+      await writeScopedJson(stateDir, 'hud-state.json', undefined, { turn_count: 11 });
+      const value = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'omx-canonical', 'hud-state.json'), 'utf-8'),
+      ) as { turn_count?: unknown };
+      assert.equal(value.turn_count, 11);
+    } finally {
+      if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      if (typeof previousCodexSessionId === 'string') process.env.CODEX_SESSION_ID = previousCodexSessionId;
+      else delete process.env.CODEX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

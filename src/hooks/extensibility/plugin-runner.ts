@@ -32,6 +32,7 @@ function emitResult(result: RunnerResult): void {
 function finish(result: RunnerResult, exitCode: number): void {
   process.exitCode = exitCode;
   emitResult(result);
+  process.exit(exitCode);
 }
 
 async function main(): Promise<void> {

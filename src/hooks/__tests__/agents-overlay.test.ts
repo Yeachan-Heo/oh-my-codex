@@ -535,6 +535,38 @@ describe("resolveSessionOrchestrationMode", () => {
     assert.ok(overlay.includes("- team: phase: running"));
     assert.equal(overlay.includes("- autoresearch:"), false);
   });
+
+  it("active mode summary reads canonical state from OMX_TEAM_STATE_ROOT", async () => {
+    const sessionId = "sess-overlay-team-root";
+    const teamStateRoot = join(tempDir, "team-state-root");
+    const sessionDir = join(teamStateRoot, "sessions", sessionId);
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      process.env.OMX_TEAM_STATE_ROOT = teamStateRoot;
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(sessionDir, "skill-active-state.json"),
+        JSON.stringify({
+          active: true,
+          skill: "team",
+          phase: "team-exec",
+          session_id: sessionId,
+          active_skills: [{ skill: "team", phase: "team-exec", active: true, session_id: sessionId }],
+        }),
+      );
+      await writeFile(
+        join(sessionDir, "team-state.json"),
+        JSON.stringify({ active: true, team_name: "rooted" }),
+      );
+
+      const overlay = await generateOverlay(tempDir, sessionId);
+
+      assert.ok(overlay.includes("- team: phase: team-exec"));
+    } finally {
+      if (typeof previousTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+    }
+  });
 });
 
 describe("applyOverlay + stripOverlay roundtrip", () => {

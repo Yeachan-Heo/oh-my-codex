@@ -286,6 +286,11 @@ function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): str
   return undefined;
 }
 
+function resolveCanonicalSessionId(candidate: string | undefined, metadata: ResolvedSessionMetadata | undefined): string | undefined {
+  if (!candidate) return undefined;
+  return metadata?.nativeSessionAliases.includes(candidate) ? metadata.sessionId : candidate;
+}
+
 async function readUsableSessionStateFromBaseStateDir(
   cwd: string,
   baseStateDir = getBaseStateDir(cwd),
@@ -303,11 +308,17 @@ async function readUsableSessionStateFromBaseStateDir(
 }
 function normalizeSessionMetadata(state: SessionState | null, sourcePath?: string): ResolvedSessionMetadata | undefined {
   if (!state?.session_id) return undefined;
+  const raw = state as SessionState & Record<string, unknown>;
   const nativeSessionId = typeof state.native_session_id === 'string' && state.native_session_id.trim()
     ? state.native_session_id.trim()
     : undefined;
-  const nativeSessionAliases = [...new Set([nativeSessionId].filter((value): value is string => Boolean(value)))];
-  const raw = state as SessionState & Record<string, unknown>;
+  const nativeSessionAliases = [...new Set([
+    raw.native_session_id,
+    raw.codex_session_id,
+    raw.previous_native_session_id,
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+    .map((value) => value.trim()))];
   return {
     sessionId: state.session_id,
     ...(nativeSessionId ? { nativeSessionId } : {}),
@@ -336,10 +347,10 @@ export async function readCurrentSessionId(workingDirectory?: string): Promise<s
   const cwd = resolveWorkingDirectoryForState(workingDirectory);
   const baseStateDir = getBaseStateDir(cwd);
   const envSessionId = readSessionIdFromEnvironment();
-  if (envSessionId) return envSessionId;
+  const metadata = await readSessionMetadataFromBaseStateDir(cwd, baseStateDir);
+  if (envSessionId) return resolveCanonicalSessionId(envSessionId, metadata);
 
-  const baseSession = await readUsableSessionStateFromBaseStateDir(cwd, baseStateDir);
-  if (baseSession) return baseSession.session_id;
+  if (metadata?.sessionId) return metadata.sessionId;
 
   const localStateDir = join(cwd, '.omx', 'state');
   if (resolvePath(baseStateDir) !== resolvePath(localStateDir)) {
@@ -353,16 +364,20 @@ export async function resolveStateScope(
   workingDirectory?: string,
   explicitSessionId?: string,
 ): Promise<ResolvedStateScope> {
+  const cwd = resolveWorkingDirectoryForState(workingDirectory);
+  const baseStateDir = getBaseStateDir(cwd);
+  const metadata = await readSessionMetadataFromBaseStateDir(cwd, baseStateDir);
   const validatedExplicit = validateSessionId(explicitSessionId);
   if (validatedExplicit) {
+    const sessionId = resolveCanonicalSessionId(validatedExplicit, metadata) ?? validatedExplicit;
     return {
       source: 'explicit',
-      sessionId: validatedExplicit,
-      stateDir: getStateDir(workingDirectory, validatedExplicit),
+      sessionId,
+      stateDir: join(baseStateDir, 'sessions', sessionId),
     };
   }
 
-  const currentSessionId = await readCurrentSessionId(workingDirectory);
+  const currentSessionId = await readCurrentSessionId(cwd);
   if (currentSessionId) {
     return {
       source: 'session',

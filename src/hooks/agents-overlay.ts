@@ -39,7 +39,7 @@ import { buildExploreRoutingGuidance } from "./explore-routing.js";
 import {
   SKILL_ACTIVE_STATE_FILE,
   listActiveSkills,
-  readVisibleSkillActiveState,
+  readVisibleSkillActiveStateForStateDir,
 } from "../state/skill-active.js";
 import {
   OMX_GENERATED_AGENTS_MARKER,
@@ -206,7 +206,11 @@ async function readActiveModes(
   cwd: string,
   sessionId?: string,
 ): Promise<string> {
-  const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
+  const [baseStateDir] = await getAuthoritativeActiveStateDirs(cwd, sessionId);
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(
+    sessionId ? dirname(dirname(baseStateDir)) : baseStateDir,
+    sessionId,
+  );
   const canonicalEntries = listActiveSkills(canonicalState ?? {}).sort((a, b) => a.skill.localeCompare(b.skill));
   const modes: string[] = [];
 

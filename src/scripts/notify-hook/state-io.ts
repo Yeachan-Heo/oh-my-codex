@@ -23,13 +23,27 @@ function isSafeStateFileName(fileName: string): boolean {
     && !fileName.includes('\\');
 }
 
-async function readSessionIdFromBaseStateDir(baseStateDir: string): Promise<string | undefined> {
+interface SessionMetadata {
+  sessionId?: string;
+  nativeAliases: string[];
+}
+
+async function readSessionMetadataFromBaseStateDir(baseStateDir: string): Promise<SessionMetadata> {
   const session = await readJsonIfExists(join(baseStateDir, 'session.json'), null);
+  let sessionId: string | undefined;
   try {
-    return validateSessionId(session?.session_id);
+    sessionId = validateSessionId(session?.session_id);
   } catch {
-    return undefined;
+    sessionId = undefined;
   }
+  const nativeAliases = [
+    session?.native_session_id,
+    session?.codex_session_id,
+    session?.previous_native_session_id,
+  ]
+    .map((value) => safeString(value).trim())
+    .filter(Boolean);
+  return { sessionId, nativeAliases: [...new Set(nativeAliases)] };
 }
 
 function readSessionIdFromEnvironment(): string | undefined {
@@ -47,6 +61,13 @@ function readSessionIdFromEnvironment(): string | undefined {
   return undefined;
 }
 
+function resolveCanonicalSessionId(candidate: string | undefined, metadata: SessionMetadata): string | undefined {
+  if (!candidate) return undefined;
+  return metadata.sessionId && metadata.nativeAliases.includes(candidate)
+    ? metadata.sessionId
+    : candidate;
+}
+
 async function resolveBaseScopedStateDir(
   baseStateDir: string,
   explicitSessionId?: string,
@@ -55,7 +76,10 @@ async function resolveBaseScopedStateDir(
     ? explicitSessionId.trim()
     : undefined;
   const validatedExplicit = validateSessionId(normalizedExplicit);
-  const sessionId = validatedExplicit ?? readSessionIdFromEnvironment() ?? await readSessionIdFromBaseStateDir(baseStateDir);
+  const metadata = await readSessionMetadataFromBaseStateDir(baseStateDir);
+  const sessionId = resolveCanonicalSessionId(validatedExplicit, metadata)
+    ?? resolveCanonicalSessionId(readSessionIdFromEnvironment(), metadata)
+    ?? metadata.sessionId;
   return sessionId ? join(baseStateDir, 'sessions', sessionId) : baseStateDir;
 }
 
@@ -74,7 +98,8 @@ async function resolveBaseScopedStateDirs(
 
 
 export async function readCurrentSessionId(baseStateDir: string): Promise<string | undefined> {
-  return readSessionIdFromEnvironment() ?? readSessionIdFromBaseStateDir(baseStateDir);
+  const metadata = await readSessionMetadataFromBaseStateDir(baseStateDir);
+  return resolveCanonicalSessionId(readSessionIdFromEnvironment(), metadata) ?? metadata.sessionId;
 }
 
 export async function resolveScopedStateDir(

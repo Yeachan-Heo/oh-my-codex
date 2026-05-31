@@ -12,6 +12,8 @@ import {
   getAllSessionScopedStatePaths,
   getReadScopedStateFilePaths,
   readCurrentSessionId,
+  resolveRuntimeStateScope,
+  resolveStateScope,
   resolveWorkingDirectoryForState,
   getStateDir,
   getStateFilePath,
@@ -376,6 +378,59 @@ describe('state paths', () => {
     } finally {
       if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
       else delete process.env.OMX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('maps native Codex session aliases to the canonical OMX session id', async () => {
+    const wd = await mkRealTemp('omx-state-paths-native-alias-');
+    const previousOmxSessionId = process.env.OMX_SESSION_ID;
+    const previousCodexSessionId = process.env.CODEX_SESSION_ID;
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(join(stateDir, 'sessions', 'omx-canonical'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'omx-canonical',
+        native_session_id: 'codex-native',
+        codex_session_id: 'codex-current',
+        previous_native_session_id: 'codex-previous',
+        cwd: wd,
+      }));
+      delete process.env.OMX_SESSION_ID;
+      process.env.CODEX_SESSION_ID = 'codex-previous';
+
+      assert.equal(await readCurrentSessionId(wd), 'omx-canonical');
+      const scope = await resolveRuntimeStateScope(wd);
+      assert.equal(scope.sessionId, 'omx-canonical');
+      assert.equal(scope.source, 'native-alias');
+    } finally {
+      if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      if (typeof previousCodexSessionId === 'string') process.env.CODEX_SESSION_ID = previousCodexSessionId;
+      else delete process.env.CODEX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('maps explicit native Codex session aliases through resolveStateScope', async () => {
+    const wd = await mkRealTemp('omx-state-paths-explicit-native-alias-');
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(join(stateDir, 'sessions', 'omx-canonical'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'omx-canonical',
+        native_session_id: 'codex-native',
+        previous_native_session_id: 'codex-previous',
+        cwd: wd,
+      }));
+
+      const scope = await resolveStateScope(wd, 'codex-previous');
+      assert.equal(scope.sessionId, 'omx-canonical');
+      assert.equal(scope.stateDir, join(stateDir, 'sessions', 'omx-canonical'));
+    } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });

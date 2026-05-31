@@ -3123,6 +3123,30 @@ describe("detached tmux new-session sequencing", () => {
     );
   });
 
+
+
+  it("buildDetachedSessionBootstrapSteps preserves OMX_STATE_ROOT identity when no root override is explicit", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      "/tmp/state-root",
+      { OMX_STATE_ROOT: "/tmp/state-root" },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_STATE_ROOT=/tmp/state-root"), true);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/state-root"), false);
+  });
+
   it("buildDetachedSessionBootstrapSteps preserves OMX_ROOT precedence over OMX_STATE_ROOT", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
@@ -3143,6 +3167,29 @@ describe("detached tmux new-session sequencing", () => {
     assert.ok(newSession);
     assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/root-from-omx-root"), true);
     assert.equal(newSession.args.some((arg) => arg === "OMX_STATE_ROOT=/tmp/state-root-should-not-win"), false);
+  });
+
+
+  it("buildDetachedSessionBootstrapSteps preserves OMX_TEAM_STATE_ROOT over explicit root env", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      "/tmp/root-from-omx-root",
+      { OMX_ROOT: "/tmp/root-from-omx-root", OMX_TEAM_STATE_ROOT: "/tmp/team-state-root" },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_TEAM_STATE_ROOT=/tmp/team-state-root"), true);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/root-from-omx-root"), false);
   });
 
   it("serializes custom parent env for the interactive detached tmux leader without logging values in tmux args", () => {
@@ -3227,12 +3274,14 @@ describe("detached tmux new-session sequencing", () => {
     );
   });
 
-  it("runCodex builds inside-tmux HUD command through shared root-source resolver", async () => {
+  it("runCodex builds inside-tmux HUD command through explicit runtime-root resolver", async () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
+    assert.match(source, /const hudRuntimeRoot = resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
     assert.match(
       source,
-      /const hudEnvArgs = Object\.entries\(buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*omxRoot: omxRootOverride,\s*rootSource: resolveHudRuntimeRootSource\(omxRootOverride, process\.env\),\s*\}\)\.env\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
+      /const hudEnvArgs = Object\.entries\(buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
     );
+    assert.match(source, /if \(env\.OMX_TEAM_STATE_ROOT\?\.trim\(\)\) return 'team-env';\s*if \(env\.OMX_ROOT\?\.trim\(\) \|\| omxRootOverride\) return 'omx-root-env';\s*if \(env\.OMX_STATE_ROOT\?\.trim\(\)\) return 'omx-state-root-env';/);
     assert.match(
       source,
       /buildTmuxPaneCommand\("env",\s*\[\.\.\.hudEnvArgs,\s*"node",\s*omxBin,\s*"hud",\s*"--watch"\]\)/,

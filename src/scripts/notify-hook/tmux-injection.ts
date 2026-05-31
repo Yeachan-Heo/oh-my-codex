@@ -99,8 +99,14 @@ async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: 
   return finalizeResolvedPane(healedPaneId, 'healed_hud_pane_target', expectedCwd);
 }
 
-async function resolvePreferredModePane(stateDir: string, allowedModes: string[]): Promise<{ mode: string; state: any; pane: string; stateDir: string } | null> {
-  const dirs = await getScopedStateDirsForCurrentSession(stateDir, undefined, { includeRootFallback: true }).catch(() => [stateDir]);
+async function resolvePreferredModePane(
+  stateDir: string,
+  allowedModes: string[],
+  options: { includeRootFallback?: boolean } = {},
+): Promise<{ mode: string; state: any; pane: string; stateDir: string } | null> {
+  const dirs = await getScopedStateDirsForCurrentSession(stateDir, undefined, {
+    includeRootFallback: options.includeRootFallback !== false,
+  }).catch(() => [stateDir]);
   for (const dir of dirs) {
     for (const mode of allowedModes || []) {
       const path = join(dir, `${mode}-state.json`);
@@ -190,7 +196,13 @@ export async function readVisibleAllowedModes(
   stateDir: string,
   payload: any,
   allowedModes: string[],
-): Promise<{ canonicalPresent: boolean; activeSkillCount: number; allowedSet: Set<string> | null; preferredMode: string | null }> {
+): Promise<{
+  canonicalPresent: boolean;
+  activeSkillCount: number;
+  allowedSet: Set<string> | null;
+  preferredMode: string | null;
+  sessionScoped: boolean;
+}> {
   const candidateSessionIds = [
     await readCurrentSessionId(stateDir).catch(() => undefined),
     resolveInvocationSessionId(payload),
@@ -213,6 +225,7 @@ export async function readVisibleAllowedModes(
       activeSkillCount: activeSkills.length,
       allowedSet,
       preferredMode: pickActiveMode([...allowedSet], allowedModes),
+      sessionScoped: true,
     };
   }
 
@@ -230,6 +243,7 @@ export async function readVisibleAllowedModes(
         activeSkillCount: activeSkills.length,
         allowedSet,
         preferredMode: pickActiveMode([...allowedSet], allowedModes),
+        sessionScoped: false,
       };
     }
   }
@@ -239,6 +253,7 @@ export async function readVisibleAllowedModes(
     activeSkillCount: 0,
     allowedSet: null,
     preferredMode: null,
+    sessionScoped: candidateSessionIds.length > 0,
   };
 }
 
@@ -470,7 +485,24 @@ export async function handleTmuxInjection({
     }
   };
   try {
-    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir, undefined, { includeRootFallback: !canonicalModeState.canonicalPresent });
+    if (!canonicalModeState.canonicalPresent && canonicalModeState.sessionScoped) {
+      await logTmuxHookEvent(logsDir, {
+        timestamp: nowIso,
+        type: 'tmux_hook',
+        mode: null,
+        reason: 'missing_canonical_session_skill_state',
+        turn_id: turnId,
+        thread_id: threadId,
+        target: config.target,
+        dry_run: config.dry_run,
+        sent: false,
+        event: 'injection_skipped',
+      });
+      return;
+    }
+    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir, undefined, {
+      includeRootFallback: !canonicalModeState.canonicalPresent && !canonicalModeState.sessionScoped,
+    });
     await scanActiveModeStateDirs(scopedDirs);
   } catch {
     // Non-fatal
@@ -481,6 +513,7 @@ export async function handleTmuxInjection({
     canonicalModeState.canonicalPresent
       ? (canonicalModeState.preferredMode ? [canonicalModeState.preferredMode] : [])
       : config.allowed_modes,
+    { includeRootFallback: !canonicalModeState.sessionScoped },
   ).catch(() => null);
   const mode = canonicalModeState.canonicalPresent
     ? canonicalModeState.preferredMode

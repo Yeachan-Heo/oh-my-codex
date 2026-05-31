@@ -1362,14 +1362,58 @@ export function resolveOmxRootForLaunch(
   if (typeof raw !== "string" || raw.trim() === "") return undefined;
   return isCrossPlatformAbsolutePath(raw) ? raw : join(cwd, raw);
 }
+type HudRuntimeRootSource = 'team-env' | 'omx-root-env' | 'omx-state-root-env' | 'cwd-default';
+
+interface HudRuntimeRootForLaunch {
+  omxRoot?: string;
+  omxStateRoot?: string;
+  omxTeamStateRoot?: string;
+  rootSource: HudRuntimeRootSource;
+}
+
+function resolveLaunchPath(cwd: string, raw: string): string {
+  return isCrossPlatformAbsolutePath(raw) ? raw : join(cwd, raw);
+}
+
 function resolveHudRuntimeRootSource(
   omxRootOverride: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
-): 'team-env' | 'omx-root-env' | 'omx-state-root-env' | 'cwd-default' {
+): HudRuntimeRootSource {
   if (env.OMX_TEAM_STATE_ROOT?.trim()) return 'team-env';
   if (env.OMX_ROOT?.trim() || omxRootOverride) return 'omx-root-env';
   if (env.OMX_STATE_ROOT?.trim()) return 'omx-state-root-env';
   return 'cwd-default';
+}
+
+export function resolveHudRuntimeRootForLaunch(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): HudRuntimeRootForLaunch {
+  const omxTeamStateRoot = env.OMX_TEAM_STATE_ROOT?.trim();
+  if (omxTeamStateRoot) {
+    return {
+      omxTeamStateRoot: resolveLaunchPath(cwd, omxTeamStateRoot),
+      rootSource: 'team-env',
+    };
+  }
+
+  const omxRoot = env.OMX_ROOT?.trim();
+  if (omxRoot) {
+    return {
+      omxRoot: resolveLaunchPath(cwd, omxRoot),
+      rootSource: 'omx-root-env',
+    };
+  }
+
+  const omxStateRoot = env.OMX_STATE_ROOT?.trim();
+  if (omxStateRoot) {
+    return {
+      omxStateRoot: resolveLaunchPath(cwd, omxStateRoot),
+      rootSource: 'omx-state-root-env',
+    };
+  }
+
+  return { rootSource: 'cwd-default' };
 }
 
 function hasExplicitOmxRootEnv(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -3410,12 +3454,24 @@ export function buildDetachedSessionBootstrapSteps(
         runtimeCodexHomeForCleanup,
         parentEnvFilePath,
       );
+  const resolvedEnvStateRoot = env.OMX_STATE_ROOT?.trim()
+    ? resolveLaunchPath(cwd, env.OMX_STATE_ROOT.trim())
+    : undefined;
+  const hasExplicitRootOverride = Boolean(
+    env.OMX_ROOT?.trim()
+      || (omxRootOverride && omxRootOverride !== resolvedEnvStateRoot),
+  );
+  const hudRuntimeRoot = env.OMX_TEAM_STATE_ROOT?.trim()
+    ? resolveHudRuntimeRootForLaunch(cwd, env)
+    : hasExplicitRootOverride
+      ? {
+          omxRoot: omxRootOverride,
+          rootSource: resolveHudRuntimeRootSource(omxRootOverride, env),
+        }
+      : resolveHudRuntimeRootForLaunch(cwd, env);
   const hudRuntimeEnv = buildHudRuntimeEnv({
     sessionId,
-    omxRoot: omxRootOverride,
-    omxStateRoot: env.OMX_STATE_ROOT,
-    omxTeamStateRoot: env.OMX_TEAM_STATE_ROOT,
-    rootSource: resolveHudRuntimeRootSource(omxRootOverride, env),
+    ...hudRuntimeRoot,
   }).env;
   const newSessionArgs: string[] = [
     "new-session",
@@ -4222,11 +4278,11 @@ function runCodex(
   }
   const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
   const currentPaneId = process.env.TMUX_PANE;
+  const hudRuntimeRoot = resolveHudRuntimeRootForLaunch(cwd, process.env);
   const hudEnvArgs = Object.entries(buildHudRuntimeEnv({
     sessionId,
     leaderPaneId: currentPaneId,
-    omxRoot: omxRootOverride,
-    rootSource: resolveHudRuntimeRootSource(omxRootOverride, process.env),
+    ...hudRuntimeRoot,
   }).env).map(([key, value]) => `${key}=${value}`);
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
