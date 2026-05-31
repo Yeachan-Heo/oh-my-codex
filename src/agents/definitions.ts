@@ -15,6 +15,12 @@ export interface AgentDefinition {
   routingRole: 'leader' | 'specialist' | 'executor';
   /** Tool access pattern */
   tools: 'read-only' | 'analysis' | 'execution' | 'data';
+  /**
+   * Whether a generated native-agent role may dispatch child native subagents.
+   * Omitted means the role is a leaf lane and must report missing specialist
+   * coverage upward to its leader instead of spawning grandchildren.
+   */
+  nativeSubagentDelegation?: 'allowed';
   /** Category for grouping */
   category: 'build' | 'review' | 'domain' | 'product' | 'coordination';
 }
@@ -27,6 +33,7 @@ const EXECUTOR_AGENT: AgentDefinition = {
   modelClass: 'standard',
   routingRole: 'executor',
   tools: 'execution',
+  nativeSubagentDelegation: 'allowed',
   category: 'build',
 };
 
@@ -325,6 +332,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     modelClass: 'frontier',
     routingRole: 'leader',
     tools: 'analysis',
+    nativeSubagentDelegation: 'allowed',
     category: 'coordination',
   },
   'prometheus-strict-momus': {
