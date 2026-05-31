@@ -64,6 +64,7 @@ import {
 	discoverOmxPluginCacheDirs,
 	expectedPackagedOmxSkillNames,
 	packagedOmxPluginVersion,
+	pluginHookCacheMatchesPackaged,
 	readOmxPluginCacheState,
 	resolvePackagedOmxMarketplace,
 } from "./plugin-marketplace.js";
@@ -1183,6 +1184,15 @@ async function checkPluginScopedNativeHooks(
 					`plugin-scoped hooks are enabled, but expected plugin hook file is missing at ${expectedPath}; ${setupHooksPathDescription}; run "omx setup --plugin --force" to refresh the plugin cache`,
 			};
 		}
+	}
+
+	if (!(await pluginHookCacheMatchesPackaged(expectedCacheDir, packagedMarketplace))) {
+		return {
+			name: "Native hooks",
+			status: "warn",
+			message:
+				`plugin-scoped hooks are enabled, but cached plugin hook files or pinned hook launcher in ${expectedCacheDir} do not match the packaged plugin; ${setupHooksPathDescription}; run "omx setup --plugin --force" to refresh the plugin cache`,
+		};
 	}
 
 	let hookContent: string;

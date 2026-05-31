@@ -112,6 +112,7 @@ import {
 	upsertLocalOmxPluginEnablement,
 	upsertLocalOmxPluginMcpServerEnablement,
 	hasLocalOmxPluginMcpServerRegistrations,
+	pluginHookCacheMatchesPackaged,
 } from "./plugin-marketplace.js";
 import { resolveCodexHookFeatureSupportForCli } from "./codex-feature-probe.js";
 
@@ -1095,6 +1096,8 @@ async function refreshOmxPluginDiscoveryCache(
 		const hookFilesMissing = !existsSync(join(cacheDir, "hooks", "hooks.json"))
 			|| !existsSync(join(cacheDir, "hooks", "codex-native-hook.mjs"))
 			|| !existsSync(join(cacheDir, "hooks", "omx-command.json"));
+		const hookFilesChanged = !hookFilesMissing
+			&& !(await pluginHookCacheMatchesPackaged(cacheDir, packagedMarketplace));
 		const skillListChanged =
 			expectedSkillNames !== null &&
 			cachedSkillNames !== null &&
@@ -1105,6 +1108,7 @@ async function refreshOmxPluginDiscoveryCache(
 			!skillsPointerChanged &&
 			!hooksPointerChanged &&
 			!hookFilesMissing &&
+			!hookFilesChanged &&
 			!skillListChanged
 		) continue;
 
@@ -1124,6 +1128,7 @@ async function refreshOmxPluginDiscoveryCache(
 					? `hooks pointer ${manifest.hooks ?? "missing"} -> ./hooks/hooks.json`
 					: null,
 				hookFilesMissing ? "plugin hook files missing" : null,
+				hookFilesChanged ? "plugin hook files changed" : null,
 				skillListChanged ? "skill directory list changed" : null,
 			].filter(Boolean);
 			console.log(

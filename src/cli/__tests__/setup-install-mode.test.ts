@@ -595,6 +595,40 @@ async function seedStalePluginDiscoveryCache(codexHomeDir: string): Promise<stri
 	return artifactPath;
 }
 
+
+async function seedSameVersionPluginCacheWithStaleHooks(codexHomeDir: string): Promise<string> {
+	const cacheDir = await packagedPluginCacheDir(codexHomeDir);
+	await mkdir(dirname(cacheDir), { recursive: true });
+	await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
+		recursive: true,
+	});
+	await writeFile(
+		join(cacheDir, "hooks", "omx-command.json"),
+		JSON.stringify({ command: process.execPath, argsPrefix: [join(packageRoot, "dist", "cli", "omx.js")] }, null, 2) + "\n",
+	);
+	const hooksPath = join(cacheDir, "hooks", "hooks.json");
+	const hooks = JSON.parse(await readFile(hooksPath, "utf-8")) as { hooks?: { PreToolUse?: Array<Record<string, unknown>> } };
+	const preToolUse = hooks.hooks?.PreToolUse?.[0];
+	assert.ok(preToolUse, "expected packaged plugin PreToolUse hook fixture");
+	preToolUse.matcher = "Bash";
+	await writeFile(hooksPath, JSON.stringify(hooks, null, 2) + "\n");
+	return cacheDir;
+}
+
+
+async function seedSameVersionPluginCacheWithStaleLauncher(codexHomeDir: string): Promise<string> {
+	const cacheDir = await packagedPluginCacheDir(codexHomeDir);
+	await mkdir(dirname(cacheDir), { recursive: true });
+	await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
+		recursive: true,
+	});
+	await writeFile(
+		join(cacheDir, "hooks", "omx-command.json"),
+		JSON.stringify({ command: "/stale/node", argsPrefix: ["/stale/omx.js"] }, null, 2) + "\n",
+	);
+	return cacheDir;
+}
+
 async function packagedPluginCacheDir(codexHomeDir: string): Promise<string> {
 	const manifest = JSON.parse(
 		await readFile(
@@ -1139,6 +1173,55 @@ describe("omx setup install mode behavior", () => {
 						existsSync(join(codexHomeDir, "skills", "old-only", "SKILL.md")),
 						false,
 					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates same-version plugin caches when hook file contents drift", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const cacheDir = await seedSameVersionPluginCacheWithStaleHooks(codexHomeDir);
+
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin" });
+					});
+
+					const refreshedHooks = JSON.parse(
+						await readFile(join(cacheDir, "hooks", "hooks.json"), "utf-8"),
+					) as { hooks?: { PreToolUse?: Array<{ matcher?: unknown }> } };
+					assert.equal(refreshedHooks.hooks?.PreToolUse?.[0]?.matcher, undefined);
+					assert.match(output, /Invalidated 1 stale Codex plugin discovery cache entry/);
+					assert.match(output, /Installed local Codex plugin cache/);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates same-version plugin caches when the pinned hook launcher drifts", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const cacheDir = await seedSameVersionPluginCacheWithStaleLauncher(codexHomeDir);
+
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin" });
+					});
+
+					const launcher = JSON.parse(
+						await readFile(join(cacheDir, "hooks", "omx-command.json"), "utf-8"),
+					) as { command?: string; argsPrefix?: string[] };
+					assert.equal(launcher.command, process.execPath);
+					assert.deepEqual(launcher.argsPrefix, [join(packageRoot, "dist", "cli", "omx.js")]);
+					assert.match(output, /Invalidated 1 stale Codex plugin discovery cache entry/);
+					assert.match(output, /Installed local Codex plugin cache/);
 				});
 			});
 		} finally {

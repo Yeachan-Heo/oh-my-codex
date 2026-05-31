@@ -224,15 +224,79 @@ export async function hasExpectedOmxPluginCache(
 	const state = await readOmxPluginCacheState(
 		join(omxPluginCacheBase(codexHomeDir), version),
 	);
-	return (
-		state?.manifestVersion === version &&
-		state.skillsPointer === "./skills/" &&
-		state.hooksPointer === "./hooks/hooks.json" &&
-		state.hookLauncherPinned &&
-		existsSync(join(state.cacheDir, "hooks", "hooks.json")) &&
-		existsSync(join(state.cacheDir, "hooks", "codex-native-hook.mjs")) &&
-		JSON.stringify(state.skillNames) === JSON.stringify(expectedSkillNames)
+	if (
+		state?.manifestVersion !== version ||
+		state.skillsPointer !== "./skills/" ||
+		state.hooksPointer !== "./hooks/hooks.json" ||
+		!state.hookLauncherPinned ||
+		!existsSync(join(state.cacheDir, "hooks", "hooks.json")) ||
+		!existsSync(join(state.cacheDir, "hooks", "codex-native-hook.mjs")) ||
+		JSON.stringify(state.skillNames) !== JSON.stringify(expectedSkillNames)
+	) {
+		return false;
+	}
+
+	return pluginHookCacheMatchesPackaged(state.cacheDir, packagedMarketplace);
+}
+
+async function fileContentsEqual(leftPath: string, rightPath: string): Promise<boolean> {
+	try {
+		const [left, right] = await Promise.all([
+			readFile(leftPath),
+			readFile(rightPath),
+		]);
+		return left.equals(right);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Compares only plugin-scoped hook assets that Codex executes from the cache.
+ * Manifest pointers and skill lists are validated by callers before using this
+ * as a hook/launcher freshness predicate.
+ */
+export async function pluginHookCacheMatchesPackaged(
+	cacheDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+): Promise<boolean> {
+	return await fileContentsEqual(
+		join(cacheDir, "hooks", "hooks.json"),
+		join(packagedMarketplace.pluginRoot, "hooks", "hooks.json"),
+	) && await fileContentsEqual(
+		join(cacheDir, "hooks", "codex-native-hook.mjs"),
+		join(packagedMarketplace.pluginRoot, "hooks", "codex-native-hook.mjs"),
+	) && await pinnedHookLauncherMatchesPackaged(
+		cacheDir,
+		packagedMarketplace,
 	);
+}
+
+function buildPinnedHookLauncherContent(
+	packagedMarketplace: PackagedOmxMarketplace,
+): string {
+	return `${JSON.stringify(
+		{
+			command: process.execPath,
+			argsPrefix: [join(packagedMarketplace.packageRoot, "dist", "cli", "omx.js")],
+		},
+		null,
+		2,
+	)}\n`;
+}
+
+async function pinnedHookLauncherMatchesPackaged(
+	cacheDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+): Promise<boolean> {
+	try {
+		return await readFile(
+			join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
+			"utf-8",
+		) === buildPinnedHookLauncherContent(packagedMarketplace);
+	} catch {
+		return false;
+	}
 }
 
 async function writePinnedHookLauncher(
@@ -241,14 +305,7 @@ async function writePinnedHookLauncher(
 ): Promise<void> {
 	await writeFile(
 		join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
-		`${JSON.stringify(
-			{
-				command: process.execPath,
-				argsPrefix: [join(packagedMarketplace.packageRoot, "dist", "cli", "omx.js")],
-			},
-			null,
-			2,
-		)}\n`,
+		buildPinnedHookLauncherContent(packagedMarketplace),
 	);
 }
 
