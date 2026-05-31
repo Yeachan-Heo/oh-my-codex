@@ -384,7 +384,16 @@ export function buildTmuxSplitArgs(
   const height = Number.isFinite(heightLines) && (heightLines ?? 0) > 0
     ? Math.floor(heightLines ?? HUD_TMUX_HEIGHT_LINES)
     : HUD_TMUX_HEIGHT_LINES;
-  return ['split-window', '-v', '-l', String(height), '-c', cwd, cmd];
+  return [
+    'split-window',
+    '-v',
+    '-l',
+    String(height),
+    ...(leaderPaneId ? ['-t', leaderPaneId] : []),
+    '-c',
+    cwd,
+    cmd,
+  ];
 }
 
 async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {

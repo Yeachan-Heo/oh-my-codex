@@ -139,7 +139,6 @@ export async function reconcileHudForPromptSubmit(
     ...findLegacyFocusedHudWatchPaneIds(panes, currentPaneId),
   ].filter((paneId, index, paneIds) => paneIds.indexOf(paneId) === index);
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
-  const nonHudPaneCount = panes.filter((pane) => !isHudWatchPane(pane)).length;
   const readHudConfigFn = deps.readHudConfig ?? readHudConfig;
   const hudConfig = await readHudConfigFn(cwd).catch(() => null);
   const readAllStateFn = deps.readAllState ?? readAllState;
@@ -204,7 +203,6 @@ export async function reconcileHudForPromptSubmit(
 
   const paneId = createPane(cwd, hudCmd, {
     heightLines: desiredHeight,
-    fullWidth: nonHudPaneCount > 1,
     targetPaneId: currentPaneId,
   });
   if (!paneId) {

@@ -5075,6 +5075,50 @@ esac
     }
   });
 
+  it("skips prompt-submit HUD reconciliation during doctor smoke validation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-doctor-smoke-hud-"));
+    const originalTmux = process.env.TMUX;
+    const originalTmuxPane = process.env.TMUX_PANE;
+    const originalHudOwner = process.env[OMX_TMUX_HUD_OWNER_ENV];
+    const originalDoctorSmoke = process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE;
+    try {
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%1";
+      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+      process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE = "1";
+
+      let reconcileCalled = false;
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "omx-doctor-plugin-hook-smoke",
+          prompt: "$ralplan doctor plugin hook smoke test",
+        },
+        {
+          cwd,
+          reconcileHudForPromptSubmitFn: async () => {
+            reconcileCalled = true;
+            return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
+          },
+        },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(reconcileCalled, false);
+    } finally {
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+      if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
+      else process.env.TMUX_PANE = originalTmuxPane;
+      if (originalHudOwner === undefined) delete process.env[OMX_TMUX_HUD_OWNER_ENV];
+      else process.env[OMX_TMUX_HUD_OWNER_ENV] = originalHudOwner;
+      if (originalDoctorSmoke === undefined) delete process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE;
+      else process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE = originalDoctorSmoke;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("recreates a leader-only HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-"));
     const originalTmux = process.env.TMUX;
