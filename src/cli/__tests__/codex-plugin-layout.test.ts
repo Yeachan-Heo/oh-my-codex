@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join, relative, sep } from 'node:path';
+import { delimiter, dirname, join, relative, sep } from 'node:path';
 import { buildMergedConfig } from '../../config/generator.js';
 import type { CatalogManifest } from '../../catalog/schema.js';
 import { getSetupInstallableSkillNames } from '../../catalog/installable.js';
@@ -74,6 +74,11 @@ type PluginAppsManifest = {
 
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf-8')) as T;
+}
+
+async function writeJson(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(value, null, 2), 'utf-8');
 }
 
 function escapeRegex(value: string): string {
@@ -158,17 +163,25 @@ async function withPluginCacheCopy<T>(run: (cachePluginRoot: string, cacheRoot: 
   }
 }
 
+function pluginHookEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of ['OMX_TEAM_STATE_ROOT', 'OMX_ROOT', 'OMX_STATE_ROOT', 'OMX_SESSION_ID', 'CODEX_SESSION_ID']) {
+    delete env[key];
+  }
+  return { ...env, ...overrides };
+}
+
 function runPluginNativeHook(
   cachePluginRoot: string,
   input: string,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = {},
 ) {
   return spawnSync(process.execPath, [join(cachePluginRoot, 'hooks', 'codex-native-hook.mjs')], {
     cwd: cachePluginRoot,
     input,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
-    env,
+    env: pluginHookEnv(env),
   });
 }
 
@@ -252,7 +265,6 @@ describe('official Codex plugin layout', () => {
         cachePluginRoot,
         JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-missing-command-stop' }),
         {
-          ...process.env,
           OMX_NATIVE_HOOK_COMMAND: join(cacheRoot, 'bin', 'missing-omx-command'),
         },
       );
@@ -270,7 +282,6 @@ describe('official Codex plugin layout', () => {
         cachePluginRoot,
         JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-false-command-stop' }),
         {
-          ...process.env,
           OMX_NATIVE_HOOK_COMMAND: process.platform === 'win32' ? 'cmd.exe /c exit 1' : '/bin/false',
         },
       );
@@ -295,7 +306,7 @@ describe('official Codex plugin layout', () => {
       const result = runPluginNativeHook(
         cachePluginRoot,
         JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-empty-ok-stop' }),
-        { ...process.env, OMX_NATIVE_HOOK_COMMAND: commandPath },
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
       );
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -318,7 +329,7 @@ describe('official Codex plugin layout', () => {
       const result = runPluginNativeHook(
         cachePluginRoot,
         JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-partial-stop' }),
-        { ...process.env, OMX_NATIVE_HOOK_COMMAND: commandPath },
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
       );
 
       assert.equal(result.status, 2, result.stderr || result.stdout);
@@ -398,15 +409,151 @@ describe('official Codex plugin layout', () => {
     });
   });
 
-  it('fails oversized plugin Stop stdin with one schema-safe JSON object', async () => {
+  it('allows oversized plugin Stop stdin when no active workflow state is present', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       const oversizedStop = `{"hook_event_name":"Stop","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
       const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    });
+  });
+
+  it('blocks oversized plugin Stop stdin when current session autopilot state is active', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      const sessionId = 'sess-plugin-oversized-active';
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), {
+        active: true,
+        current_phase: 'execution',
+      });
+      const oversizedStop = `{"hook_event_name":"Stop","cwd":"${cachePluginRoot}","session_id":"${sessionId}","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
       assert.equal(output.decision, 'block');
-      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_active_workflow');
+    });
+  });
+
+  it('does not let unrelated terminal run-state suppress active plugin Autopilot oversized Stop blocking', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      const sessionId = 'sess-plugin-oversized-unrelated-terminal';
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), {
+        active: true,
+        current_phase: 'execution',
+      });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'run-state.json'), {
+        mode: 'ralph',
+        active: false,
+        outcome: 'finish',
+      });
+      const oversizedStop = `{"hook_event_name":"Stop","cwd":"${cachePluginRoot}","session_id":"${sessionId}","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_active_workflow');
+    });
+  });
+
+  it('allows oversized plugin Stop stdin when terminal Autopilot run-state shadows stale active state', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      const sessionId = 'sess-plugin-oversized-terminal-autopilot';
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), {
+        active: true,
+        current_phase: 'execution',
+      });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'run-state.json'), {
+        mode: 'autopilot',
+        active: false,
+        outcome: 'blocked_on_user',
+      });
+      const oversizedStop = `{"hook_event_name":"Stop","cwd":"${cachePluginRoot}","session_id":"${sessionId}","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    });
+  });
+
+  it('detects active plugin Autopilot state for oversized Stop under OMX_ROOT', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const sessionId = 'sess-plugin-oversized-omx-root';
+      const omxRoot = join(cacheRoot, 'boxed-root');
+      await writeJson(join(omxRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(omxRoot, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), {
+        active: true,
+        current_phase: 'execution',
+      });
+      const oversizedStop = `{"hook_event_name":"Stop","cwd":"${cachePluginRoot}","session_id":"${sessionId}","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop, { OMX_ROOT: omxRoot });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_active_workflow');
+    });
+  });
+
+  it('lets terminal OMX_ROOT Autopilot state override stale cwd active state for oversized Stop', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const sessionId = 'sess-plugin-oversized-omx-root-terminal';
+      const omxRoot = join(cacheRoot, 'boxed-root-terminal');
+      await writeJson(join(omxRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(omxRoot, '.omx', 'state', 'sessions', sessionId, 'run-state.json'), {
+        mode: 'autopilot',
+        outcome: 'blocked_on_user',
+      });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), {
+        active: true,
+        current_phase: 'execution',
+      });
+      const oversizedStop = `{"hook_event_name":"Stop","cwd":"${cachePluginRoot}","session_id":"${sessionId}","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop, { OMX_ROOT: omxRoot });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    });
+  });
+
+  it('allows oversized plugin Stop when Autopilot state is active but terminal by phase', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      const sessionId = 'sess-plugin-oversized-terminal-phase';
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), {
+        active: true,
+        current_phase: 'complete',
+      });
+      const oversizedStop = `{"hook_event_name":"Stop","cwd":"${cachePluginRoot}","session_id":"${sessionId}","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    });
+  });
+
+  it('ignores stale plugin session state whose cwd does not match oversized Stop cwd', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const sessionId = 'sess-plugin-oversized-stale-cwd';
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), {
+        session_id: sessionId,
+        cwd: join(cacheRoot, 'different-cwd'),
+      });
+      await writeJson(join(cachePluginRoot, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), {
+        active: true,
+        current_phase: 'execution',
+      });
+      const oversizedStop = `{"hook_event_name":"Stop","cwd":"${cachePluginRoot}","session_id":"${sessionId}","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
+      const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
     });
   });
 
@@ -450,7 +597,6 @@ process.stdin.on('end', () => {
         payload: 'keep these bytes unchanged',
       });
       const result = runPluginNativeHook(cachePluginRoot, input, {
-        ...process.env,
         OMX_NATIVE_HOOK_COMMAND: launcherPath,
         CAPTURE_PATH: capturePath,
       });

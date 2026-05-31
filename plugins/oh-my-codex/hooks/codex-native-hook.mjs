@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const hookDir = dirname(fileURLToPath(import.meta.url));
@@ -71,9 +71,9 @@ function readJsonStringLiteral(raw, quoteIndex) {
   return null;
 }
 
-function extractTopLevelHookEventName(rawInput) {
+function extractTopLevelStringField(rawInput, fieldNames) {
   const raw = rawInput.slice(0, RAW_EVENT_SCAN_BYTES);
-  const wanted = new Set(['hook_event_name', 'hookEventName', 'event', 'name']);
+  const wanted = new Set(fieldNames);
   let depth = 0;
   let index = 0;
 
@@ -87,8 +87,7 @@ function extractTopLevelHookEventName(rawInput) {
       if (depth === 1 && raw[afterKey] === ':' && wanted.has(key.value)) {
         const valueStart = skipJsonWhitespace(raw, afterKey + 1);
         const value = readJsonStringLiteral(raw, valueStart);
-        const eventName = value?.value ?? null;
-        return CODEX_HOOK_EVENT_NAMES.has(eventName) ? eventName : null;
+        return value?.value ?? null;
       }
       continue;
     }
@@ -98,6 +97,11 @@ function extractTopLevelHookEventName(rawInput) {
   }
 
   return null;
+}
+
+function extractTopLevelHookEventName(rawInput) {
+  const eventName = extractTopLevelStringField(rawInput, ['hook_event_name', 'hookEventName', 'event', 'name']);
+  return CODEX_HOOK_EVENT_NAMES.has(eventName) ? eventName : null;
 }
 
 function detectStopHookInput(input) {
@@ -177,6 +181,98 @@ function readConfiguredLauncher() {
   return readPinnedLauncher() ?? { command: 'omx', argsPrefix: [] };
 }
 
+function readJsonFile(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function isTerminalOutcome(value) {
+  return ['finish', 'finished', 'complete', 'completed', 'done', 'blocked', 'blocked-on-user', 'blocked_on_user', 'failed', 'fail', 'error', 'cancelled', 'canceled', 'cancel', 'aborted', 'abort', 'userinterlude', 'user-interlude', 'interrupted', 'interrupt', 'askuserquestion', 'ask-user-question', 'askuser', 'question'].includes(String(value ?? '').trim().toLowerCase());
+}
+
+function isTerminalRunStateForMode(state, mode) {
+  if (!state) return false;
+  const runMode = String(state.mode ?? '').trim();
+  if (runMode && runMode !== mode) return false;
+  return isTerminalOutcome(state.outcome)
+    || isTerminalOutcome(state.run_outcome)
+    || isTerminalOutcome(state.lifecycle_outcome)
+    || isTerminalOutcome(state.terminal_outcome);
+}
+
+function canonicalPath(path) {
+  const absolute = resolve(path);
+  if (!existsSync(absolute)) return absolute;
+  try {
+    return typeof realpathSync.native === 'function' ? realpathSync.native(absolute) : realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+function sameFilePath(leftPath, rightPath) {
+  return canonicalPath(leftPath) === canonicalPath(rightPath);
+}
+
+function isSessionStateAuthoritativeForCwd(state, cwd) {
+  if (!isSafeSessionId(state?.session_id)) return false;
+  const sessionCwd = typeof state.cwd === 'string' ? state.cwd.trim() : '';
+  return !sessionCwd || sameFilePath(sessionCwd, cwd);
+}
+
+function listAuthoritativeStateBaseDirs(cwd) {
+  if (process.env.OMX_TEAM_STATE_ROOT?.trim()) return [process.env.OMX_TEAM_STATE_ROOT.trim()];
+  if (process.env.OMX_ROOT?.trim()) return [join(process.env.OMX_ROOT.trim(), '.omx', 'state')];
+  if (process.env.OMX_STATE_ROOT?.trim()) return [join(process.env.OMX_STATE_ROOT.trim(), '.omx', 'state')];
+  return [join(cwd, '.omx', 'state')];
+}
+
+function isSafeSessionId(sessionId) {
+  return typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(sessionId.trim());
+}
+
+function readCurrentSessionId(stateBaseDirs, cwd) {
+  for (const stateDir of stateBaseDirs) {
+    const session = readJsonFile(join(stateDir, 'session.json'));
+    if (isSessionStateAuthoritativeForCwd(session, cwd)) return session.session_id.trim();
+  }
+  const envSessionId = process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID;
+  return isSafeSessionId(envSessionId) ? envSessionId.trim() : null;
+}
+
+function shouldContinueAutopilotState(state) {
+  if (state?.active !== true) return false;
+  return !(isTerminalOutcome(state.current_phase)
+    || isTerminalOutcome(state.run_outcome)
+    || isTerminalOutcome(state.lifecycle_outcome)
+    || isTerminalOutcome(state.terminal_outcome)
+    || isTerminalOutcome(state.outcome)
+    || (typeof state.completed_at === 'string' && state.completed_at.trim() !== ''));
+}
+
+function hasActiveAutopilotStateForOversizedStop(input) {
+  const text = input.toString('utf8');
+  const cwd = extractTopLevelStringField(text, ['cwd']) || process.cwd();
+  const stateBaseDirs = listAuthoritativeStateBaseDirs(cwd);
+  const sessionId = readCurrentSessionId(stateBaseDirs, cwd);
+  if (!isSafeSessionId(sessionId)) return false;
+
+  const sessionDir = join(stateBaseDirs[0], 'sessions', sessionId.trim());
+  const terminalRunState = readJsonFile(join(sessionDir, 'run-state.json'));
+  if (isTerminalRunStateForMode(terminalRunState, 'autopilot')) return false;
+
+  const sessionState = readJsonFile(join(sessionDir, 'autopilot-state.json'));
+  return shouldContinueAutopilotState(sessionState);
+}
+
+function writeJsonNoop() {
+  process.stdout.write(`${JSON.stringify({})}\n`);
+  process.exitCode = 0;
+}
+
 async function main() {
   const { input, oversized, totalBytes } = await readBoundedStdin();
   const isStop = detectStopHookInput(input);
@@ -184,8 +280,12 @@ async function main() {
   if (oversized) {
     const message = `plugin hook stdin exceeded ${MAX_WRAPPER_STDIN_BYTES} bytes before launcher delegation; totalBytes>${totalBytes}`;
     if (isStop) {
-      console.error(`[oh-my-codex] ${message}`);
-      writeStopFallback('plugin_stop_hook_stdin_oversized', message);
+      if (hasActiveAutopilotStateForOversizedStop(input)) {
+        console.error(`[oh-my-codex] ${message}`);
+        writeStopFallback('plugin_stop_hook_stdin_oversized_active_workflow', message);
+        return;
+      }
+      writeJsonNoop();
       return;
     }
     console.error(`[oh-my-codex] ${message}`);
