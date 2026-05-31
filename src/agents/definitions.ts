@@ -18,7 +18,9 @@ export interface AgentDefinition {
   /**
    * Whether a generated native-agent role may dispatch child native subagents.
    * Omitted means the role is a leaf lane and must report missing specialist
-   * coverage upward to its leader instead of spawning grandchildren.
+   * coverage upward to its leader instead of spawning grandchildren. This is
+   * enforced by generated native developer instructions plus verifier checks;
+   * add a runtime tool-capability gate here if native TOML gains one later.
    */
   nativeSubagentDelegation?: 'allowed';
   /** Category for grouping */
@@ -33,7 +35,6 @@ const EXECUTOR_AGENT: AgentDefinition = {
   modelClass: 'standard',
   routingRole: 'executor',
   tools: 'execution',
-  nativeSubagentDelegation: 'allowed',
   category: 'build',
 };
 

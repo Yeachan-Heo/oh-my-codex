@@ -248,19 +248,23 @@ describe("agents/native-config", () => {
     assert.match(teamExecutorToml, /<native_subagent_leaf_guard>/);
   });
 
-  it("does not apply the leaf guard to roles with explicit native delegation contracts", () => {
+  it("keeps executor native agents as leaf implementation lanes", () => {
     const executorToml = generateAgentToml(
       AGENT_DEFINITIONS.executor,
       "executor prompt",
     );
+
+    assert.match(executorToml, /<native_subagent_leaf_guard>/);
+    assert.doesNotMatch(executorToml, /native_subagent_delegation: allowed/);
+  });
+
+  it("does not apply the leaf guard to roles with explicit native delegation contracts", () => {
     const metisToml = generateAgentToml(
       AGENT_DEFINITIONS["prometheus-strict-metis"],
       "metis prompt",
     );
 
-    assert.doesNotMatch(executorToml, /<native_subagent_leaf_guard>/);
     assert.doesNotMatch(metisToml, /<native_subagent_leaf_guard>/);
-    assert.match(executorToml, /native_subagent_delegation: allowed/);
     assert.match(metisToml, /native_subagent_delegation: allowed/);
   });
 
