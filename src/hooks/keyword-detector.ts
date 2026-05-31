@@ -528,6 +528,7 @@ async function persistStatefulSkillSeedState(
   previousSkill: SkillActiveState | null,
   activationText: string,
   sourceCwd: string,
+  options: { activeContinuation?: boolean } = {},
 ): Promise<SkillActiveState> {
   const config = STATEFUL_SKILL_SEED_CONFIG[nextSkill.skill as StatefulSkillMode];
   if (!config) return nextSkill;
@@ -612,7 +613,7 @@ async function persistStatefulSkillSeedState(
       nowIso,
       activationText || safeString(nextSkill.keyword) || '$autopilot',
       existingContextSnapshotPath,
-      { allowTaskSnapshotCreation: !preserveExistingModeState },
+      { allowTaskSnapshotCreation: !(preserveExistingModeState || options.activeContinuation === true) },
     );
     const contextSnapshotPath = contextSnapshot.path;
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
@@ -1386,6 +1387,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           previous,
           input.text,
           sourceCwd,
+          { activeContinuation: requestedEntry.skill === 'autopilot' && sameSkillContinuation },
         );
         if (requestedEntry.skill === workflowState.skill) {
           nextState = {
@@ -1438,7 +1440,15 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   };
 
   try {
-    const nextState = await persistStatefulSkillSeedState(input.stateDir, state, nowIso, previous, input.text, sourceCwd);
+    const nextState = await persistStatefulSkillSeedState(
+      input.stateDir,
+      state,
+      nowIso,
+      previous,
+      input.text,
+      sourceCwd,
+      { activeContinuation: match.skill === 'autopilot' && sameSkillContinuation },
+    );
     nextState.active_skills = buildActiveSkills(nextState);
     await writeSkillActiveStateCopiesForStateDir(
       input.stateDir,

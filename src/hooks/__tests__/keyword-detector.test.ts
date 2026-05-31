@@ -750,6 +750,64 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+  it('does not snapshot bare continuation text when active Autopilot mode state is corrupt', async () => {
+    for (const fixture of ['missing-current-phase', 'malformed-json'] as const) {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-keyword-autopilot-corrupt-continuation-${fixture}-`));
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = `sess-autopilot-corrupt-continuation-${fixture}`;
+      try {
+        await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+        await writeFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: '$autopilot',
+          phase: 'ralplan',
+          activated_at: '2026-05-29T00:00:00.000Z',
+          updated_at: '2026-05-29T00:10:00.000Z',
+          session_id: sessionId,
+          active_skills: [{ skill: 'autopilot', active: true, phase: 'ralplan', session_id: sessionId }],
+        }, null, 2));
+        const modeStatePath = join(stateDir, 'sessions', sessionId, 'autopilot-state.json');
+        if (fixture === 'missing-current-phase') {
+          await writeFile(modeStatePath, JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            started_at: '2026-05-29T00:00:00.000Z',
+            state: { handoff_artifacts: {} },
+          }, null, 2));
+        } else {
+          await writeFile(modeStatePath, '{ "active": true, "mode": "autopilot",');
+        }
+
+        await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: 'continue',
+          sessionId,
+          threadId: `thread-${fixture}`,
+          turnId: `turn-${fixture}`,
+          nowIso: '2026-05-30T00:00:00.000Z',
+        });
+
+        assert.equal(existsSync(join(cwd, '.omx', 'context', 'continue-20260530T000000Z.md')), false);
+        const modeState = JSON.parse(await readFile(modeStatePath, 'utf-8')) as {
+          state?: { handoff_artifacts?: { context_snapshot_path?: string }; context_snapshot_recovery?: { status?: string; reason?: string } };
+        };
+        const snapshotPath = modeState.state?.handoff_artifacts?.context_snapshot_path ?? '';
+        assert.match(snapshotPath, /^\.omx\/context\/autopilot-recovery-20260530T000000Z(?:-\d+)?\.md$/);
+        assert.equal(modeState.state?.context_snapshot_recovery?.status, 'degraded');
+        assert.equal(modeState.state?.context_snapshot_recovery?.reason, 'missing-or-unsafe-legacy-context-snapshot');
+        const recoverySnapshot = await readFile(join(cwd, snapshotPath), 'utf-8');
+        assert.match(recoverySnapshot, /recovery status: degraded/);
+        assert.match(recoverySnapshot, /do not treat the continuation input as the task statement/);
+        assert.doesNotMatch(recoverySnapshot, /task statement: continue/);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('does not follow symlinked Autopilot context directories when writing snapshots', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-symlink-context-'));
     const outside = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-symlink-outside-'));
