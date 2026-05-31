@@ -418,10 +418,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install self-hosted test prerequisites
         run: |
-          if ! command -v tmux >/dev/null 2>&1; then
+          if ! command -v tmux >/dev/null 2>&1 || ! command -v cc >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install -y tmux
+            sudo apt-get install -y build-essential tmux
           fi
+      - name: Setup Rust for harness-backed Node tests
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
@@ -435,11 +439,10 @@ jobs:
       - name: Run grouped full-suite lane
         if: matrix.lane != 'smoke'
         env:
-          # The team-state-runtime lane exercises tmux/process supervision. On
-          # hosted runners, leaked child handles can leave Node's test process
-          # alive after all tests have reported. Force exit only after the test
-          # runner finishes so successful suites do not hang indefinitely.
-          OMX_NODE_TEST_FORCE_EXIT: ${{ matrix.lane == 'team-state-runtime' && '1' || '' }}
+          # Self-hosted runner lanes can leave platform/process handles alive
+          # after all tests report. Force exit only after Node's test runner
+          # finishes so successful suites do not hang indefinitely.
+          OMX_NODE_TEST_FORCE_EXIT: ${{ (matrix.lane == 'team-state-runtime' || matrix.lane == 'hooks-notify-platform') && '1' || '' }}
         run: |
           node dist/scripts/run-test-files.js ${{ matrix.test-roots }}
       - name: Verify generated catalog docs
