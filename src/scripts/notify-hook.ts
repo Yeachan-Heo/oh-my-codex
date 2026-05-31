@@ -267,7 +267,8 @@ function isExplicitAutopilotActivationText(text: string): boolean {
   return /(?:^|[^\w])\$autopilot\b/i.test(text)
     || /^\s*\/autopilot\b/i.test(text)
     || /^\s*(?:please\s+)?autopilot(?:\s+(?:this|mode|workflow|skill|loop|now))?\s*[.!]?\s*$/i.test(text)
-    || /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?autopilot(?:\s+(?:mode|workflow|skill|loop|now))?\s*[.!]?\s*$/i.test(text);
+    || /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?autopilot(?:\s+(?:mode|workflow|skill|loop|now))?\s*[.!]?\s*$/i.test(text)
+    || /\bautopilot\s+(?:mode|workflow|skill|loop)\b/i.test(text);
 }
 
 function looksLikeAutopilotTerminalHandoff(text: string): boolean {
@@ -288,7 +289,25 @@ function isTerminalModeStateObject(value: unknown, mode: string): boolean {
     || safeString(state.completed_at || state.completedAt).trim() !== '';
 }
 
-async function hasTerminalAutopilotStateForNotifyTurn(stateDir: string, sessionId: string): Promise<boolean> {
+function terminalStateMatchesNotifyTurn(state: Record<string, unknown>, payload: Record<string, unknown>): boolean {
+  const payloadTurnId = safeString(payload['turn-id'] || payload.turn_id || '').trim();
+  const stateTurnId = safeString(state.turn_id || state.turnId || '').trim();
+  const payloadThreadId = safeString(payload['thread-id'] || payload.thread_id || '').trim();
+  const stateThreadId = safeString(state.thread_id || state.threadId || '').trim();
+
+  if (payloadTurnId || stateTurnId) {
+    if (!payloadTurnId || !stateTurnId || payloadTurnId !== stateTurnId) return false;
+    return !payloadThreadId || !stateThreadId || payloadThreadId === stateThreadId;
+  }
+
+  return Boolean(payloadThreadId && stateThreadId && payloadThreadId === stateThreadId);
+}
+
+async function hasTerminalAutopilotStateForNotifyTurn(
+  stateDir: string,
+  sessionId: string,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
   const state = await readScopedJsonIfExists(
     stateDir,
     'autopilot-state.json',
@@ -296,22 +315,23 @@ async function hasTerminalAutopilotStateForNotifyTurn(stateDir: string, sessionI
     null,
     { includeRootFallback: true },
   );
-  return isTerminalModeStateObject(state, 'autopilot');
+  return isTerminalModeStateObject(state, 'autopilot')
+    && terminalStateMatchesNotifyTurn(state as Record<string, unknown>, payload);
 }
 
 async function shouldSuppressAutopilotTerminalReplayActivation(
   stateDir: string,
   payload: Record<string, unknown>,
-  latestUserInput: string,
+  isAutopilotActivation: boolean,
   sessionId: string,
 ): Promise<boolean> {
   if (!isTurnCompletePayload(payload) && !isNotifyFallbackTaskCompletePayload(payload)) return false;
-  if (!isExplicitAutopilotActivationText(latestUserInput)) return false;
+  if (!isAutopilotActivation) return false;
 
   const lastAssistantMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
   if (!looksLikeAutopilotTerminalHandoff(lastAssistantMessage) && !isNotifyFallbackTaskCompletePayload(payload)) return false;
 
-  return hasTerminalAutopilotStateForNotifyTurn(stateDir, sessionId);
+  return hasTerminalAutopilotStateForNotifyTurn(stateDir, sessionId, payload);
 }
 
 function buildIdleNotificationFingerprint(payload: Record<string, unknown>): string {
@@ -693,13 +713,16 @@ async function main() {
 
   // 4.45. Skill activation tracking: update skill-active-state.json before any nudge logic.
   try {
-    const { recordSkillActivation } = await import('../hooks/keyword-detector.js');
+    const { detectKeywords, recordSkillActivation } = await import('../hooks/keyword-detector.js');
     if (latestUserInput) {
       const activationSessionId = getEffectiveSessionId();
+      const isAutopilotActivation = detectKeywords(latestUserInput)
+        .some((match) => match.skill === 'autopilot')
+        || isExplicitAutopilotActivationText(latestUserInput);
       const suppressTerminalReplay = await shouldSuppressAutopilotTerminalReplayActivation(
         stateDir,
         payload,
-        latestUserInput,
+        isAutopilotActivation,
         activationSessionId,
       );
       if (!suppressTerminalReplay) {
