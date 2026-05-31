@@ -278,18 +278,34 @@ async function readCanonicalActiveWorkflowModes(
   return [...new Set(activeModes)];
 }
 
+function isActiveDetailWorkflowState(state: Record<string, unknown>): boolean {
+  if (state.active !== true) return false;
+  const phase = typeof state.current_phase === 'string' ? state.current_phase.trim().toLowerCase() : '';
+  return !['complete', 'completed', 'cancelled', 'canceled', 'failed', 'cleared'].includes(phase);
+}
+
 async function readSessionDetailTransitionModes(
   cwd: string,
   sessionId: string | undefined,
   requestedMode: TrackedWorkflowMode,
 ): Promise<TrackedWorkflowMode[] | undefined> {
   if (!sessionId || requestedMode !== 'ralplan') return undefined;
+  const autopilotPath = getStatePath('autopilot', cwd, sessionId);
+  if (existsSync(autopilotPath)) {
+    try {
+      const state = JSON.parse(await readFile(autopilotPath, 'utf-8')) as Record<string, unknown>;
+      if (isActiveDetailWorkflowState(state)) return ['autopilot'];
+    } catch {
+      return undefined;
+    }
+  }
+
   const deepInterviewPath = getStatePath('deep-interview', cwd, sessionId);
   if (!existsSync(deepInterviewPath)) return undefined;
 
   try {
     const state = JSON.parse(await readFile(deepInterviewPath, 'utf-8')) as Record<string, unknown>;
-    return state.active === true ? ['deep-interview'] : undefined;
+    return isActiveDetailWorkflowState(state) ? ['deep-interview'] : undefined;
   } catch {
     return undefined;
   }
@@ -501,9 +517,13 @@ export async function executeStateOperation(
               validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
               return;
             }
-            const transitionCurrentModes = mode === 'ralplan' && activeCanonicalModes.includes('deep-interview')
-              ? activeCanonicalModes
-              : await readSessionDetailTransitionModes(cwd, effectiveSessionId, mode);
+            const transitionCurrentModes = mode === 'ralplan'
+              ? (
+                activeCanonicalModes.length > 0
+                  ? activeCanonicalModes
+                  : await readSessionDetailTransitionModes(cwd, effectiveSessionId, mode)
+              )
+              : undefined;
             try {
               const transition = await reconcileWorkflowTransition(cwd, mode, {
                 action: 'write',

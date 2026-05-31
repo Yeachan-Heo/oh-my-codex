@@ -802,6 +802,109 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('rejects standalone ralplan writes from detail-only active Autopilot supervisor state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-detail-only-ralplan-child-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-detail-only-ralplan-child';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+            state: {
+              deep_interview_gate: {
+                status: 'required',
+                skip_reason: null,
+              },
+            },
+          }, null, 2),
+        );
+
+        const denied = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'ralplan',
+          active: true,
+          current_phase: 'planning',
+        });
+
+        assert.equal(denied.isError, true);
+        assert.match(String((denied.payload as { error?: string }).error || ''), /Cannot write ralplan: autopilot is already active\./);
+        assert.match(String((denied.payload as { error?: string }).error || ''), /Execution-to-planning rollback auto-complete is not allowed\./);
+        assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), false);
+        assert.equal(existsSync(join(sessionDir, 'skill-active-state.json')), false);
+
+        const autopilotState = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(autopilotState.active, true);
+        assert.equal(autopilotState.mode, 'autopilot');
+        assert.equal(autopilotState.current_phase, 'deep-interview');
+        assert.equal(autopilotState.auto_completed_reason, undefined);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('lets canonical ralplan authority override stale detail-only Autopilot state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-canonical-ralplan-stale-autopilot-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-canonical-ralplan-stale-autopilot';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'skill-active-state.json'),
+          JSON.stringify({
+            active: true,
+            skill: 'ralplan',
+            phase: 'planning',
+            session_id: sessionId,
+            active_skills: [{ skill: 'ralplan', phase: 'planning', active: true, session_id: sessionId }],
+          }, null, 2),
+        );
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+            session_id: sessionId,
+          }, null, 2),
+        );
+
+        const written = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'ralplan',
+          active: true,
+          current_phase: 'critic-review',
+        });
+
+        assert.equal(written.isError, undefined);
+        assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), true);
+
+        const canonical = JSON.parse(
+          await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8'),
+        ) as { active_skills?: Array<{ skill: string }> };
+        assert.deepEqual(canonical.active_skills?.map((entry) => entry.skill), ['ralplan']);
+
+        const autopilotState = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(autopilotState.active, true);
+        assert.equal(autopilotState.auto_completed_reason, undefined);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('allows Autopilot itself to enter the supervised ralplan child phase', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-child-phase-'));
     try {
