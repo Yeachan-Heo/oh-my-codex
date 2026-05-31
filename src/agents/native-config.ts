@@ -103,6 +103,15 @@ const EXACT_MINI_MODEL_OVERLAY = [
   "</exact_model_guidance>",
 ].join("\n");
 
+const NATIVE_SUBAGENT_LEAF_GUARD = [
+  "<native_subagent_leaf_guard>",
+  "",
+  "Leaf native subagent: do not call Task, spawn_agent, or native child agents.",
+  "Use local tools; report missing specialist coverage to the leader.",
+  "",
+  "</native_subagent_leaf_guard>",
+].join("\n");
+
 export interface GeneratedNativeAgentConfig {
   name: string;
   description: string;
@@ -123,6 +132,11 @@ interface RoleInstructionMetadata {
   posture: AgentDefinition["posture"];
   modelClass: AgentDefinition["modelClass"];
   routingRole: AgentDefinition["routingRole"];
+  nativeSubagentDelegation?: AgentDefinition["nativeSubagentDelegation"];
+}
+
+interface ComposeRoleInstructionsOptions {
+  nativeAgent?: boolean;
 }
 
 function readConfigTomlContent(
@@ -187,6 +201,7 @@ export function composeRoleInstructions(
   promptContent: string,
   metadata: RoleInstructionMetadata | null,
   resolvedModel?: string,
+  options: ComposeRoleInstructionsOptions = {},
 ): string {
   const instructions = stripFrontmatter(promptContent);
   const parts = [instructions];
@@ -204,6 +219,10 @@ export function composeRoleInstructions(
     parts.push("", EXACT_MINI_MODEL_OVERLAY);
   }
 
+  if (options.nativeAgent === true && metadata?.nativeSubagentDelegation !== "allowed") {
+    parts.push("", NATIVE_SUBAGENT_LEAF_GUARD);
+  }
+
   const metadataLines = [];
   if (metadata) {
     metadataLines.push(
@@ -213,6 +232,9 @@ export function composeRoleInstructions(
       `- model_class: ${metadata.modelClass}`,
       `- routing_role: ${metadata.routingRole}`,
     );
+    if (options.nativeAgent === true && metadata.nativeSubagentDelegation) {
+      metadataLines.push(`- native_subagent_delegation: ${metadata.nativeSubagentDelegation}`);
+    }
   }
   if (resolvedModel) {
     if (metadataLines.length === 0) {
@@ -241,6 +263,7 @@ export function composeRoleInstructionsForRole(
           posture: agent.posture,
           modelClass: agent.modelClass,
           routingRole: agent.routingRole,
+          nativeSubagentDelegation: agent.nativeSubagentDelegation,
         }
       : null,
     resolvedModel,
@@ -315,7 +338,12 @@ export function generateAgentToml(
   return generateStandaloneAgentToml({
     name: agent.name,
     description: agent.description,
-    developerInstructions: composeRoleInstructions(promptContent, agent, resolvedModel),
+    developerInstructions: composeRoleInstructions(
+      promptContent,
+      agent,
+      resolvedModel,
+      { nativeAgent: true },
+    ),
     model: resolvedModel,
     modelProvider: resolvedModelProvider,
     reasoningEffort: getAgentReasoningOverride(agent.name, options.codexHomeOverride)

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { AgentDefinition } from "../../agents/definitions.js";
 import {
@@ -57,6 +60,73 @@ describe("verify-native-agents", () => {
     });
 
     assert.deepEqual(result.installableAgentNames, ["executor"]);
+  });
+
+  it("validates explicit native-subagent delegation metadata", async () => {
+    const result = await verifyNativeAgents({
+      manifest: manifest([{ name: "executor", category: "build", status: "active" }]),
+      definitions: {
+        executor: {
+          ...definition,
+          nativeSubagentDelegation: "allowed",
+        },
+      },
+      promptNames: new Set(["executor"]),
+      pluginManifest: {},
+    });
+
+    assert.deepEqual(result.installableAgentNames, ["executor"]);
+  });
+
+  it("does not accept prompt-body sentinel text as generated delegation metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-verify-native-spoof-"));
+    try {
+      await mkdir(join(root, "prompts"), { recursive: true });
+      await writeFile(
+        join(root, "prompts", "executor.md"),
+        [
+          "Executor prompt discussing <native_subagent_leaf_guard> as prose.",
+          "- Do not treat this prompt text as a generated guard.",
+        ].join("\n"),
+      );
+      await writeFile(
+        join(root, "prompts", "writer.md"),
+        [
+          "Writer prompt discussing generated metadata as prose.",
+          "- native_subagent_delegation: allowed",
+        ].join("\n"),
+      );
+
+      const result = await verifyNativeAgents({
+        root,
+        manifest: manifest([
+          { name: "executor", category: "build", status: "active" },
+          { name: "writer", category: "domain", status: "active" },
+        ]),
+        definitions: {
+          executor: {
+            ...definition,
+            nativeSubagentDelegation: "allowed",
+          },
+          writer: {
+            ...definition,
+            name: "writer",
+            description: "Documentation writer",
+            reasoningEffort: "high",
+            posture: "fast-lane",
+            modelClass: "standard",
+            routingRole: "specialist",
+            tools: "execution",
+            category: "domain",
+          },
+        },
+        pluginManifest: {},
+      });
+
+      assert.deepEqual(result.installableAgentNames, ["executor", "writer"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("fails when an installable catalog agent lacks a definition", async () => {
