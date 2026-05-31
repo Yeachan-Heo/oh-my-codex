@@ -13880,6 +13880,39 @@ exit 0
     }
   });
 
+  it("does not block implementation writes from Autopilot ralplan detail state without canonical skill state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-no-canonical-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-autopilot-ralplan-no-canonical";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-ralplan-no-canonical",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows implementation writes when terminal Autopilot run-state shadows stale supervised ralplan state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-terminal-pretool-"));
     try {

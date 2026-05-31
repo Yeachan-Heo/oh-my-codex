@@ -662,11 +662,11 @@ async function main() {
     // Non-fatal: lifecycle sync should not block the hook
   }
 
-  const deepInterviewStateActive = (
-    await isDeepInterviewStateActive(stateDir, getEffectiveSessionId())
-    || await isDeepInterviewStateActive(stateDir, undefined)
-  );
-  const deepInterviewInputLockActive = await isDeepInterviewInputLockActive(stateDir, getEffectiveSessionId());
+  const effectiveSessionId = getEffectiveSessionId();
+  const deepInterviewStateActive = effectiveSessionId
+    ? await isDeepInterviewStateActive(stateDir, effectiveSessionId)
+    : await isDeepInterviewStateActive(stateDir, undefined);
+  const deepInterviewInputLockActive = await isDeepInterviewInputLockActive(stateDir, effectiveSessionId);
 
   // 4.55. Notify leader when individual worker transitions to idle (worker session only)
   if (isTeamWorker && parsedTeamWorker && !deepInterviewStateActive) {

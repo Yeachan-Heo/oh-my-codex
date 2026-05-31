@@ -572,10 +572,10 @@ export async function maybeNudgeTeamLeader({
 
   const candidateTeamNames = new Set();
   const currentSessionId = await resolveCurrentSessionId(stateDir);
-  if (
-    await isDeepInterviewStateActive(stateDir, currentSessionId).catch(() => false)
-    || await isDeepInterviewStateActive(stateDir, undefined).catch(() => false)
-  ) {
+  const deepInterviewActive = currentSessionId
+    ? await isDeepInterviewStateActive(stateDir, currentSessionId).catch(() => false)
+    : await isDeepInterviewStateActive(stateDir, undefined).catch(() => false);
+  if (deepInterviewActive) {
     return;
   }
   try {

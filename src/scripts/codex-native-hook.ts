@@ -2718,7 +2718,7 @@ async function readActiveRalplanStateForPreToolUse(
   if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId)) return null;
   const terminalAutopilotRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, "autopilot");
   if (terminalAutopilotRunState) return null;
-  if (!canonicalState) return autopilotState;
+  if (!canonicalState) return null;
   const hasActiveAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
     entry.skill === "autopilot"
     && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
