@@ -4582,7 +4582,7 @@ exit 0
   it('keeps the detached helper alive after the hidden bootstrap exits', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-bootstrap-survival-'));
     const readyPath = join(wd, 'helper-ready.json');
-    const helperScriptPath = join(wd, 'helper-survival.js');
+    const helperScriptPath = join(wd, 'helper-survival.cjs');
 
     try {
       await writeFile(helperScriptPath, `
