@@ -131,13 +131,12 @@ import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 import { readUltragoalState } from "../hud/state.js";
-import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
 import {
   createHudWatchPane as createSharedHudWatchPane,
   killTmuxPane as killSharedTmuxPane,
   listCurrentWindowHudPaneIds,
   listCurrentWindowPanes,
-  OMX_TMUX_HUD_LEADER_PANE_ENV,
+  buildHudRuntimeEnv,
   parsePaneIdFromTmuxOutput,
   reapDeadHudPanes,
   registerHudResizeHook,
@@ -1362,6 +1361,59 @@ export function resolveOmxRootForLaunch(
   const raw = env.OMX_ROOT || env.OMX_STATE_ROOT;
   if (typeof raw !== "string" || raw.trim() === "") return undefined;
   return isCrossPlatformAbsolutePath(raw) ? raw : join(cwd, raw);
+}
+type HudRuntimeRootSource = 'team-env' | 'omx-root-env' | 'omx-state-root-env' | 'cwd-default';
+
+interface HudRuntimeRootForLaunch {
+  omxRoot?: string;
+  omxStateRoot?: string;
+  omxTeamStateRoot?: string;
+  rootSource: HudRuntimeRootSource;
+}
+
+function resolveLaunchPath(cwd: string, raw: string): string {
+  return isCrossPlatformAbsolutePath(raw) ? raw : join(cwd, raw);
+}
+
+function resolveHudRuntimeRootSource(
+  omxRootOverride: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): HudRuntimeRootSource {
+  if (env.OMX_TEAM_STATE_ROOT?.trim()) return 'team-env';
+  if (env.OMX_ROOT?.trim() || omxRootOverride) return 'omx-root-env';
+  if (env.OMX_STATE_ROOT?.trim()) return 'omx-state-root-env';
+  return 'cwd-default';
+}
+
+export function resolveHudRuntimeRootForLaunch(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): HudRuntimeRootForLaunch {
+  const omxTeamStateRoot = env.OMX_TEAM_STATE_ROOT?.trim();
+  if (omxTeamStateRoot) {
+    return {
+      omxTeamStateRoot: resolveLaunchPath(cwd, omxTeamStateRoot),
+      rootSource: 'team-env',
+    };
+  }
+
+  const omxRoot = env.OMX_ROOT?.trim();
+  if (omxRoot) {
+    return {
+      omxRoot: resolveLaunchPath(cwd, omxRoot),
+      rootSource: 'omx-root-env',
+    };
+  }
+
+  const omxStateRoot = env.OMX_STATE_ROOT?.trim();
+  if (omxStateRoot) {
+    return {
+      omxStateRoot: resolveLaunchPath(cwd, omxStateRoot),
+      rootSource: 'omx-state-root-env',
+    };
+  }
+
+  return { rootSource: 'cwd-default' };
 }
 
 function hasExplicitOmxRootEnv(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -3402,6 +3454,25 @@ export function buildDetachedSessionBootstrapSteps(
         runtimeCodexHomeForCleanup,
         parentEnvFilePath,
       );
+  const resolvedEnvStateRoot = env.OMX_STATE_ROOT?.trim()
+    ? resolveLaunchPath(cwd, env.OMX_STATE_ROOT.trim())
+    : undefined;
+  const hasExplicitRootOverride = Boolean(
+    env.OMX_ROOT?.trim()
+      || (omxRootOverride && omxRootOverride !== resolvedEnvStateRoot),
+  );
+  const hudRuntimeRoot = env.OMX_TEAM_STATE_ROOT?.trim()
+    ? resolveHudRuntimeRootForLaunch(cwd, env)
+    : hasExplicitRootOverride
+      ? {
+          omxRoot: omxRootOverride,
+          rootSource: resolveHudRuntimeRootSource(omxRootOverride, env),
+        }
+      : resolveHudRuntimeRootForLaunch(cwd, env);
+  const hudRuntimeEnv = buildHudRuntimeEnv({
+    sessionId,
+    ...hudRuntimeRoot,
+  }).env;
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -3415,12 +3486,9 @@ export function buildDetachedSessionBootstrapSteps(
     ...(workerLaunchArgs
       ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
       : []),
-    ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
-    ...(sessionId ? ["-e", `${OMX_TMUX_HUD_OWNER_ENV}=1`] : []),
+    ...Object.entries(hudRuntimeEnv).map(([key, value]) => ["-e", `${key}=${value}`]).flat(),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(sqliteHomeOverride ? ["-e", `${CODEX_SQLITE_HOME_ENV}=${sqliteHomeOverride}`] : []),
-    ...(omxRootOverride ? ["-e", `OMX_ROOT=${omxRootOverride}`] : []),
-    ...(env.OMX_STATE_ROOT ? ["-e", `OMX_STATE_ROOT=${env.OMX_STATE_ROOT}`] : []),
     ...(env.OMXBOX_ACTIVE ? ["-e", `OMXBOX_ACTIVE=${env.OMXBOX_ACTIVE}`] : []),
     ...(env.OMX_SOURCE_CWD ? ["-e", `OMX_SOURCE_CWD=${env.OMX_SOURCE_CWD}`] : []),
     ...(notifyTempContractRaw
@@ -4210,12 +4278,12 @@ function runCodex(
   }
   const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
   const currentPaneId = process.env.TMUX_PANE;
-  const hudEnvArgs = [
-    `OMX_SESSION_ID=${sessionId}`,
-    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
-    ...(currentPaneId ? [`${OMX_TMUX_HUD_LEADER_PANE_ENV}=${currentPaneId}`] : []),
-    ...(omxRootOverride ? [`OMX_ROOT=${omxRootOverride}`] : []),
-  ];
+  const hudRuntimeRoot = resolveHudRuntimeRootForLaunch(cwd, process.env);
+  const hudEnvArgs = Object.entries(buildHudRuntimeEnv({
+    sessionId,
+    leaderPaneId: currentPaneId,
+    ...hudRuntimeRoot,
+  }).env).map(([key, value]) => `${key}=${value}`);
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
     : buildTmuxPaneCommand("env", [...hudEnvArgs, "node", omxBin, "hud", "--watch"]);
@@ -4234,8 +4302,7 @@ function runCodex(
   };
   const codexEnvWithSession = {
     ...codexBaseEnv,
-    OMX_SESSION_ID: sessionId,
-    [OMX_TMUX_HUD_OWNER_ENV]: "1",
+    ...buildHudRuntimeEnv({ sessionId }).env,
   };
   const codexEnv = workerLaunchArgs
     ? { ...codexEnvWithSession, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }

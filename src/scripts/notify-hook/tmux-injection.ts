@@ -21,7 +21,7 @@ import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { resolveInvocationSessionId, resolveManagedCurrentPane, resolveManagedSessionContext, verifyManagedPaneTarget } from './managed-tmux.js';
 import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
-import { listActiveSkills, readVisibleSkillActiveState } from '../../state/skill-active.js';
+import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../../state/skill-active.js';
 import {
   normalizeTmuxHookConfig,
   pickActiveMode,
@@ -99,12 +99,14 @@ async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: 
   return finalizeResolvedPane(healedPaneId, 'healed_hud_pane_target', expectedCwd);
 }
 
-async function resolvePreferredModePane(stateDir: string, allowedModes: string[]): Promise<{ mode: string; state: any; pane: string; stateDir: string } | null> {
-  const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir).catch(() => [stateDir]);
-  const dirs = [...scopedDirs];
-  if (!dirs.map((dir) => resolvePath(dir)).includes(resolvePath(stateDir))) {
-    dirs.push(stateDir);
-  }
+async function resolvePreferredModePane(
+  stateDir: string,
+  allowedModes: string[],
+  options: { includeRootFallback?: boolean } = {},
+): Promise<{ mode: string; state: any; pane: string; stateDir: string } | null> {
+  const dirs = await getScopedStateDirsForCurrentSession(stateDir, undefined, {
+    includeRootFallback: options.includeRootFallback !== false,
+  }).catch(() => [stateDir]);
   for (const dir of dirs) {
     for (const mode of allowedModes || []) {
       const path = join(dir, `${mode}-state.json`);
@@ -189,12 +191,18 @@ async function validateResolvedInjectionOwnership({
   return { ok: true };
 }
 
-async function readVisibleAllowedModes(
+export async function readVisibleAllowedModes(
   cwd: string,
   stateDir: string,
   payload: any,
   allowedModes: string[],
-): Promise<{ canonicalPresent: boolean; allowedSet: Set<string> | null; preferredMode: string | null }> {
+): Promise<{
+  canonicalPresent: boolean;
+  activeSkillCount: number;
+  allowedSet: Set<string> | null;
+  preferredMode: string | null;
+  sessionScoped: boolean;
+}> {
   const candidateSessionIds = [
     await readCurrentSessionId(stateDir).catch(() => undefined),
     resolveInvocationSessionId(payload),
@@ -203,41 +211,49 @@ async function readVisibleAllowedModes(
     .filter(Boolean);
 
   for (const sessionId of candidateSessionIds) {
-    const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
+    const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
     if (!canonicalState) continue;
 
+    const activeSkills = listActiveSkills(canonicalState);
     const allowedSet = new Set(
-      listActiveSkills(canonicalState)
+      activeSkills
         .map((entry) => entry.skill)
         .filter((skill) => allowedModes.includes(skill)),
     );
     return {
       canonicalPresent: true,
+      activeSkillCount: activeSkills.length,
       allowedSet,
       preferredMode: pickActiveMode([...allowedSet], allowedModes),
+      sessionScoped: true,
     };
   }
 
   if (candidateSessionIds.length === 0) {
-    const rootCanonicalState = await readVisibleSkillActiveState(cwd).catch(() => null);
+    const rootCanonicalState = await readVisibleSkillActiveStateForStateDir(stateDir).catch(() => null);
     if (rootCanonicalState) {
+      const activeSkills = listActiveSkills(rootCanonicalState);
       const allowedSet = new Set(
-        listActiveSkills(rootCanonicalState)
+        activeSkills
           .map((entry) => entry.skill)
           .filter((skill) => allowedModes.includes(skill)),
       );
       return {
         canonicalPresent: true,
+        activeSkillCount: activeSkills.length,
         allowedSet,
         preferredMode: pickActiveMode([...allowedSet], allowedModes),
+        sessionScoped: false,
       };
     }
   }
 
   return {
     canonicalPresent: false,
+    activeSkillCount: 0,
     allowedSet: null,
     preferredMode: null,
+    sessionScoped: candidateSessionIds.length > 0,
   };
 }
 
@@ -415,10 +431,11 @@ export async function handleTmuxInjection({
   state.recent_keys = pruneRecentKeys(state.recent_keys, now);
   const canonicalModeState = await readVisibleAllowedModes(cwd, stateDir, payload, config.allowed_modes).catch(() => ({
     canonicalPresent: false,
+    activeSkillCount: 0,
     allowedSet: null,
     preferredMode: null,
   }));
-  if (canonicalModeState.canonicalPresent && !canonicalModeState.preferredMode) {
+  if (canonicalModeState.canonicalPresent && canonicalModeState.activeSkillCount > 0 && !canonicalModeState.preferredMode) {
     const nextState = {
       ...state,
       last_reason: 'mode_not_allowed',
@@ -468,12 +485,10 @@ export async function handleTmuxInjection({
     }
   };
   try {
-    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
+    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir, undefined, {
+      includeRootFallback: !canonicalModeState.canonicalPresent && !canonicalModeState.sessionScoped,
+    });
     await scanActiveModeStateDirs(scopedDirs);
-
-    if (!pickActiveMode(activeModes, config.allowed_modes) && !scannedStateDirs.has(resolvePath(stateDir))) {
-      await scanActiveModeStateDirs([stateDir], true);
-    }
   } catch {
     // Non-fatal
   }
@@ -483,6 +498,7 @@ export async function handleTmuxInjection({
     canonicalModeState.canonicalPresent
       ? (canonicalModeState.preferredMode ? [canonicalModeState.preferredMode] : [])
       : config.allowed_modes,
+    { includeRootFallback: !canonicalModeState.sessionScoped },
   ).catch(() => null);
   const mode = canonicalModeState.canonicalPresent
     ? canonicalModeState.preferredMode

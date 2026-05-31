@@ -73,6 +73,18 @@ function modeStatePathForRoot(
   return getStatePath(mode, cwd, sessionId);
 }
 
+
+async function assertAuthoritativeWorkflowStateReadable(
+  cwd: string,
+  sessionId?: string,
+  baseStateDir?: string,
+): Promise<void> {
+  for (const mode of TRACKED_WORKFLOW_MODES) {
+    const candidatePath = modeStatePathForRoot(mode, cwd, sessionId, baseStateDir);
+    await readJsonIfExists(candidatePath, { mode, throwOnParseError: true });
+  }
+}
+
 async function visibleTrackedModes(
   cwd: string,
   sessionId?: string,
@@ -86,21 +98,7 @@ async function visibleTrackedModes(
     .map((entry) => entry.skill)
     .filter(isTrackedWorkflowMode);
 
-  const visibleModes = new Set<TrackedWorkflowMode>(canonicalModes);
-  for (const mode of TRACKED_WORKFLOW_MODES) {
-    const candidatePaths = [modeStatePathForRoot(mode, cwd, sessionId, baseStateDir)];
-    for (const candidatePath of candidatePaths) {
-      const state = await readJsonIfExists(candidatePath, {
-        mode,
-        throwOnParseError: true,
-      });
-      if (state?.active === true) {
-        visibleModes.add(mode);
-      }
-    }
-  }
-
-  return [...visibleModes];
+  return [...new Set(canonicalModes)];
 }
 
 async function completeSourceModeState(
@@ -229,6 +227,9 @@ export async function reconcileWorkflowTransition(
     source = 'workflow-transition',
     baseStateDir,
   } = options;
+  if (!options.currentModes) {
+    await assertAuthoritativeWorkflowStateReadable(cwd, sessionId, baseStateDir);
+  }
   const currentModes = options.currentModes
     ? [...options.currentModes].filter(isTrackedWorkflowMode)
     : await visibleTrackedModes(cwd, sessionId, baseStateDir);

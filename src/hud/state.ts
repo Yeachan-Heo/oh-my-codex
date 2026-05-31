@@ -12,9 +12,9 @@ import { fileURLToPath } from 'url';
 import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
-import { getBaseStateDir, getReadScopedStateFilePaths, getReadScopedStatePaths, readCurrentSessionId } from '../mcp/state-paths.js';
+import { getBaseStateDir, getStateFilePath, readCurrentSessionId, resolveRuntimeStateScope } from '../mcp/state-paths.js';
 import { teamReadPhase as readTeamPhase } from '../team/team-ops.js';
-import { readUsableSessionState } from '../hooks/session.js';
+
 import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../state/skill-active.js';
 import type {
   RalphStateForHud,
@@ -45,32 +45,9 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
   }
 }
 
-function rootModeStateBelongsToSession(state: unknown, sessionId: string): boolean {
-  if (!state || typeof state !== 'object') return false;
-  return sanitizeOptionalString((state as { session_id?: unknown }).session_id) === sessionId;
-}
-
-async function readSessionAwareModeState<T>(cwd: string, mode: string): Promise<T | null> {
-  const candidates = await getReadScopedStatePaths(mode, cwd);
+async function readAuthoritativeModeState<T>(cwd: string, mode: string): Promise<T | null> {
   const sessionId = await readCurrentSessionId(cwd);
-
-  if (sessionId) {
-    if (candidates.length === 0) return null;
-    const sessionState = await readJsonFile<T>(candidates[0]);
-    if (sessionState) return sessionState;
-
-    const rootCandidate = candidates[1];
-    if (!rootCandidate) return null;
-    const rootState = await readJsonFile<T>(rootCandidate);
-    return rootModeStateBelongsToSession(rootState, sessionId) ? rootState : null;
-  }
-
-  for (const candidate of candidates) {
-    const state = await readJsonFile<T>(candidate);
-    if (state) return state;
-  }
-
-  return null;
+  return readJsonFile<T>(getStateFilePath(`${mode}-state.json`, cwd, sessionId));
 }
 
 function isValidPreset(value: unknown): value is ResolvedHudConfig['preset'] {
@@ -227,22 +204,22 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
 }
 
 export async function readRalphState(cwd: string): Promise<RalphStateForHud | null> {
-  const state = await readSessionAwareModeState<RalphStateForHud>(cwd, 'ralph');
+  const state = await readAuthoritativeModeState<RalphStateForHud>(cwd, 'ralph');
   return state?.active ? state : null;
 }
 
 export async function readUltraworkState(cwd: string): Promise<UltraworkStateForHud | null> {
-  const state = await readSessionAwareModeState<UltraworkStateForHud>(cwd, 'ultrawork');
+  const state = await readAuthoritativeModeState<UltraworkStateForHud>(cwd, 'ultrawork');
   return state?.active ? state : null;
 }
 
 export async function readAutopilotState(cwd: string): Promise<AutopilotStateForHud | null> {
-  const state = await readSessionAwareModeState<AutopilotStateForHud>(cwd, 'autopilot');
+  const state = await readAuthoritativeModeState<AutopilotStateForHud>(cwd, 'autopilot');
   return state?.active ? state : null;
 }
 
 export async function readRalplanState(cwd: string): Promise<RalplanStateForHud | null> {
-  const state = await readSessionAwareModeState<RalplanStateForHud>(cwd, 'ralplan');
+  const state = await readAuthoritativeModeState<RalplanStateForHud>(cwd, 'ralplan');
   return state?.active ? state : null;
 }
 
@@ -253,7 +230,7 @@ interface DeepInterviewRawState extends DeepInterviewStateForHud {
 }
 
 export async function readDeepInterviewState(cwd: string): Promise<DeepInterviewStateForHud | null> {
-  const state = await readSessionAwareModeState<DeepInterviewRawState>(cwd, 'deep-interview');
+  const state = await readAuthoritativeModeState<DeepInterviewRawState>(cwd, 'deep-interview');
   if (!state?.active) return null;
 
   return {
@@ -263,17 +240,17 @@ export async function readDeepInterviewState(cwd: string): Promise<DeepInterview
 }
 
 export async function readAutoresearchState(cwd: string): Promise<AutoresearchStateForHud | null> {
-  const state = await readSessionAwareModeState<AutoresearchStateForHud>(cwd, 'autoresearch');
+  const state = await readAuthoritativeModeState<AutoresearchStateForHud>(cwd, 'autoresearch');
   return state?.active ? state : null;
 }
 
 export async function readUltraqaState(cwd: string): Promise<UltraqaStateForHud | null> {
-  const state = await readSessionAwareModeState<UltraqaStateForHud>(cwd, 'ultraqa');
+  const state = await readAuthoritativeModeState<UltraqaStateForHud>(cwd, 'ultraqa');
   return state?.active ? state : null;
 }
 
 export async function readTeamState(cwd: string): Promise<TeamStateForHud | null> {
-  const state = await readSessionAwareModeState<TeamStateForHud>(cwd, 'team');
+  const state = await readAuthoritativeModeState<TeamStateForHud>(cwd, 'team');
   return state?.active ? state : null;
 }
 
@@ -282,15 +259,18 @@ export async function readMetrics(cwd: string): Promise<HudMetrics | null> {
 }
 
 export async function readHudNotifyState(cwd: string): Promise<HudNotifyState | null> {
-  const [hudStatePath] = await getReadScopedStateFilePaths('hud-state.json', cwd, undefined, {
-    rootFallback: false,
-  });
+  const sessionId = await readCurrentSessionId(cwd);
+  const hudStatePath = getStateFilePath('hud-state.json', cwd, sessionId);
   return readJsonFile<HudNotifyState>(hudStatePath);
 }
 
 export async function readSessionState(cwd: string): Promise<SessionStateForHud | null> {
-  const state = await readUsableSessionState(cwd);
-  return state?.session_id ? state : null;
+  const scope = await resolveRuntimeStateScope(cwd);
+  const metadata = scope.metadata;
+  return metadata?.sessionId ? {
+    session_id: metadata.sessionId,
+    started_at: typeof metadata.raw?.started_at === 'string' ? metadata.raw.started_at : '',
+  } : null;
 }
 
 export async function readHudConfig(cwd: string): Promise<ResolvedHudConfig> {
@@ -466,11 +446,10 @@ function shouldSurfaceCanonicalSkill(
   canonicalSkills: Map<string, { phase?: string }>,
   skill: string,
   detail: { active?: boolean; current_phase?: string } | null,
-  useCompatibilityFallback: boolean,
 ): boolean {
   const canonicalPhase = canonicalPhaseForSkill(canonicalSkills, skill);
   if (canonicalSkills.has(skill) && !detail && canonicalPhase) return true;
-  if (!canonicalSkills.has(skill) && !useCompatibilityFallback) return false;
+  if (!canonicalSkills.has(skill)) return false;
   return !isMissingTerminalOrInactiveDetail(detail);
 }
 
@@ -528,7 +507,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
   const canonicalSkills = new Map(
     listActiveSkills(canonicalSkillState).map((entry) => [entry.skill, entry] as const),
   );
-  const useCompatibilityFallback = canonicalSkillState == null;
+
 
   const [
     ralphDetail,
@@ -541,30 +520,30 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     ultraqaDetail,
     teamDetail,
   ] = await Promise.all([
-    readSessionAwareModeState<RalphStateForHud>(cwd, 'ralph'),
+    readAuthoritativeModeState<RalphStateForHud>(cwd, 'ralph'),
     readUltragoalState(cwd),
-    readSessionAwareModeState<UltraworkStateForHud>(cwd, 'ultrawork'),
-    readSessionAwareModeState<AutopilotStateForHud>(cwd, 'autopilot'),
-    readSessionAwareModeState<RalplanStateForHud>(cwd, 'ralplan'),
-    readSessionAwareModeState<DeepInterviewRawState>(cwd, 'deep-interview'),
-    readSessionAwareModeState<AutoresearchStateForHud>(cwd, 'autoresearch'),
-    readSessionAwareModeState<UltraqaStateForHud>(cwd, 'ultraqa'),
-    readSessionAwareModeState<TeamStateForHud>(cwd, 'team'),
+    readAuthoritativeModeState<UltraworkStateForHud>(cwd, 'ultrawork'),
+    readAuthoritativeModeState<AutopilotStateForHud>(cwd, 'autopilot'),
+    readAuthoritativeModeState<RalplanStateForHud>(cwd, 'ralplan'),
+    readAuthoritativeModeState<DeepInterviewRawState>(cwd, 'deep-interview'),
+    readAuthoritativeModeState<AutoresearchStateForHud>(cwd, 'autoresearch'),
+    readAuthoritativeModeState<UltraqaStateForHud>(cwd, 'ultraqa'),
+    readAuthoritativeModeState<TeamStateForHud>(cwd, 'team'),
   ]);
 
-  const ralph = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralph', ralphDetail, useCompatibilityFallback)
-    ? (ralphDetail?.active === true ? mergePhase(ralphDetail, canonicalPhaseForSkill(canonicalSkills, 'ralph')) : null)
+  const ralph = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralph', ralphDetail)
+    ? mergePhase(ralphDetail?.active === true ? ralphDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ralph'))
     : null;
-  const ultrawork = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultrawork', ultraworkDetail, useCompatibilityFallback)
+  const ultrawork = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultrawork', ultraworkDetail)
     ? mergePhase(ultraworkDetail?.active === true ? ultraworkDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultrawork'))
     : null;
-  const autopilot = shouldSurfaceCanonicalSkill(canonicalSkills, 'autopilot', autopilotDetail, useCompatibilityFallback)
+  const autopilot = shouldSurfaceCanonicalSkill(canonicalSkills, 'autopilot', autopilotDetail)
     ? mergePhase(autopilotDetail?.active === true ? autopilotDetail : null, canonicalPhaseForSkill(canonicalSkills, 'autopilot'))
     : null;
-  const ralplan = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralplan', ralplanDetail, useCompatibilityFallback)
+  const ralplan = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralplan', ralplanDetail)
     ? mergePhase(ralplanDetail?.active === true ? ralplanDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ralplan'))
     : null;
-  const deepInterview = shouldSurfaceCanonicalSkill(canonicalSkills, 'deep-interview', deepInterviewDetail, useCompatibilityFallback)
+  const deepInterview = shouldSurfaceCanonicalSkill(canonicalSkills, 'deep-interview', deepInterviewDetail)
     ? (() => {
       const merged = mergePhase(
         deepInterviewDetail?.active === true ? {
@@ -576,18 +555,18 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
       return merged;
     })()
     : null;
-  const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail, useCompatibilityFallback)
+  const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail)
     ? mergePhase(ultraqaDetail?.active === true ? ultraqaDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'))
     : null;
   const canonicalTeamPhase = await readCanonicalTeamPhase(cwd, teamDetail?.active === true ? teamDetail : null);
-  const team = shouldSurfaceCanonicalSkill(canonicalSkills, 'team', teamDetail, useCompatibilityFallback)
+  const team = shouldSurfaceCanonicalSkill(canonicalSkills, 'team', teamDetail)
     ? mergeTeamPhase(
       teamDetail?.active === true ? teamDetail : null,
       canonicalPhaseForSkill(canonicalSkills, 'team'),
       canonicalTeamPhase,
     )
     : null;
-  const autoresearch = shouldSurfaceCanonicalSkill(canonicalSkills, 'autoresearch', autoresearchDetail, useCompatibilityFallback)
+  const autoresearch = shouldSurfaceCanonicalSkill(canonicalSkills, 'autoresearch', autoresearchDetail)
     ? mergePhase(
       autoresearchDetail?.active === true ? autoresearchDetail : null,
       canonicalPhaseForSkill(canonicalSkills, 'autoresearch'),

@@ -5075,7 +5075,7 @@ esac
     }
   });
 
-  it("reuses an existing owner-tagged HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
+  it("recreates a leader-only HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-"));
     const originalTmux = process.env.TMUX;
     const originalTmuxPane = process.env.TMUX_PANE;
@@ -5131,8 +5131,8 @@ esac
       assert.equal(result.omxEventName, "keyword-detector");
       const tmuxCalls = await readFile(tmuxLog, "utf-8");
       assert.match(tmuxCalls, /list-panes -t %1 -F/);
-      assert.match(tmuxCalls, new RegExp(`resize-pane -t %2 -y ${HUD_TMUX_HEIGHT_LINES}`));
-      assert.doesNotMatch(tmuxCalls, /split-window/);
+      assert.match(tmuxCalls, /split-window/);
+      assert.match(tmuxCalls, new RegExp(`resize-pane -t %9 -y ${HUD_TMUX_HEIGHT_LINES}`));
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", canonicalSessionId, "ralplan-state.json")), true);
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", nativeSessionId, "ralplan-state.json")), false);
     } finally {
@@ -13875,6 +13875,39 @@ exit 0
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /(?:Ralplan|Autopilot planning) is active .*implementation\/write tools are blocked/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block implementation writes from Autopilot ralplan detail state without canonical skill state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-no-canonical-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-autopilot-ralplan-no-canonical";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-ralplan-no-canonical",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

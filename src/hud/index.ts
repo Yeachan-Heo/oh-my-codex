@@ -27,6 +27,7 @@ import {
   resizeTmuxPane,
 } from './tmux.js';
 import { OMX_TMUX_HUD_OWNER_ENV } from './reconcile.js';
+import { buildHudRuntimeEnv } from './tmux.js';
 
 export const HUD_USAGE = [
   'Usage:',
@@ -367,19 +368,17 @@ export function buildTmuxSplitArgs(
   omxRoot?: string,
   leaderPaneId?: string,
   heightLines?: number,
+  rootEnv?: Parameters<typeof buildHudRuntimeEnv>[0],
 ): string[] {
   // Defense-in-depth: keep preset constrained even if this helper is reused.
   const safePreset = parseHudPreset(preset);
   const presetArg = safePreset ? ` --preset=${safePreset}` : '';
-  const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-  const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
-  const safeLeaderPaneId = typeof leaderPaneId === 'string' ? leaderPaneId.trim() : '';
-  const envAssignments = [
-    safeSessionId ? `OMX_SESSION_ID=${shellEscape(safeSessionId)}` : '',
-    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
-    safeLeaderPaneId ? `${OMX_TMUX_HUD_LEADER_PANE_ENV}=${shellEscape(safeLeaderPaneId)}` : '',
-    safeOmxRoot.trim() ? `OMX_ROOT=${shellEscape(safeOmxRoot)}` : '',
-  ].filter(Boolean);
+  const envAssignments = Object.entries(buildHudRuntimeEnv({
+    sessionId,
+    leaderPaneId,
+    omxRoot,
+    ...(rootEnv ?? { rootSource: 'omx-root-env' }),
+  }).env).map(([key, value]) => `${key}=${key === OMX_TMUX_HUD_OWNER_ENV ? value : shellEscape(value)}`);
   const envPrefix = envAssignments.length > 0 ? `env ${envAssignments.join(' ')} ` : '';
   const cmd = `exec ${envPrefix}${shellEscape(process.execPath)} ${shellEscape(omxBin)} hud --watch${presetArg}`;
   const height = Number.isFinite(heightLines) && (heightLines ?? 0) > 0
@@ -436,6 +435,11 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
     process.env.OMX_ROOT,
     currentPaneId,
     getHudRenderMaxLines(ctx),
+    {
+      omxStateRoot: process.env.OMX_STATE_ROOT,
+      omxTeamStateRoot: process.env.OMX_TEAM_STATE_ROOT,
+      rootSource: process.env.OMX_TEAM_STATE_ROOT ? 'team-env' : process.env.OMX_ROOT ? 'omx-root-env' : process.env.OMX_STATE_ROOT ? 'omx-state-root-env' : 'cwd-default',
+    },
   );
 
   try {

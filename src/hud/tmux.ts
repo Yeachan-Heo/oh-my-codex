@@ -19,6 +19,21 @@ export interface HudPaneOwner {
   sessionId?: string;
   leaderPaneId?: string;
 }
+export type HudRuntimeRootSource = 'team-env' | 'omx-root-env' | 'omx-state-root-env' | 'cwd-default';
+
+export interface HudRuntimeEnvInput {
+  sessionId?: string;
+  leaderPaneId?: string;
+  omxRoot?: string;
+  omxStateRoot?: string;
+  omxTeamStateRoot?: string;
+  rootSource?: HudRuntimeRootSource;
+}
+
+export interface HudRuntimeEnvOutput {
+  env: Record<string, string>;
+  owner: HudPaneOwner;
+}
 
 type TmuxExecSync = (args: string[]) => string;
 
@@ -26,10 +41,18 @@ type TmuxExecSync = (args: string[]) => string;
 const TMUX_HOOK_INDEX_MAX = 2147483647;
 
 function defaultExecTmuxSync(args: string[]): string {
-  return execFileSync(resolveTmuxBinaryForPlatform() || 'tmux', args, {
-    encoding: 'utf-8',
-    ...(process.platform === 'win32' ? { windowsHide: true } : {}),
-  });
+  try {
+    return execFileSync(resolveTmuxBinaryForPlatform() || 'tmux', args, {
+      encoding: 'utf-8',
+      ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+    });
+  } catch (error) {
+    const maybeSpawnError = error as { status?: unknown; stdout?: unknown };
+    if (maybeSpawnError.status === 0 && typeof maybeSpawnError.stdout === 'string') {
+      return maybeSpawnError.stdout;
+    }
+    throw error;
+  }
 }
 
 export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
@@ -139,15 +162,11 @@ export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner 
   const leaderPaneMatches = wantsLeaderPane && paneOwner.leaderPaneId === wantedLeaderPaneId;
 
   if (wantsSession && wantsLeaderPane) {
-    // Prompt-submit revive may know the canonical session id even when an
-    // existing launch-path HUD was only tagged with its leader pane. Treat
-    // either owner identity as the same HUD so reconciliation can resize/reuse
-    // it instead of creating a duplicate, while keeping other live leaders in
-    // the same tmux window isolated when their leader tag differs.
-    return leaderPaneMatches || (sessionMatches && !paneOwner.leaderPaneId);
+    if (!sessionMatches) return false;
+    return !paneOwner.leaderPaneId || leaderPaneMatches;
   }
   if (wantsSession) return sessionMatches;
-  return leaderPaneMatches;
+  return leaderPaneMatches && !paneOwner.sessionId;
 }
 
 export function findHudWatchPaneIds(
@@ -362,6 +381,28 @@ function buildEnvPrefix(env: Record<string, string | undefined>): string {
     .map(([key, value]) => `${key}=${shellEscapeSingle(value)}`);
   return assignments.length > 0 ? `env ${assignments.join(' ')} ` : '';
 }
+export function buildHudRuntimeEnv(input: HudRuntimeEnvInput = {}): HudRuntimeEnvOutput {
+  const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  const leaderPaneId = typeof input.leaderPaneId === 'string' ? input.leaderPaneId.trim() : '';
+  const env: Record<string, string> = {};
+  if (sessionId) env.OMX_SESSION_ID = sessionId;
+  env[OMX_TMUX_HUD_OWNER_ENV] = '1';
+  if (leaderPaneId) env[OMX_TMUX_HUD_LEADER_PANE_ENV] = leaderPaneId;
+  if (input.rootSource === 'team-env' && input.omxTeamStateRoot?.trim()) {
+    env.OMX_TEAM_STATE_ROOT = input.omxTeamStateRoot.trim();
+  } else if (input.rootSource === 'omx-state-root-env' && input.omxStateRoot?.trim()) {
+    env.OMX_STATE_ROOT = input.omxStateRoot.trim();
+  } else if (input.omxRoot?.trim()) {
+    env.OMX_ROOT = input.omxRoot.trim();
+  }
+  return {
+    env,
+    owner: {
+      ...(sessionId ? { sessionId } : {}),
+      ...(leaderPaneId ? { leaderPaneId } : {}),
+    },
+  };
+}
 
 export function buildHudWatchCommand(
   omxBin: string,
@@ -369,19 +410,17 @@ export function buildHudWatchCommand(
   sessionId?: string,
   omxRoot?: string,
   leaderPaneId?: string,
+  rootEnv?: Pick<HudRuntimeEnvInput, 'omxStateRoot' | 'omxTeamStateRoot' | 'rootSource'>,
 ): string {
   const safePreset = preset === 'minimal' || preset === 'focused' || preset === 'full'
     ? ` --preset=${preset}`
     : '';
-  const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-  const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
-  const safeLeaderPaneId = typeof leaderPaneId === 'string' ? leaderPaneId.trim() : '';
-  const envPrefix = buildEnvPrefix({
-    OMX_SESSION_ID: safeSessionId,
-    [OMX_TMUX_HUD_OWNER_ENV]: '1',
-    [OMX_TMUX_HUD_LEADER_PANE_ENV]: safeLeaderPaneId,
-    OMX_ROOT: safeOmxRoot,
-  });
+  const envPrefix = buildEnvPrefix(buildHudRuntimeEnv({
+    sessionId,
+    leaderPaneId,
+    omxRoot,
+    ...(rootEnv ?? { rootSource: 'omx-root-env' }),
+  }).env);
   return `exec ${envPrefix}${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} hud --watch${safePreset}`;
 }
 

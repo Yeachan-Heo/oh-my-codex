@@ -30,16 +30,16 @@ import {
   readPlanningArtifacts,
 } from "../planning/artifacts.js";
 import {
-  getReadScopedStateDirs,
+  getAuthoritativeActiveStateDirs,
+  getAuthoritativeActiveStatePaths,
   getStateDir,
-  listModeStateFilesWithScopePreference,
 } from "../mcp/state-paths.js";
 import { generateCodebaseMap } from "./codebase-map.js";
 import { buildExploreRoutingGuidance } from "./explore-routing.js";
 import {
   SKILL_ACTIVE_STATE_FILE,
   listActiveSkills,
-  readVisibleSkillActiveState,
+  readVisibleSkillActiveStateForStateDir,
 } from "../state/skill-active.js";
 import {
   OMX_GENERATED_AGENTS_MARKER,
@@ -180,19 +180,14 @@ async function isRalphActive(
   cwd: string,
   sessionId?: string,
 ): Promise<boolean> {
-  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
-    return false;
-  }
-  const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
-  const ralphRef = refs.find((ref) => ref.mode === "ralph");
-  if (!ralphRef) return false;
-
-  try {
-    const data = JSON.parse(await readFile(ralphRef.path, "utf-8"));
-    return data?.active === true;
-  } catch {
-    return false;
-  }
+  const [baseStateDir] = await getAuthoritativeActiveStateDirs(cwd, sessionId);
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(
+    sessionId ? dirname(dirname(baseStateDir)) : baseStateDir,
+    sessionId,
+  );
+  return listActiveSkills(canonicalState ?? {}).some(
+    (entry) => entry.skill === "ralph",
+  );
 }
 
 async function readRalphPlanningArtifacts(
@@ -210,59 +205,31 @@ async function readActiveModes(
   cwd: string,
   sessionId?: string,
 ): Promise<string> {
-  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
-    return "";
-  }
-  const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
-  const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
-  const canonicalSkills = new Map(
-    listActiveSkills(canonicalState).map((entry) => [entry.skill, entry] as const),
+  const [baseStateDir] = await getAuthoritativeActiveStateDirs(cwd, sessionId);
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(
+    sessionId ? dirname(dirname(baseStateDir)) : baseStateDir,
+    sessionId,
   );
-  const useCompatibilityFallback = canonicalState == null;
-
-  const preferredByMode = new Map<
-    string,
-    { mode: string; path: string; scope: "root" | "session" }
-  >();
-  for (const ref of refs) {
-    preferredByMode.set(ref.mode, ref);
-  }
-
+  const canonicalEntries = listActiveSkills(canonicalState ?? {}).sort((a, b) => a.skill.localeCompare(b.skill));
   const modes: string[] = [];
-  const emittedCanonicalSkills = new Set<string>();
-  for (const ref of [...preferredByMode.values()].sort((a, b) =>
-    a.mode.localeCompare(b.mode),
-  )) {
-    try {
-      if (
-        !useCompatibilityFallback &&
-        !canonicalSkills.has(ref.mode)
-      ) {
-        continue;
-      }
-      const data = JSON.parse(await readFile(ref.path, "utf-8"));
-      if (!data.active) continue;
-      const details: string[] = [];
-      if (data.iteration !== undefined)
-        details.push(
-          `iteration ${data.iteration}/${data.max_iterations || "?"}`,
-        );
-      const canonicalPhase = canonicalSkills.get(ref.mode)?.phase;
-      const phase = data.current_phase || canonicalPhase;
-      if (phase) details.push(`phase: ${phase}`);
-      modes.push(`- ${ref.mode}: ${details.join(", ") || "active"}`);
-      emittedCanonicalSkills.add(ref.mode);
-    } catch {
-      // Skip malformed mode state files.
-    }
-  }
 
-  if (!useCompatibilityFallback) {
-    for (const [skill, entry] of [...canonicalSkills.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      if (emittedCanonicalSkills.has(skill)) continue;
+  for (const entry of canonicalEntries) {
+    try {
+      const [detailPath] = await getAuthoritativeActiveStatePaths(entry.skill, cwd, sessionId);
+      const data = detailPath && existsSync(detailPath)
+        ? JSON.parse(await readFile(detailPath, "utf-8"))
+        : null;
+      const details: string[] = [];
+      if (data?.iteration !== undefined) {
+        details.push(`iteration ${data.iteration}/${data.max_iterations || "?"}`);
+      }
+      const phase = data?.current_phase || entry.phase;
+      if (phase) details.push(`phase: ${phase}`);
+      modes.push(`- ${entry.skill}: ${details.join(", ") || "active"}`);
+    } catch {
       const details: string[] = [];
       if (entry.phase) details.push(`phase: ${entry.phase}`);
-      modes.push(`- ${skill}: ${details.join(", ") || "active"}`);
+      modes.push(`- ${entry.skill}: ${details.join(", ") || "active"}`);
     }
   }
 
@@ -350,7 +317,7 @@ export async function resolveSessionOrchestrationMode(
     return "default";
   }
 
-  const scopedStateDirs = await getReadScopedStateDirs(cwd, sessionId);
+  const scopedStateDirs = await getAuthoritativeActiveStateDirs(cwd, sessionId);
   for (const stateDir of scopedStateDirs) {
     const statePath = join(stateDir, SKILL_ACTIVE_STATE_FILE);
     if (!existsSync(statePath)) continue;

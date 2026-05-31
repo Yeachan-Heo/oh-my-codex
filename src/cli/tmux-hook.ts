@@ -282,6 +282,23 @@ function detectInitialTarget(): InitialTargetDetection | null {
     }
   }
 
+  const envPane = process.env.TMUX && typeof process.env.TMUX_PANE === 'string'
+    ? process.env.TMUX_PANE.trim()
+    : '';
+  if (envPane) {
+    const pane = runTmux(['display-message', '-p', '-t', envPane, '#{pane_id}']);
+    if (pane.ok && pane.stdout) {
+      const session = runTmux(['display-message', '-p', '-t', envPane, '#S']);
+      return {
+        target: { type: 'pane', value: pane.stdout },
+        sessionName: session.ok && session.stdout ? session.stdout : undefined,
+      };
+    }
+    return {
+      target: { type: 'pane', value: envPane },
+    };
+  }
+
   const currentClientPane = runTmux(['display-message', '-p', '#{pane_id}']);
   if (currentClientPane.ok && currentClientPane.stdout) {
     const session = runTmux(['display-message', '-p', '#S']);

@@ -23,11 +23,18 @@ import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
 import { readUltragoalState } from '../hud/state.js';
 import {
   SKILL_ACTIVE_STATE_MODE,
+  listActiveSkills,
   readSkillActiveState,
+  readVisibleSkillActiveStateForStateDir,
   syncCanonicalSkillStateForMode,
   writeSkillActiveStateCopiesForStateDir,
 } from './skill-active.js';
-import { isTrackedWorkflowMode } from './workflow-transition.js';
+import {
+  buildWorkflowTransitionError,
+  evaluateWorkflowTransition,
+  isTrackedWorkflowMode,
+  type TrackedWorkflowMode,
+} from './workflow-transition.js';
 import { reconcileWorkflowTransition } from './workflow-transition-reconcile.js';
 import {
   buildAutopilotDeepInterviewRalplanGateError,
@@ -255,6 +262,55 @@ export async function listActiveStateModes(
     .map(([mode]) => mode);
 }
 
+async function readCanonicalActiveWorkflowModes(
+  baseStateDir: string,
+  sessionId?: string,
+): Promise<TrackedWorkflowMode[]> {
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(baseStateDir, sessionId);
+  const activeModes = listActiveSkills(canonicalState ?? {})
+    .filter((entry) => {
+      const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
+      return normalizedSessionId ? entrySessionId === normalizedSessionId : entrySessionId.length === 0;
+    })
+    .map((entry) => entry.skill)
+    .filter(isTrackedWorkflowMode);
+  return [...new Set(activeModes)];
+}
+
+function isActiveDetailWorkflowState(state: Record<string, unknown>): boolean {
+  if (state.active !== true) return false;
+  const phase = typeof state.current_phase === 'string' ? state.current_phase.trim().toLowerCase() : '';
+  return !['complete', 'completed', 'cancelled', 'canceled', 'failed', 'cleared'].includes(phase);
+}
+
+async function readSessionDetailTransitionModes(
+  cwd: string,
+  sessionId: string | undefined,
+  requestedMode: TrackedWorkflowMode,
+): Promise<TrackedWorkflowMode[] | undefined> {
+  if (!sessionId || requestedMode !== 'ralplan') return undefined;
+  const autopilotPath = getStatePath('autopilot', cwd, sessionId);
+  if (existsSync(autopilotPath)) {
+    try {
+      const state = JSON.parse(await readFile(autopilotPath, 'utf-8')) as Record<string, unknown>;
+      if (isActiveDetailWorkflowState(state)) return ['autopilot'];
+    } catch {
+      return undefined;
+    }
+  }
+
+  const deepInterviewPath = getStatePath('deep-interview', cwd, sessionId);
+  if (!existsSync(deepInterviewPath)) return undefined;
+
+  try {
+    const state = JSON.parse(await readFile(deepInterviewPath, 'utf-8')) as Record<string, unknown>;
+    return isActiveDetailWorkflowState(state) ? ['deep-interview'] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function executeStateOperation(
   name: StateOperationName,
   rawArgs: Record<string, unknown> = {},
@@ -455,12 +511,26 @@ export async function executeStateOperation(
           }
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
+            const activeCanonicalModes = await readCanonicalActiveWorkflowModes(baseStateDir, effectiveSessionId);
+            const canonicalDecision = evaluateWorkflowTransition(activeCanonicalModes, mode);
+            if (!canonicalDecision.allowed && canonicalDecision.denialReason === 'rollback') {
+              validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
+              return;
+            }
+            const transitionCurrentModes = mode === 'ralplan'
+              ? (
+                activeCanonicalModes.length > 0
+                  ? activeCanonicalModes
+                  : await readSessionDetailTransitionModes(cwd, effectiveSessionId, mode)
+              )
+              : undefined;
             try {
               const transition = await reconcileWorkflowTransition(cwd, mode, {
                 action: 'write',
                 sessionId: effectiveSessionId,
                 source: 'state-operations',
                 baseStateDir,
+                ...(transitionCurrentModes ? { currentModes: transitionCurrentModes } : {}),
               });
               transitionMessage ??= transition.transitionMessage;
             } catch (error) {

@@ -357,14 +357,18 @@ describe('notify-hook team leader nudge', () => {
       const fakeBinDir = join(cwd, 'fake-bin');
       const fakeTmuxPath = join(fakeBinDir, 'tmux');
       const tmuxLogPath = join(cwd, 'tmux.log');
+      const sessionId = 'sess-deep-interview-suppressed';
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(mailboxDir, { recursive: true });
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeJson(join(stateDir, 'deep-interview-state.json'), {
+      await writeJson(join(stateDir, 'session.json'), { session_id: sessionId });
+      await writeJson(join(stateDir, 'sessions', sessionId, 'deep-interview-state.json'), {
         active: true,
         mode: 'deep-interview',
         current_phase: 'deep-interview',
+        session_id: sessionId,
       });
       await writeJson(join(stateDir, 'team-state.json'), {
         active: true,
@@ -389,7 +393,7 @@ describe('notify-hook team leader nudge', () => {
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
-        OMX_SESSION_ID: 'sess-canonical-missing',
+        OMX_SESSION_ID: sessionId,
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
@@ -757,6 +761,39 @@ describe('notify-hook team leader nudge', () => {
       assert.match(tmuxLog, /send-keys/);
       assert.match(tmuxLog, /-t %97/, 'should target canonical leader pane');
       assert.match(tmuxLog, /\[OMX\] All 2 workers idle/, 'canonical fallback should still fire idle nudge');
+    });
+  });
+
+  it('does not let stale root deep-interview state suppress session-scoped leader nudges', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const sessionId = 'sess-stale-root-deep-interview';
+      const stateDir = join(cwd, '.omx', 'state');
+
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeCanonicalTeamFixture(cwd, {
+        teamName: 'stale-root-di',
+        sessionId,
+        ownerSessionId: sessionId,
+      });
+      await writeJson(join(stateDir, 'deep-interview-state.json'), {
+        active: true,
+        current_phase: 'intent-first',
+        session_id: 'other-session',
+      });
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, {
+        OMX_SESSION_ID: sessionId,
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /send-keys/);
+      assert.match(tmuxLog, /\[OMX\] All 2 workers idle/, 'session-scoped nudge should ignore stale root deep-interview state');
     });
   });
 

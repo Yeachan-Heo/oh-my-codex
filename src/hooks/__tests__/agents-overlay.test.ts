@@ -125,6 +125,15 @@ describe("generateOverlay", () => {
         current_phase: "executing",
       }),
     );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "ralph",
+        phase: "executing",
+        session_id: sessionId,
+      }),
+    );
     const overlay = await generateOverlay(tempDir, sessionId);
     assert.ok(overlay.includes("ralph"));
     assert.ok(overlay.includes("iteration 3/10"));
@@ -141,6 +150,15 @@ describe("generateOverlay", () => {
         iteration: 1,
         max_iterations: 5,
         current_phase: "running",
+      }),
+    );
+    await writeFile(
+      join(tempDir, ".omx", "state", "sessions", "sess1", "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: "sess1",
       }),
     );
     const overlay = await generateOverlay(tempDir, "sess1");
@@ -270,6 +288,21 @@ describe("generateOverlay", () => {
       );
     }
     await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "mode-0",
+        phase: "run",
+        session_id: sessionId,
+        active_skills: Array.from({ length: 40 }, (_, i) => ({
+          skill: `mode-${i}`,
+          phase: "run",
+          active: true,
+          session_id: sessionId,
+        })),
+      }),
+    );
+    await writeFile(
       join(tempDir, ".omx", "notepad.md"),
       `## PRIORITY\n${"N".repeat(8000)}`,
     );
@@ -318,12 +351,48 @@ describe("generateOverlay", () => {
         current_phase: "starting",
       }),
     );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: sessionId,
+      }),
+    );
     await mkdir(join(tempDir, ".omx", "plans"), { recursive: true });
 
     const overlay = await generateOverlay(tempDir, sessionId);
     assert.match(overlay, /\*\*Ralph Ralplan-First Gate:\*\* BLOCKED/);
     assert.match(overlay, /`prd-\*\.md`/);
     assert.match(overlay, /`test-spec-\*\.md`/);
+  });
+
+  it("does not activate ralph planning gate from stale detail-only session state", async () => {
+    const sessionId = "ralph-gate-stale-detail";
+    const sessionDir = join(tempDir, ".omx", "state", "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, "ralph-state.json"),
+      JSON.stringify({
+        active: true,
+        iteration: 0,
+        max_iterations: 50,
+        current_phase: "starting",
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: sessionId,
+      }),
+    );
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.doesNotMatch(overlay, /Ralph Ralplan-First Gate/);
   });
 
   it("unlocks ralph planning gate when PRD and test spec exist", async () => {
@@ -337,6 +406,15 @@ describe("generateOverlay", () => {
         iteration: 1,
         max_iterations: 50,
         current_phase: "starting",
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: sessionId,
       }),
     );
     const plansDir = join(tempDir, ".omx", "plans");
@@ -501,6 +579,38 @@ describe("resolveSessionOrchestrationMode", () => {
     const overlay = await generateOverlay(tempDir, sessionId);
     assert.ok(overlay.includes("- team: phase: running"));
     assert.equal(overlay.includes("- autoresearch:"), false);
+  });
+
+  it("active mode summary reads canonical state from OMX_TEAM_STATE_ROOT", async () => {
+    const sessionId = "sess-overlay-team-root";
+    const teamStateRoot = join(tempDir, "team-state-root");
+    const sessionDir = join(teamStateRoot, "sessions", sessionId);
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      process.env.OMX_TEAM_STATE_ROOT = teamStateRoot;
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(sessionDir, "skill-active-state.json"),
+        JSON.stringify({
+          active: true,
+          skill: "team",
+          phase: "team-exec",
+          session_id: sessionId,
+          active_skills: [{ skill: "team", phase: "team-exec", active: true, session_id: sessionId }],
+        }),
+      );
+      await writeFile(
+        join(sessionDir, "team-state.json"),
+        JSON.stringify({ active: true, team_name: "rooted" }),
+      );
+
+      const overlay = await generateOverlay(tempDir, sessionId);
+
+      assert.ok(overlay.includes("- team: phase: team-exec"));
+    } finally {
+      if (typeof previousTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+    }
   });
 });
 
