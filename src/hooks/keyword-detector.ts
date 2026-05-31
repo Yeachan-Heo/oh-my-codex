@@ -193,20 +193,28 @@ function utcCompactTimestamp(nowIso: string): string {
 
 function isSafeAutopilotContextSnapshotPath(value: unknown): value is string {
   const path = safeString(value).trim();
+  const contextPrefix = '.omx/context/';
+  const snapshotName = path.startsWith(contextPrefix) ? path.slice(contextPrefix.length) : '';
   return path.startsWith('.omx/context/')
     && path.endsWith('.md')
     && !isAbsolute(path)
     && !path.split('/').includes('..')
-    && !path.includes('\\');
+    && !path.includes('\\')
+    && snapshotName !== ''
+    && !snapshotName.includes('/');
 }
 
 async function isReadableAutopilotContextSnapshotPath(sourceCwd: string, value: unknown): Promise<boolean> {
   if (!isSafeAutopilotContextSnapshotPath(value)) return false;
-  await ensureSafeAutopilotContextDir(sourceCwd);
+  const contextDir = await ensureSafeAutopilotContextDir(sourceCwd);
   const absolutePath = join(sourceCwd, value);
   try {
     const snapshotStat = await lstat(absolutePath);
     if (!snapshotStat.isFile() || snapshotStat.isSymbolicLink()) return false;
+    const contextRealPath = await realpath(contextDir);
+    const snapshotRealPath = await realpath(absolutePath);
+    const relativeToContext = relative(contextRealPath, snapshotRealPath);
+    if (relativeToContext === '' || relativeToContext.startsWith('..') || isAbsolute(relativeToContext)) return false;
     await readFile(absolutePath, 'utf-8');
     return true;
   } catch {
@@ -214,21 +222,68 @@ async function isReadableAutopilotContextSnapshotPath(sourceCwd: string, value: 
   }
 }
 
+type AutopilotContextSnapshotKind = 'canonical' | 'legacy' | 'recovery';
+
+type AutopilotContextRecoveryReason =
+  | 'missing-or-unsafe-legacy-context-snapshot'
+  | 'missing-autopilot-mode-state'
+  | 'malformed-autopilot-mode-state'
+  | 'nonpreservable-autopilot-mode-state-missing-current-phase';
+
+interface AutopilotContextSnapshotDescriptor {
+  path: string;
+  kind: AutopilotContextSnapshotKind;
+  recovery?: Record<string, unknown>;
+}
+
+interface AutopilotContextSnapshotCandidate {
+  value: unknown;
+  kind?: AutopilotContextSnapshotKind;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeAutopilotContextSnapshotCandidate(candidate: AutopilotContextSnapshotCandidate): AutopilotContextSnapshotDescriptor | null {
+  if (isRecord(candidate.value)) {
+    const path = safeString(candidate.value.path).trim();
+    const kind = safeString(candidate.value.kind).trim() as AutopilotContextSnapshotKind;
+    if (!path || !['canonical', 'legacy', 'recovery'].includes(kind)) return null;
+    if (kind === 'recovery') return null;
+    return { path, kind };
+  }
+
+  const path = safeString(candidate.value).trim();
+  if (!path) return null;
+  if (path.startsWith('.omx/context/autopilot-recovery-')) return null;
+  return { path, kind: candidate.kind ?? 'legacy' };
+}
+
 async function findReusableAutopilotContextSnapshotPath(
   sourceCwd: string,
-  candidates: unknown[],
-): Promise<string | undefined> {
+  candidates: AutopilotContextSnapshotCandidate[],
+): Promise<AutopilotContextSnapshotDescriptor | undefined> {
   for (const candidate of candidates) {
-    if (!isSafeAutopilotContextSnapshotPath(candidate)) continue;
-    if (await isReadableAutopilotContextSnapshotPath(sourceCwd, candidate)) return candidate;
+    const normalized = normalizeAutopilotContextSnapshotCandidate(candidate);
+    if (!normalized || !isSafeAutopilotContextSnapshotPath(normalized.path)) continue;
+    if (await isReadableAutopilotContextSnapshotPath(sourceCwd, normalized.path)) return normalized;
   }
   return undefined;
 }
 
 interface AutopilotContextSnapshotResult {
   path: string;
+  kind: AutopilotContextSnapshotKind;
   recovery?: Record<string, unknown>;
 }
+
+const AUTOPILOT_CONTEXT_RECOVERY_REASON_MESSAGES: Record<AutopilotContextRecoveryReason, string> = {
+  'missing-or-unsafe-legacy-context-snapshot': 'no safe legacy Autopilot context snapshot path was available during continuation.',
+  'missing-autopilot-mode-state': 'active Autopilot skill state existed but no matching Autopilot mode state was available during continuation.',
+  'malformed-autopilot-mode-state': 'active Autopilot mode state could not be parsed during continuation.',
+  'nonpreservable-autopilot-mode-state-missing-current-phase': 'active Autopilot mode state was missing current_phase during continuation.',
+};
 
 async function ensureSafeAutopilotContextDir(sourceCwd: string): Promise<string> {
   const rootRealPath = await realpath(sourceCwd);
@@ -280,23 +335,26 @@ async function ensureAutopilotContextSnapshot(
   sourceCwd: string,
   nowIso: string,
   activationText: string,
-  existingPath?: unknown,
-  options: { allowTaskSnapshotCreation?: boolean } = {},
+  existingSnapshot?: AutopilotContextSnapshotDescriptor,
+  options: { allowTaskSnapshotCreation?: boolean; recoveryReason?: AutopilotContextRecoveryReason } = {},
 ): Promise<AutopilotContextSnapshotResult> {
-  const existing = safeString(existingPath).trim();
-  if (existing) {
-    if (isSafeAutopilotContextSnapshotPath(existing)) return { path: existing };
-    throw new Error(`Unsafe Autopilot context snapshot path: ${existing}`);
+  if (existingSnapshot) {
+    if (isSafeAutopilotContextSnapshotPath(existingSnapshot.path)) {
+      return { path: existingSnapshot.path, kind: existingSnapshot.kind };
+    }
+    throw new Error(`Unsafe Autopilot context snapshot path: ${existingSnapshot.path}`);
   }
 
   if (options.allowTaskSnapshotCreation === false) {
     const slug = 'autopilot-recovery';
     const continuationInput = activationText.trim() || '<empty>';
+    const reason = options.recoveryReason ?? 'missing-or-unsafe-legacy-context-snapshot';
     const body = [
       '# Autopilot context recovery',
       '',
       '- recovery status: degraded',
-      '- reason: no safe legacy Autopilot context snapshot path was available during continuation.',
+      `- recovery reason: ${reason}`,
+      `- reason detail: ${AUTOPILOT_CONTEXT_RECOVERY_REASON_MESSAGES[reason]}`,
       `- continuation input: ${continuationInput}`,
       '- original task statement: unavailable; do not treat the continuation input as the task statement.',
       '- required follow-up: re-establish or confirm the intended task context before downstream handoff.',
@@ -305,9 +363,10 @@ async function ensureAutopilotContextSnapshot(
     const path = await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body);
     return {
       path,
+      kind: 'recovery',
       recovery: {
         status: 'degraded',
-        reason: 'missing-or-unsafe-legacy-context-snapshot',
+        reason,
         recovered_at: nowIso,
         source: 'keyword-detector',
       },
@@ -327,7 +386,7 @@ async function ensureAutopilotContextSnapshot(
     '- likely codebase touchpoints: to be discovered during pre-context intake and planning.',
     '',
   ].join('\n');
-  return { path: await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body) };
+  return { path: await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body), kind: 'canonical' };
 }
 
 function createDeepInterviewInputLock(nowIso: string, previous?: DeepInterviewInputLock): DeepInterviewInputLock {
@@ -395,11 +454,21 @@ async function readExistingDeepInterviewState(statePath: string): Promise<DeepIn
 }
 
 async function readJsonStateIfExists(path: string): Promise<Record<string, unknown> | null> {
+  return (await readJsonStateWithStatus(path)).state;
+}
+
+async function readJsonStateWithStatus(path: string): Promise<{
+  state: Record<string, unknown> | null;
+  status: 'ok' | 'missing' | 'malformed';
+}> {
   try {
     const raw = await readFile(path, 'utf-8');
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return null;
+    return { state: JSON.parse(raw) as Record<string, unknown>, status: 'ok' };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { state: null, status: 'missing' };
+    }
+    return { state: null, status: 'malformed' };
   }
 }
 
@@ -539,7 +608,8 @@ async function persistStatefulSkillSeedState(
     nextSkill.session_id,
     config.scope,
   );
-  const existingModeState = await readJsonStateIfExists(absolutePath);
+  const existingModeStateResult = await readJsonStateWithStatus(absolutePath);
+  const existingModeState = existingModeStateResult.state;
   const sameActiveSkill = previousSkill?.skill === nextSkill.skill && previousSkill.active;
   const existingModeMatches = safeString(existingModeState?.mode).trim() === config.mode;
   const existingPhase = safeString(existingModeState?.current_phase).trim();
@@ -603,17 +673,31 @@ async function persistStatefulSkillSeedState(
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
+    let recoveryReason: AutopilotContextRecoveryReason = 'missing-or-unsafe-legacy-context-snapshot';
+    if (options.activeContinuation === true && !preserveExistingModeState) {
+      if (existingModeStateResult.status === 'missing') {
+        recoveryReason = 'missing-autopilot-mode-state';
+      } else if (existingModeStateResult.status === 'malformed') {
+        recoveryReason = 'malformed-autopilot-mode-state';
+      } else if (existingModeMatches && existingPhase === '') {
+        recoveryReason = 'nonpreservable-autopilot-mode-state-missing-current-phase';
+      }
+    }
     const existingContextSnapshotPath = await findReusableAutopilotContextSnapshotPath(sourceCwd, [
-      existingHandoffs.context_snapshot_path,
-      legacyStateContextSnapshotPath,
-      reusableModeState?.context_snapshot_path,
+      { value: existingHandoffs.context_snapshot },
+      { value: existingHandoffs.context_snapshot_path, kind: 'legacy' },
+      { value: legacyStateContextSnapshotPath, kind: 'legacy' },
+      { value: reusableModeState?.context_snapshot_path, kind: 'legacy' },
     ]);
     const contextSnapshot = await ensureAutopilotContextSnapshot(
       sourceCwd,
       nowIso,
       activationText || safeString(nextSkill.keyword) || '$autopilot',
       existingContextSnapshotPath,
-      { allowTaskSnapshotCreation: !(preserveExistingModeState || options.activeContinuation === true) },
+      {
+        allowTaskSnapshotCreation: !(preserveExistingModeState || options.activeContinuation === true),
+        recoveryReason,
+      },
     );
     const contextSnapshotPath = contextSnapshot.path;
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
@@ -638,6 +722,11 @@ async function persistStatefulSkillSeedState(
         ultraqa: null,
         ...existingHandoffs,
         context_snapshot_path: contextSnapshotPath,
+        context_snapshot: {
+          path: contextSnapshotPath,
+          kind: contextSnapshot.kind,
+          ...(contextSnapshot.recovery ? { recovery: contextSnapshot.recovery } : {}),
+        },
       },
       review_verdict: Object.prototype.hasOwnProperty.call(existingState, 'review_verdict')
         ? existingState.review_verdict
