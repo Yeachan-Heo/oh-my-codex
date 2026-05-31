@@ -180,15 +180,14 @@ async function isRalphActive(
   cwd: string,
   sessionId?: string,
 ): Promise<boolean> {
-  const [ralphPath] = await getAuthoritativeActiveStatePaths("ralph", cwd, sessionId);
-  if (!ralphPath || !existsSync(ralphPath)) return false;
-
-  try {
-    const data = JSON.parse(await readFile(ralphPath, "utf-8"));
-    return data?.active === true;
-  } catch {
-    return false;
-  }
+  const [baseStateDir] = await getAuthoritativeActiveStateDirs(cwd, sessionId);
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(
+    sessionId ? dirname(dirname(baseStateDir)) : baseStateDir,
+    sessionId,
+  );
+  return listActiveSkills(canonicalState ?? {}).some(
+    (entry) => entry.skill === "ralph",
+  );
 }
 
 async function readRalphPlanningArtifacts(

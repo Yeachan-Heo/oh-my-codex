@@ -23,7 +23,9 @@ import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
 import { readUltragoalState } from '../hud/state.js';
 import {
   SKILL_ACTIVE_STATE_MODE,
+  listActiveSkills,
   readSkillActiveState,
+  readVisibleSkillActiveStateForStateDir,
   syncCanonicalSkillStateForMode,
   writeSkillActiveStateCopiesForStateDir,
 } from './skill-active.js';
@@ -31,7 +33,7 @@ import {
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
   isTrackedWorkflowMode,
-  readActiveWorkflowModes,
+  type TrackedWorkflowMode,
 } from './workflow-transition.js';
 import { reconcileWorkflowTransition } from './workflow-transition-reconcile.js';
 import {
@@ -260,6 +262,17 @@ export async function listActiveStateModes(
     .map(([mode]) => mode);
 }
 
+async function readCanonicalActiveWorkflowModes(
+  baseStateDir: string,
+  sessionId?: string,
+): Promise<TrackedWorkflowMode[]> {
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(baseStateDir, sessionId);
+  const activeModes = listActiveSkills(canonicalState ?? {})
+    .map((entry) => entry.skill)
+    .filter(isTrackedWorkflowMode);
+  return [...new Set(activeModes)];
+}
+
 export async function executeStateOperation(
   name: StateOperationName,
   rawArgs: Record<string, unknown> = {},
@@ -460,14 +473,14 @@ export async function executeStateOperation(
           }
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
-            const activeDetailModes = await readActiveWorkflowModes(cwd, effectiveSessionId);
-            const detailDecision = evaluateWorkflowTransition(activeDetailModes, mode);
-            if (!detailDecision.allowed && detailDecision.denialReason === 'rollback') {
-              validationError = buildWorkflowTransitionError(activeDetailModes, mode, 'write');
+            const activeCanonicalModes = await readCanonicalActiveWorkflowModes(baseStateDir, effectiveSessionId);
+            const canonicalDecision = evaluateWorkflowTransition(activeCanonicalModes, mode);
+            if (!canonicalDecision.allowed && canonicalDecision.denialReason === 'rollback') {
+              validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
               return;
             }
-            const transitionCurrentModes = mode === 'ralplan' && activeDetailModes.includes('deep-interview')
-              ? activeDetailModes
+            const transitionCurrentModes = mode === 'ralplan' && activeCanonicalModes.includes('deep-interview')
+              ? activeCanonicalModes
               : undefined;
             try {
               const transition = await reconcileWorkflowTransition(cwd, mode, {

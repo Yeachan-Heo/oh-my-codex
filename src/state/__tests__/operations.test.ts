@@ -713,6 +713,39 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('does not reject planning writes from stale detail-only execution state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-stale-detail-rollback-'));
+    try {
+      const sessionId = 'sess-stale-detail';
+      const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(sessionDir, 'ralph-state.json'),
+        JSON.stringify({
+          active: true,
+          current_phase: 'executing',
+        }, null, 2),
+      );
+
+      const written = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+      });
+
+      assert.equal(written.isError, undefined);
+      assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), true);
+      const canonical = JSON.parse(
+        await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8'),
+      ) as { active_skills?: Array<{ skill: string }> };
+      assert.deepEqual(canonical.active_skills?.map((entry) => entry.skill), ['ralplan']);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects standalone ralplan writes while preserving active Autopilot supervisor state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-child-'));
     try {
@@ -732,6 +765,15 @@ describe('state operations directory initialization', () => {
                 skip_reason: null,
               },
             },
+          }, null, 2),
+        );
+        await writeFile(
+          join(sessionDir, 'skill-active-state.json'),
+          JSON.stringify({
+            active: true,
+            skill: 'autopilot',
+            phase: 'deep-interview',
+            session_id: sessionId,
           }, null, 2),
         );
 

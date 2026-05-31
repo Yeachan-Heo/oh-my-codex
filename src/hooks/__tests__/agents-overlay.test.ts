@@ -351,12 +351,48 @@ describe("generateOverlay", () => {
         current_phase: "starting",
       }),
     );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: sessionId,
+      }),
+    );
     await mkdir(join(tempDir, ".omx", "plans"), { recursive: true });
 
     const overlay = await generateOverlay(tempDir, sessionId);
     assert.match(overlay, /\*\*Ralph Ralplan-First Gate:\*\* BLOCKED/);
     assert.match(overlay, /`prd-\*\.md`/);
     assert.match(overlay, /`test-spec-\*\.md`/);
+  });
+
+  it("does not activate ralph planning gate from stale detail-only session state", async () => {
+    const sessionId = "ralph-gate-stale-detail";
+    const sessionDir = join(tempDir, ".omx", "state", "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, "ralph-state.json"),
+      JSON.stringify({
+        active: true,
+        iteration: 0,
+        max_iterations: 50,
+        current_phase: "starting",
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: sessionId,
+      }),
+    );
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.doesNotMatch(overlay, /Ralph Ralplan-First Gate/);
   });
 
   it("unlocks ralph planning gate when PRD and test spec exist", async () => {
@@ -370,6 +406,15 @@ describe("generateOverlay", () => {
         iteration: 1,
         max_iterations: 50,
         current_phase: "starting",
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: sessionId,
       }),
     );
     const plansDir = join(tempDir, ".omx", "plans");
