@@ -4,6 +4,7 @@ import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import {
   buildHudWatchCommand,
   createHudWatchPane,
+  findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
   isHudWatchPane,
   killTmuxPane,
@@ -73,7 +74,10 @@ function planOwnedHudPaneDedupe(
   owner: { sessionId?: string; leaderPaneId?: string },
   preferredPaneId: string,
 ): { paneId: string; duplicatePaneIds: string[] } {
-  const ownedPaneIds = findHudWatchPaneIds(panes, currentPaneId, owner);
+  const ownedPaneIds = [
+    ...findHudWatchPaneIds(panes, currentPaneId, owner),
+    ...findLegacyFocusedHudWatchPaneIds(panes, currentPaneId),
+  ].filter((paneId, index, paneIds) => paneIds.indexOf(paneId) === index);
   const keeperPaneId = ownedPaneIds.includes(preferredPaneId)
     ? preferredPaneId
     : (ownedPaneIds[0] ?? preferredPaneId);
@@ -130,7 +134,10 @@ export async function reconcileHudForPromptSubmit(
     sessionId: resolvedSessionId,
     leaderPaneId: currentPaneId,
   };
-  const hudPaneIds = findHudWatchPaneIds(panes, currentPaneId, owner);
+  const hudPaneIds = [
+    ...findHudWatchPaneIds(panes, currentPaneId, owner),
+    ...findLegacyFocusedHudWatchPaneIds(panes, currentPaneId),
+  ].filter((paneId, index, paneIds) => paneIds.indexOf(paneId) === index);
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
   const nonHudPaneCount = panes.filter((pane) => !isHudWatchPane(pane)).length;
   const readHudConfigFn = deps.readHudConfig ?? readHudConfig;

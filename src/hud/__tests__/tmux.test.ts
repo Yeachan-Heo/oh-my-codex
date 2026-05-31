@@ -7,6 +7,7 @@ import {
   buildHudResizeHookName,
   buildHudResizeHookSlot,
   buildHudWatchCommand,
+  findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
   hudPaneMatchesOwner,
   listCurrentWindowHudPaneIds,
@@ -333,6 +334,21 @@ describe('HUD pane ownership helpers', () => {
 
     assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-a', leaderPaneId: '%1' }), []);
     assert.deepEqual(findHudWatchPaneIds(panes, '%1'), ['%2']);
+  });
+
+  it('separately detects legacy focused watch panes for automatic reconciliation only', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        '%2\tnode\tnode /tmp/bin/omx.js hud --watch --preset=focused',
+        '%3\tnode\tnode /tmp/bin/omx.js hud --watch --preset=minimal',
+        `%4\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch --preset=focused`,
+        '%5\tnode\tnode /tmp/bin/omx.js hud --tmux --preset=focused',
+        `%6\tnode\t/bin/zsh -c 'exec '\\''node'\\'' '\\''/tmp/bin/omx.js'\\'' '\\''hud'\\'' '\\''--watch'\\'' '\\''--preset=focused'\\'''`,
+      ].join('\n'),
+    );
+
+    assert.deepEqual(findLegacyFocusedHudWatchPaneIds(panes, '%1'), ['%2', '%6']);
   });
 
   it('matches session-owned legacy HUD panes without leader tags for same-session cleanup', () => {

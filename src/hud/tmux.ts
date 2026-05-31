@@ -101,6 +101,22 @@ function hasHudPaneOwnerMetadata(pane: TmuxPaneSnapshot): boolean {
     || Boolean(owner.sessionId || owner.leaderPaneId);
 }
 
+function isLegacyFocusedHudWatchPane(pane: TmuxPaneSnapshot): boolean {
+  if (!isHudWatchPane(pane) || hasHudPaneOwnerMetadata(pane)) return false;
+  const command = `${pane.startCommand} ${pane.currentCommand}`;
+  return /(?:^|[\s'"])--preset=focused(?:[\s'"]|$)/.test(command);
+}
+
+export function findLegacyFocusedHudWatchPaneIds(
+  panes: TmuxPaneSnapshot[],
+  currentPaneId?: string,
+): string[] {
+  return panes
+    .filter((pane) => pane.paneId !== currentPaneId)
+    .filter((pane) => isLegacyFocusedHudWatchPane(pane))
+    .map((pane) => pane.paneId);
+}
+
 export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner = {}): boolean {
   if (!isHudWatchPane(pane)) return false;
   const wantedSessionId = typeof owner.sessionId === 'string' ? owner.sessionId.trim() : '';

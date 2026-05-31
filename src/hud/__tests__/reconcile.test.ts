@@ -336,6 +336,67 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(created, []);
   });
 
+  it('reuses and deduplicates legacy unowned focused HUD watch panes before recreating', async () => {
+    const killed: string[] = [];
+    const resized: Array<{ paneId: string; heightLines: number }> = [];
+    const created: string[] = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        { paneId: '%2', currentCommand: 'node', startCommand: 'node /tmp/bin/omx.js hud --watch --preset=focused' },
+        { paneId: '%3', currentCommand: 'node', startCommand: 'node /tmp/bin/omx.js hud --watch --preset=focused' },
+        { paneId: '%4', currentCommand: 'node', startCommand: 'node /tmp/bin/omx.js hud --watch --preset=minimal' },
+        { paneId: '%5', currentCommand: 'node', startCommand: 'node /tmp/bin/omx.js hud --tmux --preset=focused' },
+      ],
+      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      createHudWatchPane: () => { created.push('create'); return '%9'; },
+      resizeTmuxPane: (paneId, heightLines) => { resized.push({ paneId, heightLines }); return true; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'replaced_duplicates');
+    assert.equal(result.paneId, '%2');
+    assert.equal(result.duplicateCount, 1);
+    assert.deepEqual(killed, ['%3']);
+    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+    assert.deepEqual(created, []);
+  });
+
+  it('deduplicates legacy focused panes that appear during the prompt-submit create race', async () => {
+    const killed: string[] = [];
+    const resized: Array<{ paneId: string; heightLines: number }> = [];
+    let listCount = 0;
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-race', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => {
+        listCount += 1;
+        if (listCount === 1) return [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }];
+        return [
+          { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+          { paneId: '%8', currentCommand: 'node', startCommand: 'node /tmp/bin/omx.js hud --watch --preset=focused' },
+          {
+            paneId: '%9',
+            currentCommand: 'node',
+            startCommand: `exec env OMX_SESSION_ID='sess-race' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch --preset=focused`,
+          },
+        ];
+      },
+      createHudWatchPane: () => '%9',
+      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      resizeTmuxPane: (paneId, heightLines) => { resized.push({ paneId, heightLines }); return true; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'replaced_duplicates');
+    assert.equal(result.paneId, '%9');
+    assert.equal(result.duplicateCount, 1);
+    assert.deepEqual(killed, ['%8']);
+    assert.deepEqual(resized, [{ paneId: '%9', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+  });
+
   it('does not kill existing duplicate HUD panes when the keeper cannot be resized', async () => {
     const killed: string[] = [];
     const registered: string[] = [];
