@@ -1633,7 +1633,7 @@ describe("codex native hook dispatch", () => {
       assert.equal(sessionState.previous_native_session_id, oldNativeSessionId);
       assert.equal(sessionState.owner_omx_session_id, ownerSessionId);
 
-      let reconcileCall: { cwd: string; sessionId?: string } | null = null;
+      let reconcileCall: { cwd: string; sessionId?: string; sessionIds?: string[] } | null = null;
       const promptResult = await dispatchCodexNativeHook(
         {
           hook_event_name: "UserPromptSubmit",
@@ -1646,14 +1646,18 @@ describe("codex native hook dispatch", () => {
         {
           cwd,
           reconcileHudForPromptSubmitFn: async (hookCwd, deps = {}) => {
-            reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId };
+            reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId, sessionIds: deps.sessionIds };
             return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
           },
         },
       );
 
       assert.equal(promptResult.omxEventName, "keyword-detector");
-      assert.deepEqual(reconcileCall, { cwd, sessionId: ownerSessionId });
+      assert.deepEqual(reconcileCall, {
+        cwd,
+        sessionId: ownerSessionId,
+        sessionIds: [ownerSessionId, nativeSessionId],
+      });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1674,7 +1678,7 @@ describe("codex native hook dispatch", () => {
         sessionState.owner_omx_session_id = invalidOwnerSessionId;
         await writeJson(sessionStatePath, sessionState);
 
-        let reconcileCall: { cwd: string; sessionId?: string } | null = null;
+        let reconcileCall: { cwd: string; sessionId?: string; sessionIds?: string[] } | null = null;
         const promptResult = await dispatchCodexNativeHook(
           {
             hook_event_name: "UserPromptSubmit",
@@ -1687,14 +1691,18 @@ describe("codex native hook dispatch", () => {
           {
             cwd,
             reconcileHudForPromptSubmitFn: async (hookCwd, deps = {}) => {
-              reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId };
+              reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId, sessionIds: deps.sessionIds };
               return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
             },
           },
         );
 
         assert.equal(promptResult.omxEventName, "keyword-detector");
-        assert.deepEqual(reconcileCall, { cwd, sessionId: canonicalSessionId });
+        assert.deepEqual(reconcileCall, {
+          cwd,
+          sessionId: canonicalSessionId,
+          sessionIds: [canonicalSessionId, nativeSessionId],
+        });
       } finally {
         await rm(cwd, { recursive: true, force: true });
       }

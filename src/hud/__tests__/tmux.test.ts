@@ -380,6 +380,27 @@ describe('HUD pane ownership helpers', () => {
     assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-a', leaderPaneId: '%1' }), ['%2']);
   });
 
+  it('matches equivalent owner and canonical session ids for the same leader', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_SESSION_ID='omx-owner-abc' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+        `%3\tnode\texec env OMX_SESSION_ID='codex-native-uuid' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+        `%4\tnode\texec env OMX_SESSION_ID='other-session' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+        `%5\tnode\texec env OMX_SESSION_ID='codex-native-uuid' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%5' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+
+    assert.deepEqual(
+      findHudWatchPaneIds(panes, '%1', {
+        sessionId: 'omx-owner-abc',
+        sessionIds: ['omx-owner-abc', 'codex-native-uuid'],
+        leaderPaneId: '%1',
+      }),
+      ['%2', '%3'],
+    );
+  });
+
   it('finds one same-session HUD pane when TMUX_PANE is unavailable', () => {
     const calls: string[][] = [];
     const execTmuxSync = (args: string[]) => {

@@ -190,6 +190,25 @@ function resolveHudReconcileSessionId(
   return canonicalSessionId || sessionIdForState || undefined;
 }
 
+function resolveHudReconcileSessionIds(
+  currentSessionState: SessionState | null,
+  canonicalSessionId: string | null,
+  sessionIdForState: string | null,
+  nativeSessionId: string | null,
+): string[] {
+  const ownerOmxSessionId = safeString(currentSessionState?.owner_omx_session_id).trim();
+  return uniqueNonEmpty([
+    resolveHudReconcileSessionId(currentSessionState, canonicalSessionId, sessionIdForState),
+    canonicalSessionId ?? undefined,
+    sessionIdForState ?? undefined,
+    nativeSessionId ?? undefined,
+    safeString(currentSessionState?.session_id),
+    safeString(currentSessionState?.native_session_id),
+    OMX_OWNER_SESSION_ID_PATTERN.test(ownerOmxSessionId) ? ownerOmxSessionId : undefined,
+    safeString(currentSessionState?.owner_codex_session_id),
+  ]);
+}
+
 function safeContextSnippet(value: unknown, maxLength = 300): string {
   const text = safeString(value).replace(/\s+/g, " ").trim();
   if (text.length <= maxLength) return text;
@@ -4236,7 +4255,13 @@ export async function dispatchCodexNativeHook(
         canonicalSessionId,
         sessionIdForState,
       );
-      await reconcileHudForPromptSubmitFn(cwd, { sessionId: hudSessionId }).catch(() => {});
+      const hudSessionIds = resolveHudReconcileSessionIds(
+        currentSessionState,
+        canonicalSessionId,
+        sessionIdForState,
+        nativeSessionId,
+      );
+      await reconcileHudForPromptSubmitFn(cwd, { sessionId: hudSessionId, sessionIds: hudSessionIds }).catch(() => {});
     }
   }
 

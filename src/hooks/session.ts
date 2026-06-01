@@ -20,6 +20,7 @@ export interface SessionState {
   previous_native_session_id?: string;
   native_session_switched_at?: string;
   owner_omx_session_id?: string;
+  owner_codex_session_id?: string;
   started_at: string;
   cwd: string;
   pid: number;

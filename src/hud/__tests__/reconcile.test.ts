@@ -362,7 +362,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(resized, [{ paneId: '%8', heightLines: HUD_TMUX_HEIGHT_LINES }]);
   });
 
-  it('reports failure when the post-create keeper cannot be resized', async () => {
+  it('kills post-create duplicate HUD panes even when the keeper cannot be resized', async () => {
     const killed: string[] = [];
     const registered: string[] = [];
     let listCount = 0;
@@ -394,9 +394,9 @@ describe('reconcileHudForPromptSubmit', () => {
     });
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.paneId, null);
+    assert.equal(result.paneId, '%9');
     assert.equal(result.duplicateCount, 1);
-    assert.deepEqual(killed, []);
+    assert.deepEqual(killed, ['%8']);
     assert.deepEqual(registered, []);
   });
 
@@ -438,6 +438,56 @@ describe('reconcileHudForPromptSubmit', () => {
 
     assert.equal(result.status, 'replaced_duplicates');
     assert.equal(result.paneId, '%2');
+    assert.deepEqual(killed, ['%3']);
+    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+    assert.deepEqual(created, []);
+  });
+
+  it('deduplicates same-leader HUD panes tagged with equivalent owner and canonical session ids', async () => {
+    const killed: string[] = [];
+    const resized: Array<{ paneId: string; heightLines: number }> = [];
+    const created: Array<{ cmd: string }> = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'codex-native-uuid', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      sessionId: 'omx-owner-abc',
+      sessionIds: ['omx-owner-abc', 'codex-native-uuid'],
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        {
+          paneId: '%2',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='omx-owner-abc' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch`,
+        },
+        {
+          paneId: '%3',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='codex-native-uuid' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch`,
+        },
+        {
+          paneId: '%4',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='codex-native-uuid' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%4' node omx hud --watch`,
+        },
+      ],
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      createHudWatchPane: (_cwd, cmd) => {
+        created.push({ cmd });
+        return '%9';
+      },
+      resizeTmuxPane: (paneId, heightLines) => {
+        resized.push({ paneId, heightLines });
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'replaced_duplicates');
+    assert.equal(result.paneId, '%2');
+    assert.equal(result.duplicateCount, 1);
     assert.deepEqual(killed, ['%3']);
     assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
     assert.deepEqual(created, []);
@@ -531,7 +581,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(resized, [{ paneId: '%9', heightLines: HUD_TMUX_HEIGHT_LINES }]);
   });
 
-  it('does not kill existing duplicate HUD panes when the keeper cannot be resized', async () => {
+  it('kills existing duplicate HUD panes even when the keeper cannot be resized', async () => {
     const killed: string[] = [];
     const registered: string[] = [];
 
@@ -557,9 +607,9 @@ describe('reconcileHudForPromptSubmit', () => {
     });
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.paneId, null);
+    assert.equal(result.paneId, '%8');
     assert.equal(result.duplicateCount, 1);
-    assert.deepEqual(killed, []);
+    assert.deepEqual(killed, ['%9']);
     assert.deepEqual(registered, []);
   });
 

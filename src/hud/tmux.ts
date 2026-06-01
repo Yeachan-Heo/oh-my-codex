@@ -17,6 +17,7 @@ export const TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE = '\\037';
 
 export interface HudPaneOwner {
   sessionId?: string;
+  sessionIds?: string[];
   leaderPaneId?: string;
 }
 export type HudRuntimeRootSource = 'team-env' | 'omx-root-env' | 'omx-state-root-env' | 'cwd-default';
@@ -151,14 +152,19 @@ export function findLegacyFocusedHudWatchPaneIds(
 
 export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner = {}): boolean {
   if (!isHudWatchPane(pane)) return false;
-  const wantedSessionId = typeof owner.sessionId === 'string' ? owner.sessionId.trim() : '';
+  const wantedSessionIds = [
+    typeof owner.sessionId === 'string' ? owner.sessionId.trim() : '',
+    ...(Array.isArray(owner.sessionIds) ? owner.sessionIds : []),
+  ]
+    .map((sessionId) => sessionId.trim())
+    .filter((sessionId, index, sessionIds) => sessionId !== '' && sessionIds.indexOf(sessionId) === index);
   const wantedLeaderPaneId = typeof owner.leaderPaneId === 'string' ? owner.leaderPaneId.trim() : '';
-  const wantsSession = wantedSessionId !== '';
+  const wantsSession = wantedSessionIds.length > 0;
   const wantsLeaderPane = wantedLeaderPaneId !== '';
   if (!wantsSession && !wantsLeaderPane) return true;
 
   const paneOwner = readHudPaneOwner(pane);
-  const sessionMatches = wantsSession && paneOwner.sessionId === wantedSessionId;
+  const sessionMatches = wantsSession && wantedSessionIds.includes(paneOwner.sessionId ?? '');
   const leaderPaneMatches = wantsLeaderPane && paneOwner.leaderPaneId === wantedLeaderPaneId;
 
   if (wantsSession && wantsLeaderPane) {

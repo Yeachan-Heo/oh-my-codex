@@ -11,6 +11,7 @@ import {
   registerHudResizeHook,
   unregisterHudResizeHook,
   resizeTmuxPane,
+  type HudPaneOwner,
   type TmuxPaneSnapshot,
 } from './tmux.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
@@ -39,6 +40,7 @@ export interface ReconcileHudForPromptSubmitResult {
 export interface ReconcileHudForPromptSubmitDeps {
   env?: NodeJS.ProcessEnv;
   sessionId?: string;
+  sessionIds?: string[];
   listCurrentWindowPanes?: (currentPaneId?: string) => TmuxPaneSnapshot[];
   createHudWatchPane?: (
     cwd: string,
@@ -70,7 +72,7 @@ function ensureHudResizeHook(
 function planOwnedHudPaneDedupe(
   panes: TmuxPaneSnapshot[],
   currentPaneId: string | undefined,
-  owner: { sessionId?: string; leaderPaneId?: string },
+  owner: HudPaneOwner,
   preferredPaneId: string,
 ): { paneId: string; duplicatePaneIds: string[] } {
   const ownedPaneIds = [
@@ -129,8 +131,16 @@ export async function reconcileHudForPromptSubmit(
   const currentPaneId = env.TMUX_PANE?.trim();
   const panes = listPanes(currentPaneId);
   const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
+  const equivalentSessionIds = [
+    resolvedSessionId,
+    env.OMX_SESSION_ID?.trim(),
+    ...(deps.sessionIds ?? []),
+  ]
+    .map((sessionId) => sessionId?.trim() ?? '')
+    .filter((sessionId, index, sessionIds) => sessionId !== '' && sessionIds.indexOf(sessionId) === index);
   const owner = {
     sessionId: resolvedSessionId,
+    sessionIds: equivalentSessionIds,
     leaderPaneId: currentPaneId,
   };
   const hudPaneIds = [
@@ -164,16 +174,16 @@ export async function reconcileHudForPromptSubmit(
   if (hudPaneIds.length > 1) {
     const [keeperPaneId, ...extraPaneIds] = hudPaneIds;
     const resized = resizePane(keeperPaneId, desiredHeight);
+    for (const paneId of extraPaneIds) {
+      killPane(paneId);
+    }
     if (!resized) {
       return {
         status: 'failed',
-        paneId: null,
+        paneId: keeperPaneId,
         desiredHeight,
         duplicateCount,
       };
-    }
-    for (const paneId of extraPaneIds) {
-      killPane(paneId);
     }
     ensureHudResizeHook(keeperPaneId, currentPaneId, desiredHeight, deps);
     return {
@@ -224,16 +234,16 @@ export async function reconcileHudForPromptSubmit(
     paneId,
   );
   const resized = resizePane(postCreate.paneId, desiredHeight);
+  for (const duplicatePaneId of postCreate.duplicatePaneIds) {
+    killPane(duplicatePaneId);
+  }
   if (!resized) {
     return {
       status: 'failed',
-      paneId: null,
+      paneId: postCreate.paneId,
       desiredHeight,
       duplicateCount: postCreate.duplicatePaneIds.length,
     };
-  }
-  for (const duplicatePaneId of postCreate.duplicatePaneIds) {
-    killPane(duplicatePaneId);
   }
   ensureHudResizeHook(postCreate.paneId, currentPaneId, desiredHeight, deps);
 
