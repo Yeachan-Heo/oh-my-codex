@@ -22,9 +22,13 @@ describe('code-review skill contract', () => {
     assert.match(codeReviewSkill, /do \*\*not\*\* substitute the current\/authoring lane/i);
   });
 
-  it('uses native task agent_type examples instead of legacy delegate role/tier syntax', () => {
-    assert.match(codeReviewSkill, /task\(\s*agent_type="code-reviewer",\s*reasoning_effort="xhigh"/s);
-    assert.match(codeReviewSkill, /task\(\s*agent_type="architect",\s*reasoning_effort="xhigh"/s);
+  it('uses native task agent_type examples without overriding user model or effort', () => {
+    assert.match(codeReviewSkill, /Respect the user's current model and reasoning\/effort selection/i);
+    assert.match(codeReviewSkill, /Do not pass `model` or `reasoning_effort` overrides/i);
+    assert.match(codeReviewSkill, /task\(\s*agent_type="code-reviewer",\s*prompt=/s);
+    assert.match(codeReviewSkill, /task\(\s*agent_type="architect",\s*prompt=/s);
+    assert.doesNotMatch(codeReviewSkill, /task\(\s*agent_type="code-reviewer",\s*(?:model=|reasoning_effort=)/s);
+    assert.doesNotMatch(codeReviewSkill, /task\(\s*agent_type="architect",\s*(?:model=|reasoning_effort=)/s);
     assert.doesNotMatch(codeReviewSkill, /delegate\(\s*role=/s);
     assert.doesNotMatch(codeReviewSkill, /tier="/);
   });
