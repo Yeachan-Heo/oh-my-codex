@@ -5,13 +5,14 @@ argument-hint: "[--quick|--standard|--deep] [--autoresearch] <idea or vague desc
 ---
 
 <Purpose>
-Deep Interview is an intent-first Socratic clarification loop before planning or implementation. It turns vague ideas into execution-ready specifications by asking targeted questions about why the user wants a change, how far it should go, what should stay out of scope, and what OMX may decide without confirmation.
+Deep Interview is an intent-first Socratic clarification loop before planning or implementation. It turns vague ideas into execution-ready specifications by asking targeted questions about why the user wants a change, how far it should go, what should stay out of scope, which execution scope/stride should govern downstream work, and what OMX may decide without confirmation.
 </Purpose>
 
 <Use_When>
 - The request is broad, ambiguous, or missing concrete acceptance criteria
 - The user says "deep interview", "interview me", "ask me everything", "don't assume", or "ouroboros"
 - The user wants to avoid misaligned implementation from underspecified requirements
+- The request is broad, phase-like, project-level, or multi-deliverable and the downstream workflow must know whether to take a conservative task-sized step or a full-phase stride
 - You need a requirements artifact before handing off to `ralplan`, `autopilot`, `ralph`, or `team`
 </Use_When>
 
@@ -23,7 +24,7 @@ Deep Interview is an intent-first Socratic clarification loop before planning or
 </Do_Not_Use_When>
 
 <Why_This_Exists>
-Execution quality is usually bottlenecked by intent clarity, not just missing implementation detail. A single expansion pass often misses why the user wants a change, where the scope should stop, which tradeoffs are unacceptable, and which decisions still require user approval. This workflow applies Socratic pressure + quantitative ambiguity scoring so orchestration modes begin with an explicit, testable, intent-aligned spec.
+Execution quality is usually bottlenecked by intent clarity, not just missing implementation detail. A single expansion pass often misses why the user wants a change, where the scope should stop, which execution stride is intended, which tradeoffs are unacceptable, and which decisions still require user approval. This workflow applies Socratic pressure + quantitative ambiguity scoring so orchestration modes begin with an explicit, testable, intent-aligned spec.
 </Why_This_Exists>
 
 <Depth_Profiles>
@@ -81,6 +82,7 @@ If no flag is provided, use **Standard**.
 - Treat `max_rounds` as a stop cap, not evidence that more rounds are needed.
 - Do not hand off to execution while ambiguity remains above threshold unless user explicitly opts to proceed with warning
 - Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
+- When the downstream handoff is `$autopilot`, `$ultragoal`, `$ralph`, or `$team` and the request is broad, phase-like, project-level, or multi-deliverable, resolve an explicit `execution_scope` before handoff. Do not assume a full-phase stride from vague ambition, and do not silently shrink a user-selected full phase to a task-sized slice.
 - Treat early exit as a safety valve, not the default success path
 - Persist mode state for resume safety with CLI-first state commands (`omx state write/read --input '<json>' --json`); use `state_write` / `state_read` only when explicit MCP compatibility is enabled
 </Execution_Policy>
@@ -160,7 +162,7 @@ Use:
 - Activated challenge mode injection (Phase 3)
 
 Target the lowest-scoring dimension, but respect stage priority:
-- **Stage 1 — Intent-first:** Intent, Outcome, Scope, Non-goals, Decision Boundaries
+- **Stage 1 — Intent-first:** Intent, Outcome, Scope, Execution Scope / Stride, Non-goals, Decision Boundaries
 - **Stage 2 — Feasibility:** Constraints, Success Criteria
 - **Stage 3 — Brownfield grounding:** Context Clarity (brownfield only)
 
@@ -174,7 +176,7 @@ Follow-up pressure ladder after each answer:
 
 Prefer staying on the same thread for multiple rounds when it has the highest leverage. Breadth without pressure is not progress.
 
-Maintain a **Breadth Ledger** across independent ambiguity tracks: scope, constraints, outputs, verification, brownfield integration, and any user-mentioned deliverable tracks. The ledger is a guard, not a mandatory rotation rule: stay deep on the current thread until it has been pressure-tested, then zoom out only when another material track remains unresolved and would change execution.
+Maintain a **Breadth Ledger** across independent ambiguity tracks: scope, constraints, outputs, verification, brownfield integration, execution stride, and any user-mentioned deliverable tracks. The ledger is a guard, not a mandatory rotation rule: stay deep on the current thread until it has been pressure-tested, then zoom out only when another material track remains unresolved and would change execution.
 
 Maintain a **Docs/Terminology Ledger** for brownfield interviews:
 - repo docs/rules/context sources inspected, with path references
@@ -187,11 +189,12 @@ Detailed dimensions:
 - Intent Clarity — why the user wants this
 - Outcome Clarity — what end state they want
 - Scope Clarity — how far the change should go
+- Execution Scope / Stride Clarity — whether the next workflow should complete the smallest safe task, a natural deliverable, or the full current phase
 - Constraint Clarity — technical or business limits that must hold
 - Success Criteria Clarity — how completion will be judged
 - Context Clarity — existing codebase understanding (brownfield only)
 
-`Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit.
+`Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit. `Execution Scope / Stride` is a conditional readiness gate for broad downstream execution: if the task is phase-like or multi-deliverable, ask or infer-with-confirmation whether the handoff should be `task`, `deliverable`, or `phase`.
 
 ### 2b) Ask the question
 Use the surface-appropriate structured questioning path for every interview round. In attached-tmux sessions, use OMX-owned structured questioning via `omx question` (this is the required structured-question equivalent and required `AskUserQuestion` equivalent for deep-interview). Outside tmux, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer. Present:
@@ -270,6 +273,35 @@ Canonical bounded multi-select payload:
 }
 ```
 
+Canonical execution-scope / stride payload for broad downstream work:
+
+```json
+{
+  "question": "What execution scope should the downstream workflow use for this request?",
+  "type": "single-answerable",
+  "options": [
+    {
+      "label": "Task-sized step",
+      "value": "task",
+      "description": "Complete the smallest safe, testable slice; default when risk or scope is unclear"
+    },
+    {
+      "label": "Natural deliverable",
+      "value": "deliverable",
+      "description": "Complete one coherent deliverable without intentionally shrinking or expanding scope"
+    },
+    {
+      "label": "Full current phase",
+      "value": "phase",
+      "description": "Complete every phase acceptance criterion, or stop only for a blocker requiring user decision"
+    }
+  ],
+  "allow_other": false,
+  "other_label": "Other",
+  "source": "deep-interview"
+}
+```
+
 Canonical answer-shape reminders:
 
 ```json
@@ -304,6 +336,7 @@ Brownfield: `ambiguity = 1 - (intent × 0.25 + outcome × 0.20 + scope × 0.20 +
 Readiness gate:
 - `Non-goals` must be explicit
 - `Decision Boundaries` must be explicit
+- For broad downstream execution, `Execution Scope / Stride` must be explicit with `execution_scope: task|deliverable|phase`, `allow_task_shrink`, and a matching stop condition
 - A pressure pass must be complete: at least one earlier answer has been revisited with an evidence, assumption, or tradeoff follow-up
 - A practical closure audit must pass: another question would change execution materially, not merely polish wording or chase a narrow edge case
 - If either gate is unresolved, or the pressure pass is incomplete, continue below threshold only with a final closure question that names the unresolved gate and would materially change execution.
@@ -354,6 +387,7 @@ Spec should include:
 - In-Scope
 - Out-of-Scope / Non-goals
 - Decision Boundaries (what OMX may decide without confirmation)
+- Execution Scope / Stride (`task`, `deliverable`, or `phase`; whether task shrink is allowed; completion unit; stop condition)
 - Constraints
 - Testable acceptance criteria
 - Assumptions exposed + resolutions
@@ -424,7 +458,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 ### 3. **`$autopilot`**
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$autopilot <spec-path>`
-- **Consumer Behavior:** Use the deep-interview spec as the clarified execution brief. Preserve intent, non-goals, decision boundaries, and acceptance criteria as binding context for planning/execution.
+- **Consumer Behavior:** Use the deep-interview spec as the clarified execution brief. Preserve intent, non-goals, decision boundaries, execution scope/stride, and acceptance criteria as binding context for planning/execution. If `execution_scope: phase`, do not stop after a single task-sized slice unless all phase acceptance criteria are satisfied with evidence or a blocker requires user decision.
 - **Skipped / Already-Satisfied Stages:** Initial requirement discovery and ambiguity reduction
 - **Expected Output:** Planning/execution progress, QA evidence, and validation artifacts produced by autopilot
 - **Best When:** The clarified spec is already strong enough for direct planning + execution without an additional consensus gate
@@ -495,6 +529,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - [ ] Challenge modes triggered at thresholds (when applicable)
 - [ ] Transcript written to `.omx/interviews/{slug}-{timestamp}.md`
 - [ ] Spec written to `.omx/specs/deep-interview-{slug}.md`
+- [ ] Broad downstream execution specs include explicit execution scope/stride (`task`, `deliverable`, or `phase`) and a matching stop condition
 - [ ] Brownfield questions use evidence-backed confirmation when applicable
 - [ ] Brownfield preflight inspected applicable repo docs/rules/context before user-facing questions
 - [ ] Fuzzy or conflicting terminology was challenged against repo language/current code behavior when applicable

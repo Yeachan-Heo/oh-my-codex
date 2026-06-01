@@ -39,6 +39,18 @@ describe('autopilot skill default Ultragoal contract', () => {
     }
   });
 
+  it('carries execution scope from deep-interview through planning and completion gates', () => {
+    assert.match(autopilotSkill, /execution_scope/i);
+    assert.match(autopilotSkill, /`task`, `deliverable`, or `phase`/i);
+    assert.match(autopilotSkill, /conditional readiness gate/i);
+    assert.match(autopilotSkill, /do not silently shrink a user-selected full phase into a task-sized slice/i);
+    assert.match(autopilotSkill, /allow_task_shrink/i);
+    assert.match(autopilotSkill, /acceptance_coverage_required/i);
+    assert.match(autopilotSkill, /If `execution_scope: phase`, the plan\/test spec must map the full phase acceptance criteria/i);
+    assert.match(autopilotSkill, /completion evidence must map every phase acceptance criterion/i);
+    assert.match(autopilotSkill, /blocked\/partial rather than complete/i);
+  });
+
   it('forbids self-attesting clean review and QA gates without durable stage evidence', () => {
     assert.match(autopilotSkill, /Do not author `review_verdict:\{clean:true\}` from the leader's own summary/i);
     assert.match(autopilotSkill, /both gates have durable source evidence/i);

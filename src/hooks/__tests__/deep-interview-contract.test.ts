@@ -235,6 +235,19 @@ describe("deep-interview Ouroboros contract", () => {
 		);
 	});
 
+	it("requires execution scope/stride confirmation for broad downstream execution", () => {
+		assert.match(deepInterviewSkill, /Execution Scope \/ Stride/i);
+		assert.match(deepInterviewSkill, /execution_scope/i);
+		assert.match(deepInterviewSkill, /task\|deliverable\|phase/i);
+		assert.match(deepInterviewSkill, /Task-sized step/i);
+		assert.match(deepInterviewSkill, /Natural deliverable/i);
+		assert.match(deepInterviewSkill, /Full current phase/i);
+		assert.match(deepInterviewSkill, /conditional readiness gate for broad downstream execution/i);
+		assert.match(deepInterviewSkill, /do not silently shrink a user-selected full phase to a task-sized slice/i);
+		assert.match(deepInterviewSkill, /Preserve intent, non-goals, decision boundaries, execution scope\/stride, and acceptance criteria/i);
+		assert.match(autopilotSkill, /do not silently shrink a user-selected full phase into a task-sized slice/i);
+	});
+
 	it("includes contract-style execution bridge and no-direct-implementation guard", () => {
 		assert.match(deepInterviewSkill, /Execution Bridge/i);
 		assert.match(deepInterviewSkill, /\$ultragoal/i);
