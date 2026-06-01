@@ -593,25 +593,39 @@ export function launchQuestionRenderer(
 
     const sizingTarget = returnTarget || safeString(env.TMUX_PANE).trim() || undefined;
     const availableHeight = resolveAvailablePaneHeight(execTmux, sizingTarget);
+    const estimatedContentLines = estimateQuestionContentLines(readQuestionRecordForSizing(options.recordPath));
     const requestedHeight = computeAdaptiveQuestionPaneHeight(
       availableHeight,
-      estimateQuestionContentLines(readQuestionRecordForSizing(options.recordPath)),
+      estimatedContentLines,
     );
-    const rawPane = execTmux([
-      'split-window',
-      '-v',
-      '-l',
-      String(requestedHeight),
-      ...splitTarget,
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-c',
-      options.cwd,
-      ...commandArgs,
-    ]);
+    const questionNeedsFullWindow = estimatedContentLines > availableHeight;
+    const rawPane = questionNeedsFullWindow
+      ? execTmux([
+          'new-window',
+          '-n',
+          'OMX Question',
+          '-P',
+          '-F',
+          '#{pane_id}',
+          '-c',
+          options.cwd,
+          ...commandArgs,
+        ])
+      : execTmux([
+          'split-window',
+          '-v',
+          '-l',
+          String(requestedHeight),
+          ...splitTarget,
+          '-P',
+          '-F',
+          '#{pane_id}',
+          '-c',
+          options.cwd,
+          ...commandArgs,
+        ]);
     const paneId = parsePaneIdFromTmuxOutput(rawPane);
-    if (!paneId) throw new Error('Failed to create tmux split pane for omx question UI.');
+    if (!paneId) throw new Error('Failed to create tmux question renderer container.');
     sleepImpl(QUESTION_RENDERER_PANE_SETTLE_MS);
     if (!isLaunchedQuestionPaneAlive(paneId, execTmux)) {
       throw new Error(`Question UI pane ${paneId} disappeared immediately after launch.`);
