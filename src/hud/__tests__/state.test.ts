@@ -5,6 +5,8 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
+import { renderHud } from '../render.js';
+import { recordSkillActivation } from '../../hooks/keyword-detector.js';
 import {
   buildGitBranchLabel,
   readGitBranch,
@@ -38,6 +40,10 @@ async function withWindowsPlatform(run: () => Promise<void> | void): Promise<voi
       Object.defineProperty(process, 'platform', originalPlatform);
     }
   }
+}
+
+function stripSgr(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
 async function withTempRepo(prefix: string, run: (cwd: string) => Promise<void>): Promise<void> {
@@ -676,13 +682,35 @@ describe('readAllState canonical skill precedence', () => {
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'code-review',
-        phase: 'running',
+        phase: 'planning',
         session_id: sessionId,
-        active_skills: [{ skill: 'code-review', phase: 'running', active: true, session_id: sessionId }],
+        active_skills: [{ skill: 'code-review', phase: 'planning', active: true, session_id: sessionId }],
       }));
 
       const state = await readAllState(cwd);
-      assert.deepEqual(state.codeReview, { active: true, current_phase: 'running' });
+      assert.deepEqual(state.codeReview, { active: true, current_phase: 'planning', source: 'canonical-skill' });
+    });
+  });
+
+  it('surfaces real keyword-activated code-review phase in state and HUD', async () => {
+    await withTempRepo('omx-hud-keyword-code-review-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-code-review-keyword';
+      await mkdir(join(rootStateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+
+      await recordSkillActivation({
+        stateDir: rootStateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect HUD',
+        sessionId,
+        nowIso: '2026-06-01T00:00:00.000Z',
+      });
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.codeReview, { active: true, current_phase: 'planning', source: 'canonical-skill' });
+      const rendered = stripSgr(renderHud(state, 'focused'));
+      assert.ok(rendered.includes('code-review:planning'));
     });
   });
 
@@ -707,7 +735,7 @@ describe('readAllState canonical skill precedence', () => {
       }));
 
       const codeReviewState = await readAllState(cwd);
-      assert.deepEqual(codeReviewState.codeReview, { active: true, current_phase: 'autopilot' });
+      assert.deepEqual(codeReviewState.codeReview, { active: true, current_phase: 'autopilot', source: 'autopilot' });
       assert.equal(codeReviewState.ultraqa, null);
 
       await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
@@ -717,7 +745,7 @@ describe('readAllState canonical skill precedence', () => {
       }));
       const ultraqaState = await readAllState(cwd);
       assert.equal(ultraqaState.codeReview, null);
-      assert.deepEqual(ultraqaState.ultraqa, { active: true, current_phase: 'autopilot' });
+      assert.deepEqual(ultraqaState.ultraqa, { active: true, current_phase: 'autopilot', source: 'autopilot' });
     });
   });
 

@@ -34,6 +34,7 @@ import type {
   SessionStateForHud,
   ResolvedHudConfig,
   HudGitDisplay,
+  LateGateHudSource,
 } from './types.js';
 import { DEFAULT_HUD_CONFIG } from './types.js';
 
@@ -498,12 +499,19 @@ function activeAutopilotPhase(autopilot: AutopilotStateForHud | null): string | 
   return sanitizeOptionalString(autopilot.current_phase)?.toLowerCase().replace(/_/g, '-');
 }
 
-function supervisedAutopilotStage<T extends { active?: boolean; current_phase?: string }>(
+function withLateGateSource<T extends { source?: LateGateHudSource }>(
+  state: T | null,
+  source: LateGateHudSource,
+): T | null {
+  return state ? { ...state, source } : null;
+}
+
+function supervisedAutopilotStage<T extends { active?: boolean; current_phase?: string; source?: LateGateHudSource }>(
   autopilot: AutopilotStateForHud | null,
   stage: string,
 ): T | null {
   return activeAutopilotPhase(autopilot) === stage
-    ? { active: true, current_phase: 'autopilot' } as T
+    ? { active: true, current_phase: 'autopilot', source: 'autopilot' } as T
     : null;
 }
 
@@ -571,10 +579,17 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     })()
     : null;
   const codeReview = shouldSurfaceCanonicalSkill(canonicalSkills, 'code-review', null)
-    ? mergePhase<CodeReviewStateForHud>(null, canonicalPhaseForSkill(canonicalSkills, 'code-review'))
+    ? withLateGateSource(
+      mergePhase<CodeReviewStateForHud>(null, canonicalPhaseForSkill(canonicalSkills, 'code-review')),
+      'canonical-skill',
+    )
     : supervisedAutopilotStage<CodeReviewStateForHud>(autopilot, 'code-review');
   const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail)
-    ? mergePhase(ultraqaDetail?.active === true ? ultraqaDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'))
+    ? (() => {
+      const detail = ultraqaDetail?.active === true ? ultraqaDetail : null;
+      const merged = mergePhase(detail, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'));
+      return detail ? merged : withLateGateSource(merged, 'canonical-skill');
+    })()
     : supervisedAutopilotStage<UltraqaStateForHud>(autopilot, 'ultraqa');
   const canonicalTeamPhase = await readCanonicalTeamPhase(cwd, teamDetail?.active === true ? teamDetail : null);
   const team = shouldSurfaceCanonicalSkill(canonicalSkills, 'team', teamDetail)

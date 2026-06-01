@@ -209,11 +209,46 @@ describe('renderHud – code-review', () => {
     const ctx = {
       ...emptyCtx(),
       autopilot: { active: true, current_phase: 'code-review' },
-      codeReview: { active: true, current_phase: 'autopilot' },
+      codeReview: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
     };
     const result = stripSgr(renderHud(ctx, 'focused'));
     assert.ok(result.includes('code-review:autopilot'));
     assert.equal(result.includes('autopilot:code-review'), false);
+  });
+
+  it('drops mismatched autopilot-derived late gate labels', () => {
+    const ctx = {
+      ...emptyCtx(),
+      autopilot: { active: true, current_phase: 'code-review' },
+      codeReview: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
+      ultraqa: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
+    };
+    const result = stripSgr(renderHud(ctx, 'focused'));
+    assert.ok(result.includes('code-review:autopilot'));
+    assert.equal(result.includes('qa:autopilot'), false);
+    assert.equal(result.includes('autopilot:code-review'), false);
+  });
+
+  it('keeps autopilot visible when only a mismatched derived late gate exists', () => {
+    const ctx = {
+      ...emptyCtx(),
+      autopilot: { active: true, current_phase: 'code-review' },
+      ultraqa: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
+    };
+    const result = stripSgr(renderHud(ctx, 'focused'));
+    assert.ok(result.includes('autopilot:code-review'));
+    assert.equal(result.includes('qa:autopilot'), false);
+  });
+
+  it('keeps canonical code-review distinct from an autopilot late phase', () => {
+    const ctx = {
+      ...emptyCtx(),
+      autopilot: { active: true, current_phase: 'code-review' },
+      codeReview: { active: true, current_phase: 'planning', source: 'canonical-skill' as const },
+    };
+    const result = stripSgr(renderHud(ctx, 'focused'));
+    assert.ok(result.includes('autopilot:code-review'));
+    assert.ok(result.includes('code-review:planning'));
   });
 });
 
@@ -230,7 +265,7 @@ describe('renderHud – ultraqa', () => {
     const ctx = {
       ...emptyCtx(),
       autopilot: { active: true, current_phase: 'ultraqa' },
-      ultraqa: { active: true, current_phase: 'autopilot' },
+      ultraqa: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
     };
     const result = stripSgr(renderHud(ctx, 'focused'));
     assert.ok(result.includes('qa:autopilot'));
