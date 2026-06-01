@@ -6,8 +6,10 @@ import {
   createHudWatchPane,
   findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
+  isHudWatchPane,
   killTmuxPane,
   listCurrentWindowPanes,
+  readHudPaneOwner,
   registerHudResizeHook,
   unregisterHudResizeHook,
   resizeTmuxPane,
@@ -20,6 +22,54 @@ export const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 
 function isExplicitOmxOwnedTmuxEnv(env: NodeJS.ProcessEnv): boolean {
   return env[OMX_TMUX_HUD_OWNER_ENV] === '1';
+}
+
+/**
+ * Kill HUD watch panes that belong to the *current* session but whose owning
+ * leader pane is no longer alive in this window.
+ *
+ * When a leader pane is destroyed (e.g. during a `team` setup/teardown cycle that
+ * tears down the leader REPL pane), its owner-tagged HUD panes are left pointing at
+ * the dead leader id. They are matched by neither `findHudWatchPaneIds` — whose
+ * owner check requires the recorded leader to equal the current pane — nor
+ * `findLegacyFocusedHudWatchPaneIds`, which only adopts HUD panes that *lack* owner
+ * metadata. So the reconcile below sees "no HUD", recreates one, and repeats on
+ * every prompt submit until the window degenerates into a column of stacked HUD
+ * strips with no leader or worker panes left.
+ *
+ * The reap is intentionally scoped to the current session: HUD panes owned by other
+ * sessions (whose leader may legitimately live in a different tmux window we cannot
+ * see from this window's pane list) are never touched.
+ */
+function reapOrphanedSessionHudPanes(
+  panes: TmuxPaneSnapshot[],
+  opts: {
+    sessionId: string | undefined;
+    currentPaneId: string | undefined;
+    killPane: (paneId: string) => boolean;
+  },
+): string[] {
+  const { sessionId, currentPaneId, killPane } = opts;
+  if (!sessionId) return [];
+  // A recorded leader only counts as "live" if it exists in this window AND is not
+  // itself a HUD watcher. Without the HUD exclusion, an orphan whose recorded leader
+  // is *another HUD pane* would be preserved here; that referenced HUD could be
+  // reaped on a later iteration, leaving a dangling orphan that still never matches
+  // the real current pane — so the all-HUD-strip state is only partially cleaned.
+  const liveNonHudPaneIds = new Set(
+    panes.filter((pane) => !isHudWatchPane(pane)).map((pane) => pane.paneId),
+  );
+  const reaped: string[] = [];
+  for (const pane of panes) {
+    if (!isHudWatchPane(pane)) continue;
+    const owner = readHudPaneOwner(pane);
+    // Only reclaim HUDs that explicitly belong to this session and name a leader.
+    if (owner.sessionId !== sessionId || !owner.leaderPaneId) continue;
+    // Keep HUDs whose leader is the current pane or another live non-HUD leader pane.
+    if (owner.leaderPaneId === currentPaneId || liveNonHudPaneIds.has(owner.leaderPaneId)) continue;
+    if (killPane(pane.paneId)) reaped.push(pane.paneId);
+  }
+  return reaped;
 }
 
 export interface ReconcileHudForPromptSubmitResult {
@@ -129,7 +179,6 @@ export async function reconcileHudForPromptSubmit(
   const resizePane = deps.resizeTmuxPane ?? ((paneId, lines) => resizeTmuxPane(paneId, lines));
 
   const currentPaneId = env.TMUX_PANE?.trim();
-  const panes = listPanes(currentPaneId);
   const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
   const equivalentSessionIds = [
     resolvedSessionId,
@@ -138,6 +187,21 @@ export async function reconcileHudForPromptSubmit(
   ]
     .map((sessionId) => sessionId?.trim() ?? '')
     .filter((sessionId, index, sessionIds) => sessionId !== '' && sessionIds.indexOf(sessionId) === index);
+  let panes = listPanes(currentPaneId);
+
+  // Reclaim orphaned HUD panes left behind by a destroyed leader before deciding
+  // whether a HUD already exists; otherwise dead-leader HUDs accumulate one per
+  // prompt submit and the window fills with stacked HUD strips.
+  const reapedOrphanPaneIds = reapOrphanedSessionHudPanes(panes, {
+    sessionId: resolvedSessionId,
+    currentPaneId,
+    killPane,
+  });
+  if (reapedOrphanPaneIds.length > 0) {
+    const reapedPaneIdSet = new Set(reapedOrphanPaneIds);
+    panes = panes.filter((pane) => !reapedPaneIdSet.has(pane.paneId));
+  }
+
   const owner = {
     sessionId: resolvedSessionId,
     sessionIds: equivalentSessionIds,
