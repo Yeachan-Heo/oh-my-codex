@@ -429,6 +429,135 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(Object.hasOwn(created[0]?.options ?? {}, 'fullWidth'), false);
   });
 
+  it('keeps repeated left/right prompt-submit HUD recreation scoped to each pane when the neighboring pane already has a HUD', async () => {
+    const created: Array<{ side: 'left' | 'right'; options?: { heightLines?: number; targetPaneId?: string } }> = [];
+    const resized: Array<{ side: 'left' | 'right'; paneId: string; heightLines: number }> = [];
+    const killed: string[] = [];
+
+    const codexPane = (paneId: string) => ({
+      paneId,
+      currentCommand: 'codex',
+      startCommand: 'codex',
+    });
+
+    const hudPane = (paneId: string, sessionId: string, leaderPaneId: string) => ({
+      paneId,
+      currentCommand: 'node',
+      startCommand: `exec env OMX_SESSION_ID='${sessionId}' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='${leaderPaneId}' node omx hud --watch --preset=focused`,
+    });
+
+    const leftCreateResult = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%left', OMX_SESSION_ID: 'sess-left', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        codexPane('%left'),
+        codexPane('%right'),
+        hudPane('%hud-right', 'sess-right', '%right'),
+      ],
+      createHudWatchPane: (_cwd, _cmd, options) => {
+        created.push({ side: 'left', options });
+        return '%hud-left';
+      },
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: (paneId, heightLines) => {
+        resized.push({ side: 'left', paneId, heightLines });
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    const leftRepeatResult = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%left', OMX_SESSION_ID: 'sess-left', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        codexPane('%left'),
+        codexPane('%right'),
+        hudPane('%hud-left', 'sess-left', '%left'),
+        hudPane('%hud-right', 'sess-right', '%right'),
+      ],
+      createHudWatchPane: (_cwd, _cmd, options) => {
+        created.push({ side: 'left', options });
+        return '%hud-left-repeat';
+      },
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: (paneId, heightLines) => {
+        resized.push({ side: 'left', paneId, heightLines });
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    const rightCreateResult = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%right', OMX_SESSION_ID: 'sess-right', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        codexPane('%left'),
+        codexPane('%right'),
+        hudPane('%hud-left', 'sess-left', '%left'),
+      ],
+      createHudWatchPane: (_cwd, _cmd, options) => {
+        created.push({ side: 'right', options });
+        return '%hud-right';
+      },
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: (paneId, heightLines) => {
+        resized.push({ side: 'right', paneId, heightLines });
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    const rightRepeatResult = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%right', OMX_SESSION_ID: 'sess-right', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        codexPane('%left'),
+        codexPane('%right'),
+        hudPane('%hud-left', 'sess-left', '%left'),
+        hudPane('%hud-right', 'sess-right', '%right'),
+      ],
+      createHudWatchPane: (_cwd, _cmd, options) => {
+        created.push({ side: 'right', options });
+        return '%hud-right-repeat';
+      },
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: (paneId, heightLines) => {
+        resized.push({ side: 'right', paneId, heightLines });
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(leftCreateResult.status, 'recreated');
+    assert.equal(leftCreateResult.paneId, '%hud-left');
+    assert.equal(leftRepeatResult.status, 'resized');
+    assert.equal(leftRepeatResult.paneId, '%hud-left');
+    assert.equal(rightCreateResult.status, 'recreated');
+    assert.equal(rightCreateResult.paneId, '%hud-right');
+    assert.equal(rightRepeatResult.status, 'resized');
+    assert.equal(rightRepeatResult.paneId, '%hud-right');
+    assert.deepEqual(killed, []);
+    assert.deepEqual(resized, [
+      { side: 'left', paneId: '%hud-left', heightLines: HUD_TMUX_HEIGHT_LINES },
+      { side: 'left', paneId: '%hud-left', heightLines: HUD_TMUX_HEIGHT_LINES },
+      { side: 'right', paneId: '%hud-right', heightLines: HUD_TMUX_HEIGHT_LINES },
+      { side: 'right', paneId: '%hud-right', heightLines: HUD_TMUX_HEIGHT_LINES },
+    ]);
+    assert.equal(created.length, 2);
+    assert.equal(created[0]?.options?.targetPaneId, '%left');
+    assert.equal(created[1]?.options?.targetPaneId, '%right');
+    assert.equal(Object.hasOwn(created[0]?.options ?? {}, 'fullWidth'), false);
+    assert.equal(Object.hasOwn(created[1]?.options ?? {}, 'fullWidth'), false);
+  });
+
   it('collapses same-owner HUD panes that appear during the create race window', async () => {
     const killed: string[] = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
