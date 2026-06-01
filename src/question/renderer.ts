@@ -127,12 +127,59 @@ export function estimateQuestionContentLines(record: QuestionRecord | null | und
   return lines;
 }
 
+function wrappedLineCount(value: string | undefined, paneWidth: number): number {
+  if (!value) return 0;
+  const safeWidth = Number.isFinite(paneWidth) && paneWidth > 0 ? Math.floor(paneWidth) : 80;
+  return value
+    .split('\n')
+    .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / safeWidth)), 0);
+}
+
+export function estimateQuestionRenderFootprint(
+  record: QuestionRecord | null | undefined,
+  paneWidth: number,
+): number {
+  if (!record) return 24;
+  const questions = record.questions?.length
+    ? record.questions
+    : [{
+      header: record.header,
+      question: record.question,
+      options: record.options,
+      allow_other: record.allow_other,
+      other_label: record.other_label,
+      multi_select: record.multi_select,
+      type: record.type,
+      id: 'q-1',
+    }];
+  let lines = 2;
+  if (record.header) lines += wrappedLineCount(record.header, paneWidth);
+  for (const question of questions) {
+    lines += 2 + wrappedLineCount(question.question, paneWidth);
+    if (question.header && question.header !== record.header) lines += wrappedLineCount(question.header, paneWidth);
+    for (const option of question.options) {
+      lines += 1 + wrappedLineCount(option.description, paneWidth);
+    }
+    if (question.allow_other) lines += 1;
+    lines += 2;
+  }
+  if (questions.length > 1) lines += 3;
+  return lines;
+}
+
 export function computeAdaptiveQuestionPaneHeight(availableHeight: number, estimatedContentLines: number): number {
   const safeAvailable = Number.isFinite(availableHeight) && availableHeight > 0 ? Math.floor(availableHeight) : 40;
   const maxHeight = Math.max(1, safeAvailable - 2);
   const minLarge = Math.min(Math.max(18, Math.floor(safeAvailable * 0.60)), maxHeight);
   const requested = Number.isFinite(estimatedContentLines) && estimatedContentLines > 0 ? Math.ceil(estimatedContentLines) : 24;
   return Math.min(Math.max(Math.max(requested, minLarge), Math.min(8, maxHeight)), maxHeight);
+}
+
+export function shouldOpenQuestionInNewWindow(availableHeight: number, estimatedRenderFootprint: number): boolean {
+  const safeAvailable = Number.isFinite(availableHeight) && availableHeight > 0 ? Math.floor(availableHeight) : 40;
+  const maxSplitHeight = Math.max(1, safeAvailable - 2);
+  const requested = Number.isFinite(estimatedRenderFootprint) && estimatedRenderFootprint > 0 ? Math.ceil(estimatedRenderFootprint) : 24;
+  return requested > maxSplitHeight;
 }
 
 function readQuestionRecordForSizing(recordPath: string): QuestionRecord | null {
@@ -154,6 +201,23 @@ function resolveAvailablePaneHeight(
     }
   }
   return 40;
+}
+
+function resolveAvailablePaneWidth(
+  execTmux: ExecTmuxSync,
+  target: string | undefined,
+): number {
+  const format = '#{pane_width}';
+  const attempts = target ? [['display-message', '-p', '-t', target, format], ['display-message', '-p', format]] : [['display-message', '-p', format]];
+  for (const args of attempts) {
+    try {
+      const parsed = Number.parseInt(execTmux(args).trim(), 10);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    } catch {
+      // Try the next source, then fall back.
+    }
+  }
+  return 80;
 }
 
 function resolveQuestionUiProcessArgs(
@@ -593,17 +657,22 @@ export function launchQuestionRenderer(
 
     const sizingTarget = returnTarget || safeString(env.TMUX_PANE).trim() || undefined;
     const availableHeight = resolveAvailablePaneHeight(execTmux, sizingTarget);
-    const estimatedContentLines = estimateQuestionContentLines(readQuestionRecordForSizing(options.recordPath));
+    const availableWidth = resolveAvailablePaneWidth(execTmux, sizingTarget);
+    const estimatedRenderFootprint = estimateQuestionRenderFootprint(
+      readQuestionRecordForSizing(options.recordPath),
+      availableWidth,
+    );
     const requestedHeight = computeAdaptiveQuestionPaneHeight(
       availableHeight,
-      estimatedContentLines,
+      estimatedRenderFootprint,
     );
-    const questionNeedsFullWindow = estimatedContentLines > availableHeight;
+    const questionNeedsFullWindow = shouldOpenQuestionInNewWindow(availableHeight, estimatedRenderFootprint);
     const rawPane = questionNeedsFullWindow
       ? execTmux([
           'new-window',
           '-n',
           'OMX Question',
+          ...splitTarget,
           '-P',
           '-F',
           '#{pane_id}',

@@ -13,6 +13,8 @@ import {
   injectQuestionAnswersToPane,
   launchQuestionRenderer,
   resolveQuestionRendererStrategy,
+  estimateQuestionRenderFootprint,
+  shouldOpenQuestionInNewWindow,
   supersedeLiveQuestionsForSession,
 } from '../renderer.js';
 import { buildSendPaneArgvs } from '../../notifications/tmux-detector.js';
@@ -159,6 +161,49 @@ describe('adaptive question pane sizing', () => {
     assert.equal(computeAdaptiveQuestionPaneHeight(20, 50), 18);
     assert.equal(computeAdaptiveQuestionPaneHeight(Number.NaN, 10), 24);
     assert.equal(computeAdaptiveQuestionPaneHeight(9, 20), 7);
+  });
+});
+
+describe('question window topology selection', () => {
+  it('switches to a new tmux window only after the split height budget is exceeded', () => {
+    assert.equal(shouldOpenQuestionInNewWindow(20, 18), false);
+    assert.equal(shouldOpenQuestionInNewWindow(20, 19), true);
+    assert.equal(shouldOpenQuestionInNewWindow(5, 3), false);
+    assert.equal(shouldOpenQuestionInNewWindow(5, 4), true);
+  });
+
+  it('counts wrapped question text more conservatively in narrow panes', () => {
+    const record = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      question: 'x'.repeat(180),
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'y'.repeat(140),
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+      source: 'deep-interview',
+      questions: [{
+        id: 'q-1',
+        question: 'x'.repeat(180),
+        options: [{
+          label: 'Only option',
+          value: 'only',
+          description: 'y'.repeat(140),
+        }],
+        allow_other: false,
+        multi_select: false,
+        type: 'single-answerable',
+      }],
+    } as any;
+
+    assert.ok(estimateQuestionRenderFootprint(record, 20) > estimateQuestionRenderFootprint(record, 80));
   });
 });
 
@@ -314,7 +359,85 @@ describe('launchQuestionRenderer', () => {
       assert.equal(result.target, '%42');
       assert.equal(result.return_target, '%11');
       assert.equal(result.return_transport, 'tmux-send-keys');
-      assert.equal(calls.some((call) => call[0] === 'new-window'), true);
+      const newWindowCall = calls.find((call) => call[0] === 'new-window');
+      assert.ok(newWindowCall);
+      const targetIndex = newWindowCall.indexOf('-t');
+      assert.notEqual(targetIndex, -1);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '%11']);
+      assert.equal(calls.some((call) => call[0] === 'split-window'), false);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  it('opens a new tmux window when wrapped content would exceed the split budget in a narrow pane', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-wrapped-window-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
+      mkdirSync(stateDir, { recursive: true });
+      const recordPath = join(stateDir, 'question-1.json');
+      writeFileSync(recordPath, JSON.stringify({
+        kind: 'omx.question/v1',
+        question_id: 'question-1',
+        created_at: '2026-05-01T10:08:52.523Z',
+        updated_at: '2026-05-01T10:08:52.523Z',
+        status: 'pending',
+        question: 'x'.repeat(220),
+        options: [{
+          label: 'Only option',
+          value: 'only',
+          description: 'y'.repeat(180),
+        }],
+        allow_other: false,
+        multi_select: false,
+        type: 'single-answerable',
+        source: 'deep-interview',
+        questions: [{
+          id: 'q-1',
+          question: 'x'.repeat(220),
+          options: [{
+            label: 'Only option',
+            value: 'only',
+            description: 'y'.repeat(180),
+          }],
+          allow_other: false,
+          multi_select: false,
+          type: 'single-answerable',
+        }],
+      }, null, 2));
+
+      const calls: string[][] = [];
+      const result = launchQuestionRenderer(
+        {
+          cwd,
+          recordPath,
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '20\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '20\n';
+            if (args[0] === 'new-window') return '%99\n';
+            if (args[0] === 'list-panes' && args[2] === '%99') return '0\t%99\n';
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      );
+
+      assert.equal(result.renderer, 'tmux-pane');
+      assert.equal(result.target, '%99');
+      assert.equal(result.return_target, '%11');
+      assert.equal(result.return_transport, 'tmux-send-keys');
+      const newWindowCall = calls.find((call) => call[0] === 'new-window');
+      assert.ok(newWindowCall);
+      const targetIndex = newWindowCall.indexOf('-t');
+      assert.notEqual(targetIndex, -1);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '%11']);
       assert.equal(calls.some((call) => call[0] === 'split-window'), false);
     } finally {
       rmSync(cwd, { recursive: true });
