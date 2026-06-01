@@ -322,6 +322,35 @@ describe('question window topology selection', () => {
 
     assert.ok(estimateQuestionRenderFootprint(reviewScreenRecord, 80) > estimateQuestionRenderFootprint(singleScreenRecord, 80));
   });
+
+  it('sizes review screens from selected answers when multi-select summaries wrap', () => {
+    const questions = Array.from({ length: 5 }, (_, index) => ({
+      id: `q-${index + 1}`,
+      question: `Question ${index + 1}?`,
+      options: [
+        { label: 'Alpha option', value: 'alpha' },
+        { label: 'Beta option', value: 'beta' },
+        { label: 'Gamma option', value: 'gamma' },
+      ],
+      allow_other: false,
+      multi_select: true,
+      type: 'multi-answerable',
+    }));
+    const record = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      allow_other: false,
+      multi_select: true,
+      type: 'multi-answerable',
+      source: 'deep-interview',
+      questions,
+    } as any;
+
+    assert.equal(shouldOpenQuestionInNewWindow(20, estimateQuestionRenderFootprint(record, 20)), true);
+  });
 });
 
 describe('launchQuestionRenderer', () => {

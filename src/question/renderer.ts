@@ -12,7 +12,7 @@ import { TRACKED_WORKFLOW_MODES } from '../state/workflow-transition.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 import { createInitialInteractiveSelectionState, createInitialQuestionWizardState, renderInteractiveQuestionFrame, renderQuestionWizardFrame } from './ui.js';
-import type { QuestionAnswer, QuestionRecord, QuestionRendererState } from './types.js';
+import type { NormalizedQuestionItem, QuestionAnswer, QuestionRecord, QuestionRendererState } from './types.js';
 
 export type QuestionRendererStrategy = 'inside-tmux' | 'detached-tmux' | 'inline-tty' | 'windows-console' | 'test-noop' | 'unsupported';
 
@@ -143,30 +143,19 @@ export function estimateQuestionRenderFootprint(
   paneWidth: number,
 ): number {
   if (!record) return 24;
-  const questions = record.questions?.length
-    ? record.questions
-    : [{
-      header: record.header,
-      question: record.question,
-      options: record.options,
-      allow_other: record.allow_other,
-      other_label: record.other_label,
-      multi_select: record.multi_select,
-      type: record.type,
-      id: 'q-1',
-    }];
+  const questions = recordQuestionsForSizing(record);
   if (questions.length === 1) {
     const frame = renderInteractiveQuestionFrame(record, createInitialInteractiveSelectionState());
     return wrappedDisplayLineCount(frame, paneWidth);
   }
 
-  const wizardState = createInitialQuestionWizardState(record);
+  const wizardState = buildWorstCaseReviewWizardState(record);
   let maxFootprint = 0;
   for (let index = 0; index < questions.length; index += 1) {
     const frame = renderQuestionWizardFrame(record, { ...wizardState, currentQuestionIndex: index });
     maxFootprint = Math.max(maxFootprint, wrappedDisplayLineCount(frame, paneWidth));
   }
-  const reviewFrame = renderQuestionWizardFrame(record, { ...wizardState, mode: 'review' });
+  const reviewFrame = renderQuestionWizardFrame(record, { ...wizardState, mode: 'review' as const });
   maxFootprint = Math.max(maxFootprint, wrappedDisplayLineCount(reviewFrame, paneWidth));
   return maxFootprint;
 }
@@ -188,6 +177,50 @@ export function shouldOpenQuestionInNewWindow(availableHeight: number, estimated
 
 function readQuestionRecordForSizing(recordPath: string): QuestionRecord | null {
   return readJsonFileIfExists(recordPath) as QuestionRecord | null;
+}
+
+function recordQuestionsForSizing(record: QuestionRecord): NormalizedQuestionItem[] {
+  if (record.questions?.length) return record.questions;
+  return [{
+    header: record.header,
+    question: record.question,
+    options: record.options,
+    allow_other: record.allow_other,
+    other_label: record.other_label,
+    multi_select: record.multi_select,
+    type: record.type ?? (record.multi_select ? 'multi-answerable' : 'single-answerable'),
+    id: 'q-1',
+  }];
+}
+
+function buildWorstCaseReviewWizardState(record: QuestionRecord) {
+  const questions = recordQuestionsForSizing(record);
+  const baseState = createInitialQuestionWizardState(record);
+  return {
+    ...baseState,
+    selections: questions.map((question) => {
+      if (question.multi_select || question.type === 'multi-answerable') {
+        return {
+          cursorIndex: 0,
+          selectedIndices: question.options.map((_, index) => index),
+        };
+      }
+
+      let bestIndex = 0;
+      let bestWidth = -1;
+      question.options.forEach((option, index) => {
+        const width = displayWidth(option.label);
+        if (width > bestWidth) {
+          bestWidth = width;
+          bestIndex = index;
+        }
+      });
+      return {
+        cursorIndex: bestIndex,
+        selectedIndices: [],
+      };
+    }),
+  };
 }
 
 function resolveAvailablePaneHeight(
