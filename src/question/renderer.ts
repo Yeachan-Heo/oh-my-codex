@@ -11,7 +11,8 @@ import { getStateDir, getStatePath } from '../mcp/state-paths.js';
 import { TRACKED_WORKFLOW_MODES } from '../state/workflow-transition.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
-import type { QuestionAnswer, QuestionRecord, QuestionRendererState } from './types.js';
+import { createInitialInteractiveSelectionState, createInitialQuestionWizardState, renderInteractiveQuestionFrame, renderQuestionWizardFrame } from './ui.js';
+import type { NormalizedQuestionItem, QuestionAnswer, QuestionRecord, QuestionRendererState } from './types.js';
 
 export type QuestionRendererStrategy = 'inside-tmux' | 'detached-tmux' | 'inline-tty' | 'windows-console' | 'test-noop' | 'unsupported';
 
@@ -93,38 +94,70 @@ export function resolveQuestionRendererStrategy(
 }
 
 
-function lineCount(value: string | undefined): number {
-  if (!value) return 0;
-  return Math.max(1, value.split('\n').length);
+function isCombiningMark(codePoint: number): boolean {
+  return /\p{Mark}/u.test(String.fromCodePoint(codePoint));
 }
 
-export function estimateQuestionContentLines(record: QuestionRecord | null | undefined): number {
-  if (!record) return 24;
-  const questions = record.questions?.length
-    ? record.questions
-    : [{
-      header: record.header,
-      question: record.question,
-      options: record.options,
-      allow_other: record.allow_other,
-      other_label: record.other_label,
-      multi_select: record.multi_select,
-      type: record.type,
-      id: 'q-1',
-    }];
-  let lines = 2;
-  if (record.header) lines += lineCount(record.header);
-  for (const question of questions) {
-    lines += 2 + lineCount(question.question);
-    if (question.header && question.header !== record.header) lines += lineCount(question.header);
-    for (const option of question.options) {
-      lines += 1 + lineCount(option.description);
-    }
-    if (question.allow_other) lines += 1;
-    lines += 2;
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    codePoint >= 0x1100 && (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+    )
+  );
+}
+
+function displayWidth(value: string): number {
+  let width = 0;
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0) continue;
+    if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) continue;
+    if (isCombiningMark(codePoint)) continue;
+    width += isWideCodePoint(codePoint) ? 2 : 1;
   }
-  if (questions.length > 1) lines += 3;
-  return lines;
+  return width;
+}
+
+function wrappedDisplayLineCount(value: string | undefined, paneWidth: number): number {
+  if (!value) return 0;
+  const safeWidth = Number.isFinite(paneWidth) && paneWidth > 0 ? Math.floor(paneWidth) : 80;
+  return value
+    .split('\n')
+    .reduce((count, line) => count + Math.max(1, Math.ceil(displayWidth(line) / safeWidth)), 0);
+}
+
+export function estimateQuestionRenderFootprint(
+  record: QuestionRecord | null | undefined,
+  paneWidth: number,
+): number {
+  if (!record) return 24;
+  const questions = recordQuestionsForSizing(record);
+  if (questions.length === 1) {
+    const frame = renderInteractiveQuestionFrame(record, createInitialInteractiveSelectionState());
+    return wrappedDisplayLineCount(frame, paneWidth);
+  }
+
+  const wizardState = buildWorstCaseReviewWizardState(record);
+  let maxFootprint = 0;
+  for (let index = 0; index < questions.length; index += 1) {
+    const frame = renderQuestionWizardFrame(record, { ...wizardState, currentQuestionIndex: index });
+    maxFootprint = Math.max(maxFootprint, wrappedDisplayLineCount(frame, paneWidth));
+  }
+  const reviewFrame = renderQuestionWizardFrame(record, { ...wizardState, mode: 'review' as const });
+  maxFootprint = Math.max(maxFootprint, wrappedDisplayLineCount(reviewFrame, paneWidth));
+  return maxFootprint;
 }
 
 export function computeAdaptiveQuestionPaneHeight(availableHeight: number, estimatedContentLines: number): number {
@@ -135,8 +168,59 @@ export function computeAdaptiveQuestionPaneHeight(availableHeight: number, estim
   return Math.min(Math.max(Math.max(requested, minLarge), Math.min(8, maxHeight)), maxHeight);
 }
 
+export function shouldOpenQuestionInNewWindow(availableHeight: number, estimatedRenderFootprint: number): boolean {
+  const safeAvailable = Number.isFinite(availableHeight) && availableHeight > 0 ? Math.floor(availableHeight) : 40;
+  const maxSplitHeight = Math.max(1, safeAvailable - 2);
+  const requested = Number.isFinite(estimatedRenderFootprint) && estimatedRenderFootprint > 0 ? Math.ceil(estimatedRenderFootprint) : 24;
+  return requested > maxSplitHeight;
+}
+
 function readQuestionRecordForSizing(recordPath: string): QuestionRecord | null {
   return readJsonFileIfExists(recordPath) as QuestionRecord | null;
+}
+
+function recordQuestionsForSizing(record: QuestionRecord): NormalizedQuestionItem[] {
+  if (record.questions?.length) return record.questions;
+  return [{
+    header: record.header,
+    question: record.question,
+    options: record.options,
+    allow_other: record.allow_other,
+    other_label: record.other_label,
+    multi_select: record.multi_select,
+    type: record.type ?? (record.multi_select ? 'multi-answerable' : 'single-answerable'),
+    id: 'q-1',
+  }];
+}
+
+function buildWorstCaseReviewWizardState(record: QuestionRecord) {
+  const questions = recordQuestionsForSizing(record);
+  const baseState = createInitialQuestionWizardState(record);
+  return {
+    ...baseState,
+    selections: questions.map((question) => {
+      if (question.multi_select || question.type === 'multi-answerable') {
+        return {
+          cursorIndex: 0,
+          selectedIndices: question.options.map((_, index) => index),
+        };
+      }
+
+      let bestIndex = 0;
+      let bestWidth = -1;
+      question.options.forEach((option, index) => {
+        const width = displayWidth(option.label);
+        if (width > bestWidth) {
+          bestWidth = width;
+          bestIndex = index;
+        }
+      });
+      return {
+        cursorIndex: bestIndex,
+        selectedIndices: [],
+      };
+    }),
+  };
 }
 
 function resolveAvailablePaneHeight(
@@ -154,6 +238,84 @@ function resolveAvailablePaneHeight(
     }
   }
   return 40;
+}
+
+function resolveAvailablePaneWidth(
+  execTmux: ExecTmuxSync,
+  target: string | undefined,
+): { width: number; probeFailed: boolean } {
+  const format = '#{pane_width}';
+  if (target) {
+    try {
+      const parsed = Number.parseInt(execTmux(['display-message', '-p', '-t', target, format]).trim(), 10);
+      if (Number.isFinite(parsed) && parsed > 0) return { width: parsed, probeFailed: false };
+    } catch {
+      // Keep the width probe target-scoped. If the explicit target cannot be
+      // queried, fall back to the conservative default instead of measuring the
+      // current pane width for a different destination.
+    }
+    return { width: 80, probeFailed: true };
+  }
+  try {
+    const parsed = Number.parseInt(execTmux(['display-message', '-p', format]).trim(), 10);
+    if (Number.isFinite(parsed) && parsed > 0) return { width: parsed, probeFailed: false };
+  } catch {
+    // Try the default tmux query, then fall back.
+  }
+  // Keep a documented fallback so renderer launches remain usable even when
+  // tmux width probing is unavailable or transiently fails.
+  return { width: 80, probeFailed: false };
+}
+
+function resolveNewWindowTarget(
+  execTmux: ExecTmuxSync,
+  returnTarget: string | undefined,
+): string | undefined {
+  if (!returnTarget) return undefined;
+
+  const attempts = [
+    ['display-message', '-p', '-t', returnTarget, '#{session_id}'],
+    ['display-message', '-p', '-t', returnTarget, '#{window_id}'],
+  ] as const;
+
+  for (const args of attempts) {
+    try {
+      const resolved = execTmux([...args]).trim();
+      if (resolved) return resolved;
+    } catch {
+      // Try the next tmux target form.
+    }
+  }
+
+  return undefined;
+}
+
+function launchQuestionPane(
+  execTmux: ExecTmuxSync,
+  sleepImpl: SleepSync,
+  args: string[],
+  launchedAt: string,
+  returnTarget: string | undefined,
+): {
+  renderer: 'tmux-pane';
+  target: string;
+  launched_at: string;
+  return_target?: string;
+  return_transport?: 'tmux-send-keys';
+} {
+  const rawPane = execTmux(args);
+  const paneId = parsePaneIdFromTmuxOutput(rawPane);
+  if (!paneId) throw new Error('Failed to create tmux question renderer container.');
+  sleepImpl(QUESTION_RENDERER_PANE_SETTLE_MS);
+  if (!isLaunchedQuestionPaneAlive(paneId, execTmux)) {
+    throw new Error(`Question UI pane ${paneId} disappeared immediately after launch.`);
+  }
+  return {
+    renderer: 'tmux-pane',
+    target: paneId,
+    launched_at: launchedAt,
+    ...(returnTarget ? { return_target: returnTarget, return_transport: 'tmux-send-keys' as const } : {}),
+  };
 }
 
 function resolveQuestionUiProcessArgs(
@@ -592,36 +754,76 @@ export function launchQuestionRenderer(
     });
 
     const sizingTarget = returnTarget || safeString(env.TMUX_PANE).trim() || undefined;
+    const availableWidthInfo = resolveAvailablePaneWidth(execTmux, sizingTarget);
+    const newWindowTarget = resolveNewWindowTarget(execTmux, returnTarget);
+    const newWindowTargetArgs = newWindowTarget ? ['-t', newWindowTarget] : [];
+    if (sizingTarget && availableWidthInfo.probeFailed) {
+      return launchQuestionPane(
+        execTmux,
+        sleepImpl,
+        [
+          'new-window',
+          '-n',
+          'OMX Question',
+          ...newWindowTargetArgs,
+          '-P',
+          '-F',
+          '#{pane_id}',
+          '-c',
+          options.cwd,
+          ...commandArgs,
+        ],
+        launchedAt,
+        returnTarget,
+      );
+    }
+
     const availableHeight = resolveAvailablePaneHeight(execTmux, sizingTarget);
+    const availableWidth = availableWidthInfo.width;
+    const estimatedRenderFootprint = estimateQuestionRenderFootprint(
+      readQuestionRecordForSizing(options.recordPath),
+      availableWidth,
+    );
+    const questionNeedsFullWindow = shouldOpenQuestionInNewWindow(
+      availableHeight,
+      estimatedRenderFootprint,
+    );
     const requestedHeight = computeAdaptiveQuestionPaneHeight(
       availableHeight,
-      estimateQuestionContentLines(readQuestionRecordForSizing(options.recordPath)),
+      estimatedRenderFootprint,
     );
-    const rawPane = execTmux([
-      'split-window',
-      '-v',
-      '-l',
-      String(requestedHeight),
-      ...splitTarget,
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-c',
-      options.cwd,
-      ...commandArgs,
-    ]);
-    const paneId = parsePaneIdFromTmuxOutput(rawPane);
-    if (!paneId) throw new Error('Failed to create tmux split pane for omx question UI.');
-    sleepImpl(QUESTION_RENDERER_PANE_SETTLE_MS);
-    if (!isLaunchedQuestionPaneAlive(paneId, execTmux)) {
-      throw new Error(`Question UI pane ${paneId} disappeared immediately after launch.`);
-    }
-    return {
-      renderer: 'tmux-pane',
-      target: paneId,
-      launched_at: launchedAt,
-      ...(returnTarget ? { return_target: returnTarget, return_transport: 'tmux-send-keys' } : {}),
-    };
+    return launchQuestionPane(
+      execTmux,
+      sleepImpl,
+      questionNeedsFullWindow
+        ? [
+            'new-window',
+            '-n',
+            'OMX Question',
+            ...newWindowTargetArgs,
+            '-P',
+            '-F',
+            '#{pane_id}',
+            '-c',
+            options.cwd,
+            ...commandArgs,
+          ]
+        : [
+            'split-window',
+            '-v',
+            '-l',
+            String(requestedHeight),
+            ...splitTarget,
+            '-P',
+            '-F',
+            '#{pane_id}',
+            '-c',
+            options.cwd,
+            ...commandArgs,
+          ],
+      launchedAt,
+      returnTarget,
+    );
   }
 
   if (strategy === 'windows-console') {
