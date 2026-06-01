@@ -424,11 +424,14 @@ case "$1" in
     printf '%%0\\t1\\n%%2\\t0\\n'
     ;;
   display-message)
-    if [ "$2" = "-p" ] && [ "$3" = "-t" ] && [ "$4" = "%0" ] && [ "$5" = "#{session_attached}" ]; then
-      printf '1\n'
-      exit 0
-    fi
-    printf '%%0\n'
+    for format do :; done
+    case "$format" in
+      '#{session_attached}') printf '1\n' ;;
+      '#{pane_width}') printf '80\n' ;;
+      '#{pane_height}') printf '40\n' ;;
+      '#{session_id}'|'#{window_id}') printf '\n' ;;
+      *) printf '%%0\n' ;;
+    esac
     ;;
 esac
 `, { mode: 0o755 });
@@ -487,7 +490,14 @@ esac
 printf '%s\n' "$*" >> "${tmuxLogPath}"
 case "$1" in
   display-message)
-    printf '1\n'
+    for format do :; done
+    case "$format" in
+      '#{session_attached}') printf '1\n' ;;
+      '#{pane_width}') printf '80\n' ;;
+      '#{pane_height}') printf '40\n' ;;
+      '#{session_id}'|'#{window_id}') printf '\n' ;;
+      *) printf '1\n' ;;
+    esac
     ;;
   split-window)
     printf '%%45\n'
