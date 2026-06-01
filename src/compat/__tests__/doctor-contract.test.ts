@@ -42,10 +42,14 @@ function resolveCompatTarget(): { command: string; argsPrefix: string[] } {
 
 function runCompatTarget(cwd: string, argv: string[], envOverrides: Record<string, string> = {}): CompatRunResult {
   const target = resolveCompatTarget();
+  const env = { ...process.env, ...envOverrides };
+  if (!Object.hasOwn(envOverrides, 'USE_OMX_EXPLORE_CMD')) {
+    delete env.USE_OMX_EXPLORE_CMD;
+  }
   const result = spawnSync(target.command, [...target.argsPrefix, ...argv], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, ...envOverrides },
+    env,
   });
   return { status: result.status, stdout: result.stdout || '', stderr: result.stderr || '', error: result.error?.message };
 }

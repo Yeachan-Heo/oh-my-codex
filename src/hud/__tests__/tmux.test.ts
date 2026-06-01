@@ -380,6 +380,18 @@ describe('HUD pane ownership helpers', () => {
     assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-a', leaderPaneId: '%1' }), ['%2']);
   });
 
+  it('prefers leader-tagged HUD panes over legacy same-session panes during duplicate cleanup', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        "%2\tnode\texec env OMX_SESSION_ID='sess-a' /node /omx.js hud --watch",
+        `%3\tnode\texec env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+
+    assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-a', leaderPaneId: '%1' }), ['%3', '%2']);
+  });
+
   it('finds one same-session HUD pane when TMUX_PANE is unavailable', () => {
     const calls: string[][] = [];
     const execTmuxSync = (args: string[]) => {

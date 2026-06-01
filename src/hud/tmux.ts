@@ -174,9 +174,16 @@ export function findHudWatchPaneIds(
   currentPaneId?: string,
   owner: HudPaneOwner = {},
 ): string[] {
+  const wantedLeaderPaneId = typeof owner.leaderPaneId === 'string' ? owner.leaderPaneId.trim() : '';
   return panes
     .filter((pane) => pane.paneId !== currentPaneId)
     .filter((pane) => hudPaneMatchesOwner(pane, owner))
+    .sort((a, b) => {
+      if (!wantedLeaderPaneId) return 0;
+      const aLeaderMatches = readHudPaneOwner(a).leaderPaneId === wantedLeaderPaneId;
+      const bLeaderMatches = readHudPaneOwner(b).leaderPaneId === wantedLeaderPaneId;
+      return Number(bLeaderMatches) - Number(aLeaderMatches);
+    })
     .map((pane) => pane.paneId);
 }
 
