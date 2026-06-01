@@ -1233,11 +1233,11 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies broad Autopilot deep-interview handoff without execution_scope', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-broad-scope-deny-'));
+  it('denies Autopilot deep-interview handoff when execution_scope_required lacks execution_scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-required-scope-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
-        const sessionId = 'sess-autopilot-broad-scope-deny';
+        const sessionId = 'sess-autopilot-required-scope-deny';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
@@ -1247,12 +1247,13 @@ describe('state operations directory initialization', () => {
             mode: 'autopilot',
             current_phase: 'deep-interview',
             state: {
+              execution_scope_required: true,
               deep_interview_gate: {
                 status: 'complete',
-                rationale: 'The user wants the full current phase delivered.',
+                rationale: 'Requirements and execution scope must be explicit before planning.',
               },
               handoff_artifacts: {
-                deep_interview: { summary: 'Full phase execution is ready for planning.' },
+                deep_interview: { summary: 'Ready for planning after structured scope confirmation.' },
               },
             },
           }, null, 2),
@@ -1278,11 +1279,93 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('allows broad Autopilot deep-interview handoff with a valid phase execution_scope', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-broad-scope-allow-'));
+  for (const scope of [
+    {
+      selected: 'task',
+      source: 'deep-interview',
+      allow_task_shrink: true,
+      completion_unit: 'smallest safe task',
+      acceptance_coverage_required: false,
+      stop_condition: 'the selected task is complete or blocked',
+    },
+    {
+      selected: 'deliverable',
+      source: 'deep-interview',
+      allow_task_shrink: false,
+      completion_unit: 'one coherent deliverable',
+      acceptance_coverage_required: true,
+      stop_condition: 'the deliverable acceptance criteria are satisfied or blocked',
+    },
+    {
+      selected: 'phase',
+      source: 'deep-interview',
+      allow_task_shrink: false,
+      completion_unit: 'full current phase',
+      acceptance_coverage_required: true,
+      stop_condition: 'all phase acceptance criteria are satisfied or blocked',
+    },
+  ]) {
+    it(`allows Autopilot deep-interview handoff with valid ${scope.selected} execution_scope`, async () => {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${scope.selected}-scope-allow-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-${scope.selected}-scope-allow`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+              state: {
+                deep_interview_gate: {
+                  status: 'complete',
+                  rationale: 'Requirements are explicit and ready for planning.',
+                },
+                handoff_artifacts: {
+                  deep_interview: { summary: 'Structured execution scope is ready for planning.' },
+                },
+              },
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+            state: {
+              execution_scope_required: true,
+              execution_scope: scope,
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: `The user selected ${scope.selected} execution scope.`,
+              },
+              handoff_artifacts: {
+                deep_interview: { summary: 'Structured execution scope is ready for planning.' },
+              },
+            },
+          });
+
+          assert.equal(response.isError, undefined);
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, 'ralplan');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('denies Autopilot deep-interview handoff with invalid phase execution_scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-invalid-phase-scope-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
-        const sessionId = 'sess-autopilot-broad-scope-allow';
+        const sessionId = 'sess-autopilot-invalid-phase-scope-deny';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
@@ -1294,10 +1377,10 @@ describe('state operations directory initialization', () => {
             state: {
               deep_interview_gate: {
                 status: 'complete',
-                rationale: 'The user wants the full current phase delivered.',
+                rationale: 'Requirements are explicit and ready for planning.',
               },
               handoff_artifacts: {
-                deep_interview: { summary: 'Full phase execution is ready for planning.' },
+                deep_interview: { summary: 'Ready for structured planning.' },
               },
             },
           }, null, 2),
@@ -1314,26 +1397,95 @@ describe('state operations directory initialization', () => {
             execution_scope: {
               selected: 'phase',
               source: 'deep-interview',
-              allow_task_shrink: false,
+              allow_task_shrink: true,
               completion_unit: 'full current phase',
               acceptance_coverage_required: true,
-              stop_condition: 'all phase acceptance criteria are satisfied or a blocker requires user decision',
             },
             deep_interview_gate: {
               status: 'complete',
-              rationale: 'The user selected full current phase execution.',
+              rationale: 'The user selected phase execution scope.',
             },
             handoff_artifacts: {
-              deep_interview: { summary: 'Full phase execution is ready for planning.' },
+              deep_interview: { summary: 'Ready for structured planning.' },
             },
           },
         });
 
-        assert.equal(response.isError, undefined);
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /missing valid execution_scope/i);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
-        assert.equal(state.current_phase, 'ralplan');
+        assert.equal(state.current_phase, 'deep-interview');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows standalone deep-interview handoff with valid source execution_scope and no nextState', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-standalone-di-source-scope-allow-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-standalone-di-source-scope-allow';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'skill-active-state.json'),
+          JSON.stringify({
+            version: 1,
+            active: true,
+            skill: 'deep-interview',
+            session_id: sessionId,
+            active_skills: [{
+              skill: 'deep-interview',
+              active: true,
+              phase: 'deep-interview',
+              session_id: sessionId,
+            }],
+          }, null, 2),
+        );
+        await writeFile(
+          join(sessionDir, 'deep-interview-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'deep-interview',
+            current_phase: 'deep-interview',
+            execution_scope_required: true,
+            execution_scope: {
+              selected: 'phase',
+              source: 'deep-interview',
+              allow_task_shrink: false,
+              completion_unit: 'full current phase',
+              acceptance_coverage_required: true,
+              stop_condition: 'all phase acceptance criteria are satisfied or blocked',
+            },
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'Requirements and stride are explicitly complete.',
+              handoff_summary: 'Ready for ralplan.',
+            },
+            handoff_artifacts: {
+              deep_interview: { summary: 'Ready for planning.' },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'ralplan',
+          active: true,
+          current_phase: 'planning',
+        });
+
+        assert.equal(response.isError, undefined);
+        assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), true);
+        const deepInterviewState = JSON.parse(
+          await readFile(join(sessionDir, 'deep-interview-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(deepInterviewState.active, false);
+        assert.equal(deepInterviewState.current_phase, 'completed');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });

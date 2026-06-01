@@ -42,6 +42,7 @@ describe('autopilot skill default Ultragoal contract', () => {
   it('carries execution scope from deep-interview through planning and completion gates', () => {
     assert.match(autopilotSkill, /execution_scope/i);
     assert.match(autopilotSkill, /`task`, `deliverable`, or `phase`/i);
+    assert.match(autopilotSkill, /`phase` means delivery\/execution scope, not the Autopilot workflow `current_phase`/i);
     assert.match(autopilotSkill, /conditional readiness gate/i);
     assert.match(autopilotSkill, /do not silently shrink a user-selected full phase into a task-sized slice/i);
     assert.match(autopilotSkill, /execution_scope_required/i);

@@ -194,7 +194,7 @@ Detailed dimensions:
 - Success Criteria Clarity — how completion will be judged
 - Context Clarity — existing codebase understanding (brownfield only)
 
-`Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit. `Execution Scope / Stride` is a conditional readiness gate for broad downstream execution: if the task is phase-like or multi-deliverable, ask or infer-with-confirmation whether the handoff should be `task`, `deliverable`, or `phase`.
+`Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit. `Execution Scope / Stride` is a conditional readiness gate for broad downstream execution: if the task is phase-like or multi-deliverable, ask or infer-with-confirmation whether the handoff should be `task`, `deliverable`, or `phase`. In this vocabulary, `phase` means delivery/execution scope, not an Autopilot workflow `current_phase`.
 
 ### 2b) Ask the question
 Use the surface-appropriate structured questioning path for every interview round. In attached-tmux sessions, use OMX-owned structured questioning via `omx question` (this is the required structured-question equivalent and required `AskUserQuestion` equivalent for deep-interview). Outside tmux, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer. Present:

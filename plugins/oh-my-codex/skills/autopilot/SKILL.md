@@ -32,7 +32,7 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 1. **Phase `deep-interview`** — Socratic requirements clarification gate
    - Run or resume `$deep-interview` to clarify intent, scope, non-goals, constraints, decision boundaries, and the intended execution scope/stride.
    - Deep-interview is a structured question chain, not a one-question gate; `max_rounds` is a cap, not a target.
-   - For broad, phase-like, project-level, or multi-deliverable requests, deep-interview must resolve `execution_scope` as `task`, `deliverable`, or `phase` before handoff. This is a conditional readiness gate: do not silently choose a full-phase stride from vague ambition, and do not silently shrink a user-selected full phase into a task-sized slice.
+   - For broad, phase-like, project-level, or multi-deliverable requests, deep-interview must resolve `execution_scope` as `task`, `deliverable`, or `phase` before handoff. Here `phase` means delivery/execution scope, not the Autopilot workflow `current_phase`. This is a conditional readiness gate: do not silently choose a full-phase stride from vague ambition, and do not silently shrink a user-selected full phase into a task-sized slice.
    - After a user answers an `omx question`, re-score ambiguity against the active profile threshold. Ask another question only when a readiness gate is still unresolved and the answer would materially change execution; otherwise crystallize the spec and hand off.
    - Required handoff artifact: a clarified spec or concise requirements summary suitable for `$ralplan`, including an explicit interview-complete rationale and any `execution_scope` contract when leaving deep-interview.
 

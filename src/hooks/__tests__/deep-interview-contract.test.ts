@@ -239,6 +239,7 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /Execution Scope \/ Stride/i);
 		assert.match(deepInterviewSkill, /execution_scope/i);
 		assert.match(deepInterviewSkill, /task\|deliverable\|phase/i);
+		assert.match(deepInterviewSkill, /`phase` means delivery\/execution scope, not an Autopilot workflow `current_phase`/i);
 		assert.match(deepInterviewSkill, /Task-sized step/i);
 		assert.match(deepInterviewSkill, /Natural deliverable/i);
 		assert.match(deepInterviewSkill, /Full current phase/i);

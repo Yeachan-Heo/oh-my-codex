@@ -1,6 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { isAbsolute, normalize, resolve } from 'node:path';
-
 import { getQuestionRecordPath, getQuestionRecordPathForStateDir, readQuestionRecord } from '../question/state.js';
 import type { QuestionRecord } from '../question/types.js';
 import type { DeepInterviewQuestionEnforcementState } from '../question/deep-interview.js';
@@ -83,81 +80,22 @@ function hasValidExecutionScope(state: JsonObject | null | undefined): boolean {
   return completionUnit.length > 0 || stopCondition.length > 0;
 }
 
-function collectTextSignalsFromValue(value: unknown, output: string[], depth = 0): void {
-  if (depth > 4 || value == null) return;
-  if (typeof value === 'string') {
-    output.push(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectTextSignalsFromValue(item, output, depth + 1);
-    return;
-  }
-  const object = safeObject(value);
-  if (!object) return;
-  for (const key of [
-    'initial_idea',
-    'task_statement',
-    'activation_prompt',
-    'task_seed',
-    'prompt',
-    'summary',
-    'handoff_summary',
-    'rationale',
-    'reason',
-    'objective',
-    'desired_outcome',
-    'title',
-  ]) {
-    collectTextSignalsFromValue(object[key], output, depth + 1);
-  }
+function hasValidExecutionScopeForHandoff(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): boolean {
+  if (input.nextState) return hasValidExecutionScope(input.nextState);
+  return hasValidExecutionScope(deepState) || hasValidExecutionScope(input.currentState);
 }
 
-function hasBroadExecutionSignal(text: string): boolean {
-  return /\b(?:phase|full[-\s]?phase|whole|entire|campaign|roadmap|multi[-\s]?deliverable|project[-\s]?level|large[-\s]?scale|broad|all acceptance criteria)\b/i.test(text)
-    || /(?:阶段|大阶段|完整|整个|全[部量]|项目级|长期目标|多阶段)/.test(text);
-}
-
-function contextSnapshotPath(state: JsonObject | null | undefined): string {
-  const artifacts = handoffArtifacts(state);
-  const nested = nestedState(state);
-  return safeString(artifacts?.context_snapshot_path)
-    || safeString(nested?.context_snapshot_path)
-    || safeString(state?.context_snapshot_path);
-}
-
-async function readContextSnapshotSignal(cwd: string, state: JsonObject | null | undefined): Promise<string> {
-  const snapshotPath = contextSnapshotPath(state);
-  if (!snapshotPath) return '';
-  const resolved = isAbsolute(snapshotPath) ? normalize(snapshotPath) : resolve(cwd, snapshotPath);
-  const cwdRoot = resolve(cwd);
-  if (!resolved.startsWith(`${cwdRoot}/`)) return '';
-  try {
-    return await readFile(resolved, 'utf-8');
-  } catch {
-    return '';
-  }
-}
-
-async function requiresExecutionScope(
+function requiresExecutionScope(
   input: AutopilotDeepInterviewRalplanGateInput,
   deepState: JsonObject | null,
   gate: JsonObject,
-): Promise<boolean> {
+): boolean {
   const candidates = allCandidateStates(input, deepState);
-  if (executionScopeRequiredMarker(gate) || candidates.some((state) => executionScopeRequiredMarker(state))) return true;
-
-  const signals: string[] = [];
-  collectTextSignalsFromValue(gate, signals);
-  for (const state of candidates) collectTextSignalsFromValue(state, signals);
-  if (signals.some(hasBroadExecutionSignal)) return true;
-
-  for (const state of candidates) {
-    const snapshot = await readContextSnapshotSignal(input.cwd, state);
-    if (snapshot && hasBroadExecutionSignal(snapshot)) return true;
-  }
-
-  return false;
+  return executionScopeRequiredMarker(gate)
+    || candidates.some((state) => executionScopeRequiredMarker(state));
 }
 
 function deepInterviewGate(state: JsonObject | null | undefined): JsonObject | null {
@@ -430,7 +368,7 @@ export async function canAdvanceAutopilotDeepInterviewToRalplan(
     };
   }
 
-  if (await requiresExecutionScope(input, deepState, gate) && !hasValidExecutionScope(input.nextState)) {
+  if (requiresExecutionScope(input, deepState, gate) && !hasValidExecutionScopeForHandoff(input, deepState)) {
     return {
       allowed: false,
       reason: 'missing valid execution_scope for broad or phase-like deep-interview handoff',
