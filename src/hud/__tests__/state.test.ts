@@ -666,6 +666,90 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('surfaces code-review from canonical skill-active without detail state', async () => {
+    await withTempRepo('omx-hud-canonical-code-review-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-code-review';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'code-review',
+        phase: 'running',
+        session_id: sessionId,
+        active_skills: [{ skill: 'code-review', phase: 'running', active: true, session_id: sessionId }],
+      }));
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.codeReview, { active: true, current_phase: 'running' });
+    });
+  });
+
+  it('derives late-gate HUD statuses from active Autopilot child phases', async () => {
+    await withTempRepo('omx-hud-autopilot-late-gates-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-autopilot-late';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'code-review',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'code-review', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'code-review',
+      }));
+
+      const codeReviewState = await readAllState(cwd);
+      assert.deepEqual(codeReviewState.codeReview, { active: true, current_phase: 'autopilot' });
+      assert.equal(codeReviewState.ultraqa, null);
+
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ultraqa',
+      }));
+      const ultraqaState = await readAllState(cwd);
+      assert.equal(ultraqaState.codeReview, null);
+      assert.deepEqual(ultraqaState.ultraqa, { active: true, current_phase: 'autopilot' });
+    });
+  });
+
+  it('suppresses stale root late-gate detail without session authority', async () => {
+    await withTempRepo('omx-hud-late-gate-stale-root-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-late-gate-stale';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'code-review-state.json'), JSON.stringify({ active: true, current_phase: 'stale-root' }));
+      await writeFile(join(rootStateDir, 'ultraqa-state.json'), JSON.stringify({ active: true, current_phase: 'stale-root' }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'ralplan',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'ralplan', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ralplan',
+      }));
+
+      const state = await readAllState(cwd);
+      assert.equal(state.codeReview, null);
+      assert.equal(state.ultraqa, null);
+      assert.deepEqual(state.autopilot, { active: true, mode: 'autopilot', current_phase: 'ralplan' });
+    });
+  });
+
   it('surfaces approved combined workflow state from canonical multi-skill data', async () => {
     await withTempRepo('omx-hud-canonical-combined-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

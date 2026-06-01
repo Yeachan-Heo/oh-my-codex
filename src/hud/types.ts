@@ -67,6 +67,12 @@ export interface AutoresearchStateForHud {
   current_phase?: string;
 }
 
+/** Code-review state for HUD display */
+export interface CodeReviewStateForHud {
+  active: boolean;
+  current_phase?: string;
+}
+
 /** Ultraqa state for HUD display */
 export interface UltraqaStateForHud {
   active: boolean;
@@ -117,6 +123,7 @@ export interface HudRenderContext {
   ralplan: RalplanStateForHud | null;
   deepInterview: DeepInterviewStateForHud | null;
   autoresearch: AutoresearchStateForHud | null;
+  codeReview?: CodeReviewStateForHud | null;
   ultraqa: UltraqaStateForHud | null;
   team: TeamStateForHud | null;
   metrics: HudMetrics | null;

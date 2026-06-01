@@ -24,6 +24,7 @@ import type {
   RalplanStateForHud,
   DeepInterviewStateForHud,
   AutoresearchStateForHud,
+  CodeReviewStateForHud,
   UltraqaStateForHud,
   TeamStateForHud,
   HudMetrics,
@@ -492,6 +493,20 @@ function mergeTeamPhase(
   return { active: true, current_phase: canonicalPhase };
 }
 
+function activeAutopilotPhase(autopilot: AutopilotStateForHud | null): string | undefined {
+  if (autopilot?.active !== true) return undefined;
+  return sanitizeOptionalString(autopilot.current_phase)?.toLowerCase().replace(/_/g, '-');
+}
+
+function supervisedAutopilotStage<T extends { active?: boolean; current_phase?: string }>(
+  autopilot: AutopilotStateForHud | null,
+  stage: string,
+): T | null {
+  return activeAutopilotPhase(autopilot) === stage
+    ? { active: true, current_phase: 'autopilot' } as T
+    : null;
+}
+
 /** Read all state files and build the full render context */
 export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFAULT_HUD_CONFIG): Promise<HudRenderContext> {
   const version = readVersion();
@@ -555,9 +570,12 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
       return merged;
     })()
     : null;
+  const codeReview = shouldSurfaceCanonicalSkill(canonicalSkills, 'code-review', null)
+    ? mergePhase<CodeReviewStateForHud>(null, canonicalPhaseForSkill(canonicalSkills, 'code-review'))
+    : supervisedAutopilotStage<CodeReviewStateForHud>(autopilot, 'code-review');
   const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail)
     ? mergePhase(ultraqaDetail?.active === true ? ultraqaDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'))
-    : null;
+    : supervisedAutopilotStage<UltraqaStateForHud>(autopilot, 'ultraqa');
   const canonicalTeamPhase = await readCanonicalTeamPhase(cwd, teamDetail?.active === true ? teamDetail : null);
   const team = shouldSurfaceCanonicalSkill(canonicalSkills, 'team', teamDetail)
     ? mergeTeamPhase(
@@ -591,6 +609,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     ralplan,
     deepInterview,
     autoresearch,
+    codeReview,
     ultraqa,
     team,
     metrics,

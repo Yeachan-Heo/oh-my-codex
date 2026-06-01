@@ -29,6 +29,7 @@ function emptyCtx(): HudRenderContext {
     ralplan: null,
     deepInterview: null,
     autoresearch: null,
+    codeReview: null,
     ultraqa: null,
     team: null,
     metrics: null,
@@ -195,6 +196,27 @@ describe('renderHud – autoresearch', () => {
   });
 });
 
+// ── Code review ───────────────────────────────────────────────────────────────
+
+describe('renderHud – code-review', () => {
+  it('renders code-review with the current phase', () => {
+    const ctx = { ...emptyCtx(), codeReview: { active: true, current_phase: 'running' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${GREEN}code-review:running${RESET}`));
+  });
+
+  it('suppresses duplicate late autopilot code-review status', () => {
+    const ctx = {
+      ...emptyCtx(),
+      autopilot: { active: true, current_phase: 'code-review' },
+      codeReview: { active: true, current_phase: 'autopilot' },
+    };
+    const result = stripSgr(renderHud(ctx, 'focused'));
+    assert.ok(result.includes('code-review:autopilot'));
+    assert.equal(result.includes('autopilot:code-review'), false);
+  });
+});
+
 // ── Ultraqa ───────────────────────────────────────────────────────────────────
 
 describe('renderHud – ultraqa', () => {
@@ -202,6 +224,17 @@ describe('renderHud – ultraqa', () => {
     const ctx = { ...emptyCtx(), ultraqa: { active: true, current_phase: 'diagnose' } };
     const result = renderHud(ctx, 'focused');
     assert.ok(result.includes(`${GREEN}qa:diagnose${RESET}`));
+  });
+
+  it('suppresses duplicate late autopilot ultraqa status', () => {
+    const ctx = {
+      ...emptyCtx(),
+      autopilot: { active: true, current_phase: 'ultraqa' },
+      ultraqa: { active: true, current_phase: 'autopilot' },
+    };
+    const result = stripSgr(renderHud(ctx, 'focused'));
+    assert.ok(result.includes('qa:autopilot'));
+    assert.equal(result.includes('autopilot:ultraqa'), false);
   });
 });
 

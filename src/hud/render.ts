@@ -74,9 +74,15 @@ function renderUltrawork(ctx: HudRenderContext): string | null {
   return cyan('ultrawork');
 }
 
+function isLateAutopilotHudPhase(phase: string): boolean {
+  const normalized = phase.toLowerCase().replace(/_/g, '-');
+  return normalized === 'code-review' || normalized === 'ultraqa';
+}
+
 function renderAutopilot(ctx: HudRenderContext): string | null {
   if (!ctx.autopilot) return null;
   const phase = sanitizeDynamicText(ctx.autopilot.current_phase || 'active') || 'active';
+  if (isLateAutopilotHudPhase(phase) && (ctx.codeReview || ctx.ultraqa)) return null;
   return yellow(`autopilot:${phase}`);
 }
 
@@ -103,6 +109,12 @@ function renderAutoresearch(ctx: HudRenderContext): string | null {
   if (!ctx.autoresearch) return null;
   const phase = sanitizeDynamicText(ctx.autoresearch.current_phase || 'active') || 'active';
   return cyan(`research:${phase}`);
+}
+
+function renderCodeReview(ctx: HudRenderContext): string | null {
+  if (!ctx.codeReview) return null;
+  const phase = sanitizeDynamicText(ctx.codeReview.current_phase || 'active') || 'active';
+  return green(`code-review:${phase}`);
 }
 
 function renderUltraqa(ctx: HudRenderContext): string | null {
@@ -256,6 +268,7 @@ const MINIMAL_ELEMENTS: ElementRenderer[] = [
   renderRalplan,
   renderDeepInterview,
   renderAutoresearch,
+  renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
   renderTurns,
@@ -269,6 +282,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderRalplan,
   renderDeepInterview,
   renderAutoresearch,
+  renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
   renderTurns,
@@ -286,6 +300,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderRalplan,
   renderDeepInterview,
   renderAutoresearch,
+  renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
   renderTurns,
