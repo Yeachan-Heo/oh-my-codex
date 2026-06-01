@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import { isAbsolute, normalize, resolve } from 'node:path';
+
 import { getQuestionRecordPath, getQuestionRecordPathForStateDir, readQuestionRecord } from '../question/state.js';
 import type { QuestionRecord } from '../question/types.js';
 import type { DeepInterviewQuestionEnforcementState } from '../question/deep-interview.js';
@@ -46,6 +49,115 @@ function handoffArtifacts(state: JsonObject | null | undefined): JsonObject | nu
 
 function deepInterviewHandoff(state: JsonObject | null | undefined): unknown {
   return handoffArtifacts(state)?.deep_interview;
+}
+
+function executionScope(state: JsonObject | null | undefined): JsonObject | null {
+  const direct = safeObject(state?.execution_scope) ?? safeObject(nestedState(state)?.execution_scope);
+  if (direct) return direct;
+  const handoff = safeObject(deepInterviewHandoff(state));
+  return safeObject(handoff?.execution_scope);
+}
+
+function executionScopeRequiredMarker(state: JsonObject | null | undefined): boolean {
+  const nested = nestedState(state);
+  const handoff = safeObject(deepInterviewHandoff(state));
+  const gate = deepInterviewGate(state);
+  return state?.execution_scope_required === true
+    || nested?.execution_scope_required === true
+    || handoff?.execution_scope_required === true
+    || gate?.execution_scope_required === true;
+}
+
+function hasValidExecutionScope(state: JsonObject | null | undefined): boolean {
+  const scope = executionScope(state);
+  if (!scope) return false;
+  const selected = safeString(scope.selected) || safeString(scope.value) || safeString(scope.scope);
+  if (!['task', 'deliverable', 'phase'].includes(selected)) return false;
+  const stopCondition = safeString(scope.stop_condition) || safeString(scope.stopCondition);
+  const completionUnit = safeString(scope.completion_unit) || safeString(scope.completionUnit);
+  if (selected === 'phase') {
+    return scope.allow_task_shrink === false
+      && scope.acceptance_coverage_required === true
+      && stopCondition.length > 0;
+  }
+  return completionUnit.length > 0 || stopCondition.length > 0;
+}
+
+function collectTextSignalsFromValue(value: unknown, output: string[], depth = 0): void {
+  if (depth > 4 || value == null) return;
+  if (typeof value === 'string') {
+    output.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectTextSignalsFromValue(item, output, depth + 1);
+    return;
+  }
+  const object = safeObject(value);
+  if (!object) return;
+  for (const key of [
+    'initial_idea',
+    'task_statement',
+    'activation_prompt',
+    'task_seed',
+    'prompt',
+    'summary',
+    'handoff_summary',
+    'rationale',
+    'reason',
+    'objective',
+    'desired_outcome',
+    'title',
+  ]) {
+    collectTextSignalsFromValue(object[key], output, depth + 1);
+  }
+}
+
+function hasBroadExecutionSignal(text: string): boolean {
+  return /\b(?:phase|full[-\s]?phase|whole|entire|campaign|roadmap|multi[-\s]?deliverable|project[-\s]?level|large[-\s]?scale|broad|all acceptance criteria)\b/i.test(text)
+    || /(?:阶段|大阶段|完整|整个|全[部量]|项目级|长期目标|多阶段)/.test(text);
+}
+
+function contextSnapshotPath(state: JsonObject | null | undefined): string {
+  const artifacts = handoffArtifacts(state);
+  const nested = nestedState(state);
+  return safeString(artifacts?.context_snapshot_path)
+    || safeString(nested?.context_snapshot_path)
+    || safeString(state?.context_snapshot_path);
+}
+
+async function readContextSnapshotSignal(cwd: string, state: JsonObject | null | undefined): Promise<string> {
+  const snapshotPath = contextSnapshotPath(state);
+  if (!snapshotPath) return '';
+  const resolved = isAbsolute(snapshotPath) ? normalize(snapshotPath) : resolve(cwd, snapshotPath);
+  const cwdRoot = resolve(cwd);
+  if (!resolved.startsWith(`${cwdRoot}/`)) return '';
+  try {
+    return await readFile(resolved, 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
+async function requiresExecutionScope(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+  gate: JsonObject,
+): Promise<boolean> {
+  const candidates = allCandidateStates(input, deepState);
+  if (executionScopeRequiredMarker(gate) || candidates.some((state) => executionScopeRequiredMarker(state))) return true;
+
+  const signals: string[] = [];
+  collectTextSignalsFromValue(gate, signals);
+  for (const state of candidates) collectTextSignalsFromValue(state, signals);
+  if (signals.some(hasBroadExecutionSignal)) return true;
+
+  for (const state of candidates) {
+    const snapshot = await readContextSnapshotSignal(input.cwd, state);
+    if (snapshot && hasBroadExecutionSignal(snapshot)) return true;
+  }
+
+  return false;
 }
 
 function deepInterviewGate(state: JsonObject | null | undefined): JsonObject | null {
@@ -315,6 +427,14 @@ export async function canAdvanceAutopilotDeepInterviewToRalplan(
     return {
       allowed: false,
       reason: 'satisfied deep-interview question obligation lacks same-session answered omx question record',
+    };
+  }
+
+  if (await requiresExecutionScope(input, deepState, gate) && !hasValidExecutionScope(input.nextState)) {
+    return {
+      allowed: false,
+      reason: 'missing valid execution_scope for broad or phase-like deep-interview handoff',
+      evidence: { gate_status: 'complete', execution_scope_required: true },
     };
   }
 

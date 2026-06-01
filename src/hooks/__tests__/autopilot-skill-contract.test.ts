@@ -44,6 +44,7 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /`task`, `deliverable`, or `phase`/i);
     assert.match(autopilotSkill, /conditional readiness gate/i);
     assert.match(autopilotSkill, /do not silently shrink a user-selected full phase into a task-sized slice/i);
+    assert.match(autopilotSkill, /execution_scope_required/i);
     assert.match(autopilotSkill, /allow_task_shrink/i);
     assert.match(autopilotSkill, /acceptance_coverage_required/i);
     assert.match(autopilotSkill, /If `execution_scope: phase`, the plan\/test spec must map the full phase acceptance criteria/i);
