@@ -8,6 +8,7 @@ import {
   isHudWatchPane,
   killTmuxPane,
   listCurrentWindowPanes,
+  readHudPaneOwner,
   registerHudResizeHook,
   unregisterHudResizeHook,
   resizeTmuxPane,
@@ -19,6 +20,46 @@ export const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 
 function isExplicitOmxOwnedTmuxEnv(env: NodeJS.ProcessEnv): boolean {
   return env[OMX_TMUX_HUD_OWNER_ENV] === '1';
+}
+
+/**
+ * Kill HUD watch panes that belong to the *current* session but whose owning
+ * leader pane is no longer alive in this window.
+ *
+ * Without this, a destroyed leader pane (e.g. when a `team` setup/teardown cycle
+ * tears down the leader REPL pane) leaves its HUD panes orphaned. The owner match
+ * used below (`findHudWatchPaneIds` with `leaderPaneId: currentPaneId`) keys on the
+ * *current* leader pane id, so those orphans — still tagged with the dead leader id
+ * — never match. The reconcile then treats the window as having zero HUDs and
+ * appends a fresh one on every prompt submit, until the window degenerates into a
+ * column of stacked HUD strips with no leader or worker panes left.
+ *
+ * The reap is intentionally scoped to the current session: HUD panes owned by other
+ * sessions (whose leader may legitimately live in a different tmux window we cannot
+ * see from this window's pane list) are never touched.
+ */
+function reapOrphanedSessionHudPanes(
+  panes: TmuxPaneSnapshot[],
+  opts: {
+    sessionId: string | undefined;
+    currentPaneId: string | undefined;
+    killPane: (paneId: string) => boolean;
+  },
+): string[] {
+  const { sessionId, currentPaneId, killPane } = opts;
+  if (!sessionId) return [];
+  const livePaneIds = new Set(panes.map((pane) => pane.paneId));
+  const reaped: string[] = [];
+  for (const pane of panes) {
+    if (!isHudWatchPane(pane)) continue;
+    const owner = readHudPaneOwner(pane);
+    // Only reclaim HUDs that explicitly belong to this session and name a leader.
+    if (owner.sessionId !== sessionId || !owner.leaderPaneId) continue;
+    // Keep HUDs whose leader is the current pane or otherwise still alive here.
+    if (owner.leaderPaneId === currentPaneId || livePaneIds.has(owner.leaderPaneId)) continue;
+    if (killPane(pane.paneId)) reaped.push(pane.paneId);
+  }
+  return reaped;
 }
 
 export interface ReconcileHudForPromptSubmitResult {
@@ -107,8 +148,21 @@ export async function reconcileHudForPromptSubmit(
   const resizePane = deps.resizeTmuxPane ?? ((paneId, lines) => resizeTmuxPane(paneId, lines));
 
   const currentPaneId = env.TMUX_PANE?.trim();
-  const panes = listPanes(currentPaneId);
   const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
+  let panes = listPanes(currentPaneId);
+
+  // Reclaim orphaned HUD panes from a destroyed leader before deciding whether a
+  // HUD already exists; otherwise dead-leader HUDs accumulate one per prompt submit.
+  const reapedOrphanPaneIds = reapOrphanedSessionHudPanes(panes, {
+    sessionId: resolvedSessionId,
+    currentPaneId,
+    killPane,
+  });
+  if (reapedOrphanPaneIds.length > 0) {
+    const reapedPaneIdSet = new Set(reapedOrphanPaneIds);
+    panes = panes.filter((pane) => !reapedPaneIdSet.has(pane.paneId));
+  }
+
   const hudPaneIds = findHudWatchPaneIds(panes, currentPaneId, {
     sessionId: resolvedSessionId,
     leaderPaneId: currentPaneId,
