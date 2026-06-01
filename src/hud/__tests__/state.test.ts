@@ -306,6 +306,37 @@ describe('readUltragoalState', { concurrency: false }, () => {
     });
   });
 
+  it('keeps HUD active when aggregate completion exists but repo-native ultragoal work is still running', async () => {
+    await withTempRepo('omx-hud-ultragoal-aggregate-active-', async (cwd) => {
+      const ultragoalDir = join(cwd, '.omx', 'ultragoal');
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        activeGoalId: 'G002-running',
+        aggregateCompletion: {
+          status: 'complete',
+          completedAt: '2026-06-01T12:00:00.000Z',
+          evidence: 'task-scoped Codex aggregate completed before microgoal ledger reconciliation finished',
+        },
+        goals: [
+          { id: 'G001-done', title: 'Done', objective: 'Completed prior work', status: 'complete' },
+          { id: 'G002-running', title: 'Running', objective: 'Finish active repo-native work', status: 'in_progress' },
+          { id: 'G003-pending', title: 'Pending', objective: 'Finish follow-up work', status: 'pending' },
+        ],
+      }));
+
+      const state = await readUltragoalState(cwd);
+
+      assert.equal(state?.active, true);
+      assert.equal(state?.status, 'in_progress');
+      assert.equal(state?.activeGoal?.id, 'G002-running');
+      assert.equal(state?.complete, 1);
+      assert.equal(state?.inProgress, 1);
+      assert.equal(state?.pending, 1);
+      assert.deepEqual(state?.ongoingGoals?.map((goal) => goal.id), ['G002-running', 'G003-pending']);
+    });
+  });
+
   it('shows active ultragoal plus the next three pending goals', async () => {
     await withTempRepo('omx-hud-ultragoal-next-pending-', async (cwd) => {
       const ultragoalDir = join(cwd, '.omx', 'ultragoal');

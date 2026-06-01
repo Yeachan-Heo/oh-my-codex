@@ -138,11 +138,6 @@ function normalizeUltragoalGoal(raw: unknown): NormalizedUltragoalGoal | null {
   return { id, title, objective, status };
 }
 
-function isAggregateComplete(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  return (value as { status?: unknown }).status === 'complete';
-}
-
 export async function readUltragoalState(cwd: string): Promise<UltragoalStateForHud | null> {
   const plan = await readJsonFile<RawUltragoalPlan>(join(cwd, '.omx', 'ultragoal', 'goals.json'));
   if (!plan || typeof plan !== 'object' || !Array.isArray(plan.goals)) return null;
@@ -164,7 +159,7 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
     ?? goals.find((goal) => ULTRAGOAL_UNRESOLVED_STATUSES.has(goal.status))
   );
   const activeIndex = activeGoal ? goals.findIndex((goal) => goal.id === activeGoal.id) : -1;
-  const complete = isAggregateComplete(plan.aggregateCompletion) || unresolved_goals === 0;
+  const complete = unresolved_goals === 0;
   const toHudGoal = ({ goal, index }: { goal: NormalizedUltragoalGoal; index: number }) => ({
     id: goal.id,
     title: goal.title,
