@@ -214,7 +214,8 @@ describe('launchQuestionRenderer', () => {
         strategy: 'inside-tmux',
         execTmux: (args) => {
           calls.push(args);
-          if (args[0] === 'display-message') return '1\n';
+          if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message') return '1\n';
           if (args[0] === 'split-window') return '%42\n';
           if (args[0] === 'list-panes') return '0\t%42\n';
           return '';
@@ -249,6 +250,77 @@ describe('launchQuestionRenderer', () => {
     assert.ok(calls.some((call) => call.join(' ') === 'list-panes -t %42 -F #{pane_dead}\t#{pane_id}'));
   });
 
+  it('opens a new tmux window when the current pane is too short for the question frame', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-new-window-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
+      mkdirSync(stateDir, { recursive: true });
+      const recordPath = join(stateDir, 'question-1.json');
+      writeFileSync(recordPath, JSON.stringify({
+        kind: 'omx.question/v1',
+        question_id: 'question-1',
+        created_at: '2026-05-01T10:08:52.523Z',
+        updated_at: '2026-05-01T10:08:52.523Z',
+        status: 'pending',
+        question: 'Round 1 | Target: definition-boundary | Ambiguity: 42%\n\nСамая важная неоднозначность: что именно считать системной метрикой скорости для TTS / Image / Voice, чтобы прогресс-бар и карточки не врали оператору?',
+        options: [
+          { label: 'Stage timings', value: 'stage-timings', description: 'Считать отдельно реальные этапы: TTS synthesis, image/still generation, voice/video final generation; для каждого нужны stage timestamps/metadata.' },
+          { label: 'Wall-clock by artifact', value: 'wall-clock-by-artifact', description: 'Брать общий wall-clock от createdAt до completed и нормализовать по типу результата: 1 image / N sec, 1s video / N sec.' },
+          { label: 'Hybrid recommended', value: 'hybrid', description: 'Сначала использовать wall-clock fallback, но добавлять stage timings для новых генераций, когда этапы можно инструментировать.' },
+        ],
+        allow_other: true,
+        other_label: 'Other',
+        multi_select: false,
+        type: 'single-answerable',
+        questions: [{
+          id: 'q-1',
+          question: 'Round 1 | Target: definition-boundary | Ambiguity: 42%\n\nСамая важная неоднозначность: что именно считать системной метрикой скорости для TTS / Image / Voice, чтобы прогресс-бар и карточки не врали оператору?',
+          options: [
+            { label: 'Stage timings', value: 'stage-timings', description: 'Считать отдельно реальные этапы: TTS synthesis, image/still generation, voice/video final generation; для каждого нужны stage timestamps/metadata.' },
+            { label: 'Wall-clock by artifact', value: 'wall-clock-by-artifact', description: 'Брать общий wall-clock от createdAt до completed и нормализовать по типу результата: 1 image / N sec, 1s video / N sec.' },
+            { label: 'Hybrid recommended', value: 'hybrid', description: 'Сначала использовать wall-clock fallback, но добавлять stage timings для новых генераций, когда этапы можно инструментировать.' },
+          ],
+          allow_other: true,
+          other_label: 'Other',
+          multi_select: false,
+          type: 'single-answerable',
+        }],
+        source: 'deep-interview',
+      }, null, 2));
+
+      const calls: string[][] = [];
+      const result = launchQuestionRenderer(
+        {
+          cwd,
+          recordPath,
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '5\n';
+            if (args[0] === 'new-window') return '%42\n';
+            if (args[0] === 'list-panes' && args[2] === '%42') return '0\t%42\n';
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      );
+
+      assert.equal(result.renderer, 'tmux-pane');
+      assert.equal(result.target, '%42');
+      assert.equal(result.return_target, '%11');
+      assert.equal(result.return_transport, 'tmux-send-keys');
+      assert.equal(calls.some((call) => call[0] === 'new-window'), true);
+      assert.equal(calls.some((call) => call[0] === 'split-window'), false);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
   it('targets the explicit leader pane even when the caller is already inside tmux', () => {
     const calls: string[][] = [];
     const result = launchQuestionRenderer(
@@ -267,7 +339,7 @@ describe('launchQuestionRenderer', () => {
         execTmux: (args) => {
           calls.push(args);
           if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
-          if (args[0] === 'display-message') return '1\n';
+            if (args[0] === 'display-message') return '1\n';
           if (args[0] === 'split-window') return '%45\n';
           if (args[0] === 'list-panes') return '0\t%45\n';
           return '';
@@ -457,6 +529,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%42\n';
             throw new Error("can't find pane: %42");
@@ -532,6 +605,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%77\n';
             if (args[0] === 'list-panes') return '0\t%77\n';
@@ -579,6 +653,7 @@ describe('launchQuestionRenderer', () => {
         {
           strategy: 'inside-tmux',
           execTmux: (args) => {
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%77\n';
             if (args[0] === 'list-panes') return '0\t%77\n';
@@ -607,7 +682,8 @@ describe('launchQuestionRenderer', () => {
         strategy: 'inside-tmux',
         execTmux: (args) => {
           calls.push(args);
-          if (args[0] === 'display-message') return '1\n';
+          if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message') return '1\n';
           if (args[0] === 'split-window') return '%77\n';
           if (args[0] === 'list-panes') return '0\t%77\n';
           return '';
@@ -649,6 +725,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') {
               process.env.TMUX_PANE = '%201';
@@ -755,6 +832,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%42\n';
             if (args[0] === 'list-panes') return '0\t%42\n';
