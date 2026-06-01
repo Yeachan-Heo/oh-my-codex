@@ -45,6 +45,7 @@ type RunGlobalUpdateResult = { ok: boolean; stderr: string };
 type RunSetupRefreshResult = { ok: boolean; stderr: string };
 type RunDeferredUpdateResult = { ok: boolean; stderr: string; logPath?: string };
 type SpawnSyncLike = typeof spawnSync;
+type SpawnSyncOptions = NonNullable<Parameters<SpawnSyncLike>[2]>;
 type SpawnLike = typeof spawn;
 export type AutoUpdateMode = 'disabled' | 'prompt' | 'defer';
 
@@ -133,19 +134,49 @@ async function getCurrentVersion(): Promise<string | null> {
   }
 }
 
-function runGlobalUpdate(): RunGlobalUpdateResult {
-  const result = spawnSync('npm', ['install', '-g', `${PACKAGE_NAME}@latest`], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 120000,
-    windowsHide: true,
-  });
+function isEnoentSpawnError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === 'ENOENT',
+  );
+}
+
+function spawnNpmSync(
+  args: string[],
+  options: SpawnSyncOptions,
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): ReturnType<SpawnSyncLike> {
+  const result = spawnProcess('npm', args, options);
+  if (platform === 'win32' && isEnoentSpawnError(result.error)) {
+    return spawnProcess('npm.cmd', args, options);
+  }
+  return result;
+}
+
+export function runGlobalUpdate(
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): RunGlobalUpdateResult {
+  const result = spawnNpmSync(
+    ['install', '-g', `${PACKAGE_NAME}@latest`],
+    {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120000,
+      windowsHide: true,
+    },
+    spawnProcess,
+    platform,
+  );
 
   if (result.error) {
     return { ok: false, stderr: result.error.message };
   }
   if (result.status !== 0) {
-    return { ok: false, stderr: (result.stderr || '').trim() || `npm exited ${result.status}` };
+    return { ok: false, stderr: String(result.stderr || '').trim() || `npm exited ${result.status}` };
   }
   return { ok: true, stderr: '' };
 }
@@ -386,19 +417,27 @@ function doesSetupStampMatchVersion(
   return stripLeadingV(stamp?.setup_completed_version ?? '') === stripLeadingV(currentVersion);
 }
 
-function resolveGlobalInstallRoot(): string | null {
-  const result = spawnSync('npm', ['root', '-g'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 15000,
-    windowsHide: true,
-  });
+export function resolveGlobalInstallRoot(
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const result = spawnNpmSync(
+    ['root', '-g'],
+    {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15000,
+      windowsHide: true,
+    },
+    spawnProcess,
+    platform,
+  );
 
   if (result.error || result.status !== 0) {
     return null;
   }
 
-  const root = (result.stdout || '').trim();
+  const root = String(result.stdout || '').trim();
   return root === '' ? null : root;
 }
 

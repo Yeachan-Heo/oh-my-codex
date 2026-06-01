@@ -9,10 +9,12 @@ import {
   maybeCheckAndPromptUpdate,
   readUserInstallStamp,
   resolveAutoUpdateMode,
+  resolveGlobalInstallRoot,
   resolveInstalledCliEntry,
   formatDeferredSetupCommand,
   resolveSetupRefreshArgs,
   runDeferredGlobalUpdate,
+  runGlobalUpdate,
   runImmediateUpdate,
   shouldCheckForUpdates,
   spawnInstalledSetupRefresh,
@@ -441,6 +443,67 @@ describe('maybeCheckAndPromptUpdate', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe('direct npm spawn fallback', () => {
+  function enoentResult() {
+    const error = Object.assign(new Error('spawnSync npm ENOENT'), { code: 'ENOENT' });
+    return { status: null, signal: null, error, stdout: '', stderr: '', output: [null, '', ''], pid: 0 };
+  }
+
+  function okResult(stdout = '') {
+    return { status: 0, signal: null, error: undefined, stdout, stderr: '', output: [null, stdout, ''], pid: 0 };
+  }
+
+  it('falls back to npm.cmd for win32 global installs when direct npm spawn returns ENOENT', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    const result = runGlobalUpdate(
+      ((command: string, args: readonly string[]) => {
+        calls.push({ command, args: args as string[] });
+        return command === 'npm' ? enoentResult() : okResult();
+      }) as unknown as typeof import('node:child_process').spawnSync,
+      'win32',
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd']);
+    assert.deepEqual(calls[0].args, ['install', '-g', 'oh-my-codex@latest']);
+    assert.deepEqual(calls[1].args, ['install', '-g', 'oh-my-codex@latest']);
+  });
+
+  it('does not fall back to npm.cmd for non-Windows ENOENT failures', () => {
+    const calls: string[] = [];
+
+    const result = runGlobalUpdate(
+      ((command: string) => {
+        calls.push(command);
+        return enoentResult();
+      }) as unknown as typeof import('node:child_process').spawnSync,
+      'linux',
+    );
+
+    assert.equal(result.ok, false);
+    assert.match(result.stderr, /ENOENT/);
+    assert.deepEqual(calls, ['npm']);
+  });
+
+  it('falls back to npm.cmd for win32 global-root lookup when direct npm spawn returns ENOENT', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    const root = resolveGlobalInstallRoot(
+      ((command: string, args: readonly string[]) => {
+        calls.push({ command, args: args as string[] });
+        return command === 'npm' ? enoentResult() : okResult('C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\r\n');
+      }) as unknown as typeof import('node:child_process').spawnSync,
+      'win32',
+    );
+
+    assert.equal(root, 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules');
+    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd']);
+    assert.deepEqual(calls[0].args, ['root', '-g']);
+    assert.deepEqual(calls[1].args, ['root', '-g']);
   });
 });
 
