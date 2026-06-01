@@ -205,6 +205,123 @@ describe('question window topology selection', () => {
 
     assert.ok(estimateQuestionRenderFootprint(record, 20) > estimateQuestionRenderFootprint(record, 80));
   });
+
+  it('sizes multi-question records from the largest visible screen rather than summing every question', () => {
+    const longQuestion = {
+      id: 'q-2',
+      question: 'x'.repeat(220),
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'y'.repeat(180),
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shortQuestion = {
+      id: 'q-1',
+      question: 'Short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shared = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+      source: 'deep-interview',
+    };
+    const multiQuestionRecord = {
+      ...shared,
+      questions: [shortQuestion, longQuestion],
+    } as any;
+    const shortRecord = {
+      ...shared,
+      questions: [shortQuestion],
+    } as any;
+    const longRecord = {
+      ...shared,
+      questions: [longQuestion],
+    } as any;
+
+    const multiFootprint = estimateQuestionRenderFootprint(multiQuestionRecord, 20);
+    const shortFootprint = estimateQuestionRenderFootprint(shortRecord, 20);
+    const longFootprint = estimateQuestionRenderFootprint(longRecord, 20);
+
+    assert.ok(multiFootprint >= longFootprint);
+    assert.ok(multiFootprint < shortFootprint + longFootprint);
+  });
+
+  it('includes the review screen when sizing multi-question records', () => {
+    const shortQuestion = {
+      id: 'q-1',
+      question: 'First short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shortSecondQuestion = {
+      id: 'q-2',
+      question: 'Second short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shortThirdQuestion = {
+      id: 'q-3',
+      question: 'Third short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shared = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+      source: 'deep-interview',
+    };
+    const singleScreenRecord = {
+      ...shared,
+      questions: [shortQuestion],
+    } as any;
+    const reviewScreenRecord = {
+      ...shared,
+      questions: [shortQuestion, shortSecondQuestion, shortThirdQuestion],
+    } as any;
+
+    assert.ok(estimateQuestionRenderFootprint(reviewScreenRecord, 80) > estimateQuestionRenderFootprint(singleScreenRecord, 80));
+  });
 });
 
 describe('launchQuestionRenderer', () => {
@@ -438,6 +555,82 @@ describe('launchQuestionRenderer', () => {
       const targetIndex = newWindowCall.indexOf('-t');
       assert.notEqual(targetIndex, -1);
       assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '%11']);
+      assert.equal(calls.some((call) => call[0] === 'split-window'), false);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  it('falls back to the default tmux width when the width probe fails', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-width-fallback-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
+      mkdirSync(stateDir, { recursive: true });
+      const recordPath = join(stateDir, 'question-1.json');
+      writeFileSync(recordPath, JSON.stringify({
+        kind: 'omx.question/v1',
+        question_id: 'question-1',
+        created_at: '2026-05-01T10:08:52.523Z',
+        updated_at: '2026-05-01T10:08:52.523Z',
+        status: 'pending',
+        question: 'x'.repeat(2000),
+        options: [{
+          label: 'Only option',
+          value: 'only',
+          description: 'y'.repeat(1000),
+        }],
+        allow_other: false,
+        multi_select: false,
+        type: 'single-answerable',
+        source: 'deep-interview',
+        questions: [{
+          id: 'q-1',
+          question: 'x'.repeat(2000),
+          options: [{
+            label: 'Only option',
+            value: 'only',
+            description: 'y'.repeat(1000),
+          }],
+          allow_other: false,
+          multi_select: false,
+          type: 'single-answerable',
+        }],
+      }, null, 2));
+
+      const calls: string[][] = [];
+      const result = launchQuestionRenderer(
+        {
+          cwd,
+          recordPath,
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '20\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}') && args.includes('-t')) throw new Error('width query failed');
+            if (args[0] === 'display-message' && args.includes('#{pane_width}') && !args.includes('-t')) return '3\n';
+            if (args[0] === 'new-window') return '%88\n';
+            if (args[0] === 'list-panes' && args[2] === '%88') return '0\t%88\n';
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      );
+
+      assert.equal(result.renderer, 'tmux-pane');
+      assert.equal(result.target, '%88');
+      assert.equal(result.return_target, '%11');
+      assert.equal(result.return_transport, 'tmux-send-keys');
+      const newWindowCall = calls.find((call) => call[0] === 'new-window');
+      assert.ok(newWindowCall);
+      const targetIndex = newWindowCall.indexOf('-t');
+      assert.notEqual(targetIndex, -1);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '%11']);
+      assert.equal(calls.some((call) => call[0] === 'display-message' && call.includes('#{pane_width}') && !call.includes('-t')), false);
       assert.equal(calls.some((call) => call[0] === 'split-window'), false);
     } finally {
       rmSync(cwd, { recursive: true });
