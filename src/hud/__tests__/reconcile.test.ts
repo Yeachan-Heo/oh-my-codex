@@ -170,6 +170,45 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.paneId, '%9');
   });
 
+  it('reaps a same-session orphan whose recorded leader is itself another HUD pane', async () => {
+    // Review follow-up (#2682): when a HUD pane was mistakenly used as a leader, an
+    // orphan can name another HUD pane as its leader. That referenced HUD must not
+    // count as a live leader, or the orphan survives while the referenced HUD is
+    // reaped — leaving a dangling strip that still never matches the real pane.
+    const killed: string[] = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        {
+          // orphan whose recorded leader (%3) is itself another HUD pane
+          paneId: '%2',
+          currentCommand: 'node',
+          startCommand: `exec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%3' node omx hud --watch --preset=focused`,
+        },
+        {
+          // the referenced HUD %3, itself orphaned (its leader %21 is gone)
+          paneId: '%3',
+          currentCommand: 'node',
+          startCommand: `exec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%21' node omx hud --watch --preset=focused`,
+        },
+      ],
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: () => true,
+      createHudWatchPane: () => '%9',
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    // Both HUD-led and dead-leader orphans are reaped; a single fresh HUD is created.
+    assert.deepEqual(killed.sort(), ['%2', '%3']);
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%9');
+  });
+
   it('prefers an explicit session override when recreating HUD', async () => {
     const created: Array<{ cmd: string }> = [];
 
