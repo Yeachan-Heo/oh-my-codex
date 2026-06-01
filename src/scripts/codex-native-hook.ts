@@ -83,6 +83,7 @@ import {
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
+import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import { getRunContinuationSnapshot, shouldContinueRun } from "../runtime/run-loop.js";
@@ -2592,12 +2593,12 @@ function isActiveRalplanPhase(state: Record<string, unknown> | null): boolean {
   return true;
 }
 
-function isActiveAutopilotRalplanPhase(state: Record<string, unknown> | null): boolean {
-  if (!state || state.active !== true) return false;
-  const mode = safeString(state.mode).trim();
-  if (mode && mode !== "autopilot") return false;
-  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
-  return phase === "ralplan" || phase === "replan" || phase === "autopilot:replan";
+function isAutopilotRalplanLikePhase(phase: string): boolean {
+  return normalizeAutopilotPhase(phase) === "ralplan";
+}
+
+function canAutopilotSkillMirrorSupplyRalplanPhase(phase: string): boolean {
+  return phase === "" || normalizeAutopilotPhase(phase) === "ralplan";
 }
 
 function hasExplicitExecutionHandoffSkill(
@@ -2733,7 +2734,9 @@ async function readActiveRalplanStateForPreToolUse(
   const autopilotState = sessionId
     ? await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir)
     : await readJsonIfExists(join(stateDir, "autopilot-state.json"));
-  if (!isActiveAutopilotRalplanPhase(autopilotState) || !autopilotState) return null;
+  if (!autopilotState || autopilotState.active !== true) return null;
+  const autopilotMode = safeString(autopilotState.mode).trim();
+  if (autopilotMode && autopilotMode !== "autopilot") return null;
   if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId)) return null;
   const terminalAutopilotRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, "autopilot");
   if (terminalAutopilotRunState) return null;
@@ -2742,6 +2745,15 @@ async function readActiveRalplanStateForPreToolUse(
     entry.skill === "autopilot"
     && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
   ));
+  if (!hasActiveAutopilotSkill) return null;
+  const autopilotStatePhase = safeString(autopilotState.current_phase ?? autopilotState.currentPhase).trim().toLowerCase();
+  if (!canAutopilotSkillMirrorSupplyRalplanPhase(autopilotStatePhase)) return null;
+  const hasRalplanScopedAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "autopilot"
+    && isAutopilotRalplanLikePhase(safeString(entry.phase).trim().toLowerCase())
+    && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  if (!isAutopilotRalplanLikePhase(autopilotStatePhase) && !hasRalplanScopedAutopilotSkill) return null;
   return hasActiveAutopilotSkill ? autopilotState : null;
 }
 

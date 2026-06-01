@@ -65,6 +65,17 @@ function classifyChangedPaths(paths: string[]): Record<string, string> {
 }
 
 describe('CI Rust gates', () => {
+
+  it('runs fork pull-request CI on GitHub-hosted runners instead of skipping lane detection', () => {
+    const workflow = readCiWorkflow();
+    const changesJob = jobBlock(workflow, 'changes');
+
+    assert.doesNotMatch(changesJob, /head\.repo\.full_name == github\.repository/);
+    assert.doesNotMatch(changesJob, /^\s+if:\s*github\.event_name != 'pull_request'/m);
+    assert.match(workflow, /head\.repo\.full_name != github\.repository && 'ubuntu-latest' \|\| 'gajae-layofflabs-2'/);
+    assert.match(jobBlock(workflow, 'ci-status'), /head\.repo\.full_name != github\.repository && 'ubuntu-latest' \|\| 'gajae-layofflabs-2'/);
+  });
+
   it('detects changed-file lanes once and exposes fail-closed outputs for targeted CI', () => {
     const workflow = readCiWorkflow();
     const changesJob = jobBlock(workflow, 'changes');
