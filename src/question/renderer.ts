@@ -11,6 +11,7 @@ import { getStateDir, getStatePath } from '../mcp/state-paths.js';
 import { TRACKED_WORKFLOW_MODES } from '../state/workflow-transition.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
+import { createInitialInteractiveSelectionState, createInitialQuestionWizardState, renderInteractiveQuestionFrame, renderQuestionWizardFrame } from './ui.js';
 import type { QuestionAnswer, QuestionRecord, QuestionRendererState } from './types.js';
 
 export type QuestionRendererStrategy = 'inside-tmux' | 'detached-tmux' | 'inline-tty' | 'windows-console' | 'test-noop' | 'unsupported';
@@ -98,6 +99,50 @@ function lineCount(value: string | undefined): number {
   return Math.max(1, value.split('\n').length);
 }
 
+function isCombiningMark(codePoint: number): boolean {
+  return /\p{Mark}/u.test(String.fromCodePoint(codePoint));
+}
+
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    codePoint >= 0x1100 && (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+    )
+  );
+}
+
+function displayWidth(value: string): number {
+  let width = 0;
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0) continue;
+    if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) continue;
+    if (isCombiningMark(codePoint)) continue;
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+  return width;
+}
+
+function wrappedDisplayLineCount(value: string | undefined, paneWidth: number): number {
+  if (!value) return 0;
+  const safeWidth = Number.isFinite(paneWidth) && paneWidth > 0 ? Math.floor(paneWidth) : 80;
+  return value
+    .split('\n')
+    .reduce((count, line) => count + Math.max(1, Math.ceil(displayWidth(line) / safeWidth)), 0);
+}
+
 export function estimateQuestionContentLines(record: QuestionRecord | null | undefined): number {
   if (!record) return 24;
   const questions = record.questions?.length
@@ -127,14 +172,6 @@ export function estimateQuestionContentLines(record: QuestionRecord | null | und
   return lines;
 }
 
-function wrappedLineCount(value: string | undefined, paneWidth: number): number {
-  if (!value) return 0;
-  const safeWidth = Number.isFinite(paneWidth) && paneWidth > 0 ? Math.floor(paneWidth) : 80;
-  return value
-    .split('\n')
-    .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / safeWidth)), 0);
-}
-
 export function estimateQuestionRenderFootprint(
   record: QuestionRecord | null | undefined,
   paneWidth: number,
@@ -152,19 +189,20 @@ export function estimateQuestionRenderFootprint(
       type: record.type,
       id: 'q-1',
     }];
-  let lines = 2;
-  if (record.header) lines += wrappedLineCount(record.header, paneWidth);
-  for (const question of questions) {
-    lines += 2 + wrappedLineCount(question.question, paneWidth);
-    if (question.header && question.header !== record.header) lines += wrappedLineCount(question.header, paneWidth);
-    for (const option of question.options) {
-      lines += 1 + wrappedLineCount(option.description, paneWidth);
-    }
-    if (question.allow_other) lines += 1;
-    lines += 2;
+  if (questions.length === 1) {
+    const frame = renderInteractiveQuestionFrame(record, createInitialInteractiveSelectionState());
+    return wrappedDisplayLineCount(frame, paneWidth);
   }
-  if (questions.length > 1) lines += 3;
-  return lines;
+
+  const wizardState = createInitialQuestionWizardState(record);
+  let maxFootprint = 0;
+  for (let index = 0; index < questions.length; index += 1) {
+    const frame = renderQuestionWizardFrame(record, { ...wizardState, currentQuestionIndex: index });
+    maxFootprint = Math.max(maxFootprint, wrappedDisplayLineCount(frame, paneWidth));
+  }
+  const reviewFrame = renderQuestionWizardFrame(record, { ...wizardState, mode: 'review' });
+  maxFootprint = Math.max(maxFootprint, wrappedDisplayLineCount(reviewFrame, paneWidth));
+  return maxFootprint;
 }
 
 export function computeAdaptiveQuestionPaneHeight(availableHeight: number, estimatedContentLines: number): number {
@@ -208,15 +246,25 @@ function resolveAvailablePaneWidth(
   target: string | undefined,
 ): number {
   const format = '#{pane_width}';
-  const attempts = target ? [['display-message', '-p', '-t', target, format], ['display-message', '-p', format]] : [['display-message', '-p', format]];
-  for (const args of attempts) {
+  if (target) {
     try {
-      const parsed = Number.parseInt(execTmux(args).trim(), 10);
+      const parsed = Number.parseInt(execTmux(['display-message', '-p', '-t', target, format]).trim(), 10);
       if (Number.isFinite(parsed) && parsed > 0) return parsed;
     } catch {
-      // Try the next source, then fall back.
+      // Keep the width probe target-scoped. If the explicit target cannot be
+      // queried, fall back to the conservative default instead of measuring the
+      // current pane width for a different destination.
     }
+    return 80;
   }
+  try {
+    const parsed = Number.parseInt(execTmux(['display-message', '-p', format]).trim(), 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  } catch {
+    // Try the default tmux query, then fall back.
+  }
+  // Keep a documented fallback so renderer launches remain usable even when
+  // tmux width probing is unavailable or transiently fails.
   return 80;
 }
 
