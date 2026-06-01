@@ -95,6 +95,81 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(resized[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
+  it('reaps orphaned same-session HUD panes whose leader pane was destroyed, then recreates a single HUD', async () => {
+    // Regression for the "team mode leaves only stacked HUD strips" bug: the leader
+    // pane (%21) was destroyed but its owner-tagged HUD panes remained, all pointing
+    // at the dead leader id. They match neither findHudWatchPaneIds (leader mismatch)
+    // nor findLegacyFocusedHudWatchPaneIds (they carry owner metadata), so each prompt
+    // submit previously appended a fresh HUD instead of reclaiming the orphans.
+    const killed: string[] = [];
+    const created: Array<{ cmd: string; options?: { targetPaneId?: string } }> = [];
+
+    const orphan = (paneId: string) => ({
+      paneId,
+      currentCommand: 'node',
+      startCommand: `exec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%21' node omx hud --watch --preset=focused`,
+    });
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%33', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        // %33 is the current (live) leader pane; %21 is gone from the window.
+        { paneId: '%33', currentCommand: 'codex', startCommand: 'codex' },
+        orphan('%34'),
+        orphan('%42'),
+        orphan('%47'),
+      ],
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: () => true,
+      createHudWatchPane: (_cwd, cmd, options) => {
+        created.push({ cmd, options });
+        return '%50';
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    // All three dead-leader orphans are reaped, then exactly one fresh HUD is created.
+    assert.deepEqual(killed.sort(), ['%34', '%42', '%47']);
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%50');
+    assert.equal(created.length, 1);
+    assert.equal(created[0]?.options?.targetPaneId, '%33');
+    assert.match(created[0]?.cmd || '', new RegExp(`${OMX_TMUX_HUD_LEADER_PANE_ENV}='%33'`));
+  });
+
+  it('does not reap an orphaned HUD pane that belongs to a different session', async () => {
+    // A HUD owned by another session's leader (which may live in a different tmux
+    // window we cannot see here) must survive even when that leader is absent.
+    const killed: string[] = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        {
+          paneId: '%4',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='sess-b' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%5' node omx hud --watch`,
+        },
+      ],
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: () => true,
+      createHudWatchPane: () => '%9',
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    // sess-b orphan is left untouched; this session simply creates its own HUD.
+    assert.deepEqual(killed, []);
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%9');
+  });
+
   it('prefers an explicit session override when recreating HUD', async () => {
     const created: Array<{ cmd: string }> = [];
 
