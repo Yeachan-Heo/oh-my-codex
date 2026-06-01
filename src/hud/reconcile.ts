@@ -45,12 +45,18 @@ function reapOrphanedSessionHudPanes(
   panes: TmuxPaneSnapshot[],
   opts: {
     sessionId: string | undefined;
+    sessionIds?: string[];
     currentPaneId: string | undefined;
     killPane: (paneId: string) => boolean;
   },
 ): string[] {
   const { sessionId, currentPaneId, killPane } = opts;
-  if (!sessionId) return [];
+  const sameSessionIds = new Set(
+    [sessionId, ...(opts.sessionIds ?? [])]
+      .map((candidate) => candidate?.trim() ?? '')
+      .filter((candidate) => candidate !== ''),
+  );
+  if (sameSessionIds.size === 0) return [];
   // A recorded leader only counts as "live" if it exists in this window AND is not
   // itself a HUD watcher. Without the HUD exclusion, an orphan whose recorded leader
   // is *another HUD pane* would be preserved here; that referenced HUD could be
@@ -64,7 +70,7 @@ function reapOrphanedSessionHudPanes(
     if (!isHudWatchPane(pane)) continue;
     const owner = readHudPaneOwner(pane);
     // Only reclaim HUDs that explicitly belong to this session and name a leader.
-    if (owner.sessionId !== sessionId || !owner.leaderPaneId) continue;
+    if (!owner.sessionId || !sameSessionIds.has(owner.sessionId) || !owner.leaderPaneId) continue;
     // Keep HUDs whose leader is the current pane or another live non-HUD leader pane.
     if (owner.leaderPaneId === currentPaneId || liveNonHudPaneIds.has(owner.leaderPaneId)) continue;
     if (killPane(pane.paneId)) reaped.push(pane.paneId);
@@ -194,6 +200,7 @@ export async function reconcileHudForPromptSubmit(
   // prompt submit and the window fills with stacked HUD strips.
   const reapedOrphanPaneIds = reapOrphanedSessionHudPanes(panes, {
     sessionId: resolvedSessionId,
+    sessionIds: equivalentSessionIds,
     currentPaneId,
     killPane,
   });
