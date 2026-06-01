@@ -464,6 +464,7 @@ describe('launchQuestionRenderer', () => {
             calls.push(args);
             if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
             if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '5\n';
+            if (args[0] === 'display-message' && args.includes('#{session_id}')) return '$1\n';
             if (args[0] === 'new-window') return '%42\n';
             if (args[0] === 'list-panes' && args[2] === '%42') return '0\t%42\n';
             return '';
@@ -480,8 +481,9 @@ describe('launchQuestionRenderer', () => {
       assert.ok(newWindowCall);
       const targetIndex = newWindowCall.indexOf('-t');
       assert.notEqual(targetIndex, -1);
-      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '%11']);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '$1']);
       assert.equal(calls.some((call) => call[0] === 'split-window'), false);
+      assert.equal(calls.some((call) => call[0] === 'display-message' && call.includes('#{session_id}')), true);
     } finally {
       rmSync(cwd, { recursive: true });
     }
@@ -538,6 +540,7 @@ describe('launchQuestionRenderer', () => {
             if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
             if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '20\n';
             if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '20\n';
+            if (args[0] === 'display-message' && args.includes('#{session_id}')) return '$1\n';
             if (args[0] === 'new-window') return '%99\n';
             if (args[0] === 'list-panes' && args[2] === '%99') return '0\t%99\n';
             return '';
@@ -554,7 +557,7 @@ describe('launchQuestionRenderer', () => {
       assert.ok(newWindowCall);
       const targetIndex = newWindowCall.indexOf('-t');
       assert.notEqual(targetIndex, -1);
-      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '%11']);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '$1']);
       assert.equal(calls.some((call) => call[0] === 'split-window'), false);
     } finally {
       rmSync(cwd, { recursive: true });
@@ -613,6 +616,7 @@ describe('launchQuestionRenderer', () => {
             if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '20\n';
             if (args[0] === 'display-message' && args.includes('#{pane_width}') && args.includes('-t')) throw new Error('width query failed');
             if (args[0] === 'display-message' && args.includes('#{pane_width}') && !args.includes('-t')) return '3\n';
+            if (args[0] === 'display-message' && args.includes('#{session_id}')) return '$1\n';
             if (args[0] === 'new-window') return '%88\n';
             if (args[0] === 'list-panes' && args[2] === '%88') return '0\t%88\n';
             return '';
@@ -629,7 +633,8 @@ describe('launchQuestionRenderer', () => {
       assert.ok(newWindowCall);
       const targetIndex = newWindowCall.indexOf('-t');
       assert.notEqual(targetIndex, -1);
-      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '%11']);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '$1']);
+      assert.equal(calls.some((call) => call[0] === 'display-message' && call.includes('#{pane_height}')), false);
       assert.equal(calls.some((call) => call[0] === 'display-message' && call.includes('#{pane_width}') && !call.includes('-t')), false);
       assert.equal(calls.some((call) => call[0] === 'split-window'), false);
     } finally {
@@ -714,13 +719,15 @@ describe('launchQuestionRenderer', () => {
         nowIso: '2026-04-19T00:00:00.000Z',
         env: { OMX_QUESTION_RETURN_PANE: '%77' } as NodeJS.ProcessEnv,
       },
-      {
-        execTmux: (args) => {
-          calls.push(args);
-          if (args[0] === 'split-window') return '%78\n';
-          if (args[0] === 'list-panes') return '0\t%78\n';
-          return '';
-        },
+        {
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
+            if (args[0] === 'split-window') return '%78\n';
+            if (args[0] === 'list-panes') return '0\t%78\n';
+            return '';
+          },
         sleepSync: () => {},
       },
     );
@@ -808,6 +815,8 @@ describe('launchQuestionRenderer', () => {
         {
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
             if (args[0] === 'split-window') return '%92\n';
             if (args[0] === 'list-panes') return '0\t%92\n';
             return '';
@@ -922,6 +931,7 @@ describe('launchQuestionRenderer', () => {
           execTmux: (args) => {
             calls.push(args);
             if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%77\n';
             if (args[0] === 'list-panes') return '0\t%77\n';
@@ -970,6 +980,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%77\n';
             if (args[0] === 'list-panes') return '0\t%77\n';
@@ -1380,6 +1391,7 @@ describe('question renderer in-flight dedupe', () => {
           calls.push(args);
           if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
           if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+          if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
           if (args[0] === 'list-panes' && args[2] === '%41') return '0\t%41\n';
           if (args[0] === 'kill-pane') return '';
           if (args[0] === 'split-window') return '%44\n';
