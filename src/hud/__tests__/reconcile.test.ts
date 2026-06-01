@@ -140,6 +140,38 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.match(created[0]?.cmd || '', new RegExp(`${OMX_TMUX_HUD_LEADER_PANE_ENV}='%33'`));
   });
 
+  it('reaps orphaned HUD panes tagged with an equivalent native session id', async () => {
+    // #2684 lets HUD dedupe treat the OMX owner id and Codex native session id as
+    // equivalent. Orphan reaping must use the same identity set so a canonical
+    // owner reconcile still reclaims dead-leader HUDs tagged with the native id.
+    const killed: string[] = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'codex-native-uuid', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      sessionId: 'omx-owner-abc',
+      sessionIds: ['omx-owner-abc', 'codex-native-uuid'],
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        {
+          paneId: '%2',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='codex-native-uuid' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%21' node omx hud --watch`,
+        },
+      ],
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: () => true,
+      createHudWatchPane: () => '%9',
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.deepEqual(killed, ['%2']);
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%9');
+  });
+
   it('does not reap an orphaned HUD pane that belongs to a different session', async () => {
     // A HUD owned by another session's leader (which may live in a different tmux
     // window we cannot see here) must survive even when that leader is absent.
@@ -579,6 +611,8 @@ describe('reconcileHudForPromptSubmit', () => {
           startCommand: `env OMX_SESSION_ID='codex-native-uuid' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch`,
         },
         {
+          // Same equivalent session, but its recorded leader is itself a HUD pane;
+          // the orphan reaper should remove it before normal same-leader dedupe.
           paneId: '%4',
           currentCommand: 'node',
           startCommand: `env OMX_SESSION_ID='codex-native-uuid' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%4' node omx hud --watch`,
@@ -602,7 +636,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.status, 'replaced_duplicates');
     assert.equal(result.paneId, '%2');
     assert.equal(result.duplicateCount, 1);
-    assert.deepEqual(killed, ['%3']);
+    assert.deepEqual(killed, ['%4', '%3']);
     assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
     assert.deepEqual(created, []);
   });
