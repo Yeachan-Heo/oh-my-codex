@@ -94,11 +94,6 @@ export function resolveQuestionRendererStrategy(
 }
 
 
-function lineCount(value: string | undefined): number {
-  if (!value) return 0;
-  return Math.max(1, value.split('\n').length);
-}
-
 function isCombiningMark(codePoint: number): boolean {
   return /\p{Mark}/u.test(String.fromCodePoint(codePoint));
 }
@@ -141,35 +136,6 @@ function wrappedDisplayLineCount(value: string | undefined, paneWidth: number): 
   return value
     .split('\n')
     .reduce((count, line) => count + Math.max(1, Math.ceil(displayWidth(line) / safeWidth)), 0);
-}
-
-export function estimateQuestionContentLines(record: QuestionRecord | null | undefined): number {
-  if (!record) return 24;
-  const questions = record.questions?.length
-    ? record.questions
-    : [{
-      header: record.header,
-      question: record.question,
-      options: record.options,
-      allow_other: record.allow_other,
-      other_label: record.other_label,
-      multi_select: record.multi_select,
-      type: record.type,
-      id: 'q-1',
-    }];
-  let lines = 2;
-  if (record.header) lines += lineCount(record.header);
-  for (const question of questions) {
-    lines += 2 + lineCount(question.question);
-    if (question.header && question.header !== record.header) lines += lineCount(question.header);
-    for (const option of question.options) {
-      lines += 1 + lineCount(option.description);
-    }
-    if (question.allow_other) lines += 1;
-    lines += 2;
-  }
-  if (questions.length > 1) lines += 3;
-  return lines;
 }
 
 export function estimateQuestionRenderFootprint(
@@ -244,28 +210,79 @@ function resolveAvailablePaneHeight(
 function resolveAvailablePaneWidth(
   execTmux: ExecTmuxSync,
   target: string | undefined,
-): number {
+): { width: number; probeFailed: boolean } {
   const format = '#{pane_width}';
   if (target) {
     try {
       const parsed = Number.parseInt(execTmux(['display-message', '-p', '-t', target, format]).trim(), 10);
-      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+      if (Number.isFinite(parsed) && parsed > 0) return { width: parsed, probeFailed: false };
     } catch {
       // Keep the width probe target-scoped. If the explicit target cannot be
       // queried, fall back to the conservative default instead of measuring the
       // current pane width for a different destination.
     }
-    return 80;
+    return { width: 80, probeFailed: true };
   }
   try {
     const parsed = Number.parseInt(execTmux(['display-message', '-p', format]).trim(), 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0) return { width: parsed, probeFailed: false };
   } catch {
     // Try the default tmux query, then fall back.
   }
   // Keep a documented fallback so renderer launches remain usable even when
   // tmux width probing is unavailable or transiently fails.
-  return 80;
+  return { width: 80, probeFailed: false };
+}
+
+function resolveNewWindowTarget(
+  execTmux: ExecTmuxSync,
+  returnTarget: string | undefined,
+): string | undefined {
+  if (!returnTarget) return undefined;
+
+  const attempts = [
+    ['display-message', '-p', '-t', returnTarget, '#{session_id}'],
+    ['display-message', '-p', '-t', returnTarget, '#{window_id}'],
+  ] as const;
+
+  for (const args of attempts) {
+    try {
+      const resolved = execTmux([...args]).trim();
+      if (resolved) return resolved;
+    } catch {
+      // Try the next tmux target form.
+    }
+  }
+
+  return undefined;
+}
+
+function launchQuestionPane(
+  execTmux: ExecTmuxSync,
+  sleepImpl: SleepSync,
+  args: string[],
+  launchedAt: string,
+  returnTarget: string | undefined,
+): {
+  renderer: 'tmux-pane';
+  target: string;
+  launched_at: string;
+  return_target?: string;
+  return_transport?: 'tmux-send-keys';
+} {
+  const rawPane = execTmux(args);
+  const paneId = parsePaneIdFromTmuxOutput(rawPane);
+  if (!paneId) throw new Error('Failed to create tmux question renderer container.');
+  sleepImpl(QUESTION_RENDERER_PANE_SETTLE_MS);
+  if (!isLaunchedQuestionPaneAlive(paneId, execTmux)) {
+    throw new Error(`Question UI pane ${paneId} disappeared immediately after launch.`);
+  }
+  return {
+    renderer: 'tmux-pane',
+    target: paneId,
+    launched_at: launchedAt,
+    ...(returnTarget ? { return_target: returnTarget, return_transport: 'tmux-send-keys' as const } : {}),
+  };
 }
 
 function resolveQuestionUiProcessArgs(
@@ -704,55 +721,76 @@ export function launchQuestionRenderer(
     });
 
     const sizingTarget = returnTarget || safeString(env.TMUX_PANE).trim() || undefined;
+    const availableWidthInfo = resolveAvailablePaneWidth(execTmux, sizingTarget);
+    const newWindowTarget = resolveNewWindowTarget(execTmux, returnTarget);
+    const newWindowTargetArgs = newWindowTarget ? ['-t', newWindowTarget] : [];
+    if (sizingTarget && availableWidthInfo.probeFailed) {
+      return launchQuestionPane(
+        execTmux,
+        sleepImpl,
+        [
+          'new-window',
+          '-n',
+          'OMX Question',
+          ...newWindowTargetArgs,
+          '-P',
+          '-F',
+          '#{pane_id}',
+          '-c',
+          options.cwd,
+          ...commandArgs,
+        ],
+        launchedAt,
+        returnTarget,
+      );
+    }
+
     const availableHeight = resolveAvailablePaneHeight(execTmux, sizingTarget);
-    const availableWidth = resolveAvailablePaneWidth(execTmux, sizingTarget);
+    const availableWidth = availableWidthInfo.width;
     const estimatedRenderFootprint = estimateQuestionRenderFootprint(
       readQuestionRecordForSizing(options.recordPath),
       availableWidth,
+    );
+    const questionNeedsFullWindow = shouldOpenQuestionInNewWindow(
+      availableHeight,
+      estimatedRenderFootprint,
     );
     const requestedHeight = computeAdaptiveQuestionPaneHeight(
       availableHeight,
       estimatedRenderFootprint,
     );
-    const questionNeedsFullWindow = shouldOpenQuestionInNewWindow(availableHeight, estimatedRenderFootprint);
-    const rawPane = questionNeedsFullWindow
-      ? execTmux([
-          'new-window',
-          '-n',
-          'OMX Question',
-          ...splitTarget,
-          '-P',
-          '-F',
-          '#{pane_id}',
-          '-c',
-          options.cwd,
-          ...commandArgs,
-        ])
-      : execTmux([
-          'split-window',
-          '-v',
-          '-l',
-          String(requestedHeight),
-          ...splitTarget,
-          '-P',
-          '-F',
-          '#{pane_id}',
-          '-c',
-          options.cwd,
-          ...commandArgs,
-        ]);
-    const paneId = parsePaneIdFromTmuxOutput(rawPane);
-    if (!paneId) throw new Error('Failed to create tmux question renderer container.');
-    sleepImpl(QUESTION_RENDERER_PANE_SETTLE_MS);
-    if (!isLaunchedQuestionPaneAlive(paneId, execTmux)) {
-      throw new Error(`Question UI pane ${paneId} disappeared immediately after launch.`);
-    }
-    return {
-      renderer: 'tmux-pane',
-      target: paneId,
-      launched_at: launchedAt,
-      ...(returnTarget ? { return_target: returnTarget, return_transport: 'tmux-send-keys' } : {}),
-    };
+    return launchQuestionPane(
+      execTmux,
+      sleepImpl,
+      questionNeedsFullWindow
+        ? [
+            'new-window',
+            '-n',
+            'OMX Question',
+            ...newWindowTargetArgs,
+            '-P',
+            '-F',
+            '#{pane_id}',
+            '-c',
+            options.cwd,
+            ...commandArgs,
+          ]
+        : [
+            'split-window',
+            '-v',
+            '-l',
+            String(requestedHeight),
+            ...splitTarget,
+            '-P',
+            '-F',
+            '#{pane_id}',
+            '-c',
+            options.cwd,
+            ...commandArgs,
+          ],
+      launchedAt,
+      returnTarget,
+    );
   }
 
   if (strategy === 'windows-console') {
