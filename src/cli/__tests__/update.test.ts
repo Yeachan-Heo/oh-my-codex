@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -510,6 +511,55 @@ describe('direct npm spawn fallback', () => {
     assert.deepEqual(calls, ['npm']);
   });
 
+
+  it('packs the dev branch from a local checkout instead of globally installing the git dependency spec', () => {
+    const originalNpmLocation = process.env.npm_config_location;
+    const calls: Array<{ command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }> = [];
+
+    process.env.npm_config_location = 'global';
+
+    try {
+      const result = runGlobalUpdate(
+        'github:Yeachan-Heo/oh-my-codex#dev',
+        ((command: string, args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+          calls.push({ command, args: args as string[], cwd: options?.cwd, env: options?.env });
+          if (command === 'git' && args[0] === 'clone') {
+            mkdirSync(String(args[args.length - 1]), { recursive: true });
+          }
+          if (command === 'git' && args[0] === 'rev-parse') {
+            return okResult('1234567890abcdef\n');
+          }
+          if (command === 'npm' && args[0] === 'pack') {
+            writeFileSync(join(options?.cwd ?? process.cwd(), 'oh-my-codex-0.18.8.tgz'), 'packed');
+            return okResult(JSON.stringify([{ filename: 'oh-my-codex-0.18.8.tgz' }]));
+          }
+          return okResult();
+        }) as unknown as typeof import('node:child_process').spawnSync,
+        'linux',
+      );
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(calls.map((call) => [call.command, ...call.args.slice(0, 3)]), [
+        ['git', 'clone', '--depth', '1'],
+        ['git', 'rev-parse', 'HEAD'],
+        ['npm', 'install', '--global=false', '--location=project'],
+        ['npm', 'run', 'prepack'],
+        ['npm', 'pack', '--ignore-scripts', '--json'],
+        ['npm', 'install', '-g', join(calls[2].cwd ?? '', 'oh-my-codex-0.18.8.tgz')],
+      ]);
+      const dependencyInstall = calls.find((call) => call.command === 'npm' && call.args[0] === 'install' && call.args.includes('--include=dev'));
+      assert.equal(dependencyInstall?.env?.npm_config_global, 'false');
+      assert.equal(dependencyInstall?.env?.npm_config_location, 'project');
+      assert.equal(calls.some((call) => call.args.includes('github:Yeachan-Heo/oh-my-codex#dev')), false);
+    } finally {
+      if (typeof originalNpmLocation === 'string') {
+        process.env.npm_config_location = originalNpmLocation;
+      } else {
+        delete process.env.npm_config_location;
+      }
+    }
+  });
+
   it('falls back to npm.cmd for win32 global-root lookup when direct npm spawn returns ENOENT', () => {
     const calls: Array<{ command: string; args: string[] }> = [];
 
@@ -695,7 +745,7 @@ describe('runImmediateUpdate', () => {
         fetchLatestVersion: async () => '0.14.0',
         runGlobalUpdate: (installSource) => {
           installSources.push(installSource);
-          return { ok: true, stderr: '' };
+          return { ok: true, stderr: '', revision: '1234567890ab' };
         },
         runSetupRefresh: async () => {
           refreshCalls += 1;
@@ -762,14 +812,14 @@ describe('runImmediateUpdate', () => {
         },
         runGlobalUpdate: (installSource) => {
           installSources.push(installSource);
-          return { ok: true, stderr: '' };
+          return { ok: true, stderr: '', revision: '1234567890ab' };
         },
         runSetupRefresh: async () => {
           refreshCalls += 1;
           return { ok: true, stderr: '' };
         },
         getInstalledVersionAfterUpdate: async () => '0.15.0',
-        getInstalledRevisionAfterUpdate: async () => 'abcdef123456',
+        getInstalledRevisionAfterUpdate: async () => null,
       }, { channel: 'dev' });
 
       assert.equal(result.status, 'updated');
@@ -778,7 +828,7 @@ describe('runImmediateUpdate', () => {
       assert.deepEqual(installSources, ['github:Yeachan-Heo/oh-my-codex#dev']);
       assert.match(logs.join('\n'), /Selected update channel: dev/);
       assert.match(logs.join('\n'), /Install source: github:Yeachan-Heo\/oh-my-codex#dev/);
-      assert.match(logs.join('\n'), /Running: npm install -g github:Yeachan-Heo\/oh-my-codex#dev/);
+      assert.match(logs.join('\n'), /Running: clone dev branch, run prepack, then npm install -g the packed tarball/);
       assert.doesNotMatch(logs.join('\n'), /dev.*oh-my-codex@latest/i);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
@@ -792,7 +842,7 @@ describe('runImmediateUpdate', () => {
       assert.equal(stamp.setup_completed_version, '0.15.0');
       assert.equal(stamp.install_channel, 'dev');
       assert.equal(stamp.install_source, 'github:Yeachan-Heo/oh-my-codex#dev');
-      assert.equal(stamp.install_revision, 'abcdef123456');
+      assert.equal(stamp.install_revision, '1234567890ab');
     } finally {
       console.log = originalLog;
       if (typeof originalCodexHome === 'string') {

@@ -17,7 +17,7 @@
     "dev": "tsc --watch",
     "lint": "biome lint src",
     "prepack": "npm run build && npm run verify:native-agents && npm run sync:plugin && npm run verify:plugin-bundle && npm run clean:native-package-assets",
-    "postinstall": "node src/scripts/postinstall-bootstrap.js",
+    "postinstall": "node -e \"const fs=require('fs');const p='./dist/scripts/postinstall.js';if(fs.existsSync(p))import(p).then(m=>m.main?.()).catch(e=>console.warn('[omx] Postinstall skipped after a non-fatal error: '+(e?.message??e)))\"",
     "setup": "node dist/cli/omx.js setup",
     "doctor": "node dist/cli/omx.js doctor",
     "ask:claude": "./src/scripts/ask-claude.sh",

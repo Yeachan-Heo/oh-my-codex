@@ -7,8 +7,9 @@
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 import { spawn, spawnSync } from 'child_process';
 import { createInterface } from 'readline/promises';
 import { getPackageRoot } from '../utils/package.js';
@@ -51,7 +52,7 @@ export interface UpdateChannelConfig {
   installSource: string;
 }
 
-type RunGlobalUpdateResult = { ok: boolean; stderr: string };
+type RunGlobalUpdateResult = { ok: boolean; stderr: string; revision?: string | null };
 type RunSetupRefreshResult = { ok: boolean; stderr: string };
 type RunDeferredUpdateResult = { ok: boolean; stderr: string; logPath?: string };
 type SpawnSyncLike = typeof spawnSync;
@@ -63,6 +64,9 @@ const PACKAGE_NAME = 'oh-my-codex';
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12h
 const STABLE_INSTALL_SOURCE = `${PACKAGE_NAME}@latest`;
 const DEV_INSTALL_SOURCE = 'github:Yeachan-Heo/oh-my-codex#dev';
+const DEV_REPOSITORY_URL = 'https://github.com/Yeachan-Heo/oh-my-codex.git';
+const DEV_REPOSITORY_BRANCH = 'dev';
+const DEV_UPDATE_TIMEOUT_MS = 300000;
 
 export function resolveUpdateChannelConfig(channel: UpdateChannel = 'stable'): UpdateChannelConfig {
   if (channel === 'dev') {
@@ -175,6 +179,158 @@ function spawnNpmSync(
   return result;
 }
 
+function commandFailure(stderr: unknown, status: number | null, label: string): RunGlobalUpdateResult {
+  const details = String(stderr || '').trim();
+  return {
+    ok: false,
+    stderr: details || `${label} exited ${typeof status === 'number' ? status : 'without a status'}`,
+  };
+}
+
+function runDevGlobalUpdate(
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): RunGlobalUpdateResult {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'omx-dev-update-'));
+  const checkoutDir = join(tempRoot, 'checkout');
+
+  try {
+    const cloneResult = spawnProcess(
+      'git',
+      ['clone', '--depth', '1', '--branch', DEV_REPOSITORY_BRANCH, DEV_REPOSITORY_URL, checkoutDir],
+      {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+    );
+    if (cloneResult.error) return { ok: false, stderr: cloneResult.error.message };
+    if (cloneResult.status !== 0) {
+      return commandFailure(cloneResult.stderr, cloneResult.status, 'git clone');
+    }
+
+    const revisionResult = spawnProcess(
+      'git',
+      ['rev-parse', 'HEAD'],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15000,
+        windowsHide: true,
+      },
+    );
+    const clonedRevision = revisionResult.status === 0
+      ? String(revisionResult.stdout || '').trim()
+      : null;
+    const installRevision = /^[0-9a-f]{7,40}$/i.test(clonedRevision ?? '')
+      ? String(clonedRevision).slice(0, 12)
+      : null;
+
+    const installResult = spawnNpmSync(
+      [
+        'install',
+        '--global=false',
+        '--location=project',
+        '--include=dev',
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-progress',
+      ],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+        env: { ...process.env, npm_config_global: 'false', npm_config_location: 'project' },
+      },
+      spawnProcess,
+      platform,
+    );
+    if (installResult.error) return { ok: false, stderr: installResult.error.message };
+    if (installResult.status !== 0) {
+      return commandFailure(installResult.stderr, installResult.status, 'npm install --include=dev');
+    }
+
+    const prepackResult = spawnNpmSync(
+      ['run', 'prepack'],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      spawnProcess,
+      platform,
+    );
+    if (prepackResult.error) return { ok: false, stderr: prepackResult.error.message };
+    if (prepackResult.status !== 0) {
+      return commandFailure(prepackResult.stderr, prepackResult.status, 'npm run prepack');
+    }
+
+    const packResult = spawnNpmSync(
+      ['pack', '--ignore-scripts', '--json'],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      spawnProcess,
+      platform,
+    );
+    if (packResult.error) return { ok: false, stderr: packResult.error.message };
+    if (packResult.status !== 0) {
+      return commandFailure(packResult.stderr, packResult.status, 'npm pack');
+    }
+
+    let tarballPath: string | null = null;
+    try {
+      const packed = JSON.parse(String(packResult.stdout || '[]')) as Array<{ filename?: string }>;
+      const filename = packed[0]?.filename;
+      if (typeof filename === 'string' && filename.trim() !== '') {
+        tarballPath = join(checkoutDir, filename);
+      }
+    } catch {
+      tarballPath = null;
+    }
+    if (!tarballPath || !existsSync(tarballPath)) {
+      return { ok: false, stderr: 'npm pack did not produce an installable tarball.' };
+    }
+
+    const globalInstallResult = spawnNpmSync(
+      ['install', '-g', tarballPath],
+      {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      spawnProcess,
+      platform,
+    );
+    if (globalInstallResult.error) {
+      return { ok: false, stderr: globalInstallResult.error.message };
+    }
+    if (globalInstallResult.status !== 0) {
+      return commandFailure(globalInstallResult.stderr, globalInstallResult.status, 'npm install -g dev tarball');
+    }
+
+    return { ok: true, stderr: '', revision: installRevision };
+  } finally {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true });
+    } catch {
+      // Cleanup is best-effort. Do not mask a successful update or the primary
+      // failure from git/npm with a transient temp-directory removal error.
+    }
+  }
+}
+
 export function runGlobalUpdate(
   installSourceOrSpawnProcess: string | SpawnSyncLike = STABLE_INSTALL_SOURCE,
   spawnProcessOrPlatform: SpawnSyncLike | NodeJS.Platform = spawnSync,
@@ -194,6 +350,10 @@ export function runGlobalUpdate(
     : typeof spawnProcessOrPlatform === 'string'
       ? spawnProcessOrPlatform
       : platform;
+
+  if (installSource === DEV_INSTALL_SOURCE) {
+    return runDevGlobalUpdate(spawnProcess, resolvedPlatform);
+  }
 
   const result = spawnNpmSync(
     ['install', '-g', installSource],
@@ -355,6 +515,14 @@ function summarizeUpdateFailure(
   logPath?: string,
 ): string {
   const details = stderr.trim().split(/\r?\n/).filter(Boolean).slice(0, 3).join(' | ');
+  if (installSource === DEV_INSTALL_SOURCE) {
+    return [
+      `[omx] Update failed while building and installing the dev channel from ${DEV_REPOSITORY_URL}#${DEV_REPOSITORY_BRANCH}.`,
+      details ? `[omx] update stderr: ${details}` : undefined,
+      logPath ? `[omx] Full log: ${logPath}` : undefined,
+      '[omx] You can retry manually with: omx update --dev',
+    ].filter((line): line is string => typeof line === 'string').join('\n');
+  }
   return [
     `[omx] Update failed while running npm install -g ${installSource}.`,
     details ? `[omx] npm stderr: ${details}` : undefined,
@@ -699,7 +867,11 @@ async function executeUpdate(
 
   console.log(`[omx] Selected update channel: ${channelConfig.channel}`);
   console.log(`[omx] Install source: ${channelConfig.installSource}`);
-  console.log(`[omx] Running: npm install -g ${channelConfig.installSource}`);
+  if (channelConfig.channel === 'dev') {
+    console.log('[omx] Running: clone dev branch, run prepack, then npm install -g the packed tarball');
+  } else {
+    console.log(`[omx] Running: npm install -g ${channelConfig.installSource}`);
+  }
   const result = dependencies.runGlobalUpdate(channelConfig.installSource);
 
   if (!result.ok) {
@@ -717,7 +889,7 @@ async function executeUpdate(
 
   const installedVersion = await dependencies.getInstalledVersionAfterUpdate();
   const installedRevision = channelConfig.channel === 'dev'
-    ? await dependencies.getInstalledRevisionAfterUpdate()
+    ? ((await dependencies.getInstalledRevisionAfterUpdate()) ?? result.revision ?? null)
     : null;
   const stampVersion = channelConfig.channel === 'stable'
     ? (latest ?? installedVersion ?? current)

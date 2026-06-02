@@ -49,7 +49,8 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['verify:native-agents'], 'node dist/scripts/verify-native-agents.js');
     assert.equal(pkg.scripts?.prepack, 'npm run build && npm run verify:native-agents && npm run sync:plugin && npm run verify:plugin-bundle && npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.prepare, 'node src/scripts/prepare-build.js');
-    assert.equal(pkg.scripts?.postinstall, 'node src/scripts/postinstall-bootstrap.js');
+    assert.match(pkg.scripts?.postinstall ?? '', /dist\/scripts\/postinstall\.js/);
+    assert.match(pkg.scripts?.postinstall ?? '', /existsSync/);
     assert.equal(pkg.scripts?.postpack, 'npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.['test:explore'], 'cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js');
     assert.equal(pkg.scripts?.['test:team:cross-rebase-smoke:compiled'], 'node dist/scripts/run-test-files.js dist/team/__tests__/cross-rebase-smoke.test.js');
@@ -105,6 +106,16 @@ describe('package bin contract', () => {
     assert.match(prepareBuildSource, /dist.*cli.*omx\.js/s);
     assert.match(prepareBuildSource, /dist.*scripts.*postinstall\.js/s);
     assert.match(prepareBuildSource, /npm.*run.*build/s);
+    assert.match(prepareBuildSource, /--global=false/s);
+    assert.match(prepareBuildSource, /--location=project/s);
+    assert.match(prepareBuildSource, /npm_config_global.*false/s);
+    assert.match(prepareBuildSource, /npm_config_location.*project/s);
+    assert.match(prepareBuildSource, /shouldCleanupBootstrappedDependencies/s);
+    assert.match(prepareBuildSource, /hadNodeModules/s);
+    assert.match(prepareBuildSource, /nodeModulesDir/s);
+    assert.match(prepareBuildSource, /rmSync.*node_modules/s);
+    assert.match(prepareBuildSource, /--include=dev/s);
+    assert.match(prepareBuildSource, /--ignore-scripts/s);
 
     const binSource = readFileSync(binPath, 'utf-8');
     const compiledCliSource = readFileSync(compiledCliPath, 'utf-8');
@@ -193,7 +204,6 @@ describe('package bin contract', () => {
     const rootRalphSkillEntry = results[0]?.files?.find((file) => file.path === 'skills/ralph/SKILL.md');
     const promptEntry = results[0]?.files?.find((file) => file.path === 'prompts/executor.md');
     const templateEntry = results[0]?.files?.find((file) => file.path === 'templates/AGENTS.md');
-    const postinstallEntry = results[0]?.files?.find((file) => file.path === 'src/scripts/postinstall-bootstrap.js');
     const rootNativeAgentEntry = results[0]?.files?.find((file) => file.path === 'agents' || file.path.startsWith('agents/'));
     const pluginScopedHooksEntry = results[0]?.files?.find((file) =>
       file.path === 'plugins/oh-my-codex/hooks.json'
@@ -240,7 +250,6 @@ describe('package bin contract', () => {
     assert.ok(rootRalphSkillEntry, 'expected npm pack output to keep canonical root skills');
     assert.ok(promptEntry, 'expected npm pack output to keep prompts');
     assert.ok(templateEntry, 'expected npm pack output to keep templates');
-    assert.ok(postinstallEntry, 'expected npm pack output to keep postinstall bootstrap script');
     assert.equal(rootNativeAgentEntry, undefined, 'did not expect generated root native agent TOMLs in package output');
     assert.equal(pluginScopedHooksEntry, undefined, 'did not expect setup-owned hook assets inside the installable plugin bundle');
   });
