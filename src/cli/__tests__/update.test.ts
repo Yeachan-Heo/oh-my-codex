@@ -734,6 +734,7 @@ describe('runImmediateUpdate', () => {
 
   it('installs the upstream dev branch without implying npm latest', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-dev-'));
+    const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
     const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
@@ -761,6 +762,7 @@ describe('runImmediateUpdate', () => {
           refreshCalls += 1;
           return { ok: true, stderr: '' };
         },
+        getInstalledVersionAfterUpdate: async () => '0.15.0',
       }, { channel: 'dev' });
 
       assert.equal(result.status, 'updated');
@@ -771,6 +773,13 @@ describe('runImmediateUpdate', () => {
       assert.match(logs.join('\n'), /Install source: github:Yeachan-Heo\/oh-my-codex#dev/);
       assert.match(logs.join('\n'), /Running: npm install -g github:Yeachan-Heo\/oh-my-codex#dev/);
       assert.doesNotMatch(logs.join('\n'), /dev.*oh-my-codex@latest/i);
+
+      const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
+        installed_version: string;
+        setup_completed_version: string;
+      };
+      assert.equal(stamp.installed_version, '0.15.0');
+      assert.equal(stamp.setup_completed_version, '0.15.0');
     } finally {
       console.log = originalLog;
       if (typeof originalCodexHome === 'string') {

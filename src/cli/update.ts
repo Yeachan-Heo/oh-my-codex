@@ -375,6 +375,7 @@ interface UpdateDependencies {
   askYesNo: typeof askYesNo;
   fetchLatestVersion: typeof fetchLatestVersion;
   getCurrentVersion: typeof getCurrentVersion;
+  getInstalledVersionAfterUpdate: typeof getInstalledVersionAfterUpdate;
   readUserInstallStamp: typeof readUserInstallStamp;
   runGlobalUpdate: (installSource: string) => RunGlobalUpdateResult;
   runDeferredGlobalUpdate: typeof runDeferredGlobalUpdate;
@@ -386,6 +387,7 @@ const defaultUpdateDependencies: UpdateDependencies = {
   askYesNo,
   fetchLatestVersion,
   getCurrentVersion,
+  getInstalledVersionAfterUpdate,
   readUserInstallStamp,
   runGlobalUpdate,
   runDeferredGlobalUpdate,
@@ -475,6 +477,22 @@ export function resolveGlobalInstallRoot(
 
   const root = String(result.stdout || '').trim();
   return root === '' ? null : root;
+}
+
+async function getInstalledVersionAfterUpdate(): Promise<string | null> {
+  const globalInstallRoot = resolveGlobalInstallRoot();
+  if (!globalInstallRoot) return null;
+
+  try {
+    const packageJsonPath = join(globalInstallRoot, PACKAGE_NAME, 'package.json');
+    const content = await readFile(packageJsonPath, 'utf-8');
+    const pkg = JSON.parse(content) as PackageManifest;
+    return typeof pkg.version === 'string' && pkg.version.trim() !== ''
+      ? pkg.version
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveInstalledCliEntry(globalInstallRoot: string): Promise<string | null> {
@@ -660,9 +678,16 @@ async function executeUpdate(
     return { status: 'failed', currentVersion: current, latestVersion: latest };
   }
 
-  const stampVersion = channelConfig.channel === 'stable' ? (latest ?? current) : current;
+  const installedVersion = await dependencies.getInstalledVersionAfterUpdate();
+  const stampVersion = channelConfig.channel === 'stable'
+    ? (latest ?? installedVersion ?? current)
+    : installedVersion;
   if (stampVersion) {
     await writeSuccessfulInstallStamp(stampVersion);
+  } else if (channelConfig.channel === 'dev') {
+    console.log(
+      '[omx] Dev update completed, but the installed package version could not be determined for the setup stamp.',
+    );
   }
   const versionSummary = channelConfig.channel === 'stable' && latest
     ? ` to v${latest}`
