@@ -56,7 +56,7 @@
     "verify:native-agents": "node dist/scripts/verify-native-agents.js",
     "prompt:inventory": "node dist/scripts/prompt-inventory.js",
     "build:api": "node dist/scripts/build-api.js",
-    "prepare": "npm run build"
+    "prepare": "node src/scripts/prepare-build.js"
   },
   "engines": {
     "node": ">=20"
