@@ -16,6 +16,7 @@ import {
   buildWindowsPromptCommand,
   buildTmuxSessionName,
   resolveCliInvocation,
+  resolveUpdateChannelArg,
   commandOwnsLocalHelp,
   resolveCodexLaunchPolicy,
   resolveEffectiveLeaderLaunchPolicyOverride,
@@ -1721,6 +1722,20 @@ describe("resolveCliInvocation", () => {
     });
   });
 
+  it("resolves update channel flags and rejects invalid combinations", () => {
+    assert.equal(resolveUpdateChannelArg([]), "stable");
+    assert.equal(resolveUpdateChannelArg(["--stable"]), "stable");
+    assert.equal(resolveUpdateChannelArg(["--dev"]), "dev");
+    assert.throws(
+      () => resolveUpdateChannelArg(["--dev", "--stable"]),
+      /mutually exclusive/,
+    );
+    assert.throws(
+      () => resolveUpdateChannelArg(["--beta"]),
+      /Unknown omx update option: --beta/,
+    );
+  });
+
   it("resolves hooks to hooks command", () => {
     assert.deepEqual(resolveCliInvocation(["hooks"]), {
       command: "hooks",
@@ -1771,7 +1786,9 @@ describe("resolveCliInvocation", () => {
   });
 
   it("advertises the explicit update command in top-level help", () => {
-    assert.match(HELP, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
+    assert.match(HELP, /omx update\s+Install the stable channel now, then refresh setup/);
+    assert.match(HELP, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
+    assert.match(HELP, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
   });
 
   it("advertises concise launch policy controls in top-level help", () => {

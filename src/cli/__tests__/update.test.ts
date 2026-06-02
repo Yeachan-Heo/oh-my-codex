@@ -201,6 +201,7 @@ describe('maybeCheckAndPromptUpdate', () => {
 
   it('schedules a deferred update after a successful startup prompt', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalMode = process.env.OMX_AUTO_UPDATE;
     const originalLog = console.log;
     const logs: string[] = [];
     let inlineUpdateCalls = 0;
@@ -209,6 +210,7 @@ describe('maybeCheckAndPromptUpdate', () => {
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
     };
+    delete process.env.OMX_AUTO_UPDATE;
 
     try {
       await withInteractiveTty(async () => {
@@ -240,6 +242,11 @@ describe('maybeCheckAndPromptUpdate', () => {
       assert.match(logs.join('\n'), /Update scheduled after this session exits/);
       assert.match(logs.join('\n'), /Log: .*update-test\.log/);
     } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -247,9 +254,11 @@ describe('maybeCheckAndPromptUpdate', () => {
 
   it('keeps startup update deferred so local setup is not refreshed inline', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalMode = process.env.OMX_AUTO_UPDATE;
     const originalLog = console.log;
     const receivedCwds: string[] = [];
     console.log = () => undefined;
+    delete process.env.OMX_AUTO_UPDATE;
 
     try {
       await withInteractiveTty(async () => {
@@ -269,6 +278,11 @@ describe('maybeCheckAndPromptUpdate', () => {
 
       assert.deepEqual(receivedCwds, [cwd]);
     } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -354,6 +368,7 @@ describe('maybeCheckAndPromptUpdate', () => {
 
   it('reports scheduler diagnostics when startup deferral cannot be launched', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalMode = process.env.OMX_AUTO_UPDATE;
     const originalLog = console.log;
     const logs: string[] = [];
     let setupRefreshCalls = 0;
@@ -361,6 +376,7 @@ describe('maybeCheckAndPromptUpdate', () => {
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
     };
+    delete process.env.OMX_AUTO_UPDATE;
 
     try {
       await withInteractiveTty(async () => {
@@ -381,6 +397,11 @@ describe('maybeCheckAndPromptUpdate', () => {
       assert.match(logs.join('\n'), /powershell not found/);
       assert.match(logs.join('\n'), /update-test\.log/);
     } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -517,6 +538,7 @@ describe('runImmediateUpdate', () => {
     const logs: string[] = [];
     let setupCalls = 0;
     const refreshCwds: string[] = [];
+    const installSources: string[] = [];
     let updateCalls = 0;
     let latestCalls = 0;
 
@@ -539,8 +561,9 @@ describe('runImmediateUpdate', () => {
           latestCalls += 1;
           return '0.14.1';
         },
-        runGlobalUpdate: () => {
+        runGlobalUpdate: (installSource) => {
           updateCalls += 1;
+          installSources.push(installSource);
           return { ok: true, stderr: '' };
         },
         runSetupRefresh: async (refreshCwd) => {
@@ -553,10 +576,13 @@ describe('runImmediateUpdate', () => {
       assert.equal(result.status, 'updated');
       assert.equal(latestCalls, 1);
       assert.equal(updateCalls, 1);
+      assert.deepEqual(installSources, [`${PACKAGE_NAME}@latest`]);
       assert.equal(setupCalls, 1);
       assert.deepEqual(refreshCwds, [cwd]);
+      assert.match(logs.join('\n'), /Selected update channel: stable/);
+      assert.match(logs.join('\n'), /Install source: oh-my-codex@latest/);
       assert.match(logs.join('\n'), /Running: npm install -g oh-my-codex@latest/);
-      assert.match(logs.join('\n'), /Updated to v0\.14\.1/);
+      assert.match(logs.join('\n'), /Updated stable channel to v0\.14\.1/);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
@@ -575,12 +601,13 @@ describe('runImmediateUpdate', () => {
     }
   });
 
-  it('reports up-to-date status for explicit update when npm is already current', async () => {
+  it('force-installs stable for explicit update even when npm is already current', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
     const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
     const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
+    const installSources: string[] = [];
     let updateCalls = 0;
     let refreshCalls = 0;
 
@@ -602,8 +629,9 @@ describe('runImmediateUpdate', () => {
       const result = await runImmediateUpdate(cwd, {
         getCurrentVersion: async () => '0.14.0',
         fetchLatestVersion: async () => '0.14.0',
-        runGlobalUpdate: () => {
+        runGlobalUpdate: (installSource) => {
           updateCalls += 1;
+          installSources.push(installSource);
           return { ok: true, stderr: '' };
         },
         runSetupRefresh: async () => {
@@ -612,10 +640,12 @@ describe('runImmediateUpdate', () => {
         },
       });
 
-      assert.equal(result.status, 'up-to-date');
-      assert.equal(updateCalls, 0);
-      assert.equal(refreshCalls, 0);
-      assert.match(logs.join('\n'), /already up to date \(v0\.14\.0\)/);
+      assert.equal(result.status, 'updated');
+      assert.equal(updateCalls, 1);
+      assert.equal(refreshCalls, 1);
+      assert.deepEqual(installSources, [`${PACKAGE_NAME}@latest`]);
+      assert.match(logs.join('\n'), /Selected update channel: stable/);
+      assert.match(logs.join('\n'), /Running: npm install -g oh-my-codex@latest/);
     } finally {
       console.log = originalLog;
       if (typeof originalCodexHome === 'string') {
@@ -627,12 +657,14 @@ describe('runImmediateUpdate', () => {
     }
   });
 
-  it('runs setup refresh for explicit update when current version matches but setup stamp is stale', async () => {
+  it('uses stable as a rollback path while preserving persisted setup preferences', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
     const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
     const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
+    const installSources: string[] = [];
+    const setupArgs = resolveSetupRefreshArgs;
     let refreshCalls = 0;
 
     console.log = (...args: unknown[]) => {
@@ -649,23 +681,39 @@ describe('runImmediateUpdate', () => {
         },
         stampPath,
       );
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'setup-scope.json'),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
+      );
 
       const result = await runImmediateUpdate(cwd, {
         getCurrentVersion: async () => '0.14.0',
         fetchLatestVersion: async () => '0.14.0',
-        runGlobalUpdate: () => {
-          throw new Error('global update should not run when already current');
+        runGlobalUpdate: (installSource) => {
+          installSources.push(installSource);
+          return { ok: true, stderr: '' };
         },
         runSetupRefresh: async () => {
           refreshCalls += 1;
+          assert.deepEqual(setupArgs(cwd), [
+            'setup',
+            '--scope',
+            'user',
+            '--plugin',
+            '--mcp',
+            'none',
+            '--disable-team',
+          ]);
           return { ok: true, stderr: '' };
         },
-      });
+      }, { channel: 'stable' });
 
-      assert.equal(result.status, 'up-to-date');
+      assert.equal(result.status, 'updated');
+      assert.deepEqual(installSources, [`${PACKAGE_NAME}@latest`]);
       assert.equal(refreshCalls, 1);
-      assert.match(logs.join('\n'), /Running setup refresh/);
-      assert.match(logs.join('\n'), /Setup refresh completed for v0\.14\.0/);
+      assert.match(logs.join('\n'), /Selected update channel: stable/);
+      assert.match(logs.join('\n'), /Install source: oh-my-codex@latest/);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
@@ -684,8 +732,59 @@ describe('runImmediateUpdate', () => {
     }
   });
 
+  it('installs the upstream dev branch without implying npm latest', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-dev-'));
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalLog = console.log;
+    const logs: string[] = [];
+    const installSources: string[] = [];
+    let latestCalls = 0;
+    let refreshCalls = 0;
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+    process.env.CODEX_HOME = join(cwd, '.codex');
+
+    try {
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => {
+          latestCalls += 1;
+          return '0.14.0';
+        },
+        runGlobalUpdate: (installSource) => {
+          installSources.push(installSource);
+          return { ok: true, stderr: '' };
+        },
+        runSetupRefresh: async () => {
+          refreshCalls += 1;
+          return { ok: true, stderr: '' };
+        },
+      }, { channel: 'dev' });
+
+      assert.equal(result.status, 'updated');
+      assert.equal(latestCalls, 0);
+      assert.equal(refreshCalls, 1);
+      assert.deepEqual(installSources, ['github:Yeachan-Heo/oh-my-codex#dev']);
+      assert.match(logs.join('\n'), /Selected update channel: dev/);
+      assert.match(logs.join('\n'), /Install source: github:Yeachan-Heo\/oh-my-codex#dev/);
+      assert.match(logs.join('\n'), /Running: npm install -g github:Yeachan-Heo\/oh-my-codex#dev/);
+      assert.doesNotMatch(logs.join('\n'), /dev.*oh-my-codex@latest/i);
+    } finally {
+      console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('continues explicit update when update-check state cannot be written', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
+    const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
     let updateCalls = 0;
@@ -694,6 +793,7 @@ describe('runImmediateUpdate', () => {
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
     };
+    process.env.CODEX_HOME = join(cwd, '.codex');
 
     try {
       const result = await runImmediateUpdate(cwd, {
@@ -715,9 +815,14 @@ describe('runImmediateUpdate', () => {
       assert.equal(result.status, 'updated');
       assert.equal(updateCalls, 1);
       assert.equal(refreshCalls, 1);
-      assert.match(logs.join('\n'), /Updated to v0\.14\.1/);
+      assert.match(logs.join('\n'), /Updated stable channel to v0\.14\.1/);
     } finally {
       console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
       await rm(cwd, { recursive: true, force: true });
     }
   });

@@ -89,7 +89,11 @@ function collectLinkedLocalIssueNumbers({ title = '', body = '', owner, repo }) 
 }
 
 function buildMaintainerCloseComment({ prNumber }) {
-  return `Closing automatically because PR #${prNumber} was merged into \`dev\` and explicitly referenced this issue in the PR title or body.`;
+  return [
+    `Closing automatically because PR #${prNumber} was merged into \`dev\` and explicitly referenced this issue in the PR title or body.`,
+    '',
+    'A hot-fix build is available now. Try it with `omx update --dev` and let us know whether it resolves the issue.',
+  ].join('\n');
 }
 
 module.exports = {

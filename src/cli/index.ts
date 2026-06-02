@@ -93,7 +93,7 @@ import {
   type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
-import { maybeCheckAndPromptUpdate, runImmediateUpdate } from "./update.js";
+import { maybeCheckAndPromptUpdate, runImmediateUpdate, type UpdateChannel } from "./update.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
 import {
   generateOverlay,
@@ -202,7 +202,11 @@ Usage:
                 Queue a Stop-hook continuation for built-in image generation turns
   omx setup     Install skills, prompts, CLI-first config, and scope-specific AGENTS.md
                 (user scope prompts for legacy vs plugin skill delivery when needed)
-  omx update    Check npm now, update the global install immediately, then refresh setup
+  omx update    Install the stable channel now, then refresh setup
+  omx update --stable
+                Install/rollback to npm stable (oh-my-codex@latest), then refresh setup
+  omx update --dev
+                Install the upstream dev branch, then refresh setup
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
   omx list      List packaged OMX skills and native agent prompts (--json)
@@ -626,6 +630,34 @@ export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
     return { command: "resume", launchArgs: args.slice(1) };
   }
   return { command: firstArg, launchArgs: [] };
+}
+
+export function resolveUpdateChannelArg(args: string[]): UpdateChannel {
+  let channel: UpdateChannel = 'stable';
+  let sawStable = false;
+  let sawDev = false;
+
+  for (const arg of args) {
+    if (arg === '--stable') {
+      sawStable = true;
+      channel = 'stable';
+      continue;
+    }
+    if (arg === '--dev') {
+      sawDev = true;
+      channel = 'dev';
+      continue;
+    }
+    throw new Error(
+      `Unknown omx update option: ${arg}. Expected no flags, --stable, or --dev.`,
+    );
+  }
+
+  if (sawStable && sawDev) {
+    throw new Error('omx update --dev and --stable are mutually exclusive.');
+  }
+
+  return channel;
 }
 
 export function resolveNotifyTempContract(
@@ -1896,7 +1928,7 @@ export async function main(args: string[]): Promise<void> {
         });
         break;
       case "update":
-        await runImmediateUpdate(process.cwd());
+        await runImmediateUpdate(process.cwd(), {}, { channel: resolveUpdateChannelArg(args.slice(1)) });
         break;
       case "list":
         await listCommand(args.slice(1));
