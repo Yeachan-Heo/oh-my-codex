@@ -23,6 +23,9 @@ export interface UpdateState {
 export interface UserInstallStamp {
   installed_version: string;
   setup_completed_version?: string;
+  install_channel?: UpdateChannel;
+  install_source?: string;
+  install_revision?: string;
   updated_at: string;
 }
 
@@ -376,6 +379,7 @@ interface UpdateDependencies {
   fetchLatestVersion: typeof fetchLatestVersion;
   getCurrentVersion: typeof getCurrentVersion;
   getInstalledVersionAfterUpdate: typeof getInstalledVersionAfterUpdate;
+  getInstalledRevisionAfterUpdate: typeof getInstalledRevisionAfterUpdate;
   readUserInstallStamp: typeof readUserInstallStamp;
   runGlobalUpdate: (installSource: string) => RunGlobalUpdateResult;
   runDeferredGlobalUpdate: typeof runDeferredGlobalUpdate;
@@ -388,6 +392,7 @@ const defaultUpdateDependencies: UpdateDependencies = {
   fetchLatestVersion,
   getCurrentVersion,
   getInstalledVersionAfterUpdate,
+  getInstalledRevisionAfterUpdate,
   readUserInstallStamp,
   runGlobalUpdate,
   runDeferredGlobalUpdate,
@@ -401,10 +406,18 @@ function stripLeadingV(version: string): string {
 
 async function writeSuccessfulInstallStamp(
   installedVersion: string,
+  metadata: {
+    channel?: UpdateChannel;
+    source?: string;
+    revision?: string | null;
+  } = {},
 ): Promise<void> {
   await writeUserInstallStamp({
     installed_version: stripLeadingV(installedVersion),
     setup_completed_version: stripLeadingV(installedVersion),
+    ...(metadata.channel ? { install_channel: metadata.channel } : {}),
+    ...(metadata.source ? { install_source: metadata.source } : {}),
+    ...(metadata.revision ? { install_revision: metadata.revision } : {}),
     updated_at: new Date().toISOString(),
   });
 }
@@ -423,6 +436,15 @@ export async function readUserInstallStamp(
       installed_version: parsed.installed_version,
       ...(typeof parsed.setup_completed_version === 'string'
         ? { setup_completed_version: parsed.setup_completed_version }
+        : {}),
+      ...(parsed.install_channel === 'stable' || parsed.install_channel === 'dev'
+        ? { install_channel: parsed.install_channel }
+        : {}),
+      ...(typeof parsed.install_source === 'string'
+        ? { install_source: parsed.install_source }
+        : {}),
+      ...(typeof parsed.install_revision === 'string'
+        ? { install_revision: parsed.install_revision }
         : {}),
       updated_at: parsed.updated_at,
     };
@@ -490,6 +512,21 @@ async function getInstalledVersionAfterUpdate(): Promise<string | null> {
     return typeof pkg.version === 'string' && pkg.version.trim() !== ''
       ? pkg.version
       : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getInstalledRevisionAfterUpdate(): Promise<string | null> {
+  const globalInstallRoot = resolveGlobalInstallRoot();
+  if (!globalInstallRoot) return null;
+
+  try {
+    const packageJsonPath = join(globalInstallRoot, PACKAGE_NAME, 'package.json');
+    const content = await readFile(packageJsonPath, 'utf-8');
+    const pkg = JSON.parse(content) as { gitHead?: string };
+    const revision = typeof pkg.gitHead === 'string' ? pkg.gitHead.trim() : '';
+    return /^[0-9a-f]{7,40}$/i.test(revision) ? revision.slice(0, 12) : null;
   } catch {
     return null;
   }
@@ -679,11 +716,18 @@ async function executeUpdate(
   }
 
   const installedVersion = await dependencies.getInstalledVersionAfterUpdate();
+  const installedRevision = channelConfig.channel === 'dev'
+    ? await dependencies.getInstalledRevisionAfterUpdate()
+    : null;
   const stampVersion = channelConfig.channel === 'stable'
     ? (latest ?? installedVersion ?? current)
     : installedVersion;
   if (stampVersion) {
-    await writeSuccessfulInstallStamp(stampVersion);
+    await writeSuccessfulInstallStamp(stampVersion, {
+      channel: channelConfig.channel,
+      source: channelConfig.installSource,
+      revision: channelConfig.channel === 'dev' ? installedRevision : null,
+    });
   } else if (channelConfig.channel === 'dev') {
     console.log(
       '[omx] Dev update completed, but the installed package version could not be determined for the setup stamp.',

@@ -5,11 +5,10 @@
  */
 
 import { readFile } from 'fs/promises';
-import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { join, dirname, basename } from 'path';
-import { fileURLToPath } from 'url';
+import { join, basename } from 'path';
 import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
+import { resolveOmxDisplayVersionSync } from '../utils/version.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
 import { getBaseStateDir, getStateFilePath, readCurrentSessionId, resolveRuntimeStateScope } from '../mcp/state-paths.js';
@@ -276,14 +275,7 @@ export async function readHudConfig(cwd: string): Promise<ResolvedHudConfig> {
 }
 
 export function readVersion(): string | null {
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const pkgPath = join(dirname(__filename), '..', '..', 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return `v${pkg.version}`;
-  } catch {
-    return null;
-  }
+  return resolveOmxDisplayVersionSync();
 }
 
 export type GitRunner = (cwd: string, args: string[]) => string | null;

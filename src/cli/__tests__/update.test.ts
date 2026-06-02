@@ -587,6 +587,9 @@ describe('runImmediateUpdate', () => {
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
         setup_completed_version: string;
+        install_channel: string;
+        install_source: string;
+        install_revision: string;
       };
       assert.equal(stamp.installed_version, '0.14.1');
       assert.equal(stamp.setup_completed_version, '0.14.1');
@@ -718,6 +721,9 @@ describe('runImmediateUpdate', () => {
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
         setup_completed_version: string;
+        install_channel: string;
+        install_source: string;
+        install_revision: string;
       };
       assert.equal(stamp.installed_version, '0.14.0');
       assert.equal(stamp.setup_completed_version, '0.14.0');
@@ -763,6 +769,7 @@ describe('runImmediateUpdate', () => {
           return { ok: true, stderr: '' };
         },
         getInstalledVersionAfterUpdate: async () => '0.15.0',
+        getInstalledRevisionAfterUpdate: async () => 'abcdef123456',
       }, { channel: 'dev' });
 
       assert.equal(result.status, 'updated');
@@ -777,9 +784,15 @@ describe('runImmediateUpdate', () => {
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
         setup_completed_version: string;
+        install_channel: string;
+        install_source: string;
+        install_revision: string;
       };
       assert.equal(stamp.installed_version, '0.15.0');
       assert.equal(stamp.setup_completed_version, '0.15.0');
+      assert.equal(stamp.install_channel, 'dev');
+      assert.equal(stamp.install_source, 'github:Yeachan-Heo/oh-my-codex#dev');
+      assert.equal(stamp.install_revision, 'abcdef123456');
     } finally {
       console.log = originalLog;
       if (typeof originalCodexHome === 'string') {
