@@ -48,6 +48,7 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['verify:plugin-bundle'], 'node dist/scripts/sync-plugin-mirror.js --check');
     assert.equal(pkg.scripts?.['verify:native-agents'], 'node dist/scripts/verify-native-agents.js');
     assert.equal(pkg.scripts?.prepack, 'npm run build && npm run verify:native-agents && npm run sync:plugin && npm run verify:plugin-bundle && npm run clean:native-package-assets');
+    assert.equal(pkg.scripts?.prepare, 'npm run build');
     assert.equal(pkg.scripts?.postinstall, 'node src/scripts/postinstall-bootstrap.js');
     assert.equal(pkg.scripts?.postpack, 'npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.['test:explore'], 'cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js');

@@ -55,7 +55,8 @@
     "verify:plugin-bundle": "node dist/scripts/sync-plugin-mirror.js --check",
     "verify:native-agents": "node dist/scripts/verify-native-agents.js",
     "prompt:inventory": "node dist/scripts/prompt-inventory.js",
-    "build:api": "node dist/scripts/build-api.js"
+    "build:api": "node dist/scripts/build-api.js",
+    "prepare": "npm run build"
   },
   "engines": {
     "node": ">=20"
