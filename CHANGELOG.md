@@ -3,6 +3,11 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
+
+### Fixed
+
+- **`omx question` UI pane works under cmux** — when OMX runs inside cmux, its `tmux` binary is a shim (`~/.cmuxterm/.../tmux` -> `cmux __tmux-compat`) that does not implement tmux's `split-window -e KEY=VALUE` env option, so the `-e` flags leaked into the spawned pane's shell command (`zsh: command not found: -e`) and the question pane exited immediately. Under cmux, OMX now delivers env vars to the question pane via a shell-quoted `export ... &&` prefix instead of `-e`. Real tmux is unchanged (still uses `-e`). This is a defensive compatibility workaround; the root cause is in cmux's tmux-compat layer.
+
 ## [0.18.8] - 2026-06-01
 
 Patch release for the post-`0.18.7` runtime reliability train: HUD/session ownership under native session drift, Autopilot replay and context-snapshot hardening, plugin hook/cache correctness, Team startup/disablement safety, native subagent guidance, and release/CI evidence improvements.
