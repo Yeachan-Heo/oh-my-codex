@@ -1496,31 +1496,30 @@ describe('buildQuestionUiTmuxArgs', () => {
     assert.equal(args.some((token) => /^'.*'$/.test(token)), false);
   });
 
-  it('delivers env via an export prefix and never emits a bare -e under cmux', () => {
+  it('delivers env via a single export-prefixed shell command and never emits a bare -e under cmux', () => {
     const args = buildQuestionUiTmuxArgs(recordPath, {
       cwd: '/repo',
       sessionId: 's1',
       returnTarget: '%11',
       underCmux: true,
     });
-    assert.equal(args.includes('-e'), false);
-    assert.equal(args[0], 'export');
-    assert.ok(args.includes("OMX_SESSION_ID='s1'"));
-    assert.ok(args.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
-    assert.ok(args.includes("OMX_QUESTION_RETURN_TRANSPORT='tmux-send-keys'"));
-    const separatorIndex = args.indexOf('&&');
-    assert.ok(separatorIndex > 0);
-    // The first executed token is the real command (quoted node), never `-e`.
-    assert.equal(args[separatorIndex + 1], `'${process.execPath}'`);
-    assert.notEqual(args[separatorIndex + 1], '-e');
-    // Every command token is single-quoted so cmux's space-join stays one argv each.
-    for (const token of args.slice(separatorIndex + 1)) {
-      assert.match(token, /^'.*'$/);
-    }
-    assert.equal(args[args.length - 1], `'${recordPath}'`);
+    // A single shell-command argument: stays correct on both the cmux shim and a
+    // real tmux that inherits cmux env vars (single arg -> run via the shell).
+    assert.equal(args.length, 1);
+    const command = args[0];
+    assert.match(command, /^export /);
+    assert.equal(command.startsWith('-e'), false);
+    assert.equal(command.includes(' -e '), false);
+    assert.ok(command.includes("OMX_SESSION_ID='s1'"));
+    assert.ok(command.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
+    assert.ok(command.includes("OMX_QUESTION_RETURN_TRANSPORT='tmux-send-keys'"));
+    // The first executed token after the export prefix is the real command (quoted
+    // node), never `-e`.
+    assert.ok(command.includes(`&& '${process.execPath}' `));
+    assert.ok(command.endsWith(`'${recordPath}'`));
   });
 
-  it('single-quotes values containing =, % and spaces so they survive the cmux shell join', () => {
+  it('single-quotes values containing =, % and spaces so they survive the cmux shell command', () => {
     const trickyReturnTarget = 'pane=%5 with spaces';
     const trickySessionId = 'sess=a%b c';
     const args = buildQuestionUiTmuxArgs(recordPath, {
@@ -1529,10 +1528,11 @@ describe('buildQuestionUiTmuxArgs', () => {
       returnTarget: trickyReturnTarget,
       underCmux: true,
     });
-    // Quoted into a single argv token each, so `=`, `%`, and spaces round-trip intact.
-    assert.ok(args.includes(`OMX_SESSION_ID='${trickySessionId}'`));
-    assert.ok(args.includes(`OMX_QUESTION_RETURN_TARGET='${trickyReturnTarget}'`));
-    assert.equal(args.includes('-e'), false);
+    const command = args[0];
+    // `=`, `%`, and spaces round-trip intact inside single quotes.
+    assert.ok(command.includes(`OMX_SESSION_ID='${trickySessionId}'`));
+    assert.ok(command.includes(`OMX_QUESTION_RETURN_TARGET='${trickyReturnTarget}'`));
+    assert.equal(command.includes(' -e '), false);
   });
 
   it('escapes embedded single quotes in env values under cmux', () => {
@@ -1542,14 +1542,15 @@ describe('buildQuestionUiTmuxArgs', () => {
       underCmux: true,
     });
     // POSIX single-quote escaping: a'b=c -> 'a'\''b=c'
-    assert.ok(args.includes("OMX_SESSION_ID='a'\\''b=c'"));
+    assert.ok(args[0].includes("OMX_SESSION_ID='a'\\''b=c'"));
   });
 
   it('omits the export prefix entirely when there are no env vars under cmux', () => {
     const args = buildQuestionUiTmuxArgs(recordPath, { cwd: '/repo', underCmux: true });
-    assert.equal(args.includes('export'), false);
-    assert.equal(args.includes('&&'), false);
-    assert.equal(args[0], `'${process.execPath}'`);
+    assert.equal(args.length, 1);
+    assert.equal(args[0].includes('export'), false);
+    assert.equal(args[0].includes('&&'), false);
+    assert.ok(args[0].startsWith(`'${process.execPath}' `));
   });
 });
 
@@ -1590,13 +1591,13 @@ describe('launchQuestionRenderer under cmux', () => {
     assert.ok(splitCall.includes('-P'));
     // No bare `-e` leaks into the cmux pane command (the original bug).
     assert.equal(splitCall.includes('-e'), false);
-    // Env is delivered via an export prefix with quoted values instead.
-    assert.ok(splitCall.includes('export'));
-    assert.ok(splitCall.includes("OMX_SESSION_ID='s1'"));
-    assert.ok(splitCall.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
-    const separatorIndex = splitCall.indexOf('&&');
-    assert.ok(separatorIndex > 0);
-    assert.equal(splitCall[separatorIndex + 1], `'${process.execPath}'`);
-    assert.notEqual(splitCall[separatorIndex + 1], '-e');
+    // The pane command is a single export-prefixed shell-command argument.
+    const paneCommand = splitCall[splitCall.length - 1];
+    assert.match(paneCommand, /^export /);
+    assert.equal(paneCommand.includes(' -e '), false);
+    assert.ok(paneCommand.includes("OMX_SESSION_ID='s1'"));
+    assert.ok(paneCommand.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
+    // The first executed token after the export prefix is the real command, never `-e`.
+    assert.ok(paneCommand.includes(`&& '${process.execPath}' `));
   });
 });

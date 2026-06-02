@@ -355,14 +355,20 @@ export function buildQuestionUiTmuxArgs(
   if (options.underCmux) {
     // cmux's tmux-compat shim does not consume `split-window -e KEY=VALUE`; it leaks
     // the flags into the spawned pane's shell command, which fails with
-    // `command not found: -e`. Deliver env through an `export ... &&` prefix on the
-    // pane command instead. cmux space-joins these tokens into a single shell string
-    // (after the `-c <cwd>` it turns into `cd -- '<cwd>' &&`), so every value and
-    // command token is single-quoted here to survive shell word-splitting.
+    // `command not found: -e`. Deliver env through an `export ... &&` prefix instead.
+    //
+    // The command is returned as a SINGLE shell-command argument (not multiple
+    // tokens). tmux only runs the pane command through the shell when it receives a
+    // single argument; multiple arguments are exec'd directly, which would treat
+    // `export` and the single-quoted node path as a literal executable. A single
+    // string therefore stays correct on both the cmux shim (which prepends
+    // `cd -- '<cwd>' &&` from `-c`) and on a real tmux binary that happens to inherit
+    // cmux env vars (e.g. a nested native tmux), where it runs via `sh -c`. Every
+    // value and command token is single-quoted to survive shell word-splitting.
     const exportPrefix = envEntries.length > 0
-      ? ['export', ...envEntries.map(([key, value]) => `${key}=${shellEscapeSingle(value)}`), '&&']
-      : [];
-    return [...exportPrefix, ...command.map((token) => shellEscapeSingle(token))];
+      ? `export ${envEntries.map(([key, value]) => `${key}=${shellEscapeSingle(value)}`).join(' ')} && `
+      : '';
+    return [exportPrefix + command.map((token) => shellEscapeSingle(token)).join(' ')];
   }
 
   return [
