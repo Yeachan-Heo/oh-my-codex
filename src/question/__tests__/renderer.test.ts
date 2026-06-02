@@ -1496,7 +1496,7 @@ describe('buildQuestionUiTmuxArgs', () => {
     assert.equal(args.some((token) => /^'.*'$/.test(token)), false);
   });
 
-  it('delivers env via a single export-prefixed shell command and never emits a bare -e under cmux', () => {
+  it('delivers env via a single shell-neutral env-prefixed command and never emits a bare -e under cmux', () => {
     const args = buildQuestionUiTmuxArgs(recordPath, {
       cwd: '/repo',
       sessionId: 's1',
@@ -1507,15 +1507,17 @@ describe('buildQuestionUiTmuxArgs', () => {
     // real tmux that inherits cmux env vars (single arg -> run via the shell).
     assert.equal(args.length, 1);
     const command = args[0];
-    assert.match(command, /^export /);
+    // `env` keeps it shell-neutral (works in fish/zsh/sh); no POSIX-only `export`/`&&`.
+    assert.match(command, /^env /);
+    assert.equal(command.includes('export'), false);
+    assert.equal(command.includes('&&'), false);
     assert.equal(command.startsWith('-e'), false);
     assert.equal(command.includes(' -e '), false);
     assert.ok(command.includes("OMX_SESSION_ID='s1'"));
     assert.ok(command.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
     assert.ok(command.includes("OMX_QUESTION_RETURN_TRANSPORT='tmux-send-keys'"));
-    // The first executed token after the export prefix is the real command (quoted
-    // node), never `-e`.
-    assert.ok(command.includes(`&& '${process.execPath}' `));
+    // The executable env runs is the real command (quoted node), never `-e`.
+    assert.ok(command.includes(`'tmux-send-keys' '${process.execPath}' `));
     assert.ok(command.endsWith(`'${recordPath}'`));
   });
 
@@ -1530,6 +1532,7 @@ describe('buildQuestionUiTmuxArgs', () => {
     });
     const command = args[0];
     // `=`, `%`, and spaces round-trip intact inside single quotes.
+    assert.match(command, /^env /);
     assert.ok(command.includes(`OMX_SESSION_ID='${trickySessionId}'`));
     assert.ok(command.includes(`OMX_QUESTION_RETURN_TARGET='${trickyReturnTarget}'`));
     assert.equal(command.includes(' -e '), false);
@@ -1545,9 +1548,10 @@ describe('buildQuestionUiTmuxArgs', () => {
     assert.ok(args[0].includes("OMX_SESSION_ID='a'\\''b=c'"));
   });
 
-  it('omits the export prefix entirely when there are no env vars under cmux', () => {
+  it('omits the env prefix entirely when there are no env vars under cmux', () => {
     const args = buildQuestionUiTmuxArgs(recordPath, { cwd: '/repo', underCmux: true });
     assert.equal(args.length, 1);
+    assert.equal(args[0].startsWith('env '), false);
     assert.equal(args[0].includes('export'), false);
     assert.equal(args[0].includes('&&'), false);
     assert.ok(args[0].startsWith(`'${process.execPath}' `));
@@ -1591,13 +1595,14 @@ describe('launchQuestionRenderer under cmux', () => {
     assert.ok(splitCall.includes('-P'));
     // No bare `-e` leaks into the cmux pane command (the original bug).
     assert.equal(splitCall.includes('-e'), false);
-    // The pane command is a single export-prefixed shell-command argument.
+    // The pane command is a single shell-neutral env-prefixed shell-command argument.
     const paneCommand = splitCall[splitCall.length - 1];
-    assert.match(paneCommand, /^export /);
+    assert.match(paneCommand, /^env /);
     assert.equal(paneCommand.includes(' -e '), false);
+    assert.equal(paneCommand.includes('export'), false);
     assert.ok(paneCommand.includes("OMX_SESSION_ID='s1'"));
     assert.ok(paneCommand.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
-    // The first executed token after the export prefix is the real command, never `-e`.
-    assert.ok(paneCommand.includes(`&& '${process.execPath}' `));
+    // env runs the real command (quoted node), never `-e`.
+    assert.ok(paneCommand.includes(`'${process.execPath}' `));
   });
 });

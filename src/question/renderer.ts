@@ -355,20 +355,25 @@ export function buildQuestionUiTmuxArgs(
   if (options.underCmux) {
     // cmux's tmux-compat shim does not consume `split-window -e KEY=VALUE`; it leaks
     // the flags into the spawned pane's shell command, which fails with
-    // `command not found: -e`. Deliver env through an `export ... &&` prefix instead.
+    // `command not found: -e`. Deliver env through an `env KEY=VALUE ...` prefix on
+    // the pane command instead.
     //
-    // The command is returned as a SINGLE shell-command argument (not multiple
-    // tokens). tmux only runs the pane command through the shell when it receives a
-    // single argument; multiple arguments are exec'd directly, which would treat
-    // `export` and the single-quoted node path as a literal executable. A single
-    // string therefore stays correct on both the cmux shim (which prepends
-    // `cd -- '<cwd>' &&` from `-c`) and on a real tmux binary that happens to inherit
-    // cmux env vars (e.g. a nested native tmux), where it runs via `sh -c`. Every
-    // value and command token is single-quoted to survive shell word-splitting.
-    const exportPrefix = envEntries.length > 0
-      ? `export ${envEntries.map(([key, value]) => `${key}=${shellEscapeSingle(value)}`).join(' ')} && `
+    // Two properties keep this robust:
+    //  1. `env` (not an `export ... &&` prefix) is shell-neutral. The pane shell may
+    //     be fish or another non-POSIX shell where `export FOO=bar` is a syntax error
+    //     parsed before node ever starts; `env FOO=bar cmd` is just arguments to the
+    //     external `env` binary and works in every shell.
+    //  2. The command is returned as a SINGLE shell-command argument. tmux runs a
+    //     one-argument command through the shell, so this stays correct on both the
+    //     cmux shim (which prepends `cd -- '<cwd>' &&` from `-c`) and a real tmux that
+    //     happens to inherit cmux env vars (e.g. a nested native tmux), where it runs
+    //     via `sh -c`. Multiple arguments would instead be exec'd directly with the
+    //     single quotes intact. Every value and command token is single-quoted to
+    //     survive shell word-splitting.
+    const envPrefix = envEntries.length > 0
+      ? `env ${envEntries.map(([key, value]) => `${key}=${shellEscapeSingle(value)}`).join(' ')} `
       : '';
-    return [exportPrefix + command.map((token) => shellEscapeSingle(token)).join(' ')];
+    return [envPrefix + command.map((token) => shellEscapeSingle(token)).join(' ')];
   }
 
   return [
