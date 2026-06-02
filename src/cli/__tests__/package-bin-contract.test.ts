@@ -143,7 +143,9 @@ describe('package bin contract', () => {
         `${target} initialize response should include serverInfo`,
       );
     }
-    assert.match(compiledCliSource, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
+    assert.match(compiledCliSource, /omx update\s+Install the stable channel now, then refresh setup/);
+    assert.match(compiledCliSource, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
+    assert.match(compiledCliSource, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
     assert.match(compiledCliSource, /case "update"/);
 
     rmSync(packagedSparkShellPath, { force: true });
