@@ -9,7 +9,7 @@ const requiredDistFiles = [
 ];
 
 if (requiredDistFiles.every((file) => existsSync(file))) {
-  console.log('[omx prepare] dist already present; skipping build');
+  console.log('omx prepare: dist already present; skipping build');
   process.exit(0);
 }
 
@@ -21,7 +21,7 @@ const result = spawnSync(npmBin, ['run', 'build'], {
 });
 
 if (result.error) {
-  console.error(`[omx prepare] failed to launch npm build: ${result.error.message}`);
+  console.error(`omx prepare: failed to launch npm build: ${result.error.message}`);
   process.exit(1);
 }
 
