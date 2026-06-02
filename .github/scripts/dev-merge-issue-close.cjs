@@ -96,7 +96,20 @@ function buildMaintainerCloseComment({ prNumber }) {
   ].join('\n');
 }
 
+function formatIssueList(issueNumbers) {
+  return issueNumbers.map((issueNumber) => `#${issueNumber}`).join(', ');
+}
+
+function buildMaintainerPrComment({ issueNumbers }) {
+  return [
+    `Closed explicitly linked issue${issueNumbers.length === 1 ? '' : 's'} after this PR was merged into \`dev\`: ${formatIssueList(issueNumbers)}.`,
+    '',
+    'A hot-fix build is available now. Issue creators can try it with `omx update --dev` and let us know whether it resolves the issue.',
+  ].join('\n');
+}
+
 module.exports = {
   buildMaintainerCloseComment,
+  buildMaintainerPrComment,
   collectLinkedLocalIssueNumbers,
 };
