@@ -1867,6 +1867,51 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("includes repo-local .omx project-memory during SessionStart when OMX_ROOT is boxed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-boxed-memory-"));
+    const boxedRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-boxed-root-"));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    try {
+      process.env.OMX_ROOT = boxedRoot;
+      await writeJson(join(cwd, ".omx", "project-memory.json"), {
+        techStack: "Repo-local CLI memory",
+        conventions: "SessionStart should load CLI-written project memory",
+        directives: [
+          { directive: "Prefer repo-local .omx project memory over boxed runtime fallback.", priority: "high" },
+        ],
+      });
+      await writeJson(join(boxedRoot, ".omx", "project-memory.json"), {
+        techStack: "Boxed runtime memory should not win",
+        notes: [{ category: "runtime", content: "stale boxed runtime note", timestamp: new Date().toISOString() }],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "sess-boxed-memory-1",
+        },
+        { cwd, sessionOwnerPid: 43210 },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /\[Project memory\]/);
+      assert.match(additionalContext, /source: \.omx\/project-memory\.json/);
+      assert.match(additionalContext, /Repo-local CLI memory/);
+      assert.match(additionalContext, /SessionStart should load CLI-written project memory/);
+      assert.match(additionalContext, /Prefer repo-local \.omx project memory over boxed runtime fallback\./);
+      assert.doesNotMatch(additionalContext, /Boxed runtime memory should not win/);
+      assert.doesNotMatch(additionalContext, /stale boxed runtime note/);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(boxedRoot, { recursive: true, force: true });
+    }
+  });
+
   it("prefers repository project-memory.json during SessionStart while preserving legacy wiki guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-root-memory-legacy-wiki-"));
     try {

@@ -315,11 +315,24 @@ export function canonicalProjectMemoryPath(projectRoot?: string): string {
   return join(projectRoot || process.cwd(), "project-memory.json");
 }
 
-/** Project memory read order: repository-visible canonical file, then legacy OMX runtime memory. */
+/** CLI-compatible repository-local project memory file (.omx/project-memory.json). */
+export function repoLocalProjectMemoryPath(projectRoot?: string): string {
+  return join(projectRoot || process.cwd(), ".omx", "project-memory.json");
+}
+
+/**
+ * Project memory read order for startup context.
+ *
+ * Keep the repository-visible root file first for existing SessionStart compatibility,
+ * then include the CLI/MCP project-memory location before boxed OMX runtime memory.
+ */
 export function projectMemoryPathCandidates(projectRoot?: string): string[] {
-  const canonical = canonicalProjectMemoryPath(projectRoot);
-  const legacy = omxProjectMemoryPath(projectRoot);
-  return canonical === legacy ? [canonical] : [canonical, legacy];
+  const candidates = [
+    canonicalProjectMemoryPath(projectRoot),
+    repoLocalProjectMemoryPath(projectRoot),
+    omxProjectMemoryPath(projectRoot),
+  ];
+  return candidates.filter((path, index) => candidates.indexOf(path) === index);
 }
 
 /** First readable project memory path, preferring repository-visible canonical memory. */
