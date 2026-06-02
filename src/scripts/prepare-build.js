@@ -9,14 +9,13 @@ const requiredDistFiles = [
 ];
 
 if (requiredDistFiles.every((file) => existsSync(file))) {
-  console.log('omx prepare: dist already present; skipping build');
   process.exit(0);
 }
 
 const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const result = spawnSync(npmBin, ['run', 'build'], {
   cwd: process.cwd(),
-  stdio: 'inherit',
+  stdio: process.env.npm_config_json === 'true' ? ['inherit', 'ignore', 'inherit'] : 'inherit',
   env: process.env,
 });
 
