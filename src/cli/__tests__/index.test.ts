@@ -2160,6 +2160,44 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("includes project Codex history artifacts in the runtime mirror for resume launches", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-resume-runtime-codex-home-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(join(projectCodexHome, "sessions", "2026", "06", "03"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, "state_5.sqlite"), "state db placeholder");
+      await writeFile(join(projectCodexHome, "state_5.sqlite-wal"), "state db wal placeholder");
+      await writeFile(join(projectCodexHome, "logs_2.sqlite-shm"), "logs db shm placeholder");
+      await writeFile(
+        join(projectCodexHome, "sessions", "2026", "06", "03", "rollout-session-2712.jsonl"),
+        '{"type":"session_meta","payload":{"id":"session-2712"}}\n',
+      );
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-resume", {}, {
+        includeHistoryArtifacts: true,
+      });
+      const runtimeCodexHome = runtimeCodexHomePath(wd, "session-resume");
+
+      assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+      assert.equal(prepared.sqliteHomeOverride, projectCodexHome);
+      assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite")), true);
+      assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite-wal")), true);
+      assert.equal(existsSync(join(runtimeCodexHome, "logs_2.sqlite-shm")), true);
+      assert.equal(
+        existsSync(join(runtimeCodexHome, "sessions", "2026", "06", "03", "rollout-session-2712.jsonl")),
+        true,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("uses a session-scoped CODEX_HOME mirror for project launch config writes", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-codex-home-"));
     try {

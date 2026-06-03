@@ -846,10 +846,15 @@ export async function persistProjectLaunchRuntimeAuthState(
  * Launch against a session mirror so those runtime writes never dirty the
  * durable project config while preserving the project config as the launch input.
  */
+export interface PrepareRuntimeCodexHomeForProjectLaunchOptions {
+  includeHistoryArtifacts?: boolean;
+}
+
 export async function prepareRuntimeCodexHomeForProjectLaunch(
   cwd: string,
   sessionId: string,
   projectCodexHome: string,
+  options: PrepareRuntimeCodexHomeForProjectLaunchOptions = {},
 ): Promise<string> {
   const runtimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
   await rm(runtimeCodexHome, { recursive: true, force: true });
@@ -858,7 +863,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
   if (!existsSync(projectCodexHome)) return runtimeCodexHome;
 
   for (const entry of await readdir(projectCodexHome, { withFileTypes: true })) {
-    if (isCodexSqliteArtifact(entry.name)) continue;
+    if (isCodexSqliteArtifact(entry.name) && !options.includeHistoryArtifacts) continue;
     if (PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES.has(entry.name)) continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
@@ -890,10 +895,15 @@ function resolveProjectSqliteHomeForLaunch(
   return projectCodexHome;
 }
 
+export interface PrepareCodexHomeForLaunchOptions {
+  includeHistoryArtifacts?: boolean;
+}
+
 export async function prepareCodexHomeForLaunch(
   cwd: string,
   sessionId: string,
   env: NodeJS.ProcessEnv = process.env,
+  options: PrepareCodexHomeForLaunchOptions = {},
 ): Promise<PreparedCodexHomeForLaunch> {
   const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(cwd, env);
   if (projectLocalCodexHomeForCleanup) {
@@ -901,6 +911,7 @@ export async function prepareCodexHomeForLaunch(
       cwd,
       sessionId,
       projectLocalCodexHomeForCleanup,
+      { includeHistoryArtifacts: options.includeHistoryArtifacts },
     );
     return {
       codexHomeOverride: runtimeCodexHome,
@@ -2356,7 +2367,9 @@ export async function launchWithHud(args: string[]): Promise<void> {
     // Non-fatal: repair failure must not block launch
   }
 
-  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env);
+  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env, {
+    includeHistoryArtifacts: normalizedArgs[0] === "resume",
+  });
   const codexHomeOverride = preparedCodexHome.codexHomeOverride;
   const sqliteHomeOverride = preparedCodexHome.sqliteHomeOverride;
   const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
