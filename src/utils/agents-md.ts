@@ -19,13 +19,29 @@ export function isOmxGeneratedAgentsMd(content: string): boolean {
   return content.includes(OMX_GENERATED_AGENTS_MARKER)
 }
 
+function hasOrderedMarkerPair(
+  content: string,
+  startMarker: string,
+  endMarker: string,
+): boolean {
+  const startIndex = content.indexOf(startMarker)
+  const endIndex = content.indexOf(endMarker)
+  return startIndex >= 0 && endIndex > startIndex
+}
+
 export function hasOmxManagedAgentsSections(content: string): boolean {
   return (
     isOmxGeneratedAgentsMd(content) ||
-    (content.includes(OMX_MANAGED_AGENTS_START_MARKER) &&
-      content.includes(OMX_MANAGED_AGENTS_END_MARKER)) ||
-    (content.includes(OMX_MODELS_START_MARKER) &&
-      content.includes(OMX_MODELS_END_MARKER))
+    hasOrderedMarkerPair(
+      content,
+      OMX_MANAGED_AGENTS_START_MARKER,
+      OMX_MANAGED_AGENTS_END_MARKER,
+    ) ||
+    hasOrderedMarkerPair(
+      content,
+      OMX_MODELS_START_MARKER,
+      OMX_MODELS_END_MARKER,
+    )
   )
 }
 

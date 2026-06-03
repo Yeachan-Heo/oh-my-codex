@@ -9,6 +9,10 @@ import {
   OMX_MANAGED_AGENTS_END_MARKER,
   OMX_MANAGED_AGENTS_START_MARKER,
 } from '../agents-md.js';
+import {
+  OMX_MODELS_END_MARKER,
+  OMX_MODELS_START_MARKER,
+} from '../agents-model-table.js';
 
 describe('agents-md helpers', () => {
   it('inserts the generated marker after the autonomy directive block', () => {
@@ -78,6 +82,32 @@ describe('agents-md helpers', () => {
 
     assert.equal(isOmxGeneratedAgentsMd(content), false);
     assert.equal(hasOmxManagedAgentsSections(content), true);
+    assert.equal(hasOmxAgentsContract(content), false);
+  });
+
+  it('does not recognize reversed managed AGENTS markers as a managed section', () => {
+    const content = [
+      '# Shared ownership AGENTS',
+      '',
+      OMX_MANAGED_AGENTS_END_MARKER,
+      'user guidance',
+      OMX_MANAGED_AGENTS_START_MARKER,
+    ].join('\n');
+
+    assert.equal(hasOmxManagedAgentsSections(content), false);
+    assert.equal(hasOmxAgentsContract(content), false);
+  });
+
+  it('does not recognize reversed model table markers as a managed section', () => {
+    const content = [
+      '# Shared ownership AGENTS',
+      '',
+      OMX_MODELS_END_MARKER,
+      'model table',
+      OMX_MODELS_START_MARKER,
+    ].join('\n');
+
+    assert.equal(hasOmxManagedAgentsSections(content), false);
     assert.equal(hasOmxAgentsContract(content), false);
   });
 
