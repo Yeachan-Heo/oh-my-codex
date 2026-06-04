@@ -1641,7 +1641,7 @@ describe('state operations directory initialization', () => {
       executionStride: 'deliverable',
       source: 'deep-interview',
       selected_by: 'user',
-      allow_task_shrink: false,
+      allowTaskShrink: false,
       completionUnit: 'The named deliverable',
       stopCondition: 'Stop after the deliverable is complete and verified',
       acceptanceCoverageScope: 'deliverable',

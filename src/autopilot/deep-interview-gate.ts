@@ -67,6 +67,12 @@ function executionContractValue(contract: JsonObject, snakeKey: string, camelKey
   return safeString(contract[snakeKey]) || safeString(contract[camelKey]);
 }
 
+function executionContractBoolean(contract: JsonObject, snakeKey: string, camelKey: string): boolean | undefined {
+  if (typeof contract[snakeKey] === 'boolean') return contract[snakeKey];
+  if (typeof contract[camelKey] === 'boolean') return contract[camelKey];
+  return undefined;
+}
+
 function executionContractStride(contract: JsonObject): string {
   return executionContractValue(contract, 'execution_stride', 'executionStride') || safeString(contract.stride);
 }
@@ -127,7 +133,7 @@ function isValidExecutionContract(contract: JsonObject): boolean {
   if (!executionContractValue(contract, 'stop_condition', 'stopCondition')) return false;
 
   const expected = expectedExecutionContractFields(stride);
-  return contract.allow_task_shrink === expected.allowTaskShrink
+  return executionContractBoolean(contract, 'allow_task_shrink', 'allowTaskShrink') === expected.allowTaskShrink
     && executionContractValue(contract, 'acceptance_coverage_scope', 'acceptanceCoverageScope') === expected.acceptanceCoverageScope
     && executionContractValue(contract, 'shrink_policy', 'shrinkPolicy') === expected.shrinkPolicy;
 }

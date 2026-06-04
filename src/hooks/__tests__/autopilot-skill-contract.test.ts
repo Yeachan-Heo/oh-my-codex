@@ -70,7 +70,7 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /Do not infer stride from prose, broadness, phase names, snapshots, or task size/i);
     assert.match(autopilotSkill, /deliberately uses `milestone` rather than `phase`/i);
     assert.match(autopilotSkill, /New artifacts must write canonical snake_case keys/i);
-    assert.match(autopilotSkill, /runtime may read legacy camelCase aliases only as compatibility input/i);
+    assert.match(autopilotSkill, /runtime may read legacy camelCase aliases and direct\/nested `execution_contract` locations only as compatibility input/i);
   });
 
   it('requires role-specific subsequent ralplan reviewer subagents with full context', () => {
