@@ -57,10 +57,14 @@ function deepInterviewGate(state: JsonObject | null | undefined): JsonObject | n
 function executionContractRequiredMarker(state: JsonObject | null | undefined): boolean {
   const nested = nestedState(state);
   const handoff = safeObject(deepInterviewHandoff(state));
-  return state?.execution_contract_required === true
-    || nested?.execution_contract_required === true
-    || deepInterviewGate(state)?.execution_contract_required === true
-    || handoff?.execution_contract_required === true;
+  return executionContractRequiredValue(state)
+    || executionContractRequiredValue(nested)
+    || executionContractRequiredValue(deepInterviewGate(state))
+    || executionContractRequiredValue(handoff);
+}
+
+function executionContractRequiredValue(state: JsonObject | null | undefined): boolean {
+  return state?.execution_contract_required === true || state?.executionContractRequired === true;
 }
 
 function executionContractValue(contract: JsonObject, snakeKey: string, camelKey: string): string {
@@ -139,6 +143,14 @@ function isValidExecutionContract(contract: JsonObject): boolean {
 }
 
 function executionContractStatusForState(state: JsonObject | null | undefined): ExecutionContractStatus {
+  const handoff = safeObject(deepInterviewHandoff(state));
+  if (executionContractRequiredValue(handoff)) {
+    const handoffContract = safeObject(handoff?.execution_contract);
+    if (!handoffContract || isExecutionContractPlaceholder(handoffContract) || !isValidExecutionContract(handoffContract)) {
+      return 'invalid';
+    }
+  }
+
   let hasValidContract = false;
   for (const contract of executionContractCandidates(state)) {
     if (isExecutionContractPlaceholder(contract)) continue;
