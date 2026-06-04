@@ -104,10 +104,28 @@ describe('execution-heavy skill guidance contract', () => {
     assert.doesNotMatch('Harness debris noted.', harnessDebris);
   });
 
-  it('ultrawork guidance stays OMX-native and avoids upstream-only runtime taxonomy', () => {
-    const content = loadSurface('skills/ultrawork/SKILL.md');
-    assert.doesNotMatch(content, /@opencode-ai\/plugin|bun:sqlite|\.sisyphus/i);
-    assert.doesNotMatch(content, /\boracle\b|\blibrarian\b|\bartistry\b|\bPrometheus\b/i);
-    assert.match(content, /Ralph owns persistence, architect verification, deslop, and the full verified-completion promise/i);
+  it('ultrawork guidance stays OMX-native and routes durability outside ultrawork', () => {
+    const rootSkill = loadSurface('skills/ultrawork/SKILL.md');
+    const pluginSkill = loadSurface('plugins/oh-my-codex/skills/ultrawork/SKILL.md');
+
+    for (const [label, content] of [
+      ['root', rootSkill],
+      ['plugin', pluginSkill],
+    ] as const) {
+      assert.doesNotMatch(content, /@opencode-ai\/plugin|bun:sqlite|\.sisyphus/i);
+      assert.doesNotMatch(content, /\boracle\b|\blibrarian\b|\bartistry\b|\bPrometheus\b/i);
+      assert.match(
+        content,
+        /Ultrawork does not own persistence, durable ledgers, architect verification, deslop, full QA, or the full verified-completion promise/i,
+        `${label} skill must keep ultrawork inside lightweight-verification boundaries`,
+      );
+      assert.match(content, /Escalate to `ultragoal` when the work needs durable goal state/i, `${label} skill must route durable goal state to ultragoal`);
+      assert.match(content, /Escalate to `team` when the work needs coordinated tmux workers/i, `${label} skill must route coordinated worker lifecycle to team`);
+      assert.match(
+        content,
+        /Escalate to explicitly requested `ralph` only for the supported legacy single-owner persistence\/verification fallback/i,
+        `${label} skill must keep ralph as explicit legacy fallback`,
+      );
+    }
   });
 });

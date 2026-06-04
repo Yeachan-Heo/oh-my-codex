@@ -144,6 +144,7 @@ Why bad: No verification output, no acceptance evidence, and no manual QA note w
 - Escalate to `ultragoal` when the work needs durable goal state, story checkpoints, or resume across implementation steps.
 - Escalate to `team` when the work needs coordinated tmux workers, shared task state, or durable multi-worker lifecycle control.
 - Escalate to explicitly requested `ralph` only for the supported legacy single-owner persistence/verification fallback.
+- Ralph owns persistence, architect verification, deslop, and the full verified-completion promise only when explicitly selected as the supported legacy fallback; direct ultrawork does not own those guarantees.
 - If a task fails repeatedly across retries, report the issue rather than retrying indefinitely.
 - Escalate to the user when tasks have unclear dependencies, conflicting requirements, or a materially branching acceptance target.
 </Escalation_And_Stop_Conditions>
