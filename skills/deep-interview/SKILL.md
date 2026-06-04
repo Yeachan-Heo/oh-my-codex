@@ -393,9 +393,19 @@ When the clarified task is specifically about `$autoresearch`, or the skill is i
 
 Present execution options after artifact generation using explicit handoff contracts. Treat the deep-interview spec as the current requirements source of truth and preserve intent, non-goals, decision boundaries, acceptance criteria, docs/terminology grounding, and any residual-risk warnings across the handoff.
 
-### Optional execution contract foundation
+### Autopilot execution stride confirmation
 
-When an Autopilot/deep-interview handoff explicitly requires a stride contract, emit it as structured data rather than prose. This is a validation foundation, not a broadness-inference feature: do not infer stride from task length, phase labels, snapshots, or freeform wording.
+Before handing a clarified spec to `$autopilot`/`$ralplan`, decide whether execution stride would materially change what the executor should finish before stopping. Use this guard for Autopilot handoff or any downstream workflow that explicitly needs an execution-span guard; do not require it for every ordinary deep-interview artifact.
+
+When the guard applies, deep-interview must confirm the execution stride before handoff and emit it as structured data rather than prose. This is a validation foundation, not a broadness-inference feature: do not infer stride from task length, phase labels, snapshots, repository/context snapshot size, or freeform wording.
+
+Ask a bounded single-choice confirmation unless the user has already explicitly selected one of these meanings in the current handoff conversation:
+
+1. `task` — conservative small step: complete one focused task; task shrink is allowed.
+2. `deliverable` — complete a clearly named deliverable; do not default-shrink; ask before shrinking.
+3. `milestone` — complete the larger approved stage/milestone; do not shrink unless blocked.
+
+If the user explicitly chooses a stride, write `selected_by:"user"`. If you use a safe default, explain the default logic visibly before handoff and write `selected_by:"default"`; never present a default as if the user chose it. Defaults are allowed only when the default policy itself is explicit and safe for the workflow, not as a hidden inference from broadness or prose.
 
 Canonical location under Autopilot state:
 
@@ -421,9 +431,9 @@ Canonical location under Autopilot state:
 ```
 
 Stride meanings:
-- `task`: conservative, small-step execution; `allow_task_shrink:true`, `acceptance_coverage_scope:"task"`, `shrink_policy:"allowed"`.
-- `deliverable`: finish the named deliverable before stopping; `allow_task_shrink:false`, `acceptance_coverage_scope:"deliverable"`, `shrink_policy:"ask_before_shrink"`.
-- `milestone`: finish the larger approved milestone unless blocked; `allow_task_shrink:false`, `acceptance_coverage_scope:"milestone"`, `shrink_policy:"deny_unless_blocked"`.
+- `task`: conservative small-step execution; complete one focused task; shrinking is allowed. Write `allow_task_shrink:true`, `acceptance_coverage_scope:"task"`, and `shrink_policy:"allowed"`.
+- `deliverable`: complete the named deliverable before stopping; do not default-shrink. Write `allow_task_shrink:false`, `acceptance_coverage_scope:"deliverable"`, and `shrink_policy:"ask_before_shrink"`.
+- `milestone`: complete the larger approved milestone/stage unless blocked. Write `allow_task_shrink:false`, `acceptance_coverage_scope:"milestone"`, and `shrink_policy:"deny_unless_blocked"`.
 
 Only set `execution_contract_required:true` when the selected downstream workflow needs this explicit stride/stop-condition guard. New artifacts must write the canonical snake_case schema shown above under `handoff_artifacts.deep_interview`; runtime readers may accept legacy camelCase field/marker aliases and direct/nested `execution_contract` locations only as compatibility input. If `execution_contract_required` is absent or false, downstream Autopilot compatibility behavior is unchanged.
 
