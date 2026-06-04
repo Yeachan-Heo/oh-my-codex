@@ -441,8 +441,32 @@ describe("codex native hook dispatch", () => {
     );
   });
 
-  it("emits schema-safe JSON stdout when CLI stdin is malformed", () => {
+  it("emits Stop-safe JSON stdout when CLI stdin is malformed before event detection", () => {
     const stdout = runNativeHookCli("{");
+
+    const output = parseSingleJsonStdout(stdout) as {
+      decision?: string;
+      reason?: string;
+      stopReason?: string;
+      systemMessage?: string;
+      hookSpecificOutput?: unknown;
+    };
+
+    assert.equal(output.decision, "block");
+    assert.equal(
+      output.reason,
+      "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.",
+    );
+    assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+    assert.equal(output.hookSpecificOutput, undefined);
+    assert.match(
+      String(output.systemMessage ?? ""),
+      /stdin JSON parsing failed inside codex-native-hook:/,
+    );
+  });
+
+  it("keeps explicit non-Stop malformed stdin on the non-Stop fail-closed schema", () => {
+    const stdout = runNativeHookCli('{"hook_event_name":"UserPromptSubmit",');
 
     const output = parseSingleJsonStdout(stdout) as {
       continue?: boolean;

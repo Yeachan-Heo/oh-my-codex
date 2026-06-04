@@ -4457,16 +4457,17 @@ function buildMalformedStdinHookOutput(parseError: Error, rawInput: string): Rec
     "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.";
   const systemMessage =
     `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
-  if (inferHookEventNameFromMalformedInput(rawInput) === "Stop") {
+  const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
+  if (inferredHookEventName && inferredHookEventName !== "Stop") {
     return {
-      decision: "block",
-      reason,
+      continue: false,
       stopReason: "native_hook_stdin_parse_error",
       systemMessage,
     };
   }
   return {
-    continue: false,
+    decision: "block",
+    reason,
     stopReason: "native_hook_stdin_parse_error",
     systemMessage,
   };
