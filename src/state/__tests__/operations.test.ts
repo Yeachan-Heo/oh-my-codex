@@ -1500,6 +1500,62 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('allows partial Autopilot ralplan handoff writes when a required execution contract is already persisted', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-execution-contract-partial-write-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-execution-contract-partial-write';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+            state: {
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: 'The persisted interview artifact already defines the milestone contract.',
+              },
+              handoff_artifacts: {
+                deep_interview: {
+                  summary: 'Ready for ralplan with a persisted milestone execution contract.',
+                  execution_contract_required: true,
+                  execution_contract: validExecutionContract('milestone'),
+                },
+              },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+        });
+
+        assert.equal(response.isError, undefined);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+        assert.deepEqual(
+          ((state.state as Record<string, unknown>).handoff_artifacts as Record<string, unknown>).deep_interview,
+          {
+            summary: 'Ready for ralplan with a persisted milestone execution contract.',
+            execution_contract_required: true,
+            execution_contract: validExecutionContract('milestone'),
+          },
+        );
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('denies Autopilot deep-interview handoff when execution contract is required but missing or invalid', async () => {
     for (const [caseName, deepInterviewHandoff] of Object.entries({
       missing: {
