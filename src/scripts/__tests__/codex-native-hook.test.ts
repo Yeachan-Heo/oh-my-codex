@@ -5873,6 +5873,76 @@ exit 0
     }
   });
 
+  it("allows null-device fd redirects while deep-interview blocks real Bash writes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-null-redirect-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-di-null-redirect");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-di-null-redirect", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: "sess-di-null-redirect",
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-null-redirect" }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-di-null-redirect",
+      });
+
+      const allowedCommands = [
+        "find application -type d -name 'bug-tracking*' 2>/dev/null | head -20",
+        "find application -type d -name 'bug-tracking*' 2> /dev/null | head -20",
+        "find application -type d -name 'bug-tracking*' 2>NUL | head -20",
+        "find application -type d -name 'bug-tracking*' 1>/dev/null",
+        "find application -type d -name 'bug-tracking*' &>/dev/null",
+      ];
+
+      for (const [index, command] of allowedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-null-redirect",
+            tool_name: "Bash",
+            tool_use_id: `tool-di-null-redirect-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson, null, command);
+      }
+
+      const blockedCommands = [
+        "find application -type d -name 'bug-tracking*' 2>errors.log | head -20",
+        "find application -type d -name 'bug-tracking*' > /tmp/bug-tracking.txt",
+        "find application -type d -name 'bug-tracking*' | tee /dev/null",
+      ];
+
+      for (const [index, command] of blockedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-null-redirect",
+            tool_name: "Bash",
+            tool_use_id: `tool-di-real-redirect-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows implementation tools after an explicit deep-interview handoff deactivates the mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-handoff-"));
     try {

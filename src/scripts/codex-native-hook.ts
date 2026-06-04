@@ -2657,9 +2657,23 @@ function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
   return candidates.map((candidate) => safeString(candidate).trim()).filter(Boolean);
 }
 
+function isNullDeviceRedirectTarget(target: string): boolean {
+  const normalized = target.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  return normalized === "/dev/null" || normalized === "nul";
+}
+
+function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
+  const targets: string[] = [];
+  for (const match of command.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
+    const candidate = safeString(match[2]).trim();
+    if (candidate && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
+  }
+  return targets;
+}
+
 function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return /\bapply_patch\b/.test(command)
-    || /(?:^|[;&|]\s*)(?:cat|printf|echo)\b[\s\S]{0,240}>\s*[^\s&|;]+/.test(command)
+    || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
@@ -2667,11 +2681,7 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
-  const targets: string[] = [];
-  for (const match of command.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
-    const candidate = safeString(match[2]).trim();
-    if (candidate) targets.push(candidate);
-  }
+  const targets = extractDeepInterviewCommandRedirectTargets(command);
   for (const match of command.matchAll(/\btee\s+(?:-a\s+)?(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
     if (candidate) targets.push(candidate);

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { readStdin } from '../plugin-runner-stdin.js';
 
 const RESULT_PREFIX = '__OMX_PLUGIN_RESULT__ ';
 
@@ -14,6 +16,12 @@ function getRunnerPath(): string {
 
 function runRunner(
   input: Record<string, unknown>,
+): Promise<{ stdout: string; stderr: string; code: number | null; result: Record<string, unknown> | null }> {
+  return runRunnerWithStdin([Buffer.from(JSON.stringify(input))]);
+}
+
+function runRunnerWithStdin(
+  chunks: Array<string | Buffer | Uint8Array>,
 ): Promise<{ stdout: string; stderr: string; code: number | null; result: Record<string, unknown> | null }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [getRunnerPath()], {
@@ -40,12 +48,93 @@ function runRunner(
       resolve({ stdout, stderr, code, result });
     });
 
-    child.stdin.write(JSON.stringify(input));
+    for (const chunk of chunks) {
+      child.stdin.write(chunk);
+    }
     child.stdin.end();
   });
 }
 
+function setEuroByteOffset(payload: Record<string, unknown>, targetOffset: number): Buffer {
+  const event = payload.event as { context: { padding: string } };
+  event.context.padding = '';
+  const initial = Buffer.from(JSON.stringify(payload));
+  const initialOffset = initial.indexOf(Buffer.from('€'));
+  assert.notEqual(initialOffset, -1);
+  assert.ok(initialOffset <= targetOffset, `initial euro offset ${initialOffset} exceeded target ${targetOffset}`);
+  event.context.padding = 'a'.repeat(targetOffset - initialOffset);
+  const encoded = Buffer.from(JSON.stringify(payload));
+  assert.equal(encoded.indexOf(Buffer.from('€')), targetOffset);
+  return encoded;
+}
+
 describe('plugin-runner', () => {
+  it('reads stdin through async stream iteration without touching the fd', async () => {
+    const chunks = ['  {"hello":', Buffer.from('"world"}'), '\n'];
+    const stream = Readable.from(chunks, { encoding: 'utf-8' }) as Readable & { fd: number };
+    Object.defineProperty(stream, 'fd', {
+      get() {
+        throw Object.assign(new Error('resource temporarily unavailable'), { code: 'EAGAIN' });
+      },
+    });
+
+    assert.equal(await readStdin(stream), '{"hello":"world"}');
+  });
+
+  it('preserves multibyte UTF-8 split across input chunks', async () => {
+    const encoded = Buffer.from('{"msg":"€"}');
+    const euroOffset = encoded.indexOf(Buffer.from('€'));
+    assert.notEqual(euroOffset, -1);
+
+    const input = Readable.from([
+      encoded.subarray(0, euroOffset + 1),
+      encoded.subarray(euroOffset + 1),
+    ]);
+
+    assert.equal(await readStdin(input), '{"msg":"€"}');
+  });
+
+  it('preserves dispatcher-sized UTF-8 stdin payloads when multibyte bytes cross a stream boundary', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runner-utf8-'));
+    try {
+      const pluginPath = join(cwd, 'utf8-check.mjs');
+      await writeFile(
+        pluginPath,
+        `export function onHookEvent(event) {
+          if (event.context.msg !== '€') {
+            throw new Error('expected euro, got ' + JSON.stringify(event.context.msg));
+          }
+        }`,
+      );
+
+      const payload = {
+        cwd,
+        pluginId: 'utf8-check',
+        pluginPath,
+        event: {
+          schema_version: '1',
+          event: 'session-start',
+          timestamp: new Date().toISOString(),
+          source: 'native',
+          context: { padding: '', msg: '€' },
+        },
+      };
+      const encoded = setEuroByteOffset(payload, 65_535);
+      const euroOffset = encoded.indexOf(Buffer.from('€'));
+      const { result, code } = await runRunnerWithStdin([
+        encoded.subarray(0, euroOffset + 1),
+        encoded.subarray(euroOffset + 1),
+      ]);
+
+      assert.ok(result);
+      assert.equal(result.ok, true);
+      assert.equal(result.reason, 'ok');
+      assert.equal(code, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('emits error for empty stdin', async () => {
     const { result, code } = await new Promise<{ result: Record<string, unknown> | null; code: number | null }>((resolve) => {
       const child = spawn(process.execPath, [getRunnerPath()], {
@@ -149,6 +238,44 @@ describe('plugin-runner', () => {
       assert.equal(result.reason, 'ok');
       assert.equal(result.plugin, 'valid');
       assert.equal(code, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('handles bounded concurrent piped runner requests', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runner-concurrent-'));
+    try {
+      const pluginPath = join(cwd, 'valid-concurrent.mjs');
+      await writeFile(pluginPath, 'export async function onHookEvent() {}');
+      const runs = 60;
+      const concurrency = 20;
+      let next = 0;
+      const failures: Array<{ index: number; code: number | null; result: Record<string, unknown> | null; stderr: string }> = [];
+
+      async function worker(): Promise<void> {
+        while (next < runs) {
+          const index = next++;
+          const { result, code, stderr } = await runRunner({
+            cwd,
+            pluginId: `valid-concurrent-${index}`,
+            pluginPath,
+            event: {
+              schema_version: '1',
+              event: 'session-start',
+              timestamp: new Date().toISOString(),
+              source: 'native',
+              context: { index },
+            },
+          });
+          if (code !== 0 || result?.ok !== true || result?.reason !== 'ok') {
+            failures.push({ index, code, result, stderr });
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      assert.deepEqual(failures, []);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
