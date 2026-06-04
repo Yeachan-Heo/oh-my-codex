@@ -17,6 +17,12 @@ function getRunnerPath(): string {
 function runRunner(
   input: Record<string, unknown>,
 ): Promise<{ stdout: string; stderr: string; code: number | null; result: Record<string, unknown> | null }> {
+  return runRunnerWithStdin([Buffer.from(JSON.stringify(input))]);
+}
+
+function runRunnerWithStdin(
+  chunks: Array<string | Buffer | Uint8Array>,
+): Promise<{ stdout: string; stderr: string; code: number | null; result: Record<string, unknown> | null }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [getRunnerPath()], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -42,9 +48,24 @@ function runRunner(
       resolve({ stdout, stderr, code, result });
     });
 
-    child.stdin.write(JSON.stringify(input));
+    for (const chunk of chunks) {
+      child.stdin.write(chunk);
+    }
     child.stdin.end();
   });
+}
+
+function setEuroByteOffset(payload: Record<string, unknown>, targetOffset: number): Buffer {
+  const event = payload.event as { context: { padding: string } };
+  event.context.padding = '';
+  const initial = Buffer.from(JSON.stringify(payload));
+  const initialOffset = initial.indexOf(Buffer.from('€'));
+  assert.notEqual(initialOffset, -1);
+  assert.ok(initialOffset <= targetOffset, `initial euro offset ${initialOffset} exceeded target ${targetOffset}`);
+  event.context.padding = 'a'.repeat(targetOffset - initialOffset);
+  const encoded = Buffer.from(JSON.stringify(payload));
+  assert.equal(encoded.indexOf(Buffer.from('€')), targetOffset);
+  return encoded;
 }
 
 describe('plugin-runner', () => {
@@ -58,6 +79,60 @@ describe('plugin-runner', () => {
     });
 
     assert.equal(await readStdin(stream), '{"hello":"world"}');
+  });
+
+  it('preserves multibyte UTF-8 split across input chunks', async () => {
+    const encoded = Buffer.from('{"msg":"€"}');
+    const euroOffset = encoded.indexOf(Buffer.from('€'));
+    assert.notEqual(euroOffset, -1);
+
+    const input = Readable.from([
+      encoded.subarray(0, euroOffset + 1),
+      encoded.subarray(euroOffset + 1),
+    ]);
+
+    assert.equal(await readStdin(input), '{"msg":"€"}');
+  });
+
+  it('preserves dispatcher-sized UTF-8 stdin payloads when multibyte bytes cross a stream boundary', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runner-utf8-'));
+    try {
+      const pluginPath = join(cwd, 'utf8-check.mjs');
+      await writeFile(
+        pluginPath,
+        `export function onHookEvent(event) {
+          if (event.context.msg !== '€') {
+            throw new Error('expected euro, got ' + JSON.stringify(event.context.msg));
+          }
+        }`,
+      );
+
+      const payload = {
+        cwd,
+        pluginId: 'utf8-check',
+        pluginPath,
+        event: {
+          schema_version: '1',
+          event: 'session-start',
+          timestamp: new Date().toISOString(),
+          source: 'native',
+          context: { padding: '', msg: '€' },
+        },
+      };
+      const encoded = setEuroByteOffset(payload, 65_535);
+      const euroOffset = encoded.indexOf(Buffer.from('€'));
+      const { result, code } = await runRunnerWithStdin([
+        encoded.subarray(0, euroOffset + 1),
+        encoded.subarray(euroOffset + 1),
+      ]);
+
+      assert.ok(result);
+      assert.equal(result.ok, true);
+      assert.equal(result.reason, 'ok');
+      assert.equal(code, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('emits error for empty stdin', async () => {
