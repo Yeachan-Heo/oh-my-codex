@@ -14,7 +14,7 @@ import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { safeString, asNumber, isTerminalPhase } from './utils.js';
 import { readJsonIfExists } from './state-io.js';
 import { logTmuxHookEvent } from './log.js';
-import { evaluatePaneInjectionReadiness, queuePaneInput, sendPaneInput } from './team-tmux-guard.js';
+import { evaluatePaneInjectionReadiness, sendPaneInput } from './team-tmux-guard.js';
 import { resolvePaneTarget } from './tmux-injection.js';
 import { readTeamWorkersForIdleCheck } from './team-worker.js';
 
@@ -147,6 +147,35 @@ async function resolveCanonicalLeaderPaneId(leaderPaneId) {
   return normalizedLeaderPaneId;
 }
 
+async function recordSuppressedWorkerStopNudge({
+  logsDir,
+  teamName,
+  workerName,
+  reason,
+}) {
+  const nowIso = new Date().toISOString();
+  await logTmuxHookEvent(logsDir, {
+    timestamp: nowIso,
+    type: 'worker_stop_leader_nudge_suppressed',
+    team: teamName,
+    worker: workerName,
+    to_worker: 'leader-fixed',
+    reason,
+    tmux_injection_attempted: false,
+    source_type: SOURCE_TYPE,
+  }).catch(() => {});
+  await appendTeamDeliveryLog(logsDir, {
+    event: 'nudge_triggered',
+    source: SOURCE_TYPE,
+    team: teamName,
+    from_worker: workerName,
+    to_worker: 'leader-fixed',
+    transport: 'none',
+    result: 'suppressed',
+    reason,
+  }).catch(() => {});
+}
+
 async function recordDeferred({
   stateDir,
   logsDir,
@@ -229,18 +258,34 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
   };
   let tmuxSession = '';
   let leaderPaneId = '';
+  let recordedShutdownSuppression = false;
+  const recordShutdownSuppressionOnce = async () => {
+    if (recordedShutdownSuppression) return;
+    recordedShutdownSuppression = true;
+    await recordSuppressedWorkerStopNudge({
+      logsDir,
+      teamName,
+      workerName,
+      reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+    });
+  };
 
   if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+    await recordShutdownSuppressionOnce();
     return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
   }
 
   const lock = await acquireTeamStopNudgeLock(teamDir, nowMs, cooldownMs);
   if (!lock.acquired) {
+    if (lock.reason === TEAM_SHUTDOWN_NO_INJECTION_REASON) {
+      await recordShutdownSuppressionOnce();
+    }
     return { ok: true, result: lock.reason || TEAM_LOCK_HELD_REASON };
   }
 
   try {
     if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      await recordShutdownSuppressionOnce();
       return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
     }
 
@@ -263,6 +308,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
 
   if (!tmuxTarget) {
     if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      await recordShutdownSuppressionOnce();
       return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
     }
     await recordDeferred({
@@ -287,6 +333,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
   });
   if (!paneGuard.ok) {
     if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      await recordShutdownSuppressionOnce();
       return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
     }
     await recordDeferred({
@@ -305,6 +352,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
   }
 
   if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+    await recordShutdownSuppressionOnce();
     return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
   }
 
@@ -314,23 +362,14 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     + DEFAULT_MARKER;
 
     const leaderHasActiveTask = paneHasActiveTask(paneGuard.paneCapture);
-    let deliveryMode = 'sent';
-    if (leaderHasActiveTask) {
-      const sendResult = await queuePaneInput({
-        paneTarget: tmuxTarget,
-        prompt,
-      });
-      if (!sendResult.ok) throw new Error(sendResult.error || sendResult.reason || 'send_failed');
-      deliveryMode = 'queued';
-    } else {
-      const sendResult = await sendPaneInput({
-        paneTarget: tmuxTarget,
-        prompt,
-        submitKeyPresses: 2,
-        submitDelayMs: 100,
-      });
-      if (!sendResult.ok) throw new Error(sendResult.error || sendResult.reason || 'send_failed');
-    }
+    const sendResult = await sendPaneInput({
+      paneTarget: tmuxTarget,
+      prompt,
+      submitKeyPresses: 2,
+      submitDelayMs: 100,
+    });
+    if (!sendResult.ok) throw new Error(sendResult.error || sendResult.reason || 'send_failed');
+    const deliveryMode = leaderHasActiveTask ? 'steered' : 'sent';
 
     const deliveryState = {
       ...nextState,
@@ -376,6 +415,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     return { ok: true, result: deliveryMode };
   } catch (err) {
     if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      await recordShutdownSuppressionOnce();
       return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
     }
     // Worker Stop is already allowed before this helper runs; nudge failures are

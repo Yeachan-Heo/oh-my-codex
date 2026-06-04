@@ -38,4 +38,23 @@ describe('appendTeamDeliveryLogForCwd', () => {
       await rm(box, { recursive: true, force: true });
     }
   });
+
+  it('accepts steered nudge delivery results in the shared contract', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-delivery-steered-'));
+    try {
+      await appendTeamDeliveryLogForCwd(cwd, {
+        event: 'nudge_triggered',
+        source: 'worker_stop',
+        team: 'steered-log-team',
+        transport: 'send-keys',
+        result: 'steered',
+      });
+
+      const date = new Date().toISOString().slice(0, 10);
+      const raw = await readFile(join(cwd, '.omx', 'logs', `team-delivery-${date}.jsonl`), 'utf-8');
+      assert.match(raw, /"result":"steered"/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

@@ -9082,7 +9082,7 @@ exit 0
     }
   });
 
-  it("queues worker Stop leader nudge with Tab and submit when leader pane is busy", async () => {
+  it("steers worker Stop leader nudge directly when leader pane is busy", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-busy-leader-"));
     const prevTeamWorker = process.env.OMX_TEAM_WORKER;
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -9155,14 +9155,11 @@ exit 0
       assert.equal(result.outputJson, null);
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
-      assert.match(tmuxLog, /send-keys -t %42 Tab/);
-      assert.match(tmuxLog, /send-keys -t %42 C-m/);
-      assert.ok(
-        tmuxLog.indexOf("send-keys -t %42 Tab") < tmuxLog.indexOf("send-keys -t %42 C-m"),
-        "busy worker-stop nudge should press Tab before C-m",
-      );
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 Tab/);
+      const submits = tmuxLog.match(/send-keys -t %42 C-m/g) || [];
+      assert.equal(submits.length, 2, "busy worker-stop nudge should submit directly as steering, not queue via Tab");
       const nudgeState = JSON.parse(await readFile(join(workerDir, "worker-stop-nudge.json"), "utf-8"));
-      assert.equal(nudgeState.delivery, "queued");
+      assert.equal(nudgeState.delivery, "steered");
     } finally {
       if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
       else delete process.env.OMX_TEAM_WORKER;
@@ -9298,6 +9295,14 @@ exit 0
       });
       assert.equal(shutdownResult.result, "team_state_gone_or_shutdown");
       assert.equal(existsSync(join(stateDir, "team", "shutdown-team", "worker-stop-nudge.json")), false);
+      const deliveryLogPath = join(logsDir, `team-delivery-${new Date().toISOString().split("T")[0]}.jsonl`);
+      const deliveryEvents = (await readFile(deliveryLogPath, "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const suppressedEvents = deliveryEvents.filter((event) => event.reason === "team_state_gone_or_shutdown");
+      assert.equal(suppressedEvents.length, 2, "late closed-team Stop nudges should be diagnostics, not queued prompts");
+      assert.equal(suppressedEvents.every((event) => event.result === "suppressed" && event.transport === "none"), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -9338,13 +9343,13 @@ exit 0
         workerContext: { teamName, workerName: "worker-2" },
       });
 
-      assert.equal(result.result, "queued");
+      assert.equal(result.result, "steered");
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-2 native Stop allowed/);
-      assert.match(tmuxLog, /send-keys -t %42 Tab/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 Tab/);
       const teamNudgeState = JSON.parse(await readFile(join(teamDir, "worker-stop-nudge.json"), "utf-8"));
       assert.equal(teamNudgeState.worker, "worker-2");
-      assert.equal(teamNudgeState.delivery, "queued");
+      assert.equal(teamNudgeState.delivery, "steered");
     } finally {
       if (typeof prevPath === "string") process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -9477,6 +9482,21 @@ exit 0
       assert.equal(existsSync(teamDir), false, "deferred worker Stop recording must not recreate removed team state");
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
+      const deliveryLogPath = join(logsDir, `team-delivery-${new Date().toISOString().split("T")[0]}.jsonl`);
+      const deliveryEvents = (await readFile(deliveryLogPath, "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(
+        deliveryEvents.some((event) =>
+          event.team === teamName
+          && event.result === "suppressed"
+          && event.transport === "none"
+          && event.reason === "team_state_gone_or_shutdown"
+        ),
+        true,
+        "teardown-race worker Stop nudges should be diagnostic suppression events, not queued prompts",
+      );
     } finally {
       if (typeof prevPath === "string") process.env.PATH = prevPath;
       else delete process.env.PATH;
