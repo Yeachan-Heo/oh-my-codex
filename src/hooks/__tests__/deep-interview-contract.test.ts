@@ -253,6 +253,21 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /Do NOT implement directly/i);
 	});
 
+	it("documents optional execution contract foundation for Autopilot stride handoff", () => {
+		assert.match(deepInterviewSkill, /Optional execution contract foundation/i);
+		assert.match(deepInterviewSkill, /execution_contract_required/i);
+		assert.match(deepInterviewSkill, /execution_contract/i);
+		assert.match(deepInterviewSkill, /execution_stride/i);
+		assert.match(deepInterviewSkill, /task.*deliverable.*milestone/s);
+		assert.match(deepInterviewSkill, /allow_task_shrink/i);
+		assert.match(deepInterviewSkill, /completion_unit/i);
+		assert.match(deepInterviewSkill, /stop_condition/i);
+		assert.match(deepInterviewSkill, /acceptance_coverage_scope/i);
+		assert.match(deepInterviewSkill, /shrink_policy/i);
+		assert.match(deepInterviewSkill, /do not infer stride from task length, phase labels, snapshots, or freeform wording/i);
+		assert.match(pluginDeepInterviewSkill, /Optional execution contract foundation/i);
+	});
+
 	it("documents surface-aware omx question handling and fallback boundaries", () => {
 		assert.match(deepInterviewSkill, /omx question/i);
 		assert.match(
