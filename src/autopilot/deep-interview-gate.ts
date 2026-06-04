@@ -31,6 +31,10 @@ function safeObject(value: unknown): JsonObject | null {
     : null;
 }
 
+function hasOwnKey(object: JsonObject | null | undefined, key: string): object is JsonObject {
+  return Boolean(object) && Object.prototype.hasOwnProperty.call(object, key);
+}
+
 async function readDeepInterviewState(input: AutopilotDeepInterviewRalplanGateInput): Promise<JsonObject | null> {
   // Autopilot supervisor handoffs must not be driven by sibling workflow files.
   // Standalone deep-interview -> ralplan reconciliation passes its source state
@@ -81,13 +85,17 @@ function executionContractStride(contract: JsonObject): string {
   return executionContractValue(contract, 'execution_stride', 'executionStride') || safeString(contract.stride);
 }
 
-function executionContractCandidates(state: JsonObject | null | undefined): JsonObject[] {
-  const direct = safeObject(state?.execution_contract);
+function executionContractCandidates(state: JsonObject | null | undefined): unknown[] {
+  const candidates: unknown[] = [];
+  if (hasOwnKey(state, 'execution_contract')) candidates.push(state.execution_contract);
+
   const nested = nestedState(state);
-  const nestedContract = safeObject(nested?.execution_contract);
+  if (hasOwnKey(nested, 'execution_contract')) candidates.push(nested.execution_contract);
+
   const handoff = safeObject(deepInterviewHandoff(state));
-  const handoffContract = safeObject(handoff?.execution_contract);
-  return [direct, nestedContract, handoffContract].filter((contract): contract is JsonObject => Boolean(contract));
+  if (hasOwnKey(handoff, 'execution_contract')) candidates.push(handoff.execution_contract);
+
+  return candidates;
 }
 
 function isExecutionContractPlaceholder(contract: JsonObject): boolean {
@@ -145,15 +153,25 @@ function isValidExecutionContract(contract: JsonObject): boolean {
 function executionContractStatusForState(state: JsonObject | null | undefined): ExecutionContractStatus {
   const handoff = safeObject(deepInterviewHandoff(state));
   if (executionContractRequiredValue(handoff)) {
-    const handoffContract = safeObject(handoff?.execution_contract);
-    if (!handoffContract || isExecutionContractPlaceholder(handoffContract) || !isValidExecutionContract(handoffContract)) {
-      return 'invalid';
+    if (hasOwnKey(handoff, 'execution_contract')) {
+      const handoffContract = safeObject(handoff.execution_contract);
+      if (
+        !handoffContract
+        || isExecutionContractPlaceholder(handoffContract)
+        || !isValidExecutionContract(handoffContract)
+      ) {
+        return 'invalid';
+      }
     }
   }
 
   let hasValidContract = false;
-  for (const contract of executionContractCandidates(state)) {
-    if (isExecutionContractPlaceholder(contract)) continue;
+  for (const candidate of executionContractCandidates(state)) {
+    const contract = safeObject(candidate);
+    if (!contract) {
+      return 'invalid';
+    }
+    if (isExecutionContractPlaceholder(contract)) return 'invalid';
     if (!isValidExecutionContract(contract)) return 'invalid';
     hasValidContract = true;
   }
@@ -173,7 +191,9 @@ function executionContractStatusForHandoff(
   input: AutopilotDeepInterviewRalplanGateInput,
   deepState: JsonObject | null,
 ): ExecutionContractStatus {
-  const states = input.nextState ? [input.nextState] : [deepState, input.currentState];
+  const states = input.nextState
+    ? [input.nextState, deepState, input.currentState]
+    : [deepState, input.currentState];
   for (const state of states) {
     const status = executionContractStatusForState(state);
     if (status !== 'absent') return status;

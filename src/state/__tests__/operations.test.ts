@@ -1824,15 +1824,15 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies missing or invalid handoff execution contracts even when a direct contract is valid', async () => {
-    for (const [caseName, handoffPatch] of [
-      ['missing', {}],
-      ['invalid', { execution_contract: { ...validExecutionContract('deliverable'), source: 'ralplan' } }],
+  it('supports direct execution contract compatibility while rejecting invalid handoff contracts', async () => {
+    for (const [caseName, handoffPatch, shouldAllow] of [
+      ['missing-handoff-contract', {}, true],
+      ['invalid-handoff-contract', { execution_contract: { ...validExecutionContract('deliverable'), source: 'ralplan' } }, false],
     ] as const) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-${caseName}-handoff-`));
       try {
         await withOmxRootEnv(wd, async () => {
-          const sessionId = `sess-autopilot-execution-contract-${caseName}-handoff`;
+          const sessionId = `sess-contract-${caseName}`;
           const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
           await mkdir(sessionDir, { recursive: true });
           await writeFile(
@@ -1854,7 +1854,7 @@ describe('state operations directory initialization', () => {
               execution_contract: validExecutionContract('deliverable'),
               deep_interview_gate: {
                 status: 'complete',
-                rationale: 'A valid direct contract must not hide a missing or malformed handoff contract.',
+                rationale: 'A compatibility direct contract may satisfy a marker, but invalid handoff data fails first.',
               },
               handoff_artifacts: {
                 deep_interview: {
@@ -1866,12 +1866,14 @@ describe('state operations directory initialization', () => {
             },
           });
 
-          assert.equal(response.isError, true);
-          assert.match(String((response.payload as { error?: string }).error || ''), /execution_contract/i);
+          assert.equal(response.isError, shouldAllow ? undefined : true);
+          if (!shouldAllow) {
+            assert.match(String((response.payload as { error?: string }).error || ''), /execution_contract/i);
+          }
           const state = JSON.parse(
             await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
           ) as Record<string, unknown>;
-          assert.equal(state.current_phase, 'deep-interview');
+          assert.equal(state.current_phase, shouldAllow ? 'ralplan' : 'deep-interview');
         });
       } finally {
         await rm(wd, { recursive: true, force: true });
