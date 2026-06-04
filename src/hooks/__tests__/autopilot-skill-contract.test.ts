@@ -57,7 +57,19 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /do not progress to `\$ultragoal`, `\$team`, `\$ralph`, or implementation/i);
   });
 
-  it('documents optional deep-interview execution contract validation without broadness inference', () => {
+  it('documents deep-interview execution stride confirmation without broadness inference', () => {
+    assert.match(autopilotSkill, /Execution stride confirmation/i);
+    assert.match(autopilotSkill, /before an Autopilot\/ralplan handoff/i);
+    assert.match(autopilotSkill, /execution stride would affect what the next executor completes before stopping/i);
+    assert.match(autopilotSkill, /must confirm one of exactly `task`, `deliverable`, or `milestone`/i);
+    assert.match(autopilotSkill, /do not introduce `phase` or any other stride/i);
+    assert.match(autopilotSkill, /not for every deep-interview run/i);
+    assert.match(autopilotSkill, /`task` = conservative small step, complete one focused task, shrinking allowed/i);
+    assert.match(autopilotSkill, /`deliverable` = complete a clearly named deliverable, do not default-shrink, ask before shrinking/i);
+    assert.match(autopilotSkill, /`milestone` = complete the larger approved stage\/milestone, do not shrink unless blocked/i);
+    assert.match(autopilotSkill, /selected_by:"user"/i);
+    assert.match(autopilotSkill, /selected_by:"default"/i);
+    assert.match(autopilotSkill, /never disguise a default as a user choice/i);
     assert.match(autopilotSkill, /execution_contract_required:true/i);
     assert.match(autopilotSkill, /execution_contract/i);
     assert.match(autopilotSkill, /execution_stride:"task"\|"deliverable"\|"milestone"/i);
@@ -68,7 +80,7 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /shrink_policy/i);
     assert.match(autopilotSkill, /Preserve legacy behavior when `execution_contract_required` is absent or false/i);
     assert.match(autopilotSkill, /Do not infer stride from prose, broadness, phase names, snapshots, or task size/i);
-    assert.match(autopilotSkill, /deliberately uses `milestone` rather than `phase`/i);
+    assert.match(autopilotSkill, /execution-stage consumption remains out of scope here/i);
     assert.match(autopilotSkill, /New artifacts must write canonical snake_case keys/i);
     assert.match(autopilotSkill, /runtime may read legacy camelCase field\/marker aliases and direct\/nested `execution_contract` locations only as compatibility input/i);
   });
