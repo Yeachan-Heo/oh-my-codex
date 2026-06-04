@@ -265,6 +265,8 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /acceptance_coverage_scope/i);
 		assert.match(deepInterviewSkill, /shrink_policy/i);
 		assert.match(deepInterviewSkill, /do not infer stride from task length, phase labels, snapshots, or freeform wording/i);
+		assert.match(deepInterviewSkill, /New artifacts must write the canonical snake_case schema/i);
+		assert.match(deepInterviewSkill, /runtime readers may accept legacy camelCase aliases only as compatibility input/i);
 		assert.match(pluginDeepInterviewSkill, /Optional execution contract foundation/i);
 	});
 

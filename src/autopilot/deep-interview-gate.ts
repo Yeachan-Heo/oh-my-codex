@@ -120,6 +120,9 @@ function isValidExecutionContract(contract: JsonObject): boolean {
   if (contract.version !== 1) return false;
   const stride = executionContractStride(contract);
   if (!isExecutionStride(stride)) return false;
+  if (safeString(contract.source) !== 'deep-interview') return false;
+  const selectedBy = executionContractValue(contract, 'selected_by', 'selectedBy');
+  if (selectedBy !== 'user' && selectedBy !== 'default') return false;
   if (!executionContractValue(contract, 'completion_unit', 'completionUnit')) return false;
   if (!executionContractValue(contract, 'stop_condition', 'stopCondition')) return false;
 
@@ -130,11 +133,13 @@ function isValidExecutionContract(contract: JsonObject): boolean {
 }
 
 function executionContractStatusForState(state: JsonObject | null | undefined): ExecutionContractStatus {
+  let hasValidContract = false;
   for (const contract of executionContractCandidates(state)) {
     if (isExecutionContractPlaceholder(contract)) continue;
-    return isValidExecutionContract(contract) ? 'valid' : 'invalid';
+    if (!isValidExecutionContract(contract)) return 'invalid';
+    hasValidContract = true;
   }
-  return 'absent';
+  return hasValidContract ? 'valid' : 'absent';
 }
 
 function requiresExecutionContract(

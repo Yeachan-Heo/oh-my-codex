@@ -1522,6 +1522,22 @@ describe('state operations directory initialization', () => {
           execution_stride: 'phase',
         },
       },
+      invalidSource: {
+        summary: 'Contract provenance must be deep-interview.',
+        execution_contract_required: true,
+        execution_contract: {
+          ...validExecutionContract('task'),
+          source: 'ralplan',
+        },
+      },
+      invalidSelection: {
+        summary: 'Contract selected_by must be user or default.',
+        execution_contract_required: true,
+        execution_contract: {
+          ...validExecutionContract('task'),
+          selected_by: 'inferred',
+        },
+      },
     })) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-deny-${caseName}-`));
       try {
@@ -1734,6 +1750,59 @@ describe('state operations directory initialization', () => {
                 summary: 'Valid handoff contract must not mask invalid direct/nested contract.',
                 execution_contract_required: true,
                 execution_contract: validExecutionContract('milestone'),
+              },
+            },
+          },
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /execution_contract/i);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'deep-interview');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies invalid handoff execution contracts even when a direct contract is valid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-execution-contract-invalid-handoff-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-execution-contract-invalid-handoff';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          state: {
+            execution_contract: validExecutionContract('deliverable'),
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'A valid direct contract must not hide a malformed handoff contract.',
+            },
+            handoff_artifacts: {
+              deep_interview: {
+                summary: 'Handoff marker requires the handoff contract to be valid too.',
+                execution_contract_required: true,
+                execution_contract: {
+                  ...validExecutionContract('deliverable'),
+                  source: 'ralplan',
+                },
               },
             },
           },

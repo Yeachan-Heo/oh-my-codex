@@ -425,7 +425,7 @@ Stride meanings:
 - `deliverable`: finish the named deliverable before stopping; `allow_task_shrink:false`, `acceptance_coverage_scope:"deliverable"`, `shrink_policy:"ask_before_shrink"`.
 - `milestone`: finish the larger approved milestone unless blocked; `allow_task_shrink:false`, `acceptance_coverage_scope:"milestone"`, `shrink_policy:"deny_unless_blocked"`.
 
-Only set `execution_contract_required:true` when the selected downstream workflow needs this explicit stride/stop-condition guard. If it is absent or false, downstream Autopilot compatibility behavior is unchanged.
+Only set `execution_contract_required:true` when the selected downstream workflow needs this explicit stride/stop-condition guard. New artifacts must write the canonical snake_case schema shown above; runtime readers may accept legacy camelCase aliases only as compatibility input. If `execution_contract_required` is absent or false, downstream Autopilot compatibility behavior is unchanged.
 
 ### Goal-mode follow-ups
 
