@@ -1,7 +1,8 @@
+import { writeSync } from 'fs';
 import { basename } from 'path';
-import { readFileSync, writeSync } from 'fs';
 import { pathToFileURL } from 'url';
 import { createHookPluginSdk } from './sdk.js';
+import { readStdin } from './plugin-runner-stdin.js';
 import type { HookEventEnvelope, HookPluginModule } from './types.js';
 
 interface RunnerRequest {
@@ -20,10 +21,6 @@ interface RunnerResult {
 }
 
 const RESULT_PREFIX = '__OMX_PLUGIN_RESULT__ ';
-
-async function readStdin(): Promise<string> {
-  return readFileSync(process.stdin.fd, 'utf-8').trim();
-}
 
 function emitResult(result: RunnerResult): void {
   writeSync(process.stdout.fd, `${RESULT_PREFIX}${JSON.stringify(result)}\n`);

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { readStdin } from '../plugin-runner-stdin.js';
 
 const RESULT_PREFIX = '__OMX_PLUGIN_RESULT__ ';
 
@@ -46,6 +48,18 @@ function runRunner(
 }
 
 describe('plugin-runner', () => {
+  it('reads stdin through async stream iteration without touching the fd', async () => {
+    const chunks = ['  {"hello":', Buffer.from('"world"}'), '\n'];
+    const stream = Readable.from(chunks, { encoding: 'utf-8' }) as Readable & { fd: number };
+    Object.defineProperty(stream, 'fd', {
+      get() {
+        throw Object.assign(new Error('resource temporarily unavailable'), { code: 'EAGAIN' });
+      },
+    });
+
+    assert.equal(await readStdin(stream), '{"hello":"world"}');
+  });
+
   it('emits error for empty stdin', async () => {
     const { result, code } = await new Promise<{ result: Record<string, unknown> | null; code: number | null }>((resolve) => {
       const child = spawn(process.execPath, [getRunnerPath()], {
@@ -149,6 +163,44 @@ describe('plugin-runner', () => {
       assert.equal(result.reason, 'ok');
       assert.equal(result.plugin, 'valid');
       assert.equal(code, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('handles bounded concurrent piped runner requests', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runner-concurrent-'));
+    try {
+      const pluginPath = join(cwd, 'valid-concurrent.mjs');
+      await writeFile(pluginPath, 'export async function onHookEvent() {}');
+      const runs = 60;
+      const concurrency = 20;
+      let next = 0;
+      const failures: Array<{ index: number; code: number | null; result: Record<string, unknown> | null; stderr: string }> = [];
+
+      async function worker(): Promise<void> {
+        while (next < runs) {
+          const index = next++;
+          const { result, code, stderr } = await runRunner({
+            cwd,
+            pluginId: `valid-concurrent-${index}`,
+            pluginPath,
+            event: {
+              schema_version: '1',
+              event: 'session-start',
+              timestamp: new Date().toISOString(),
+              source: 'native',
+              context: { index },
+            },
+          });
+          if (code !== 0 || result?.ok !== true || result?.reason !== 'ok') {
+            failures.push({ index, code, result, stderr });
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      assert.deepEqual(failures, []);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
