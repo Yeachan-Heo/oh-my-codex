@@ -77,6 +77,40 @@ describe("omx auth CLI", () => {
     }
   });
 
+  it("sets subscription Codex defaults when auth add sees empty config", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-auth-defaults-"));
+    try {
+      const home = join(wd, "home");
+      const codexHome = join(home, ".codex");
+      const bin = join(wd, "bin");
+      await mkdir(codexHome, { recursive: true });
+      await writeFakeCodex(bin, `#!/bin/sh\nif [ "$1" = "login" ]; then mkdir -p "$CODEX_HOME"; printf '{"access_token":"sentinel-secret"}\\n' > "$CODEX_HOME/auth.json"; exit 0; fi\necho unexpected "$@" >&2\nexit 2\n`);
+      const add = runOmx(wd, ["auth", "add", "work"], { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` });
+      assert.equal(add.status, 0, add.stderr);
+      assert.match(await readFile(join(codexHome, "config.toml"), "utf-8"), /^model = "gpt-5-codex"\n+model_provider = "openai-chatgpt"\n$/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves explicit model and provider when auth add succeeds", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-auth-preserve-defaults-"));
+    try {
+      const home = join(wd, "home");
+      const codexHome = join(home, ".codex");
+      const bin = join(wd, "bin");
+      await mkdir(codexHome, { recursive: true });
+      const originalConfig = 'model = "gpt-custom"\nmodel_provider = "custom_provider"\n[tui]\nstatus_line = []\n';
+      await writeFile(join(codexHome, "config.toml"), originalConfig);
+      await writeFakeCodex(bin, `#!/bin/sh\nif [ "$1" = "login" ]; then mkdir -p "$CODEX_HOME"; printf '{"access_token":"sentinel-secret"}\\n' > "$CODEX_HOME/auth.json"; exit 0; fi\necho unexpected "$@" >&2\nexit 2\n`);
+      const add = runOmx(wd, ["auth", "add", "work"], { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` });
+      assert.equal(add.status, 0, add.stderr);
+      assert.equal(await readFile(join(codexHome, "config.toml"), "utf-8"), originalConfig);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 
   it("adds project-scope slots from the same CODEX_HOME used by launch", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-auth-project-add-"));
