@@ -2673,8 +2673,7 @@ function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
 
 function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return /\bapply_patch\b/.test(command)
-    || extractDeepInterviewCommandRedirectTargets(command).length > 0
-    || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
+    || extractDeepInterviewCommandWriteTargets(command).length > 0
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || /\b(?:git\s+(?:checkout|switch|restore|reset|apply|am|merge|rebase)|npm\s+(?:install|i|ci)|pnpm\s+(?:install|i)|yarn\s+(?:install|add))\b/.test(command);
@@ -2684,7 +2683,7 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   const targets = extractDeepInterviewCommandRedirectTargets(command);
   for (const match of command.matchAll(/\btee\s+(?:-a\s+)?(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
-    if (candidate) targets.push(candidate);
+    if (candidate && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
   }
   return targets;
 }

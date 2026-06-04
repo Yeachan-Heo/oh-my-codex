@@ -5886,6 +5886,19 @@ exit 0
       );
       assert.equal(allowedAppendBash.outputJson, null);
 
+      const allowedReadOnlyStderrRedirect = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-readonly-stderr-redirect",
+          tool_input: { command: "find application -type d -name 'bug-tracking*' 2>/dev/null | head -20" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedReadOnlyStderrRedirect.outputJson, null);
+
       const blockedBash = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -5931,6 +5944,7 @@ exit 0
         "find application -type d -name 'bug-tracking*' 2>NUL | head -20",
         "find application -type d -name 'bug-tracking*' 1>/dev/null",
         "find application -type d -name 'bug-tracking*' &>/dev/null",
+        "find application -type d -name 'bug-tracking*' | tee /dev/null",
       ];
 
       for (const [index, command] of allowedCommands.entries()) {
@@ -5951,7 +5965,6 @@ exit 0
       const blockedCommands = [
         "find application -type d -name 'bug-tracking*' 2>errors.log | head -20",
         "find application -type d -name 'bug-tracking*' > /tmp/bug-tracking.txt",
-        "find application -type d -name 'bug-tracking*' | tee /dev/null",
       ];
 
       for (const [index, command] of blockedCommands.entries()) {
