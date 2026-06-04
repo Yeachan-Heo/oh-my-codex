@@ -5832,6 +5832,19 @@ exit 0
       );
       assert.equal(allowedAppendBash.outputJson, null);
 
+      const allowedReadOnlyStderrRedirect = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-readonly-stderr-redirect",
+          tool_input: { command: "find application -type d -name 'bug-tracking*' 2>/dev/null | head -20" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedReadOnlyStderrRedirect.outputJson, null);
+
       const blockedBash = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",

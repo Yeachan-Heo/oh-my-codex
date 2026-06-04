@@ -2659,22 +2659,25 @@ function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
 
 function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return /\bapply_patch\b/.test(command)
-    || /(?:^|[;&|]\s*)(?:cat|printf|echo)\b[\s\S]{0,240}>\s*[^\s&|;]+/.test(command)
-    || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
+    || extractDeepInterviewCommandWriteTargets(command).length > 0
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || /\b(?:git\s+(?:checkout|switch|restore|reset|apply|am|merge|rebase)|npm\s+(?:install|i|ci)|pnpm\s+(?:install|i)|yarn\s+(?:install|add))\b/.test(command);
 }
 
+function isDeepInterviewIgnoredWriteTarget(target: string): boolean {
+  return target === "/dev/null" || target.toUpperCase() === "NUL";
+}
+
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   const targets: string[] = [];
-  for (const match of command.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
+  for (const match of command.matchAll(/(?:^|[\s;&|])(?:[A-Za-z_][A-Za-z0-9_]*=)?>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
-    if (candidate) targets.push(candidate);
+    if (candidate && !isDeepInterviewIgnoredWriteTarget(candidate)) targets.push(candidate);
   }
   for (const match of command.matchAll(/\btee\s+(?:-a\s+)?(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
-    if (candidate) targets.push(candidate);
+    if (candidate && !isDeepInterviewIgnoredWriteTarget(candidate)) targets.push(candidate);
   }
   return targets;
 }
