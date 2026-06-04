@@ -462,7 +462,6 @@ fn summary_mode_uses_combined_stdout_and_stderr_threshold() {
 fn summary_failure_when_api_is_missing_falls_back_to_raw_output() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve port");
     let base_url = format!("http://{}", listener.local_addr().expect("address"));
-    drop(listener);
 
     let output = Command::new(sparkshell_bin())
         .env("OMX_API_BASE_URL", base_url)
@@ -473,6 +472,7 @@ fn summary_failure_when_api_is_missing_falls_back_to_raw_output() {
         .arg("printf 'one\ntwo\n'; printf 'child-err\n' >&2")
         .output()
         .expect("run sparkshell");
+    drop(listener);
 
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout), "one\ntwo\n");

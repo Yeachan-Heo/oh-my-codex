@@ -12,7 +12,7 @@ jobs:
   close-linked-issues:
     name: Close explicitly linked issues after dev merge
     if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +23,7 @@ jobs:
           script: |
             const {
               buildMaintainerCloseComment,
+              buildMaintainerPrComment,
               collectLinkedLocalIssueNumbers,
             } = require('./.github/scripts/dev-merge-issue-close.cjs');
 
@@ -84,5 +85,12 @@ jobs:
               core.notice('No open issues required closing.');
               return;
             }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequest.number,
+              body: buildMaintainerPrComment({ issueNumbers: closedIssueNumbers }),
+            });
 
             core.notice(`Closed linked issues after merge to dev: ${closedIssueNumbers.map((issueNumber) => `#${issueNumber}`).join(', ')}`);

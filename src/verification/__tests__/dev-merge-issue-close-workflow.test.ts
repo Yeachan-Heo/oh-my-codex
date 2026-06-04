@@ -7,9 +7,11 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   buildMaintainerCloseComment,
+  buildMaintainerPrComment,
   collectLinkedLocalIssueNumbers,
 } = require(join(process.cwd(), '.github', 'scripts', 'dev-merge-issue-close.cjs')) as {
   buildMaintainerCloseComment: ({ prNumber }: { prNumber: number }) => string;
+  buildMaintainerPrComment: ({ issueNumbers }: { issueNumbers: number[] }) => string;
   collectLinkedLocalIssueNumbers: (input: {
     title?: string;
     body?: string;
@@ -32,6 +34,9 @@ describe('dev merge issue close workflow', () => {
     assert.match(workflow, /require\('\.\/\.github\/scripts\/dev-merge-issue-close\.cjs'\)/);
     assert.match(workflow, /title:\s*pullRequest\.title/);
     assert.match(workflow, /body:\s*pullRequest\.body/);
+    assert.match(workflow, /buildMaintainerPrComment/);
+    assert.match(workflow, /issue_number:\s*pullRequest\.number/);
+    assert.match(workflow, /issueNumbers:\s*closedIssueNumbers/);
     assert.doesNotMatch(workflow, /commit/i);
     assert.doesNotMatch(workflow, /discussion/i);
   });
@@ -74,9 +79,24 @@ describe('dev merge issue close workflow', () => {
       }),
       [1540],
     );
-    assert.equal(
-      buildMaintainerCloseComment({ prNumber: 1550 }),
-      'Closing automatically because PR #1550 was merged into `dev` and explicitly referenced this issue in the PR title or body.',
+    const comment = buildMaintainerCloseComment({ prNumber: 1550 });
+    assert.match(
+      comment,
+      /Closing automatically because PR #1550 was merged into `dev` and explicitly referenced this issue in the PR title or body\./,
     );
+    assert.match(comment, /A hot-fix build is available now\./);
+    assert.match(comment, /`omx update --dev`/);
+    assert.match(comment, /let us know whether it resolves the issue/);
+  });
+
+  it('provides a matching PR summary comment after linked issues close', () => {
+    const comment = buildMaintainerPrComment({ issueNumbers: [1540, 1541] });
+    assert.match(
+      comment,
+      /Closed explicitly linked issues after this PR was merged into `dev`: #1540, #1541\./,
+    );
+    assert.match(comment, /A hot-fix build is available now\./);
+    assert.match(comment, /Issue creators can try it with `omx update --dev`/);
+    assert.match(comment, /let us know whether it resolves the issue/);
   });
 });

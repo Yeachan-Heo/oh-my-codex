@@ -16,6 +16,7 @@ import {
   buildWindowsPromptCommand,
   buildTmuxSessionName,
   resolveCliInvocation,
+  resolveUpdateChannelArg,
   commandOwnsLocalHelp,
   resolveCodexLaunchPolicy,
   resolveEffectiveLeaderLaunchPolicyOverride,
@@ -35,6 +36,7 @@ import {
   resolveSetupInstallModeArg,
   resolveSetupMcpModeArg,
   resolveSetupScopeArg,
+  resolveSetupTeamModeArg,
   resolveLaunchConfigRepairOptions,
   readPersistedSetupPreferences,
   readPersistedSetupScope,
@@ -1720,6 +1722,20 @@ describe("resolveCliInvocation", () => {
     });
   });
 
+  it("resolves update channel flags and rejects invalid combinations", () => {
+    assert.equal(resolveUpdateChannelArg([]), "stable");
+    assert.equal(resolveUpdateChannelArg(["--stable"]), "stable");
+    assert.equal(resolveUpdateChannelArg(["--dev"]), "dev");
+    assert.throws(
+      () => resolveUpdateChannelArg(["--dev", "--stable"]),
+      /mutually exclusive/,
+    );
+    assert.throws(
+      () => resolveUpdateChannelArg(["--beta"]),
+      /Unknown omx update option: --beta/,
+    );
+  });
+
   it("resolves hooks to hooks command", () => {
     assert.deepEqual(resolveCliInvocation(["hooks"]), {
       command: "hooks",
@@ -1770,7 +1786,9 @@ describe("resolveCliInvocation", () => {
   });
 
   it("advertises the explicit update command in top-level help", () => {
-    assert.match(HELP, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
+    assert.match(HELP, /omx update\s+Install the stable channel now, then refresh setup/);
+    assert.match(HELP, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
+    assert.match(HELP, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
   });
 
   it("advertises concise launch policy controls in top-level help", () => {
@@ -1861,6 +1879,41 @@ describe("resolveSetupMcpModeArg", () => {
   });
 });
 
+describe("resolveSetupTeamModeArg", () => {
+  it("maps explicit setup Team mode flags", () => {
+    assert.equal(resolveSetupTeamModeArg(["--dry-run"]), undefined);
+    assert.equal(resolveSetupTeamModeArg(["--disable-team"]), "disabled");
+    assert.equal(resolveSetupTeamModeArg(["--no-team"]), "disabled");
+    assert.equal(resolveSetupTeamModeArg(["--enable-team"]), "enabled");
+    assert.equal(resolveSetupTeamModeArg(["--team"]), "enabled");
+    assert.equal(resolveSetupTeamModeArg(["--team-mode", "disabled"]), "disabled");
+    assert.equal(resolveSetupTeamModeArg(["--team-mode=enabled"]), "enabled");
+    assert.equal(
+      resolveSetupTeamModeArg(["--scope", "project", "--team-mode", "disabled"]),
+      "disabled",
+    );
+  });
+
+  it("rejects invalid or conflicting setup Team mode flags", () => {
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--team-mode"]),
+      /Missing setup Team mode value after --team-mode/,
+    );
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--team-mode", "minimal"]),
+      /Invalid setup Team mode: minimal/,
+    );
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--disable-team", "--enable-team"]),
+      /Conflicting setup Team mode flags/,
+    );
+    assert.throws(
+      () => resolveSetupTeamModeArg(["--team-mode=enabled", "--no-team"]),
+      /Conflicting setup Team mode flags/,
+    );
+  });
+});
+
 describe("resolveSetupScopeArg", () => {
   it("returns undefined when scope is omitted", () => {
     assert.equal(resolveSetupScopeArg(["--dry-run"]), undefined);
@@ -1917,6 +1970,23 @@ describe("project launch scope helpers", () => {
       assert.deepEqual(readPersistedSetupPreferences(wd), {
         scope: "user",
         installMode: "plugin",
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads persisted setup Team mode when present", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project", teamMode: "disabled" }),
+      );
+      assert.deepEqual(readPersistedSetupPreferences(wd), {
+        scope: "project",
+        teamMode: "disabled",
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -2084,6 +2154,44 @@ describe("project launch scope helpers", () => {
           CODEX_HOME: "/tmp/user-global-codex-home",
         }),
         undefined,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("includes project Codex history artifacts in the runtime mirror for resume launches", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-resume-runtime-codex-home-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(join(projectCodexHome, "sessions", "2026", "06", "03"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, "state_5.sqlite"), "state db placeholder");
+      await writeFile(join(projectCodexHome, "state_5.sqlite-wal"), "state db wal placeholder");
+      await writeFile(join(projectCodexHome, "logs_2.sqlite-shm"), "logs db shm placeholder");
+      await writeFile(
+        join(projectCodexHome, "sessions", "2026", "06", "03", "rollout-session-2712.jsonl"),
+        '{"type":"session_meta","payload":{"id":"session-2712"}}\n',
+      );
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-resume", {}, {
+        includeHistoryArtifacts: true,
+      });
+      const runtimeCodexHome = runtimeCodexHomePath(wd, "session-resume");
+
+      assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+      assert.equal(prepared.sqliteHomeOverride, projectCodexHome);
+      assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite")), true);
+      assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite-wal")), true);
+      assert.equal(existsSync(join(runtimeCodexHome, "logs_2.sqlite-shm")), true);
+      assert.equal(
+        existsSync(join(runtimeCodexHome, "sessions", "2026", "06", "03", "rollout-session-2712.jsonl")),
+        true,
       );
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -3060,13 +3168,83 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/boxed-runtime"), true);
     assert.equal(
       newSession.args.some((arg) => arg === "OMX_STATE_ROOT=/tmp/boxed-state-root"),
-      true,
+      false,
     );
+    assert.equal(newSession.args.some((arg) => arg === "OMX_TMUX_HUD_OWNER=1"), true);
     assert.equal(newSession.args.some((arg) => arg === "OMXBOX_ACTIVE=1"), true);
     assert.equal(
       newSession.args.some((arg) => arg === "OMX_SOURCE_CWD=/tmp/source-project"),
       true,
     );
+  });
+
+
+
+  it("buildDetachedSessionBootstrapSteps preserves OMX_STATE_ROOT identity when no root override is explicit", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      "/tmp/state-root",
+      { OMX_STATE_ROOT: "/tmp/state-root" },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_STATE_ROOT=/tmp/state-root"), true);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/state-root"), false);
+  });
+
+  it("buildDetachedSessionBootstrapSteps preserves OMX_ROOT precedence over OMX_STATE_ROOT", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      "/tmp/root-from-omx-root",
+      { OMX_STATE_ROOT: "/tmp/state-root-should-not-win" },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/root-from-omx-root"), true);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_STATE_ROOT=/tmp/state-root-should-not-win"), false);
+  });
+
+
+  it("buildDetachedSessionBootstrapSteps preserves OMX_TEAM_STATE_ROOT over explicit root env", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      "/tmp/root-from-omx-root",
+      { OMX_ROOT: "/tmp/root-from-omx-root", OMX_TEAM_STATE_ROOT: "/tmp/team-state-root" },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_TEAM_STATE_ROOT=/tmp/team-state-root"), true);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/root-from-omx-root"), false);
   });
 
   it("serializes custom parent env for the interactive detached tmux leader without logging values in tmux args", () => {
@@ -3128,7 +3306,7 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(argsText, /fake-provider-key/);
   });
 
-  it("runCodex coalesces stale same-leader HUD panes across session ids and reuses a keeper", async () => {
+  it("runCodex cleans only same-session same-leader HUD panes before launch", async () => {
     const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
@@ -3151,12 +3329,14 @@ describe("detached tmux new-session sequencing", () => {
     );
   });
 
-  it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID and OMX_ROOT when set", async () => {
+  it("runCodex builds inside-tmux HUD command through explicit runtime-root resolver", async () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
+    assert.match(source, /const hudRuntimeRoot = resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
     assert.match(
       source,
-      /const hudEnvArgs = \[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*`\$\{OMX_TMUX_HUD_OWNER_ENV\}=1`,\s*\.\.\.\(currentPaneId \? \[`\$\{OMX_TMUX_HUD_LEADER_PANE_ENV\}=\$\{currentPaneId\}`\] : \[\]\),\s*\.\.\.\(omxRootOverride \? \[`OMX_ROOT=\$\{omxRootOverride\}`\] : \[\]\),\s*\]/,
+      /const hudEnvArgs = Object\.entries\(buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
     );
+    assert.match(source, /if \(env\.OMX_TEAM_STATE_ROOT\?\.trim\(\)\) return 'team-env';\s*if \(env\.OMX_ROOT\?\.trim\(\) \|\| omxRootOverride\) return 'omx-root-env';\s*if \(env\.OMX_STATE_ROOT\?\.trim\(\)\) return 'omx-state-root-env';/);
     assert.match(
       source,
       /buildTmuxPaneCommand\("env",\s*\[\.\.\.hudEnvArgs,\s*"node",\s*omxBin,\s*"hud",\s*"--watch"\]\)/,

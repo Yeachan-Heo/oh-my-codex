@@ -9,7 +9,7 @@ if (build.status !== 0) {
 }
 
 const test = spawnSync('node', [
-  '--test',
+  'dist/scripts/run-test-files.js',
   'dist/autoresearch/__tests__/contracts.test.js',
   'dist/autoresearch/__tests__/runtime.test.js',
   'dist/cli/__tests__/autoresearch.test.js',

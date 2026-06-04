@@ -115,7 +115,7 @@ async function writeManagedSessionState(stateDir: string, cwd: string, sessionId
 }
 
 describe('notify-hook tmux target healing', () => {
-  it('falls back to global mode state when scoped session has no allowed active mode', async () => {
+  it('does not fall back to global mode state when scoped session has no allowed active mode', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -214,8 +214,8 @@ exit 1
       }
 
       const hookState = await readJson<Record<string, unknown>>(hookStatePath);
-      assert.equal(hookState.last_reason, 'injection_sent');
-      assert.equal(hookState.total_injections, 1);
+      assert.equal(hookState.last_reason, 'mode_not_allowed');
+      assert.equal(hookState.total_injections ?? 0, 0);
     });
   });
 

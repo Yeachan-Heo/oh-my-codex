@@ -2404,7 +2404,7 @@ describe('teamCommand status', () => {
       assert.match(output, /inspect_hud: tmux capture-pane -p -t %11 -S -400/);
       assert.match(output, /inspect_worker-1: tmux capture-pane -p -t %21 -S -400/);
       assert.match(output, /inspect_worker-2: tmux capture-pane -p -t %22 -S -400/);
-      assert.match(output, /inspect_summary: [\s\S]*command=tmux capture-pane -p -t %21 -S -400/);
+      assert.match(output, /inspect_summary: [\s\S]*command=tmux capture-pane -p -t %22 -S -400/);
       assert.doesNotMatch(output
         .split('\n')
         .filter((line) => !line.includes('--model-inspect'))
@@ -2413,7 +2413,7 @@ describe('teamCommand status', () => {
       logs.length = 0;
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-team', '--model-inspect']));
       const modelInspectOutput = logs.join('\n');
-      assert.match(modelInspectOutput, /inspect_summary: [\s\S]*command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
+      assert.match(modelInspectOutput, /inspect_summary: [\s\S]*command=omx sparkshell --tmux-pane %22 --tail-lines 400/);
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);

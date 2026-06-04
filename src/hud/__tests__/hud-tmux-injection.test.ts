@@ -235,7 +235,8 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
 
   it('tags tmux-launched HUD panes with the emitting leader pane', () => {
     const args = buildTmuxSplitArgs('/home/user', '/usr/bin/omx.js', undefined, 'sess-managed', undefined, '%leader');
-    const cmd = args[6];
+    const cmd = args.at(-1) ?? '';
+    assert.deepEqual(args.slice(0, 7), ['split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-t', '%leader', '-c']);
     assert.equal(cmd, `exec env OMX_SESSION_ID='sess-managed' OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%leader' ${runtimePrefix} '/usr/bin/omx.js' hud --watch`);
   });
 });

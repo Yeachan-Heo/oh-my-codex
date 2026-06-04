@@ -116,17 +116,81 @@ function assertTomlStructure(
     });
   }
 
+  const metadataHeading = "## OMX Agent Metadata";
+  const metadataIndex = instructions.lastIndexOf(metadataHeading);
+  if (metadataIndex < 0) {
+    throw errorBlock("native_agent_toml_invalid", {
+      agent: agentName,
+      field: "developer_instructions",
+      missing: metadataHeading,
+    });
+  }
+  const metadataLines = new Set(
+    instructions
+      .slice(metadataIndex)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
+
   for (const expected of [
     `- role: ${agentName}`,
     `- posture: ${agent.posture}`,
     `- model_class: ${agent.modelClass}`,
     `- routing_role: ${agent.routingRole}`,
   ]) {
-    if (!instructions.includes(expected)) {
+    if (!metadataLines.has(expected)) {
       throw errorBlock("native_agent_toml_invalid", {
         agent: agentName,
         field: "developer_instructions",
         missing: expected,
+      });
+    }
+  }
+
+  const leafGuard = "<native_subagent_leaf_guard>";
+  const leafGuardEnd = "</native_subagent_leaf_guard>";
+  const allowedDelegation = "- native_subagent_delegation: allowed";
+  const latestGeneratedPolicyIndex = Math.max(
+    instructions.lastIndexOf("</posture_overlay>", metadataIndex),
+    instructions.lastIndexOf("</model_class_guidance>", metadataIndex),
+    instructions.lastIndexOf("</exact_model_guidance>", metadataIndex),
+  );
+  const leafGuardIndex = instructions.lastIndexOf(leafGuard);
+  const leafGuardEndIndex = instructions.lastIndexOf(leafGuardEnd);
+  const hasGeneratedLeafGuard = leafGuardIndex > latestGeneratedPolicyIndex
+    && leafGuardEndIndex > leafGuardIndex
+    && leafGuardEndIndex < metadataIndex;
+  if (agent.nativeSubagentDelegation === "allowed") {
+    if (!metadataLines.has(allowedDelegation)) {
+      throw errorBlock("native_agent_toml_invalid", {
+        agent: agentName,
+        field: "developer_instructions",
+        missing: allowedDelegation,
+      });
+    }
+    if (hasGeneratedLeafGuard) {
+      throw errorBlock("native_agent_toml_invalid", {
+        agent: agentName,
+        field: "developer_instructions",
+        unexpected: leafGuard,
+        message: "delegation-allowed agents must not receive the leaf-only guard",
+      });
+    }
+  } else {
+    if (!hasGeneratedLeafGuard) {
+      throw errorBlock("native_agent_toml_invalid", {
+        agent: agentName,
+        field: "developer_instructions",
+        missing: leafGuard,
+        message: "leaf native agents must receive the anti-recursion guard",
+      });
+    }
+    if (metadataLines.has(allowedDelegation)) {
+      throw errorBlock("native_agent_toml_invalid", {
+        agent: agentName,
+        field: "developer_instructions",
+        unexpected: allowedDelegation,
       });
     }
   }

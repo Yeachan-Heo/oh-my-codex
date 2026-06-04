@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -85,8 +85,10 @@ describe("omx auth CLI", () => {
       const bin = join(wd, "bin");
       await mkdir(join(wd, ".omx"), { recursive: true });
       await writeFile(join(wd, ".omx", "setup-scope.json"), '{"scope":"project"}\n');
+      const canonicalWd = await realpath(wd);
+      const projectCodexHome = `${canonicalWd}/.codex`;
       await writeFakeCodex(bin, `#!/bin/sh
-if [ "$1" = "login" ]; then case "$CODEX_HOME" in ${JSON.stringify(`${wd}/.codex`)}) mkdir -p "$CODEX_HOME"; printf '{"access_token":"project-secret"}\n' > "$CODEX_HOME/auth.json"; exit 0;; *) echo "wrong CODEX_HOME=$CODEX_HOME" >&2; exit 4;; esac; fi
+if [ "$1" = "login" ]; then case "$CODEX_HOME" in ${JSON.stringify(projectCodexHome)}) mkdir -p "$CODEX_HOME"; printf '{"access_token":"project-secret"}\n' > "$CODEX_HOME/auth.json"; exit 0;; *) echo "wrong CODEX_HOME=$CODEX_HOME" >&2; exit 4;; esac; fi
 echo unexpected "$@" >&2
 exit 2
 `);

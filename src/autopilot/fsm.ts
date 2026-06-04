@@ -28,9 +28,9 @@ function safeObject(value: unknown): Record<string, unknown> {
 }
 
 function normalizePhaseText(value: unknown): string {
-  const normalized = safeString(value).toLowerCase().replace(/_/g, '-');
+  const normalized = safeString(value).toLowerCase().replace(/_/g, '-').replace(/^autopilot:/, '');
   if (normalized === 'completed') return 'complete';
-  if (normalized === 'planning') return 'ralplan';
+  if (normalized === 'planning' || normalized === 'replan') return 'ralplan';
   return normalized;
 }
 

@@ -48,10 +48,12 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['verify:plugin-bundle'], 'node dist/scripts/sync-plugin-mirror.js --check');
     assert.equal(pkg.scripts?.['verify:native-agents'], 'node dist/scripts/verify-native-agents.js');
     assert.equal(pkg.scripts?.prepack, 'npm run build && npm run verify:native-agents && npm run sync:plugin && npm run verify:plugin-bundle && npm run clean:native-package-assets');
-    assert.equal(pkg.scripts?.postinstall, 'node src/scripts/postinstall-bootstrap.js');
+    assert.equal(pkg.scripts?.prepare, 'node src/scripts/prepare-build.js');
+    assert.match(pkg.scripts?.postinstall ?? '', /dist\/scripts\/postinstall\.js/);
+    assert.match(pkg.scripts?.postinstall ?? '', /existsSync/);
     assert.equal(pkg.scripts?.postpack, 'npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.['test:explore'], 'cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js');
-    assert.equal(pkg.scripts?.['test:team:cross-rebase-smoke:compiled'], 'node --test dist/team/__tests__/cross-rebase-smoke.test.js');
+    assert.equal(pkg.scripts?.['test:team:cross-rebase-smoke:compiled'], 'node dist/scripts/run-test-files.js dist/team/__tests__/cross-rebase-smoke.test.js');
     assert.equal(pkg.scripts?.['test:node'], 'node dist/scripts/run-test-files.js dist');
     assert.equal(pkg.scripts?.test, 'npm run build && npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check');
     assert.equal(pkg.scripts?.['test:ci:compiled'], 'npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check');
@@ -73,15 +75,15 @@ describe('package bin contract', () => {
     );
     assert.equal(
       pkg.scripts?.['test:ralph-persistence:compiled'],
-      'node --test dist/cli/__tests__/session-scoped-runtime.test.js dist/mcp/__tests__/trace-server.test.js dist/hud/__tests__/state.test.js dist/mcp/__tests__/state-server-ralph-phase.test.js dist/ralph/__tests__/persistence.test.js dist/verification/__tests__/ralph-persistence-gate.test.js',
+      'node dist/scripts/run-test-files.js dist/cli/__tests__/session-scoped-runtime.test.js dist/mcp/__tests__/trace-server.test.js dist/hud/__tests__/state.test.js dist/mcp/__tests__/state-server-ralph-phase.test.js dist/ralph/__tests__/persistence.test.js dist/verification/__tests__/ralph-persistence-gate.test.js',
     );
     assert.equal(
       pkg.scripts?.['test:plugin-boundaries:compiled'],
-      'node --test dist/cli/__tests__/codex-plugin-layout.test.js dist/cli/__tests__/package-bin-contract.test.js dist/cli/__tests__/setup-hooks-shared-ownership.test.js dist/catalog/__tests__/plugin-bundle-ssot.test.js',
+      'node dist/scripts/run-test-files.js dist/cli/__tests__/codex-plugin-layout.test.js dist/cli/__tests__/package-bin-contract.test.js dist/cli/__tests__/setup-hooks-shared-ownership.test.js dist/catalog/__tests__/plugin-bundle-ssot.test.js',
     );
     assert.equal(pkg.scripts?.['test:compat:node'], 'npm run build && node dist/scripts/run-test-files.js dist/compat/__tests__');
 
-    for (const scriptName of ['test:node', 'test:ci:compiled', 'coverage:team-critical', 'coverage:team-critical:compiled', 'coverage:ts:full', 'coverage:ts:full:compiled', 'test:ralph-persistence:compiled', 'test:plugin-boundaries:compiled', 'test:compat:node'] as const) {
+    for (const scriptName of ['test:node', 'test:ci:compiled', 'coverage:team-critical', 'coverage:team-critical:compiled', 'coverage:ts:full', 'coverage:ts:full:compiled', 'test:team:cross-rebase-smoke:compiled', 'test:team:worker-runtime-identity:compiled', 'test:recent-bug-regressions:compiled', 'test:ralph-persistence:compiled', 'test:plugin-boundaries:compiled', 'test:explicit-terminal-contract:compiled', 'test:compat:node'] as const) {
       const script: string | undefined = pkg.scripts?.[scriptName];
       assert.ok(script, `expected ${scriptName} to exist`);
       assert.equal(script.includes('$(find '), false, `${scriptName} should not rely on POSIX command substitution`);
@@ -99,6 +101,21 @@ describe('package bin contract', () => {
 
     const binPath = join(process.cwd(), 'dist', 'cli', 'omx.js');
     const compiledCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
+
+    const prepareBuildSource = readFileSync(join(process.cwd(), 'src', 'scripts', 'prepare-build.js'), 'utf-8');
+    assert.match(prepareBuildSource, /dist.*cli.*omx\.js/s);
+    assert.match(prepareBuildSource, /dist.*scripts.*postinstall\.js/s);
+    assert.match(prepareBuildSource, /npm.*run.*build/s);
+    assert.match(prepareBuildSource, /--global=false/s);
+    assert.match(prepareBuildSource, /--location=project/s);
+    assert.match(prepareBuildSource, /npm_config_global.*false/s);
+    assert.match(prepareBuildSource, /npm_config_location.*project/s);
+    assert.match(prepareBuildSource, /shouldCleanupBootstrappedDependencies/s);
+    assert.match(prepareBuildSource, /hadNodeModules/s);
+    assert.match(prepareBuildSource, /nodeModulesDir/s);
+    assert.match(prepareBuildSource, /rmSync.*node_modules/s);
+    assert.match(prepareBuildSource, /--include=dev/s);
+    assert.match(prepareBuildSource, /--ignore-scripts/s);
 
     const binSource = readFileSync(binPath, 'utf-8');
     const compiledCliSource = readFileSync(compiledCliPath, 'utf-8');
@@ -143,7 +160,9 @@ describe('package bin contract', () => {
         `${target} initialize response should include serverInfo`,
       );
     }
-    assert.match(compiledCliSource, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
+    assert.match(compiledCliSource, /omx update\s+Install the stable channel now, then refresh setup/);
+    assert.match(compiledCliSource, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
+    assert.match(compiledCliSource, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
     assert.match(compiledCliSource, /case "update"/);
 
     rmSync(packagedSparkShellPath, { force: true });
@@ -175,6 +194,8 @@ describe('package bin contract', () => {
     const pluginManifestEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.codex-plugin/plugin.json');
     const pluginMcpEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.mcp.json');
     const pluginAppsEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.app.json');
+    const pluginHooksManifestEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/hooks/hooks.json');
+    const pluginHookLauncherEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/hooks/codex-native-hook.mjs');
     const stateServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/state-server.js');
     const memoryServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/memory-server.js');
     const codeIntelServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/code-intel-server.js');
@@ -183,7 +204,6 @@ describe('package bin contract', () => {
     const rootRalphSkillEntry = results[0]?.files?.find((file) => file.path === 'skills/ralph/SKILL.md');
     const promptEntry = results[0]?.files?.find((file) => file.path === 'prompts/executor.md');
     const templateEntry = results[0]?.files?.find((file) => file.path === 'templates/AGENTS.md');
-    const postinstallEntry = results[0]?.files?.find((file) => file.path === 'src/scripts/postinstall-bootstrap.js');
     const rootNativeAgentEntry = results[0]?.files?.find((file) => file.path === 'agents' || file.path.startsWith('agents/'));
     const pluginScopedHooksEntry = results[0]?.files?.find((file) =>
       file.path === 'plugins/oh-my-codex/hooks.json'
@@ -202,6 +222,8 @@ describe('package bin contract', () => {
     assert.ok(pluginManifestEntry, 'expected npm pack output to include plugins/oh-my-codex/.codex-plugin/plugin.json');
     assert.ok(pluginMcpEntry, 'expected npm pack output to include plugins/oh-my-codex/.mcp.json');
     assert.ok(pluginAppsEntry, 'expected npm pack output to include plugins/oh-my-codex/.app.json');
+    assert.ok(pluginHooksManifestEntry, 'expected npm pack output to include plugins/oh-my-codex/hooks/hooks.json');
+    assert.ok(pluginHookLauncherEntry, 'expected npm pack output to include plugins/oh-my-codex/hooks/codex-native-hook.mjs');
     assert.ok(stateServerEntry, 'expected npm pack output to include dist/mcp/state-server.js for omx mcp-serve');
     assert.ok(memoryServerEntry, 'expected npm pack output to include dist/mcp/memory-server.js for omx mcp-serve');
     assert.ok(codeIntelServerEntry, 'expected npm pack output to include dist/mcp/code-intel-server.js for omx mcp-serve');
@@ -228,7 +250,6 @@ describe('package bin contract', () => {
     assert.ok(rootRalphSkillEntry, 'expected npm pack output to keep canonical root skills');
     assert.ok(promptEntry, 'expected npm pack output to keep prompts');
     assert.ok(templateEntry, 'expected npm pack output to keep templates');
-    assert.ok(postinstallEntry, 'expected npm pack output to keep postinstall bootstrap script');
     assert.equal(rootNativeAgentEntry, undefined, 'did not expect generated root native agent TOMLs in package output');
     assert.equal(pluginScopedHooksEntry, undefined, 'did not expect setup-owned hook assets inside the installable plugin bundle');
   });

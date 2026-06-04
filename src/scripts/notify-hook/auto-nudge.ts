@@ -269,7 +269,9 @@ export async function syncSkillStateFromTurn(stateDir, payload) {
 
 
 export async function isDeepInterviewStateActive(stateDir, sessionId) {
-  const modeState = await readScopedJsonIfExists(stateDir, 'deep-interview-state.json', sessionId, null);
+  const modeState = typeof sessionId === 'string' && sessionId.trim()
+    ? await readScopedJsonIfExists(stateDir, 'deep-interview-state.json', sessionId, null)
+    : await readJsonIfExists(join(stateDir, 'deep-interview-state.json'), null);
   return Boolean(modeState && modeState.active === true);
 }
 

@@ -67,10 +67,22 @@ export interface AutoresearchStateForHud {
   current_phase?: string;
 }
 
+export type LateGateHudSource = 'canonical-skill' | 'autopilot';
+
+/** Code-review state for HUD display */
+export interface CodeReviewStateForHud {
+  active: boolean;
+  current_phase?: string;
+  /** Authority that produced this HUD-only status. */
+  source?: LateGateHudSource;
+}
+
 /** Ultraqa state for HUD display */
 export interface UltraqaStateForHud {
   active: boolean;
   current_phase?: string;
+  /** Authority that produced this derived/fallback HUD status. */
+  source?: LateGateHudSource;
 }
 
 /** Team state for HUD display */
@@ -117,6 +129,7 @@ export interface HudRenderContext {
   ralplan: RalplanStateForHud | null;
   deepInterview: DeepInterviewStateForHud | null;
   autoresearch: AutoresearchStateForHud | null;
+  codeReview?: CodeReviewStateForHud | null;
   ultraqa: UltraqaStateForHud | null;
   team: TeamStateForHud | null;
   metrics: HudMetrics | null;

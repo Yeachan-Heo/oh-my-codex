@@ -88,6 +88,48 @@ describe('runWatchMode', () => {
     assert.equal(resolved, '/workspace/link');
   });
 
+  it('does not select a proc deleted-cwd marker over the safer launch cwd', () => {
+    const resolved = resolveHudWatchCwd('/tmp/omx-doctor-plugin-hook-smoke', {
+      getCwd: () => '/tmp/omx-doctor-plugin-hook-smoke',
+      readProcCwd: () => '/tmp/omx-doctor-plugin-hook-smoke (deleted)',
+      realpath: (path) => {
+        if (path === '/tmp/omx-doctor-plugin-hook-smoke') return '/dev/inode/reused-safe-path';
+        throw new Error(`deleted marker path should not be resolved: ${path}`);
+      },
+    });
+
+    assert.equal(resolved, '/tmp/omx-doctor-plugin-hook-smoke');
+  });
+
+  it('follows a live cwd whose literal name ends with the deleted marker text', () => {
+    const resolved = resolveHudWatchCwd('/tmp/stale-launch', {
+      getCwd: () => '/tmp/live workspace (deleted)',
+      readProcCwd: () => '/tmp/live workspace (deleted)',
+      realpath: (path) => {
+        if (path === '/tmp/stale-launch') return '/dev/inode/stale-launch';
+        if (path === '/tmp/live workspace (deleted)') return '/dev/inode/live-literal-marker';
+        return path;
+      },
+    });
+
+    assert.equal(resolved, '/tmp/live workspace (deleted)');
+  });
+
+  it('follows a live literal deleted-marker cwd when process cwd is an alias to the same directory', () => {
+    const resolved = resolveHudWatchCwd('/tmp/stale-launch', {
+      getCwd: () => '/tmp/link-to-live',
+      readProcCwd: () => '/tmp/live workspace (deleted)',
+      realpath: (path) => {
+        if (path === '/tmp/stale-launch') return '/dev/inode/stale-launch';
+        if (path === '/tmp/link-to-live') return '/dev/inode/live-literal-marker';
+        if (path === '/tmp/live workspace (deleted)') return '/dev/inode/live-literal-marker';
+        return path;
+      },
+    });
+
+    assert.equal(resolved, '/tmp/live workspace (deleted)');
+  });
+
   it('reads HUD state from the resolved live cwd on every watch frame', async () => {
     const seenConfigCwds: string[] = [];
     const seenStateCwds: string[] = [];

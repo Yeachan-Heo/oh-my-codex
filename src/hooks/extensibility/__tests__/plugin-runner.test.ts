@@ -154,6 +154,42 @@ describe('plugin-runner', () => {
     }
   });
 
+  it('exits promptly when a successful plugin leaves handles open', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runner-open-handle-'));
+    try {
+      const pluginPath = join(cwd, 'open-handle.mjs');
+      await writeFile(
+        pluginPath,
+        'export async function onHookEvent() { setInterval(() => {}, 1000); }',
+      );
+
+      const startedAt = Date.now();
+      const { result, code } = await Promise.race([
+        runRunner({
+          cwd,
+          pluginId: 'open-handle',
+          pluginPath,
+          event: {
+            schema_version: '1',
+            event: 'session-start',
+            timestamp: new Date().toISOString(),
+            source: 'native',
+            context: {},
+          },
+        }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('runner timed out')), 1000)),
+      ]);
+
+      assert.ok(Date.now() - startedAt < 1000);
+      assert.ok(result);
+      assert.equal(result.ok, true);
+      assert.equal(result.reason, 'ok');
+      assert.equal(code, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('emits runner_error when plugin throws', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runner-'));
     try {

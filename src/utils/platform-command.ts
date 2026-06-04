@@ -213,6 +213,23 @@ export function resolveTmuxBinaryForPlatform(
   return resolveCommandPathForPlatform('tmux', platform, env, existsImpl);
 }
 
+const CMUX_RUNTIME_ENV_SIGNALS = ['CMUX_SOCKET_PATH', 'CMUX_SOCKET'] as const;
+
+/**
+ * Detects whether OMX is running under cmux, whose `tmux` binary is a shim
+ * (`~/.cmuxterm/.../tmux` -> `cmux __tmux-compat`) that does not implement
+ * tmux's `split-window -e KEY=VALUE` environment option. Under cmux the `-e`
+ * flags leak into the spawned pane's shell command, so pane-spawn callers must
+ * deliver env vars without relying on `-e`. cmux exports these socket env vars
+ * for every session it manages, which is a stable runtime marker.
+ */
+export function isRunningUnderCmux(env: NodeJS.ProcessEnv = process.env): boolean {
+  return CMUX_RUNTIME_ENV_SIGNALS.some((key) => {
+    const value = env[key];
+    return typeof value === 'string' && value.trim() !== '';
+  });
+}
+
 export function buildPlatformCommandSpec(
   command: string,
   args: string[],

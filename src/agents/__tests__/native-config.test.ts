@@ -8,6 +8,7 @@ import { AGENT_DEFINITIONS } from "../definitions.js";
 import type { AgentDefinition } from "../definitions.js";
 import type { CatalogManifest } from "../../catalog/schema.js";
 import {
+  composeRoleInstructionsForRole,
   generateAgentToml,
   installNativeAgentConfigs,
 } from "../native-config.js";
@@ -195,6 +196,93 @@ describe("agents/native-config", () => {
     assert.match(exactMiniToml, /resolved_model: gpt-5\.4-mini/);
     assert.doesNotMatch(frontierToml, /exact gpt-5\.4-mini model/);
     assert.doesNotMatch(tunedToml, /exact gpt-5\.4-mini model/);
+  });
+
+  it("adds a leaf guard after delegation guidance in generated native agent instructions", () => {
+    const codeReviewerToml = generateAgentToml(
+      AGENT_DEFINITIONS["code-reviewer"],
+      "code-reviewer prompt",
+    );
+
+    assert.match(codeReviewerToml, /<native_subagent_leaf_guard>/);
+    assert.match(codeReviewerToml, /do not call Task, spawn_agent, or native child agents/);
+    assert.match(codeReviewerToml, /report missing specialist coverage to the leader/);
+
+    const postureDelegationIndex = codeReviewerToml.indexOf(
+      "Default to delegation and orchestration when specialists exist.",
+    );
+    const modelDelegationIndex = codeReviewerToml.indexOf("precise delegation.");
+    const guardIndex = codeReviewerToml.indexOf("<native_subagent_leaf_guard>");
+    const metadataIndex = codeReviewerToml.indexOf("## OMX Agent Metadata");
+
+    assert.ok(postureDelegationIndex >= 0, "frontier posture delegation text should exist");
+    assert.ok(modelDelegationIndex >= 0, "frontier model delegation text should exist");
+    assert.ok(guardIndex > postureDelegationIndex, "leaf guard should override posture delegation text");
+    assert.ok(guardIndex > modelDelegationIndex, "leaf guard should override model delegation text");
+    assert.ok(metadataIndex > guardIndex, "metadata should remain final non-policy bookkeeping");
+
+    const architectToml = generateAgentToml(
+      AGENT_DEFINITIONS.architect,
+      "architect prompt",
+    );
+    const exactMiniIndex = architectToml.indexOf(
+      "strict execution order: inspect -> plan -> act -> verify",
+    );
+    const architectGuardIndex = architectToml.indexOf("<native_subagent_leaf_guard>");
+    const architectMetadataIndex = architectToml.indexOf("## OMX Agent Metadata");
+
+    assert.ok(exactMiniIndex >= 0, "architect should exercise the exact-model overlay path");
+    assert.ok(
+      architectGuardIndex > exactMiniIndex,
+      "leaf guard should override exact-model overlay guidance",
+    );
+    assert.ok(
+      architectMetadataIndex > architectGuardIndex,
+      "metadata should remain final non-policy bookkeeping for exact-model roles",
+    );
+
+    const teamExecutorToml = generateAgentToml(
+      AGENT_DEFINITIONS["team-executor"],
+      "team-executor prompt",
+    );
+    assert.match(teamExecutorToml, /<native_subagent_leaf_guard>/);
+  });
+
+  it("keeps executor native agents as leaf implementation lanes", () => {
+    const executorToml = generateAgentToml(
+      AGENT_DEFINITIONS.executor,
+      "executor prompt",
+    );
+
+    assert.match(executorToml, /<native_subagent_leaf_guard>/);
+    assert.doesNotMatch(executorToml, /native_subagent_delegation: allowed/);
+  });
+
+  it("does not apply the leaf guard to roles with explicit native delegation contracts", () => {
+    const metisToml = generateAgentToml(
+      AGENT_DEFINITIONS["prometheus-strict-metis"],
+      "metis prompt",
+    );
+
+    assert.doesNotMatch(metisToml, /<native_subagent_leaf_guard>/);
+    assert.match(metisToml, /native_subagent_delegation: allowed/);
+  });
+
+  it("keeps native-only leaf guards out of non-native role composition", () => {
+    const writerInstructions = composeRoleInstructionsForRole(
+      "writer",
+      "writer prompt",
+      "gpt-5.5",
+    );
+    const unknownInstructions = composeRoleInstructionsForRole(
+      "does-not-exist",
+      "plain prompt",
+      "gpt-5.5",
+    );
+
+    assert.doesNotMatch(writerInstructions, /<native_subagent_leaf_guard>/);
+    assert.doesNotMatch(writerInstructions, /native_subagent_delegation: allowed/);
+    assert.doesNotMatch(unknownInstructions, /<native_subagent_leaf_guard>/);
   });
 
   it("installs only catalog-installable agents and skips existing files without force", async () => {

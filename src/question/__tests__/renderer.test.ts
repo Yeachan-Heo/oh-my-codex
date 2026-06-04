@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  buildQuestionUiTmuxArgs,
   closeQuestionRenderer,
   computeAdaptiveQuestionPaneHeight,
   formatQuestionAnswerForInjection,
@@ -13,6 +14,8 @@ import {
   injectQuestionAnswersToPane,
   launchQuestionRenderer,
   resolveQuestionRendererStrategy,
+  estimateQuestionRenderFootprint,
+  shouldOpenQuestionInNewWindow,
   supersedeLiveQuestionsForSession,
 } from '../renderer.js';
 import { buildSendPaneArgvs } from '../../notifications/tmux-detector.js';
@@ -162,6 +165,195 @@ describe('adaptive question pane sizing', () => {
   });
 });
 
+describe('question window topology selection', () => {
+  it('switches to a new tmux window only after the split height budget is exceeded', () => {
+    assert.equal(shouldOpenQuestionInNewWindow(20, 18), false);
+    assert.equal(shouldOpenQuestionInNewWindow(20, 19), true);
+    assert.equal(shouldOpenQuestionInNewWindow(5, 3), false);
+    assert.equal(shouldOpenQuestionInNewWindow(5, 4), true);
+  });
+
+  it('counts wrapped question text more conservatively in narrow panes', () => {
+    const record = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      question: 'x'.repeat(180),
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'y'.repeat(140),
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+      source: 'deep-interview',
+      questions: [{
+        id: 'q-1',
+        question: 'x'.repeat(180),
+        options: [{
+          label: 'Only option',
+          value: 'only',
+          description: 'y'.repeat(140),
+        }],
+        allow_other: false,
+        multi_select: false,
+        type: 'single-answerable',
+      }],
+    } as any;
+
+    assert.ok(estimateQuestionRenderFootprint(record, 20) > estimateQuestionRenderFootprint(record, 80));
+  });
+
+  it('sizes multi-question records from the largest visible screen rather than summing every question', () => {
+    const longQuestion = {
+      id: 'q-2',
+      question: 'x'.repeat(220),
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'y'.repeat(180),
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shortQuestion = {
+      id: 'q-1',
+      question: 'Short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shared = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+      source: 'deep-interview',
+    };
+    const multiQuestionRecord = {
+      ...shared,
+      questions: [shortQuestion, longQuestion],
+    } as any;
+    const shortRecord = {
+      ...shared,
+      questions: [shortQuestion],
+    } as any;
+    const longRecord = {
+      ...shared,
+      questions: [longQuestion],
+    } as any;
+
+    const multiFootprint = estimateQuestionRenderFootprint(multiQuestionRecord, 20);
+    const shortFootprint = estimateQuestionRenderFootprint(shortRecord, 20);
+    const longFootprint = estimateQuestionRenderFootprint(longRecord, 20);
+
+    assert.ok(multiFootprint >= longFootprint);
+    assert.ok(multiFootprint < shortFootprint + longFootprint);
+  });
+
+  it('includes the review screen when sizing multi-question records', () => {
+    const shortQuestion = {
+      id: 'q-1',
+      question: 'First short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shortSecondQuestion = {
+      id: 'q-2',
+      question: 'Second short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shortThirdQuestion = {
+      id: 'q-3',
+      question: 'Third short question?',
+      options: [{
+        label: 'Only option',
+        value: 'only',
+        description: 'Short description.',
+      }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    const shared = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+      source: 'deep-interview',
+    };
+    const singleScreenRecord = {
+      ...shared,
+      questions: [shortQuestion],
+    } as any;
+    const reviewScreenRecord = {
+      ...shared,
+      questions: [shortQuestion, shortSecondQuestion, shortThirdQuestion],
+    } as any;
+
+    assert.ok(estimateQuestionRenderFootprint(reviewScreenRecord, 80) > estimateQuestionRenderFootprint(singleScreenRecord, 80));
+  });
+
+  it('sizes review screens from selected answers when multi-select summaries wrap', () => {
+    const questions = Array.from({ length: 5 }, (_, index) => ({
+      id: `q-${index + 1}`,
+      question: `Question ${index + 1}?`,
+      options: [
+        { label: 'Alpha option', value: 'alpha' },
+        { label: 'Beta option', value: 'beta' },
+        { label: 'Gamma option', value: 'gamma' },
+      ],
+      allow_other: false,
+      multi_select: true,
+      type: 'multi-answerable',
+    }));
+    const record = {
+      kind: 'omx.question/v1',
+      question_id: 'question-1',
+      created_at: '2026-05-01T10:08:52.523Z',
+      updated_at: '2026-05-01T10:08:52.523Z',
+      status: 'pending',
+      allow_other: false,
+      multi_select: true,
+      type: 'multi-answerable',
+      source: 'deep-interview',
+      questions,
+    } as any;
+
+    assert.equal(shouldOpenQuestionInNewWindow(20, estimateQuestionRenderFootprint(record, 20)), true);
+  });
+});
+
 describe('launchQuestionRenderer', () => {
   it('fails before building UI argv or invoking tmux when no visible renderer is available', () => {
     const calls: string[][] = [];
@@ -214,7 +406,8 @@ describe('launchQuestionRenderer', () => {
         strategy: 'inside-tmux',
         execTmux: (args) => {
           calls.push(args);
-          if (args[0] === 'display-message') return '1\n';
+          if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message') return '1\n';
           if (args[0] === 'split-window') return '%42\n';
           if (args[0] === 'list-panes') return '0\t%42\n';
           return '';
@@ -249,6 +442,236 @@ describe('launchQuestionRenderer', () => {
     assert.ok(calls.some((call) => call.join(' ') === 'list-panes -t %42 -F #{pane_dead}\t#{pane_id}'));
   });
 
+  it('opens a new tmux window when the current pane is too short for the question frame', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-new-window-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
+      mkdirSync(stateDir, { recursive: true });
+      const recordPath = join(stateDir, 'question-1.json');
+      writeFileSync(recordPath, JSON.stringify({
+        kind: 'omx.question/v1',
+        question_id: 'question-1',
+        created_at: '2026-05-01T10:08:52.523Z',
+        updated_at: '2026-05-01T10:08:52.523Z',
+        status: 'pending',
+        question: 'Round 1 | Target: definition-boundary | Ambiguity: 42%\n\nСамая важная неоднозначность: что именно считать системной метрикой скорости для TTS / Image / Voice, чтобы прогресс-бар и карточки не врали оператору?',
+        options: [
+          { label: 'Stage timings', value: 'stage-timings', description: 'Считать отдельно реальные этапы: TTS synthesis, image/still generation, voice/video final generation; для каждого нужны stage timestamps/metadata.' },
+          { label: 'Wall-clock by artifact', value: 'wall-clock-by-artifact', description: 'Брать общий wall-clock от createdAt до completed и нормализовать по типу результата: 1 image / N sec, 1s video / N sec.' },
+          { label: 'Hybrid recommended', value: 'hybrid', description: 'Сначала использовать wall-clock fallback, но добавлять stage timings для новых генераций, когда этапы можно инструментировать.' },
+        ],
+        allow_other: true,
+        other_label: 'Other',
+        multi_select: false,
+        type: 'single-answerable',
+        questions: [{
+          id: 'q-1',
+          question: 'Round 1 | Target: definition-boundary | Ambiguity: 42%\n\nСамая важная неоднозначность: что именно считать системной метрикой скорости для TTS / Image / Voice, чтобы прогресс-бар и карточки не врали оператору?',
+          options: [
+            { label: 'Stage timings', value: 'stage-timings', description: 'Считать отдельно реальные этапы: TTS synthesis, image/still generation, voice/video final generation; для каждого нужны stage timestamps/metadata.' },
+            { label: 'Wall-clock by artifact', value: 'wall-clock-by-artifact', description: 'Брать общий wall-clock от createdAt до completed и нормализовать по типу результата: 1 image / N sec, 1s video / N sec.' },
+            { label: 'Hybrid recommended', value: 'hybrid', description: 'Сначала использовать wall-clock fallback, но добавлять stage timings для новых генераций, когда этапы можно инструментировать.' },
+          ],
+          allow_other: true,
+          other_label: 'Other',
+          multi_select: false,
+          type: 'single-answerable',
+        }],
+        source: 'deep-interview',
+      }, null, 2));
+
+      const calls: string[][] = [];
+      const result = launchQuestionRenderer(
+        {
+          cwd,
+          recordPath,
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '5\n';
+            if (args[0] === 'display-message' && args.includes('#{session_id}')) return '$1\n';
+            if (args[0] === 'new-window') return '%42\n';
+            if (args[0] === 'list-panes' && args[2] === '%42') return '0\t%42\n';
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      );
+
+      assert.equal(result.renderer, 'tmux-pane');
+      assert.equal(result.target, '%42');
+      assert.equal(result.return_target, '%11');
+      assert.equal(result.return_transport, 'tmux-send-keys');
+      const newWindowCall = calls.find((call) => call[0] === 'new-window');
+      assert.ok(newWindowCall);
+      const targetIndex = newWindowCall.indexOf('-t');
+      assert.notEqual(targetIndex, -1);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '$1']);
+      assert.equal(calls.some((call) => call[0] === 'split-window'), false);
+      assert.equal(calls.some((call) => call[0] === 'display-message' && call.includes('#{session_id}')), true);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  it('opens a new tmux window when wrapped content would exceed the split budget in a narrow pane', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-wrapped-window-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
+      mkdirSync(stateDir, { recursive: true });
+      const recordPath = join(stateDir, 'question-1.json');
+      writeFileSync(recordPath, JSON.stringify({
+        kind: 'omx.question/v1',
+        question_id: 'question-1',
+        created_at: '2026-05-01T10:08:52.523Z',
+        updated_at: '2026-05-01T10:08:52.523Z',
+        status: 'pending',
+        question: 'x'.repeat(220),
+        options: [{
+          label: 'Only option',
+          value: 'only',
+          description: 'y'.repeat(180),
+        }],
+        allow_other: false,
+        multi_select: false,
+        type: 'single-answerable',
+        source: 'deep-interview',
+        questions: [{
+          id: 'q-1',
+          question: 'x'.repeat(220),
+          options: [{
+            label: 'Only option',
+            value: 'only',
+            description: 'y'.repeat(180),
+          }],
+          allow_other: false,
+          multi_select: false,
+          type: 'single-answerable',
+        }],
+      }, null, 2));
+
+      const calls: string[][] = [];
+      const result = launchQuestionRenderer(
+        {
+          cwd,
+          recordPath,
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '20\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '20\n';
+            if (args[0] === 'display-message' && args.includes('#{session_id}')) return '$1\n';
+            if (args[0] === 'new-window') return '%99\n';
+            if (args[0] === 'list-panes' && args[2] === '%99') return '0\t%99\n';
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      );
+
+      assert.equal(result.renderer, 'tmux-pane');
+      assert.equal(result.target, '%99');
+      assert.equal(result.return_target, '%11');
+      assert.equal(result.return_transport, 'tmux-send-keys');
+      const newWindowCall = calls.find((call) => call[0] === 'new-window');
+      assert.ok(newWindowCall);
+      const targetIndex = newWindowCall.indexOf('-t');
+      assert.notEqual(targetIndex, -1);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '$1']);
+      assert.equal(calls.some((call) => call[0] === 'split-window'), false);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
+  it('falls back to the default tmux width when the width probe fails', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-width-fallback-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
+      mkdirSync(stateDir, { recursive: true });
+      const recordPath = join(stateDir, 'question-1.json');
+      writeFileSync(recordPath, JSON.stringify({
+        kind: 'omx.question/v1',
+        question_id: 'question-1',
+        created_at: '2026-05-01T10:08:52.523Z',
+        updated_at: '2026-05-01T10:08:52.523Z',
+        status: 'pending',
+        question: 'x'.repeat(2000),
+        options: [{
+          label: 'Only option',
+          value: 'only',
+          description: 'y'.repeat(1000),
+        }],
+        allow_other: false,
+        multi_select: false,
+        type: 'single-answerable',
+        source: 'deep-interview',
+        questions: [{
+          id: 'q-1',
+          question: 'x'.repeat(2000),
+          options: [{
+            label: 'Only option',
+            value: 'only',
+            description: 'y'.repeat(1000),
+          }],
+          allow_other: false,
+          multi_select: false,
+          type: 'single-answerable',
+        }],
+      }, null, 2));
+
+      const calls: string[][] = [];
+      const result = launchQuestionRenderer(
+        {
+          cwd,
+          recordPath,
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '20\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}') && args.includes('-t')) throw new Error('width query failed');
+            if (args[0] === 'display-message' && args.includes('#{pane_width}') && !args.includes('-t')) return '3\n';
+            if (args[0] === 'display-message' && args.includes('#{session_id}')) return '$1\n';
+            if (args[0] === 'new-window') return '%88\n';
+            if (args[0] === 'list-panes' && args[2] === '%88') return '0\t%88\n';
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      );
+
+      assert.equal(result.renderer, 'tmux-pane');
+      assert.equal(result.target, '%88');
+      assert.equal(result.return_target, '%11');
+      assert.equal(result.return_transport, 'tmux-send-keys');
+      const newWindowCall = calls.find((call) => call[0] === 'new-window');
+      assert.ok(newWindowCall);
+      const targetIndex = newWindowCall.indexOf('-t');
+      assert.notEqual(targetIndex, -1);
+      assert.deepEqual(newWindowCall.slice(targetIndex, targetIndex + 2), ['-t', '$1']);
+      assert.equal(calls.some((call) => call[0] === 'display-message' && call.includes('#{pane_height}')), false);
+      assert.equal(calls.some((call) => call[0] === 'display-message' && call.includes('#{pane_width}') && !call.includes('-t')), false);
+      assert.equal(calls.some((call) => call[0] === 'split-window'), false);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+
   it('targets the explicit leader pane even when the caller is already inside tmux', () => {
     const calls: string[][] = [];
     const result = launchQuestionRenderer(
@@ -267,7 +690,7 @@ describe('launchQuestionRenderer', () => {
         execTmux: (args) => {
           calls.push(args);
           if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
-          if (args[0] === 'display-message') return '1\n';
+            if (args[0] === 'display-message') return '1\n';
           if (args[0] === 'split-window') return '%45\n';
           if (args[0] === 'list-panes') return '0\t%45\n';
           return '';
@@ -326,13 +749,15 @@ describe('launchQuestionRenderer', () => {
         nowIso: '2026-04-19T00:00:00.000Z',
         env: { OMX_QUESTION_RETURN_PANE: '%77' } as NodeJS.ProcessEnv,
       },
-      {
-        execTmux: (args) => {
-          calls.push(args);
-          if (args[0] === 'split-window') return '%78\n';
-          if (args[0] === 'list-panes') return '0\t%78\n';
-          return '';
-        },
+        {
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
+            if (args[0] === 'split-window') return '%78\n';
+            if (args[0] === 'list-panes') return '0\t%78\n';
+            return '';
+          },
         sleepSync: () => {},
       },
     );
@@ -420,6 +845,8 @@ describe('launchQuestionRenderer', () => {
         {
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
             if (args[0] === 'split-window') return '%92\n';
             if (args[0] === 'list-panes') return '0\t%92\n';
             return '';
@@ -457,6 +884,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%42\n';
             throw new Error("can't find pane: %42");
@@ -532,6 +960,8 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%77\n';
             if (args[0] === 'list-panes') return '0\t%77\n';
@@ -579,6 +1009,8 @@ describe('launchQuestionRenderer', () => {
         {
           strategy: 'inside-tmux',
           execTmux: (args) => {
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%77\n';
             if (args[0] === 'list-panes') return '0\t%77\n';
@@ -607,7 +1039,8 @@ describe('launchQuestionRenderer', () => {
         strategy: 'inside-tmux',
         execTmux: (args) => {
           calls.push(args);
-          if (args[0] === 'display-message') return '1\n';
+          if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+            if (args[0] === 'display-message') return '1\n';
           if (args[0] === 'split-window') return '%77\n';
           if (args[0] === 'list-panes') return '0\t%77\n';
           return '';
@@ -649,6 +1082,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') {
               process.env.TMUX_PANE = '%201';
@@ -755,6 +1189,7 @@ describe('launchQuestionRenderer', () => {
           strategy: 'inside-tmux',
           execTmux: (args) => {
             calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
             if (args[0] === 'display-message') return '1\n';
             if (args[0] === 'split-window') return '%42\n';
             if (args[0] === 'list-panes') return '0\t%42\n';
@@ -986,6 +1421,7 @@ describe('question renderer in-flight dedupe', () => {
           calls.push(args);
           if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
           if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+          if (args[0] === 'display-message' && args.includes('#{pane_width}')) return '80\n';
           if (args[0] === 'list-panes' && args[2] === '%41') return '0\t%41\n';
           if (args[0] === 'kill-pane') return '';
           if (args[0] === 'split-window') return '%44\n';
@@ -1036,5 +1472,137 @@ describe('question renderer in-flight dedupe', () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildQuestionUiTmuxArgs', () => {
+  const recordPath = '/repo/.omx/state/sessions/s1/questions/question-1.json';
+
+  it('passes env via tmux -e flags on real tmux (no cmux)', () => {
+    const args = buildQuestionUiTmuxArgs(recordPath, {
+      cwd: '/repo',
+      sessionId: 's1',
+      returnTarget: '%11',
+      underCmux: false,
+    });
+    assert.ok(args.includes('-e'));
+    assert.ok(args.includes('OMX_SESSION_ID=s1'));
+    assert.ok(args.includes('OMX_QUESTION_RETURN_TARGET=%11'));
+    assert.ok(args.includes('OMX_QUESTION_RETURN_TRANSPORT=tmux-send-keys'));
+    // tmux execs the command argv directly, so command tokens stay raw/unquoted.
+    assert.ok(args.includes(process.execPath));
+    assert.equal(args.includes('export'), false);
+    assert.equal(args.includes('&&'), false);
+    assert.equal(args.some((token) => /^'.*'$/.test(token)), false);
+  });
+
+  it('delivers env via a single shell-neutral env-prefixed command and never emits a bare -e under cmux', () => {
+    const args = buildQuestionUiTmuxArgs(recordPath, {
+      cwd: '/repo',
+      sessionId: 's1',
+      returnTarget: '%11',
+      underCmux: true,
+    });
+    // A single shell-command argument: stays correct on both the cmux shim and a
+    // real tmux that inherits cmux env vars (single arg -> run via the shell).
+    assert.equal(args.length, 1);
+    const command = args[0];
+    // `env` keeps it shell-neutral (works in fish/zsh/sh); no POSIX-only `export`/`&&`.
+    assert.match(command, /^env /);
+    assert.equal(command.includes('export'), false);
+    assert.equal(command.includes('&&'), false);
+    assert.equal(command.startsWith('-e'), false);
+    assert.equal(command.includes(' -e '), false);
+    assert.ok(command.includes("OMX_SESSION_ID='s1'"));
+    assert.ok(command.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
+    assert.ok(command.includes("OMX_QUESTION_RETURN_TRANSPORT='tmux-send-keys'"));
+    // The executable env runs is the real command (quoted node), never `-e`.
+    assert.ok(command.includes(`'tmux-send-keys' '${process.execPath}' `));
+    assert.ok(command.endsWith(`'${recordPath}'`));
+  });
+
+  it('single-quotes values containing =, % and spaces so they survive the cmux shell command', () => {
+    const trickyReturnTarget = 'pane=%5 with spaces';
+    const trickySessionId = 'sess=a%b c';
+    const args = buildQuestionUiTmuxArgs(recordPath, {
+      cwd: '/repo',
+      sessionId: trickySessionId,
+      returnTarget: trickyReturnTarget,
+      underCmux: true,
+    });
+    const command = args[0];
+    // `=`, `%`, and spaces round-trip intact inside single quotes.
+    assert.match(command, /^env /);
+    assert.ok(command.includes(`OMX_SESSION_ID='${trickySessionId}'`));
+    assert.ok(command.includes(`OMX_QUESTION_RETURN_TARGET='${trickyReturnTarget}'`));
+    assert.equal(command.includes(' -e '), false);
+  });
+
+  it('escapes embedded single quotes in env values under cmux', () => {
+    const args = buildQuestionUiTmuxArgs(recordPath, {
+      cwd: '/repo',
+      sessionId: "a'b=c",
+      underCmux: true,
+    });
+    // POSIX single-quote escaping: a'b=c -> 'a'\''b=c'
+    assert.ok(args[0].includes("OMX_SESSION_ID='a'\\''b=c'"));
+  });
+
+  it('omits the env prefix entirely when there are no env vars under cmux', () => {
+    const args = buildQuestionUiTmuxArgs(recordPath, { cwd: '/repo', underCmux: true });
+    assert.equal(args.length, 1);
+    assert.equal(args[0].startsWith('env '), false);
+    assert.equal(args[0].includes('export'), false);
+    assert.equal(args[0].includes('&&'), false);
+    assert.ok(args[0].startsWith(`'${process.execPath}' `));
+  });
+});
+
+describe('launchQuestionRenderer under cmux', () => {
+  it('drops bare -e and exports env so the cmux split pane runs the real command', () => {
+    const calls: string[][] = [];
+    const result = launchQuestionRenderer(
+      {
+        cwd: '/repo',
+        recordPath: '/repo/.omx/state/sessions/s1/questions/question-cmux.json',
+        sessionId: 's1',
+        env: {
+          TMUX: '/tmp/tmux-demo',
+          TMUX_PANE: '%11',
+          CMUX_SOCKET_PATH: '/tmp/cmux.sock',
+        } as NodeJS.ProcessEnv,
+      },
+      {
+        strategy: 'inside-tmux',
+        execTmux: (args) => {
+          calls.push(args);
+          if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+          if (args[0] === 'display-message') return '1\n';
+          if (args[0] === 'split-window') return '%55\n';
+          if (args[0] === 'list-panes') return '0\t%55\n';
+          return '';
+        },
+        sleepSync: () => {},
+      },
+    );
+
+    assert.equal(result.target, '%55');
+    const splitCall = calls.find((call) => call[0] === 'split-window');
+    assert.ok(splitCall);
+    // cwd (-c) and pane flags are preserved exactly as on real tmux.
+    assert.ok(splitCall.includes('-c'));
+    assert.ok(splitCall.includes('/repo'));
+    assert.ok(splitCall.includes('-P'));
+    // No bare `-e` leaks into the cmux pane command (the original bug).
+    assert.equal(splitCall.includes('-e'), false);
+    // The pane command is a single shell-neutral env-prefixed shell-command argument.
+    const paneCommand = splitCall[splitCall.length - 1];
+    assert.match(paneCommand, /^env /);
+    assert.equal(paneCommand.includes(' -e '), false);
+    assert.equal(paneCommand.includes('export'), false);
+    assert.ok(paneCommand.includes("OMX_SESSION_ID='s1'"));
+    assert.ok(paneCommand.includes("OMX_QUESTION_RETURN_TARGET='%11'"));
+    // env runs the real command (quoted node), never `-e`.
+    assert.ok(paneCommand.includes(`'${process.execPath}' `));
   });
 });

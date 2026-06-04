@@ -7,7 +7,8 @@ on:
 jobs:
   size-label:
     name: PR Size Label
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     permissions:
       pull-requests: write
     steps:
@@ -51,7 +52,8 @@ jobs:
 
   draft-check:
     name: Draft Check
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     steps:
       - uses: actions/github-script@v9
         with:
@@ -63,7 +65,7 @@ jobs:
   base-branch-guidance:
     name: PR Base Guidance
     if: github.event.pull_request.base.ref == 'main'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
     permissions: {}
     steps:
       - name: Remind contributors to target dev for normal contributions

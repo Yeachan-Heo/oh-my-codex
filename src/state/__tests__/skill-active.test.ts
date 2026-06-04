@@ -196,8 +196,8 @@ describe('skill-active state helpers', () => {
     });
   });
 
-  it('sanitizes root mirror metadata when session skill-active file is missing', async () => {
-    await withTempRepo('omx-skill-active-root-mirror-sanitize-', async (cwd) => {
+  it('returns null for a missing session skill-active file even when the root mirror is active', async () => {
+    await withTempRepo('omx-skill-active-root-mirror-missing-session-', async (cwd) => {
       const stateDir = join(cwd, '.omx', 'state');
       await mkdir(stateDir, { recursive: true });
       await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
@@ -223,25 +223,9 @@ describe('skill-active state helpers', () => {
         }],
       }));
 
-      const sessionState = await readVisibleSkillActiveState(cwd, 'current-session') as Record<string, unknown> | null;
+      const sessionState = await readVisibleSkillActiveState(cwd, 'current-session');
 
-      assert.ok(sessionState);
-      assert.equal(sessionState.skill, 'autopilot');
-      assert.equal(sessionState.phase, 'deep-interview');
-      assert.equal(sessionState.session_id, 'current-session');
-      assert.equal(sessionState.thread_id, 'current-thread');
-      assert.equal(sessionState.turn_id, 'current-turn');
-      assert.equal(sessionState.initialized_mode, undefined);
-      assert.equal(sessionState.initialized_state_path, undefined);
-      assert.equal(sessionState.owner_omx_session_id, undefined);
-      assert.equal(sessionState.owner_codex_session_id, undefined);
-      assert.equal(sessionState.owner_codex_thread_id, undefined);
-      assert.equal(sessionState.task_slug, undefined);
-      assert.equal(sessionState.context_snapshot_path, undefined);
-      assert.deepEqual(
-        listActiveSkills(sessionState).map(({ skill, phase, session_id }) => ({ skill, phase, session_id })),
-        [{ skill: 'autopilot', phase: 'deep-interview', session_id: 'current-session' }],
-      );
+      assert.equal(sessionState, null);
     });
   });
 

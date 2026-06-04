@@ -1,8 +1,7 @@
 import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
-import { dirname, join, resolve } from 'path';
+import { dirname, join } from 'path';
 import { captureTmuxPaneFromEnv } from '../../state/mode-state-context.js';
-import { isSessionStateUsable } from '../../hooks/session.js';
 import { resolveCodexPane } from '../tmux-hook-engine.js';
 import { safeString } from './utils.js';
 
@@ -222,15 +221,10 @@ function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): str
 
 async function readCurrentOmxSessionId(stateDir: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const envSessionId = readSessionIdFromEnvironment(env);
-  if (envSessionId) {
-    const envScopedDir = join(stateDir, 'sessions', envSessionId);
-    if (existsSync(envScopedDir)) return envSessionId;
-  }
+  if (envSessionId) return envSessionId;
 
-  const cwd = resolve(stateDir, '..', '..');
   const session = await readJson(join(stateDir, 'session.json'));
   if (!session || typeof session !== 'object') return '';
-  if (!isSessionStateUsable(session as any, cwd)) return '';
   const sessionId = safeString(session?.session_id).trim();
   return SESSION_ID_PATTERN.test(sessionId) ? sessionId : '';
 }

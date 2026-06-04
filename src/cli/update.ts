@@ -7,8 +7,9 @@
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 import { spawn, spawnSync } from 'child_process';
 import { createInterface } from 'readline/promises';
 import { getPackageRoot } from '../utils/package.js';
@@ -23,6 +24,9 @@ export interface UpdateState {
 export interface UserInstallStamp {
   installed_version: string;
   setup_completed_version?: string;
+  install_channel?: UpdateChannel;
+  install_source?: string;
+  install_revision?: string;
   updated_at: string;
 }
 
@@ -41,15 +45,35 @@ export interface UpdateExecutionResult {
   latestVersion: string | null;
 }
 
-type RunGlobalUpdateResult = { ok: boolean; stderr: string };
+export type UpdateChannel = 'stable' | 'dev';
+
+export interface UpdateChannelConfig {
+  channel: UpdateChannel;
+  installSource: string;
+}
+
+type RunGlobalUpdateResult = { ok: boolean; stderr: string; revision?: string | null };
 type RunSetupRefreshResult = { ok: boolean; stderr: string };
 type RunDeferredUpdateResult = { ok: boolean; stderr: string; logPath?: string };
 type SpawnSyncLike = typeof spawnSync;
+type SpawnSyncOptions = NonNullable<Parameters<SpawnSyncLike>[2]>;
 type SpawnLike = typeof spawn;
 export type AutoUpdateMode = 'disabled' | 'prompt' | 'defer';
 
 const PACKAGE_NAME = 'oh-my-codex';
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12h
+const STABLE_INSTALL_SOURCE = `${PACKAGE_NAME}@latest`;
+const DEV_INSTALL_SOURCE = 'github:Yeachan-Heo/oh-my-codex#dev';
+const DEV_REPOSITORY_URL = 'https://github.com/Yeachan-Heo/oh-my-codex.git';
+const DEV_REPOSITORY_BRANCH = 'dev';
+const DEV_UPDATE_TIMEOUT_MS = 300000;
+
+export function resolveUpdateChannelConfig(channel: UpdateChannel = 'stable'): UpdateChannelConfig {
+  if (channel === 'dev') {
+    return { channel: 'dev', installSource: DEV_INSTALL_SOURCE };
+  }
+  return { channel: 'stable', installSource: STABLE_INSTALL_SOURCE };
+}
 
 export function resolveAutoUpdateMode(value = process.env.OMX_AUTO_UPDATE): AutoUpdateMode {
   const normalized = (value ?? '').trim().toLowerCase();
@@ -133,19 +157,221 @@ async function getCurrentVersion(): Promise<string | null> {
   }
 }
 
-function runGlobalUpdate(): RunGlobalUpdateResult {
-  const result = spawnSync('npm', ['install', '-g', `${PACKAGE_NAME}@latest`], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 120000,
-    windowsHide: true,
-  });
+function isEnoentSpawnError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === 'ENOENT',
+  );
+}
+
+function spawnNpmSync(
+  args: string[],
+  options: SpawnSyncOptions,
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): ReturnType<SpawnSyncLike> {
+  const result = spawnProcess('npm', args, options);
+  if (platform === 'win32' && isEnoentSpawnError(result.error)) {
+    return spawnProcess('npm.cmd', args, options);
+  }
+  return result;
+}
+
+function commandFailure(stderr: unknown, status: number | null, label: string): RunGlobalUpdateResult {
+  const details = String(stderr || '').trim();
+  return {
+    ok: false,
+    stderr: details || `${label} exited ${typeof status === 'number' ? status : 'without a status'}`,
+  };
+}
+
+function runDevGlobalUpdate(
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): RunGlobalUpdateResult {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'omx-dev-update-'));
+  const checkoutDir = join(tempRoot, 'checkout');
+
+  try {
+    const cloneResult = spawnProcess(
+      'git',
+      ['clone', '--depth', '1', '--branch', DEV_REPOSITORY_BRANCH, DEV_REPOSITORY_URL, checkoutDir],
+      {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+    );
+    if (cloneResult.error) return { ok: false, stderr: cloneResult.error.message };
+    if (cloneResult.status !== 0) {
+      return commandFailure(cloneResult.stderr, cloneResult.status, 'git clone');
+    }
+
+    const revisionResult = spawnProcess(
+      'git',
+      ['rev-parse', 'HEAD'],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15000,
+        windowsHide: true,
+      },
+    );
+    const clonedRevision = revisionResult.status === 0
+      ? String(revisionResult.stdout || '').trim()
+      : null;
+    const installRevision = /^[0-9a-f]{7,40}$/i.test(clonedRevision ?? '')
+      ? String(clonedRevision).slice(0, 12)
+      : null;
+
+    const installResult = spawnNpmSync(
+      [
+        'install',
+        '--global=false',
+        '--location=project',
+        '--include=dev',
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-progress',
+      ],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+        env: { ...process.env, npm_config_global: 'false', npm_config_location: 'project' },
+      },
+      spawnProcess,
+      platform,
+    );
+    if (installResult.error) return { ok: false, stderr: installResult.error.message };
+    if (installResult.status !== 0) {
+      return commandFailure(installResult.stderr, installResult.status, 'npm install --include=dev');
+    }
+
+    const prepackResult = spawnNpmSync(
+      ['run', 'prepack'],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      spawnProcess,
+      platform,
+    );
+    if (prepackResult.error) return { ok: false, stderr: prepackResult.error.message };
+    if (prepackResult.status !== 0) {
+      return commandFailure(prepackResult.stderr, prepackResult.status, 'npm run prepack');
+    }
+
+    const packResult = spawnNpmSync(
+      ['pack', '--ignore-scripts', '--json'],
+      {
+        cwd: checkoutDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      spawnProcess,
+      platform,
+    );
+    if (packResult.error) return { ok: false, stderr: packResult.error.message };
+    if (packResult.status !== 0) {
+      return commandFailure(packResult.stderr, packResult.status, 'npm pack');
+    }
+
+    let tarballPath: string | null = null;
+    try {
+      const packed = JSON.parse(String(packResult.stdout || '[]')) as Array<{ filename?: string }>;
+      const filename = packed[0]?.filename;
+      if (typeof filename === 'string' && filename.trim() !== '') {
+        tarballPath = join(checkoutDir, filename);
+      }
+    } catch {
+      tarballPath = null;
+    }
+    if (!tarballPath || !existsSync(tarballPath)) {
+      return { ok: false, stderr: 'npm pack did not produce an installable tarball.' };
+    }
+
+    const globalInstallResult = spawnNpmSync(
+      ['install', '-g', tarballPath],
+      {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: DEV_UPDATE_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      spawnProcess,
+      platform,
+    );
+    if (globalInstallResult.error) {
+      return { ok: false, stderr: globalInstallResult.error.message };
+    }
+    if (globalInstallResult.status !== 0) {
+      return commandFailure(globalInstallResult.stderr, globalInstallResult.status, 'npm install -g dev tarball');
+    }
+
+    return { ok: true, stderr: '', revision: installRevision };
+  } finally {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true });
+    } catch {
+      // Cleanup is best-effort. Do not mask a successful update or the primary
+      // failure from git/npm with a transient temp-directory removal error.
+    }
+  }
+}
+
+export function runGlobalUpdate(
+  installSourceOrSpawnProcess: string | SpawnSyncLike = STABLE_INSTALL_SOURCE,
+  spawnProcessOrPlatform: SpawnSyncLike | NodeJS.Platform = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): RunGlobalUpdateResult {
+  const legacySpawnFirst = typeof installSourceOrSpawnProcess === 'function';
+  const installSource = legacySpawnFirst ? STABLE_INSTALL_SOURCE : installSourceOrSpawnProcess;
+  const spawnProcess = legacySpawnFirst
+    ? installSourceOrSpawnProcess
+    : typeof spawnProcessOrPlatform === 'function'
+      ? spawnProcessOrPlatform
+      : spawnSync;
+  const resolvedPlatform = legacySpawnFirst
+    ? typeof spawnProcessOrPlatform === 'string'
+      ? spawnProcessOrPlatform
+      : platform
+    : typeof spawnProcessOrPlatform === 'string'
+      ? spawnProcessOrPlatform
+      : platform;
+
+  if (installSource === DEV_INSTALL_SOURCE) {
+    return runDevGlobalUpdate(spawnProcess, resolvedPlatform);
+  }
+
+  const result = spawnNpmSync(
+    ['install', '-g', installSource],
+    {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120000,
+      windowsHide: true,
+    },
+    spawnProcess,
+    resolvedPlatform,
+  );
 
   if (result.error) {
     return { ok: false, stderr: result.error.message };
   }
   if (result.status !== 0) {
-    return { ok: false, stderr: (result.stderr || '').trim() || `npm exited ${result.status}` };
+    return { ok: false, stderr: String(result.stderr || '').trim() || `npm exited ${result.status}` };
   }
   return { ok: true, stderr: '' };
 }
@@ -164,6 +390,11 @@ export function resolveSetupRefreshArgs(cwd: string): string[] {
   }
   if (preferences?.mcpMode) {
     args.push('--mcp', preferences.mcpMode);
+  }
+  if (preferences?.teamMode === 'disabled') {
+    args.push('--disable-team');
+  } else if (preferences?.teamMode === 'enabled') {
+    args.push('--enable-team');
   }
   return args;
 }
@@ -278,13 +509,25 @@ function formatDeferredUpdateFailure(stderr: string, logPath?: string): string {
   ].filter((line): line is string => typeof line === 'string').join('\n');
 }
 
-function summarizeUpdateFailure(stderr: string, logPath?: string): string {
+function summarizeUpdateFailure(
+  stderr: string,
+  installSource = STABLE_INSTALL_SOURCE,
+  logPath?: string,
+): string {
   const details = stderr.trim().split(/\r?\n/).filter(Boolean).slice(0, 3).join(' | ');
+  if (installSource === DEV_INSTALL_SOURCE) {
+    return [
+      `[omx] Update failed while building and installing the dev channel from ${DEV_REPOSITORY_URL}#${DEV_REPOSITORY_BRANCH}.`,
+      details ? `[omx] update stderr: ${details}` : undefined,
+      logPath ? `[omx] Full log: ${logPath}` : undefined,
+      '[omx] You can retry manually with: omx update --dev',
+    ].filter((line): line is string => typeof line === 'string').join('\n');
+  }
   return [
-    '[omx] Update failed while running npm install -g oh-my-codex@latest.',
+    `[omx] Update failed while running npm install -g ${installSource}.`,
     details ? `[omx] npm stderr: ${details}` : undefined,
     logPath ? `[omx] Full log: ${logPath}` : undefined,
-    '[omx] You can retry manually with: npm install -g oh-my-codex@latest && omx setup',
+    `[omx] You can retry manually with: npm install -g ${installSource} && omx setup`,
   ].filter((line): line is string => typeof line === 'string').join('\n');
 }
 
@@ -303,8 +546,10 @@ interface UpdateDependencies {
   askYesNo: typeof askYesNo;
   fetchLatestVersion: typeof fetchLatestVersion;
   getCurrentVersion: typeof getCurrentVersion;
+  getInstalledVersionAfterUpdate: typeof getInstalledVersionAfterUpdate;
+  getInstalledRevisionAfterUpdate: typeof getInstalledRevisionAfterUpdate;
   readUserInstallStamp: typeof readUserInstallStamp;
-  runGlobalUpdate: typeof runGlobalUpdate;
+  runGlobalUpdate: (installSource: string) => RunGlobalUpdateResult;
   runDeferredGlobalUpdate: typeof runDeferredGlobalUpdate;
   runSetupRefresh: (cwd: string) => Promise<RunSetupRefreshResult>;
   writeUpdateState: typeof writeUpdateState;
@@ -314,6 +559,8 @@ const defaultUpdateDependencies: UpdateDependencies = {
   askYesNo,
   fetchLatestVersion,
   getCurrentVersion,
+  getInstalledVersionAfterUpdate,
+  getInstalledRevisionAfterUpdate,
   readUserInstallStamp,
   runGlobalUpdate,
   runDeferredGlobalUpdate,
@@ -327,10 +574,18 @@ function stripLeadingV(version: string): string {
 
 async function writeSuccessfulInstallStamp(
   installedVersion: string,
+  metadata: {
+    channel?: UpdateChannel;
+    source?: string;
+    revision?: string | null;
+  } = {},
 ): Promise<void> {
   await writeUserInstallStamp({
     installed_version: stripLeadingV(installedVersion),
     setup_completed_version: stripLeadingV(installedVersion),
+    ...(metadata.channel ? { install_channel: metadata.channel } : {}),
+    ...(metadata.source ? { install_source: metadata.source } : {}),
+    ...(metadata.revision ? { install_revision: metadata.revision } : {}),
     updated_at: new Date().toISOString(),
   });
 }
@@ -349,6 +604,15 @@ export async function readUserInstallStamp(
       installed_version: parsed.installed_version,
       ...(typeof parsed.setup_completed_version === 'string'
         ? { setup_completed_version: parsed.setup_completed_version }
+        : {}),
+      ...(parsed.install_channel === 'stable' || parsed.install_channel === 'dev'
+        ? { install_channel: parsed.install_channel }
+        : {}),
+      ...(typeof parsed.install_source === 'string'
+        ? { install_source: parsed.install_source }
+        : {}),
+      ...(typeof parsed.install_revision === 'string'
+        ? { install_revision: parsed.install_revision }
         : {}),
       updated_at: parsed.updated_at,
     };
@@ -381,20 +645,59 @@ function doesSetupStampMatchVersion(
   return stripLeadingV(stamp?.setup_completed_version ?? '') === stripLeadingV(currentVersion);
 }
 
-function resolveGlobalInstallRoot(): string | null {
-  const result = spawnSync('npm', ['root', '-g'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 15000,
-    windowsHide: true,
-  });
+export function resolveGlobalInstallRoot(
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const result = spawnNpmSync(
+    ['root', '-g'],
+    {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15000,
+      windowsHide: true,
+    },
+    spawnProcess,
+    platform,
+  );
 
   if (result.error || result.status !== 0) {
     return null;
   }
 
-  const root = (result.stdout || '').trim();
+  const root = String(result.stdout || '').trim();
   return root === '' ? null : root;
+}
+
+async function getInstalledVersionAfterUpdate(): Promise<string | null> {
+  const globalInstallRoot = resolveGlobalInstallRoot();
+  if (!globalInstallRoot) return null;
+
+  try {
+    const packageJsonPath = join(globalInstallRoot, PACKAGE_NAME, 'package.json');
+    const content = await readFile(packageJsonPath, 'utf-8');
+    const pkg = JSON.parse(content) as PackageManifest;
+    return typeof pkg.version === 'string' && pkg.version.trim() !== ''
+      ? pkg.version
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getInstalledRevisionAfterUpdate(): Promise<string | null> {
+  const globalInstallRoot = resolveGlobalInstallRoot();
+  if (!globalInstallRoot) return null;
+
+  try {
+    const packageJsonPath = join(globalInstallRoot, PACKAGE_NAME, 'package.json');
+    const content = await readFile(packageJsonPath, 'utf-8');
+    const pkg = JSON.parse(content) as { gitHead?: string };
+    const revision = typeof pkg.gitHead === 'string' ? pkg.gitHead.trim() : '';
+    return /^[0-9a-f]{7,40}$/i.test(revision) ? revision.slice(0, 12) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveInstalledCliEntry(globalInstallRoot: string): Promise<string | null> {
@@ -475,13 +778,24 @@ async function executeUpdate(
     dependencies: UpdateDependencies;
     prompt: boolean;
     immediate: boolean;
+    channel?: UpdateChannel;
+    forceInstall?: boolean;
     nowMs?: number;
   },
 ): Promise<UpdateExecutionResult> {
-  const { cwd, dependencies, prompt, immediate, nowMs = Date.now() } = options;
+  const {
+    cwd,
+    dependencies,
+    prompt,
+    immediate,
+    channel = 'stable',
+    forceInstall = false,
+    nowMs = Date.now(),
+  } = options;
+  const channelConfig = resolveUpdateChannelConfig(channel);
   const [current, latest] = await Promise.all([
     dependencies.getCurrentVersion(),
-    dependencies.fetchLatestVersion(),
+    channel === 'stable' || !forceInstall ? dependencies.fetchLatestVersion() : Promise.resolve(null),
   ]);
 
   try {
@@ -494,14 +808,14 @@ async function executeUpdate(
     // just because the current working directory is read-only or unavailable.
   }
 
-  if (!current || !latest) {
+  if (!forceInstall && (!current || !latest)) {
     if (immediate) {
       console.log('[omx] Unable to determine the latest oh-my-codex version. Try again later.');
     }
     return { status: 'unavailable', currentVersion: current, latestVersion: latest };
   }
 
-  if (!isNewerVersion(current, latest)) {
+  if (!forceInstall && current && latest && !isNewerVersion(current, latest)) {
     if (immediate) {
       const installStamp = await dependencies.readUserInstallStamp();
       if (!doesSetupStampMatchVersion(current, installStamp)) {
@@ -551,11 +865,17 @@ async function executeUpdate(
     return { status: 'scheduled', currentVersion: current, latestVersion: latest };
   }
 
-  console.log(`[omx] Running: npm install -g ${PACKAGE_NAME}@latest`);
-  const result = dependencies.runGlobalUpdate();
+  console.log(`[omx] Selected update channel: ${channelConfig.channel}`);
+  console.log(`[omx] Install source: ${channelConfig.installSource}`);
+  if (channelConfig.channel === 'dev') {
+    console.log('[omx] Running: clone dev branch, run prepack, then npm install -g the packed tarball');
+  } else {
+    console.log(`[omx] Running: npm install -g ${channelConfig.installSource}`);
+  }
+  const result = dependencies.runGlobalUpdate(channelConfig.installSource);
 
   if (!result.ok) {
-    console.log(summarizeUpdateFailure(result.stderr));
+    console.log(summarizeUpdateFailure(result.stderr, channelConfig.installSource));
     return { status: 'failed', currentVersion: current, latestVersion: latest };
   }
 
@@ -567,14 +887,37 @@ async function executeUpdate(
     return { status: 'failed', currentVersion: current, latestVersion: latest };
   }
 
-  await writeSuccessfulInstallStamp(latest);
-  console.log(`[omx] Updated to v${latest}. Restart to use new code.`);
+  const installedVersion = await dependencies.getInstalledVersionAfterUpdate();
+  const installedRevision = channelConfig.channel === 'dev'
+    ? ((await dependencies.getInstalledRevisionAfterUpdate()) ?? result.revision ?? null)
+    : null;
+  const stampVersion = channelConfig.channel === 'stable'
+    ? (latest ?? installedVersion ?? current)
+    : installedVersion;
+  if (stampVersion) {
+    await writeSuccessfulInstallStamp(stampVersion, {
+      channel: channelConfig.channel,
+      source: channelConfig.installSource,
+      revision: channelConfig.channel === 'dev' ? installedRevision : null,
+    });
+  } else if (channelConfig.channel === 'dev') {
+    console.log(
+      '[omx] Dev update completed, but the installed package version could not be determined for the setup stamp.',
+    );
+  }
+  const versionSummary = channelConfig.channel === 'stable' && latest
+    ? ` to v${latest}`
+    : '';
+  console.log(
+    `[omx] Updated ${channelConfig.channel} channel${versionSummary}. Restart to use new code.`,
+  );
   return { status: 'updated', currentVersion: current, latestVersion: latest };
 }
 
 export async function runImmediateUpdate(
   cwd = process.cwd(),
   dependencies: Partial<UpdateDependencies> = {},
+  options: { channel?: UpdateChannel } = {},
 ): Promise<UpdateExecutionResult> {
   const updateDependencies = { ...defaultUpdateDependencies, ...dependencies };
   return executeUpdate({
@@ -582,6 +925,8 @@ export async function runImmediateUpdate(
     dependencies: updateDependencies,
     prompt: false,
     immediate: true,
+    channel: options.channel ?? 'stable',
+    forceInstall: true,
   });
 }
 

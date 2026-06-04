@@ -26,7 +26,7 @@ describe('Windows popup loop contracts', () => {
     assert.match(cliIndex, /spawnSync\(\s*process\.execPath,\s*\[watcherScript,\s*"--once",\s*"--cwd",\s*cwd,\s*"--notify-script",\s*notifyScript\],\s*\{[\s\S]*?windowsHide:\s*true/);
     assert.match(cliIndex, /spawnSync\(process\.execPath,\s*\[watcherScript,\s*"--once",\s*"--cwd",\s*cwd\],\s*\{[\s\S]*?windowsHide:\s*true/);
     assert.match(starPrompt, /spawnSyncFn\('gh',\s*\['api',[\s\S]*?windowsHide:\s*true/);
-    assert.match(updateSource, /spawnSync\('npm',\s*\['install',\s*'-g',[\s\S]*?windowsHide:\s*true/);
+    assert.match(updateSource, /spawnNpmSync\(\s*\[\s*'install',\s*'-g',[\s\S]*?windowsHide:\s*true/);
     assert.match(notifierSource, /execFileAsync\(cmd,\s*args,\s*\{\s*windowsHide:\s*true\s*\}\)/);
     assert.match(replyListenerSource, /spawn\('node',\s*\['-e',\s*daemonScript\],\s*\{[\s\S]*?windowsHide:\s*true/);
     assert.match(fallbackWatcherSource, /spawnPlatformCommandSync\('tmux', \['send-keys'/);

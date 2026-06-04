@@ -89,10 +89,8 @@ OMX_TEAM_WORKER_LAUNCH_ARGS="${OMX_TEAM_WORKER_LAUNCH_ARGS:--c model_reasoning_e
 TEAM_STARTED=0
 cleanup() {
   if ((TEAM_STARTED == 1)); then
-    echo "[cleanup] shutting down team: $TEAM_NAME"
-    omx team shutdown "$TEAM_NAME" >/dev/null 2>&1 || true
-    echo "[cleanup] cleaning state for team: $TEAM_NAME"
-    omx team api cleanup --input "{\"team_name\":\"$TEAM_NAME\"}" --json >/dev/null 2>&1 || true
+    echo "[cleanup] force-cleaning demo team: $TEAM_NAME"
+    omx team api cleanup --input "{\"team_name\":\"$TEAM_NAME\",\"force\":true,\"confirm_issues\":true}" --json >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -106,7 +104,13 @@ echo "OMX_TEAM_WORKER_CLI_MAP=$OMX_TEAM_WORKER_CLI_MAP"
 echo "OMX_TEAM_WORKER_LAUNCH_ARGS=$OMX_TEAM_WORKER_LAUNCH_ARGS"
 
 echo "[1/8] start team (${WORKER_COUNT} mixed workers)"
-omx team "${WORKER_COUNT}:executor" "$TEAM_TASK"
+START_OUTPUT="$(omx team "${WORKER_COUNT}:executor" "$TEAM_TASK")"
+echo "$START_OUTPUT"
+ACTUAL_TEAM_NAME="$(echo "$START_OUTPUT" | sed -nE 's/^Team started: ([^[:space:]]+)$/\1/p' | head -n 1)"
+if [[ -n "$ACTUAL_TEAM_NAME" && "$ACTUAL_TEAM_NAME" != "$TEAM_NAME" ]]; then
+  echo "TEAM_NAME_RESOLVED=$ACTUAL_TEAM_NAME"
+  TEAM_NAME="$ACTUAL_TEAM_NAME"
+fi
 TEAM_STARTED=1
 
 echo "[2/8] status"
@@ -174,8 +178,7 @@ SUMMARY_JSON="$(omx team api get-summary --input "$SUMMARY_INPUT" --json)"
 echo "$SUMMARY_JSON" | jq -e '.schema_version == "1.0" and .operation == "get-summary" and .ok == true' >/dev/null
 
 echo "[8/8] shutdown + cleanup"
-omx team shutdown "$TEAM_NAME"
-omx team api cleanup --input "{\"team_name\":\"$TEAM_NAME\"}" --json >/dev/null
+omx team api cleanup --input "{\"team_name\":\"$TEAM_NAME\",\"force\":true,\"confirm_issues\":true}" --json >/dev/null
 TEAM_STARTED=0
 
 echo "E2E demo complete."

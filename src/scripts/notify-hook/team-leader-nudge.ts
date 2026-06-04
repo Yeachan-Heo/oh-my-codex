@@ -25,6 +25,7 @@ import { writeTeamLeaderAttention } from '../../team/state.js';
 import { readLatestTeamProgressEvidenceMs } from '../../team/progress-evidence.js';
 import { validateSessionId } from '../../mcp/state-paths.js';
 import { TEAM_NAME_SAFE_PATTERN } from '../../team/contracts.js';
+import { isDeepInterviewStateActive } from './auto-nudge.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON = 'pane_already_shows_same_classified_state';
@@ -571,6 +572,12 @@ export async function maybeNudgeTeamLeader({
 
   const candidateTeamNames = new Set();
   const currentSessionId = await resolveCurrentSessionId(stateDir);
+  const deepInterviewActive = currentSessionId
+    ? await isDeepInterviewStateActive(stateDir, currentSessionId).catch(() => false)
+    : await isDeepInterviewStateActive(stateDir, undefined).catch(() => false);
+  if (deepInterviewActive) {
+    return;
+  }
   try {
     const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
     const candidateStateDirs = [...new Set([...scopedDirs, stateDir])];

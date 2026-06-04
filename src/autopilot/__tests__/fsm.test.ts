@@ -16,6 +16,9 @@ describe('autopilot supervisor FSM helpers', () => {
     assert.equal(normalizeAutopilotPhase('ralph'), 'ralph');
     assert.equal(normalizeAutopilotPhase('completed'), 'complete');
     assert.equal(normalizeAutopilotPhase('planning'), 'ralplan');
+    assert.equal(normalizeAutopilotPhase('replan'), 'ralplan');
+    assert.equal(normalizeAutopilotPhase('autopilot:ralplan'), 'ralplan');
+    assert.equal(normalizeAutopilotPhase('autopilot:replan'), 'ralplan');
   });
 
   it('derives child-stage labels only from Autopilot supervisor state', () => {

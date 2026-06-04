@@ -76,7 +76,7 @@ function entryKey(entry: Pick<SkillActiveEntry, 'skill' | 'session_id'>): string
   return `${entry.skill}::${safeString(entry.session_id).trim()}`;
 }
 
-function filterRootEntriesForSession(entries: SkillActiveEntry[], sessionId?: string): SkillActiveEntry[] {
+function rootMirrorEntriesForCanonicalSession(entries: SkillActiveEntry[], sessionId?: string): SkillActiveEntry[] {
   const normalizedSessionId = safeString(sessionId).trim();
   if (!normalizedSessionId) return entries;
   return entries.filter((entry) => {
@@ -90,7 +90,7 @@ function filterSessionOnlyEntries(
   rootEntries: SkillActiveEntry[],
   sessionId: string,
 ): SkillActiveEntry[] {
-  const inheritedKeys = new Set(filterRootEntriesForSession(rootEntries, sessionId).map(entryKey));
+  const inheritedKeys = new Set(rootMirrorEntriesForCanonicalSession(rootEntries, sessionId).map(entryKey));
   return listActiveSkills(sessionState ?? {}).filter((entry) => (
     safeString(entry.session_id).trim() === sessionId
     && !inheritedKeys.has(entryKey(entry))
@@ -143,7 +143,7 @@ function baseInitializationMatchesTargetSession(
   return true;
 }
 
-function sanitizeInheritedSkillActiveBase(
+function sanitizeWriterBaseForSession(
   base: SkillActiveStateLike | null,
   targetSessionId?: string,
 ): SkillActiveStateLike {
@@ -309,45 +309,12 @@ async function readVisibleSkillActiveStateFromPaths(
   rootPath: string,
   sessionPath?: string,
 ): Promise<SkillActiveStateLike | null> {
-  if (sessionPath && existsSync(sessionPath)) {
-    return readSkillActiveState(sessionPath);
+  if (sessionPath) {
+    return existsSync(sessionPath) ? readSkillActiveState(sessionPath) : null;
   }
 
   if (!existsSync(rootPath)) return null;
-  const rootState = await readSkillActiveState(rootPath);
-  if (!sessionPath) return rootState;
-
-  const normalizedSessionId = sessionPath.replace(/\\/g, '/').match(/(?:^|\/)sessions\/([^/]+)\/skill-active-state\.json$/)?.[1];
-  if (!normalizedSessionId) return null;
-
-  let rawRootState: SkillActiveStateLike | null = null;
-  try {
-    rawRootState = JSON.parse(await readFile(rootPath, 'utf-8')) as SkillActiveStateLike;
-  } catch {
-    return null;
-  }
-
-  if (!Array.isArray(rawRootState.active_skills)) return null;
-  const visibleRootEntries = rawRootState.active_skills
-    .map(normalizeSkillActiveEntry)
-    .filter((entry): entry is SkillActiveEntry => (
-      entry !== null && safeString(entry.session_id).trim() === normalizedSessionId
-    ));
-  if (visibleRootEntries.length === 0) return null;
-
-  const primaryEntry = visibleRootEntries[0];
-  return normalizeSkillActiveState({
-    version: rootState?.version,
-    active_skills: visibleRootEntries,
-    active: true,
-    skill: primaryEntry?.skill,
-    phase: primaryEntry?.phase ?? '',
-    activated_at: primaryEntry?.activated_at,
-    updated_at: primaryEntry?.updated_at,
-    session_id: primaryEntry?.session_id,
-    thread_id: primaryEntry?.thread_id,
-    turn_id: primaryEntry?.turn_id,
-  });
+  return readSkillActiveState(rootPath);
 }
 
 export function tracksCanonicalWorkflowSkill(mode: string): mode is CanonicalWorkflowSkill {
@@ -407,7 +374,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     fallbackMode: string,
     targetSessionId?: string,
   ): SkillActiveStateLike => {
-    const inheritedBase = sanitizeInheritedSkillActiveBase(base, targetSessionId);
+    const inheritedBase = sanitizeWriterBaseForSession(base, targetSessionId);
     const currentPrimary = safeString(inheritedBase.skill).trim();
     const primarySkill = pickPrimaryWorkflowMode(currentPrimary, entries.map((entry) => entry.skill), fallbackMode);
     const primaryEntry = entries.find((entry) => entry.skill === primarySkill) ?? entries[0];

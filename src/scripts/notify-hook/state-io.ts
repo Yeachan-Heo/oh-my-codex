@@ -3,12 +3,10 @@
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises';
-import { dirname, join, resolve } from 'path';
-import { existsSync } from 'fs';
-import { isSessionStateUsable } from '../../hooks/session.js';
+import { dirname, join } from 'path';
+import { validateSessionId } from '../../mcp/state-paths.js';
 import { asNumber, safeString } from './utils.js';
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export { readdir };
 
@@ -25,46 +23,90 @@ function isSafeStateFileName(fileName: string): boolean {
     && !fileName.includes('\\');
 }
 
-function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const candidates = [env.OMX_SESSION_ID, env.CODEX_SESSION_ID, env.SESSION_ID];
-  for (const candidate of candidates) {
-    const sessionId = safeString(candidate).trim();
-    if (!SESSION_ID_PATTERN.test(sessionId)) continue;
-    return sessionId;
+interface SessionMetadata {
+  sessionId?: string;
+  nativeAliases: string[];
+}
+
+async function readSessionMetadataFromBaseStateDir(baseStateDir: string): Promise<SessionMetadata> {
+  const session = await readJsonIfExists(join(baseStateDir, 'session.json'), null);
+  let sessionId: string | undefined;
+  try {
+    sessionId = validateSessionId(session?.session_id);
+  } catch {
+    sessionId = undefined;
+  }
+  const nativeAliases = [
+    session?.native_session_id,
+    session?.codex_session_id,
+    session?.previous_native_session_id,
+  ]
+    .map((value) => safeString(value).trim())
+    .filter(Boolean);
+  return { sessionId, nativeAliases: [...new Set(nativeAliases)] };
+}
+
+function readSessionIdFromEnvironment(): string | undefined {
+  for (const candidate of [process.env.OMX_SESSION_ID, process.env.CODEX_SESSION_ID, process.env.SESSION_ID]) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    try {
+      const sessionId = validateSessionId(trimmed);
+      if (sessionId) return sessionId;
+    } catch {
+      continue;
+    }
   }
   return undefined;
 }
 
-export async function readCurrentSessionId(baseStateDir: string): Promise<string | undefined> {
-  const envSessionId = readSessionIdFromEnvironment();
-  if (envSessionId) {
-    const envScopedDir = join(baseStateDir, 'sessions', envSessionId);
-    if (existsSync(envScopedDir)) return envSessionId;
-  }
+function resolveCanonicalSessionId(candidate: string | undefined, metadata: SessionMetadata): string | undefined {
+  if (!candidate) return undefined;
+  return metadata.sessionId && metadata.nativeAliases.includes(candidate)
+    ? metadata.sessionId
+    : candidate;
+}
 
-  const cwd = resolve(baseStateDir, '..', '..');
-  const session = await readJsonIfExists(join(baseStateDir, 'session.json'), null);
-  if (!session || typeof session !== 'object') return undefined;
-  if (!isSessionStateUsable(session, cwd)) return undefined;
-  const sessionId = safeString(session?.session_id);
-  return SESSION_ID_PATTERN.test(sessionId) ? sessionId : undefined;
+async function resolveBaseScopedStateDir(
+  baseStateDir: string,
+  explicitSessionId?: string,
+): Promise<string> {
+  const normalizedExplicit = typeof explicitSessionId === 'string' && explicitSessionId.trim()
+    ? explicitSessionId.trim()
+    : undefined;
+  const validatedExplicit = validateSessionId(normalizedExplicit);
+  const metadata = await readSessionMetadataFromBaseStateDir(baseStateDir);
+  const sessionId = resolveCanonicalSessionId(validatedExplicit, metadata)
+    ?? resolveCanonicalSessionId(readSessionIdFromEnvironment(), metadata)
+    ?? metadata.sessionId;
+  return sessionId ? join(baseStateDir, 'sessions', sessionId) : baseStateDir;
+}
+
+async function resolveBaseScopedStateDirs(
+  baseStateDir: string,
+  explicitSessionId?: string,
+  options: { includeRootFallback?: boolean } = {},
+): Promise<string[]> {
+  const scopedDir = await resolveBaseScopedStateDir(baseStateDir, explicitSessionId);
+  return options.includeRootFallback === true && scopedDir !== baseStateDir
+    ? [scopedDir, baseStateDir]
+    : [scopedDir];
+}
+
+
+
+
+export async function readCurrentSessionId(baseStateDir: string): Promise<string | undefined> {
+  const metadata = await readSessionMetadataFromBaseStateDir(baseStateDir);
+  return resolveCanonicalSessionId(readSessionIdFromEnvironment(), metadata) ?? metadata.sessionId;
 }
 
 export async function resolveScopedStateDir(
   baseStateDir: string,
   explicitSessionId?: string,
 ): Promise<string> {
-  const normalizedExplicit = safeString(explicitSessionId).trim();
-  if (SESSION_ID_PATTERN.test(normalizedExplicit)) {
-    return join(baseStateDir, 'sessions', normalizedExplicit);
-  }
-
-  const currentSessionId = await readCurrentSessionId(baseStateDir);
-  if (currentSessionId) {
-    return join(baseStateDir, 'sessions', currentSessionId);
-  }
-
-  return baseStateDir;
+  return resolveBaseScopedStateDir(baseStateDir, explicitSessionId);
 }
 
 export async function getScopedStateDirsForCurrentSession(
@@ -72,11 +114,7 @@ export async function getScopedStateDirsForCurrentSession(
   explicitSessionId?: string,
   options: { includeRootFallback?: boolean } = {},
 ): Promise<string[]> {
-  const scopedDir = await resolveScopedStateDir(baseStateDir, explicitSessionId);
-  if (scopedDir === baseStateDir || options.includeRootFallback !== true) {
-    return [scopedDir];
-  }
-  return [scopedDir, baseStateDir];
+  return resolveBaseScopedStateDirs(baseStateDir, explicitSessionId, options);
 }
 
 export async function getScopedStatePath(

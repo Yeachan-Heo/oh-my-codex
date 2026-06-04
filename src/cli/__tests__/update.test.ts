@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,10 +10,12 @@ import {
   maybeCheckAndPromptUpdate,
   readUserInstallStamp,
   resolveAutoUpdateMode,
+  resolveGlobalInstallRoot,
   resolveInstalledCliEntry,
   formatDeferredSetupCommand,
   resolveSetupRefreshArgs,
   runDeferredGlobalUpdate,
+  runGlobalUpdate,
   runImmediateUpdate,
   shouldCheckForUpdates,
   spawnInstalledSetupRefresh,
@@ -199,6 +202,7 @@ describe('maybeCheckAndPromptUpdate', () => {
 
   it('schedules a deferred update after a successful startup prompt', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalMode = process.env.OMX_AUTO_UPDATE;
     const originalLog = console.log;
     const logs: string[] = [];
     let inlineUpdateCalls = 0;
@@ -207,6 +211,7 @@ describe('maybeCheckAndPromptUpdate', () => {
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
     };
+    delete process.env.OMX_AUTO_UPDATE;
 
     try {
       await withInteractiveTty(async () => {
@@ -238,6 +243,11 @@ describe('maybeCheckAndPromptUpdate', () => {
       assert.match(logs.join('\n'), /Update scheduled after this session exits/);
       assert.match(logs.join('\n'), /Log: .*update-test\.log/);
     } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -245,9 +255,11 @@ describe('maybeCheckAndPromptUpdate', () => {
 
   it('keeps startup update deferred so local setup is not refreshed inline', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalMode = process.env.OMX_AUTO_UPDATE;
     const originalLog = console.log;
     const receivedCwds: string[] = [];
     console.log = () => undefined;
+    delete process.env.OMX_AUTO_UPDATE;
 
     try {
       await withInteractiveTty(async () => {
@@ -267,6 +279,11 @@ describe('maybeCheckAndPromptUpdate', () => {
 
       assert.deepEqual(receivedCwds, [cwd]);
     } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -352,6 +369,7 @@ describe('maybeCheckAndPromptUpdate', () => {
 
   it('reports scheduler diagnostics when startup deferral cannot be launched', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalMode = process.env.OMX_AUTO_UPDATE;
     const originalLog = console.log;
     const logs: string[] = [];
     let setupRefreshCalls = 0;
@@ -359,6 +377,7 @@ describe('maybeCheckAndPromptUpdate', () => {
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
     };
+    delete process.env.OMX_AUTO_UPDATE;
 
     try {
       await withInteractiveTty(async () => {
@@ -379,6 +398,11 @@ describe('maybeCheckAndPromptUpdate', () => {
       assert.match(logs.join('\n'), /powershell not found/);
       assert.match(logs.join('\n'), /update-test\.log/);
     } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -444,6 +468,116 @@ describe('maybeCheckAndPromptUpdate', () => {
   });
 });
 
+describe('direct npm spawn fallback', () => {
+  function enoentResult() {
+    const error = Object.assign(new Error('spawnSync npm ENOENT'), { code: 'ENOENT' });
+    return { status: null, signal: null, error, stdout: '', stderr: '', output: [null, '', ''], pid: 0 };
+  }
+
+  function okResult(stdout = '') {
+    return { status: 0, signal: null, error: undefined, stdout, stderr: '', output: [null, stdout, ''], pid: 0 };
+  }
+
+  it('falls back to npm.cmd for win32 global installs when direct npm spawn returns ENOENT', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    const result = runGlobalUpdate(
+      ((command: string, args: readonly string[]) => {
+        calls.push({ command, args: args as string[] });
+        return command === 'npm' ? enoentResult() : okResult();
+      }) as unknown as typeof import('node:child_process').spawnSync,
+      'win32',
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd']);
+    assert.deepEqual(calls[0].args, ['install', '-g', 'oh-my-codex@latest']);
+    assert.deepEqual(calls[1].args, ['install', '-g', 'oh-my-codex@latest']);
+  });
+
+  it('does not fall back to npm.cmd for non-Windows ENOENT failures', () => {
+    const calls: string[] = [];
+
+    const result = runGlobalUpdate(
+      ((command: string) => {
+        calls.push(command);
+        return enoentResult();
+      }) as unknown as typeof import('node:child_process').spawnSync,
+      'linux',
+    );
+
+    assert.equal(result.ok, false);
+    assert.match(result.stderr, /ENOENT/);
+    assert.deepEqual(calls, ['npm']);
+  });
+
+
+  it('packs the dev branch from a local checkout instead of globally installing the git dependency spec', () => {
+    const originalNpmLocation = process.env.npm_config_location;
+    const calls: Array<{ command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }> = [];
+
+    process.env.npm_config_location = 'global';
+
+    try {
+      const result = runGlobalUpdate(
+        'github:Yeachan-Heo/oh-my-codex#dev',
+        ((command: string, args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+          calls.push({ command, args: args as string[], cwd: options?.cwd, env: options?.env });
+          if (command === 'git' && args[0] === 'clone') {
+            mkdirSync(String(args[args.length - 1]), { recursive: true });
+          }
+          if (command === 'git' && args[0] === 'rev-parse') {
+            return okResult('1234567890abcdef\n');
+          }
+          if (command === 'npm' && args[0] === 'pack') {
+            writeFileSync(join(options?.cwd ?? process.cwd(), 'oh-my-codex-0.18.9.tgz'), 'packed');
+            return okResult(JSON.stringify([{ filename: 'oh-my-codex-0.18.9.tgz' }]));
+          }
+          return okResult();
+        }) as unknown as typeof import('node:child_process').spawnSync,
+        'linux',
+      );
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(calls.map((call) => [call.command, ...call.args.slice(0, 3)]), [
+        ['git', 'clone', '--depth', '1'],
+        ['git', 'rev-parse', 'HEAD'],
+        ['npm', 'install', '--global=false', '--location=project'],
+        ['npm', 'run', 'prepack'],
+        ['npm', 'pack', '--ignore-scripts', '--json'],
+        ['npm', 'install', '-g', join(calls[2].cwd ?? '', 'oh-my-codex-0.18.9.tgz')],
+      ]);
+      const dependencyInstall = calls.find((call) => call.command === 'npm' && call.args[0] === 'install' && call.args.includes('--include=dev'));
+      assert.equal(dependencyInstall?.env?.npm_config_global, 'false');
+      assert.equal(dependencyInstall?.env?.npm_config_location, 'project');
+      assert.equal(calls.some((call) => call.args.includes('github:Yeachan-Heo/oh-my-codex#dev')), false);
+    } finally {
+      if (typeof originalNpmLocation === 'string') {
+        process.env.npm_config_location = originalNpmLocation;
+      } else {
+        delete process.env.npm_config_location;
+      }
+    }
+  });
+
+  it('falls back to npm.cmd for win32 global-root lookup when direct npm spawn returns ENOENT', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    const root = resolveGlobalInstallRoot(
+      ((command: string, args: readonly string[]) => {
+        calls.push({ command, args: args as string[] });
+        return command === 'npm' ? enoentResult() : okResult('C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\r\n');
+      }) as unknown as typeof import('node:child_process').spawnSync,
+      'win32',
+    );
+
+    assert.equal(root, 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules');
+    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd']);
+    assert.deepEqual(calls[0].args, ['root', '-g']);
+    assert.deepEqual(calls[1].args, ['root', '-g']);
+  });
+});
+
 describe('runImmediateUpdate', () => {
   it('bypasses the passive cadence and updates immediately on explicit request', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
@@ -454,6 +588,7 @@ describe('runImmediateUpdate', () => {
     const logs: string[] = [];
     let setupCalls = 0;
     const refreshCwds: string[] = [];
+    const installSources: string[] = [];
     let updateCalls = 0;
     let latestCalls = 0;
 
@@ -476,8 +611,9 @@ describe('runImmediateUpdate', () => {
           latestCalls += 1;
           return '0.14.1';
         },
-        runGlobalUpdate: () => {
+        runGlobalUpdate: (installSource) => {
           updateCalls += 1;
+          installSources.push(installSource);
           return { ok: true, stderr: '' };
         },
         runSetupRefresh: async (refreshCwd) => {
@@ -490,14 +626,20 @@ describe('runImmediateUpdate', () => {
       assert.equal(result.status, 'updated');
       assert.equal(latestCalls, 1);
       assert.equal(updateCalls, 1);
+      assert.deepEqual(installSources, [`${PACKAGE_NAME}@latest`]);
       assert.equal(setupCalls, 1);
       assert.deepEqual(refreshCwds, [cwd]);
+      assert.match(logs.join('\n'), /Selected update channel: stable/);
+      assert.match(logs.join('\n'), /Install source: oh-my-codex@latest/);
       assert.match(logs.join('\n'), /Running: npm install -g oh-my-codex@latest/);
-      assert.match(logs.join('\n'), /Updated to v0\.14\.1/);
+      assert.match(logs.join('\n'), /Updated stable channel to v0\.14\.1/);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
         setup_completed_version: string;
+        install_channel: string;
+        install_source: string;
+        install_revision: string;
       };
       assert.equal(stamp.installed_version, '0.14.1');
       assert.equal(stamp.setup_completed_version, '0.14.1');
@@ -512,12 +654,13 @@ describe('runImmediateUpdate', () => {
     }
   });
 
-  it('reports up-to-date status for explicit update when npm is already current', async () => {
+  it('force-installs stable for explicit update even when npm is already current', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
     const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
     const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
+    const installSources: string[] = [];
     let updateCalls = 0;
     let refreshCalls = 0;
 
@@ -539,8 +682,9 @@ describe('runImmediateUpdate', () => {
       const result = await runImmediateUpdate(cwd, {
         getCurrentVersion: async () => '0.14.0',
         fetchLatestVersion: async () => '0.14.0',
-        runGlobalUpdate: () => {
+        runGlobalUpdate: (installSource) => {
           updateCalls += 1;
+          installSources.push(installSource);
           return { ok: true, stderr: '' };
         },
         runSetupRefresh: async () => {
@@ -549,10 +693,12 @@ describe('runImmediateUpdate', () => {
         },
       });
 
-      assert.equal(result.status, 'up-to-date');
-      assert.equal(updateCalls, 0);
-      assert.equal(refreshCalls, 0);
-      assert.match(logs.join('\n'), /already up to date \(v0\.14\.0\)/);
+      assert.equal(result.status, 'updated');
+      assert.equal(updateCalls, 1);
+      assert.equal(refreshCalls, 1);
+      assert.deepEqual(installSources, [`${PACKAGE_NAME}@latest`]);
+      assert.match(logs.join('\n'), /Selected update channel: stable/);
+      assert.match(logs.join('\n'), /Running: npm install -g oh-my-codex@latest/);
     } finally {
       console.log = originalLog;
       if (typeof originalCodexHome === 'string') {
@@ -564,12 +710,14 @@ describe('runImmediateUpdate', () => {
     }
   });
 
-  it('runs setup refresh for explicit update when current version matches but setup stamp is stale', async () => {
+  it('uses stable as a rollback path while preserving persisted setup preferences', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
     const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
     const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
+    const installSources: string[] = [];
+    const setupArgs = resolveSetupRefreshArgs;
     let refreshCalls = 0;
 
     console.log = (...args: unknown[]) => {
@@ -586,27 +734,46 @@ describe('runImmediateUpdate', () => {
         },
         stampPath,
       );
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'setup-scope.json'),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
+      );
 
       const result = await runImmediateUpdate(cwd, {
         getCurrentVersion: async () => '0.14.0',
         fetchLatestVersion: async () => '0.14.0',
-        runGlobalUpdate: () => {
-          throw new Error('global update should not run when already current');
+        runGlobalUpdate: (installSource) => {
+          installSources.push(installSource);
+          return { ok: true, stderr: '', revision: '1234567890ab' };
         },
         runSetupRefresh: async () => {
           refreshCalls += 1;
+          assert.deepEqual(setupArgs(cwd), [
+            'setup',
+            '--scope',
+            'user',
+            '--plugin',
+            '--mcp',
+            'none',
+            '--disable-team',
+          ]);
           return { ok: true, stderr: '' };
         },
-      });
+      }, { channel: 'stable' });
 
-      assert.equal(result.status, 'up-to-date');
+      assert.equal(result.status, 'updated');
+      assert.deepEqual(installSources, [`${PACKAGE_NAME}@latest`]);
       assert.equal(refreshCalls, 1);
-      assert.match(logs.join('\n'), /Running setup refresh/);
-      assert.match(logs.join('\n'), /Setup refresh completed for v0\.14\.0/);
+      assert.match(logs.join('\n'), /Selected update channel: stable/);
+      assert.match(logs.join('\n'), /Install source: oh-my-codex@latest/);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
         setup_completed_version: string;
+        install_channel: string;
+        install_source: string;
+        install_revision: string;
       };
       assert.equal(stamp.installed_version, '0.14.0');
       assert.equal(stamp.setup_completed_version, '0.14.0');
@@ -621,8 +788,75 @@ describe('runImmediateUpdate', () => {
     }
   });
 
+  it('installs the upstream dev branch without implying npm latest', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-dev-'));
+    const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalLog = console.log;
+    const logs: string[] = [];
+    const installSources: string[] = [];
+    let latestCalls = 0;
+    let refreshCalls = 0;
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+    process.env.CODEX_HOME = join(cwd, '.codex');
+
+    try {
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => {
+          latestCalls += 1;
+          return '0.14.0';
+        },
+        runGlobalUpdate: (installSource) => {
+          installSources.push(installSource);
+          return { ok: true, stderr: '', revision: '1234567890ab' };
+        },
+        runSetupRefresh: async () => {
+          refreshCalls += 1;
+          return { ok: true, stderr: '' };
+        },
+        getInstalledVersionAfterUpdate: async () => '0.15.0',
+        getInstalledRevisionAfterUpdate: async () => null,
+      }, { channel: 'dev' });
+
+      assert.equal(result.status, 'updated');
+      assert.equal(latestCalls, 0);
+      assert.equal(refreshCalls, 1);
+      assert.deepEqual(installSources, ['github:Yeachan-Heo/oh-my-codex#dev']);
+      assert.match(logs.join('\n'), /Selected update channel: dev/);
+      assert.match(logs.join('\n'), /Install source: github:Yeachan-Heo\/oh-my-codex#dev/);
+      assert.match(logs.join('\n'), /Running: clone dev branch, run prepack, then npm install -g the packed tarball/);
+      assert.doesNotMatch(logs.join('\n'), /dev.*oh-my-codex@latest/i);
+
+      const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
+        installed_version: string;
+        setup_completed_version: string;
+        install_channel: string;
+        install_source: string;
+        install_revision: string;
+      };
+      assert.equal(stamp.installed_version, '0.15.0');
+      assert.equal(stamp.setup_completed_version, '0.15.0');
+      assert.equal(stamp.install_channel, 'dev');
+      assert.equal(stamp.install_source, 'github:Yeachan-Heo/oh-my-codex#dev');
+      assert.equal(stamp.install_revision, '1234567890ab');
+    } finally {
+      console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('continues explicit update when update-check state cannot be written', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
+    const originalCodexHome = process.env.CODEX_HOME;
     const originalLog = console.log;
     const logs: string[] = [];
     let updateCalls = 0;
@@ -631,6 +865,7 @@ describe('runImmediateUpdate', () => {
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
     };
+    process.env.CODEX_HOME = join(cwd, '.codex');
 
     try {
       const result = await runImmediateUpdate(cwd, {
@@ -652,9 +887,14 @@ describe('runImmediateUpdate', () => {
       assert.equal(result.status, 'updated');
       assert.equal(updateCalls, 1);
       assert.equal(refreshCalls, 1);
-      assert.match(logs.join('\n'), /Updated to v0\.14\.1/);
+      assert.match(logs.join('\n'), /Updated stable channel to v0\.14\.1/);
     } finally {
       console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -786,7 +1026,7 @@ describe('runDeferredGlobalUpdate', () => {
       await mkdir(join(cwd, '.omx'), { recursive: true });
       await writeFile(
         join(cwd, '.omx', 'setup-scope.json'),
-        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none' }, null, 2),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
       );
 
       const result = runDeferredGlobalUpdate(
@@ -806,7 +1046,7 @@ describe('runDeferredGlobalUpdate', () => {
 
       assert.equal(result.ok, true);
       assert.equal(calls.length, 1);
-      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none'/);
+      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none' '--disable-team'/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -821,7 +1061,7 @@ describe('runDeferredGlobalUpdate', () => {
       const setupScopePath = join(cwd, '.omx', 'setup-scope.json');
       await writeFile(
         setupScopePath,
-        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none' }, null, 2),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
       );
 
       const result = runDeferredGlobalUpdate(
@@ -846,7 +1086,7 @@ describe('runDeferredGlobalUpdate', () => {
 
       assert.equal(result.ok, true);
       assert.equal(calls.length, 1);
-      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none'/);
+      assert.match(calls[0].args[1], /'omx' 'setup' '--scope' 'user' '--plugin' '--mcp' 'none' '--disable-team'/);
       assert.doesNotMatch(calls[0].args[1], /compat/);
       assert.doesNotMatch(calls[0].args[1], /legacy/);
     } finally {
@@ -938,7 +1178,7 @@ describe('post-update setup refresh handoff', () => {
       await mkdir(join(cwd, '.omx'), { recursive: true });
       await writeFile(
         join(cwd, '.omx', 'setup-scope.json'),
-        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none' }, null, 2),
+        JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', teamMode: 'disabled' }, null, 2),
       );
 
       const result = spawnInstalledSetupRefresh(
@@ -959,6 +1199,7 @@ describe('post-update setup refresh handoff', () => {
         '--plugin',
         '--mcp',
         'none',
+        '--disable-team',
       ]);
       assert.deepEqual(resolveSetupRefreshArgs(cwd), [
         'setup',
@@ -967,6 +1208,7 @@ describe('post-update setup refresh handoff', () => {
         '--plugin',
         '--mcp',
         'none',
+        '--disable-team',
       ]);
     } finally {
       await rm(cwd, { recursive: true, force: true });

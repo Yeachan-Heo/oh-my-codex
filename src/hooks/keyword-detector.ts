@@ -10,14 +10,16 @@
  * rather than the full keyword/state table.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
 import { hasDurableRalplanConsensusEvidenceForCwd } from '../ralplan/consensus-gate.js';
 import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
+import { readTeamModeConfig } from '../config/team-mode.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
   listActiveSkills,
@@ -171,6 +173,243 @@ export interface DeepInterviewModeState {
   [key: string]: unknown;
 }
 
+function slugifyAutopilotTask(text: string): string {
+  const slug = text
+    .replace(/(?:^|\s)\$?(?:oh-my-codex:)?autopilot\b/gi, ' ')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+    .slice(0, 48)
+    .replace(/-+$/g, '');
+  return slug || 'autopilot-task';
+}
+
+function utcCompactTimestamp(nowIso: string): string {
+  const parsed = new Date(nowIso);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid Autopilot context timestamp: ${nowIso}`);
+  }
+  return parsed.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function isSafeAutopilotContextSnapshotPath(value: unknown): value is string {
+  const path = safeString(value).trim();
+  const contextPrefix = '.omx/context/';
+  const snapshotName = path.startsWith(contextPrefix) ? path.slice(contextPrefix.length) : '';
+  return path.startsWith('.omx/context/')
+    && path.endsWith('.md')
+    && !isAbsolute(path)
+    && !path.split('/').includes('..')
+    && !path.includes('\\')
+    && snapshotName !== ''
+    && !snapshotName.includes('/');
+}
+
+function isAutopilotRecoverySnapshotPath(path: string): boolean {
+  return path.startsWith('.omx/context/autopilot-recovery-');
+}
+
+const MAX_REUSABLE_AUTOPILOT_CONTEXT_SNAPSHOT_BYTES = 1024 * 1024;
+
+async function isReadableAutopilotContextSnapshotPath(sourceCwd: string, value: unknown): Promise<boolean> {
+  if (!isSafeAutopilotContextSnapshotPath(value)) return false;
+  const contextDir = await ensureSafeAutopilotContextDir(sourceCwd);
+  const absolutePath = join(sourceCwd, value);
+  try {
+    const snapshotStat = await lstat(absolutePath);
+    if (!snapshotStat.isFile() || snapshotStat.isSymbolicLink()) return false;
+    if (snapshotStat.size > MAX_REUSABLE_AUTOPILOT_CONTEXT_SNAPSHOT_BYTES) return false;
+    const contextRealPath = await realpath(contextDir);
+    const snapshotRealPath = await realpath(absolutePath);
+    const relativeToContext = relative(contextRealPath, snapshotRealPath);
+    if (relativeToContext === '' || relativeToContext.startsWith('..') || isAbsolute(relativeToContext)) return false;
+    await access(absolutePath, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type AutopilotContextSnapshotKind = 'canonical' | 'legacy' | 'recovery';
+
+type AutopilotContextRecoveryReason =
+  | 'missing-or-unsafe-legacy-context-snapshot'
+  | 'missing-autopilot-mode-state'
+  | 'malformed-autopilot-mode-state'
+  | 'nonpreservable-autopilot-mode-state-missing-current-phase';
+
+interface AutopilotContextSnapshotDescriptor {
+  path: string;
+  kind: AutopilotContextSnapshotKind;
+  recovery?: Record<string, unknown>;
+}
+
+interface AutopilotContextSnapshotCandidate {
+  value: unknown;
+  kind?: AutopilotContextSnapshotKind;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeAutopilotContextSnapshotCandidate(candidate: AutopilotContextSnapshotCandidate): AutopilotContextSnapshotDescriptor | null {
+  if (isRecord(candidate.value)) {
+    const path = safeString(candidate.value.path).trim();
+    const kind = safeString(candidate.value.kind).trim() as AutopilotContextSnapshotKind;
+    if (!path || !['canonical', 'legacy', 'recovery'].includes(kind)) return null;
+    if (kind === 'recovery' || isAutopilotRecoverySnapshotPath(path)) return null;
+    return { path, kind };
+  }
+
+  const path = safeString(candidate.value).trim();
+  if (!path) return null;
+  if (isAutopilotRecoverySnapshotPath(path)) return null;
+  return { path, kind: candidate.kind ?? 'legacy' };
+}
+
+async function findReusableAutopilotContextSnapshotPath(
+  sourceCwd: string,
+  candidates: AutopilotContextSnapshotCandidate[],
+): Promise<AutopilotContextSnapshotDescriptor | undefined> {
+  for (const candidate of candidates) {
+    const normalized = normalizeAutopilotContextSnapshotCandidate(candidate);
+    if (!normalized || isAutopilotRecoverySnapshotPath(normalized.path) || !isSafeAutopilotContextSnapshotPath(normalized.path)) continue;
+    if (await isReadableAutopilotContextSnapshotPath(sourceCwd, normalized.path)) return normalized;
+  }
+  return undefined;
+}
+
+interface AutopilotContextSnapshotResult {
+  path: string;
+  kind: AutopilotContextSnapshotKind;
+  original_task_status?: 'activation-prompt' | 'legacy-unverified' | 'unavailable';
+  recovery?: Record<string, unknown>;
+}
+
+const AUTOPILOT_CONTEXT_RECOVERY_REASON_MESSAGES: Record<AutopilotContextRecoveryReason, string> = {
+  'missing-or-unsafe-legacy-context-snapshot': 'no safe legacy Autopilot context snapshot path was available during continuation.',
+  'missing-autopilot-mode-state': 'active Autopilot skill state existed but no matching Autopilot mode state was available during continuation.',
+  'malformed-autopilot-mode-state': 'active Autopilot mode state could not be parsed during continuation.',
+  'nonpreservable-autopilot-mode-state-missing-current-phase': 'active Autopilot mode state was missing current_phase during continuation.',
+};
+
+async function ensureSafeAutopilotContextDir(sourceCwd: string): Promise<string> {
+  const rootRealPath = await realpath(sourceCwd);
+  const omxDir = join(sourceCwd, '.omx');
+  await mkdir(omxDir, { recursive: true });
+  if ((await lstat(omxDir)).isSymbolicLink()) {
+    throw new Error('Unsafe Autopilot context directory: .omx is a symbolic link');
+  }
+
+  const contextDir = join(omxDir, 'context');
+  await mkdir(contextDir, { recursive: true });
+  if ((await lstat(contextDir)).isSymbolicLink()) {
+    throw new Error('Unsafe Autopilot context directory: .omx/context is a symbolic link');
+  }
+
+  const contextRealPath = await realpath(contextDir);
+  const relativeToRoot = relative(rootRealPath, contextRealPath);
+  if (relativeToRoot === '' || relativeToRoot.startsWith('..') || isAbsolute(relativeToRoot)) {
+    throw new Error('Unsafe Autopilot context directory: resolved path escapes repository root');
+  }
+  return contextDir;
+}
+
+async function writeUniqueAutopilotContextSnapshot(
+  sourceCwd: string,
+  slug: string,
+  nowIso: string,
+  body: string,
+): Promise<string> {
+  const contextDir = await ensureSafeAutopilotContextDir(sourceCwd);
+  const timestamp = utcCompactTimestamp(nowIso);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const suffix = attempt === 0 ? '' : `-${attempt + 1}`;
+    const filename = `${slug}-${timestamp}${suffix}.md`;
+    const relativePath = `.omx/context/${filename}`;
+    const absolutePath = resolve(contextDir, filename);
+    try {
+      await writeFile(absolutePath, body, { encoding: 'utf-8', flag: 'wx' });
+      return relativePath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+  throw new Error(`Unable to allocate unique Autopilot context snapshot for ${slug}`);
+}
+
+async function ensureAutopilotContextSnapshot(
+  sourceCwd: string,
+  nowIso: string,
+  activationText: string,
+  existingSnapshot?: AutopilotContextSnapshotDescriptor,
+  options: { allowTaskSnapshotCreation?: boolean; recoveryReason?: AutopilotContextRecoveryReason } = {},
+): Promise<AutopilotContextSnapshotResult> {
+  if (existingSnapshot) {
+    if (isSafeAutopilotContextSnapshotPath(existingSnapshot.path)) {
+      return {
+        path: existingSnapshot.path,
+        kind: existingSnapshot.kind,
+        original_task_status: existingSnapshot.kind === 'legacy' ? 'legacy-unverified' : 'activation-prompt',
+      };
+    }
+    throw new Error(`Unsafe Autopilot context snapshot path: ${existingSnapshot.path}`);
+  }
+
+  if (options.allowTaskSnapshotCreation === false) {
+    const slug = 'autopilot-recovery';
+    const continuationInput = activationText.trim() || '<empty>';
+    const reason = options.recoveryReason ?? 'missing-or-unsafe-legacy-context-snapshot';
+    const body = [
+      '# Autopilot context recovery',
+      '',
+      '- recovery status: degraded',
+      `- recovery reason: ${reason}`,
+      `- reason detail: ${AUTOPILOT_CONTEXT_RECOVERY_REASON_MESSAGES[reason]}`,
+      `- continuation input: ${continuationInput}`,
+      '- original task status: unavailable',
+      '- original task seed: unavailable; do not treat the continuation input as the task seed.',
+      '- required follow-up: re-establish or confirm the intended task context before downstream handoff.',
+      '',
+    ].join('\n');
+    const path = await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body);
+    return {
+      path,
+      kind: 'recovery',
+      original_task_status: 'unavailable',
+      recovery: {
+        status: 'degraded',
+        reason,
+        recovered_at: nowIso,
+        source: 'keyword-detector',
+      },
+    };
+  }
+
+  const slug = slugifyAutopilotTask(activationText);
+  const taskSeed = activationText.trim() || '$autopilot';
+  const body = [
+    `# Autopilot task seed: ${slug}`,
+    '',
+    `- activation prompt / task seed: ${taskSeed}`,
+    '- original task status: activation-prompt',
+    '- scope note: this seed captures the Autopilot activation prompt and is not guaranteed to include prior conversation context.',
+    '- desired outcome: complete the requested Autopilot workflow correctly with durable gate evidence.',
+    '- known facts/evidence: Autopilot was activated from a UserPromptSubmit keyword.',
+    '- constraints: follow deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa; do not skip gates without persisted evidence.',
+    '- unknowns/open questions: to be resolved by the deep-interview gate.',
+    '- likely codebase touchpoints: to be discovered during pre-context intake and planning.',
+    '',
+  ].join('\n');
+  return {
+    path: await writeUniqueAutopilotContextSnapshot(sourceCwd, slug, nowIso, body),
+    kind: 'canonical',
+    original_task_status: 'activation-prompt',
+  };
+}
+
 function createDeepInterviewInputLock(nowIso: string, previous?: DeepInterviewInputLock): DeepInterviewInputLock {
   return {
     active: true,
@@ -236,11 +475,23 @@ async function readExistingDeepInterviewState(statePath: string): Promise<DeepIn
 }
 
 async function readJsonStateIfExists(path: string): Promise<Record<string, unknown> | null> {
+  return (await readJsonStateWithStatus(path)).state;
+}
+
+async function readJsonStateWithStatus(path: string): Promise<{
+  state: Record<string, unknown> | null;
+  status: 'ok' | 'missing' | 'malformed';
+}> {
   try {
     const raw = await readFile(path, 'utf-8');
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return { state: null, status: 'malformed' };
+    return { state: parsed, status: 'ok' };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { state: null, status: 'missing' };
+    }
+    return { state: null, status: 'malformed' };
   }
 }
 
@@ -367,6 +618,9 @@ async function persistStatefulSkillSeedState(
   nextSkill: SkillActiveState,
   nowIso: string,
   previousSkill: SkillActiveState | null,
+  activationText: string,
+  sourceCwd: string,
+  options: { activeContinuation?: boolean } = {},
 ): Promise<SkillActiveState> {
   const config = STATEFUL_SKILL_SEED_CONFIG[nextSkill.skill as StatefulSkillMode];
   if (!config) return nextSkill;
@@ -377,7 +631,8 @@ async function persistStatefulSkillSeedState(
     nextSkill.session_id,
     config.scope,
   );
-  const existingModeState = await readJsonStateIfExists(absolutePath);
+  const existingModeStateResult = await readJsonStateWithStatus(absolutePath);
+  const existingModeState = existingModeStateResult.state;
   const sameActiveSkill = previousSkill?.skill === nextSkill.skill && previousSkill.active;
   const existingModeMatches = safeString(existingModeState?.mode).trim() === config.mode;
   const existingPhase = safeString(existingModeState?.current_phase).trim();
@@ -430,13 +685,46 @@ async function persistStatefulSkillSeedState(
 
   if (config.mode === 'autopilot') {
     const reusableModeState = preserveExistingModeState ? existingModeState : null;
-    const existingState = (reusableModeState?.state && typeof reusableModeState.state === 'object')
+    const existingStateRaw = (reusableModeState?.state && typeof reusableModeState.state === 'object')
       ? reusableModeState.state as Record<string, unknown>
       : {};
+    const {
+      context_snapshot_path: legacyStateContextSnapshotPath,
+      context_snapshot_recovery: _legacyContextSnapshotRecovery,
+      ...existingState
+    } = existingStateRaw;
     const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
+    let recoveryReason: AutopilotContextRecoveryReason = 'missing-or-unsafe-legacy-context-snapshot';
+    if (options.activeContinuation === true && !preserveExistingModeState) {
+      if (existingModeStateResult.status === 'missing') {
+        recoveryReason = 'missing-autopilot-mode-state';
+      } else if (existingModeStateResult.status === 'malformed') {
+        recoveryReason = 'malformed-autopilot-mode-state';
+      } else if (existingModeMatches && existingPhase === '') {
+        recoveryReason = 'nonpreservable-autopilot-mode-state-missing-current-phase';
+      }
+    }
+    const existingContextSnapshotPath = await findReusableAutopilotContextSnapshotPath(sourceCwd, [
+      { value: existingHandoffs.context_snapshot },
+      { value: existingHandoffs.context_snapshot_path, kind: 'legacy' },
+      { value: legacyStateContextSnapshotPath, kind: 'legacy' },
+      { value: reusableModeState?.context_snapshot_path, kind: 'legacy' },
+    ]);
+    const contextSnapshot = await ensureAutopilotContextSnapshot(
+      sourceCwd,
+      nowIso,
+      activationText || safeString(nextSkill.keyword) || '$autopilot',
+      existingContextSnapshotPath,
+      {
+        allowTaskSnapshotCreation: !(preserveExistingModeState || options.activeContinuation === true),
+        recoveryReason,
+      },
+    );
+    const contextSnapshotPath = contextSnapshot.path;
     baseState.review_cycle = typeof reusableModeState?.review_cycle === 'number' ? reusableModeState.review_cycle : 0;
+    delete baseState.context_snapshot_path;
     baseState.state = {
       ...existingState,
       phase_cycle: Array.isArray(existingState.phase_cycle) ? existingState.phase_cycle : ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
@@ -456,6 +744,13 @@ async function persistStatefulSkillSeedState(
         code_review: null,
         ultraqa: null,
         ...existingHandoffs,
+        context_snapshot_path: contextSnapshotPath,
+        context_snapshot: {
+          path: contextSnapshotPath,
+          kind: contextSnapshot.kind,
+          ...(contextSnapshot.original_task_status ? { original_task_status: contextSnapshot.original_task_status } : {}),
+          ...(contextSnapshot.recovery ? { recovery: contextSnapshot.recovery } : {}),
+        },
       },
       review_verdict: Object.prototype.hasOwnProperty.call(existingState, 'review_verdict')
         ? existingState.review_verdict
@@ -466,6 +761,7 @@ async function persistStatefulSkillSeedState(
       return_to_ralplan_reason: Object.prototype.hasOwnProperty.call(existingState, 'return_to_ralplan_reason')
         ? existingState.return_to_ralplan_reason
         : null,
+      ...(contextSnapshot.recovery ? { context_snapshot_recovery: contextSnapshot.recovery } : {}),
       deep_interview_gate: (existingState.deep_interview_gate && typeof existingState.deep_interview_gate === 'object')
         ? existingState.deep_interview_gate
         : {
@@ -724,6 +1020,15 @@ export function detectPrimaryKeyword(text: string): KeywordMatch | null {
   return matches.length > 0 ? matches[0] : null;
 }
 
+function filterMatchesForTeamMode(matches: KeywordMatch[], teamEnabled: boolean): KeywordMatch[] {
+  return teamEnabled ? matches : matches.filter((entry) => entry.skill !== 'team');
+}
+
+function detectPrimaryKeywordForTeamMode(text: string, teamEnabled: boolean): KeywordMatch | null {
+  const matches = filterMatchesForTeamMode(detectKeywords(text), teamEnabled);
+  return matches[0] ?? null;
+}
+
 function isActiveSkillContinuationPrompt(text: string): boolean {
   const normalized = text.trim();
   if (!normalized) return false;
@@ -893,16 +1198,17 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const previousRoot = await readExistingSkillState(rootStatePath);
   const previousSession = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
   const previous = input.sessionId ? previousSession : previousRoot;
+  const teamMode = readTeamModeConfig(sourceCwd);
   const match = resolveContinuationKeywordMatch(
     input.text,
     previous,
-    detectPrimaryKeyword(input.text),
+    detectPrimaryKeywordForTeamMode(input.text, teamMode.enabled),
   );
   if (!match) return null;
 
   const nowIso = input.nowIso ?? new Date().toISOString();
   const hadDeepInterviewLock = previous?.skill === 'deep-interview' && previous?.input_lock?.active === true;
-  const matches = detectKeywords(input.text);
+  const matches = filterMatchesForTeamMode(detectKeywords(input.text), teamMode.enabled);
   const hasCancelIntent = matches.some((entry) => entry.skill === 'cancel');
 
   if (hasCancelIntent && hadDeepInterviewLock) {
@@ -974,6 +1280,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const workflowMatches: TrackedWorkflowMode[] = isTrackedWorkflowMatch && !markedQuestionAnswerContinuation
     ? parseExplicitSkillInvocations(normalizedInputText).matches
       .map((entry) => entry.skill)
+      .filter((skill) => teamMode.enabled || skill !== 'team')
       .filter(isTrackedWorkflowMode)
     : [];
   const resolvedWorkflowRequest = isTrackedWorkflowMatch
@@ -1191,6 +1498,9 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           },
           nowIso,
           previous,
+          input.text,
+          sourceCwd,
+          { activeContinuation: requestedEntry.skill === 'autopilot' && sameSkillContinuation },
         );
         if (requestedEntry.skill === workflowState.skill) {
           nextState = {
@@ -1243,7 +1553,15 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   };
 
   try {
-    const nextState = await persistStatefulSkillSeedState(input.stateDir, state, nowIso, previous);
+    const nextState = await persistStatefulSkillSeedState(
+      input.stateDir,
+      state,
+      nowIso,
+      previous,
+      input.text,
+      sourceCwd,
+      { activeContinuation: match.skill === 'autopilot' && sameSkillContinuation },
+    );
     nextState.active_skills = buildActiveSkills(nextState);
     await writeSkillActiveStateCopiesForStateDir(
       input.stateDir,

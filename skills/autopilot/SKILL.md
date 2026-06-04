@@ -68,12 +68,14 @@ Before Phase `deep-interview` or `ralplan` starts or resumes:
 1. Derive a task slug from the request.
 2. Reuse the latest relevant `.omx/context/{slug}-*.md` snapshot when available.
 3. If none exists, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
-   - task statement
+   - activation prompt / task seed
+   - original task status (`activation-prompt`, `legacy-unverified`, or `unavailable`)
    - desired outcome
    - known facts/evidence
    - constraints
    - unknowns/open questions
    - likely codebase touchpoints
+   - a scope note that the seed is the Autopilot activation prompt, not guaranteed prior conversation context
 4. If brownfield facts are missing, run `explore` first before or during `$deep-interview` (`$deep-interview --quick <task>` remains acceptable for bounded low-ambiguity intake); do not skip the clarification gate merely because the task sounds actionable.
 5. Carry the snapshot path in Autopilot state and all handoff artifacts.
 </Pre-context Intake>

@@ -71,10 +71,11 @@ Delegates to the `code-reviewer` and `architect` agents in parallel for a two-la
 
 Do not self-review as a fallback. If the `code-reviewer` or `architect` agent path is missing, unavailable, skipped, or fails, emit a clear unavailable-review result and block approval until the independent lane evidence exists.
 
+Respect the user's current model and reasoning/effort selection when launching review lanes. Do not pass `model` or `reasoning_effort` overrides in the review-lane task calls unless the user explicitly asks for review-specific overrides; omitting them lets native subagents inherit the active session settings.
+
 ```
 task(
   agent_type="code-reviewer",
-  reasoning_effort="xhigh",
   prompt="CODE REVIEW TASK
 
 Review code changes for quality, security, and maintainability.
@@ -100,7 +101,6 @@ Output: Code review report with:
 
 task(
   agent_type="architect",
-  reasoning_effort="xhigh",
   prompt="ARCHITECTURE / DEVIL'S-ADVOCATE REVIEW TASK
 
 Review the same code changes from the architecture/tradeoff perspective.

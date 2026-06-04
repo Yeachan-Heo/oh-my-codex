@@ -13,9 +13,11 @@ import {
   setup,
   SETUP_MCP_MODES,
   SETUP_SCOPES,
+  SETUP_TEAM_MODES,
   type SetupInstallMode,
   type SetupMcpMode,
   type SetupScope,
+  type SetupTeamMode,
 } from "./setup.js";
 import { uninstall } from "./uninstall.js";
 import { version } from "./version.js";
@@ -91,7 +93,7 @@ import {
   type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
-import { maybeCheckAndPromptUpdate, runImmediateUpdate } from "./update.js";
+import { maybeCheckAndPromptUpdate, runImmediateUpdate, type UpdateChannel } from "./update.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
 import {
   generateOverlay,
@@ -129,13 +131,12 @@ import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 import { readUltragoalState } from "../hud/state.js";
-import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
 import {
   createHudWatchPane as createSharedHudWatchPane,
   killTmuxPane as killSharedTmuxPane,
   listCurrentWindowHudPaneIds,
   listCurrentWindowPanes,
-  OMX_TMUX_HUD_LEADER_PANE_ENV,
+  buildHudRuntimeEnv,
   parsePaneIdFromTmuxOutput,
   reapDeadHudPanes,
   registerHudResizeHook,
@@ -201,7 +202,11 @@ Usage:
                 Queue a Stop-hook continuation for built-in image generation turns
   omx setup     Install skills, prompts, CLI-first config, and scope-specific AGENTS.md
                 (user scope prompts for legacy vs plugin skill delivery when needed)
-  omx update    Check npm now, update the global install immediately, then refresh setup
+  omx update    Install the stable channel now, then refresh setup
+  omx update --stable
+                Install/rollback to npm stable (oh-my-codex@latest), then refresh setup
+  omx update --dev
+                Install the upstream dev branch, then refresh setup
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
   omx list      List packaged OMX skills and native agent prompts (--json)
@@ -287,6 +292,11 @@ Options:
                 Explicit setup MCP mode (default: none; compat enables first-party MCP compatibility and shared registry sync)
   --no-mcp      Alias for --mcp=none
   --with-mcp    Alias for --mcp=compat
+  --disable-team
+                Disable Team skill/context generation for setup (default remains enabled)
+  --enable-team Re-enable Team skill/context generation for setup
+  --team-mode <enabled|disabled>
+                Explicit Team setup mode
   --keep-config Skip config.toml cleanup during uninstall
   --purge       Remove .omx/ cache directory during uninstall
   --verbose     Show detailed output
@@ -551,6 +561,54 @@ export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
   );
 }
 
+export function resolveSetupTeamModeArg(args: string[]): SetupTeamMode | undefined {
+  let value: SetupTeamMode | undefined;
+  const setValue = (next: SetupTeamMode, source: string): void => {
+    if (value && value !== next) {
+      throw new Error(
+        `Conflicting setup Team mode flags: ${source} selects ${next}, but another flag already selected ${value}`,
+      );
+    }
+    value = next;
+  };
+  const parseValue = (next: string): SetupTeamMode => {
+    if (!SETUP_TEAM_MODES.includes(next as SetupTeamMode)) {
+      throw new Error(
+        `Invalid setup Team mode: ${next}. Expected one of: enabled, disabled`,
+      );
+    }
+    return next as SetupTeamMode;
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--disable-team" || arg === "--no-team") {
+      setValue("disabled", arg);
+      continue;
+    }
+    if (arg === "--enable-team" || arg === "--team") {
+      setValue("enabled", arg);
+      continue;
+    }
+    if (arg === "--team-mode") {
+      const next = args[index + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error(
+          `Missing setup Team mode value after --team-mode. Expected one of: enabled, disabled`,
+        );
+      }
+      setValue(parseValue(next), arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--team-mode=")) {
+      setValue(parseValue(arg.slice("--team-mode=".length)), "--team-mode");
+    }
+  }
+
+  return value;
+}
+
 export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
   const firstArg = args[0];
   if (firstArg === "--help" || firstArg === "-h") {
@@ -572,6 +630,34 @@ export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
     return { command: "resume", launchArgs: args.slice(1) };
   }
   return { command: firstArg, launchArgs: [] };
+}
+
+export function resolveUpdateChannelArg(args: string[]): UpdateChannel {
+  let channel: UpdateChannel = 'stable';
+  let sawStable = false;
+  let sawDev = false;
+
+  for (const arg of args) {
+    if (arg === '--stable') {
+      sawStable = true;
+      channel = 'stable';
+      continue;
+    }
+    if (arg === '--dev') {
+      sawDev = true;
+      channel = 'dev';
+      continue;
+    }
+    throw new Error(
+      `Unknown omx update option: ${arg}. Expected no flags, --stable, or --dev.`,
+    );
+  }
+
+  if (sawStable && sawDev) {
+    throw new Error('omx update --dev and --stable are mutually exclusive.');
+  }
+
+  return channel;
 }
 
 export function resolveNotifyTempContract(
@@ -760,10 +846,15 @@ export async function persistProjectLaunchRuntimeAuthState(
  * Launch against a session mirror so those runtime writes never dirty the
  * durable project config while preserving the project config as the launch input.
  */
+export interface PrepareRuntimeCodexHomeForProjectLaunchOptions {
+  includeHistoryArtifacts?: boolean;
+}
+
 export async function prepareRuntimeCodexHomeForProjectLaunch(
   cwd: string,
   sessionId: string,
   projectCodexHome: string,
+  options: PrepareRuntimeCodexHomeForProjectLaunchOptions = {},
 ): Promise<string> {
   const runtimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
   await rm(runtimeCodexHome, { recursive: true, force: true });
@@ -772,7 +863,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
   if (!existsSync(projectCodexHome)) return runtimeCodexHome;
 
   for (const entry of await readdir(projectCodexHome, { withFileTypes: true })) {
-    if (isCodexSqliteArtifact(entry.name)) continue;
+    if (isCodexSqliteArtifact(entry.name) && !options.includeHistoryArtifacts) continue;
     if (PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES.has(entry.name)) continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
@@ -804,10 +895,15 @@ function resolveProjectSqliteHomeForLaunch(
   return projectCodexHome;
 }
 
+export interface PrepareCodexHomeForLaunchOptions {
+  includeHistoryArtifacts?: boolean;
+}
+
 export async function prepareCodexHomeForLaunch(
   cwd: string,
   sessionId: string,
   env: NodeJS.ProcessEnv = process.env,
+  options: PrepareCodexHomeForLaunchOptions = {},
 ): Promise<PreparedCodexHomeForLaunch> {
   const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(cwd, env);
   if (projectLocalCodexHomeForCleanup) {
@@ -815,6 +911,7 @@ export async function prepareCodexHomeForLaunch(
       cwd,
       sessionId,
       projectLocalCodexHomeForCleanup,
+      { includeHistoryArtifacts: options.includeHistoryArtifacts },
     );
     return {
       codexHomeOverride: runtimeCodexHome,
@@ -1308,6 +1405,59 @@ export function resolveOmxRootForLaunch(
   if (typeof raw !== "string" || raw.trim() === "") return undefined;
   return isCrossPlatformAbsolutePath(raw) ? raw : join(cwd, raw);
 }
+type HudRuntimeRootSource = 'team-env' | 'omx-root-env' | 'omx-state-root-env' | 'cwd-default';
+
+interface HudRuntimeRootForLaunch {
+  omxRoot?: string;
+  omxStateRoot?: string;
+  omxTeamStateRoot?: string;
+  rootSource: HudRuntimeRootSource;
+}
+
+function resolveLaunchPath(cwd: string, raw: string): string {
+  return isCrossPlatformAbsolutePath(raw) ? raw : join(cwd, raw);
+}
+
+function resolveHudRuntimeRootSource(
+  omxRootOverride: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): HudRuntimeRootSource {
+  if (env.OMX_TEAM_STATE_ROOT?.trim()) return 'team-env';
+  if (env.OMX_ROOT?.trim() || omxRootOverride) return 'omx-root-env';
+  if (env.OMX_STATE_ROOT?.trim()) return 'omx-state-root-env';
+  return 'cwd-default';
+}
+
+export function resolveHudRuntimeRootForLaunch(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): HudRuntimeRootForLaunch {
+  const omxTeamStateRoot = env.OMX_TEAM_STATE_ROOT?.trim();
+  if (omxTeamStateRoot) {
+    return {
+      omxTeamStateRoot: resolveLaunchPath(cwd, omxTeamStateRoot),
+      rootSource: 'team-env',
+    };
+  }
+
+  const omxRoot = env.OMX_ROOT?.trim();
+  if (omxRoot) {
+    return {
+      omxRoot: resolveLaunchPath(cwd, omxRoot),
+      rootSource: 'omx-root-env',
+    };
+  }
+
+  const omxStateRoot = env.OMX_STATE_ROOT?.trim();
+  if (omxStateRoot) {
+    return {
+      omxStateRoot: resolveLaunchPath(cwd, omxStateRoot),
+      rootSource: 'omx-state-root-env',
+    };
+  }
+
+  return { rootSource: 'cwd-default' };
+}
 
 function hasExplicitOmxRootEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   return [env.OMX_ROOT, env.OMX_STATE_ROOT].some(
@@ -1785,10 +1935,11 @@ export async function main(args: string[]): Promise<void> {
           scope: resolveSetupScopeArg(args.slice(1)),
           installMode: resolveSetupInstallModeArg(args.slice(1)),
           mcpMode: resolveSetupMcpModeArg(args.slice(1)),
+          teamMode: resolveSetupTeamModeArg(args.slice(1)),
         });
         break;
       case "update":
-        await runImmediateUpdate(process.cwd());
+        await runImmediateUpdate(process.cwd(), {}, { channel: resolveUpdateChannelArg(args.slice(1)) });
         break;
       case "list":
         await listCommand(args.slice(1));
@@ -2216,7 +2367,9 @@ export async function launchWithHud(args: string[]): Promise<void> {
     // Non-fatal: repair failure must not block launch
   }
 
-  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env);
+  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env, {
+    includeHistoryArtifacts: normalizedArgs[0] === "resume",
+  });
   const codexHomeOverride = preparedCodexHome.codexHomeOverride;
   const sqliteHomeOverride = preparedCodexHome.sqliteHomeOverride;
   const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
@@ -3346,6 +3499,25 @@ export function buildDetachedSessionBootstrapSteps(
         runtimeCodexHomeForCleanup,
         parentEnvFilePath,
       );
+  const resolvedEnvStateRoot = env.OMX_STATE_ROOT?.trim()
+    ? resolveLaunchPath(cwd, env.OMX_STATE_ROOT.trim())
+    : undefined;
+  const hasExplicitRootOverride = Boolean(
+    env.OMX_ROOT?.trim()
+      || (omxRootOverride && omxRootOverride !== resolvedEnvStateRoot),
+  );
+  const hudRuntimeRoot = env.OMX_TEAM_STATE_ROOT?.trim()
+    ? resolveHudRuntimeRootForLaunch(cwd, env)
+    : hasExplicitRootOverride
+      ? {
+          omxRoot: omxRootOverride,
+          rootSource: resolveHudRuntimeRootSource(omxRootOverride, env),
+        }
+      : resolveHudRuntimeRootForLaunch(cwd, env);
+  const hudRuntimeEnv = buildHudRuntimeEnv({
+    sessionId,
+    ...hudRuntimeRoot,
+  }).env;
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -3359,12 +3531,9 @@ export function buildDetachedSessionBootstrapSteps(
     ...(workerLaunchArgs
       ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
       : []),
-    ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
-    ...(sessionId ? ["-e", `${OMX_TMUX_HUD_OWNER_ENV}=1`] : []),
+    ...Object.entries(hudRuntimeEnv).map(([key, value]) => ["-e", `${key}=${value}`]).flat(),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(sqliteHomeOverride ? ["-e", `${CODEX_SQLITE_HOME_ENV}=${sqliteHomeOverride}`] : []),
-    ...(omxRootOverride ? ["-e", `OMX_ROOT=${omxRootOverride}`] : []),
-    ...(env.OMX_STATE_ROOT ? ["-e", `OMX_STATE_ROOT=${env.OMX_STATE_ROOT}`] : []),
     ...(env.OMXBOX_ACTIVE ? ["-e", `OMXBOX_ACTIVE=${env.OMXBOX_ACTIVE}`] : []),
     ...(env.OMX_SOURCE_CWD ? ["-e", `OMX_SOURCE_CWD=${env.OMX_SOURCE_CWD}`] : []),
     ...(notifyTempContractRaw
@@ -4154,12 +4323,12 @@ function runCodex(
   }
   const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
   const currentPaneId = process.env.TMUX_PANE;
-  const hudEnvArgs = [
-    `OMX_SESSION_ID=${sessionId}`,
-    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
-    ...(currentPaneId ? [`${OMX_TMUX_HUD_LEADER_PANE_ENV}=${currentPaneId}`] : []),
-    ...(omxRootOverride ? [`OMX_ROOT=${omxRootOverride}`] : []),
-  ];
+  const hudRuntimeRoot = resolveHudRuntimeRootForLaunch(cwd, process.env);
+  const hudEnvArgs = Object.entries(buildHudRuntimeEnv({
+    sessionId,
+    leaderPaneId: currentPaneId,
+    ...hudRuntimeRoot,
+  }).env).map(([key, value]) => `${key}=${value}`);
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
     : buildTmuxPaneCommand("env", [...hudEnvArgs, "node", omxBin, "hud", "--watch"]);
@@ -4178,8 +4347,7 @@ function runCodex(
   };
   const codexEnvWithSession = {
     ...codexBaseEnv,
-    OMX_SESSION_ID: sessionId,
-    [OMX_TMUX_HUD_OWNER_ENV]: "1",
+    ...buildHudRuntimeEnv({ sessionId }).env,
   };
   const codexEnv = workerLaunchArgs
     ? { ...codexEnvWithSession, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }

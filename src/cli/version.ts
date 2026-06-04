@@ -1,16 +1,12 @@
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { resolveOmxDisplayVersionSync } from '../utils/version.js';
 
 export function version(): void {
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const pkgPath = join(dirname(__filename), '..', '..', 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    console.log(`oh-my-codex v${pkg.version}`);
+  const displayVersion = resolveOmxDisplayVersionSync();
+  if (displayVersion) {
+    console.log(`oh-my-codex ${displayVersion}`);
     console.log(`Node.js ${process.version}`);
     console.log(`Platform: ${process.platform} ${process.arch}`);
-  } catch {
+  } else {
     console.log('oh-my-codex (version unknown)');
   }
 }

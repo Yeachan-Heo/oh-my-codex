@@ -74,9 +74,34 @@ function renderUltrawork(ctx: HudRenderContext): string | null {
   return cyan('ultrawork');
 }
 
+function normalizeHudPhase(phase: string | undefined): string {
+  return (phase || '').toLowerCase().replace(/_/g, '-');
+}
+
+function isLateAutopilotHudPhase(phase: string): boolean {
+  const normalized = normalizeHudPhase(phase);
+  return normalized === 'code-review' || normalized === 'ultraqa';
+}
+
+function isAutopilotLateGateSource(ctx: HudRenderContext, stage: 'code-review' | 'ultraqa'): boolean {
+  return normalizeHudPhase(ctx.autopilot?.current_phase) === stage;
+}
+
+function hasAutopilotLateGateReplacement(ctx: HudRenderContext, phase: string): boolean {
+  const normalized = normalizeHudPhase(phase);
+  if (normalized === 'code-review') {
+    return ctx.codeReview?.source === 'autopilot' && isAutopilotLateGateSource(ctx, 'code-review');
+  }
+  if (normalized === 'ultraqa') {
+    return ctx.ultraqa?.source === 'autopilot' && isAutopilotLateGateSource(ctx, 'ultraqa');
+  }
+  return false;
+}
+
 function renderAutopilot(ctx: HudRenderContext): string | null {
   if (!ctx.autopilot) return null;
   const phase = sanitizeDynamicText(ctx.autopilot.current_phase || 'active') || 'active';
+  if (isLateAutopilotHudPhase(phase) && hasAutopilotLateGateReplacement(ctx, phase)) return null;
   return yellow(`autopilot:${phase}`);
 }
 
@@ -105,8 +130,16 @@ function renderAutoresearch(ctx: HudRenderContext): string | null {
   return cyan(`research:${phase}`);
 }
 
+function renderCodeReview(ctx: HudRenderContext): string | null {
+  if (!ctx.codeReview) return null;
+  if (ctx.codeReview.source === 'autopilot' && !isAutopilotLateGateSource(ctx, 'code-review')) return null;
+  const phase = sanitizeDynamicText(ctx.codeReview.current_phase || 'active') || 'active';
+  return green(`code-review:${phase}`);
+}
+
 function renderUltraqa(ctx: HudRenderContext): string | null {
   if (!ctx.ultraqa) return null;
+  if (ctx.ultraqa.source === 'autopilot' && !isAutopilotLateGateSource(ctx, 'ultraqa')) return null;
   const phase = sanitizeDynamicText(ctx.ultraqa.current_phase || 'active') || 'active';
   return green(`qa:${phase}`);
 }
@@ -256,6 +289,7 @@ const MINIMAL_ELEMENTS: ElementRenderer[] = [
   renderRalplan,
   renderDeepInterview,
   renderAutoresearch,
+  renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
   renderTurns,
@@ -269,6 +303,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderRalplan,
   renderDeepInterview,
   renderAutoresearch,
+  renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
   renderTurns,
@@ -286,6 +321,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderRalplan,
   renderDeepInterview,
   renderAutoresearch,
+  renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
   renderTurns,

@@ -158,6 +158,64 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /must solicit direct human judgment/i);
 	});
 
+	it("grounds brownfield interviews in repo docs, terminology, and scenarios", () => {
+		assert.match(
+			deepInterviewSkill,
+			/doc\/context grounding before user-facing questions/i,
+		);
+		assert.match(deepInterviewSkill, /applicable `AGENTS\.md` files/i);
+		assert.match(deepInterviewSkill, /README\/getting-started docs/i);
+		assert.match(deepInterviewSkill, /docs\/.*contracts\/plans\/ADRs/i);
+		assert.match(deepInterviewSkill, /`CONTEXT\.md` or `CONTEXT-MAP\.md`/i);
+		assert.match(deepInterviewSkill, /Docs\/Terminology Ledger/i);
+		assert.match(deepInterviewSkill, /canonical terms already used by the repo/i);
+		assert.match(deepInterviewSkill, /user terms that conflict with docs or current code behavior/i);
+		assert.match(
+			deepInterviewSkill,
+			/Cross-check user claims about current behavior against code or documented contracts/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/If docs and code disagree, ask a confirmation question that names both sources/i,
+		);
+		assert.match(deepInterviewSkill, /Terminologist/i);
+		assert.match(
+			deepInterviewSkill,
+			/Stress-test the boundary with one concrete scenario or edge case/i,
+		);
+	});
+
+	it("keeps durable documentation updates opt-in and preserves grounding for ultragoal handoff", () => {
+		assert.match(
+			deepInterviewSkill,
+			/Durable docs, glossary, ADR, or memory updates are opt-in and public-safe only/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/must not automatically create or dump public docs from interview transcripts/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Optional durable documentation recommendations, explicitly marked opt-in and public-safe/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Read applicable repo docs\/rules\/context during preflight; write durable docs, glossary, ADR, or memory updates only when the user explicitly opts in/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/preserve intent, non-goals, decision boundaries, acceptance criteria, docs\/terminology grounding/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Do not score ambiguity, do not run readiness gates, and do not hand off to `\$ultragoal`, `\$ralplan`, `\$autopilot`, `\$ralph`, or `\$team` until that summary answer is captured/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Durable docs\/ADR\/memory updates, if any, were explicitly opted into and public-safe/i,
+		);
+	});
+
 	it("moves challenge modes and preserved evidence discipline earlier", () => {
 		assert.match(
 			deepInterviewSkill,
@@ -179,6 +237,7 @@ describe("deep-interview Ouroboros contract", () => {
 
 	it("includes contract-style execution bridge and no-direct-implementation guard", () => {
 		assert.match(deepInterviewSkill, /Execution Bridge/i);
+		assert.match(deepInterviewSkill, /\$ultragoal/i);
 		assert.match(deepInterviewSkill, /\$ralplan/i);
 		assert.match(deepInterviewSkill, /\$autopilot/i);
 		assert.match(deepInterviewSkill, /\$ralph/i);
@@ -310,6 +369,23 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /Recommend `\$ultragoal`[\s\S]*default durable goal-mode follow-up/i);
 		assert.match(deepInterviewSkill, /keep `\$ralph` only as an explicit fallback/i);
 		assert.match(deepInterviewSkill, /supersedes Ralph for goal tracking/i);
+		assert.match(deepInterviewSkill, /`\$ultragoal` \(Default durable execution follow-up\)/i);
+		assert.match(
+			deepInterviewSkill,
+			/Invocation:[\s\S]*`\$ultragoal create-goals --brief-file <spec-path>`[\s\S]*`\$ultragoal complete-goals`/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Expected Output:[\s\S]*\.omx\/ultragoal\/brief\.md[\s\S]*\.omx\/ultragoal\/goals\.json[\s\S]*\.omx\/ultragoal\/ledger\.jsonl/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Skipped \/ Already-Satisfied Stages:[\s\S]*doc\/context preflight/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Handoff options provided \(`\$ultragoal`, `\$ralplan`, `\$autopilot`, `\$ralph`, `\$team`\)/i,
+		);
 	});
 
 	it("uses OMX-native output paths", () => {
@@ -323,7 +399,7 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /do not paste or forward the raw payload/i);
 		assert.match(deepInterviewSkill, /wait for the concise summary before ambiguity scoring, crystallizing artifacts, or any downstream execution handoff/i);
 		assert.match(deepInterviewSkill, /The oversized initial-context summary gate is blocking/i);
-		assert.match(deepInterviewSkill, /Do not score ambiguity, do not run readiness gates, and do not hand off to `\$ralplan`, `\$autopilot`, `\$ralph`, or `\$team` until that summary answer is captured/i);
+		assert.match(deepInterviewSkill, /Do not score ambiguity, do not run readiness gates, and do not hand off to `\$ultragoal`, `\$ralplan`, `\$autopilot`, `\$ralph`, or `\$team` until that summary answer is captured/i);
 		assert.match(deepInterviewSkill, /goals, constraints, success criteria, non-goals, decision boundaries/i);
 	});
 

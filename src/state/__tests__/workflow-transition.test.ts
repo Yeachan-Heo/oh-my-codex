@@ -202,6 +202,38 @@ describe('workflow transition rules', () => {
     });
   });
 
+  it('does not auto-complete session mode detail when canonical skill state is absent', async () => {
+    await withIsolatedStateEnv(async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-reconcile-detail-only-'));
+      try {
+        const sessionId = 'sess-detail-only';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        const staleRalplanPath = join(sessionDir, 'ralplan-state.json');
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          staleRalplanPath,
+          JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'review' }, null, 2),
+          'utf-8',
+        );
+
+        const transition = await reconcileWorkflowTransition(wd, 'team', {
+          action: 'start',
+          sessionId,
+          source: 'test',
+        });
+
+        assert.equal(transition.decision.allowed, true);
+        assert.deepEqual(transition.decision.currentModes, []);
+        assert.deepEqual(transition.completedPaths, []);
+
+        const staleRalplan = JSON.parse(await readFile(staleRalplanPath, 'utf-8')) as { active?: unknown };
+        assert.equal(staleRalplan.active, true);
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('co-locates auto-completed mode detail and canonical skill state under an explicit base state dir', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-workflow-reconcile-base-dir-'));
     try {
