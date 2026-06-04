@@ -1619,6 +1619,76 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('honors all documented execution contract required marker locations and runtime aliases', async () => {
+    const aliasContract = {
+      version: 1,
+      executionStride: 'deliverable',
+      source: 'deep-interview',
+      selected_by: 'user',
+      allow_task_shrink: false,
+      completionUnit: 'The named deliverable',
+      stopCondition: 'Stop after the deliverable is complete and verified',
+      acceptanceCoverageScope: 'deliverable',
+      shrinkPolicy: 'ask_before_shrink',
+    };
+
+    for (const [caseName, topLevelPatch, nestedPatch, handoffPatch] of [
+      ['gate', {}, { deep_interview_gate: { execution_contract_required: true } }, {}],
+      ['top-level', { execution_contract_required: true }, {}, {}],
+      ['nested-state', {}, { execution_contract_required: true }, {}],
+      ['handoff', {}, {}, { execution_contract_required: true }],
+    ] as const) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-marker-${caseName}-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-execution-contract-marker-${caseName}`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+            ...topLevelPatch,
+            state: {
+              ...nestedPatch,
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: `The ${caseName} marker requires a valid execution contract.`,
+                ...((nestedPatch as { deep_interview_gate?: Record<string, unknown> }).deep_interview_gate ?? {}),
+              },
+              handoff_artifacts: {
+                deep_interview: {
+                  summary: `Ready for ralplan with ${caseName} required marker.`,
+                  execution_contract: aliasContract,
+                  ...handoffPatch,
+                },
+              },
+            },
+          });
+
+          assert.equal(response.isError, undefined);
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, 'ralplan');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('denies stale valid execution contracts from masking an invalid next-state contract', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-execution-contract-precedence-'));
     try {
