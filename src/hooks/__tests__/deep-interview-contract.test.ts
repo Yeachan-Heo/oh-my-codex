@@ -253,21 +253,30 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /Do NOT implement directly/i);
 	});
 
-	it("documents optional execution contract foundation for Autopilot stride handoff", () => {
-		assert.match(deepInterviewSkill, /Optional execution contract foundation/i);
+	it("documents Autopilot execution stride confirmation for handoff", () => {
+		assert.match(deepInterviewSkill, /Autopilot execution stride confirmation/i);
+		assert.match(deepInterviewSkill, /Before handing a clarified spec to `\$autopilot`\/`\$ralplan`/i);
+		assert.match(deepInterviewSkill, /execution stride would materially change what the executor should finish before stopping/i);
+		assert.match(deepInterviewSkill, /must confirm the execution stride before handoff/i);
+		assert.match(deepInterviewSkill, /do not require it for every ordinary deep-interview artifact/i);
+		assert.match(deepInterviewSkill, /Ask a bounded single-choice confirmation/i);
 		assert.match(deepInterviewSkill, /execution_contract_required/i);
 		assert.match(deepInterviewSkill, /execution_contract/i);
 		assert.match(deepInterviewSkill, /execution_stride/i);
-		assert.match(deepInterviewSkill, /task.*deliverable.*milestone/s);
+		assert.match(deepInterviewSkill, /`task`.*`deliverable`.*`milestone`/s);
+		assert.match(deepInterviewSkill, /selected_by:"user"/i);
+		assert.match(deepInterviewSkill, /selected_by:"default"/i);
+		assert.match(deepInterviewSkill, /never present a default as if the user chose it/i);
 		assert.match(deepInterviewSkill, /allow_task_shrink/i);
 		assert.match(deepInterviewSkill, /completion_unit/i);
 		assert.match(deepInterviewSkill, /stop_condition/i);
 		assert.match(deepInterviewSkill, /acceptance_coverage_scope/i);
 		assert.match(deepInterviewSkill, /shrink_policy/i);
-		assert.match(deepInterviewSkill, /do not infer stride from task length, phase labels, snapshots, or freeform wording/i);
+		assert.match(deepInterviewSkill, /do not infer stride from task length, phase labels, snapshots, repository\/context snapshot size, or freeform wording/i);
+		assert.match(deepInterviewSkill, /Only set `execution_contract_required:true` when the selected downstream workflow needs this explicit stride\/stop-condition guard/i);
 		assert.match(deepInterviewSkill, /New artifacts must write the canonical snake_case schema/i);
 		assert.match(deepInterviewSkill, /runtime readers may accept legacy camelCase field\/marker aliases and direct\/nested `execution_contract` locations only as compatibility input/i);
-		assert.match(pluginDeepInterviewSkill, /Optional execution contract foundation/i);
+		assert.match(pluginDeepInterviewSkill, /Autopilot execution stride confirmation/i);
 	});
 
 	it("documents surface-aware omx question handling and fallback boundaries", () => {
