@@ -145,7 +145,6 @@ import {
 import {
   readPersistedTeamUltragoalContext,
   renderLeaderOwnedUltragoalContextSection,
-  resolveLeaderOwnedUltragoalContext,
   resolveLeaderOwnedUltragoalContextOutcome,
   writePersistedTeamUltragoalContext,
 } from './ultragoal-context.js';
@@ -2458,15 +2457,10 @@ export async function startTeam(
     requestedApprovedExecution ?? approvedExecution,
     selectedApprovedExecutionHint,
   );
-  const strictUltragoalContext = explicitUltragoalLinkedTeam
-    ? await resolveLeaderOwnedUltragoalContext(leaderCwd)
-    : undefined;
-  const ultragoalOutcome = explicitUltragoalLinkedTeam
-    ? {
-      status: strictUltragoalContext ? 'valid' as const : 'missing' as const,
-      context: strictUltragoalContext ?? null,
-    }
-    : await resolveLeaderOwnedUltragoalContextOutcome(leaderCwd);
+  const ultragoalOutcome = await resolveLeaderOwnedUltragoalContextOutcome(leaderCwd);
+  if (explicitUltragoalLinkedTeam && ultragoalOutcome.status !== 'valid') {
+    throw new Error(`invalid_ultragoal_team_context:${ultragoalOutcome.warning?.message ?? ultragoalOutcome.status}`);
+  }
   const ultragoalContext = ultragoalOutcome.status === 'valid' ? ultragoalOutcome.context : null;
   const approvedContextSection = joinContextSections(
     buildApprovedTeamHandoffSection(selectedApprovedExecutionHint),
