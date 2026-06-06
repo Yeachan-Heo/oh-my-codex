@@ -159,6 +159,7 @@ When editing `templates/AGENTS.md`, any tracked root `AGENTS.md`, or other root 
 2. **Leader and worker responsibilities stay separate.** Leaders choose the mode, own verification, and integrate work; workers execute assigned slices and report blockers upward.
 3. **Stop/escalate rules are explicit.** The prompt should say when to stop, when to escalate to the user, and when workers must escalate back to the leader.
 4. **Output contract stays tight.** Default progress/final updates should be compact: current mode, action/result, and evidence or blocker/next step. Avoid repeating full-plan rationale unless the risk or decision changed.
+5. **Bootstrap stays bootstrap-sized.** Keep only instructions that must be available before the first tool call or first repository action: autonomy posture, mode/delegation routing, safety boundaries, marker contracts, verification, cancellation, and state ownership. Move workflow walkthroughs, deprecated workflow descriptions, and catalog-sized role lists to `SKILL.md`, role prompts, or docs.
 
 ## Relationship to the guidance schema
 
