@@ -1293,8 +1293,12 @@ describe('buildWorkerStartupCommand', () => {
     const stateRoot = join(wd, '.omx', 'state');
     const prevShell = process.env.SHELL;
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevHudOwner = process.env.OMX_TMUX_HUD_OWNER;
+    const prevHudLeaderPane = process.env.OMX_TMUX_HUD_LEADER_PANE;
     process.env.SHELL = '/bin/bash';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.OMX_TMUX_HUD_OWNER = '1';
+    process.env.OMX_TMUX_HUD_LEADER_PANE = '%leader';
     try {
       const cmd = writeWorkerStartupScriptCommand(
         'alpha',
@@ -1304,6 +1308,8 @@ describe('buildWorkerStartupCommand', () => {
         {
           OMX_TEAM_STATE_ROOT: stateRoot,
           OMX_TEAM_LEADER_CWD: wd,
+          OMX_TMUX_HUD_OWNER: '1',
+          OMX_TMUX_HUD_LEADER_PANE: '%leader',
         },
         'gemini',
       );
@@ -1311,7 +1317,10 @@ describe('buildWorkerStartupCommand', () => {
       const script = await readFile(join(stateRoot, 'team', 'alpha', 'runtime', 'worker-1-startup.sh'), 'utf-8');
       assert.match(script, /^#!\/bin\/sh/m);
       assert.match(script, new RegExp(`cd '${wd.replace(/'/g, `'\\\\''`)}'`));
+      assert.match(script, /^unset OMX_TMUX_HUD_OWNER OMX_TMUX_HUD_LEADER_PANE$/m);
       assert.match(script, /export OMX_TEAM_STATE_ROOT=/);
+      assert.doesNotMatch(script, /^export OMX_TMUX_HUD_OWNER=/m);
+      assert.doesNotMatch(script, /^export OMX_TMUX_HUD_LEADER_PANE=/m);
       assert.match(script, /exec '\/bin\/bash' -c /);
       assert.doesNotMatch(cmd ?? '', /OMX_TEAM_STATE_ROOT=/, 'tmux command should point at script instead of inlining env');
     } finally {
@@ -1319,6 +1328,10 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.SHELL;
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevHudOwner === 'string') process.env.OMX_TMUX_HUD_OWNER = prevHudOwner;
+      else delete process.env.OMX_TMUX_HUD_OWNER;
+      if (typeof prevHudLeaderPane === 'string') process.env.OMX_TMUX_HUD_LEADER_PANE = prevHudLeaderPane;
+      else delete process.env.OMX_TMUX_HUD_LEADER_PANE;
       await rm(wd, { recursive: true, force: true });
     }
   });

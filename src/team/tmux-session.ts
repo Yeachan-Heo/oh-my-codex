@@ -1129,6 +1129,7 @@ function buildWorkerStartupScriptContent(
   return [
     '#!/bin/sh',
     'set -eu',
+    `unset ${OMX_TMUX_HUD_OWNER_ENV} ${OMX_TMUX_HUD_LEADER_PANE_ENV}`,
     `cd ${shellQuoteSingle(cwd)}`,
     envExports,
     `exec ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(`${rcPrefix}${pathPrefix}${cliInvocation}`)}`,
