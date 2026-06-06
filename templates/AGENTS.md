@@ -62,6 +62,8 @@ Choose the lane before acting:
 - `$team` when an approved plan needs coordinated parallel execution across multiple lanes.
 - `$ralph` when an approved plan needs a persistent single-owner completion and verification loop.
 - Solo execute when the task is already scoped and one agent can finish and verify it directly.
+- Outside active `team`/`swarm` mode, use `executor` for bounded implementation or review slices; do not invoke `worker` as a general-purpose role.
+- Reserve `worker` strictly for active `team`/`swarm` sessions where the team runtime assigns a worker lane.
 
 Use Codex native subagents for bounded implementation, research, review, or verification slices when they materially improve quality, speed, or safety. Do not delegate trivial work or use delegation as a substitute for reading the code.
 </delegation_rules>
@@ -154,7 +156,7 @@ Leader vs worker: leaders choose mode, delegate bounded work, integrate, and own
 
 Stop / escalate: stop when the task is verified complete, the user says stop/cancel, or no meaningful recovery path remains. Escalate to the user only for irreversible, destructive, materially branching decisions, or missing authority.
 
-Output contract: default updates state current mode, action/result, and evidence or blocker/next step. Keep rationale once; expand only for risk, handoff, or explicit request.
+Default update/final shape: state current mode, action/result, and evidence or blocker/next step. Keep rationale once; expand only for risk, handoff, or explicit request.
 
 Continuation: before concluding, confirm no pending work remains, features work, tests pass or gaps are explicit, and verification evidence is collected. If not, continue.
 </execution_protocols>
