@@ -3,6 +3,8 @@ import type { QuestionRecord } from '../question/types.js';
 import type { DeepInterviewQuestionEnforcementState } from '../question/deep-interview.js';
 
 type JsonObject = Record<string, unknown>;
+type ExecutionContractStatus = 'absent' | 'valid' | 'invalid';
+type ExecutionStride = 'task' | 'deliverable' | 'milestone';
 
 export interface AutopilotDeepInterviewRalplanGateInput {
   cwd: string;
@@ -29,6 +31,10 @@ function safeObject(value: unknown): JsonObject | null {
     : null;
 }
 
+function hasOwnKey(object: JsonObject | null | undefined, key: string): object is JsonObject {
+  return Boolean(object) && Object.prototype.hasOwnProperty.call(object, key);
+}
+
 async function readDeepInterviewState(input: AutopilotDeepInterviewRalplanGateInput): Promise<JsonObject | null> {
   // Autopilot supervisor handoffs must not be driven by sibling workflow files.
   // Standalone deep-interview -> ralplan reconciliation passes its source state
@@ -50,6 +56,149 @@ function deepInterviewHandoff(state: JsonObject | null | undefined): unknown {
 
 function deepInterviewGate(state: JsonObject | null | undefined): JsonObject | null {
   return safeObject(state?.deep_interview_gate) ?? safeObject(nestedState(state)?.deep_interview_gate);
+}
+
+function executionContractRequiredMarker(state: JsonObject | null | undefined): boolean {
+  const nested = nestedState(state);
+  const handoff = safeObject(deepInterviewHandoff(state));
+  return executionContractRequiredValue(state)
+    || executionContractRequiredValue(nested)
+    || executionContractRequiredValue(deepInterviewGate(state))
+    || executionContractRequiredValue(handoff);
+}
+
+function executionContractRequiredValue(state: JsonObject | null | undefined): boolean {
+  return state?.execution_contract_required === true || state?.executionContractRequired === true;
+}
+
+function executionContractValue(contract: JsonObject, snakeKey: string, camelKey: string): string {
+  return safeString(contract[snakeKey]) || safeString(contract[camelKey]);
+}
+
+function executionContractBoolean(contract: JsonObject, snakeKey: string, camelKey: string): boolean | undefined {
+  if (typeof contract[snakeKey] === 'boolean') return contract[snakeKey];
+  if (typeof contract[camelKey] === 'boolean') return contract[camelKey];
+  return undefined;
+}
+
+function executionContractStride(contract: JsonObject): string {
+  return executionContractValue(contract, 'execution_stride', 'executionStride') || safeString(contract.stride);
+}
+
+function executionContractCandidates(state: JsonObject | null | undefined): unknown[] {
+  const candidates: unknown[] = [];
+  if (hasOwnKey(state, 'execution_contract')) candidates.push(state.execution_contract);
+
+  const nested = nestedState(state);
+  if (hasOwnKey(nested, 'execution_contract')) candidates.push(nested.execution_contract);
+
+  const handoff = safeObject(deepInterviewHandoff(state));
+  if (hasOwnKey(handoff, 'execution_contract')) candidates.push(handoff.execution_contract);
+
+  return candidates;
+}
+
+function isExecutionContractPlaceholder(contract: JsonObject): boolean {
+  return executionContractStride(contract).length === 0
+    && executionContractValue(contract, 'completion_unit', 'completionUnit').length === 0
+    && executionContractValue(contract, 'stop_condition', 'stopCondition').length === 0;
+}
+
+function expectedExecutionContractFields(stride: ExecutionStride): {
+  allowTaskShrink: boolean;
+  acceptanceCoverageScope: string;
+  shrinkPolicy: string;
+} {
+  if (stride === 'task') {
+    return {
+      allowTaskShrink: true,
+      acceptanceCoverageScope: 'task',
+      shrinkPolicy: 'allowed',
+    };
+  }
+  if (stride === 'deliverable') {
+    return {
+      allowTaskShrink: false,
+      acceptanceCoverageScope: 'deliverable',
+      shrinkPolicy: 'ask_before_shrink',
+    };
+  }
+  return {
+    allowTaskShrink: false,
+    acceptanceCoverageScope: 'milestone',
+    shrinkPolicy: 'deny_unless_blocked',
+  };
+}
+
+function isExecutionStride(value: string): value is ExecutionStride {
+  return value === 'task' || value === 'deliverable' || value === 'milestone';
+}
+
+function isValidExecutionContract(contract: JsonObject): boolean {
+  if (contract.version !== 1) return false;
+  const stride = executionContractStride(contract);
+  if (!isExecutionStride(stride)) return false;
+  if (safeString(contract.source) !== 'deep-interview') return false;
+  const selectedBy = executionContractValue(contract, 'selected_by', 'selectedBy');
+  if (selectedBy !== 'user' && selectedBy !== 'default') return false;
+  if (!executionContractValue(contract, 'completion_unit', 'completionUnit')) return false;
+  if (!executionContractValue(contract, 'stop_condition', 'stopCondition')) return false;
+
+  const expected = expectedExecutionContractFields(stride);
+  return executionContractBoolean(contract, 'allow_task_shrink', 'allowTaskShrink') === expected.allowTaskShrink
+    && executionContractValue(contract, 'acceptance_coverage_scope', 'acceptanceCoverageScope') === expected.acceptanceCoverageScope
+    && executionContractValue(contract, 'shrink_policy', 'shrinkPolicy') === expected.shrinkPolicy;
+}
+
+function executionContractStatusForState(state: JsonObject | null | undefined): ExecutionContractStatus {
+  const handoff = safeObject(deepInterviewHandoff(state));
+  if (executionContractRequiredValue(handoff)) {
+    if (hasOwnKey(handoff, 'execution_contract')) {
+      const handoffContract = safeObject(handoff.execution_contract);
+      if (
+        !handoffContract
+        || isExecutionContractPlaceholder(handoffContract)
+        || !isValidExecutionContract(handoffContract)
+      ) {
+        return 'invalid';
+      }
+    }
+  }
+
+  let hasValidContract = false;
+  for (const candidate of executionContractCandidates(state)) {
+    const contract = safeObject(candidate);
+    if (!contract) {
+      return 'invalid';
+    }
+    if (isExecutionContractPlaceholder(contract)) return 'invalid';
+    if (!isValidExecutionContract(contract)) return 'invalid';
+    hasValidContract = true;
+  }
+  return hasValidContract ? 'valid' : 'absent';
+}
+
+function requiresExecutionContract(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+  gate: JsonObject,
+): boolean {
+  if (executionContractRequiredMarker(gate)) return true;
+  return allCandidateStates(input, deepState).some((state) => executionContractRequiredMarker(state));
+}
+
+function executionContractStatusForHandoff(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): ExecutionContractStatus {
+  const states = input.nextState
+    ? [input.nextState, deepState, input.currentState]
+    : [deepState, input.currentState];
+  for (const state of states) {
+    const status = executionContractStatusForState(state);
+    if (status !== 'absent') return status;
+  }
+  return 'absent';
 }
 
 function questionEnforcement(state: JsonObject | null | undefined): DeepInterviewQuestionEnforcementState | undefined {
@@ -293,6 +442,17 @@ export async function canAdvanceAutopilotDeepInterviewToRalplan(
       allowed: false,
       reason: 'missing deep-interview completion/skip gate for ralplan handoff',
     };
+  }
+
+  if (requiresExecutionContract(input, deepState, gate)) {
+    const executionContractStatus = executionContractStatusForHandoff(input, deepState);
+    if (executionContractStatus !== 'valid') {
+      return {
+        allowed: false,
+        reason: 'missing valid execution_contract for deep-interview ralplan handoff',
+        evidence: { gate_status: gate.status, execution_contract_required: true, execution_contract_status: executionContractStatus },
+      };
+    }
   }
 
   if (isSkipGate(gate, input.sessionId)) {

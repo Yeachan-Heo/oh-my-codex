@@ -51,6 +51,40 @@ async function withOmxRootEnv<T>(root: string, run: () => Promise<T>): Promise<T
   }
 }
 
+function validExecutionContract(stride: 'task' | 'deliverable' | 'milestone'): Record<string, unknown> {
+  const perStride = {
+    task: {
+      allow_task_shrink: true,
+      acceptance_coverage_scope: 'task',
+      shrink_policy: 'allowed',
+      completion_unit: 'One focused task',
+      stop_condition: 'Stop after that task is implemented and verified',
+    },
+    deliverable: {
+      allow_task_shrink: false,
+      acceptance_coverage_scope: 'deliverable',
+      shrink_policy: 'ask_before_shrink',
+      completion_unit: 'The named deliverable',
+      stop_condition: 'Stop after the deliverable is complete and verified',
+    },
+    milestone: {
+      allow_task_shrink: false,
+      acceptance_coverage_scope: 'milestone',
+      shrink_policy: 'deny_unless_blocked',
+      completion_unit: 'The approved milestone',
+      stop_condition: 'Stop after the milestone is complete unless blocked',
+    },
+  } as const;
+
+  return {
+    version: 1,
+    execution_stride: stride,
+    source: 'deep-interview',
+    selected_by: 'user',
+    ...perStride[stride],
+  };
+}
+
 async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
   const trackingPath = subagentTrackingPath(cwd);
   const now = '2026-05-28T00:00:00.000Z';
@@ -1413,6 +1447,497 @@ describe('state operations directory initialization', () => {
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows Autopilot deep-interview to ralplan handoff with required valid execution contract strides', async () => {
+    for (const stride of ['task', 'deliverable', 'milestone'] as const) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-${stride}-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-execution-contract-${stride}`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+            state: {
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: `The ${stride} stride is explicitly contracted for planning.`,
+              },
+              handoff_artifacts: {
+                deep_interview: {
+                  summary: `Ready for ralplan with ${stride} stride.`,
+                  execution_contract_required: true,
+                  execution_contract: validExecutionContract(stride),
+                },
+              },
+            },
+          });
+
+          assert.equal(response.isError, undefined);
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, 'ralplan');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('allows partial Autopilot ralplan handoff writes when a required execution contract is already persisted', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-execution-contract-partial-write-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-execution-contract-partial-write';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+            state: {
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: 'The persisted interview artifact already defines the milestone contract.',
+              },
+              handoff_artifacts: {
+                deep_interview: {
+                  summary: 'Ready for ralplan with a persisted milestone execution contract.',
+                  execution_contract_required: true,
+                  execution_contract: validExecutionContract('milestone'),
+                },
+              },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+        });
+
+        assert.equal(response.isError, undefined);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+        assert.deepEqual(
+          ((state.state as Record<string, unknown>).handoff_artifacts as Record<string, unknown>).deep_interview,
+          {
+            summary: 'Ready for ralplan with a persisted milestone execution contract.',
+            execution_contract_required: true,
+            execution_contract: validExecutionContract('milestone'),
+          },
+        );
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies Autopilot deep-interview handoff when execution contract is required but missing or invalid', async () => {
+    for (const [caseName, deepInterviewHandoff] of Object.entries({
+      missing: {
+        summary: 'Execution contract was required but omitted.',
+        execution_contract_required: true,
+      },
+      wrongStrideFields: {
+        summary: 'Execution contract mismatches its stride semantics.',
+        execution_contract_required: true,
+        execution_contract: {
+          ...validExecutionContract('deliverable'),
+          allow_task_shrink: true,
+        },
+      },
+      legacyPhaseEnum: {
+        summary: 'Legacy phase enum must not be accepted as an execution stride.',
+        execution_contract_required: true,
+        execution_contract: {
+          ...validExecutionContract('milestone'),
+          execution_stride: 'phase',
+        },
+      },
+      invalidSource: {
+        summary: 'Contract provenance must be deep-interview.',
+        execution_contract_required: true,
+        execution_contract: {
+          ...validExecutionContract('task'),
+          source: 'ralplan',
+        },
+      },
+      invalidSelection: {
+        summary: 'Contract selected_by must be user or default.',
+        execution_contract_required: true,
+        execution_contract: {
+          ...validExecutionContract('task'),
+          selected_by: 'inferred',
+        },
+      },
+    })) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-deny-${caseName}-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-execution-contract-deny-${caseName}`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+            state: {
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: 'The interview is complete but the required contract is not valid.',
+              },
+              handoff_artifacts: {
+                deep_interview: deepInterviewHandoff,
+              },
+            },
+          });
+
+          assert.equal(response.isError, true);
+          assert.match(String((response.payload as { error?: string }).error || ''), /execution_contract/i);
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, 'deep-interview');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('preserves Autopilot legacy behavior when execution contract is absent or not required', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-execution-contract-not-required-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-execution-contract-not-required';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          state: {
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'No execution contract was required for this legacy handoff.',
+            },
+            handoff_artifacts: {
+              deep_interview: {
+                summary: 'Ready for ralplan with legacy behavior.',
+                execution_contract_required: false,
+                execution_contract: {
+                  version: 1,
+                  execution_stride: 'phase',
+                },
+              },
+            },
+          },
+        });
+
+        assert.equal(response.isError, undefined);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('honors all documented execution contract required marker locations and runtime aliases', async () => {
+    const aliasContract = {
+      version: 1,
+      executionStride: 'deliverable',
+      source: 'deep-interview',
+      selected_by: 'user',
+      allowTaskShrink: false,
+      completionUnit: 'The named deliverable',
+      stopCondition: 'Stop after the deliverable is complete and verified',
+      acceptanceCoverageScope: 'deliverable',
+      shrinkPolicy: 'ask_before_shrink',
+    };
+
+    for (const [caseName, topLevelPatch, nestedPatch, handoffPatch] of [
+      ['gate', {}, { deep_interview_gate: { execution_contract_required: true } }, {}],
+      ['top-level', { execution_contract_required: true }, {}, {}],
+      ['nested-state', {}, { execution_contract_required: true }, {}],
+      ['handoff', {}, {}, { execution_contract_required: true }],
+      ['handoff-camel', {}, {}, { executionContractRequired: true }],
+    ] as const) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-marker-${caseName}-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-execution-contract-marker-${caseName}`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+            ...topLevelPatch,
+            state: {
+              ...nestedPatch,
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: `The ${caseName} marker requires a valid execution contract.`,
+                ...((nestedPatch as { deep_interview_gate?: Record<string, unknown> }).deep_interview_gate ?? {}),
+              },
+              handoff_artifacts: {
+                deep_interview: {
+                  summary: `Ready for ralplan with ${caseName} required marker.`,
+                  execution_contract: aliasContract,
+                  ...handoffPatch,
+                },
+              },
+            },
+          });
+
+          assert.equal(response.isError, undefined);
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, 'ralplan');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('denies stale valid execution contracts from masking an invalid next-state contract', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-execution-contract-precedence-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-execution-contract-precedence';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'deep-interview',
+            state: {
+              handoff_artifacts: {
+                deep_interview: {
+                  summary: 'Stale current-state contract must not rescue nextState.',
+                  execution_contract_required: true,
+                  execution_contract: validExecutionContract('milestone'),
+                },
+              },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          state: {
+            execution_contract: {
+              ...validExecutionContract('milestone'),
+              shrink_policy: 'allowed',
+            },
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'Resulting next state carries an invalid higher-priority contract.',
+            },
+            handoff_artifacts: {
+              deep_interview: {
+                summary: 'Valid handoff contract must not mask invalid direct/nested contract.',
+                execution_contract_required: true,
+                execution_contract: validExecutionContract('milestone'),
+              },
+            },
+          },
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /execution_contract/i);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'deep-interview');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('supports direct execution contract compatibility while rejecting invalid handoff contracts', async () => {
+    for (const [caseName, handoffPatch, shouldAllow] of [
+      ['missing-handoff-contract', {}, true],
+      ['invalid-handoff-contract', { execution_contract: { ...validExecutionContract('deliverable'), source: 'ralplan' } }, false],
+    ] as const) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-${caseName}-handoff-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-contract-${caseName}`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+            state: {
+              execution_contract: validExecutionContract('deliverable'),
+              deep_interview_gate: {
+                status: 'complete',
+                rationale: 'A compatibility direct contract may satisfy a marker, but invalid handoff data fails first.',
+              },
+              handoff_artifacts: {
+                deep_interview: {
+                  summary: 'Handoff marker requires the handoff contract to be valid too.',
+                  execution_contract_required: true,
+                  ...handoffPatch,
+                },
+              },
+            },
+          });
+
+          assert.equal(response.isError, shouldAllow ? undefined : true);
+          if (!shouldAllow) {
+            assert.match(String((response.payload as { error?: string }).error || ''), /execution_contract/i);
+          }
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, shouldAllow ? 'ralplan' : 'deep-interview');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('applies required execution contract validation to explicit Autopilot deep-interview skip gates', async () => {
+    for (const [caseName, deepInterviewHandoff, shouldAllow] of [
+      ['missing', { summary: 'Skip is authorized, but contract is missing.', execution_contract_required: true }, false],
+      ['valid', {
+        summary: 'Skip is authorized and the required contract is present.',
+        execution_contract_required: true,
+        execution_contract: validExecutionContract('task'),
+      }, true],
+    ] as const) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-execution-contract-skip-${caseName}-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-execution-contract-skip-${caseName}`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              mode: 'autopilot',
+              current_phase: 'deep-interview',
+              state: {
+                deep_interview_gate: {
+                  status: 'skipped',
+                  skip_authorized_by_user: true,
+                  skip_reason: 'User explicitly authorized skipping deep-interview for this bounded follow-up.',
+                  skipped_at: '2026-05-28T00:02:00.000Z',
+                  source: 'user',
+                  session_id: sessionId,
+                },
+                handoff_artifacts: {
+                  deep_interview: deepInterviewHandoff,
+                },
+              },
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+          });
+
+          assert.equal(response.isError, shouldAllow ? undefined : true);
+          if (!shouldAllow) {
+            assert.match(String((response.payload as { error?: string }).error || ''), /execution_contract/i);
+          }
+          const state = JSON.parse(
+            await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+          ) as Record<string, unknown>;
+          assert.equal(state.current_phase, shouldAllow ? 'ralplan' : 'deep-interview');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
     }
   });
 

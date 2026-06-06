@@ -24,6 +24,7 @@ export type TeamDeliveryResult =
   | 'deferred'
   | 'suppressed'
   | 'sent'
+  | 'steered'
   | 'failed';
 
 export interface TeamDeliveryLogEvent {

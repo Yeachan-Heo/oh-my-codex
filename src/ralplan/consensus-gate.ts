@@ -312,9 +312,19 @@ function trackerBackedNativeReviewProblem(
   if (!session) return `${agentRole} tracker session ${sessionId} is missing in ${expectedTrackerPath}; only reviews recorded in OMX subagent-tracking.json count as native lanes`;
   if (!thread) return `${agentRole} tracker thread ${threadId} is missing in ${expectedTrackerPath}; external/collab subagent reviews are not tracker-backed native lanes`;
   const leaderThreadId = typeof session.leader_thread_id === 'string' ? session.leader_thread_id.trim() : '';
-  if (leaderThreadId && leaderThreadId === threadId) return `${agentRole} tracker thread ${threadId} is the session leader`;
+  const currentLeaderThreadId = currentSessionNativeLeaderThreadId(options.cwd);
+  if (
+    (currentLeaderThreadId && currentLeaderThreadId === threadId)
+    || (leaderThreadId && leaderThreadId === threadId && thread.kind !== 'subagent')
+  ) return `${agentRole} tracker thread ${threadId} is the session leader`;
   if (thread.kind !== 'subagent') return `${agentRole} tracker thread ${threadId} has kind=${String(thread.kind || 'missing')}`;
   return null;
+}
+
+function currentSessionNativeLeaderThreadId(cwd: string | undefined): string {
+  if (!cwd) return '';
+  const sessionState = readJsonState(join(cwd, '.omx', 'state', 'session.json'));
+  return typeof sessionState?.native_session_id === 'string' ? sessionState.native_session_id.trim() : '';
 }
 
 function validateLocalSessionId(sessionId: string): string[] {

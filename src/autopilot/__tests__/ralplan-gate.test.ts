@@ -16,6 +16,10 @@ describe('autopilot ralplan gate', () => {
     const trackingPath = subagentTrackingPath(cwd);
     try {
       await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        native_session_id: 'thread-leader',
+      }, null, 2));
       await writeFile(trackingPath, JSON.stringify({
         schemaVersion: 1,
         sessions: {
@@ -23,6 +27,154 @@ describe('autopilot ralplan gate', () => {
             session_id: sessionId,
             leader_thread_id: 'thread-leader',
             updated_at: '2026-05-28T18:34:51.000Z',
+            threads: {
+              'thread-leader': {
+                thread_id: 'thread-leader',
+                kind: 'subagent',
+                first_seen_at: '2026-05-28T18:34:51.000Z',
+                last_seen_at: '2026-05-28T18:34:51.000Z',
+                turn_count: 2,
+              },
+              'thread-critic': {
+                thread_id: 'thread-critic',
+                kind: 'subagent',
+                first_seen_at: '2026-05-28T18:35:10.000Z',
+                last_seen_at: '2026-05-28T18:35:10.000Z',
+                turn_count: 1,
+              },
+            },
+          },
+        },
+      }, null, 2));
+
+      const state = {
+        current_phase: 'ralplan',
+        handoff_artifacts: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-leader',
+              artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-05-28T18:34:51.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-critic',
+              artifact_path: '.omx/artifacts/critic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-05-28T18:35:10.000Z',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, currentState: state });
+      assert.equal(decision.allowed, false);
+      assert.match(buildAutopilotRalplanUltragoalGateError(decision), /architect tracker thread thread-leader is the session leader/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts fresh native review evidence when tracker leader id aliases a subagent lane', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-fresh-subagent-alias-'));
+    const sessionId = 'sess-autopilot-fresh-subagent-alias';
+    const trackingPath = subagentTrackingPath(cwd);
+    try {
+      await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(trackingPath, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-architect',
+            updated_at: '2026-05-28T18:35:10.000Z',
+            threads: {
+              'thread-architect': {
+                thread_id: 'thread-architect',
+                kind: 'subagent',
+                first_seen_at: '2026-05-28T18:34:51.000Z',
+                last_seen_at: '2026-05-28T18:34:51.000Z',
+                turn_count: 1,
+                mode: 'architect',
+              },
+              'thread-critic': {
+                thread_id: 'thread-critic',
+                kind: 'subagent',
+                first_seen_at: '2026-05-28T18:35:10.000Z',
+                last_seen_at: '2026-05-28T18:35:10.000Z',
+                turn_count: 1,
+                mode: 'critic',
+              },
+            },
+          },
+        },
+      }, null, 2));
+
+      const state = {
+        current_phase: 'ralplan',
+        handoff_artifacts: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-architect',
+              artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-05-28T18:34:51.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-critic',
+              artifact_path: '.omx/artifacts/critic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-05-28T18:35:10.000Z',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, currentState: state });
+      assert.equal(decision.allowed, true);
+      assert.equal(decision.evidence?.blockedReason, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects native review evidence from the current native session leader', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-native-leader-'));
+    const sessionId = 'sess-autopilot-native-leader';
+    const trackingPath = subagentTrackingPath(cwd);
+    try {
+      await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        native_session_id: 'thread-leader',
+      }, null, 2));
+      await writeFile(trackingPath, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            updated_at: '2026-05-28T18:35:10.000Z',
             threads: {
               'thread-leader': {
                 thread_id: 'thread-leader',

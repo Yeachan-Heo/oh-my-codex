@@ -57,6 +57,22 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /do not progress to `\$ultragoal`, `\$team`, `\$ralph`, or implementation/i);
   });
 
+  it('documents optional deep-interview execution contract validation without broadness inference', () => {
+    assert.match(autopilotSkill, /execution_contract_required:true/i);
+    assert.match(autopilotSkill, /execution_contract/i);
+    assert.match(autopilotSkill, /execution_stride:"task"\|"deliverable"\|"milestone"/i);
+    assert.match(autopilotSkill, /allow_task_shrink/i);
+    assert.match(autopilotSkill, /completion_unit/i);
+    assert.match(autopilotSkill, /stop_condition/i);
+    assert.match(autopilotSkill, /acceptance_coverage_scope/i);
+    assert.match(autopilotSkill, /shrink_policy/i);
+    assert.match(autopilotSkill, /Preserve legacy behavior when `execution_contract_required` is absent or false/i);
+    assert.match(autopilotSkill, /Do not infer stride from prose, broadness, phase names, snapshots, or task size/i);
+    assert.match(autopilotSkill, /deliberately uses `milestone` rather than `phase`/i);
+    assert.match(autopilotSkill, /New artifacts must write canonical snake_case keys/i);
+    assert.match(autopilotSkill, /runtime may read legacy camelCase field\/marker aliases and direct\/nested `execution_contract` locations only as compatibility input/i);
+  });
+
   it('requires role-specific subsequent ralplan reviewer subagents with full context', () => {
     assert.match(ralplanSkill, /subsequent `Architect` subagent \(`agent_type: "architect"`\)/i);
     assert.match(ralplanSkill, /subsequent `Critic` subagent \(`agent_type: "critic"`\)/i);

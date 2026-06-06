@@ -1,9 +1,11 @@
-import { dirname } from "path";
+import { dirname, join } from "path";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { spawnPlatformCommandSync, classifySpawnError } from "../utils/platform-command.js";
 import { readAuthConfig } from "../auth/config.js";
 import { resolveLiveAuthPath } from "../auth/paths.js";
 import { redactAuthSecrets } from "../auth/redact.js";
 import { addSlotFromAuthFile, listSlots, useSlot } from "../auth/storage.js";
+import { readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
 
 export const AUTH_HELP = `
 Usage:
@@ -18,6 +20,9 @@ Auth slots are stored under ~/.omx/auth/<slot>.json with owner-only permissions.
 function wantsJson(args: string[]): boolean {
   return args.includes("--json");
 }
+const DEFAULT_SUBSCRIPTION_MODEL = "gpt-5-codex";
+const DEFAULT_SUBSCRIPTION_MODEL_PROVIDER = "openai-chatgpt";
+
 
 function runCodexLogin(cwd: string, env: NodeJS.ProcessEnv): void {
   const { result } = spawnPlatformCommandSync("codex", ["login"], {
@@ -37,6 +42,28 @@ function runCodexLogin(cwd: string, env: NodeJS.ProcessEnv): void {
     throw new Error(`codex login exited with code ${result.status ?? 1}`);
   }
 }
+async function ensureSubscriptionCodexDefaults(codexHome: string): Promise<void> {
+  const configPath = join(codexHome, "config.toml");
+  let existing = "";
+  try {
+    existing = await readFile(configPath, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  if (
+    readTopLevelTomlString(existing, "model") !== null ||
+    readTopLevelTomlString(existing, "model_provider") !== null
+  ) {
+    return;
+  }
+
+  let updated = upsertTopLevelTomlString(existing, "model", DEFAULT_SUBSCRIPTION_MODEL);
+  updated = upsertTopLevelTomlString(updated, "model_provider", DEFAULT_SUBSCRIPTION_MODEL_PROVIDER);
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(configPath, updated);
+}
+
 
 export async function authCommand(args: string[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const command = args[0];
@@ -53,6 +80,7 @@ export async function authCommand(args: string[], env: NodeJS.ProcessEnv = proce
     const liveAuthPath = resolveLiveAuthPath(cwd, env, home);
     runCodexLogin(cwd, { ...env, CODEX_HOME: dirname(liveAuthPath) });
     const record = await addSlotFromAuthFile(slot, liveAuthPath, home);
+    await ensureSubscriptionCodexDefaults(dirname(liveAuthPath));
     console.log(`Added auth slot ${record.slot}`);
     return;
   }

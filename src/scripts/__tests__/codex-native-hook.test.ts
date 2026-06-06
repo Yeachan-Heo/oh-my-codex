@@ -441,23 +441,77 @@ describe("codex native hook dispatch", () => {
     );
   });
 
-  it("emits schema-safe JSON stdout when CLI stdin is malformed", () => {
-    const stdout = runNativeHookCli("{");
+  it("emits Stop-schema-safe block JSON when unidentifiable malformed stdin has native Stop runtime surface", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-malformed-stop-surface-"));
+    try {
+      await mkdir(join(cwd, ".omx"), { recursive: true });
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: "{",
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
 
-    const output = parseSingleJsonStdout(stdout) as {
-      continue?: boolean;
-      stopReason?: string;
-      systemMessage?: string;
-      hookSpecificOutput?: unknown;
-    };
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      const output = parseSingleJsonStdout(result.stdout) as {
+        decision?: string;
+        continue?: boolean;
+        reason?: string;
+        stopReason?: string;
+        systemMessage?: string;
+        hookSpecificOutput?: unknown;
+      };
 
-    assert.equal(output.continue, false);
-    assert.equal(output.stopReason, "native_hook_stdin_parse_error");
-    assert.equal(output.hookSpecificOutput, undefined);
-    assert.match(
-      String(output.systemMessage ?? ""),
-      /stdin JSON parsing failed inside codex-native-hook:/,
-    );
+      assert.equal(output.decision, "block");
+      assert.equal(output.continue, undefined);
+      assert.equal(
+        output.reason,
+        "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.",
+      );
+      assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+      assert.equal(output.hookSpecificOutput, undefined);
+      assert.match(
+        String(output.systemMessage ?? ""),
+        /stdin JSON parsing failed inside codex-native-hook:/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves non-Stop fail-closed JSON when malformed stdin identifies a non-Stop hook", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-malformed-nonstop-"));
+    try {
+      await mkdir(join(cwd, ".omx"), { recursive: true });
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: '{hook_event_name:"PreToolUse",',
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      const output = parseSingleJsonStdout(result.stdout) as {
+        continue?: boolean;
+        decision?: string;
+        stopReason?: string;
+        systemMessage?: string;
+        hookSpecificOutput?: unknown;
+      };
+
+      assert.equal(output.continue, false);
+      assert.equal(output.decision, undefined);
+      assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+      assert.equal(output.hookSpecificOutput, undefined);
+      assert.match(
+        String(output.systemMessage ?? ""),
+        /stdin JSON parsing failed inside codex-native-hook:/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("redacts unterminated prompt-like malformed stdin fields", async () => {
@@ -5849,6 +5903,76 @@ exit 0
     }
   });
 
+  it("allows null-device fd redirects while deep-interview blocks real Bash writes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-null-redirect-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-di-null-redirect");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-di-null-redirect", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: "sess-di-null-redirect",
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-null-redirect" }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-di-null-redirect",
+      });
+
+      const allowedCommands = [
+        "find application -type d -name 'bug-tracking*' 2>/dev/null | head -20",
+        "find application -type d -name 'bug-tracking*' 2> /dev/null | head -20",
+        "find application -type d -name 'bug-tracking*' 2>NUL | head -20",
+        "find application -type d -name 'bug-tracking*' 1>/dev/null",
+        "find application -type d -name 'bug-tracking*' &>/dev/null",
+      ];
+
+      for (const [index, command] of allowedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-null-redirect",
+            tool_name: "Bash",
+            tool_use_id: `tool-di-null-redirect-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson, null, command);
+      }
+
+      const blockedCommands = [
+        "find application -type d -name 'bug-tracking*' 2>errors.log | head -20",
+        "find application -type d -name 'bug-tracking*' > /tmp/bug-tracking.txt",
+        "find application -type d -name 'bug-tracking*' | tee /dev/null",
+      ];
+
+      for (const [index, command] of blockedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-null-redirect",
+            tool_name: "Bash",
+            tool_use_id: `tool-di-real-redirect-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows implementation tools after an explicit deep-interview handoff deactivates the mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-handoff-"));
     try {
@@ -9082,7 +9206,7 @@ exit 0
     }
   });
 
-  it("queues worker Stop leader nudge with Tab and submit when leader pane is busy", async () => {
+  it("steers worker Stop leader nudge directly when leader pane is busy", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-busy-leader-"));
     const prevTeamWorker = process.env.OMX_TEAM_WORKER;
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -9155,14 +9279,11 @@ exit 0
       assert.equal(result.outputJson, null);
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
-      assert.match(tmuxLog, /send-keys -t %42 Tab/);
-      assert.match(tmuxLog, /send-keys -t %42 C-m/);
-      assert.ok(
-        tmuxLog.indexOf("send-keys -t %42 Tab") < tmuxLog.indexOf("send-keys -t %42 C-m"),
-        "busy worker-stop nudge should press Tab before C-m",
-      );
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 Tab/);
+      const submits = tmuxLog.match(/send-keys -t %42 C-m/g) || [];
+      assert.equal(submits.length, 2, "busy worker-stop nudge should submit directly as steering, not queue via Tab");
       const nudgeState = JSON.parse(await readFile(join(workerDir, "worker-stop-nudge.json"), "utf-8"));
-      assert.equal(nudgeState.delivery, "queued");
+      assert.equal(nudgeState.delivery, "steered");
     } finally {
       if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
       else delete process.env.OMX_TEAM_WORKER;
@@ -9298,6 +9419,14 @@ exit 0
       });
       assert.equal(shutdownResult.result, "team_state_gone_or_shutdown");
       assert.equal(existsSync(join(stateDir, "team", "shutdown-team", "worker-stop-nudge.json")), false);
+      const deliveryLogPath = join(logsDir, `team-delivery-${new Date().toISOString().split("T")[0]}.jsonl`);
+      const deliveryEvents = (await readFile(deliveryLogPath, "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const suppressedEvents = deliveryEvents.filter((event) => event.reason === "team_state_gone_or_shutdown");
+      assert.equal(suppressedEvents.length, 2, "late closed-team Stop nudges should be diagnostics, not queued prompts");
+      assert.equal(suppressedEvents.every((event) => event.result === "suppressed" && event.transport === "none"), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -9338,13 +9467,13 @@ exit 0
         workerContext: { teamName, workerName: "worker-2" },
       });
 
-      assert.equal(result.result, "queued");
+      assert.equal(result.result, "steered");
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-2 native Stop allowed/);
-      assert.match(tmuxLog, /send-keys -t %42 Tab/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 Tab/);
       const teamNudgeState = JSON.parse(await readFile(join(teamDir, "worker-stop-nudge.json"), "utf-8"));
       assert.equal(teamNudgeState.worker, "worker-2");
-      assert.equal(teamNudgeState.delivery, "queued");
+      assert.equal(teamNudgeState.delivery, "steered");
     } finally {
       if (typeof prevPath === "string") process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -9477,6 +9606,21 @@ exit 0
       assert.equal(existsSync(teamDir), false, "deferred worker Stop recording must not recreate removed team state");
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
+      const deliveryLogPath = join(logsDir, `team-delivery-${new Date().toISOString().split("T")[0]}.jsonl`);
+      const deliveryEvents = (await readFile(deliveryLogPath, "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(
+        deliveryEvents.some((event) =>
+          event.team === teamName
+          && event.result === "suppressed"
+          && event.transport === "none"
+          && event.reason === "team_state_gone_or_shutdown"
+        ),
+        true,
+        "teardown-race worker Stop nudges should be diagnostic suppression events, not queued prompts",
+      );
     } finally {
       if (typeof prevPath === "string") process.env.PATH = prevPath;
       else delete process.env.PATH;

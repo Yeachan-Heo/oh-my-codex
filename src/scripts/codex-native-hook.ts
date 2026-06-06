@@ -2657,9 +2657,23 @@ function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
   return candidates.map((candidate) => safeString(candidate).trim()).filter(Boolean);
 }
 
+function isNullDeviceRedirectTarget(target: string): boolean {
+  const normalized = target.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  return normalized === "/dev/null" || normalized === "nul";
+}
+
+function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
+  const targets: string[] = [];
+  for (const match of command.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
+    const candidate = safeString(match[2]).trim();
+    if (candidate && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
+  }
+  return targets;
+}
+
 function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return /\bapply_patch\b/.test(command)
-    || /(?:^|[;&|]\s*)(?:cat|printf|echo)\b[\s\S]{0,240}>\s*[^\s&|;]+/.test(command)
+    || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
@@ -2667,11 +2681,7 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
-  const targets: string[] = [];
-  for (const match of command.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
-    const candidate = safeString(match[2]).trim();
-    if (candidate) targets.push(candidate);
-  }
+  const targets = extractDeepInterviewCommandRedirectTargets(command);
   for (const match of command.matchAll(/\btee\s+(?:-a\s+)?(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
     if (candidate) targets.push(candidate);
@@ -4452,12 +4462,17 @@ function inferHookEventNameFromMalformedInput(raw: string): CodexHookEventName |
   return readHookEventName({ hook_event_name: value });
 }
 
-function buildMalformedStdinHookOutput(parseError: Error, rawInput: string): Record<string, unknown> {
+function buildMalformedStdinHookOutput(
+  parseError: Error,
+  rawInput: string,
+  cwd = process.cwd(),
+): Record<string, unknown> {
   const reason =
     "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.";
   const systemMessage =
     `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
-  if (inferHookEventNameFromMalformedInput(rawInput) === "Stop") {
+  const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
+  if (inferredHookEventName === "Stop" || (!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))) {
     return {
       decision: "block",
       reason,
@@ -4603,7 +4618,7 @@ export async function runCodexNativeHookCli(): Promise<void> {
       {},
       buildRawInputLogFields(rawInput),
     );
-    writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput));
+    writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput, process.cwd()));
     return;
   }
 
