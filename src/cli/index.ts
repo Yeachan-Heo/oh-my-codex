@@ -4,8 +4,8 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, dirname, join, posix, win32 } from "path";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { basename, delimiter, dirname, join, posix, win32 } from "path";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash } from "crypto";
@@ -126,7 +126,7 @@ import {
   mitigateCopyModeUnderlineArtifacts,
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
-import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
+import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxCliEntryPath } from "../utils/paths.js";
 import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, repairProjectScopeTrustStateForLaunch, syncProjectScopeTrustStateFromRuntime } from "../config/generator.js";
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
@@ -150,7 +150,7 @@ import {
 
 export { parseTmuxPaneSnapshot, isHudWatchPane, findHudWatchPaneIds } from "../hud/tmux.js";
 
-rememberOmxLaunchContext();
+rememberOmxLaunchContext({ argv1: process.argv[1], cwd: process.cwd(), env: process.env });
 import {
   classifySpawnError,
   resolveTmuxBinaryForPlatform,
@@ -1487,6 +1487,79 @@ function runCodexBlocking(
       console.error(`[omx] codex exited with code ${result.status}`);
     }
   }
+}
+
+export function omxRuntimeCommandShimPath(cwd: string): string {
+  return join(omxRoot(cwd), "runtime", "bin", "omx");
+}
+
+function ensureRuntimeShimDirectory(path: string): void {
+  if (existsSync(path)) {
+    const current = lstatSync(path);
+    if (current.isSymbolicLink()) {
+      throw new Error(`Refusing to create OMX runtime command shim through symlink directory: ${path}`);
+    }
+    if (!current.isDirectory()) {
+      throw new Error(`Refusing to create OMX runtime command shim because path is not a directory: ${path}`);
+    }
+    return;
+  }
+  mkdirSync(path, { mode: 0o700 });
+}
+
+function buildOmxRuntimeCommandShim(nodePath: string, omxBin: string): string {
+  return [
+    "#!/bin/sh",
+    `exec ${quoteShellArg(nodePath)} ${quoteShellArg(omxBin)} "$@"`,
+    "",
+  ].join("\n");
+}
+
+export function ensureOmxRuntimeCommandShim(
+  cwd: string,
+  omxBin: string,
+  nodePath: string = process.execPath,
+): string {
+  const shimPath = omxRuntimeCommandShimPath(cwd);
+  const shimDir = dirname(shimPath);
+  const rootDir = omxRoot(cwd);
+  const runtimeDir = dirname(shimDir);
+  ensureRuntimeShimDirectory(rootDir);
+  ensureRuntimeShimDirectory(runtimeDir);
+  ensureRuntimeShimDirectory(shimDir);
+  if (existsSync(shimPath)) {
+    const current = lstatSync(shimPath);
+    if (current.isDirectory()) {
+      throw new Error(`Refusing to replace OMX runtime command shim directory: ${shimPath}`);
+    }
+    if (current.isSymbolicLink()) {
+      rmSync(shimPath, { force: true });
+    }
+  }
+  writeFileSync(shimPath, buildOmxRuntimeCommandShim(nodePath, omxBin), {
+    encoding: "utf-8",
+    mode: 0o700,
+  });
+  chmodSync(shimPath, 0o700);
+  return shimDir;
+}
+
+export function prependOmxRuntimeCommandShimToEnv(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  omxBin: string,
+  nodePath: string = process.execPath,
+): NodeJS.ProcessEnv {
+  const shimDir = ensureOmxRuntimeCommandShim(cwd, omxBin, nodePath);
+  const currentPath = typeof env.PATH === "string" ? env.PATH : "";
+  return {
+    ...env,
+    PATH: currentPath ? `${shimDir}${delimiter}${currentPath}` : shimDir,
+    OMX_ENTRY_PATH: omxBin,
+    OMX_STARTUP_CWD: typeof env.OMX_STARTUP_CWD === "string" && env.OMX_STARTUP_CWD.trim()
+      ? env.OMX_STARTUP_CWD
+      : cwd,
+  };
 }
 
 export interface DetachedSessionTmuxStep {
@@ -4353,7 +4426,7 @@ function runCodex(
     sessionModelInstructionsPath(cwd, sessionId),
   );
   const nativeWindows = isNativeWindows();
-  const omxBin = resolveOmxEntryPath();
+  const omxBin = resolveOmxCliEntryPath({ argv1: process.argv[1], cwd, env: process.env });
   if (!omxBin) {
     throw new Error("Unable to resolve OMX launcher path for tmux HUD bootstrap");
   }
@@ -4375,12 +4448,16 @@ function runCodex(
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const codexBaseEnv = {
-    ...stripHermesMcpBridgeEnv(process.env),
-    ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
-    ...(sqliteHomeOverride ? { [CODEX_SQLITE_HOME_ENV]: sqliteHomeOverride } : {}),
-    ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
-  };
+  const codexBaseEnv = prependOmxRuntimeCommandShimToEnv(
+    cwd,
+    {
+      ...stripHermesMcpBridgeEnv(process.env),
+      ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
+      ...(sqliteHomeOverride ? { [CODEX_SQLITE_HOME_ENV]: sqliteHomeOverride } : {}),
+      ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
+    },
+    omxBin,
+  );
   const codexEnvWithSession = {
     ...codexBaseEnv,
     ...buildHudRuntimeEnv({ sessionId }).env,

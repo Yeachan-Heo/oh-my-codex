@@ -1,8 +1,8 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
@@ -82,6 +82,9 @@ import {
   registerInsideTmuxHudResizeHook,
   buildDetachedHudHookEnv,
   registerDetachedHudLayoutReconcileHook,
+  ensureOmxRuntimeCommandShim,
+  omxRuntimeCommandShimPath,
+  prependOmxRuntimeCommandShimToEnv,
   CODEX_SQLITE_HOME_ENV,
   DETACHED_TMUX_HISTORY_LIMIT,
 } from "../index.js";
@@ -3297,6 +3300,160 @@ describe("detached tmux new-session sequencing", () => {
     assert.match(envScript, /export CUSTOM_LLM_API_KEY='fake-provider-key'/);
     assert.match(envScript, /export IS_GAJAE_SLOP_GENERATOR='1'/);
     assert.doesNotMatch(envScript, /not-a-shell-name/);
+  });
+
+  it("creates a repo-local omx command shim for launched Codex sessions", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-runtime-command-shim-"));
+    try {
+      const shimDir = ensureOmxRuntimeCommandShim(
+        cwd,
+        "/repo/dist/cli/omx.js",
+        "/usr/local/bin/node",
+      );
+      const shimPath = omxRuntimeCommandShimPath(cwd);
+
+      assert.equal(shimDir, dirname(shimPath));
+      assert.equal(existsSync(shimPath), true);
+      assert.equal(await readFile(shimPath, "utf-8"), [
+        "#!/bin/sh",
+        `exec '/usr/local/bin/node' '/repo/dist/cli/omx.js' "$@"`,
+        "",
+      ].join("\n"));
+      assert.equal((await stat(shimPath)).mode & 0o700, 0o700);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prepends the repo-local omx shim before global PATH entries", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-runtime-command-shim-env-"));
+    try {
+      const env = prependOmxRuntimeCommandShimToEnv(
+        cwd,
+        {
+          PATH: "/opt/homebrew/bin:/usr/bin",
+          OMX_ENTRY_PATH: "/opt/homebrew/lib/node_modules/oh-my-codex/dist/cli/omx.js",
+        },
+        "/repo/dist/cli/omx.js",
+        "/usr/local/bin/node",
+      );
+      const shimDir = dirname(omxRuntimeCommandShimPath(cwd));
+
+      assert.equal(env.PATH, `${shimDir}${delimiter}/opt/homebrew/bin:/usr/bin`);
+      assert.equal(env.OMX_ENTRY_PATH, "/repo/dist/cli/omx.js");
+      assert.equal(env.OMX_STARTUP_CWD, cwd);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("executes the repo-local omx shim before a stale global omx with misleading success output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-runtime-command-shim-exec-"));
+    try {
+      const fakeGlobalBin = join(cwd, "fake-global-bin");
+      const fakeLocalBin = join(cwd, "fake local's $() ; bin");
+      await mkdir(fakeGlobalBin);
+      await mkdir(fakeLocalBin);
+      const globalMarker = join(cwd, "GLOBAL_CALLED");
+      const localMarker = join(cwd, "LOCAL_CALLED");
+      const fakeGlobalOmx = join(fakeGlobalBin, "omx");
+      const fakeNode = join(fakeLocalBin, "node runner");
+      const localOmxEntry = join(fakeLocalBin, "omx entry's $() ;.js");
+
+      await writeFile(fakeGlobalOmx, `#!/bin/sh
+printf 'global-called\\n' > "${globalMarker}"
+printf '{"success":true,"source":"global"}\\n'
+exit 0
+`);
+      await chmod(fakeGlobalOmx, 0o755);
+      await writeFile(fakeNode, `#!/bin/sh
+printf '%s\\n' "$@" > "${localMarker}"
+printf '{"success":true,"source":"local"}\\n'
+exit 0
+`);
+      await chmod(fakeNode, 0o755);
+
+      const env = prependOmxRuntimeCommandShimToEnv(
+        cwd,
+        { PATH: `${fakeGlobalBin}${delimiter}/usr/bin:/bin` },
+        localOmxEntry,
+        fakeNode,
+      );
+      const { execFileSync } = await import("node:child_process");
+      const output = execFileSync("omx", ["team", "status", "hud-check"], {
+        cwd,
+        env,
+        encoding: "utf-8",
+      });
+
+      assert.match(output, /"source":"local"/);
+      assert.equal(existsSync(globalMarker), false);
+      assert.deepEqual((await readFile(localMarker, "utf-8")).trim().split("\n"), [
+        localOmxEntry,
+        "team",
+        "status",
+        "hud-check",
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("overwrites stale runtime shim contents and permissions", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-runtime-command-shim-stale-"));
+    try {
+      const shimPath = omxRuntimeCommandShimPath(cwd);
+      await mkdir(dirname(shimPath), { recursive: true });
+      await writeFile(shimPath, "#!/bin/sh\necho stale-global\n");
+      await chmod(shimPath, 0o600);
+
+      ensureOmxRuntimeCommandShim(cwd, "/repo/dist/cli/omx.js", "/usr/local/bin/node");
+
+      assert.equal(await readFile(shimPath, "utf-8"), [
+        "#!/bin/sh",
+        `exec '/usr/local/bin/node' '/repo/dist/cli/omx.js' "$@"`,
+        "",
+      ].join("\n"));
+      assert.equal((await stat(shimPath)).mode & 0o777, 0o700);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces a stale runtime shim symlink without following it", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-runtime-command-shim-symlink-"));
+    try {
+      if (process.platform === "win32") return;
+      const shimPath = omxRuntimeCommandShimPath(cwd);
+      const externalTarget = join(cwd, "outside-target");
+      await mkdir(dirname(shimPath), { recursive: true });
+      await writeFile(externalTarget, "do not overwrite\n");
+      await symlink(externalTarget, shimPath);
+
+      ensureOmxRuntimeCommandShim(cwd, "/repo/dist/cli/omx.js", "/usr/local/bin/node");
+
+      assert.equal(await readFile(externalTarget, "utf-8"), "do not overwrite\n");
+      assert.equal((await lstat(shimPath)).isSymbolicLink(), false);
+      assert.match(await readFile(shimPath, "utf-8"), /\/repo\/dist\/cli\/omx\.js/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when the runtime shim bin path is not a directory", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-runtime-command-shim-file-"));
+    try {
+      const shimPath = omxRuntimeCommandShimPath(cwd);
+      await mkdir(dirname(dirname(shimPath)), { recursive: true });
+      await writeFile(dirname(shimPath), "not a directory\n");
+
+      assert.throws(
+        () => ensureOmxRuntimeCommandShim(cwd, "/repo/dist/cli/omx.js", "/usr/local/bin/node"),
+        /not a directory/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("keeps detached tmux bootstrap bounded when no interactive parent env file is requested", () => {

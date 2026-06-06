@@ -603,6 +603,31 @@ describe("OMX launcher path resolution", () => {
     }
   });
 
+  it("replaces stale ambient OMX_ENTRY_PATH when recording an explicit launcher argv1", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-explicit-record-"));
+    const env: NodeJS.ProcessEnv = {
+      [OMX_ENTRY_PATH_ENV]: "/opt/homebrew/lib/node_modules/oh-my-codex/dist/cli/omx.js",
+      [OMX_STARTUP_CWD_ENV]: startupCwd,
+    };
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      rememberOmxLaunchContext({
+        argv1: "dist/cli/omx.js",
+        cwd: startupCwd,
+        env,
+      });
+
+      assert.equal(env[OMX_ENTRY_PATH_ENV], canonicalizeComparablePath(launcherPath));
+      assert.equal(env[OMX_STARTUP_CWD_ENV], startupCwd);
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+    }
+  });
+
   it("records the default launcher path when called without an explicit argv1", async () => {
     const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-default-record-"));
     const originalArgv1 = process.argv[1];

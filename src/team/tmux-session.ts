@@ -946,7 +946,7 @@ function readTmuxWorkerAmbientEnv(env: NodeJS.ProcessEnv = process.env): Record<
   return inherited;
 }
 
-function scrubTeamWorkerHudOwnershipEnv(env: Record<string, string>): Record<string, string> {
+export function scrubTeamWorkerHudOwnershipEnv<T extends Record<string, string | undefined>>(env: T): T {
   const scrubbed = { ...env };
   delete scrubbed[OMX_TMUX_HUD_OWNER_ENV];
   delete scrubbed[OMX_TMUX_HUD_LEADER_PANE_ENV];
@@ -1054,6 +1054,9 @@ export function buildWorkerStartupCommand(
     const pathBootstrap = leaderNodeDir
       ? `$env:PATH = ${quotePowerShellArg(`${leaderNodeDir};`)} + $env:PATH`
       : '';
+    const hudEnvUnset = [OMX_TMUX_HUD_OWNER_ENV, OMX_TMUX_HUD_LEADER_PANE_ENV]
+      .map((key) => `Remove-Item Env:${key} -ErrorAction SilentlyContinue`)
+      .join('; ');
     const envAssignments = Object.entries(startupEnv)
       .map(([key, value]) => `$env:${key} = ${quotePowerShellArg(value)}`)
       .join('; ');
@@ -1062,6 +1065,7 @@ export function buildWorkerStartupCommand(
       [
         "$ErrorActionPreference = 'Stop'",
         pathBootstrap,
+        hudEnvUnset,
         envAssignments,
         invocation,
       ].filter(Boolean).join('; '),
@@ -1085,8 +1089,9 @@ export function buildWorkerStartupCommand(
     : '';
   const inner = `${rcPrefix}${pathPrefix}${cliInvocation}`;
   const envParts = Object.entries(startupEnv).map(([key, value]) => `${key}=${value}`);
+  const unsetParts = ['-u', OMX_TMUX_HUD_OWNER_ENV, '-u', OMX_TMUX_HUD_LEADER_PANE_ENV];
 
-  return `env ${envParts.map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(inner)}`;
+  return `env ${[...unsetParts, ...envParts].map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(inner)}`;
 }
 
 function assertShellEnvKey(key: string): void {

@@ -121,9 +121,11 @@ export function rememberOmxLaunchContext(
   if (String(env[OMX_STARTUP_CWD_ENV] ?? "").trim() === "") {
     env[OMX_STARTUP_CWD_ENV] = cwd;
   }
-  if (String(env[OMX_ENTRY_PATH_ENV] ?? "").trim() !== "") return;
+  const hasExplicitArgv1 = Object.prototype.hasOwnProperty.call(options, "argv1");
+  const explicitArgv1 = typeof options.argv1 === "string" ? options.argv1.trim() : "";
+  if (String(env[OMX_ENTRY_PATH_ENV] ?? "").trim() !== "" && (!hasExplicitArgv1 || explicitArgv1 === "")) return;
 
-  const resolved = Object.prototype.hasOwnProperty.call(options, "argv1")
+  const resolved = hasExplicitArgv1
     ? resolveOmxEntryPath({
       argv1: options.argv1,
       cwd,
