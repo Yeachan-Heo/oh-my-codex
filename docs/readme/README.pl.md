@@ -146,15 +146,14 @@ omx team shutdown <team-name>
 - `omx doctor` — sprawdza instalację, gdy coś nie działa
 - `omx hud --watch` — podgląd stanu i postępu, nie główny cykl pracy
 
-### Explore i sparkshell
+### Sparkshell
 
-- `omx explore --prompt "..."` — przeszukuje repo tylko do odczytu
 - `omx sparkshell <command>` — inspekcja w shellu i ograniczona weryfikacja
+- do przeszukiwania repo tylko do odczytu używaj zwykłych narzędzi/subagentów inspekcji repozytorium Codex (przestarzałe polecenie `omx explore` zostało usunięte)
 
 Przykłady:
 
 ```bash
-omx explore --prompt "find where team state is written"
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
 ```

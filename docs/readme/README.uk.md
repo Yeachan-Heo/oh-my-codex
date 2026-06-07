@@ -176,15 +176,14 @@ omx team shutdown <team-name>
 - `omx doctor` перевіряє встановлення, коли щось здається не так
 - `omx hud --watch` — це інструмент моніторингу стану, а не основний робочий процес користувача
 
-### Explore і sparkshell
+### Sparkshell
 
-- `omx explore --prompt "..."` призначений для пошуку в репозиторії лише для читання
 - `omx sparkshell <command>` призначений для перевірки в терміналі та обмеженої валідації
+- для пошуку в репозиторії лише для читання використовуйте звичайні інструменти/субагенти інспекції репозиторію Codex (застарілу команду `omx explore` вилучено)
 
 Приклади:
 
 ```bash
-omx explore --prompt "find where team state is written"
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
 ```

@@ -153,15 +153,14 @@ omx team shutdown <team-name>
 - `omx doctor` επαληθεύει την εγκατάσταση όταν κάτι φαίνεται λάθος
 - `omx hud --watch` είναι λειτουργία παρακολούθησης/κατάστασης, όχι η κύρια ροή εργασίας του χρήστη
 
-### Explore και sparkshell
+### Sparkshell
 
-- `omx explore --prompt "..."` είναι για αναζήτηση μόνο ανάγνωσης στο repository
 - `omx sparkshell <command>` είναι για επιθεώρηση απευθείας από το shell και στοχευμένη επαλήθευση
+- για αναζητήσεις μόνο ανάγνωσης στο repository, χρησιμοποιήστε τα κανονικά εργαλεία/subagents επιθεώρησης repository του Codex (η παρωχημένη εντολή `omx explore` έχει αφαιρεθεί)
 
 Παραδείγματα:
 
 ```bash
-omx explore --prompt "find where team state is written"
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
 ```

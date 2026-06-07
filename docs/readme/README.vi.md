@@ -152,15 +152,14 @@ omx team shutdown <team-name>
 - `omx doctor` kiểm tra cài đặt khi có vấn đề
 - `omx hud --watch` theo dõi trạng thái, không phải workflow chính
 
-### Explore và sparkshell
+### Sparkshell
 
-- `omx explore --prompt "..."` tìm kiếm chỉ đọc trong repository
 - `omx sparkshell <command>` chạy lệnh shell có kiểm soát output
+- để tìm kiếm chỉ đọc trong repository, hãy dùng các công cụ/subagent kiểm tra repository thông thường của Codex (lệnh `omx explore` đã lỗi thời và bị gỡ bỏ)
 
 Ví dụ:
 
 ```bash
-omx explore --prompt "find where team state is written"
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
 ```

@@ -339,19 +339,15 @@ Only use the forced team shutdown for a team you have confirmed is dead or inten
 
 If `Shift+Enter` still submits instead of inserting a newline inside an OMX-managed tmux session, see [Troubleshooting execution readiness](./docs/troubleshooting.md#shiftenter-submits-instead-of-inserting-a-newline-in-tmux-backed-omx-sessions). Current OMX already enables tmux extended-key forwarding around its own Codex launch paths, so a persistent failure is usually a tmux terminal-capability/discoverability problem rather than a net-new OMX feature gap.
 
-### Explore and sparkshell
+### Sparkshell
 
-- `omx explore --prompt "..."` is for read-only repository lookup
 - `omx sparkshell <command>` is for shell-native inspection and bounded verification
-- when `omx_wiki/` exists, `omx explore` can inject wiki-first context before falling back to broader repository search
-- fallback boundaries are explicit: sparkshell-backend fallback is reported on stderr, and spark-model fallback emits stderr metadata plus an `## OMX Explore fallback` notice in stdout so users can see when cost/behavior may differ from the low-cost path
+- for read-only repository lookups, use normal Codex repository inspection tools/subagents (the deprecated `omx explore` command has been removed)
 - sparkshell env overrides are intentionally narrow: `OMX_SPARKSHELL_BIN` selects a native sidecar path, `OMX_SPARKSHELL_MODEL` selects the primary summary model, `OMX_SPARKSHELL_FALLBACK_MODEL` selects the retry model, `OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE` selects summary instructions, and `OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS` controls the local API summary timeout
 
 Examples:
 
 ```bash
-# Deprecated compatibility only; prefer normal Codex repository inspection for new lookups
-omx explore --prompt "find where team state is written"
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
 ```
