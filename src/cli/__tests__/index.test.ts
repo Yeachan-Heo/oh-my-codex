@@ -87,12 +87,13 @@ import {
   prependOmxRuntimeCommandShimToEnv,
   CODEX_SQLITE_HOME_ENV,
   DETACHED_TMUX_HISTORY_LIMIT,
+  isExistingTmuxWindowTooCrampedForLaunchHud,
 } from "../index.js";
 import { mergeConfig, repairConfigIfNeeded } from "../../config/generator.js";
 import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
 import { readAllState } from "../../hud/state.js";
 import { generateOverlay } from "../../hooks/agents-overlay.js";
-import { HUD_TMUX_HEIGHT_LINES } from "../../hud/constants.js";
+import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from "../../hud/constants.js";
 import { createHudWatchPane as createSharedHudWatchPane, listCurrentWindowHudPaneIds } from "../../hud/tmux.js";
 import {
   DEFAULT_FRONTIER_MODEL,
@@ -5374,5 +5375,39 @@ describe("upsertTopLevelTomlString", () => {
       updated,
       'model_reasoning_effort = "xhigh"\n[tui]\nstatus_line = []\n',
     );
+  });
+});
+
+describe("isExistingTmuxWindowTooCrampedForLaunchHud (#2754)", () => {
+  it("skips the launch-time HUD split for cramped existing tmux windows", () => {
+    // The reported repro: a 160x41 existing tmux window where forcing the HUD
+    // split dropped the Codex TUI to 38 rows and became unreadable.
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(41), true);
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(38), true);
+    assert.equal(
+      isExistingTmuxWindowTooCrampedForLaunchHud(HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES - 1),
+      true,
+    );
+  });
+
+  it("keeps default HUD behavior for normal-height existing tmux windows", () => {
+    assert.equal(
+      isExistingTmuxWindowTooCrampedForLaunchHud(HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES),
+      false,
+    );
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(50), false);
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(120), false);
+  });
+
+  it("creates the HUD when the window height is unknown or invalid", () => {
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(null), false);
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(undefined), false);
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(0), false);
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(Number.NaN), false);
+  });
+
+  it("honors an explicit minimum-height override", () => {
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(41, 40), false);
+    assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(39, 40), true);
   });
 });

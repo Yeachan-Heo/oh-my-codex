@@ -130,7 +130,7 @@ import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxCliEntryP
 import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, repairProjectScopeTrustStateForLaunch, syncProjectScopeTrustStateFromRuntime } from "../config/generator.js";
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
-import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
+import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from "../hud/constants.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
 import { readUltragoalState } from "../hud/state.js";
 import {
@@ -144,6 +144,7 @@ import {
   registerHudResizeHook,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   type RegisterHudResizeHookOptions,
+  readCurrentWindowSize,
   resizeTmuxPane,
   unregisterHudResizeHook,
 } from "../hud/tmux.js";
@@ -4517,6 +4518,17 @@ function runCodex(
       } catch (err) {
         logCliOperationFailure(err);
       }
+    } else if (
+      isExistingTmuxWindowTooCrampedForLaunchHud(
+        readCurrentWindowSize(undefined, currentPaneId).height,
+      )
+    ) {
+      // Existing tmux window is height-constrained: forcing a launch-time HUD
+      // split here would steal rows from the Codex TUI and make the
+      // transcript/input area unreadable. Skip the split at launch; the
+      // prompt-submit reconcile path can add the HUD later when there is room.
+      // (closes #2754)
+      hudPaneId = null;
     } else {
       try {
         hudPaneId = createHudWatchPane(cwd, hudCmd, {
@@ -4877,6 +4889,21 @@ function listHudWatchPaneIdsInCurrentWindow(
     logCliOperationFailure(err);
     return [];
   }
+}
+
+/**
+ * Decide whether an existing tmux window is too short to spend rows on a
+ * launch-time HUD split. When the window height is unknown (null), we keep the
+ * default behavior and create the HUD. (closes #2754)
+ */
+export function isExistingTmuxWindowTooCrampedForLaunchHud(
+  windowHeight: number | null | undefined,
+  minWindowHeight: number = HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES,
+): boolean {
+  if (typeof windowHeight !== "number" || !Number.isFinite(windowHeight) || windowHeight <= 0) {
+    return false;
+  }
+  return windowHeight < minWindowHeight;
 }
 
 function createHudWatchPane(
