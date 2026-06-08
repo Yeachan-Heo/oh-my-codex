@@ -155,11 +155,17 @@ export interface HudStatusLineConfig {
   preset?: HudPreset;
 }
 
+export interface HudTmuxConfig {
+  /** Controls automatic tmux HUD split-pane creation/reconciliation. */
+  autoPane?: boolean;
+}
+
 /** HUD configuration stored in .omx/hud-config.json */
 export interface HudConfig {
   preset?: HudPreset;
   git?: HudGitConfig;
   statusLine?: HudStatusLineConfig;
+  tmux?: HudTmuxConfig;
 }
 
 export interface ResolvedHudGitConfig {
@@ -172,10 +178,15 @@ export interface ResolvedHudStatusLineConfig {
   preset: HudPreset;
 }
 
+export interface ResolvedHudTmuxConfig {
+  autoPane: boolean;
+}
+
 export interface ResolvedHudConfig {
   preset: HudPreset;
   git: ResolvedHudGitConfig;
   statusLine: ResolvedHudStatusLineConfig;
+  tmux?: ResolvedHudTmuxConfig;
 }
 
 /** Default HUD configuration */
@@ -186,6 +197,9 @@ export const DEFAULT_HUD_CONFIG: ResolvedHudConfig = {
   },
   statusLine: {
     preset: 'focused',
+  },
+  tmux: {
+    autoPane: true,
   },
 };
 

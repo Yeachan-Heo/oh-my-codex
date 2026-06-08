@@ -80,6 +80,7 @@ import {
   serializeDetachedSessionParentEnv,
   buildInsideTmuxHudHookEnv,
   registerInsideTmuxHudResizeHook,
+  isAutomaticTmuxHudPaneEnabled,
   buildDetachedHudHookEnv,
   registerDetachedHudLayoutReconcileHook,
   ensureOmxRuntimeCommandShim,
@@ -3526,6 +3527,45 @@ exit 0
       source,
       /if \(currentPaneId\) \{\s*unregisterHudResizeHook\(currentPaneId\);\s*\}/,
     );
+  });
+
+  it("runCodex honors tmux.autoPane=false before initial inside-tmux HUD creation", async () => {
+    const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf-8");
+    assert.match(source, /if \(!isAutomaticTmuxHudPaneEnabled\(cwd\)\) \{/);
+    assert.match(
+      source,
+      /if \(!isAutomaticTmuxHudPaneEnabled\(cwd\)\) \{\s*for \(const paneId of staleHudPaneIds\) \{\s*killTmuxPane\(paneId\);\s*\}\s*if \(currentPaneId\) unregisterHudResizeHook\(currentPaneId\);\s*\} else \{/,
+    );
+  });
+
+  it("isAutomaticTmuxHudPaneEnabled defaults on unless tmux.autoPane is false", async () => {
+    const tmpRoot = await mkdtemp(join(tmpdir(), "omx-hud-auto-pane-"));
+    try {
+      assert.equal(isAutomaticTmuxHudPaneEnabled(tmpRoot), true);
+
+      await mkdir(join(tmpRoot, ".omx"), { recursive: true });
+      await writeFile(join(tmpRoot, ".omx", "hud-config.json"), JSON.stringify({}), "utf-8");
+      assert.equal(isAutomaticTmuxHudPaneEnabled(tmpRoot), true);
+
+      await writeFile(
+        join(tmpRoot, ".omx", "hud-config.json"),
+        JSON.stringify({ tmux: { autoPane: true } }),
+        "utf-8",
+      );
+      assert.equal(isAutomaticTmuxHudPaneEnabled(tmpRoot), true);
+
+      await writeFile(
+        join(tmpRoot, ".omx", "hud-config.json"),
+        JSON.stringify({ tmux: { autoPane: false } }),
+        "utf-8",
+      );
+      assert.equal(isAutomaticTmuxHudPaneEnabled(tmpRoot), false);
+
+      await writeFile(join(tmpRoot, ".omx", "hud-config.json"), "{", "utf-8");
+      assert.equal(isAutomaticTmuxHudPaneEnabled(tmpRoot), true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it("buildInsideTmuxHudHookEnv tags hook commands with session, owner, leader, and local root", () => {

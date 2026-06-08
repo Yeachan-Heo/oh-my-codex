@@ -100,6 +100,49 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(resized[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
+  it('removes existing HUD panes and skips auto recreation when tmux autoPane is disabled', async () => {
+    const killed: string[] = [];
+    let created = false;
+    const unregistered: Array<string | undefined> = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        {
+          paneId: '%2',
+          currentCommand: 'node',
+          startCommand: `exec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch --preset=focused`,
+        },
+      ],
+      createHudWatchPane: () => {
+        created = true;
+        return '%9';
+      },
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      unregisterHudResizeHook: (leaderPaneId) => {
+        unregistered.push(leaderPaneId);
+        return true;
+      },
+      readHudConfig: async () => ({
+        preset: 'focused',
+        git: { display: 'repo-branch' },
+        statusLine: { preset: 'focused' },
+        tmux: { autoPane: false },
+      }),
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'disabled');
+    assert.equal(result.paneId, null);
+    assert.equal(created, false);
+    assert.deepEqual(killed, ['%2']);
+    assert.deepEqual(unregistered, ['%1']);
+  });
+
   it('reaps orphaned same-session HUD panes whose leader pane was destroyed, then recreates a single HUD', async () => {
     // Regression for the "team mode leaves only stacked HUD strips" bug: the leader
     // pane (%21) was destroyed but its owner-tagged HUD panes remained, all pointing

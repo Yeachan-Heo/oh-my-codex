@@ -15,6 +15,10 @@ describe('DEFAULT_HUD_CONFIG', () => {
   it('defaults statusLine preset to "focused"', () => {
     assert.equal(DEFAULT_HUD_CONFIG.statusLine.preset, 'focused');
   });
+
+  it('enables automatic tmux panes by default', () => {
+    assert.equal(DEFAULT_HUD_CONFIG.tmux?.autoPane, true);
+  });
 });
 
 describe('normalizeHudConfig', () => {
@@ -28,6 +32,7 @@ describe('normalizeHudConfig', () => {
       preset: 'minimal',
       git: { display: 'repo-branch' },
       statusLine: { preset: 'focused' },
+      tmux: { autoPane: true },
     });
   });
 
@@ -46,6 +51,7 @@ describe('normalizeHudConfig', () => {
         remoteName: 'upstream',
         repoLabel: 'manual-repo',
       },
+      tmux: { autoPane: true },
       statusLine: { preset: 'focused' },
     });
   });
@@ -84,5 +90,19 @@ describe('normalizeHudConfig', () => {
     });
     assert.equal(resolved.preset, 'minimal');
     assert.equal(resolved.statusLine.preset, 'full');
+  });
+
+  it('accepts tmux auto-pane opt out', () => {
+    const resolved = normalizeHudConfig({
+      tmux: { autoPane: false },
+    });
+    assert.equal(resolved.tmux?.autoPane, false);
+  });
+
+  it('falls back to automatic tmux panes for invalid opt-out values', () => {
+    const resolved = normalizeHudConfig({
+      tmux: { autoPane: 'nope' as never },
+    });
+    assert.equal(resolved.tmux?.autoPane, true);
   });
 });

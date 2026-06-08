@@ -74,6 +74,9 @@ export function normalizeHudConfig(raw: HudConfig | null | undefined): ResolvedH
     statusLine: {
       preset: DEFAULT_HUD_CONFIG.statusLine.preset,
     },
+    tmux: {
+      autoPane: DEFAULT_HUD_CONFIG.tmux?.autoPane ?? true,
+    },
   };
 
   if (!raw || typeof raw !== 'object') return normalized;
@@ -98,6 +101,10 @@ export function normalizeHudConfig(raw: HudConfig | null | undefined): ResolvedH
     if (isValidPreset(raw.statusLine.preset)) {
       normalized.statusLine.preset = raw.statusLine.preset;
     }
+  }
+
+  if (raw.tmux && typeof raw.tmux === 'object' && typeof raw.tmux.autoPane === 'boolean') {
+    normalized.tmux = { autoPane: raw.tmux.autoPane };
   }
 
   return normalized;

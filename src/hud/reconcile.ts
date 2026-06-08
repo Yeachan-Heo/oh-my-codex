@@ -88,6 +88,7 @@ export interface ReconcileHudForPromptSubmitResult {
     | 'resized'
     | 'recreated'
     | 'replaced_duplicates'
+    | 'disabled'
     | 'failed';
   paneId: string | null;
   desiredHeight: number | null;
@@ -252,6 +253,19 @@ export async function reconcileHudForPromptSubmit(
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
   const readHudConfigFn = deps.readHudConfig ?? readHudConfig;
   const hudConfig = await readHudConfigFn(cwd).catch(() => null);
+  if (hudConfig?.tmux?.autoPane === false) {
+    const unregisterHook = deps.unregisterHudResizeHook ?? unregisterHudResizeHook;
+    unregisterHook(currentPaneId);
+    for (const paneId of hudPaneIds) {
+      killPane(paneId);
+    }
+    return {
+      status: 'disabled',
+      paneId: null,
+      desiredHeight: null,
+      duplicateCount,
+    };
+  }
   const readAllStateFn = deps.readAllState ?? readAllState;
   const hudState = hudConfig ? await readAllStateFn(cwd, hudConfig).catch(() => null) : null;
   const desiredHeight = hudState ? getHudRenderMaxLines(hudState) : HUD_TMUX_HEIGHT_LINES;

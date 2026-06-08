@@ -1044,6 +1044,17 @@ export function registerInsideTmuxHudResizeHook(options: {
   );
 }
 
+export function isAutomaticTmuxHudPaneEnabled(cwd: string): boolean {
+  try {
+    const raw = JSON.parse(
+      readFileSync(join(cwd, ".omx", "hud-config.json"), "utf-8"),
+    ) as { tmux?: { autoPane?: unknown } };
+    return raw.tmux?.autoPane !== false;
+  } catch {
+    return true;
+  }
+}
+
 export function buildDetachedHudHookEnv(
   baseEnv: NodeJS.ProcessEnv,
   sessionId: string,
@@ -4480,7 +4491,7 @@ function runCodex(
   }
 
   if (launchPolicy === "inside-tmux") {
-    // Already in tmux: launch codex in current pane, HUD in bottom split
+    // Already in tmux: launch codex in current pane, HUD in bottom split unless disabled.
     const currentWindowPanes = currentPaneId ? listCurrentWindowPanes(undefined, currentPaneId) : [];
     reapDeadHudPanes(currentWindowPanes, {
       killPane: (paneId) => {
@@ -4498,41 +4509,48 @@ function runCodex(
       : [];
 
     let hudPaneId: string | null = null;
-    const [keeperHudPaneId, ...duplicateHudPaneIds] = staleHudPaneIds;
-    for (const paneId of duplicateHudPaneIds) {
-      killTmuxPane(paneId);
-    }
-
-    if (keeperHudPaneId) {
-      hudPaneId = keeperHudPaneId;
-      try {
-        resizeTmuxPane(hudPaneId, HUD_TMUX_HEIGHT_LINES);
-        registerInsideTmuxHudResizeHook({
-          hudPaneId,
-          currentPaneId,
-          cwd,
-          sessionId,
-          omxRootOverride,
-        });
-      } catch (err) {
-        logCliOperationFailure(err);
+    if (!isAutomaticTmuxHudPaneEnabled(cwd)) {
+      for (const paneId of staleHudPaneIds) {
+        killTmuxPane(paneId);
       }
+      if (currentPaneId) unregisterHudResizeHook(currentPaneId);
     } else {
-      try {
-        hudPaneId = createHudWatchPane(cwd, hudCmd, {
-          heightLines: HUD_TMUX_HEIGHT_LINES,
-          targetPaneId: currentPaneId,
-        });
-        registerInsideTmuxHudResizeHook({
-          hudPaneId,
-          currentPaneId,
-          cwd,
-          sessionId,
-          omxRootOverride,
-        });
-      } catch (err) {
-        logCliOperationFailure(err);
-        // HUD split failed, continue without it
+      const [keeperHudPaneId, ...duplicateHudPaneIds] = staleHudPaneIds;
+      for (const paneId of duplicateHudPaneIds) {
+        killTmuxPane(paneId);
+      }
+
+      if (keeperHudPaneId) {
+        hudPaneId = keeperHudPaneId;
+        try {
+          resizeTmuxPane(hudPaneId, HUD_TMUX_HEIGHT_LINES);
+          registerInsideTmuxHudResizeHook({
+            hudPaneId,
+            currentPaneId,
+            cwd,
+            sessionId,
+            omxRootOverride,
+          });
+        } catch (err) {
+          logCliOperationFailure(err);
+        }
+      } else {
+        try {
+          hudPaneId = createHudWatchPane(cwd, hudCmd, {
+            heightLines: HUD_TMUX_HEIGHT_LINES,
+            targetPaneId: currentPaneId,
+          });
+          registerInsideTmuxHudResizeHook({
+            hudPaneId,
+            currentPaneId,
+            cwd,
+            sessionId,
+            omxRootOverride,
+          });
+        } catch (err) {
+          logCliOperationFailure(err);
+          // HUD split failed, continue without it
+        }
       }
     }
 
