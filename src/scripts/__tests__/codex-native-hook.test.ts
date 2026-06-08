@@ -5129,7 +5129,7 @@ case "$1" in
     printf '%%1\\tcodex\\tcodex\\n'
     ;;
   display-message)
-    printf '80\\t24\\n'
+    printf '200\\t60\\n'
     ;;
   split-window)
     printf '%%9\\n'
@@ -5254,7 +5254,7 @@ case "$1" in
     printf '%%2\tnode\texec env OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\n'
     ;;
   display-message)
-    printf '80\t24\n'
+    printf '200\t60\n'
     ;;
   resize-pane)
     ;;

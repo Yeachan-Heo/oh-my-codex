@@ -130,7 +130,7 @@ import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxCliEntryP
 import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, repairProjectScopeTrustStateForLaunch, syncProjectScopeTrustStateFromRuntime } from "../config/generator.js";
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
-import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from "../hud/constants.js";
+import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES, isTmuxWindowTooCrampedForHudSplit } from "../hud/constants.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
 import { readUltragoalState } from "../hud/state.js";
 import {
@@ -4900,10 +4900,7 @@ export function isExistingTmuxWindowTooCrampedForLaunchHud(
   windowHeight: number | null | undefined,
   minWindowHeight: number = HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES,
 ): boolean {
-  if (typeof windowHeight !== "number" || !Number.isFinite(windowHeight) || windowHeight <= 0) {
-    return false;
-  }
-  return windowHeight < minWindowHeight;
+  return isTmuxWindowTooCrampedForHudSplit(windowHeight, minWindowHeight);
 }
 
 function createHudWatchPane(

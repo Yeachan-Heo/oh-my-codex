@@ -1,6 +1,6 @@
 import { readAllState, readHudConfig } from './state.js';
 import { getHudRenderMaxLines } from './render.js';
-import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
+import { HUD_TMUX_HEIGHT_LINES, isTmuxWindowTooCrampedForHudSplit } from './constants.js';
 import {
   buildHudWatchCommand,
   createHudWatchPane,
@@ -9,6 +9,7 @@ import {
   isHudWatchPane,
   killTmuxPane,
   listCurrentWindowPanes,
+  readCurrentWindowSize,
   readHudPaneOwner,
   registerHudResizeHook,
   unregisterHudResizeHook,
@@ -84,6 +85,7 @@ export interface ReconcileHudForPromptSubmitResult {
     | 'skipped_no_entry'
     | 'skipped_not_omx_owned_tmux'
     | 'skipped_no_session_id'
+    | 'skipped_window_too_cramped'
     | 'unchanged'
     | 'resized'
     | 'recreated'
@@ -116,6 +118,7 @@ export interface ReconcileHudForPromptSubmitDeps {
     options?: { cwd?: string; env?: NodeJS.ProcessEnv },
   ) => boolean;
   unregisterHudResizeHook?: (leaderPaneId: string | undefined) => boolean;
+  readCurrentWindowSize?: (currentPaneId?: string) => { width: number | null; height: number | null };
 }
 
 function ensureHudResizeHook(
@@ -308,6 +311,25 @@ export async function reconcileHudForPromptSubmit(
       desiredHeight,
       duplicateCount,
     };
+  }
+
+  // When there is no existing HUD pane to keep/recreate, this reconcile would
+  // create a fresh HUD split. Mirror the launch-time guard: if the current tmux
+  // window is too short, skip the split so the first prompt submit cannot
+  // recreate the cramped, unreadable 2-line HUD the launch path already
+  // declined to add. Default behavior is preserved for normal/unknown heights.
+  // (closes #2754)
+  if (hudPaneIds.length === 0) {
+    const readWindowSize = deps.readCurrentWindowSize ?? ((paneId) => readCurrentWindowSize(undefined, paneId));
+    const windowHeight = readWindowSize(currentPaneId).height;
+    if (isTmuxWindowTooCrampedForHudSplit(windowHeight)) {
+      return {
+        status: 'skipped_window_too_cramped',
+        paneId: null,
+        desiredHeight,
+        duplicateCount,
+      };
+    }
   }
 
   const unregisterHook = deps.unregisterHudResizeHook ?? unregisterHudResizeHook;
