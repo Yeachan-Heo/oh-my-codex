@@ -69,6 +69,18 @@ import {
 	resolvePackagedOmxMarketplace,
 } from "./plugin-marketplace.js";
 import { hasOmxAgentsContract } from "../utils/agents-md.js";
+import {
+	OMX_DEFAULT_SPARK_MODEL_ENV,
+	OMX_SPARK_MODEL_ENV,
+	getCodexConfigRootModelProvider,
+	getEnvConfiguredSparkDefaultModel,
+	getMainDefaultModel,
+	getSparkDefaultModel,
+	getStandardDefaultModel,
+} from "../config/models.js";
+import { AGENT_DEFINITIONS } from "../agents/definitions.js";
+import { getInstallableNativeAgentNames } from "../agents/policy.js";
+import { readCatalogManifest } from "../catalog/reader.js";
 
 interface DoctorOptions {
 	verbose?: boolean;
@@ -240,6 +252,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 		scopeResolution.installMode,
 	);
 	if (nativeReviewerRolesCheck) checks.push(nativeReviewerRolesCheck);
+
+	// Check 6.4: Spark/model lane routing (issue #2757)
+	checks.push(checkSparkRouting(paths));
 
 	// Check 6.5: Legacy/current skill-root overlap
 	if (scopeResolution.scope === "user") {
@@ -1890,6 +1905,161 @@ function checkNativeReviewerRoles(
 		status: "pass",
 		message:
 			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); advisory ${ADVISORY_NATIVE_REVIEWER_ROLES.join(", ")} role is also available`,
+	};
+}
+
+interface InstalledAgentModelInfo {
+	exists: boolean;
+	model?: string;
+	modelProvider?: string;
+}
+
+function readInstalledAgentModelInfo(tomlPath: string): InstalledAgentModelInfo {
+	if (!existsSync(tomlPath)) return { exists: false };
+	try {
+		const parsed = parseToml(readFileSync(tomlPath, "utf-8")) as {
+			model?: unknown;
+			model_provider?: unknown;
+		};
+		return {
+			exists: true,
+			model:
+				typeof parsed.model === "string" && parsed.model.trim() !== ""
+					? parsed.model.trim()
+					: undefined,
+			modelProvider:
+				typeof parsed.model_provider === "string" &&
+				parsed.model_provider.trim() !== ""
+					? parsed.model_provider.trim()
+					: undefined,
+		};
+	} catch {
+		return { exists: true };
+	}
+}
+
+function resolveSparkModelSource(codexHomeOverride?: string): string {
+	const envDefault = process.env[OMX_DEFAULT_SPARK_MODEL_ENV];
+	if (typeof envDefault === "string" && envDefault.trim() !== "") {
+		return `${OMX_DEFAULT_SPARK_MODEL_ENV} env`;
+	}
+	const envLegacy = process.env[OMX_SPARK_MODEL_ENV];
+	if (typeof envLegacy === "string" && envLegacy.trim() !== "") {
+		return `${OMX_SPARK_MODEL_ENV} env`;
+	}
+	if (getEnvConfiguredSparkDefaultModel(process.env, codexHomeOverride)) {
+		return "config.toml env";
+	}
+	return "built-in default";
+}
+
+function getInstallableSparkLaneAgentNames(): string[] {
+	try {
+		const installable = getInstallableNativeAgentNames(
+			readCatalogManifest(getPackageRoot()),
+		);
+		return Object.values(AGENT_DEFINITIONS)
+			.filter(
+				(agent) => agent.modelClass === "fast" && installable.has(agent.name),
+			)
+			.map((agent) => agent.name)
+			.sort();
+	} catch {
+		return Object.values(AGENT_DEFINITIONS)
+			.filter((agent) => agent.modelClass === "fast")
+			.map((agent) => agent.name)
+			.sort();
+	}
+}
+
+/**
+ * Surface effective Spark/model lane routing and flag the common reasons the
+ * `gpt-5.3-codex-spark` quota stays unused even though resolution is wired
+ * (issue #2757): a missing/stale installed Spark-lane agent toml, a model that
+ * diverges from the resolved Spark default, or a non-default provider that does
+ * not draw from native Spark quota.
+ */
+export function checkSparkRouting(paths: DoctorPaths): Check {
+	const name = "Spark routing";
+	const codexHomeOverride = paths.codexHomeDir;
+	const sparkModel = getSparkDefaultModel(codexHomeOverride);
+	const frontierModel = getMainDefaultModel(codexHomeOverride);
+	const standardModel = getStandardDefaultModel(codexHomeOverride);
+	const sparkSource = resolveSparkModelSource(codexHomeOverride);
+	const rootProvider = getCodexConfigRootModelProvider(codexHomeOverride);
+
+	const laneSummary =
+		`lanes: frontier=\`${frontierModel}\`, standard=\`${standardModel}\`, ` +
+		`spark=\`${sparkModel}\` (source: ${sparkSource})`;
+
+	const sparkAgents = getInstallableSparkLaneAgentNames();
+	if (sparkAgents.length === 0) {
+		return {
+			name,
+			status: "warn",
+			message:
+				`${laneSummary}; no installable Spark-eligible (fast) native agent is defined, ` +
+				`so native subagents will not consume Spark quota`,
+		};
+	}
+
+	const problems: string[] = [];
+	const wired: string[] = [];
+	for (const agentName of sparkAgents) {
+		const info = readInstalledAgentModelInfo(
+			join(paths.agentsDir, `${agentName}.toml`),
+		);
+		if (!info.exists) {
+			problems.push(
+				`${agentName}.toml is missing under ${paths.agentsDir} (run \`omx setup --force\`)`,
+			);
+			continue;
+		}
+		if (!info.model) {
+			problems.push(
+				`${agentName}.toml has no model field (stale install; run \`omx setup --force\`)`,
+			);
+			continue;
+		}
+		if (info.model !== sparkModel) {
+			problems.push(
+				`${agentName}.toml model is \`${info.model}\` but the resolved Spark model is \`${sparkModel}\` (stale install; run \`omx setup --force\`)`,
+			);
+			continue;
+		}
+		if (info.modelProvider && rootProvider && info.modelProvider !== rootProvider) {
+			problems.push(
+				`${agentName}.toml model_provider \`${info.modelProvider}\` differs from the config root provider \`${rootProvider}\` (stale install; run \`omx setup --force\`)`,
+			);
+			continue;
+		}
+		if (info.modelProvider && info.modelProvider !== "openai") {
+			problems.push(
+				`${agentName}.toml routes Spark via non-default model_provider \`${info.modelProvider}\`; native Codex Spark quota only moves when Spark is served by the default provider`,
+			);
+			continue;
+		}
+		wired.push(
+			`${agentName} -> \`${info.model}\`${
+				info.modelProvider ? ` (provider: ${info.modelProvider})` : ""
+			}`,
+		);
+	}
+
+	if (problems.length > 0) {
+		return {
+			name,
+			status: "warn",
+			message: `${laneSummary}; Spark lane issue(s): ${problems.join("; ")}`,
+		};
+	}
+
+	return {
+		name,
+		status: "pass",
+		message:
+			`${laneSummary}; Spark-lane native agent(s) wired: ${wired.join(", ")}. ` +
+			`If Spark quota is still unused, the leader may not be delegating read-only lookups to the Spark lane, or the Codex usage view may lag.`,
 	};
 }
 
