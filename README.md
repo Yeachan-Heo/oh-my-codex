@@ -307,6 +307,7 @@ These are operator/support surfaces:
 - `omx update` checks npm immediately, installs the newest global OMX build, then reruns the same interactive setup refresh path
 - launch-time update checks are throttled and prompt by default; use `OMX_AUTO_UPDATE=0` to disable them or `OMX_AUTO_UPDATE=defer` to schedule deferred updates without a prompt
 - fresh OMX-managed `gpt-5.5` config seeding now recommends `model_context_window = 250000` and `model_auto_compact_token_limit = 200000`, but only when those keys are missing
+- OMX pins your frontier model in `.codex/config.toml` and never silently downgrades it; if Codex switches your selected model (for example `gpt-5.5` to `gpt-5.4`), that is Codex CLI's own model-migration prompt — see [keeping your model stable](./docs/troubleshooting.md#codex-switched-my-model-for-example-gpt-55-to-gpt-54)
 - `.omx-config.json` model/env routing is documented in [the model/env routing reference](./docs/reference/omx-config-schema-routing.md); only edit keys supported by your installed OMX version
 - `omx doctor` verifies the install when something seems wrong; it does not prove that the active Codex profile can make an authenticated model call
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
