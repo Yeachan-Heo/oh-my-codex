@@ -34,15 +34,12 @@ describe('explore-routing', () => {
     assert.equal(isSimpleExplorationPrompt('investigate everything in this repo'), false);
   });
 
-  it('builds deprecation guidance and never recommends explore for new work', () => {
-    const guidance = buildExploreRoutingGuidance({});
-    assert.ok(guidance.startsWith('**Explore Command Deprecated:**'));
-    assert.match(guidance, /USE_OMX_EXPLORE_CMD/);
-    assert.match(guidance, /compatibility-only/i);
-    assert.match(guidance, /MUST NOT be recommended/i);
+  it('builds repository-lookup routing guidance without referencing the removed explore command', () => {
+    const guidance = buildExploreRoutingGuidance();
+    assert.ok(guidance.startsWith('**Repository Lookup Routing:**'));
     assert.match(guidance, /normal Codex repository inspection/i);
     assert.match(guidance, /omx sparkshell -- <command>/);
-    assert.match(guidance, /do not route simple lookups to `omx explore`/i);
-    assert.match(buildExploreRoutingGuidance({ USE_OMX_EXPLORE_CMD: '1' }), /explicitly enabled.*still prefer the replacement path/is);
+    assert.doesNotMatch(guidance, /omx explore/i);
+    assert.doesNotMatch(guidance, /USE_OMX_EXPLORE_CMD/);
   });
 });

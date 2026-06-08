@@ -10,11 +10,8 @@ function expectPatterns(path: string, patterns: RegExp[]): void {
 }
 
 describe('explore + sparkshell guidance contract', () => {
-  it('keeps AGENTS root and template aligned on deprecated explore routing and opt-in sparkshell guidance', () => {
-    const patterns = [
-      /USE_OMX_EXPLORE_CMD/i,
-      /`omx explore` is deprecated/i,
-      /MUST NOT be recommended|does not make `omx explore` preferred/i,
+  it('keeps AGENTS root and template aligned on supported repository-lookup routing and opt-in sparkshell guidance without the removed explore command', () => {
+    const requiredPatterns = [
       /normal Codex repository inspection/i,
       /omx sparkshell --tmux-pane/i,
       /explicit opt-?in/i,
@@ -22,7 +19,10 @@ describe('explore + sparkshell guidance contract', () => {
     ];
 
     for (const surface of listTrackedAgentSurfaces()) {
-      expectPatterns(surface, patterns);
+      const content = loadSurface(surface);
+      expectPatterns(surface, requiredPatterns);
+      assert.doesNotMatch(content, /omx explore/i, `${surface} still references the removed omx explore command`);
+      assert.doesNotMatch(content, /USE_OMX_EXPLORE_CMD/i, `${surface} still references the deprecated USE_OMX_EXPLORE_CMD override`);
     }
   });
 

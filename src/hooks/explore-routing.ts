@@ -31,14 +31,9 @@ export function isSimpleExplorationPrompt(text: string): boolean {
   return SIMPLE_EXPLORATION_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
-export function buildExploreRoutingGuidance(env: NodeJS.ProcessEnv = process.env): string {
-  const explicitlyEnabled = isExploreCommandRoutingEnabled(env);
+export function buildExploreRoutingGuidance(): string {
   return [
-    '**Explore Command Deprecated:** `omx explore` is deprecated and MUST NOT be recommended for new repository lookup work.',
-    `- \`${OMX_EXPLORE_CMD_ENV}\` is compatibility-only; unset/default is disabled. Truthy values keep legacy callers working but do not make \`omx explore\` preferred.`,
-    '- Replacement path: use normal Codex repository inspection tools/subagents; use `omx sparkshell -- <command>` only for explicit shell-native read-only evidence or `--tmux-pane` summaries.',
-    explicitlyEnabled
-      ? '- Compatibility routing is explicitly enabled; still prefer the replacement path.'
-      : '- Compatibility routing is not enabled; do not route simple lookups to `omx explore`.',
+    '**Repository Lookup Routing:** use normal Codex repository inspection tools/subagents as the default surface for simple read-only repository lookup and implementation context.',
+    '- Use `omx sparkshell -- <command>` only for explicit shell-native read-only evidence or `--tmux-pane` summaries; it does not replace raw evidence capture.',
   ].join("\n");
 }
