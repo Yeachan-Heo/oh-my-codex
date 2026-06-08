@@ -130,24 +130,3 @@ Adjust the terminal pattern if your client advertises a different terminfo name.
 - For explicit shell-native read-only evidence or `--tmux-pane` summaries, use `omx sparkshell -- <command>`.
 
 The earlier explore harness fallback boundaries (sparkshell-backend fallback and in-harness model fallback) no longer apply to a user-facing command, because the command no longer runs a harness. Internal harness-resolution helpers remain only to support `omx doctor`/native-asset diagnostics.
-
-## Codex switched my model (for example `gpt-5.5` to `gpt-5.4`)
-
-If a session that you started on one model later reports a different model, the change is almost always Codex CLI's own model-migration prompt, not OMX silently switching models on you.
-
-What OMX actually does with your model:
-
-- `omx setup` pins your frontier model in `.codex/config.toml` (the seeded default is `gpt-5.5`) and does **not** silently downgrade it. The only model line OMX rewrites is an explicit, prompted upgrade from the legacy `gpt-5.3-codex` default, and only when you accept that prompt. Non-interactive setup never changes the model on its own.
-- `omx setup` also strips Codex's transient `[tui.model_availability_nux]` counters from the config so they do not accumulate.
-
-Where the automatic switch comes from:
-
-- Codex CLI ships a per-model migration map: a model can advertise an `upgrade` target (visible in `codex debug models`). When Codex shows the model-migration prompt and the upgrade is accepted, Codex rewrites the top-level `model` in `config.toml`. OMX then preserves whatever model the file now contains, so the change persists across later launches.
-
-Keep your model stable:
-
-1. In Codex's model prompt, choose **Keep current model** instead of accepting the migration. Codex records that choice under `[tui.notice]` so it stops re-prompting for that model.
-2. Pin the model for OMX-generated surfaces with `OMX_DEFAULT_FRONTIER_MODEL=<model>` (or `models.default` in `.omx-config.json`), then re-run `omx setup` so the pinned value is written back.
-3. Confirm the resolved model with `omx doctor`, which prints the active config path and model without rewriting your config.
-
-Do not hand-add unverified Codex config keys to force this off: Codex validates known config-key types and fails closed on a type mismatch, so a wrong-shaped key can break config loading for the whole session. Use Codex's own model prompt (`/model` and **Keep current model**) and the OMX model pin above instead.
