@@ -1205,7 +1205,7 @@ esac
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
           process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
           const expectedTeamName = buildInternalTeamName('team-startup-no-evidence', resolveTeamIdentityScope(process.env));
@@ -1994,6 +1994,7 @@ esac
     const previousReadyTimeout = process.env.OMX_TEAM_READY_TIMEOUT_MS;
     const previousStartupEvidenceTimeout = process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+    const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     const teamName = `tsd-${process.pid}-${Date.now().toString(36)}`;
 
     try {
@@ -2062,9 +2063,10 @@ esac
           process.env.TMUX_PANE = '%1';
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
-          process.env.OMX_TEAM_READY_TIMEOUT_MS = '5000';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
+          process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           await assert.rejects(
             withoutTeamWorkerEnv(() =>
@@ -2102,6 +2104,8 @@ esac
       else delete process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
       if (typeof previousStartupDispatchRetries === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = previousStartupDispatchRetries;
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+      if (typeof previousStartupDispatchRetryDelay === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = previousStartupDispatchRetryDelay;
+      else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -2179,8 +2183,8 @@ esac
           process.env.TMUX_PANE = '%1';
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
-          process.env.OMX_TEAM_READY_TIMEOUT_MS = '5000';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
 
           receiptNotifier = setInterval(() => {
@@ -2256,6 +2260,7 @@ esac
     const previousReadyTimeout = process.env.OMX_TEAM_READY_TIMEOUT_MS;
     const previousStartupEvidenceTimeout = process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+    const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     const teamName = `trt-${process.pid}-${Date.now().toString(36)}`;
     let receiptNotifier: NodeJS.Timeout | null = null;
     let runtimeTeamName: string | null = null;
@@ -2312,9 +2317,10 @@ esac
           process.env.TMUX_PANE = '%1';
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
-          process.env.OMX_TEAM_READY_TIMEOUT_MS = '5000';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
+          process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptNotifier = setInterval(() => {
             void markPendingInboxDispatchesNotified(teamName, cwd);
@@ -2355,6 +2361,8 @@ esac
       else delete process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
       if (typeof previousStartupDispatchRetries === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = previousStartupDispatchRetries;
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+      if (typeof previousStartupDispatchRetryDelay === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = previousStartupDispatchRetryDelay;
+      else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -2368,6 +2376,7 @@ esac
     const previousReadyTimeout = process.env.OMX_TEAM_READY_TIMEOUT_MS;
     const previousStartupEvidenceTimeout = process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+    const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptDeliverer: NodeJS.Timeout | null = null;
     let runtimeTeamName: string | null = null;
 
@@ -2448,9 +2457,10 @@ esac
           process.env.TMUX_PANE = '%1';
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
-          process.env.OMX_TEAM_READY_TIMEOUT_MS = '2000';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '500';
           process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '50';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
+          process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptDeliverer = setInterval(() => {
             void (async () => {
@@ -2500,6 +2510,8 @@ esac
       else delete process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
       if (typeof previousStartupDispatchRetries === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = previousStartupDispatchRetries;
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+      if (typeof previousStartupDispatchRetryDelay === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = previousStartupDispatchRetryDelay;
+      else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -2603,7 +2615,7 @@ process.on('SIGTERM', () => process.exit(0));
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
           process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
@@ -2692,6 +2704,7 @@ process.on('SIGTERM', () => process.exit(0));
     const previousReadyTimeout = process.env.OMX_TEAM_READY_TIMEOUT_MS;
     const previousStartupEvidenceTimeout = process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+    const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptFailer: NodeJS.Timeout | null = null;
 
     try {
@@ -2762,9 +2775,10 @@ esac
           process.env.TMUX_PANE = '%1';
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
-          process.env.OMX_TEAM_READY_TIMEOUT_MS = '5000';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
+          process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptFailer = setInterval(() => {
             void (async () => {
@@ -2820,6 +2834,8 @@ esac
       else delete process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
       if (typeof previousStartupDispatchRetries === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = previousStartupDispatchRetries;
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
+      if (typeof previousStartupDispatchRetryDelay === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = previousStartupDispatchRetryDelay;
+      else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -2923,8 +2939,8 @@ esac
           process.env.TMUX_PANE = '%1';
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
-          process.env.OMX_TEAM_READY_TIMEOUT_MS = '5000';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
@@ -3083,7 +3099,7 @@ process.on('SIGTERM', () => process.exit(0));
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
           process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '100';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 

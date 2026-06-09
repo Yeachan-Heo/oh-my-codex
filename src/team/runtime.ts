@@ -1586,7 +1586,7 @@ function assertPromptModeWorkerCliSupported(workerCliPlan: readonly TeamWorkerCl
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = env.OMX_TEAM_READY_TIMEOUT_MS;
   const parsed = Number.parseInt(String(raw ?? ''), 10);
-  if (Number.isFinite(parsed) && parsed >= 5_000) return parsed;
+  if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
   return 45_000;
 }
 
@@ -1595,7 +1595,7 @@ function resolveWorkerStartupEvidenceTimeoutMs(
   workerReadyTimeoutMs: number,
 ): number {
   const raw = Number.parseInt(String(env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS ?? ''), 10);
-  if (Number.isFinite(raw) && raw >= 500) return raw;
+  if (Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
   return Math.max(
     STARTUP_EVIDENCE_TIMEOUT_MS,
     Math.min(workerReadyTimeoutMs, STARTUP_EVIDENCE_LAUNCH_TIMEOUT_MS),
