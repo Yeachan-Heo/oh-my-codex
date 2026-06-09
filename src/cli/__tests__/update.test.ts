@@ -823,7 +823,7 @@ describe('runImmediateUpdate', () => {
       }, { channel: 'dev' });
 
       assert.equal(result.status, 'updated');
-      assert.equal(latestCalls, 0);
+      assert.equal(latestCalls, 1);
       assert.equal(refreshCalls, 1);
       assert.deepEqual(installSources, ['github:Yeachan-Heo/oh-my-codex#dev']);
       assert.match(logs.join('\n'), /Selected update channel: dev/);
@@ -837,14 +837,56 @@ describe('runImmediateUpdate', () => {
         install_channel: string;
         install_source: string;
         install_revision: string;
+        dev_base_version: string;
       };
       assert.equal(stamp.installed_version, '0.15.0');
       assert.equal(stamp.setup_completed_version, '0.15.0');
       assert.equal(stamp.install_channel, 'dev');
       assert.equal(stamp.install_source, 'github:Yeachan-Heo/oh-my-codex#dev');
       assert.equal(stamp.install_revision, '1234567890ab');
+      assert.equal(stamp.dev_base_version, '0.15.0');
     } finally {
       console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('records the latest release as dev display baseline when dev package.json lags behind', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-dev-baseline-'));
+    const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = join(cwd, '.codex');
+
+    try {
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.18.10',
+        fetchLatestVersion: async () => '0.18.11',
+        runGlobalUpdate: () => ({ ok: true, stderr: '', revision: '4dd0f6455772' }),
+        runSetupRefresh: async () => ({ ok: true, stderr: '' }),
+        getInstalledVersionAfterUpdate: async () => '0.18.10',
+        getInstalledRevisionAfterUpdate: async () => null,
+      }, { channel: 'dev' });
+
+      assert.equal(result.status, 'updated');
+      const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
+        installed_version: string;
+        setup_completed_version: string;
+        install_channel: string;
+        install_revision: string;
+        dev_base_version: string;
+      };
+      assert.equal(stamp.installed_version, '0.18.10');
+      assert.equal(stamp.setup_completed_version, '0.18.10');
+      assert.equal(stamp.install_channel, 'dev');
+      assert.equal(stamp.install_revision, '4dd0f6455772');
+      assert.equal(stamp.dev_base_version, '0.18.11');
+    } finally {
       if (typeof originalCodexHome === 'string') {
         process.env.CODEX_HOME = originalCodexHome;
       } else {

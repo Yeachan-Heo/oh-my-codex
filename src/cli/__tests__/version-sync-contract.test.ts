@@ -17,6 +17,9 @@ interface WorkspaceMemberPackageMetadata {
 describe('version sync contract', () => {
   it('keeps package.json, workspace metadata, and Rust members aligned for releases', () => {
     const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version: string };
+    const pluginManifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'plugins', 'oh-my-codex', '.codex-plugin', 'plugin.json'), 'utf-8'),
+    ) as { version: string };
     const workspace = TOML.parse(readFileSync(join(process.cwd(), 'Cargo.toml'), 'utf-8')) as {
       workspace?: { package?: WorkspacePackageMetadata; members?: string[] };
     };
@@ -40,6 +43,7 @@ describe('version sync contract', () => {
     };
 
     assert.equal(workspace.workspace?.package?.version, pkg.version);
+    assert.equal(pluginManifest.version, pkg.version);
     assert.deepEqual(workspace.workspace?.members, [
       'crates/omx-api',
       'crates/omx-explore',

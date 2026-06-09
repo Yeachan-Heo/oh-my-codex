@@ -13,6 +13,7 @@ interface InstallVersionMetadata {
   setup_completed_version?: string;
   install_channel?: string;
   install_revision?: string;
+  dev_base_version?: string;
 }
 
 function stripLeadingV(version: string): string {
@@ -75,10 +76,15 @@ export function resolveOmxDisplayVersionSync(options: {
     : typeof stamp?.installed_version === 'string'
       ? stripLeadingV(stamp.installed_version)
       : '';
-  const isCurrentDevInstall = stamp?.install_channel === 'dev' && stampVersion === version;
+  const devBaseVersion = typeof stamp?.dev_base_version === 'string'
+    ? stripLeadingV(stamp.dev_base_version)
+    : '';
+  const isCurrentDevInstall = stamp?.install_channel === 'dev'
+    && stampVersion === version;
   if (isCurrentDevInstall) {
+    const displayVersion = devBaseVersion || version;
     const revision = shortRevision(stamp.install_revision) ?? explicitRevision ?? readGitRevision(packageRoot);
-    return revision ? `v${version}-dev-${revision}` : `v${version}-dev`;
+    return revision ? `v${displayVersion}-dev-${revision}` : `v${displayVersion}-dev`;
   }
 
   return `v${version}`;

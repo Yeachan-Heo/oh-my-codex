@@ -27,6 +27,7 @@ export interface UserInstallStamp {
   install_channel?: UpdateChannel;
   install_source?: string;
   install_revision?: string;
+  dev_base_version?: string;
   updated_at: string;
 }
 
@@ -578,6 +579,7 @@ async function writeSuccessfulInstallStamp(
     channel?: UpdateChannel;
     source?: string;
     revision?: string | null;
+    devBaseVersion?: string | null;
   } = {},
 ): Promise<void> {
   await writeUserInstallStamp({
@@ -586,6 +588,7 @@ async function writeSuccessfulInstallStamp(
     ...(metadata.channel ? { install_channel: metadata.channel } : {}),
     ...(metadata.source ? { install_source: metadata.source } : {}),
     ...(metadata.revision ? { install_revision: metadata.revision } : {}),
+    ...(metadata.devBaseVersion ? { dev_base_version: stripLeadingV(metadata.devBaseVersion) } : {}),
     updated_at: new Date().toISOString(),
   });
 }
@@ -613,6 +616,9 @@ export async function readUserInstallStamp(
         : {}),
       ...(typeof parsed.install_revision === 'string'
         ? { install_revision: parsed.install_revision }
+        : {}),
+      ...(typeof parsed.dev_base_version === 'string'
+        ? { dev_base_version: parsed.dev_base_version }
         : {}),
       updated_at: parsed.updated_at,
     };
@@ -795,7 +801,7 @@ async function executeUpdate(
   const channelConfig = resolveUpdateChannelConfig(channel);
   const [current, latest] = await Promise.all([
     dependencies.getCurrentVersion(),
-    channel === 'stable' || !forceInstall ? dependencies.fetchLatestVersion() : Promise.resolve(null),
+    channel === 'stable' || !forceInstall || channel === 'dev' ? dependencies.fetchLatestVersion() : Promise.resolve(null),
   ]);
 
   try {
@@ -891,6 +897,9 @@ async function executeUpdate(
   const installedRevision = channelConfig.channel === 'dev'
     ? ((await dependencies.getInstalledRevisionAfterUpdate()) ?? result.revision ?? null)
     : null;
+  const devBaseVersion = channelConfig.channel === 'dev'
+    ? (latest && installedVersion && isNewerVersion(latest, installedVersion) ? installedVersion : (latest ?? installedVersion ?? current))
+    : null;
   const stampVersion = channelConfig.channel === 'stable'
     ? (latest ?? installedVersion ?? current)
     : installedVersion;
@@ -899,6 +908,7 @@ async function executeUpdate(
       channel: channelConfig.channel,
       source: channelConfig.installSource,
       revision: channelConfig.channel === 'dev' ? installedRevision : null,
+      devBaseVersion,
     });
   } else if (channelConfig.channel === 'dev') {
     console.log(

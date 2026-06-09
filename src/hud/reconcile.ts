@@ -79,6 +79,36 @@ function reapOrphanedSessionHudPanes(
   return reaped;
 }
 
+function hasExplicitHudOwnerMarker(pane: TmuxPaneSnapshot): boolean {
+  const command = `${pane.startCommand} ${pane.currentCommand}`;
+  return new RegExp(`(?:^|\\s)${OMX_TMUX_HUD_OWNER_ENV}=(?:'1'|1)(?=$|\\s)`).test(command);
+}
+
+function reapStaleCurrentLeaderHudPanes(
+  panes: TmuxPaneSnapshot[],
+  opts: {
+    sessionIds: string[];
+    currentPaneId: string | undefined;
+    killPane: (paneId: string) => boolean;
+  },
+): string[] {
+  const { currentPaneId, killPane } = opts;
+  if (!currentPaneId) return [];
+  const currentSessionIds = new Set(opts.sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean));
+  if (currentSessionIds.size === 0) return [];
+
+  const reaped: string[] = [];
+  for (const pane of panes) {
+    if (!isHudWatchPane(pane)) continue;
+    const owner = readHudPaneOwner(pane);
+    if (owner.leaderPaneId !== currentPaneId) continue;
+    if (!hasExplicitHudOwnerMarker(pane)) continue;
+    if (!owner.sessionId || currentSessionIds.has(owner.sessionId)) continue;
+    if (killPane(pane.paneId)) reaped.push(pane.paneId);
+  }
+  return reaped;
+}
+
 export interface ReconcileHudForPromptSubmitResult {
   status:
     | 'skipped_not_tmux'
@@ -240,6 +270,22 @@ export async function reconcileHudForPromptSubmit(
   });
   if (reapedOrphanPaneIds.length > 0) {
     const reapedPaneIdSet = new Set(reapedOrphanPaneIds);
+    panes = panes.filter((pane) => !reapedPaneIdSet.has(pane.paneId));
+  }
+
+  // A Codex self-update can restart/resume the leader in the same tmux pane with
+  // a new OMX session id while the old HUD watcher stays alive. That stale HUD
+  // still names the current leader pane, but with the previous session id, so it
+  // does not match same-owner dedupe and the next launch would create a second HUD
+  // beside it. Reap only HUDs tied to this exact leader pane; neighboring panes'
+  // HUDs remain isolated by leaderPaneId.
+  const reapedStaleLeaderPaneIds = reapStaleCurrentLeaderHudPanes(panes, {
+    sessionIds: equivalentSessionIds,
+    currentPaneId,
+    killPane,
+  });
+  if (reapedStaleLeaderPaneIds.length > 0) {
+    const reapedPaneIdSet = new Set(reapedStaleLeaderPaneIds);
     panes = panes.filter((pane) => !reapedPaneIdSet.has(pane.paneId));
   }
 
