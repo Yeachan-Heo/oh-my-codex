@@ -439,6 +439,130 @@ describe('maybeCheckAndPromptUpdate', () => {
     }
   });
 
+  it('treats a current dev install dev_base_version as the launch update baseline', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-dev-baseline-'));
+    let promptCalls = 0;
+    let updateAttempts = 0;
+
+    try {
+      await withInteractiveTty(async () => {
+        await maybeCheckAndPromptUpdate(cwd, {
+          getCurrentVersion: async () => '0.18.10',
+          fetchLatestVersion: async () => '0.18.11',
+          readUserInstallStamp: async () => ({
+            installed_version: '0.18.10',
+            setup_completed_version: '0.18.10',
+            install_channel: 'dev',
+            install_source: 'github:Yeachan-Heo/oh-my-codex#dev',
+            install_revision: '8214377e3c1d',
+            dev_base_version: '0.18.11',
+            updated_at: '2026-06-09T20:21:24.070Z',
+          }),
+          askYesNo: async () => {
+            promptCalls += 1;
+            return true;
+          },
+          runDeferredGlobalUpdate: () => {
+            updateAttempts += 1;
+            return { ok: true, stderr: '', logPath: join(cwd, '.omx', 'logs', 'update-test.log') };
+          },
+        });
+      });
+
+      assert.equal(promptCalls, 0);
+      assert.equal(updateAttempts, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not infer a dev_base_version from launch-time latest alone', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-dev-baseline-missing-'));
+    const originalCodexHome = process.env.CODEX_HOME;
+    const codexHome = join(cwd, '.codex');
+    const stampPath = join(codexHome, '.omx', 'install-state.json');
+    let promptCalls = 0;
+    let updateAttempts = 0;
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      await mkdir(join(codexHome, '.omx'), { recursive: true });
+      await writeFile(stampPath, JSON.stringify({
+        installed_version: '0.18.10',
+        setup_completed_version: '0.18.10',
+        install_channel: 'dev',
+        install_source: 'github:Yeachan-Heo/oh-my-codex#dev',
+        install_revision: '8214377e3c1d',
+        updated_at: '2026-06-09T20:21:24.070Z',
+      }, null, 2));
+
+      await withInteractiveTty(async () => {
+        await maybeCheckAndPromptUpdate(cwd, {
+          getCurrentVersion: async () => '0.18.10',
+          fetchLatestVersion: async () => '0.18.11',
+          askYesNo: async () => {
+            promptCalls += 1;
+            return false;
+          },
+          runDeferredGlobalUpdate: () => {
+            updateAttempts += 1;
+            return { ok: true, stderr: '', logPath: join(cwd, '.omx', 'logs', 'update-test.log') };
+          },
+        });
+      });
+
+      const unchangedStamp = JSON.parse(await readFile(stampPath, 'utf-8')) as { dev_base_version?: string };
+      assert.equal(promptCalls, 1);
+      assert.equal(updateAttempts, 0);
+      assert.equal(unchangedStamp.dev_base_version, undefined);
+    } finally {
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the artifact version when it is newer than the stamped dev baseline', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-dev-baseline-outrun-'));
+    let promptCalls = 0;
+    let updateAttempts = 0;
+
+    try {
+      await withInteractiveTty(async () => {
+        await maybeCheckAndPromptUpdate(cwd, {
+          getCurrentVersion: async () => '0.18.12',
+          fetchLatestVersion: async () => '0.18.13',
+          readUserInstallStamp: async () => ({
+            installed_version: '0.18.12',
+            setup_completed_version: '0.18.12',
+            install_channel: 'dev',
+            install_source: 'github:Yeachan-Heo/oh-my-codex#dev',
+            install_revision: '8214377e3c1d',
+            dev_base_version: '0.18.11',
+            updated_at: '2026-06-09T20:21:24.070Z',
+          }),
+          askYesNo: async (question) => {
+            promptCalls += 1;
+            assert.match(question, /v0\.18\.12 → v0\.18\.13/);
+            return false;
+          },
+          runDeferredGlobalUpdate: () => {
+            updateAttempts += 1;
+            return { ok: true, stderr: '', logPath: join(cwd, '.omx', 'logs', 'update-test.log') };
+          },
+        });
+      });
+
+      assert.equal(promptCalls, 1);
+      assert.equal(updateAttempts, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('respects the passive launch-time cadence before checking npm', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
     const statePath = join(cwd, '.omx', 'state', 'update-check.json');
