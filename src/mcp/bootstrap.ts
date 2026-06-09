@@ -425,6 +425,35 @@ export function shouldSelfExitForPreTrafficSiblingHardCap(
   return observation.newerSiblingPids.length >= maxSiblingsPerEntrypoint;
 }
 
+export function shouldSelfExitForPostTrafficSiblingHardCap(
+  observation: DuplicateSiblingObservation,
+  nowMs: number,
+  duplicateObservedAtMs: number | null,
+  lastTrafficAtMs: number | null,
+  maxSiblingsPerEntrypoint = DEFAULT_MAX_SIBLINGS_PER_ENTRYPOINT,
+  postTrafficIdleMs = DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
+): boolean {
+  if (observation.status !== 'older_duplicate') return false;
+  // Pre-traffic siblings are reaped by shouldSelfExitForPreTrafficSiblingHardCap.
+  if (lastTrafficAtMs === null) return false;
+  if (!Number.isInteger(maxSiblingsPerEntrypoint) || maxSiblingsPerEntrypoint <= 0) return false;
+  if (observation.matchingPids.length <= maxSiblingsPerEntrypoint) return false;
+  // Only the oldest siblings beyond the retained window are eligible; the newest N
+  // same-parent same-entrypoint contexts are always preserved.
+  if (observation.newerSiblingPids.length < maxSiblingsPerEntrypoint) return false;
+  if (duplicateObservedAtMs === null) return false;
+  if (!Number.isFinite(nowMs) || duplicateObservedAtMs > nowMs) return false;
+  if (!Number.isFinite(lastTrafficAtMs) || lastTrafficAtMs > nowMs) return false;
+
+  // Measure the idle window from the duplicate observation rather than the last
+  // stdin byte. A long-lived Codex.app parent can keep superseded first-party
+  // siblings warm with periodic keepalive traffic, which would otherwise reset
+  // the post-traffic idle timer forever and let same-parent same-entrypoint
+  // duplicates accumulate without bound. Once a sibling has stayed superseded for
+  // the full idle window while still over the cap, reap it.
+  return nowMs - duplicateObservedAtMs >= postTrafficIdleMs;
+}
+
 export function isParentProcessAlive(
   parentPid: number,
   signalProcess: typeof process.kill = process.kill,
@@ -558,6 +587,18 @@ export function autoStartStdioMcpServer(
         lifecycleTiming.maxSiblingsPerEntrypoint,
       )) {
         void shutdown('superseded_hard_cap_pre_traffic');
+        return;
+      }
+
+      if (shouldSelfExitForPostTrafficSiblingHardCap(
+        observation,
+        Date.now(),
+        duplicateObservedAtMs,
+        lastTrafficAtMs,
+        lifecycleTiming.maxSiblingsPerEntrypoint,
+        lifecycleTiming.duplicateSiblingPostTrafficIdleMs,
+      )) {
+        void shutdown('superseded_hard_cap_post_traffic');
         return;
       }
 

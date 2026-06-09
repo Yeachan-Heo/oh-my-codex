@@ -16,6 +16,7 @@ import {
   shouldAutoStartMcpServer,
   shouldSelfExitForDuplicateSibling,
   shouldSelfExitForPreTrafficSiblingHardCap,
+  shouldSelfExitForPostTrafficSiblingHardCap,
   type McpServerName,
 } from '../bootstrap.js';
 import {
@@ -559,6 +560,65 @@ describe('mcp duplicate sibling detection', () => {
       shouldSelfExitForPreTrafficSiblingHardCap(oldest, null, 0),
       false,
       'zero disables the hard cap',
+    );
+  });
+
+  it('hard-caps post-traffic superseded siblings kept warm by a long-lived parent', () => {
+    const processes = [
+      { pid: 101, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+      { pid: 102, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+      { pid: 103, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+      { pid: 104, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+      { pid: 105, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+    ];
+
+    const oldest = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    const secondOldest = analyzeDuplicateSiblingState(processes, 102, 55, 'state-server.js');
+
+    // Keepalive traffic at t=60_000 would forever defer the last-traffic idle
+    // window, but the oldest over-cap sibling has been superseded since t=0, so
+    // the post-traffic hard cap reaps it once the idle window elapses.
+    assert.equal(
+      shouldSelfExitForPostTrafficSiblingHardCap(oldest, 60_000, 0, 60_000, 4, 60_000),
+      true,
+      'oldest over-cap sibling self-exits despite continuous keepalive traffic',
+    );
+    assert.equal(
+      shouldSelfExitForPostTrafficSiblingHardCap(secondOldest, 60_000, 0, 60_000, 4, 60_000),
+      false,
+      'the newest four post-traffic contexts are always preserved',
+    );
+    assert.equal(
+      shouldSelfExitForPostTrafficSiblingHardCap(oldest, 59_999, 0, 0, 4, 60_000),
+      false,
+      'must stay superseded for the full idle window before reaping',
+    );
+    assert.equal(
+      shouldSelfExitForPostTrafficSiblingHardCap(oldest, 60_000, 0, null, 4, 60_000),
+      false,
+      'pre-traffic siblings are handled by the pre-traffic hard cap',
+    );
+    assert.equal(
+      shouldSelfExitForPostTrafficSiblingHardCap(oldest, 60_000, 0, 60_000, 0, 60_000),
+      false,
+      'zero disables the post-traffic hard cap',
+    );
+  });
+
+  it('does not post-traffic hard-cap same-parent siblings within the retained window', () => {
+    const processes = [
+      { pid: 101, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+      { pid: 102, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+      { pid: 103, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+      { pid: 104, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
+    ];
+
+    const oldest = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    assert.equal(oldest.status, 'older_duplicate');
+    assert.equal(
+      shouldSelfExitForPostTrafficSiblingHardCap(oldest, 600_000, 0, 600_000, 4, 60_000),
+      false,
+      'at-or-below the cap, distinct client contexts are preserved',
     );
   });
 });
