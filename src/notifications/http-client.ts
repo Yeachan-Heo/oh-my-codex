@@ -86,13 +86,19 @@ function splitNoProxyEntry(entry: string): { host: string; port?: string } {
   return { host: trimmed };
 }
 
+function normalizeNoProxyHost(host: string): string {
+  return host.replace(/\.+$/, "");
+}
+
 export function noProxyMatches(target: URL, noProxyValue: string | undefined): boolean {
   if (!noProxyValue) return false;
-  const targetHost = target.hostname.replace(/^\[(.*)\]$/, "$1").toLowerCase();
+  const targetHost = normalizeNoProxyHost(target.hostname.replace(/^\[(.*)\]$/, "$1").toLowerCase());
   const targetPort = target.port || (target.protocol === "https:" ? "443" : "80");
 
   for (const rawEntry of noProxyValue.split(",")) {
-    const { host, port } = splitNoProxyEntry(rawEntry);
+    const entry = splitNoProxyEntry(rawEntry);
+    const host = normalizeNoProxyHost(entry.host);
+    const { port } = entry;
     if (!host) continue;
     if (host === "*") return true;
     if (port && port !== targetPort) continue;

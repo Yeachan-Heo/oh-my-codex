@@ -27,6 +27,12 @@ describe('proxy env resolution', () => {
     assert.equal(noProxyMatches(new URL('https://anything.invalid/hook'), '*'), true);
   });
 
+  it('normalizes trailing dots before matching NO_PROXY hosts', () => {
+    assert.equal(noProxyMatches(new URL('https://example.com./hook'), 'example.com'), true);
+    assert.equal(noProxyMatches(new URL('https://sub.example.com./hook'), '.example.com.'), true);
+    assert.equal(noProxyMatches(new URL('https://example.com.:8443/hook'), 'example.com.:8443'), true);
+  });
+
   it('does not bypass when NO_PROXY host port differs', () => {
     assert.equal(noProxyMatches(new URL('https://example.com:443/hook'), 'example.com:8443'), false);
   });
