@@ -2,6 +2,7 @@ import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, unlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { omxStateDir } from '../utils/paths.js';
+import { isTerminalRunOutcome, normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import {
   assertWorkflowTransitionAllowed,
   isTrackedWorkflowMode,
@@ -165,9 +166,40 @@ function sanitizeWriterBaseForSession(
   return inherited;
 }
 
+function isTerminalSkillActivePhase(phase: unknown): boolean {
+  const normalized = safeString(phase).trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === 'cleared') return true;
+  const runOutcome = normalizeRunOutcome(normalized).outcome;
+  if (isTerminalRunOutcome(runOutcome)) return true;
+  return Boolean(normalizeTerminalLifecycleOutcome(normalized).outcome);
+}
+
+function isTerminalSkillActiveState(state: SkillActiveStateLike): boolean {
+  if (state.active === false) return true;
+  if (isTerminalSkillActivePhase(state.phase)) return true;
+  if (safeString(state.completed_at).trim().length > 0) return true;
+  const runOutcome = normalizeRunOutcome(state.run_outcome).outcome;
+  if (isTerminalRunOutcome(runOutcome)) return true;
+  const lifecycleOutcome = normalizeTerminalLifecycleOutcome(state.lifecycle_outcome ?? state.terminal_outcome).outcome;
+  return Boolean(lifecycleOutcome);
+}
+
+function clearTerminalSkillActiveMarkers<T extends SkillActiveStateLike>(state: T): T {
+  const next = { ...state };
+  if (isTerminalSkillActivePhase(next.phase)) delete next.phase;
+  delete next.completed_at;
+  delete next.cancel_reason;
+  delete next.run_outcome;
+  delete next.lifecycle_outcome;
+  delete next.terminal_outcome;
+  return next;
+}
+
 export function listActiveSkills(raw: unknown): SkillActiveEntry[] {
   if (!raw || typeof raw !== 'object') return [];
   const state = raw as SkillActiveStateLike;
+  if (isTerminalSkillActiveState(state)) return [];
   const deduped = new Map<string, SkillActiveEntry>();
 
   if (Array.isArray(state.active_skills)) {
@@ -374,7 +406,9 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     fallbackMode: string,
     targetSessionId?: string,
   ): SkillActiveStateLike => {
-    const inheritedBase = sanitizeWriterBaseForSession(base, targetSessionId);
+    const inheritedBase = entries.length > 0
+      ? clearTerminalSkillActiveMarkers(sanitizeWriterBaseForSession(base, targetSessionId))
+      : sanitizeWriterBaseForSession(base, targetSessionId);
     const currentPrimary = safeString(inheritedBase.skill).trim();
     const primarySkill = pickPrimaryWorkflowMode(currentPrimary, entries.map((entry) => entry.skill), fallbackMode);
     const primaryEntry = entries.find((entry) => entry.skill === primarySkill) ?? entries[0];

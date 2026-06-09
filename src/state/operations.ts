@@ -11,6 +11,7 @@ import {
   getReadScopedStatePaths,
   getStateDir,
   getStatePath,
+  resolveRuntimeStateScope,
   resolveStateScope,
   resolveWorkingDirectoryForState,
   validateSessionId,
@@ -253,12 +254,30 @@ export async function listActiveStateModes(
   explicitSessionId?: string,
 ): Promise<string[]> {
   const cwd = resolveWorkingDirectoryForState(workingDirectory);
-  const sessionId = validateSessionId(explicitSessionId);
+  const scope = await resolveRuntimeStateScope(cwd, explicitSessionId);
+  const sessionId = scope.sessionId;
   const statuses = await listStateStatuses(cwd, sessionId, undefined, {
     authoritativeActiveDecision: true,
   });
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(getBaseStateDir(cwd), sessionId);
+  const canonicalActiveModes = new Set(
+    listActiveSkills(canonicalState ?? {})
+      .filter((entry) => {
+        const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
+        return sessionId ? entrySessionId === sessionId : entrySessionId.length === 0;
+      })
+      .map((entry) => entry.skill),
+  );
+  const hasCanonicalVisibility = canonicalState !== null;
+
   return Object.entries(statuses)
-    .filter(([, status]) => Boolean((status as { active?: unknown }).active))
+    .filter(([mode, status]) => {
+      if (!Boolean((status as { active?: unknown }).active)) return false;
+      if (hasCanonicalVisibility && isTrackedWorkflowMode(mode)) {
+        return canonicalActiveModes.has(mode);
+      }
+      return true;
+    })
     .map(([mode]) => mode);
 }
 
