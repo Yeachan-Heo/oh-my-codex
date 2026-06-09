@@ -45,6 +45,15 @@ jobs:
             exit 0
           fi
       - run: npm pack --dry-run
+      - name: Configure npm auth
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${NODE_AUTH_TOKEN:-}"
+          printf "//registry.npmjs.org/:_authToken=%s\nregistry=https://registry.npmjs.org/\nalways-auth=true\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+          npm whoami
       - name: Publish to npm
         shell: bash
         env:
