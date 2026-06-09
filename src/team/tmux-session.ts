@@ -46,7 +46,7 @@ export interface TeamSession {
   cwd: string;
   workerPaneIds: string[];
   /** Leader's own pane ID — must never be targeted by worker cleanup routines. */
-  leaderPaneId: string;
+  leaderPaneId: string | null;
   /** HUD pane spawned below the leader column, or null if creation failed. */
   hudPaneId: string | null;
   /** Registered tmux resize hook name for the HUD pane, or null if unavailable. */
@@ -58,6 +58,7 @@ export interface TeamSession {
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
 const MODEL_INSTRUCTIONS_FILE_KEY = 'model_instructions_file';
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
+const OMX_TEAM_RUNTIME_ENV = 'OMX_TEAM_RUNTIME';
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
 const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
@@ -1302,6 +1303,32 @@ export function isTmuxAvailable(): boolean {
   return result.status === 0;
 }
 
+export type TeamRuntimeAdapter = 'auto' | 'cli-tmux' | 'win-psmux';
+
+export function resolveTeamRuntimeAdapter(env: NodeJS.ProcessEnv = process.env): TeamRuntimeAdapter {
+  const raw = String(env[OMX_TEAM_RUNTIME_ENV] ?? '').trim().toLowerCase();
+  if (!raw || raw === 'auto') return 'auto';
+  if (raw === 'tmux' || raw === 'cli-tmux') return 'cli-tmux';
+  if (raw === 'win-psmux' || raw === 'psmux') return 'win-psmux';
+  throw new Error(
+    `Invalid ${OMX_TEAM_RUNTIME_ENV} value "${env[OMX_TEAM_RUNTIME_ENV]}". Expected: auto, win-psmux, psmux, tmux, cli-tmux`,
+  );
+}
+
+export function shouldUseDetachedPsmuxTeamRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return resolveTeamRuntimeAdapter(env) === 'win-psmux';
+}
+
+export function assertDetachedPsmuxTeamRuntimeAvailable(env: NodeJS.ProcessEnv = process.env): void {
+  if (resolveTeamRuntimeAdapter(env) !== 'win-psmux') return;
+  if (!isNativeWindows()) {
+    throw new Error(`${OMX_TEAM_RUNTIME_ENV}=win-psmux is only supported on native Windows`);
+  }
+  if (!isTmuxAvailable()) {
+    throw new Error(`${OMX_TEAM_RUNTIME_ENV}=win-psmux requires psmux/tmux on PATH`);
+  }
+}
+
 // Create tmux session with N worker windows
 // Split the current tmux leader window into worker panes.
 // Returns TeamSession or throws if tmux not available
@@ -1571,6 +1598,84 @@ export function createTeamSession(
     for (const paneId of rollbackPaneIds) {
       runTmux(['kill-pane', '-t', paneId]);
     }
+    throw error;
+  }
+}
+
+export function createDetachedPsmuxTeamSession(
+  teamName: string,
+  workerCount: number,
+  cwd: string,
+  workerLaunchArgs: string[] = [],
+  workerStartups: Array<{
+    cwd?: string;
+    env?: Record<string, string>;
+    initialPrompt?: string;
+    launchArgs?: string[];
+    workerCli?: TeamWorkerCli;
+    workerRole?: string;
+  }> = [],
+): TeamSession {
+  assertDetachedPsmuxTeamRuntimeAvailable();
+  if (!Number.isInteger(workerCount) || workerCount < 1) {
+    throw new Error(`workerCount must be >= 1 (got ${workerCount})`);
+  }
+
+  const safeTeamName = sanitizeTeamName(teamName);
+  const sessionName = `omx-team-${safeTeamName}`;
+  const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
+  const defaultWorkerCliPlan = resolveTeamWorkerCliPlan(workerCount, normalizedWorkerLaunchArgs, process.env);
+  const workerCliPlan = workerStartups.length > 0
+    ? workerStartups.map((startup, index) => startup.workerCli ?? defaultWorkerCliPlan[index]!)
+    : defaultWorkerCliPlan;
+  for (const workerCli of new Set(workerCliPlan)) {
+    assertTeamWorkerCliBinaryAvailable(workerCli);
+  }
+
+  const workerPaneIds: string[] = [];
+  try {
+    for (let i = 1; i <= workerCount; i += 1) {
+      const startup = workerStartups[i - 1] || {};
+      const workerCwd = startup.cwd || cwd;
+      const workerEnv = { ...(startup.env || {}), OMX_RUNTIME_ADAPTER: 'win-psmux' };
+      const launchArgsForWorker = startup.launchArgs || workerLaunchArgs;
+      trustWorkerMiseConfigIfAvailable(workerCwd);
+      const cmd = buildWorkerStartupCommand(
+        safeTeamName,
+        i,
+        launchArgsForWorker,
+        workerCwd,
+        workerEnv,
+        workerCliPlan[i - 1],
+        startup.initialPrompt,
+        startup.workerRole,
+      );
+      const args = i === 1
+        ? ['new-session', '-d', '-s', sessionName, '-n', `worker-${i}`, '-P', '-F', '#{pane_id}', '-c', workerCwd, cmd]
+        : ['new-window', '-t', sessionName, '-n', `worker-${i}`, '-P', '-F', '#{pane_id}', '-c', workerCwd, cmd];
+      const result = runTmux(args);
+      if (!result.ok) {
+        throw new Error(`failed to create psmux worker window ${i}: ${result.stderr}`);
+      }
+      const paneId = result.stdout.split('\n')[0]?.trim() || '';
+      if (!paneId.startsWith('%')) {
+        throw new Error(`failed to capture psmux worker pane id for worker ${i}: ${result.stdout}`);
+      }
+      workerPaneIds.push(paneId);
+    }
+
+    return {
+      name: sessionName,
+      workerCount,
+      cwd,
+      workerPaneIds,
+      leaderPaneId: null,
+      hudPaneId: null,
+      resizeHookName: null,
+      resizeHookTarget: null,
+    };
+  } catch (error) {
+    destroyTeamSession(sessionName);
     throw error;
   }
 }

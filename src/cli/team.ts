@@ -290,7 +290,8 @@ Usage: omx team [N:agent-type] "<task description>"
 Notes:
   team workers use dedicated worktrees automatically by default.
   --worktree is deprecated for omx team and is now only a backward-compatible no-op override.
-  omx team is a tmux-runtime surface by default; in Codex App or plain outside-tmux sessions, launch OMX CLI from shell first instead of treating team as directly available.
+  omx team uses an attached tmux runtime by default; on Windows/Codex App, prefix with $env:OMX_TEAM_RUNTIME='win-psmux' to launch detached psmux workers from shell.
+  on non-Windows outside-tmux sessions, launch OMX CLI from an attached tmux shell first instead of treating team as directly available.
   use native Codex subagents for small in-session fanout; use omx team for durable tmux/state/worktree coordination.
   repo-aware DAG handoff is opt-in: Team only imports a DAG when the invocation matches the latest approved PRD/test-spec launch hint (or a short approved follow-up like \`omx team team\`).
 

@@ -9,6 +9,9 @@ import {
   isTmuxAvailable,
   hasCurrentTmuxClientContext,
   createTeamSession,
+  createDetachedPsmuxTeamSession,
+  shouldUseDetachedPsmuxTeamRuntime,
+  assertDetachedPsmuxTeamRuntimeAvailable,
   buildWorkerProcessLaunchSpec,
   scrubTeamWorkerHudOwnershipEnv,
   resolveTeamWorkerCli,
@@ -2424,11 +2427,15 @@ export async function startTeam(
   }
 
   if (workerLaunchMode === 'interactive') {
-    if (!isTmuxAvailable()) {
-      throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
-    }
-    if (!hasCurrentTmuxClientContext()) {
-      throw new Error('Team mode requires running inside tmux current leader pane');
+    if (shouldUseDetachedPsmuxTeamRuntime(launchEnv)) {
+      assertDetachedPsmuxTeamRuntimeAvailable(launchEnv);
+    } else {
+      if (!isTmuxAvailable()) {
+        throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
+      }
+      if (!hasCurrentTmuxClientContext()) {
+        throw new Error('Team mode requires running inside tmux current leader pane');
+      }
     }
   }
 
@@ -2519,7 +2526,7 @@ export async function startTeam(
   let workerInstructionsPath: string | null = null;
   let sessionCreated = false;
   const createdWorkerPaneIds: string[] = [];
-  let createdLeaderPaneId: string | undefined;
+  let createdLeaderPaneId: string | null | undefined;
   let config: TeamConfig | null = null;
   const sharedWorkerLaunchArgs = resolveTeamWorkerLaunchArgs({
     existingRaw: launchEnv.OMX_TEAM_WORKER_LAUNCH_ARGS,
@@ -2846,7 +2853,9 @@ export async function startTeam(
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
 
     if (workerLaunchMode === 'interactive') {
-      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups);
+      const createdSession = shouldUseDetachedPsmuxTeamRuntime(launchEnv)
+        ? createDetachedPsmuxTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups)
+        : createTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups);
       sessionName = createdSession.name;
       sessionCreated = true;
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
@@ -3108,14 +3117,14 @@ export async function startTeam(
             await terminateTrackedProcessTree(panePid);
           }
           try {
-            await killWorkerByPaneIdAsync(paneId, createdLeaderPaneId);
+            await killWorkerByPaneIdAsync(paneId, createdLeaderPaneId ?? undefined);
           } catch (err) {
             process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
           }
         }
         if (config?.hud_pane_id) {
           try {
-            await killWorkerByPaneIdAsync(config.hud_pane_id, createdLeaderPaneId);
+            await killWorkerByPaneIdAsync(config.hud_pane_id, createdLeaderPaneId ?? undefined);
           } catch (err) {
             process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
           }

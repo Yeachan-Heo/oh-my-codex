@@ -1122,6 +1122,15 @@ function commandInvokesOmxTeam(command: string): boolean {
   return /\bomx\s+team\b/i.test(command) || /\bomx\.js['"]?\s+team\b/i.test(command);
 }
 
+function commandSetsWinPsmuxTeamRuntime(command: string): boolean {
+  return (
+    /\bOMX_TEAM_RUNTIME\s*=\s*['"]?(?:win-)?psmux['"]?/i.test(command) ||
+    /\$env:OMX_TEAM_RUNTIME\s*=\s*['"]?(?:win-)?psmux['"]?/i.test(command) ||
+    /\bset\s+OMX_TEAM_RUNTIME\s*=\s*['"]?(?:win-)?psmux['"]?/i.test(command) ||
+    /\bsetx\s+OMX_TEAM_RUNTIME\s+['"]?(?:win-)?psmux['"]?/i.test(command)
+  );
+}
+
 function commandInvokesOmxHud(command: string): boolean {
   const tokens = tokenizeShellCommand(command)?.map((token) => token.toLowerCase()) ?? [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -1151,6 +1160,7 @@ function buildNativeOmxTeamPreToolUseEnforcementOutput(
   payload: CodexHookPayload,
 ): Record<string, unknown> | null {
   if (!isNativeOutsideTmuxSurface(payload) || !commandInvokesOmxTeam(command)) return null;
+  if (commandSetsWinPsmuxTeamRuntime(command)) return null;
 
   return {
     decision: "block",

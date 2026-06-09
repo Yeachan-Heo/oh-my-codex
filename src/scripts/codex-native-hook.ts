@@ -1689,13 +1689,13 @@ function resolveExecutionEnvironment(
       surface: isNativeOutsideTmux
         ? "native-hook / Codex App outside tmux with tmux return bridge"
         : "direct CLI outside tmux with tmux return bridge",
-      tmuxWorkflowGuidance: "omx team and omx hud need an attached tmux OMX CLI shell from this surface; omx question can use the detected bridge",
+      tmuxWorkflowGuidance: "omx team normally needs an attached tmux OMX CLI shell; on Windows/Codex App, explicit `OMX_TEAM_RUNTIME=win-psmux omx team ...` can launch detached psmux workers from shell; omx question can use the detected bridge",
       questionGuidance: questionBridgeHint,
       teamRuntimeInstruction: isNativeOutsideTmux
-        ? "This session is native-hook / Codex App outside tmux; `omx team` is a CLI/tmux runtime surface, not directly available here. Launch OMX CLI from an attached tmux shell first; do not replace it with in-process fanout."
+        ? "This session is native-hook / Codex App outside tmux; prompt-side `$team` is available as an activation surface. When team mode is warranted, launch durable Windows workers from shell with `$env:OMX_TEAM_RUNTIME='win-psmux'; omx team ...`; do not replace it with in-process fanout."
         : "This session is direct CLI outside tmux with a tmux return bridge for `omx question`; prompt-side `$team` does not auto-start the durable tmux team runtime here. If you intentionally want the runtime, run `omx team ...` yourself from shell instead of replacing it with in-process fanout.",
       teamHelpInstruction: isNativeOutsideTmux
-        ? "If you need runtime syntax, run `omx team --help` from an attached tmux OMX CLI shell."
+        ? "If you need runtime syntax, run `omx team --help`; on Windows/Codex App use `$env:OMX_TEAM_RUNTIME='win-psmux'` for detached psmux workers."
         : "If you need runtime syntax, run `omx team --help` yourself from shell.",
       deepInterviewInstruction: `Deep-interview is active, but this session is not attached to tmux. Do not invoke \`omx question\`, \`omx hud\`, or \`omx team\` from this surface. Ask each interview round through the native structured question tool when available; otherwise ask exactly one concise plain-text question and wait for the answer. A tmux return bridge (${leaderPaneHint}) is recorded for explicit attached-tmux recovery only, not for default Codex App/native fallback.`,
       leaderPaneHint,
@@ -1707,17 +1707,17 @@ function resolveExecutionEnvironment(
     ? "native-hook / Codex App outside tmux"
     : "direct CLI outside tmux";
   const teamRuntimeInstruction = isNativeOutsideTmux
-    ? "This session is native-hook / Codex App outside tmux; `omx team` is a CLI/tmux runtime surface, not directly available here. Launch OMX CLI from an attached tmux shell first; do not replace it with in-process fanout."
+    ? "This session is native-hook / Codex App outside tmux; prompt-side `$team` is available as an activation surface. When team mode is warranted, launch durable Windows workers from shell with `$env:OMX_TEAM_RUNTIME='win-psmux'; omx team ...`; do not replace it with in-process fanout."
     : "This session is direct CLI outside tmux; prompt-side `$team` does not auto-start the durable tmux team runtime here. If you intentionally want the runtime, run `omx team ...` yourself from shell instead of replacing it with in-process fanout.";
   const teamHelpInstruction = isNativeOutsideTmux
-    ? "If you need runtime syntax, run `omx team --help` from an attached tmux OMX CLI shell rather than from Codex App/native outside-tmux context."
+    ? "If you need runtime syntax, run `omx team --help`; on Windows/Codex App use `$env:OMX_TEAM_RUNTIME='win-psmux'` for detached psmux workers."
     : "If you need runtime syntax, run `omx team --help` yourself from shell.";
   return {
     kind: isNativeOutsideTmux ? "native-outside-tmux" : "direct-cli-outside-tmux",
     launcher: executionSurface.launcher,
     transport: executionSurface.transport,
     surface,
-    tmuxWorkflowGuidance: "omx team, omx hud, and omx question need an attached tmux OMX CLI shell or preserved question bridge from this surface",
+    tmuxWorkflowGuidance: "omx team normally needs an attached tmux OMX CLI shell; on Windows/Codex App, explicit `OMX_TEAM_RUNTIME=win-psmux omx team ...` can launch detached psmux workers from shell; omx hud and omx question still need an attached tmux shell or preserved question bridge",
     questionGuidance: questionBridgeHint,
     teamRuntimeInstruction,
     teamHelpInstruction,
@@ -1813,6 +1813,7 @@ function buildNativeOutsideTmuxTeamPromptBlockState(
     nativeSessionId: safeString(payload.session_id ?? payload.sessionId).trim(),
   });
   if (!(environment.launcher === "native" && environment.transport === "outside-tmux")) return null;
+  if (process.platform === "win32") return null;
 
   const nowIso = new Date().toISOString();
   return {
@@ -1828,7 +1829,7 @@ function buildNativeOutsideTmuxTeamPromptBlockState(
     thread_id: threadId,
     turn_id: turnId,
     active_skills: [],
-    transition_error: "Codex App/native outside-tmux sessions cannot activate the tmux-only `team` workflow directly. Launch OMX CLI from an attached tmux shell first, then run `omx team ...` there.",
+    transition_error: "This outside-tmux native session has no supported team runtime adapter for prompt-side `$team`. On Windows/Codex App, launch with `$env:OMX_TEAM_RUNTIME='win-psmux'; omx team ...`; otherwise use an attached tmux shell.",
   };
 }
 

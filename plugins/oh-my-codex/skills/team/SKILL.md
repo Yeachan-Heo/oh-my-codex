@@ -7,7 +7,7 @@ description: N coordinated agents on shared task list using tmux-based orchestra
 
 `$team` is the tmux-based parallel execution mode for OMX. It starts real worker Codex and/or Claude CLI sessions in split panes and coordinates them through `.omx/state/team/...` files plus CLI team interop (`omx team api ...`) and state files.
 
-This skill is operationally sensitive. Treat it as an operator workflow, not a generic prompt pattern. In Codex App or plain outside-tmux sessions, do not present `$team` / `omx team` as directly available; launch OMX CLI from shell first, or stay on the nearest app-safe surface until the user explicitly wants the tmux runtime.
+This skill is operationally sensitive. Treat it as an operator workflow, not a generic prompt pattern. Prompt-side `$team` can activate in Codex App on Windows, but worker startup still happens through the OMX CLI runtime. In Codex App/native outside-tmux sessions, launch durable workers from shell with `$env:OMX_TEAM_RUNTIME='win-psmux'; omx team ...`, which starts detached psmux worker sessions. In attached tmux CLI sessions, use the normal `omx team ...` tmux runtime. On non-Windows outside-tmux sessions without psmux/tmux support, stay on the nearest app-safe surface or launch from an attached tmux shell.
 
 ## Team vs Native Subagents
 
@@ -23,7 +23,7 @@ Use the shared workflow guidance pattern: outcome-first framing, concise visible
 
 When user triggers `$team`, the agent must:
 
-1. Invoke OMX runtime directly with `omx team ...`
+1. Invoke OMX runtime directly with `omx team ...`; in Windows Codex App/native outside-tmux sessions, prefix the launch with `$env:OMX_TEAM_RUNTIME='win-psmux';`
 2. Avoid replacing the flow with in-process `spawn_agent` fanout
 3. Verify startup and surface concrete state/pane evidence
 4. If active team mode state is missing, initialize/sync it from canonical team runtime state before proceeding
@@ -100,8 +100,8 @@ OMX_TEAM_WORKER_CLI=auto OMX_TEAM_WORKER_LAUNCH_ARGS="--model claude-..." omx te
 
 Before running `$team`, confirm:
 
-1. `tmux` installed (`tmux -V`)
-2. Current leader session is inside tmux (`$TMUX` is set)
+1. Runtime adapter is available: attached tmux (`tmux -V` and `$TMUX` set) or Windows Codex App psmux (`psmux --version` or `tmux -V` through psmux, plus `OMX_TEAM_RUNTIME=win-psmux`)
+2. If using the attached tmux runtime, current leader session is inside tmux (`$TMUX` is set)
 3. `omx` command resolves to the intended install/build
 4. If running repo-local `node bin/omx.js ...`, run `npm run build` after `src` changes
 5. Check HUD pane count in the leader window and avoid duplicate `hud --watch` panes before split
@@ -159,7 +159,7 @@ When `$team` is used as a follow-up mode from ralplan, carry forward the approve
    - `.omx/state/team/<team>/worker-agents.md`
    - Uses project `AGENTS.md` content (if present) + worker overlay, without mutating project `AGENTS.md`
 5. Resolve canonical shared state root from leader cwd (`<leader-cwd>/.omx/state`)
-6. Split current tmux window into worker panes
+6. Split current tmux window into worker panes, or on Windows/Codex App with `OMX_TEAM_RUNTIME=win-psmux`, create a detached psmux team session with one worker window per worker
 7. Launch workers with:
    - `OMX_TEAM_WORKER=<team>/worker-<n>`
    - `OMX_TEAM_STATE_ROOT=<leader-cwd>/.omx/state`

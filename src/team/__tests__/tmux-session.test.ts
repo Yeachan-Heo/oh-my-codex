@@ -31,7 +31,9 @@ import {
   isTmuxAvailable,
   isWorkerPaneOpen,
   restoreStandaloneHudPane,
+  resolveTeamRuntimeAdapter,
   translatePathForMsys,
+  shouldUseDetachedPsmuxTeamRuntime,
   isWsl2,
   isWorkerAlive,
   killWorker,
@@ -183,6 +185,28 @@ describe('chooseTeamLeaderPaneId', () => {
       { paneId: '%3', currentCommand: 'node', startCommand: "node omx hud --watch" },
     ];
     assert.equal(chooseTeamLeaderPaneId(panes, '%2'), '%2');
+  });
+});
+
+describe('team runtime adapter resolution', () => {
+  it('defaults to auto when no explicit runtime is configured', () => {
+    assert.equal(resolveTeamRuntimeAdapter({}), 'auto');
+    assert.equal(shouldUseDetachedPsmuxTeamRuntime({}), false);
+  });
+
+  it('accepts Windows psmux aliases', () => {
+    assert.equal(resolveTeamRuntimeAdapter({ OMX_TEAM_RUNTIME: 'win-psmux' }), 'win-psmux');
+    assert.equal(resolveTeamRuntimeAdapter({ OMX_TEAM_RUNTIME: 'psmux' }), 'win-psmux');
+    assert.equal(shouldUseDetachedPsmuxTeamRuntime({ OMX_TEAM_RUNTIME: 'psmux' }), true);
+  });
+
+  it('accepts tmux aliases and rejects unknown values', () => {
+    assert.equal(resolveTeamRuntimeAdapter({ OMX_TEAM_RUNTIME: 'tmux' }), 'cli-tmux');
+    assert.equal(resolveTeamRuntimeAdapter({ OMX_TEAM_RUNTIME: 'cli-tmux' }), 'cli-tmux');
+    assert.throws(
+      () => resolveTeamRuntimeAdapter({ OMX_TEAM_RUNTIME: 'screen' }),
+      /Invalid OMX_TEAM_RUNTIME value/,
+    );
   });
 });
 

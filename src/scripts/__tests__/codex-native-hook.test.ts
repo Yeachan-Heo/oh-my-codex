@@ -1036,8 +1036,8 @@ describe("codex native hook dispatch", () => {
       );
       assert.match(additionalContext, /\[Execution environment\]/);
       assert.match(additionalContext, /native-hook \/ Codex App outside tmux/);
-      assert.match(additionalContext, /omx team, omx hud, and omx quest(?:ion) need an attached tmux OMX CLI shell|omx team and omx hud need an attached tmux OMX CLI shell/);
-      assert.match(additionalContext, /not available from this outside-tmux surface/);
+      assert.match(additionalContext, /OMX_TEAM_RUNTIME=win-psmux/);
+      assert.match(additionalContext, /detached psmux workers/);
       const sessionState = JSON.parse(
         await readFile(join(cwd, ".omx", "state", "session.json"), "utf-8"),
       ) as { session_id?: string; native_session_id?: string; pid?: number };
@@ -4632,9 +4632,11 @@ export async function onHookEvent(event) {
     }
   });
 
-  it("denies direct $team prompt activation from Codex App/native outside tmux", async () => {
+  it("activates $team prompt guidance from Windows Codex App/native outside tmux", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-native-block-"));
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
     try {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
       await mkdir(join(cwd, ".omx", "state"), { recursive: true });
       const result = await dispatchCodexNativeHook(
         {
@@ -4651,22 +4653,25 @@ export async function onHookEvent(event) {
 
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState?.skill, "team");
-      assert.equal(result.skillState?.active, false);
-      assert.match(String(result.skillState?.transition_error || ""), /cannot activate the tmux-only `team` workflow directly/);
+      assert.equal(result.skillState?.active, true);
+      assert.equal(result.skillState?.transition_error, undefined);
       const message = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)?.hookSpecificOutput?.additionalContext ?? "",
       );
-      assert.match(message, /denied workflow keyword "\$team" -> team/);
-      assert.match(message, /attached tmux shell first/);
-      assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), false);
+      assert.match(message, /workflow keyword "\$team" -> team/);
+      assert.match(message, /OMX_TEAM_RUNTIME='win-psmux'/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), true);
     } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("still denies direct $team prompt activation from Codex App/native outside tmux when a tmux return bridge exists", async () => {
+  it("activates $team prompt guidance from Windows Codex App/native outside tmux when a tmux return bridge exists", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-native-bridge-block-"));
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
     try {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
       await mkdir(join(cwd, ".omx", "state", "sessions", "sess-team-bridge"), { recursive: true });
       await writeJson(join(cwd, ".omx", "state", "sessions", "sess-team-bridge", "ralph-state.json"), {
         mode: "ralph",
@@ -4688,13 +4693,14 @@ export async function onHookEvent(event) {
 
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState?.skill, "team");
-      assert.equal(result.skillState?.active, false);
+      assert.equal(result.skillState?.active, true);
       const message = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)?.hookSpecificOutput?.additionalContext ?? "",
       );
-      assert.match(message, /attached tmux shell first/);
-      assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), false);
+      assert.match(message, /OMX_TEAM_RUNTIME='win-psmux'/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), true);
     } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -5703,6 +5709,29 @@ exit 0
       assert.equal((result.outputJson as { hookSpecificOutput?: unknown } | null)?.hookSpecificOutput, undefined);
       assert.match(String((result.outputJson as { reason?: string } | null)?.reason || ""), /cannot be launched directly from Codex App\/native outside-tmux Bash sessions/);
       assert.match(String((result.outputJson as { systemMessage?: string } | null)?.systemMessage || ""), /launch OMX CLI from an attached tmux shell first/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Bash omx team from Codex App/native outside tmux when Windows psmux runtime is explicit", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-team-native-psmux-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          source: "codex-app",
+          session_id: "sess-team-native-psmux",
+          tool_name: "Bash",
+          tool_use_id: "tool-team-native-psmux",
+          tool_input: { command: "$env:OMX_TEAM_RUNTIME='win-psmux'; omx team status my-team" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
