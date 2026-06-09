@@ -1,5 +1,5 @@
 import { deriveAutopilotChildPhase, normalizeAutopilotPhase, type AutopilotChildPhase } from './fsm.js';
-import { normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
+import { inferRunOutcome, inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -34,8 +34,8 @@ function isActiveAutopilotState(state: JsonObject): boolean {
 
 export function isAutopilotSuccessfulTerminalState(state: JsonObject): boolean {
   const phase = normalizeAutopilotPhase(state.current_phase);
-  const runOutcome = normalizeRunOutcome(state.run_outcome).outcome;
-  const lifecycleOutcome = normalizeTerminalLifecycleOutcome(state.lifecycle_outcome ?? state.terminal_outcome).outcome;
+  const runOutcome = inferRunOutcome(state);
+  const lifecycleOutcome = inferTerminalLifecycleOutcome(state);
   if (phase === 'failed' || runOutcome === 'failed' || runOutcome === 'cancelled' || runOutcome === 'blocked_on_user') return false;
   if (lifecycleOutcome === 'failed' || lifecycleOutcome === 'blocked' || lifecycleOutcome === 'userinterlude' || lifecycleOutcome === 'askuserQuestion') return false;
   if (phase === 'complete') return true;

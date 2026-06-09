@@ -2846,6 +2846,44 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('allows Autopilot state_write cancellation from gated phases without clean review and QA evidence', async () => {
+    for (const phase of ['deep-interview', 'ralplan', 'ultragoal', 'code-review']) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${phase}-cancel-allow-`));
+      try {
+        await withOmxRootEnv(wd, async () => {
+          const sessionId = `sess-autopilot-${phase}-cancel-allow`;
+          const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(
+            join(sessionDir, 'autopilot-state.json'),
+            JSON.stringify({
+              active: true,
+              current_phase: phase,
+            }, null, 2),
+          );
+
+          const response = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: sessionId,
+            mode: 'autopilot',
+            active: false,
+            current_phase: 'cancelled',
+            completed_at: '2026-06-09T16:30:00.000Z',
+          });
+
+          assert.equal(response.isError, undefined);
+          const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+          assert.equal(state.active, false);
+          assert.equal(state.current_phase, 'cancelled');
+          assert.equal(state.run_outcome, 'cancelled');
+          assert.equal(state.completed_at, '2026-06-09T16:30:00.000Z');
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('allows Autopilot ultraqa completion with clean review and QA evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ultraqa-complete-allow-'));
     try {
