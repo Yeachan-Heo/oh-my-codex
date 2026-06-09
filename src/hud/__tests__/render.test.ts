@@ -212,8 +212,8 @@ describe('renderHud – code-review', () => {
       codeReview: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
     };
     const result = stripSgr(renderHud(ctx, 'focused'));
-    assert.ok(result.includes('code-review:autopilot'));
-    assert.equal(result.includes('autopilot:code-review'), false);
+    assert.ok(result.includes('autopilot:code-review'));
+    assert.equal(result.includes('code-review:running'), false);
   });
 
   it('drops mismatched autopilot-derived late gate labels', () => {
@@ -224,9 +224,9 @@ describe('renderHud – code-review', () => {
       ultraqa: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
     };
     const result = stripSgr(renderHud(ctx, 'focused'));
-    assert.ok(result.includes('code-review:autopilot'));
+    assert.ok(result.includes('autopilot:code-review'));
     assert.equal(result.includes('qa:autopilot'), false);
-    assert.equal(result.includes('autopilot:code-review'), false);
+    assert.equal(result.includes('autopilot:ultraqa'), false);
   });
 
   it('keeps autopilot visible when only a mismatched derived late gate exists', () => {
@@ -268,8 +268,8 @@ describe('renderHud – ultraqa', () => {
       ultraqa: { active: true, current_phase: 'autopilot', source: 'autopilot' as const },
     };
     const result = stripSgr(renderHud(ctx, 'focused'));
-    assert.ok(result.includes('qa:autopilot'));
-    assert.equal(result.includes('autopilot:ultraqa'), false);
+    assert.ok(result.includes('autopilot:ultraqa'));
+    assert.equal(result.includes('qa:autopilot'), false);
   });
 });
 

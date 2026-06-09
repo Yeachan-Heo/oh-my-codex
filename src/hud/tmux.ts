@@ -218,13 +218,14 @@ export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner 
   const paneOwner = readHudPaneOwner(pane);
   const sessionMatches = wantsSession && wantedSessionIds.includes(paneOwner.sessionId ?? '');
   const leaderPaneMatches = wantsLeaderPane && paneOwner.leaderPaneId === wantedLeaderPaneId;
+  const hasLeaderTag = paneOwner.leaderPaneId !== undefined && paneOwner.leaderPaneId !== '';
 
   if (wantsSession && wantsLeaderPane) {
-    if (!sessionMatches) return false;
-    return !paneOwner.leaderPaneId || leaderPaneMatches;
+    if (hasLeaderTag) return sessionMatches && leaderPaneMatches;
+    return sessionMatches;
   }
   if (wantsSession) return sessionMatches;
-  return leaderPaneMatches && !paneOwner.sessionId;
+  return leaderPaneMatches;
 }
 
 export function findHudWatchPaneIds(

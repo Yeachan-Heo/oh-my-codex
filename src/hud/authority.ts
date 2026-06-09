@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getPackageRoot } from '../utils/package.js';
+import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
 export interface RunHudAuthorityTickOptions {
   cwd: string;
@@ -117,6 +118,20 @@ function parseIsoMs(value: unknown): number | null {
 
 function isNotFoundError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+function resolveHudWatcherScript(packageRoot: string, scriptName: 'notify-fallback-watcher.js' | 'notify-hook.js', cwd: string, env: NodeJS.ProcessEnv): string {
+  const packageScript = join(packageRoot, 'dist', 'scripts', scriptName);
+  if (existsSync(packageScript)) return packageScript;
+
+  const entryPath = resolveOmxCliEntryPath({ cwd, env });
+  if (entryPath && entryPath.endsWith('/dist/cli/omx.js')) {
+    const entryRoot = dirname(dirname(dirname(entryPath)));
+    const entryScript = join(entryRoot, 'dist', 'scripts', scriptName);
+    if (existsSync(entryScript)) return entryScript;
+  }
+
+  return packageScript;
 }
 
 function isAuthorityStatus(value: unknown): value is HudAuthorityState['last_status'] {
@@ -351,8 +366,9 @@ export async function runHudAuthorityTick(
   const nowMs = deps.nowMs?.() ?? Date.now();
   const random = deps.random ?? Math.random;
   const jitterMs = jitterMaxMs > 0 ? Math.floor(random() * (jitterMaxMs + 1)) : 0;
-  const watcherScript = join(packageRoot, 'dist', 'scripts', 'notify-fallback-watcher.js');
-  const notifyScript = join(packageRoot, 'dist', 'scripts', 'notify-hook.js');
+  const mergedEnv = { ...process.env, ...options.env };
+  const watcherScript = resolveHudWatcherScript(packageRoot, 'notify-fallback-watcher.js', cwd, mergedEnv);
+  const notifyScript = resolveHudWatcherScript(packageRoot, 'notify-hook.js', cwd, mergedEnv);
   const authorityStateDir = join(cwd, '.omx', 'state');
   const authorityOwnerPath = join(authorityStateDir, 'notify-fallback-authority-owner.json');
   const authorityStatePath = join(authorityStateDir, 'notify-fallback-authority-state.json');

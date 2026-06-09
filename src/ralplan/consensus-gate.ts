@@ -286,9 +286,11 @@ function trackerBackedNativeReviewProblem(
   agentRole: 'architect' | 'critic',
   options: RalplanNativeSubagentConsensusOptions,
 ): string | null {
+  const issues: string[] = [];
+
   if (!review) return `${agentRole} review is missing`;
-  if (review.agent_role !== agentRole) return `${agentRole} review has agent_role=${String(review.agent_role || 'missing')}`;
-  if (review.provenance_kind !== 'native_subagent') return `${agentRole} review has provenance_kind=${String(review.provenance_kind || 'missing')}`;
+  if (review.agent_role !== agentRole) issues.push(`${agentRole} review has agent_role=${String(review.agent_role || 'missing')}`);
+  if (review.provenance_kind !== 'native_subagent') issues.push(`${agentRole} review has provenance_kind=${String(review.provenance_kind || 'missing')}`);
   const sessionId = typeof options.sessionId === 'string' && options.sessionId.trim()
     ? options.sessionId.trim()
     : typeof review.session_id === 'string'
@@ -298,14 +300,17 @@ function trackerBackedNativeReviewProblem(
   const threadId = typeof review.thread_id === 'string' ? review.thread_id.trim() : '';
   const artifactPath = typeof review.artifact_path === 'string' ? review.artifact_path.trim() : '';
   const trackerPath = typeof review.tracker_path === 'string' ? review.tracker_path.trim() : '';
-  if (!sessionId) return `${agentRole} review cannot resolve session_id`;
-  if (!reviewSessionId || reviewSessionId !== sessionId) return `${agentRole} review session_id=${reviewSessionId || 'missing'} does not match ${sessionId}`;
-  if (!threadId) return `${agentRole} review missing thread_id`;
-  if (!artifactPath) return `${agentRole} review missing artifact_path`;
-  if (!trackerPath || !trackerPath.endsWith('subagent-tracking.json')) return `${agentRole} review missing subagent-tracking.json tracker_path`;
-  if (!options.cwd) return `${agentRole} review cannot resolve cwd for tracker lookup`;
+  if (!sessionId) issues.push(`${agentRole} review cannot resolve session_id`);
+  if (!reviewSessionId || reviewSessionId !== sessionId) issues.push(`${agentRole} review session_id=${reviewSessionId || 'missing'} does not match ${sessionId || 'missing'}`);
+  if (!threadId) issues.push(`${agentRole} review missing thread_id`);
+  if (!artifactPath) issues.push(`${agentRole} review missing artifact_path`);
+  if (!trackerPath || !trackerPath.endsWith('subagent-tracking.json')) issues.push(`${agentRole} review missing subagent-tracking.json tracker_path`);
+  const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+  if (!cwd) issues.push(`${agentRole} review cannot resolve cwd for tracker lookup`);
 
-  const expectedTrackerPath = subagentTrackingPath(options.cwd);
+  if (issues.length > 0) return issues.join('; ');
+
+  const expectedTrackerPath = subagentTrackingPath(cwd);
   const tracking = readJsonState(expectedTrackerPath);
   const session = asRecord(asRecord(tracking?.sessions)?.[sessionId]);
   const thread = asRecord(asRecord(session?.threads)?.[threadId]);

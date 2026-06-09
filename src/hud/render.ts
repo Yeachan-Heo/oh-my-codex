@@ -134,6 +134,9 @@ function renderCodeReview(ctx: HudRenderContext): string | null {
   if (!ctx.codeReview) return null;
   if (ctx.codeReview.source === 'autopilot' && !isAutopilotLateGateSource(ctx, 'code-review')) return null;
   const phase = sanitizeDynamicText(ctx.codeReview.current_phase || 'active') || 'active';
+  if (ctx.codeReview.source === 'autopilot') {
+    return green(`autopilot:code-review`);
+  }
   return green(`code-review:${phase}`);
 }
 
@@ -141,6 +144,9 @@ function renderUltraqa(ctx: HudRenderContext): string | null {
   if (!ctx.ultraqa) return null;
   if (ctx.ultraqa.source === 'autopilot' && !isAutopilotLateGateSource(ctx, 'ultraqa')) return null;
   const phase = sanitizeDynamicText(ctx.ultraqa.current_phase || 'active') || 'active';
+  if (ctx.ultraqa.source === 'autopilot') {
+    return green(`autopilot:ultraqa`);
+  }
   return green(`qa:${phase}`);
 }
 

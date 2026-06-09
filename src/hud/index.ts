@@ -429,10 +429,7 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
   const leaderPaneId = currentPaneId;
   const sessionId = process.env.OMX_SESSION_ID?.trim() || undefined;
   const existingHudPaneIds = leaderPaneId || sessionId
-    ? listCurrentWindowHudPaneIds(leaderPaneId, undefined, {
-        sessionId,
-        leaderPaneId,
-      })
+    ? listCurrentWindowHudPaneIds(leaderPaneId, undefined, leaderPaneId ? { leaderPaneId } : { sessionId })
     : [];
   if (existingHudPaneIds.length >= 1) {
     const [keeperPaneId, ...duplicatePaneIds] = existingHudPaneIds;

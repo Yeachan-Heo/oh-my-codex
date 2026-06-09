@@ -83,7 +83,6 @@ describe('runHudAuthorityTick', () => {
         {
           cwd,
           nodePath: '/node',
-          packageRoot: '/pkg',
           pollMs: 75,
           timeoutMs: 4321,
           env: { CUSTOM_ENV: '1' },
@@ -102,17 +101,17 @@ describe('runHudAuthorityTick', () => {
       assert.equal(calls.length, 1);
       const call = calls[0]!;
       assert.equal(call.nodePath, '/node');
-      assert.deepEqual(call.args, [
-        '/pkg/dist/scripts/notify-fallback-watcher.js',
-        '--once',
-        '--authority-only',
-        '--cwd',
-        cwd,
-        '--notify-script',
-        '/pkg/dist/scripts/notify-hook.js',
-        '--poll-ms',
-        '75',
-      ]);
+      assert.equal(call.args.length, 9);
+      assert.equal(typeof call.args[0], 'string');
+      assert.equal(call.args[0].endsWith('/dist/scripts/notify-fallback-watcher.js'), true);
+      assert.equal(call.args[1], '--once');
+      assert.equal(call.args[2], '--authority-only');
+      assert.equal(call.args[3], '--cwd');
+      assert.equal(call.args[4], cwd);
+      assert.equal(call.args[5], '--notify-script');
+      assert.equal(call.args[6].endsWith('/dist/scripts/notify-hook.js'), true);
+      assert.equal(call.args[7], '--poll-ms');
+      assert.equal(call.args[8], '75');
       assert.equal(call.options.cwd, cwd);
       assert.equal(call.options.timeoutMs, 4321);
       assert.equal(call.options.env.OMX_HUD_AUTHORITY, '1');
@@ -121,6 +120,54 @@ describe('runHudAuthorityTick', () => {
       assert.equal(call.options.env.CUSTOM_ENV, '1');
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to CLI entry dist scripts when package root lacks dist scripts', async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), 'omx-hud-package-root-no-dist-'));
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-authority-entry-fallback-'));
+    const cliRoot = await mkdtemp(join(tmpdir(), 'omx-cli-root-'));
+    const entryPath = join(cliRoot, 'dist', 'cli', 'omx.js');
+    const watcherPath = join(cliRoot, 'dist', 'scripts', 'notify-fallback-watcher.js');
+    const hookPath = join(cliRoot, 'dist', 'scripts', 'notify-hook.js');
+    try {
+      await mkdir(join(cliRoot, 'dist', 'scripts'), { recursive: true });
+      writeFileSync(watcherPath, 'console.log("cli entry watcher")\n');
+      writeFileSync(hookPath, 'console.log("cli entry notify hook")\n');
+
+      const calls: Array<{
+        nodePath: string;
+        args: string[];
+        options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number };
+      }> = [];
+      const env = { OMX_ENTRY_PATH: entryPath };
+
+      await runHudAuthorityTick(
+        {
+          cwd,
+          nodePath: '/node',
+          packageRoot,
+          env,
+        },
+        {
+          runProcess: async (
+            nodePath: string,
+            args: string[],
+            options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
+          ) => {
+            calls.push({ nodePath, args, options });
+          },
+        },
+      );
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]!.args[0], watcherPath);
+      assert.equal(calls[0]!.args[6], hookPath);
+      assert.equal(calls[0]!.options.env.OMX_HUD_AUTHORITY, '1');
+    } finally {
+      await rm(packageRoot, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+      await rm(cliRoot, { recursive: true, force: true });
     }
   });
 
