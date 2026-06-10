@@ -17,6 +17,14 @@ function runOmx(cwd: string, ...args: string[]) {
   });
 }
 
+function runOmxWithEnv(cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) {
+  return spawnSync(process.execPath, [omxBin, ...args], {
+    cwd,
+    encoding: 'utf-8',
+    env: { ...process.env, ...env },
+  });
+}
+
 describe('CLI session-scoped state parity', () => {
   it('status and cancel include session-scoped states', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-session-scope-'));
@@ -84,6 +92,70 @@ describe('CLI session-scoped state parity', () => {
       assert.match(statusResult.stdout, /deep-interview: inactive \(phase: cleared\)/);
     } finally {
       await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels hook-visible run-dir session state when worktree state list-active is empty', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-cancel-worktree-'));
+    const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-cancel-runs-'));
+    try {
+      const sessionId = 'sess-run-dir-cancel';
+      const runDir = join(runsRoot, 'run-20260610121751-b6c4');
+      const runStateDir = join(runDir, '.omx', 'state');
+      const runSessionDir = join(runStateDir, 'sessions', sessionId);
+      await mkdir(runSessionDir, { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(runStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(runSessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+      }, null, 2));
+      await writeFile(join(runSessionDir, 'skill-active-state.json'), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: sessionId }],
+      }, null, 2));
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({
+        launcher: 'omx --madmax',
+        created_at: '2026-06-10T12:17:51.000Z',
+        cwd: runDir,
+        source_cwd: wd,
+        argv: ['codex'],
+        run_dir: runDir,
+      })}\n`);
+
+      const listResult = runOmx(wd, 'state', 'list-active', '--json');
+      assert.equal(listResult.status, 0, listResult.stderr || listResult.stdout);
+      assert.deepEqual(JSON.parse(listResult.stdout), { active_modes: [] });
+
+      const cancelResult = runOmxWithEnv(wd, { OMX_RUNS_DIR: runsRoot }, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled: autopilot/);
+      assert.doesNotMatch(cancelResult.stdout, /No active modes to cancel/);
+
+      const autopilot = JSON.parse(await readFile(join(runSessionDir, 'autopilot-state.json'), 'utf-8'));
+      assert.equal(autopilot.active, false);
+      assert.equal(autopilot.current_phase, 'cancelled');
+      assert.ok(typeof autopilot.completed_at === 'string' && autopilot.completed_at.length > 0);
+
+      const skillActive = JSON.parse(await readFile(join(runSessionDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(skillActive.active, false);
+      assert.equal(skillActive.current_phase, 'cancelled');
+      assert.equal(skillActive.phase, 'cancelled');
+      assert.deepEqual(
+        skillActive.active_skills.map((skill: { active: unknown; phase: unknown }) => ({
+          active: skill.active,
+          phase: skill.phase,
+        })),
+        [{ active: false, phase: 'cancelled' }],
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runsRoot, { recursive: true, force: true });
     }
   });
 
