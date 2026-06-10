@@ -105,7 +105,7 @@ type DoctorSetupScope = "user" | "project";
 
 interface DoctorScopeResolution {
 	scope: DoctorSetupScope;
-	source: "persisted" | "default";
+	source: "persisted" | "config" | "default";
 	installMode?: SetupInstallMode;
 	mcpMode?: SetupMcpMode;
 }
@@ -123,15 +123,59 @@ interface DoctorPaths {
 async function resolveDoctorScope(cwd: string): Promise<DoctorScopeResolution> {
 	const persisted = await readPersistedSetupPreferences(cwd);
 	if (persisted?.scope) {
+		const inferred = await inferPluginInstallModeFromConfigForScope(cwd, persisted.scope);
 		return {
 			scope: persisted.scope,
 			source: "persisted",
-			installMode: persisted.installMode,
-			mcpMode: persisted.mcpMode ?? "none",
+			installMode: persisted.installMode ?? inferred?.installMode,
+			mcpMode: persisted.mcpMode ?? inferred?.mcpMode ?? "none",
 		};
 	}
 
+	const inferredUser = await inferPluginInstallModeFromConfigForScope(cwd, "user");
+	if (inferredUser) return inferredUser;
+
+	const inferredProject = await inferPluginInstallModeFromConfigForScope(cwd, "project");
+	if (inferredProject) return inferredProject;
+
 	return { scope: "user", source: "default" };
+}
+
+async function inferPluginInstallModeFromConfigForScope(
+	cwd: string,
+	scope: DoctorSetupScope,
+): Promise<DoctorScopeResolution | null> {
+	const configPath =
+		scope === "project" ? join(cwd, ".codex", "config.toml") : codexConfigPath();
+	if (!existsSync(configPath)) return null;
+
+	try {
+		const configContent = await readFile(configPath, "utf-8");
+		if (!configEnablesPluginScopedHooks(configContent)) return null;
+
+		const { marketplace, plugin } = getParsedPluginMarketplaceConfig(configContent);
+		if (!marketplace || marketplace.source_type !== "local") return null;
+		if (marketplace.source !== getPackageRoot()) return null;
+		if (plugin?.enabled !== true) return null;
+
+		return {
+			scope,
+			source: "config",
+			installMode: "plugin",
+			mcpMode: inferPluginMcpModeFromConfig(configContent),
+		};
+	} catch {
+		return null;
+	}
+}
+
+function inferPluginMcpModeFromConfig(configContent: string): SetupMcpMode {
+	const states = OMX_FIRST_PARTY_MCP_SERVER_NAMES.map((serverName) =>
+		pluginMcpServerEnabled(configContent, serverName),
+	);
+	return states.length > 0 && states.every((state) => state === true)
+		? "compat"
+		: "none";
 }
 
 function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
@@ -171,6 +215,8 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	const scopeSourceMessage =
 		scopeResolution.source === "persisted"
 			? " (from .omx/setup-scope.json)"
+			: scopeResolution.source === "config"
+				? " (inferred from Codex plugin config)"
 			: "";
 
 	console.log("oh-my-codex doctor");
