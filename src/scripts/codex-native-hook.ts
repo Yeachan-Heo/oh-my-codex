@@ -2865,12 +2865,28 @@ async function buildRalplanPreToolUseBoundaryOutput(
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
   let blocked = false;
+  let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
   if (toolName === "Bash") {
     blocked = !isAllowedRalplanBashWrite(cwd, command);
+    if (blocked) {
+      const targets = extractDeepInterviewCommandWriteTargets(command);
+      const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
+      blockedDetail = blockedTarget
+        ? `write target ${blockedTarget} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`
+        : "Bash write intent did not identify an allowed planning artifact path";
+    }
   } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-    blocked = pathCandidates.length === 0
-      || !pathCandidates.every((candidate) => isAllowedRalplanArtifactPath(cwd, candidate));
+    if (pathCandidates.length === 0) {
+      blocked = true;
+      blockedDetail = `${toolName} did not include a file path; only planning artifact paths are allowed`;
+    } else {
+      const blockedPath = pathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+      blocked = blockedPath !== undefined;
+      if (blockedPath !== undefined) {
+        blockedDetail = `path ${blockedPath} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+      }
+    }
   }
 
   if (!blocked) return null;
@@ -2883,7 +2899,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
     : "Ralplan is consensus-planning mode";
   return {
     decision: "block",
-    reason: `${planningModeLabel} is active (phase: ${phase}); implementation/write tools are blocked until an explicit execution handoff workflow is activated.`,
+    reason: `${planningModeLabel} is active (phase: ${phase}); implementation/write tools are blocked until an explicit execution handoff workflow is activated; ${blockedDetail}.`,
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:

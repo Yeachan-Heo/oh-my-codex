@@ -5903,6 +5903,86 @@ exit 0
     }
   });
 
+  it("allows Autopilot ralplan planning artifacts while blocking implementation writes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-autopilot-ralplan-artifact-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-autopilot-ralplan-artifact");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-autopilot-ralplan-artifact", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "ralplan",
+        session_id: "sess-autopilot-ralplan-artifact",
+        thread_id: "thread-autopilot-ralplan-artifact",
+        active_skills: [
+          {
+            skill: "autopilot",
+            phase: "ralplan",
+            active: true,
+            session_id: "sess-autopilot-ralplan-artifact",
+            thread_id: "thread-autopilot-ralplan-artifact",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        session_id: "sess-autopilot-ralplan-artifact",
+        thread_id: "thread-autopilot-ralplan-artifact",
+      });
+
+      const allowedPlanWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-ralplan-artifact",
+          thread_id: "thread-autopilot-ralplan-artifact",
+          tool_name: "Write",
+          tool_use_id: "tool-autopilot-ralplan-plan-write",
+          tool_input: { file_path: ".omx/plans/prd-omx-y7a.md", content: "# Plan" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedPlanWrite.outputJson, null);
+
+      const allowedSpecEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-ralplan-artifact",
+          thread_id: "thread-autopilot-ralplan-artifact",
+          tool_name: "Edit",
+          tool_use_id: "tool-autopilot-ralplan-spec-edit",
+          tool_input: { file_path: ".omx/specs/omx-y7a.md", old_string: "old", new_string: "new" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedSpecEdit.outputJson, null);
+
+      const blockedImplementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-ralplan-artifact",
+          thread_id: "thread-autopilot-ralplan-artifact",
+          tool_name: "Edit",
+          tool_use_id: "tool-autopilot-ralplan-src-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedImplementationEdit.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedImplementationEdit.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/implementation\.ts/);
+      assert.match(String((blockedImplementationEdit.outputJson as { reason?: string } | null)?.reason ?? ""), /not under allowed planning artifact paths/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows null-device fd redirects while deep-interview blocks real Bash writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-null-redirect-"));
     try {
