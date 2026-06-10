@@ -4,7 +4,7 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, delimiter, dirname, join, posix, win32 } from "path";
+import { basename, dirname, join, posix, win32 } from "path";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
@@ -1490,8 +1490,17 @@ function runCodexBlocking(
   }
 }
 
-export function omxRuntimeCommandShimPath(cwd: string): string {
-  return join(omxRoot(cwd), "runtime", "bin", "omx");
+export function omxRuntimeCommandShimFileName(
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return platform === "win32" ? "omx.cmd" : "omx";
+}
+
+export function omxRuntimeCommandShimPath(
+  cwd: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return join(omxRoot(cwd), "runtime", "bin", omxRuntimeCommandShimFileName(platform));
 }
 
 function ensureRuntimeShimDirectory(path: string): void {
@@ -1508,7 +1517,18 @@ function ensureRuntimeShimDirectory(path: string): void {
   mkdirSync(path, { mode: 0o700 });
 }
 
-function buildOmxRuntimeCommandShim(nodePath: string, omxBin: string): string {
+function buildOmxRuntimeCommandShim(
+  nodePath: string,
+  omxBin: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    return [
+      "@echo off",
+      `"${nodePath}" "${omxBin}" %*`,
+      "",
+    ].join("\r\n");
+  }
   return [
     "#!/bin/sh",
     `exec ${quoteShellArg(nodePath)} ${quoteShellArg(omxBin)} "$@"`,
@@ -1520,8 +1540,9 @@ export function ensureOmxRuntimeCommandShim(
   cwd: string,
   omxBin: string,
   nodePath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
 ): string {
-  const shimPath = omxRuntimeCommandShimPath(cwd);
+  const shimPath = omxRuntimeCommandShimPath(cwd, platform);
   const shimDir = dirname(shimPath);
   const rootDir = omxRoot(cwd);
   const runtimeDir = dirname(shimDir);
@@ -1537,11 +1558,13 @@ export function ensureOmxRuntimeCommandShim(
       rmSync(shimPath, { force: true });
     }
   }
-  writeFileSync(shimPath, buildOmxRuntimeCommandShim(nodePath, omxBin), {
+  writeFileSync(shimPath, buildOmxRuntimeCommandShim(nodePath, omxBin, platform), {
     encoding: "utf-8",
     mode: 0o700,
   });
-  chmodSync(shimPath, 0o700);
+  if (platform !== "win32") {
+    chmodSync(shimPath, 0o700);
+  }
   return shimDir;
 }
 
@@ -1550,17 +1573,48 @@ export function prependOmxRuntimeCommandShimToEnv(
   env: NodeJS.ProcessEnv,
   omxBin: string,
   nodePath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
-  const shimDir = ensureOmxRuntimeCommandShim(cwd, omxBin, nodePath);
-  const currentPath = typeof env.PATH === "string" ? env.PATH : "";
-  return {
-    ...env,
-    PATH: currentPath ? `${shimDir}${delimiter}${currentPath}` : shimDir,
-    OMX_ENTRY_PATH: omxBin,
-    OMX_STARTUP_CWD: typeof env.OMX_STARTUP_CWD === "string" && env.OMX_STARTUP_CWD.trim()
-      ? env.OMX_STARTUP_CWD
-      : cwd,
-  };
+  const shimDir = ensureOmxRuntimeCommandShim(cwd, omxBin, nodePath, platform);
+  const pathDelimiter = platform === "win32" ? win32.delimiter : posix.delimiter;
+  const result: NodeJS.ProcessEnv = { ...env };
+
+  if (platform === "win32") {
+    // Windows env var names are case-insensitive; the inherited key is usually
+    // `Path`, not `PATH`. Find every case variant, preserve the existing value,
+    // prepend the shim directory, and collapse to a single key so the child does
+    // not see an empty `PATH` shadowing the real `Path` (which drops System32,
+    // WindowsPowerShell, etc.).
+    const pathVariants = Object.keys(result).filter(
+      (key) => key.toLowerCase() === "path",
+    );
+    let pathKey = "Path";
+    let currentPath = "";
+    for (const variant of pathVariants) {
+      const value = result[variant];
+      if (typeof value === "string" && value.length > 0) {
+        pathKey = variant;
+        currentPath = value;
+        break;
+      }
+    }
+    for (const variant of pathVariants) {
+      delete result[variant];
+    }
+    result[pathKey] = currentPath
+      ? `${shimDir}${pathDelimiter}${currentPath}`
+      : shimDir;
+  } else {
+    const currentPath = typeof result.PATH === "string" ? result.PATH : "";
+    result.PATH = currentPath ? `${shimDir}${pathDelimiter}${currentPath}` : shimDir;
+  }
+
+  result.OMX_ENTRY_PATH = omxBin;
+  result.OMX_STARTUP_CWD =
+    typeof result.OMX_STARTUP_CWD === "string" && result.OMX_STARTUP_CWD.trim()
+      ? result.OMX_STARTUP_CWD
+      : cwd;
+  return result;
 }
 
 export interface DetachedSessionTmuxStep {

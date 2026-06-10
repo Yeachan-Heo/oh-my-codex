@@ -18,6 +18,7 @@ import {
   isRuntimeCodexHomeMirrorPath,
   mergeManagedCodexHooksConfig,
   removeManagedCodexHooks,
+  resolveWindowsPowerShellPath,
 } from "../codex-hooks.js";
 
 describe("codex hooks helpers", () => {
@@ -49,10 +50,14 @@ describe("codex hooks helpers", () => {
     );
   });
 
-  it("uses a PowerShell ProcessStartInfo shim for Windows managed hook commands", () => {
+  it("uses an absolute PowerShell ProcessStartInfo shim for Windows managed hook commands", () => {
     const config = buildManagedCodexHooksConfig(
       "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
-      { platform: "win32", codexHomeDir: "C:\\Users\\Ada Lovelace\\.codex" },
+      {
+        platform: "win32",
+        codexHomeDir: "C:\\Users\\Ada Lovelace\\.codex",
+        env: { SystemRoot: "C:\\Windows" },
+      },
     );
     const command = (config.hooks.SessionStart[0] as {
       hooks?: Array<{ command?: string }>;
@@ -60,9 +65,32 @@ describe("codex hooks helpers", () => {
 
     assert.equal(
       command,
-      'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     );
     assert.doesNotMatch(command ?? "", /codex-native-hook\.js/);
+  });
+
+  it("derives the PowerShell path from windir when SystemRoot is absent", () => {
+    const command = buildManagedCodexNativeHookCommand(
+      "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
+      {
+        platform: "win32",
+        codexHomeDir: "C:\\Users\\Ada Lovelace\\.codex",
+        env: { windir: "E:\\WINNT" },
+      },
+    );
+
+    assert.equal(
+      command,
+      '"E:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+    );
+  });
+
+  it("falls back to the default Windows install root when no env hints exist", () => {
+    assert.equal(
+      resolveWindowsPowerShellPath({}),
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
   });
 
   it("keeps Windows shim paths quoted when they contain spaces", () => {
@@ -80,7 +108,11 @@ describe("codex hooks helpers", () => {
         }),
         "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
         "C:\\Users\\Ada Lovelace\\.codex\\hooks.json",
-        { platform: "win32", codexHomeDir: "C:\\Users\\Ada Lovelace\\.codex" },
+        {
+          platform: "win32",
+          codexHomeDir: "C:\\Users\\Ada Lovelace\\.codex",
+          env: { SystemRoot: "C:\\Windows" },
+        },
       ),
     ) as { hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> };
 
@@ -90,7 +122,7 @@ describe("codex hooks helpers", () => {
 
     assert.ok(commands.includes("echo keep-me"));
     assert.ok(commands.includes(
-      'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     ));
   });
 
