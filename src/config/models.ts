@@ -14,6 +14,9 @@
  *     "default": "o4-mini",
  *     "team": "gpt-4.1"
  *   },
+ *   "agentModels": {
+ *     "architect": "gpt-5.5"
+ *   },
  *   "agentReasoning": {
  *     "architect": "xhigh"
  *   }
@@ -38,6 +41,7 @@ export interface OmxConfigEnv {
 export type ConfiguredAgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 interface OmxConfigFile {
+  agentModels?: Record<string, unknown>;
   agentReasoning?: Record<string, unknown>;
   env?: OmxConfigEnv;
   models?: ModelsConfig;
@@ -165,6 +169,29 @@ export function readAgentReasoningOverrides(
     if (role && effort) resolved[role] = effort;
   }
   return resolved;
+}
+
+export function readAgentModelOverrides(codexHomeOverride?: string): Record<string, string> {
+  const config = readOmxConfigFile(codexHomeOverride);
+  const raw = config?.agentModels;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const role = normalizeAgentName(key);
+    const model = normalizeConfiguredValue(value);
+    if (role && model) resolved[role] = model;
+  }
+  return resolved;
+}
+
+export function getAgentModelOverride(
+  agentName: string | undefined,
+  codexHomeOverride?: string,
+): string | undefined {
+  const normalized = normalizeAgentName(agentName);
+  if (!normalized) return undefined;
+  return readAgentModelOverrides(codexHomeOverride)[normalized];
 }
 
 export function getAgentReasoningOverride(

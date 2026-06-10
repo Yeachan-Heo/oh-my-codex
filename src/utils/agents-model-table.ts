@@ -5,6 +5,7 @@ import { getRootModelName } from '../config/generator.js';
 import {
   DEFAULT_FRONTIER_MODEL,
   DEFAULT_SPARK_MODEL,
+  readAgentModelOverrides,
   getEnvConfiguredSparkDefaultModel,
   getEnvConfiguredMainDefaultModel,
   getEnvConfiguredStandardDefaultModel,
@@ -20,6 +21,7 @@ export interface AgentsModelTableContext {
   frontierModel: string;
   sparkModel: string;
   subagentDefaultModel: string;
+  agentModelOverrides?: Record<string, string>;
 }
 
 function escapeTableCell(value: string): string {
@@ -34,6 +36,11 @@ function getAgentRecommendedModel(
   agent: AgentDefinition,
   context: AgentsModelTableContext,
 ): string {
+  const configuredModel = context.agentModelOverrides?.[agent.name];
+  if (configuredModel) {
+    return configuredModel;
+  }
+
   if (agent.exactModel) {
     return agent.exactModel;
   }
@@ -107,6 +114,7 @@ export function resolveAgentsModelTableContext(
     frontierModel,
     sparkModel,
     subagentDefaultModel,
+    agentModelOverrides: readAgentModelOverrides(codexHomeOverride),
   };
 }
 

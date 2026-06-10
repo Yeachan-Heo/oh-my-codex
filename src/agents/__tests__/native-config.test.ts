@@ -133,6 +133,42 @@ describe("agents/native-config", () => {
     }
   });
 
+  it("applies per-agent model overrides before exact pins and class routing", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-agent-models-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentModels: {
+          planner: "gpt-5.5",
+          debugger: "gpt-5.4-mini",
+        },
+      }));
+
+      const plannerToml = generateAgentToml(
+        AGENT_DEFINITIONS.planner,
+        "planner prompt",
+        { codexHomeOverride: codexHome },
+      );
+      assert.match(plannerToml, /model = "gpt-5\.5"/);
+      assert.match(plannerToml, /resolved_model: gpt-5\.5/);
+      assert.doesNotMatch(plannerToml, /model = "gpt-5\.4-mini"/);
+      assert.doesNotMatch(plannerToml, /exact gpt-5\.4-mini model/);
+
+      const debuggerToml = generateAgentToml(
+        AGENT_DEFINITIONS.debugger,
+        "debugger prompt",
+        {
+          codexHomeOverride: codexHome,
+          env: { OMX_DEFAULT_STANDARD_MODEL: "standard-env" } as NodeJS.ProcessEnv,
+        },
+      );
+      assert.match(debuggerToml, /model = "gpt-5\.4-mini"/);
+      assert.match(debuggerToml, /resolved_model: gpt-5\.4-mini/);
+      assert.match(debuggerToml, /exact gpt-5\.4-mini model/);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
 
   it("pins ralplan thesis/antithesis and researcher to exact gpt-5.4-mini without downgrading judgment roles", () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.5";
@@ -345,6 +381,36 @@ describe("agents/native-config", () => {
 
       const architectToml = await readFile(join(outDir, "architect.toml"), "utf8");
       assert.match(architectToml, /model_reasoning_effort = "xhigh"/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("installs native agent TOML with configured per-agent model overrides", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-config-install-agent-models-"));
+    const codexHome = join(root, ".codex");
+    const promptsDir = join(root, "prompts");
+    const outDir = join(codexHome, "agents");
+
+    try {
+      await mkdir(promptsDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentModels: {
+          Architect: "gpt-5.5",
+        },
+      }));
+      await writeFile(join(promptsDir, "architect.md"), "architect prompt");
+
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["architect"]),
+      });
+
+      const architectToml = await readFile(join(outDir, "architect.toml"), "utf8");
+      assert.match(architectToml, /model = "gpt-5\.5"/);
+      assert.match(architectToml, /resolved_model: gpt-5\.5/);
+      assert.doesNotMatch(architectToml, /exact gpt-5\.4-mini model/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

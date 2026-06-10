@@ -25,6 +25,7 @@ Current code recognizes these top-level `.omx-config.json` keys:
 
 | Top-level key | Supported shape | Primary use |
 | --- | --- | --- |
+| `agentModels` | Object mapping agent names to non-empty model strings | Optional per-agent model overrides for generated native agent TOML and the generated model capability table. |
 | `agentReasoning` | Object mapping agent names to `low`, `medium`, `high`, or `xhigh` | Optional per-agent reasoning overrides for generated native agent TOML and role-based worker/Ralph staffing guidance. |
 | `env` | Object of non-empty string values | Fallback environment values for model routing and helper launch paths. Model-related supported keys are listed below. |
 | `models` | Object of non-empty string values | Mode defaults and low-complexity model aliases. Supported model-routing keys are listed below. |
@@ -51,10 +52,14 @@ Use [`docs/discord-integration.md`](../discord-integration.md) for Discord webho
 
 ## Supported model/env keys
 
-The model-routing reader supports `env`, `models`, and the role-reasoning override map `agentReasoning`.
+The model-routing reader supports `env`, `models`, the per-agent native model override map `agentModels`, and the role-reasoning override map `agentReasoning`.
 
 ```json
 {
+  "agentModels": {
+    "planner": "gpt-5.5",
+    "architect": "gpt-5.5"
+  },
   "agentReasoning": {
     "architect": "xhigh",
     "critic": "xhigh"
@@ -112,7 +117,25 @@ Supported model-routing keys:
 | `team-low-complexity` | Alias for `team_low_complexity`. |
 | `teamLowComplexity` | Alias for `team_low_complexity`. |
 
-Do not invent per-role maps such as `models.executor`, `models.architect`, or `models.roles` unless your installed version documents that exact key. Current role routing is based on agent definitions and model class, not arbitrary per-role JSON maps.
+Do not invent per-role maps such as `models.executor`, `models.architect`, or `models.roles`. Use the documented top-level `agentModels` map for generated native-agent per-role model overrides. `models` remains the mode/default routing map.
+
+### `agentModels`
+
+`agentModels` is the supported per-agent model override map for setup-managed native agent TOML files and the generated model capability table. Keys are agent names and values must be non-empty model strings.
+
+```json
+{
+  "agentModels": {
+    "planner": "gpt-5.5",
+    "architect": "gpt-5.5",
+    "explore": "gpt-5.3-codex-spark"
+  }
+}
+```
+
+These overrides do not change built-in defaults in source. They are user/project configuration that applies when OMX regenerates native agent TOML. Rerun `omx setup` after changing this map so setup-managed native agent files and the generated model capability table are refreshed. Malformed agent names, empty values, non-string values, and wrong-shaped maps are ignored.
+
+For generated native agents, `agentModels` has the highest model precedence: it wins before built-in exact-model pins and before model-class routing. This lets a user locally promote roles such as `planner`, `architect`, or `researcher` without maintaining a patch against `src/agents/definitions.ts`.
 
 ### `agentReasoning`
 
@@ -150,6 +173,19 @@ When code asks for `getModelForMode(mode)`, the mode model resolves in this orde
 
 Example: with `models.team = "gpt-5.5"` and `models.default = "gpt-5.4-mini"`, `team` uses `gpt-5.5`; a mode without its own key uses `gpt-5.4-mini`.
 
+### Generated native agents
+
+Generated native agent TOML resolves each role model in this order:
+
+1. `.omx-config.json` `agentModels[agentName]`
+2. Built-in `AgentDefinition.exactModel`, when present
+3. Existing class routing:
+   - `executor` and `frontier` roles use the active `config.toml` root `model` first, then the main/frontier fallback.
+   - `standard` roles use the standard-lane default.
+   - `fast` roles use the spark/low-complexity default.
+
+`agentModels` applies to generated native agent TOML and the generated model capability table. It is not a substitute for explicit `--model ...` launch arguments and does not redefine mode-level `models` routing.
+
 ### Standard-lane agents
 
 Standard-lane agents resolve in this order:
@@ -175,13 +211,13 @@ For team low-complexity helpers, the exact order depends on the call path: `getS
 
 ## Role/category routing examples
 
-Native agent TOML generation and team model-contract logic use agent definitions with `modelClass`, optional `exactModel`, and `reasoningEffort` metadata. Exact-model pins win before class-based routing. Native-agent generation has one important frontier-lane precedence detail: for frontier roles and the `executor` special case, it reads the active Codex `config.toml` root `model` first, then falls back to `getMainDefaultModel()` if that root model is absent. Because `getMainDefaultModel()` is only the fallback in this path, `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL` does not override an explicit `config.toml` root `model` for generated native-agent TOML.
+Native agent TOML generation and team model-contract logic use agent definitions with `modelClass`, optional `exactModel`, and `reasoningEffort` metadata. For generated native agent TOML, `agentModels` wins before exact-model pins, and exact-model pins otherwise win before class-based routing. Native-agent generation has one important frontier-lane precedence detail: for frontier roles and the `executor` special case, it reads the active Codex `config.toml` root `model` first, then falls back to `getMainDefaultModel()` if that root model is absent. Because `getMainDefaultModel()` is only the fallback in this path, `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL` does not override an explicit `config.toml` root `model` for generated native-agent TOML.
 
 Examples:
 
 | Role/category | Examples | Model class behavior |
 | --- | --- | --- |
-| Exact mini planning/research | `planner`, `architect`, `researcher` | Uses the exact `gpt-5.4-mini` pin before model-class routing; planner/architect keep `frontier-orchestrator` posture and high reasoning, while ralplan's `critic` remains frontier-routed for the consensus gate. |
+| Exact mini planning/research | `planner`, `architect`, `researcher` | Uses the exact `gpt-5.4-mini` pin before model-class routing unless `agentModels` overrides the role; planner/architect keep `frontier-orchestrator` posture and high reasoning, while ralplan's `critic` remains frontier-routed for the consensus gate. |
 | Frontier orchestration | `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback. |
 | Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
@@ -245,6 +281,10 @@ This keeps standard agents inheriting the frontier model by omitting `OMX_DEFAUL
 
 ```json
 {
+  "agentModels": {
+    "planner": "gpt-5.5",
+    "architect": "gpt-5.5"
+  },
   "agentReasoning": {
     "architect": "xhigh",
     "critic": "xhigh"

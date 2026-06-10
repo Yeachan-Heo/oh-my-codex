@@ -11,6 +11,7 @@ import { readCatalogManifest } from "../catalog/reader.js";
 import type { CatalogManifest } from "../catalog/schema.js";
 import { getInstallableNativeAgentNames } from "./policy.js";
 import {
+  getAgentModelOverride,
   getCodexConfigRootModelProvider,
   getEnvConfiguredStandardDefaultModel,
   getAgentReasoningOverride,
@@ -174,6 +175,14 @@ function resolveAgentModel(
   agent: AgentDefinition,
   options: AgentModelResolutionOptions = {},
 ): string {
+  const configuredAgentModel = getAgentModelOverride(
+    agent.name,
+    options.codexHomeOverride,
+  );
+  if (configuredAgentModel) {
+    return configuredAgentModel;
+  }
+
   if (agent.exactModel) {
     return agent.exactModel;
   }

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildAgentsModelTable,
   OMX_MODELS_END_MARKER,
@@ -12,8 +15,10 @@ const originalFrontierEnv = process.env.OMX_DEFAULT_FRONTIER_MODEL;
 const originalStandardEnv = process.env.OMX_DEFAULT_STANDARD_MODEL;
 const originalSparkEnv = process.env.OMX_DEFAULT_SPARK_MODEL;
 const originalLegacySparkEnv = process.env.OMX_SPARK_MODEL;
+let tempDirs: string[] = [];
 
 beforeEach(() => {
+  tempDirs = [];
   delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
   delete process.env.OMX_DEFAULT_STANDARD_MODEL;
   delete process.env.OMX_DEFAULT_SPARK_MODEL;
@@ -41,6 +46,9 @@ afterEach(() => {
   } else {
     delete process.env.OMX_SPARK_MODEL;
   }
+  return Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))).then(
+    () => undefined,
+  );
 });
 
 describe('agents model table', () => {
@@ -55,6 +63,7 @@ describe('agents model table', () => {
       frontierModel: 'frontier-config',
       sparkModel: 'spark-env',
       subagentDefaultModel: 'standard-env',
+      agentModelOverrides: {},
     });
   });
 
@@ -65,7 +74,24 @@ describe('agents model table', () => {
       frontierModel: 'frontier-config',
       sparkModel: 'gpt-5.3-codex-spark',
       subagentDefaultModel: 'frontier-config',
+      agentModelOverrides: {},
     });
+  });
+
+  it('reads per-agent model overrides into table context', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-agents-model-table-'));
+    tempDirs.push(codexHome);
+    await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+      agentModels: {
+        Architect: 'gpt-5.5',
+      },
+    }));
+
+    const context = resolveAgentsModelTableContext('model = "frontier-config"\n', {
+      codexHomeOverride: codexHome,
+    });
+
+    assert.equal(context.agentModelOverrides?.architect, 'gpt-5.5');
   });
 
   it('builds table rows for summary roles, exact pins, and posture/modelClass-driven recommendations', () => {
@@ -73,6 +99,7 @@ describe('agents model table', () => {
       frontierModel: 'gpt-frontier',
       sparkModel: 'gpt-spark',
       subagentDefaultModel: 'gpt-standard',
+      agentModelOverrides: {},
     });
 
     assert.match(table, /\| Frontier \(leader\) \| `gpt-frontier` \| high \|/);
@@ -89,11 +116,28 @@ describe('agents model table', () => {
     assert.match(table, /\| `executor` \| `gpt-frontier` \| medium \| Code implementation, refactoring, feature work \(deep-worker, standard\) \|/);
   });
 
+  it('applies per-agent model overrides in role rows', () => {
+    const table = buildAgentsModelTable({
+      frontierModel: 'gpt-frontier',
+      sparkModel: 'gpt-spark',
+      subagentDefaultModel: 'gpt-standard',
+      agentModelOverrides: {
+        architect: 'gpt-5.5',
+        writer: 'gpt-writer',
+      },
+    });
+
+    assert.match(table, /\| `architect` \| `gpt-5\.5` \| high \|/);
+    assert.match(table, /\| `writer` \| `gpt-writer` \| high \|/);
+    assert.doesNotMatch(table, /\| `architect` \| `gpt-5\.4-mini` \|/);
+  });
+
   it('replaces existing marker-bounded content and inserts the block after team_model_resolution when missing', () => {
     const context = {
       frontierModel: 'gpt-frontier',
       sparkModel: 'gpt-spark',
       subagentDefaultModel: 'gpt-frontier',
+      agentModelOverrides: {},
     };
 
     const withMarkers = [
