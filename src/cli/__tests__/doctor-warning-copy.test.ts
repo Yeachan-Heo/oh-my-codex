@@ -1037,6 +1037,85 @@ OMX_LORE_COMMIT_GUARD = "truee"
 		}
 	});
 
+	it("treats a dev-update plugin install shape without setup-scope as plugin mode", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-dev-update-infer-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			const installedSourceDir = join(wd, "installed-oh-my-codex");
+			await mkdir(join(codexDir, ".omx"), { recursive: true });
+			await mkdir(installedSourceDir, { recursive: true });
+			await mkdir(codexDir, { recursive: true });
+			const cacheDir = await installPluginCacheFixture(codexDir);
+			const manifestVersion = await packagedPluginVersion();
+			await writeFile(
+				join(installedSourceDir, "package.json"),
+				`${JSON.stringify({ name: "oh-my-codex", version: manifestVersion }, null, 2)}\n`,
+			);
+			await writeFile(
+				join(codexDir, ".omx", "install-state.json"),
+				`${JSON.stringify(
+					{
+						installed_version: manifestVersion,
+						setup_completed_version: manifestVersion,
+						install_channel: "dev",
+						install_revision: "deadbeefcafefeed",
+						dev_base_version: "0.18.11",
+					},
+					null,
+					2,
+				)}\n`,
+			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				[
+					"plugin_hooks = true",
+					"goals = true",
+					"",
+					"[marketplaces.oh-my-codex-local]",
+					'source_type = "local"',
+					`source = ${JSON.stringify(installedSourceDir)}`,
+					"",
+					'[plugins."oh-my-codex@oh-my-codex-local"]',
+					"enabled = true",
+					"",
+				].join("\n"),
+			);
+
+			assert.equal(existsSync(join(wd, ".omx", "setup-scope.json")), false);
+			assert.equal(existsSync(join(codexDir, "hooks.json")), false);
+			assert.equal(existsSync(join(codexDir, "prompts")), false);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/Resolved setup install mode: plugin \(inferred from Codex plugin config\)/,
+			);
+			assert.match(
+				res.stdout,
+				new RegExp(
+					`\\[OK\\] Native hooks: plugin-scoped hooks are enabled; setup-owned hooks\\.json is intentionally absent at .*\\.codex[\\/]+hooks\\.json, and plugin cache native hook coverage smoke passed via ${join(cacheDir, "hooks", "hooks.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+				),
+			);
+			assert.match(
+				res.stdout,
+				/Prompts: plugin mode intentionally omits setup-owned prompts; Codex plugin discovery supplies workflow surfaces/,
+			);
+			assert.doesNotMatch(
+				res.stdout,
+				/expected setup-owned hooks\.json is missing/,
+			);
+			assert.doesNotMatch(res.stdout, /Prompts: prompts directory not found/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("fills missing persisted install mode from plugin config without legacy warnings", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-partial-persisted-"));
 		try {

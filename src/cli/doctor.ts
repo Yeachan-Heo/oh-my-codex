@@ -155,7 +155,7 @@ async function inferPluginInstallModeFromConfigForScope(
 
 		const { marketplace, plugin } = getParsedPluginMarketplaceConfig(configContent);
 		if (!marketplace || marketplace.source_type !== "local") return null;
-		if (marketplace.source !== getPackageRoot()) return null;
+		if (!(await isTrustedOmxPluginMarketplaceSource(marketplace.source))) return null;
 		if (plugin?.enabled !== true) return null;
 
 		return {
@@ -166,6 +166,19 @@ async function inferPluginInstallModeFromConfigForScope(
 		};
 	} catch {
 		return null;
+	}
+}
+
+async function isTrustedOmxPluginMarketplaceSource(source: unknown): Promise<boolean> {
+	if (source === getPackageRoot()) return true;
+	if (typeof source !== "string" || source.length === 0) return false;
+	try {
+		const packageJson = JSON.parse(
+			await readFile(join(source, "package.json"), "utf-8"),
+		) as { name?: unknown };
+		return packageJson.name === "oh-my-codex";
+	} catch {
+		return false;
 	}
 }
 
