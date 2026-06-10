@@ -603,6 +603,31 @@ describe("OMX launcher path resolution", () => {
     }
   });
 
+  it("resolves ambient OMX_ENTRY_PATH relative to the recorded startup cwd", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-env-start-"));
+    const laterCwd = await mkdtemp(join(tmpdir(), "omx-launcher-env-later-"));
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxEntryPath({
+        cwd: laterCwd,
+        env: {
+          ...process.env,
+          [OMX_ENTRY_PATH_ENV]: "dist/cli/omx.js",
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+      });
+
+      assert.equal(resolved, canonicalizeComparablePath(launcherPath));
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+      await rm(laterCwd, { recursive: true, force: true });
+    }
+  });
+
   it("replaces stale ambient OMX_ENTRY_PATH when recording an explicit launcher argv1", async () => {
     const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-explicit-record-"));
     const env: NodeJS.ProcessEnv = {

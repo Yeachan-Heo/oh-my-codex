@@ -80,7 +80,10 @@ export function resolveOmxEntryPath(
   }
 
   const fromEnv = String(env[OMX_ENTRY_PATH_ENV] ?? "").trim();
-  if (fromEnv !== "") return fromEnv;
+  if (fromEnv !== "") {
+    const startupCwd = String(env[OMX_STARTUP_CWD_ENV] ?? "").trim() || cwd;
+    return resolveLauncherPath(fromEnv, startupCwd);
+  }
 
   if (rawPath === "") return null;
 
