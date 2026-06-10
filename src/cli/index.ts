@@ -5,7 +5,7 @@
 
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join, posix, resolve, win32 } from "path";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash } from "crypto";
@@ -2348,7 +2348,27 @@ async function showStatus(): Promise<void> {
   const { readFile } = await import("fs/promises");
   const cwd = process.cwd();
   try {
-    const refs = await listModeStateFilesWithScopePreference(cwd);
+    let refs = await listModeStateFilesWithScopePreference(cwd);
+    // Reconcile with hook-visible run-dir state when the worktree-scoped state
+    // list reports no active workflow mode (parity with `omx cancel`). This
+    // surfaces detached/madmax sessions whose state lives under the run dir.
+    const hasActiveWorkflowMode = async (candidate: ModeStateFileRef[]): Promise<boolean> => {
+      for (const ref of candidate) {
+        const mode = basename(ref.path).replace("-state.json", "");
+        if (mode === SKILL_ACTIVE_STATE_MODE) continue;
+        try {
+          const parsed = JSON.parse(await readFile(ref.path, "utf-8")) as Record<string, unknown>;
+          if (parsed.active === true) return true;
+        } catch {
+          continue;
+        }
+      }
+      return false;
+    };
+    if (!(await hasActiveWorkflowMode(refs))) {
+      const runDirRefs = await listHookVisibleRunDirStateRefs(cwd);
+      if (await hasActiveWorkflowMode(runDirRefs)) refs = runDirRefs;
+    }
     const states = refs.map((ref) => ref.path);
     const ultragoalState = await readUltragoalState(cwd).catch(() => null);
     if (states.length === 0) {
@@ -5827,11 +5847,24 @@ async function flushHookDerivedWatcherOnce(cwd: string): Promise<void> {
   });
 }
 
+// Canonicalize a path for comparing a registry `source_cwd` against the current
+// working directory. `process.cwd()` resolves symlinks (e.g. macOS `/var` ->
+// `/private/var`), so registry values must be canonicalized the same way or the
+// run-dir fallback never matches. Falls back to `resolve` when the path is
+// missing (realpathSync requires an existing target).
+function canonicalizePathForRunDirMatch(p: string): string {
+  try {
+    return realpathSync(resolve(p));
+  } catch {
+    return resolve(p);
+  }
+}
+
 async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFileRef[]> {
   const runsRoot = resolveMadmaxRunsRoot(process.env);
   const registryPath = join(runsRoot, "registry.jsonl");
   const runDirs = new Set<string>();
-  const canonicalCwd = resolve(cwd);
+  const canonicalCwd = canonicalizePathForRunDirMatch(cwd);
   const canonicalRunsRoot = resolve(runsRoot);
 
   const addRecord = (raw: unknown): void => {
@@ -5846,7 +5879,7 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
     if (!sourceCwd || !runDir) return;
 
     try {
-      if (resolve(sourceCwd) !== canonicalCwd) return;
+      if (canonicalizePathForRunDirMatch(sourceCwd) !== canonicalCwd) return;
       const resolvedRunDir = resolve(runDir);
       if (
         resolvedRunDir !== canonicalRunsRoot

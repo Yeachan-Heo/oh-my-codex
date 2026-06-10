@@ -159,6 +159,45 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('reports hook-visible run-dir session state in status when worktree state list-active is empty', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-status-worktree-'));
+    const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-status-runs-'));
+    try {
+      const sessionId = 'sess-run-dir-status';
+      const runDir = join(runsRoot, 'run-20260610121751-c7d5');
+      const runStateDir = join(runDir, '.omx', 'state');
+      const runSessionDir = join(runStateDir, 'sessions', sessionId);
+      await mkdir(runSessionDir, { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(runStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(runSessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+      }, null, 2));
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({
+        launcher: 'omx --madmax',
+        created_at: '2026-06-10T12:17:51.000Z',
+        cwd: runDir,
+        source_cwd: wd,
+        argv: ['codex'],
+        run_dir: runDir,
+      })}\n`);
+
+      const listResult = runOmx(wd, 'state', 'list-active', '--json');
+      assert.equal(listResult.status, 0, listResult.stderr || listResult.stdout);
+      assert.deepEqual(JSON.parse(listResult.stdout), { active_modes: [] });
+
+      const statusResult = runOmxWithEnv(wd, { OMX_RUNS_DIR: runsRoot }, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /autopilot: ACTIVE \(phase: deep-interview\)/);
+      assert.doesNotMatch(statusResult.stdout, /No active modes\./);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runsRoot, { recursive: true, force: true });
+    }
+  });
+
   it('cancels linked ultrawork when Ralph is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-link-'));
     try {
