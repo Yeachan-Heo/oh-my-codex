@@ -993,11 +993,11 @@ case "$1" in
         exit 0
         ;;
       *"#{pane_pid}"*)
-        echo "4321"
+        echo "2000004321"
         exit 0
         ;;
       *"#{pane_dead} #{pane_pid}"*)
-        echo "0 4321"
+        echo "0 2000004321"
         exit 0
         ;;
       *)
@@ -1157,11 +1157,11 @@ case "$1" in
         exit 0
         ;;
       *"#{pane_pid}"*)
-        echo "4321"
+        echo "2000004321"
         exit 0
         ;;
       *"#{pane_dead} #{pane_pid}"*)
-        echo "0 4321"
+        echo "0 2000004321"
         exit 0
         ;;
       *)
@@ -1751,9 +1751,9 @@ case "\${1:-}" in
   list-panes)
     case "$*" in
       *"pane_current_command"*) printf "%%1\tnode\t'codex'\n" ;;
-      *"#{pane_dead} #{pane_pid}"*) echo "1 999999" ;;
-      *"-t %2"*"#{pane_pid}"*) echo "2222" ;;
-      *"#{pane_pid}"*) echo "1111" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "1 2000999999" ;;
+      *"-t %2"*"#{pane_pid}"*) echo "2000002222" ;;
+      *"#{pane_pid}"*) echo "2000001111" ;;
       *) exit 0 ;;
     esac
     exit 0
@@ -1873,16 +1873,16 @@ case "\${1:-}" in
         printf "%%1\tnode\t'codex'\n"
         ;;
       *"#{pane_dead} #{pane_pid}"*)
-        echo "1 999999"
+        echo "1 2000999999"
         ;;
       *"-t %2"*"#{pane_pid}"*)
-        echo "2222"
+        echo "2000002222"
         ;;
       *"-t %3"*"#{pane_pid}"*)
-        echo "3333"
+        echo "2000003333"
         ;;
       *"#{pane_pid}"*)
-        echo "1111"
+        echo "2000001111"
         ;;
       *)
         exit 0
@@ -1938,12 +1938,12 @@ esac
             ));
 
           assert.equal(runtime.config.workers[0]?.pane_id, '%2');
-          assert.equal(runtime.config.workers[0]?.pid, 2222);
+          assert.equal(runtime.config.workers[0]?.pid, 2000002222);
 
           const identityPath = join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'identity.json');
           const identity = JSON.parse(await readFile(identityPath, 'utf-8')) as { pid?: number; pane_id?: string };
           assert.equal(identity.pane_id, '%2');
-          assert.equal(identity.pid, 2222);
+          assert.equal(identity.pid, 2000002222);
         },
       );
     } finally {
@@ -2020,9 +2020,9 @@ case "$1" in
   list-panes)
     case "$*" in
       *"pane_current_command"*) printf "%%1\tnode\t'codex'\n" ;;
-      *"#{pane_dead} #{pane_pid}"*) echo "0 4242" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
       *"#{pane_dead}"*) echo "0" ;;
-      *"#{pane_pid}"*) echo "4242" ;;
+      *"#{pane_pid}"*) echo "2000004242" ;;
       *) exit 0 ;;
     esac
     exit 0
@@ -2144,10 +2144,10 @@ case "$1" in
   list-panes)
     case "$*" in
       *"pane_current_command"*) printf "%%1\tnode\t'codex'\n" ;;
-      *"#{pane_dead} #{pane_pid}"*) echo "0 4242" ;;
-      *"-t %2"*"#{pane_pid}"*) echo "4242" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
+      *"-t %2"*"#{pane_pid}"*) echo "2000004242" ;;
       *"#{pane_dead}"*) echo "0" ;;
-      *"#{pane_pid}"*) echo "4242" ;;
+      *"#{pane_pid}"*) echo "2000004242" ;;
       *) exit 0 ;;
     esac
     exit 0
@@ -2287,9 +2287,9 @@ case "$1" in
   list-panes)
     case "$*" in
       *"pane_current_command"*) printf "%%1\\tnode\\t'codex'\\n" ;;
-      *"#{pane_dead} #{pane_pid}"*) echo "0 4242" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
       *"#{pane_dead}"*) echo "0" ;;
-      *"#{pane_pid}"*) echo "4242" ;;
+      *"#{pane_pid}"*) echo "2000004242" ;;
       *) exit 0 ;;
     esac
     exit 0
@@ -2402,11 +2402,11 @@ case "$1" in
   list-panes)
     case "$*" in
       *"pane_current_command"*) printf "%%1\tnode\t'codex'\n" ;;
-      *"#{pane_dead} #{pane_pid}"*) echo "0 4242" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
       *"#{pane_dead}"*) echo "0" ;;
-      *"-t %2"*"#{pane_pid}"*) echo "4242" ;;
-      *"-t %3"*"#{pane_pid}"*) echo "4343" ;;
-      *"#{pane_pid}"*) echo "4141" ;;
+      *"-t %2"*"#{pane_pid}"*) echo "2000004242" ;;
+      *"-t %3"*"#{pane_pid}"*) echo "2000004343" ;;
+      *"#{pane_pid}"*) echo "2000004141" ;;
       *) exit 0 ;;
     esac
     exit 0
@@ -2563,13 +2563,13 @@ case "$1" in
         echo "0"
         ;;
       *"#{pane_dead} #{pane_pid}"*)
-        echo "0 4242"
+        echo "0 2000004242"
         ;;
       *"pane_current_command"*)
         printf "%%1\\tnode\\t'codex'\\n"
         ;;
       *"#{pane_pid}"*)
-        echo "4242"
+        echo "2000004242"
         ;;
       *)
         exit 0
@@ -2729,12 +2729,12 @@ case "$1" in
   list-panes)
     case "$*" in
       *"pane_current_command"*) printf "%%1\tnode\t'codex'\n" ;;
-      *"-t %2"*"#{pane_dead} #{pane_pid}"*) echo "1 4242" ;;
-      *"-t %3"*"#{pane_dead} #{pane_pid}"*) echo "0 4343" ;;
-      *"#{pane_dead} #{pane_pid}"*) echo "0 4141" ;;
-      *"-t %2"*"#{pane_pid}"*) echo "4242" ;;
-      *"-t %3"*"#{pane_pid}"*) echo "4343" ;;
-      *"#{pane_pid}"*) echo "4141" ;;
+      *"-t %2"*"#{pane_dead} #{pane_pid}"*) echo "1 2000004242" ;;
+      *"-t %3"*"#{pane_dead} #{pane_pid}"*) echo "0 2000004343" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "0 2000004141" ;;
+      *"-t %2"*"#{pane_pid}"*) echo "2000004242" ;;
+      *"-t %3"*"#{pane_pid}"*) echo "2000004343" ;;
+      *"#{pane_pid}"*) echo "2000004141" ;;
       *) exit 0 ;;
     esac
     exit 0
@@ -2903,10 +2903,10 @@ case "$1" in
         printf "%%1\\tnode\\t'codex'\\n"
         ;;
       *"#{pane_dead} #{pane_pid}"*)
-        echo "1 4242"
+        echo "1 2000004242"
         ;;
       *"#{pane_pid}"*)
-        echo "4242"
+        echo "2000004242"
         ;;
       *)
         exit 0
@@ -3032,22 +3032,22 @@ case "$1" in
   list-panes)
     case "$*" in
       *"#{pane_dead} #{pane_pid}"*)
-        echo "0 4242"
+        echo "0 2000004242"
         ;;
       *"pane_current_command"*)
         printf "%%1\\tnode\\t'codex'\\n"
         ;;
       *"-t %2"*"#{pane_pid}"*)
-        echo "4242"
+        echo "2000004242"
         ;;
       *"-t %3"*"#{pane_pid}"*)
-        echo "4343"
+        echo "2000004343"
         ;;
       *"-t %4"*"#{pane_pid}"*)
-        echo "4444"
+        echo "2000004444"
         ;;
       *"#{pane_pid}"*)
-        echo "4141"
+        echo "2000004141"
         ;;
       *)
         exit 0
@@ -3791,10 +3791,10 @@ case "\${1:-}" in
         printf "%%1\\tnode\\t'codex'\\n"
         ;;
       *"#{pane_dead} #{pane_pid}"*)
-        echo "1 999999"
+        echo "1 2000999999"
         ;;
       *"#{pane_pid}"*)
-        echo "999999"
+        echo "2000999999"
         ;;
       *)
         exit 0
@@ -5783,11 +5783,11 @@ case "$1" in
         exit 1
         ;;
       *"-t %13 -F #{pane_pid}"*)
-        echo "1013"
+        echo "2000001013"
         exit 0
         ;;
       *"-t %14 -F #{pane_pid}"*)
-        echo "1014"
+        echo "2000001014"
         exit 0
         ;;
       *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
