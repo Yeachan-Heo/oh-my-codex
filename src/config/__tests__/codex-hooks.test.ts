@@ -156,6 +156,23 @@ describe("codex hooks helpers", () => {
     );
   });
 
+  it("prepends a UTF-8 BOM to the Windows shim so PowerShell 5.1 reads non-ASCII paths as UTF-8", () => {
+    const content = buildManagedCodexNativeHookWindowsShimContent(
+      "C:\\Users\\정찬\\깃헙\\oh-my-codex",
+      { nodePath: "C:\\Program Files\\nodejs\\node.exe" },
+    );
+
+    assert.equal(content.charCodeAt(0), 0xfeff);
+    assert.equal(content.codePointAt(0), 0xfeff);
+    // BOM must precede the script body, not replace it.
+    assert.equal(content.slice(1).startsWith("$ErrorActionPreference = 'Stop'"), true);
+    // Non-ASCII install path is preserved verbatim in the emitted shim.
+    assert.match(content, /정찬\\깃헙\\oh-my-codex/);
+
+    const utf8 = Buffer.from(content, "utf-8");
+    assert.deepEqual([...utf8.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  });
+
   it("forwards payload, stdout, stderr, and non-zero exit through the Windows shim when PowerShell is available", async () => {
     const shell = ["pwsh", "powershell.exe", "powershell"].find((candidate) => {
       const probe = spawnSync(candidate, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], {

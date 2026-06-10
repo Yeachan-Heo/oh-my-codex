@@ -174,7 +174,11 @@ export function buildManagedCodexNativeHookWindowsShimContent(
     win32.join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
   const nodePath = options.nodePath ?? process.execPath;
 
-  return [
+  // Windows PowerShell 5.1 (powershell.exe) decodes BOM-less .ps1 files using
+  // the system ANSI codepage, which mojibakes non-ASCII install paths embedded
+  // below and breaks the native hook (Node MODULE_NOT_FOUND, exit 1). Prepend a
+  // UTF-8 BOM so the script is always read as UTF-8.
+  return "\uFEFF" + [
     "$ErrorActionPreference = 'Stop'",
     "$startInfo = [System.Diagnostics.ProcessStartInfo]::new()",
     `$startInfo.FileName = ${quotePowerShellLiteral(nodePath)}`,
