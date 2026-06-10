@@ -14121,6 +14121,63 @@ exit 0
     }
   });
 
+  it("blocks implementation writes while Autopilot is supervising deep-interview without a persisted phase transition", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-deep-interview-pretool-block-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-autopilot-deep-interview-pretool-block";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "autopilot",
+        phase: "deep-interview",
+        session_id: sessionId,
+        active_skills: [{ skill: "autopilot", phase: "deep-interview", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "deep-interview",
+        session_id: sessionId,
+        handoff_artifacts: {
+          deep_interview: null,
+          ralplan: null,
+          ultragoal: null,
+          code_review: null,
+          ultraqa: null,
+        },
+        ralplan_consensus_gate: {
+          ralplan_architect_review: null,
+          ralplan_critic_review: null,
+          complete: false,
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-deep-interview-pretool-block",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /Deep-interview is active .*implementation\/write tools are blocked/i);
+      assert.match(
+        String((result.outputJson?.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? ""),
+        /To implement, first ask for or process an explicit transition/i,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks implementation writes while Autopilot is supervising ralplan without handoff", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-pretool-block-"));
     try {
