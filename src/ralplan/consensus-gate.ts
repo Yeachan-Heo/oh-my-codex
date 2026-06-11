@@ -2,13 +2,22 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { subagentTrackingPath } from '../subagents/tracker.js';
 
+export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
+  nativeSubagentEvidenceMissing: 'native_subagent_consensus_evidence_missing',
+  nonApprovingReview: 'non_approving_ralplan_consensus_review',
+  missingSequentialApproval: 'missing_sequential_architect_then_critic_approval',
+} as const;
+
+export type RalplanConsensusBlockedReason =
+  typeof RALPLAN_CONSENSUS_BLOCKED_REASONS[keyof typeof RALPLAN_CONSENSUS_BLOCKED_REASONS];
+
 export interface RalplanConsensusGateEvidence {
   complete: boolean;
   sequence: ['architect-review', 'critic-review'];
   ralplan_architect_review: Record<string, unknown> | null;
   ralplan_critic_review: Record<string, unknown> | null;
   source: string | null;
-  blockedReason: string | null;
+  blockedReason: RalplanConsensusBlockedReason | null;
   blockedDetails?: string[];
 }
 
@@ -32,6 +41,12 @@ export function buildRalplanConsensusGateFromSources(
     ralplan_critic_review: Record<string, unknown>;
     source: string;
   } | null = null;
+  let invalidCompleteEvidence: {
+    ralplan_architect_review: Record<string, unknown> | null;
+    ralplan_critic_review: Record<string, unknown> | null;
+    source: string;
+    blockedDetails: string[];
+  } | null = null;
 
   for (const candidate of sources) {
     const evidence = extractSequentialConsensusEvidence(candidate.value);
@@ -52,6 +67,23 @@ export function buildRalplanConsensusGateFromSources(
         blockedReason: null,
       };
     }
+
+    const invalidEvidence = extractInvalidCompleteConsensusEvidence(candidate.value);
+    if (invalidEvidence) {
+      invalidCompleteEvidence ??= { ...invalidEvidence, source: candidate.source };
+    }
+  }
+
+  if (invalidCompleteEvidence) {
+    return {
+      complete: false,
+      sequence: ['architect-review', 'critic-review'],
+      ralplan_architect_review: invalidCompleteEvidence.ralplan_architect_review,
+      ralplan_critic_review: invalidCompleteEvidence.ralplan_critic_review,
+      source: invalidCompleteEvidence.source,
+      blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview,
+      blockedDetails: invalidCompleteEvidence.blockedDetails,
+    };
   }
 
   if (nativeBlockedEvidence) {
@@ -61,7 +93,7 @@ export function buildRalplanConsensusGateFromSources(
       ralplan_architect_review: nativeBlockedEvidence.ralplan_architect_review,
       ralplan_critic_review: nativeBlockedEvidence.ralplan_critic_review,
       source: nativeBlockedEvidence.source,
-      blockedReason: 'native_subagent_consensus_evidence_missing',
+      blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing,
       blockedDetails: [
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_architect_review, 'architect', options),
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_critic_review, 'critic', options),
@@ -75,7 +107,7 @@ export function buildRalplanConsensusGateFromSources(
     ralplan_architect_review: null,
     ralplan_critic_review: null,
     source: null,
-    blockedReason: 'missing_sequential_architect_then_critic_approval',
+    blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.missingSequentialApproval,
   };
 }
 
@@ -208,6 +240,50 @@ function extractSequentialConsensusEvidence(value: unknown): {
   return null;
 }
 
+function extractInvalidCompleteConsensusEvidence(value: unknown): {
+  ralplan_architect_review: Record<string, unknown> | null;
+  ralplan_critic_review: Record<string, unknown> | null;
+  blockedDetails: string[];
+} | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+
+  const gate = record.ralplanConsensusGate ?? record.ralplan_consensus_gate;
+  if (gate && typeof gate === 'object') {
+    const gateRecord = gate as Record<string, unknown>;
+    const architectReview = asRecord(
+      gateRecord.ralplan_architect_review ?? gateRecord.architectReview ?? gateRecord.architect_review,
+    );
+    const criticReview = asRecord(
+      gateRecord.ralplan_critic_review ?? gateRecord.criticReview ?? gateRecord.critic_review,
+    );
+    if (gateRecord.complete === true && hasArchitectThenCriticSequence(gateRecord)) {
+      const blockedDetails = [
+        ...reviewApprovalProblems(architectReview, 'architect'),
+        ...reviewApprovalProblems(criticReview, 'critic'),
+      ];
+      if (!isCriticNotBeforeArchitect(architectReview, criticReview)) {
+        blockedDetails.push('critic review is ordered before architect review');
+      }
+      if (blockedDetails.length > 0) {
+        return {
+          ralplan_architect_review: architectReview,
+          ralplan_critic_review: criticReview,
+          blockedDetails,
+        };
+      }
+    }
+  }
+
+  const stateHandoffArtifacts = asRecord(asRecord(record.state)?.handoff_artifacts);
+  if (stateHandoffArtifacts) {
+    const evidence = extractInvalidCompleteConsensusEvidence(stateHandoffArtifacts);
+    if (evidence) return evidence;
+  }
+
+  return null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null;
 }
@@ -215,14 +291,48 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function isApproveReview(value: Record<string, unknown> | null, agentRole: 'architect' | 'critic'): value is Record<string, unknown> {
   if (!value || value.agent_role !== agentRole) return false;
   if (value.verdict !== undefined && value.verdict !== 'approve') return false;
-  if (value.status !== undefined && !['approve', 'approved', 'clear', 'pass', 'passed'].includes(String(value.status).toLowerCase())) {
+  if (value.status !== undefined && !isApprovedStatus(value.status)) {
     return false;
   }
-  if (value.recommendation !== undefined && !['approve', 'approved'].includes(String(value.recommendation).toLowerCase())) {
+  if (value.recommendation !== undefined && !isApproveRecommendation(value.recommendation)) {
     return false;
   }
   if (hasBlockingReviewSignal(value)) return false;
+  return hasPositiveReviewApprovalSignal(value);
+}
+
+function reviewApprovalProblems(value: Record<string, unknown> | null, agentRole: 'architect' | 'critic'): string[] {
+  const issues: string[] = [];
+  if (!value) return [`${agentRole} review is missing`];
+  if (value.agent_role !== agentRole) issues.push(`${agentRole} review has agent_role=${String(value.agent_role || 'missing')}`);
+  if (value.verdict !== undefined && value.verdict !== 'approve') {
+    issues.push(`${agentRole} review verdict=${String(value.verdict)} is not approve`);
+  }
+  if (value.status !== undefined && !isApprovedStatus(value.status)) {
+    issues.push(`${agentRole} review status=${String(value.status)} is not approve`);
+  }
+  if (value.recommendation !== undefined && !isApproveRecommendation(value.recommendation)) {
+    issues.push(`${agentRole} review recommendation=${String(value.recommendation)} is not approve`);
+  }
+  if (issues.length === 0 && hasBlockingReviewSignal(value)) {
+    issues.push(`${agentRole} review has a blocking signal`);
+  }
+  if (issues.length === 0 && !hasPositiveReviewApprovalSignal(value)) {
+    issues.push(`${agentRole} review lacks approving evidence`);
+  }
+  return issues;
+}
+
+function hasPositiveReviewApprovalSignal(value: Record<string, unknown>): boolean {
   return value.verdict === 'approve' || value.approved === true || value.clean === true;
+}
+
+function isApprovedStatus(value: unknown): boolean {
+  return ['approve', 'approved', 'clear', 'pass', 'passed'].includes(String(value).toLowerCase());
+}
+
+function isApproveRecommendation(value: unknown): boolean {
+  return ['approve', 'approved'].includes(String(value).toLowerCase());
 }
 
 function hasArchitectThenCriticSequence(value: Record<string, unknown>): boolean {

@@ -1,4 +1,8 @@
-import { buildRalplanConsensusGateFromSources, type RalplanConsensusGateEvidence } from '../ralplan/consensus-gate.js';
+import {
+  buildRalplanConsensusGateFromSources,
+  RALPLAN_CONSENSUS_BLOCKED_REASONS,
+  type RalplanConsensusGateEvidence,
+} from '../ralplan/consensus-gate.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -66,11 +70,19 @@ export function canAdvanceAutopilotRalplanToUltragoal(
   }
   return {
     allowed: false,
-    reason: evidence.blockedReason === 'native_subagent_consensus_evidence_missing'
-      ? 'ralplan consensus lacks tracker-backed native architect and critic lanes'
-      : 'missing ralplan consensus gate with tracker-backed native architect and critic lanes',
+    reason: ralplanConsensusBlockedReason(evidence),
     evidence,
   };
+}
+
+function ralplanConsensusBlockedReason(evidence: RalplanConsensusGateEvidence): string {
+  if (evidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing) {
+    return 'ralplan consensus lacks tracker-backed native architect and critic lanes';
+  }
+  if (evidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview) {
+    return 'ralplan consensus gate contains non-approving architect or critic review evidence';
+  }
+  return 'missing ralplan consensus gate with tracker-backed native architect and critic lanes';
 }
 
 export function buildAutopilotRalplanUltragoalGateError(

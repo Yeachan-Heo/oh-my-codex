@@ -10,6 +10,55 @@ import {
 } from '../ralplan-gate.js';
 
 describe('autopilot ralplan gate', () => {
+  for (const { lane, architectVerdict, criticVerdict } of [
+    { lane: 'architect', architectVerdict: 'iterate', criticVerdict: 'approve' },
+    { lane: 'critic', architectVerdict: 'approve', criticVerdict: 'iterate' },
+  ] as const) {
+    it(`rejects complete ralplan consensus when ${lane} review verdict is iterate`, () => {
+      const state = {
+        current_phase: 'ralplan',
+        handoff_artifacts: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: architectVerdict,
+              session_id: 'sess-autopilot-iterate',
+              thread_id: 'thread-architect',
+              artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-05-28T18:34:51.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: criticVerdict,
+              session_id: 'sess-autopilot-iterate',
+              thread_id: 'thread-critic',
+              artifact_path: '.omx/artifacts/critic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-05-28T18:35:10.000Z',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({
+        cwd: process.cwd(),
+        sessionId: 'sess-autopilot-iterate',
+        currentState: state,
+      });
+      assert.equal(decision.allowed, false);
+      assert.equal(decision.evidence?.blockedReason, 'non_approving_ralplan_consensus_review');
+      const error = buildAutopilotRalplanUltragoalGateError(decision);
+      assert.match(error, /non-approving architect or critic review evidence/i);
+      assert.doesNotMatch(error, /missing ralplan consensus gate/i);
+      assert.match(error, new RegExp(`${lane}.*verdict=iterate`, 'i'));
+    });
+  }
+
   it('rejects native review evidence from the session leader even when malformed tracking marks it as subagent', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-leader-spoof-'));
     const sessionId = 'sess-autopilot-leader-spoof';
