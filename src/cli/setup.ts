@@ -851,7 +851,7 @@ async function promptForPluginAgentsMdDefault(
 	destinationPath: string,
 ): Promise<boolean> {
 	if (!process.stdin.isTTY || !process.stdout.isTTY) {
-		return false;
+		return true;
 	}
 	const rl = createInterface({
 		input: process.stdin,
@@ -860,12 +860,12 @@ async function promptForPluginAgentsMdDefault(
 	try {
 		const answer = (
 			await rl.question(
-				`Plugin mode: install OMX AGENTS.md defaults at "${destinationPath}"? [y/N]: `,
+				`Plugin mode: install/update OMX AGENTS.md defaults at "${destinationPath}"? [Y/n]: `,
 			)
 		)
 			.trim()
 			.toLowerCase();
-		return answer === "y" || answer === "yes";
+		return answer === "" || answer === "y" || answer === "yes";
 	} finally {
 		rl.close();
 	}
@@ -2433,11 +2433,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	// Step 6: Generate AGENTS.md
 	console.log("[6/8] Generating AGENTS.md...");
 	if (isPluginInstallMode) {
-		const agentsMdRemoved = await cleanupPluginModeLegacyAgentsMd(
-			pluginAgentsMdDst,
-			backupContext,
-			{ dryRun, verbose },
-		);
+		const agentsMdRemoved = usePluginAgentsMdDefault
+			? await cleanupPluginModeLegacyAgentsMd(pluginAgentsMdDst, backupContext, {
+					dryRun,
+					verbose,
+				})
+			: false;
 		if (agentsMdRemoved) {
 			summary.agentsMd.removed += 1;
 			console.log(
@@ -2743,7 +2744,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		);
 		console.log("  3. Browse plugin-provided skills with /skills");
 		console.log(
-			"  4. Optional AGENTS.md and developer_instructions defaults are only installed when selected during plugin-mode setup",
+			"  4. Plugin-mode AGENTS.md defaults provide persistent orchestration guidance; developer_instructions is an optional bootstrap",
 		);
 		console.log(
 			"  5. Native agent role TOML files written to .codex/agents/ for agent_type routing",

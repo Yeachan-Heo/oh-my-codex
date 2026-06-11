@@ -498,7 +498,7 @@ async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
 	);
 	assert.equal(existsSync(join(wd, ".codex", "agents", "planner.toml")), true);
 	assert.equal(existsSync(join(wd, ".codex", "prompts", "executor.md")), false);
-	assert.equal(existsSync(join(wd, "AGENTS.md")), false);
+	assert.equal(existsSync(join(wd, "AGENTS.md")), true);
 
 	const persisted = JSON.parse(
 		await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
@@ -1695,7 +1695,7 @@ describe("omx setup install mode behavior", () => {
 						existsSync(join(codexHomeDir, "prompts", "executor.md")),
 						false,
 					);
-					assert.equal(existsSync(join(codexHomeDir, "AGENTS.md")), false);
+					assert.equal(existsSync(join(codexHomeDir, "AGENTS.md")), true);
 				});
 			});
 		} finally {
@@ -2269,7 +2269,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.match(
 						pluginOutput,
-						/Optional AGENTS\.md and developer_instructions defaults are only installed when selected/,
+						/Plugin-mode AGENTS\.md defaults provide persistent orchestration guidance; developer_instructions is an optional bootstrap/,
 					);
 
 					const legacyWd = join(wd, "legacy");
@@ -2333,13 +2333,38 @@ describe("omx setup install mode behavior", () => {
 					assert.equal(existsSync(promptPath), false);
 					assert.equal(existsSync(agentPath), true);
 					assert.equal(existsSync(hooksPath), false);
-					assert.equal(existsSync(agentsMdPath), false);
+					assert.equal(existsSync(agentsMdPath), true);
 					const config = await readFile(configPath, "utf-8");
 					assert.match(config, /^plugin_hooks = true$/m);
 					assert.doesNotMatch(
 						config,
 						/^\s*(?:notify|developer_instructions)\s*=|^\s*\[mcp_servers[.\]]/m,
 					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves existing AGENTS.md when plugin AGENTS defaults are declined", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "legacy" });
+
+					const agentsMdPath = join(codexHomeDir, "AGENTS.md");
+					const before = await readFile(agentsMdPath, "utf-8");
+					assert.match(before, /<!-- omx:generated:agents-md -->/);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginAgentsMdPrompt: async () => false,
+					});
+
+					assert.equal(await readFile(agentsMdPath, "utf-8"), before);
 				});
 			});
 		} finally {

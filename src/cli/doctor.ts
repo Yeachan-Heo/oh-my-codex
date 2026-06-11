@@ -2175,6 +2175,9 @@ function checkAgentsMd(
 		`OMX AGENTS contract markers missing; file may have been overwritten by another tool. ` +
 		`Run "omx setup ${scopeFlag} --merge-agents" to preserve local guidance while restoring OMX-managed sections, ` +
 		`or "omx setup ${scopeFlag} --force" to replace it after backup.`;
+	const pluginMissingAgentsRepairMessage =
+		`persistent AGENTS.md is missing in plugin mode; session-scoped AGENTS.md can carry runtime overlay only, ` +
+		`so durable orchestration guidance is degraded. Run "omx setup ${scopeFlag} --force" and accept AGENTS.md defaults`;
 
 	if (scope === "user") {
 		const userAgentsMd = join(codexHomeDir, "AGENTS.md");
@@ -2203,8 +2206,8 @@ function checkAgentsMd(
 		if (installMode === "plugin") {
 			return {
 				name: "AGENTS.md",
-				status: "pass",
-				message: `optional plugin-mode AGENTS.md defaults not installed in ${userAgentsMd}`,
+				status: "fail",
+				message: `${pluginMissingAgentsRepairMessage}. Path: ${userAgentsMd}`,
 			};
 		}
 		return {
@@ -2241,9 +2244,8 @@ function checkAgentsMd(
 	if (installMode === "plugin") {
 		return {
 			name: "AGENTS.md",
-			status: "pass",
-			message:
-				"optional plugin-mode AGENTS.md defaults not installed in project root",
+			status: "fail",
+			message: `${pluginMissingAgentsRepairMessage}. Path: ${projectAgentsMd}`,
 		};
 	}
 	return {

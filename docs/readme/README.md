@@ -46,6 +46,7 @@ The repository root keeps only the canonical `README.md` so the top level stays 
 * Keep the language list synchronized between the canonical README and each localized variant.
 * Keep relative links valid from `docs/readme/`.
 * Prefer updating existing translations instead of introducing duplicate files or alternate naming schemes.
+* Preserve the plugin-mode AGENTS contract from the canonical README: persistent scope `AGENTS.md` is durable orchestration guidance, and session-scoped AGENTS files only add runtime overlays.
 
 ## Related docs
 
