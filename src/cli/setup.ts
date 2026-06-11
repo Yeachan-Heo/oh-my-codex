@@ -143,6 +143,8 @@ import {
 	upsertAgentsModelTable,
 } from "../utils/agents-model-table.js";
 
+type PluginDeveloperInstructionsPolicy = "skip" | "preserve-or-add" | "refresh";
+
 interface SetupOptions {
 	codexFeaturesProbe?: () => string | null;
 	codexVersionProbe?: () => string | null;
@@ -167,10 +169,9 @@ interface SetupOptions {
 		targetModel: string,
 	) => Promise<boolean>;
 	pluginAgentsMdPrompt?: (destinationPath: string) => Promise<boolean>;
-	pluginDeveloperInstructionsPrompt?: (configPath: string) => Promise<boolean>;
-	pluginDeveloperInstructionsOverwritePrompt?: (
+	pluginDeveloperInstructionsPrompt?: (
 		configPath: string,
-	) => Promise<boolean>;
+	) => Promise<boolean | PluginDeveloperInstructionsPolicy>;
 	firstPartyMcpRemovalPrompt?: (
 		configPath: string,
 		registrationKinds: string[],
@@ -871,35 +872,19 @@ async function promptForPluginAgentsMdDefault(
 	}
 }
 
-async function promptForPluginDeveloperInstructionsDefault(
-	configPath: string,
-): Promise<boolean> {
-	if (!process.stdin.isTTY || !process.stdout.isTTY) {
-		return false;
-	}
-	const rl = createInterface({
-		input: process.stdin,
-		output: process.stdout,
-	});
-	try {
-		const answer = (
-			await rl.question(
-				`Plugin mode: add OMX developer_instructions defaults to "${configPath}"? [y/N]: `,
-			)
-		)
-			.trim()
-			.toLowerCase();
-		return answer === "y" || answer === "yes";
-	} finally {
-		rl.close();
-	}
+function normalizePluginDeveloperInstructionsPolicy(
+	choice: boolean | PluginDeveloperInstructionsPolicy,
+): PluginDeveloperInstructionsPolicy {
+	if (choice === true) return "preserve-or-add";
+	if (choice === false) return "skip";
+	return choice;
 }
 
-async function promptForPluginDeveloperInstructionsOverwrite(
+async function promptForPluginDeveloperInstructionsDefault(
 	configPath: string,
-): Promise<boolean> {
+): Promise<PluginDeveloperInstructionsPolicy> {
 	if (!process.stdin.isTTY || !process.stdout.isTTY) {
-		return false;
+		return "skip";
 	}
 	const rl = createInterface({
 		input: process.stdin,
@@ -908,12 +893,23 @@ async function promptForPluginDeveloperInstructionsOverwrite(
 	try {
 		const answer = (
 			await rl.question(
-				`Plugin mode: overwrite existing developer_instructions in "${configPath}" with OMX defaults? [y/N]: `,
+				`Plugin mode: configure optional OMX developer_instructions bootstrap at "${configPath}"? Preserve/add if missing, refresh/overwrite, or skip [P/r/s]: `,
 			)
 		)
 			.trim()
 			.toLowerCase();
-		return answer === "y" || answer === "yes";
+		if (answer === "r" || answer === "refresh" || answer === "overwrite") {
+			return "refresh";
+		}
+		if (
+			answer === "s" ||
+			answer === "skip" ||
+			answer === "n" ||
+			answer === "no"
+		) {
+			return "skip";
+		}
+		return "preserve-or-add";
 	} finally {
 		rl.close();
 	}
@@ -1652,32 +1648,37 @@ async function applyPluginDeveloperInstructionsDefault(
 	configPath: string,
 	backupContext: SetupBackupContext,
 	summary: SetupCategorySummary,
-	options: Pick<
-		SetupOptions,
-		"dryRun" | "verbose" | "pluginDeveloperInstructionsOverwritePrompt"
-	>,
+	options: Pick<SetupOptions, "dryRun" | "verbose"> & {
+		policy: PluginDeveloperInstructionsPolicy;
+	},
 ): Promise<"updated" | "exists" | "skipped"> {
 	const existing = existsSync(configPath)
 		? await readFile(configPath, "utf-8")
 		: "";
+	if (options.policy === "skip") {
+		summary.skipped += 1;
+		if (options.verbose) {
+			console.log("  skipped plugin developer_instructions default by policy");
+		}
+		return "skipped";
+	}
+
 	const line = `developer_instructions = ${JSON.stringify(OMX_PLUGIN_DEVELOPER_INSTRUCTIONS)}`;
 	const hasExistingDeveloperInstructions = rootHasTomlKey(
 		existing,
 		"developer_instructions",
 	);
-	if (hasExistingDeveloperInstructions) {
-		const overwrite = options.pluginDeveloperInstructionsOverwritePrompt
-			? await options.pluginDeveloperInstructionsOverwritePrompt(configPath)
-			: await promptForPluginDeveloperInstructionsOverwrite(configPath);
-		if (!overwrite) {
-			summary.skipped += 1;
-			if (options.verbose) {
-				console.log(
-					"  skipped plugin developer_instructions default: root developer_instructions already exists",
-				);
-			}
-			return "exists";
+	if (
+		hasExistingDeveloperInstructions &&
+		options.policy === "preserve-or-add"
+	) {
+		summary.skipped += 1;
+		if (options.verbose) {
+			console.log(
+				"  skipped plugin developer_instructions default: root developer_instructions already exists",
+			);
 		}
+		return "exists";
 	}
 
 	const nextConfig = hasExistingDeveloperInstructions
@@ -1765,7 +1766,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		modelUpgradePrompt,
 		pluginAgentsMdPrompt,
 		pluginDeveloperInstructionsPrompt,
-		pluginDeveloperInstructionsOverwritePrompt,
 		firstPartyMcpRemovalPrompt,
 	} = options;
 	const pkgRoot = getPackageRoot();
@@ -1878,13 +1878,16 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.scope === "project"
 			? join(projectRoot, "AGENTS.md")
 			: join(scopeDirs.codexHomeDir, "AGENTS.md");
-	const usePluginDeveloperInstructionsDefault = isPluginInstallMode
-		? pluginDeveloperInstructionsPrompt
-			? await pluginDeveloperInstructionsPrompt(scopeDirs.codexConfigFile)
-			: await promptForPluginDeveloperInstructionsDefault(
-					scopeDirs.codexConfigFile,
-				)
-		: false;
+	const pluginDeveloperInstructionsPolicy: PluginDeveloperInstructionsPolicy =
+		isPluginInstallMode
+			? pluginDeveloperInstructionsPrompt
+				? normalizePluginDeveloperInstructionsPolicy(
+						await pluginDeveloperInstructionsPrompt(scopeDirs.codexConfigFile),
+					)
+				: await promptForPluginDeveloperInstructionsDefault(
+						scopeDirs.codexConfigFile,
+					)
+			: "skip";
 	const pluginAgentsMdIsSymlink = existsSync(pluginAgentsMdDst)
 		? (await lstat(pluginAgentsMdDst)).isSymbolicLink()
 		: false;
@@ -2287,7 +2290,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				: `  Native Codex hooks fallback and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
 		);
 
-		if (usePluginDeveloperInstructionsDefault) {
+		if (pluginDeveloperInstructionsPolicy !== "skip") {
 			const developerInstructionsResult =
 				await applyPluginDeveloperInstructionsDefault(
 					scopeDirs.codexConfigFile,
@@ -2296,7 +2299,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					{
 						dryRun,
 						verbose,
-						pluginDeveloperInstructionsOverwritePrompt,
+						policy: pluginDeveloperInstructionsPolicy,
 					},
 				);
 			if (developerInstructionsResult === "updated") {

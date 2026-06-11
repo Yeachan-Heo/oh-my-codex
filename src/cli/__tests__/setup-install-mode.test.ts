@@ -1825,12 +1825,17 @@ describe("omx setup install mode behavior", () => {
 					const existingConfig = 'developer_instructions = "custom"\n';
 					await writeFile(configPath, existingConfig);
 
+					let promptCount = 0;
 					await setup({
 						scope: "user",
 						installMode: "plugin",
-						pluginDeveloperInstructionsPrompt: async () => true,
+						pluginDeveloperInstructionsPrompt: async () => {
+							promptCount += 1;
+							return true;
+						},
 					});
 
+					assert.equal(promptCount, 1);
 					const config = await readFile(configPath, "utf-8");
 					assert.match(config, /^developer_instructions = "custom"$/m);
 					assert.match(config, /^plugin_hooks = true$/m);
@@ -1845,7 +1850,7 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
-	it("can overwrite existing developer_instructions after explicit plugin prompt approval", async () => {
+	it("can refresh existing developer_instructions after one explicit plugin policy prompt", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -1853,13 +1858,17 @@ describe("omx setup install mode behavior", () => {
 					const configPath = join(codexHomeDir, "config.toml");
 					await writeFile(configPath, 'developer_instructions = "custom"\n');
 
+					let promptCount = 0;
 					await setup({
 						scope: "user",
 						installMode: "plugin",
-						pluginDeveloperInstructionsPrompt: async () => true,
-						pluginDeveloperInstructionsOverwritePrompt: async () => true,
+						pluginDeveloperInstructionsPrompt: async () => {
+							promptCount += 1;
+							return "refresh";
+						},
 					});
 
+					assert.equal(promptCount, 1);
 					const config = await readFile(configPath, "utf-8");
 					assert.match(config, /You have oh-my-codex installed/);
 					assert.doesNotMatch(config, /^developer_instructions = "custom"$/m);
@@ -1869,6 +1878,28 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.match(config, /^plugin_hooks = true$/m);
 					assert.doesNotMatch(config, /\[hooks\.state\./);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("does not add developer_instructions in non-interactive plugin mode", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+					});
+
+					const config = await readFile(configPath, "utf-8");
+					assert.doesNotMatch(config, /^developer_instructions\s*=/m);
+					assert.match(config, /^plugin_hooks = true$/m);
 				});
 			});
 		} finally {
