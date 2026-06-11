@@ -1885,15 +1885,24 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					scopeDirs.codexConfigFile,
 				)
 		: false;
-	const pluginAgentsMdIsSymlink = existsSync(pluginAgentsMdDst)
-		? (await lstat(pluginAgentsMdDst)).isSymbolicLink()
-		: false;
+	let pluginAgentsMdPathExists = false;
+	let pluginAgentsMdIsSymlink = false;
+	try {
+		const pluginAgentsMdStat = await lstat(pluginAgentsMdDst);
+		pluginAgentsMdPathExists = true;
+		pluginAgentsMdIsSymlink = pluginAgentsMdStat.isSymbolicLink();
+	} catch {
+		pluginAgentsMdPathExists = false;
+		pluginAgentsMdIsSymlink = false;
+	}
 	const usePluginAgentsMdDefault = isPluginInstallMode
-		? force
-			? !pluginAgentsMdIsSymlink
-			: pluginAgentsMdPrompt
-				? await pluginAgentsMdPrompt(pluginAgentsMdDst)
-				: await promptForPluginAgentsMdDefault(pluginAgentsMdDst)
+		? options.mergeAgents || pluginAgentsMdIsSymlink
+			? false
+			: force
+				? true
+				: pluginAgentsMdPrompt
+					? await pluginAgentsMdPrompt(pluginAgentsMdDst)
+					: await promptForPluginAgentsMdDefault(pluginAgentsMdDst)
 		: false;
 
 	console.log("oh-my-codex setup");
@@ -2404,45 +2413,118 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 	// Step 6: Generate AGENTS.md
 	console.log("[6/8] Generating AGENTS.md...");
+	const activeSession =
+		resolvedScope.scope === "project"
+			? await readSessionState(projectRoot)
+			: null;
+	const sessionIsActive = activeSession && !isSessionStale(activeSession);
 	if (isPluginInstallMode) {
-		if (usePluginAgentsMdDefault) {
-			const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
-			if (existsSync(agentsMdSrc)) {
-				const content = await readFile(agentsMdSrc, "utf-8");
-				const modelTableContext = resolveAgentsModelTableContext(
-					resolvedConfig,
-					{
-						codexHomeOverride: scopeDirs.codexHomeDir,
-					},
-				);
-				const modelTableDefinitions =
-					getAgentsModelTableDefinitionsForTeamMode(resolvedTeamMode);
-				const rewritten = upsertAgentsModelTable(
-					addGeneratedAgentsMarker(
-						applyTeamModeToAgentsTemplate(
-							applyPluginModeWordingToAgentsTemplate(
-								content,
-								resolvedScope.scope,
-							),
-							resolvedTeamMode,
+		const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
+		const pluginAgentsMdExists = pluginAgentsMdPathExists;
+		if (existsSync(agentsMdSrc)) {
+			const content = await readFile(agentsMdSrc, "utf-8");
+			const modelTableContext = resolveAgentsModelTableContext(
+				resolvedConfig,
+				{
+					codexHomeOverride: scopeDirs.codexHomeDir,
+				},
+			);
+			const modelTableDefinitions =
+				getAgentsModelTableDefinitionsForTeamMode(resolvedTeamMode);
+			const rewritten = upsertAgentsModelTable(
+				addGeneratedAgentsMarker(
+					applyTeamModeToAgentsTemplate(
+						applyPluginModeWordingToAgentsTemplate(
+							content,
+							resolvedScope.scope,
 						),
+						resolvedTeamMode,
 					),
-					modelTableContext,
-					modelTableDefinitions,
-				);
-				const result = await syncManagedAgentsContent(
-					rewritten,
-					pluginAgentsMdDst,
-					summary.agentsMd,
-					backupContext,
-					{
-						agentsOverwritePrompt: options.agentsOverwritePrompt,
-						dryRun,
-						force,
-						verbose,
-					},
-				);
-				if (result === "updated") {
+				),
+				modelTableContext,
+				modelTableDefinitions,
+			);
+			if (options.mergeAgents && pluginAgentsMdExists) {
+				if (pluginAgentsMdIsSymlink) {
+					summary.agentsMd.skipped += 1;
+					console.log(
+						`  Skipped plugin-mode AGENTS.md merge for symlinked ${pluginAgentsMdDst}; existing AGENTS.md left untouched.`,
+					);
+				} else {
+					const existing = await readFile(pluginAgentsMdDst, "utf-8");
+					const mergedAgentsContent = upsertManagedAgentsBlock(existing, rewritten);
+					const canApplyManagedAgentsMerge = mergedAgentsContent !== existing;
+					if (
+						resolvedScope.scope === "project" &&
+						sessionIsActive &&
+						canApplyManagedAgentsMerge
+					) {
+						summary.agentsMd.skipped += 1;
+						console.log(
+							"  WARNING: Active omx session detected (pid " +
+								activeSession?.pid +
+								").",
+						);
+						console.log(
+							"  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
+						);
+						console.log("  Stop the active session first, then re-run setup.");
+					} else if (!canApplyManagedAgentsMerge) {
+						summary.agentsMd.unchanged += 1;
+						console.log(
+							resolvedScope.scope === "project"
+								? "  Plugin-mode AGENTS.md already up to date in project root."
+								: `  Plugin-mode AGENTS.md already up to date in ${scopeDirs.codexHomeDir}.`,
+						);
+					} else {
+						await syncManagedContent(
+							mergedAgentsContent,
+							pluginAgentsMdDst,
+							summary.agentsMd,
+							backupContext,
+							{ dryRun, verbose },
+							`plugin AGENTS merge ${pluginAgentsMdDst}`,
+						);
+						console.log(
+							resolvedScope.scope === "project"
+								? "  Merged plugin-mode OMX-managed AGENTS.md sections into project root."
+								: `  Merged plugin-mode OMX-managed AGENTS.md sections into ${scopeDirs.codexHomeDir}.`,
+						);
+					}
+				}
+			} else if (usePluginAgentsMdDefault) {
+				const defaultWouldChange = pluginAgentsMdExists
+					? (await readFile(pluginAgentsMdDst, "utf-8")) !== rewritten
+					: true;
+				if (
+					resolvedScope.scope === "project" &&
+					sessionIsActive &&
+					defaultWouldChange
+				) {
+					summary.agentsMd.skipped += 1;
+					console.log(
+						"  WARNING: Active omx session detected (pid " +
+							activeSession?.pid +
+							").",
+					);
+					console.log(
+						"  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
+					);
+					console.log("  Stop the active session first, then re-run setup.");
+				} else {
+					const result = await syncManagedAgentsContent(
+						rewritten,
+						pluginAgentsMdDst,
+						summary.agentsMd,
+						backupContext,
+						{
+							agentsOverwritePrompt: options.agentsOverwritePrompt,
+							dryRun,
+							force,
+							verbose,
+						},
+					);
+					if (result === "updated") {
 					console.log(
 						resolvedScope.scope === "project"
 							? "  Generated plugin-mode AGENTS.md defaults in project root."
@@ -2454,22 +2536,23 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 							? "  Plugin-mode AGENTS.md defaults already up to date in project root."
 							: `  Plugin-mode AGENTS.md defaults already up to date in ${scopeDirs.codexHomeDir}.`,
 					);
-				} else {
-					console.log(
-						`  Skipped plugin-mode AGENTS.md defaults for ${pluginAgentsMdDst}.`,
-					);
+					} else {
+						console.log(
+							`  Skipped plugin-mode AGENTS.md defaults for ${pluginAgentsMdDst}.`,
+						);
+					}
 				}
 			} else {
 				summary.agentsMd.skipped += 1;
-				console.log("  AGENTS.md template not found, skipping.");
+				console.log(
+					pluginAgentsMdExists
+						? "  Plugin-mode AGENTS.md defaults not selected; existing AGENTS.md left untouched.\n"
+						: "  Plugin-mode AGENTS.md defaults not selected; no AGENTS.md was generated.\n",
+				);
 			}
 		} else {
 			summary.agentsMd.skipped += 1;
-			console.log(
-				existsSync(pluginAgentsMdDst)
-					? "  Plugin-mode AGENTS.md defaults not selected; existing AGENTS.md left untouched.\n"
-					: "  Plugin-mode AGENTS.md defaults not selected; no AGENTS.md was generated.\n",
-			);
+			console.log("  AGENTS.md template not found, skipping.");
 		}
 	} else {
 		const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
@@ -2480,12 +2563,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		const agentsMdExists = existsSync(agentsMdDst);
 
 		// Guard: refuse to overwrite project-root AGENTS.md during active session
-		const activeSession =
-			resolvedScope.scope === "project"
-				? await readSessionState(projectRoot)
-				: null;
-		const sessionIsActive = activeSession && !isSessionStale(activeSession);
-
 		if (existsSync(agentsMdSrc)) {
 			const content = await readFile(agentsMdSrc, "utf-8");
 			const modelTableContext = resolveAgentsModelTableContext(resolvedConfig, {
