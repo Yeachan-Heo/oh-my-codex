@@ -4826,8 +4826,25 @@ exit 0
     assert.match(historyHook.args[3] || "", /^client-detached\[[0-9]+\]$/);
     assert.equal(
       historyHook.args[4],
-      "if-shell -F '#{==:#{session_attached},0}' 'clear-history -t %leader'",
+      `if-shell -F '#{==:#{session_attached},0}' 'run-shell -b "tmux clear-history -t %leader >/dev/null 2>&1 || true"'`,
     );
+  });
+
+  it("detached history prune hook tolerates a dead leader pane", () => {
+    const steps = buildDetachedSessionFinalizeSteps(
+      "omx-demo",
+      "%12",
+      "3",
+      true,
+      false,
+      true,
+      "%leader",
+    );
+    const historyHook = steps.find((step) => step.name === "register-detached-history-prune-hook");
+    assert.ok(historyHook);
+    const hookCommand = historyHook.args[4] || "";
+    assert.match(hookCommand, /run-shell -b/);
+    assert.match(hookCommand, />\/dev\/null 2>&1 \|\| true/);
   });
 
   it("buildDetachedSessionFinalizeSteps skips attach for Hermes MCP bridge launches", () => {
