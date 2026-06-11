@@ -940,12 +940,16 @@ async function askYesNoDefaultYes(question: string): Promise<boolean> {
 
 function legacyPluginDeveloperInstructionsDecision(
 	choice: boolean | "skip" | "preserve-or-add" | "refresh",
+	state: PluginDeveloperInstructionsDecision["state"] = "missing",
 ): PluginDeveloperInstructionsDecision {
-	if (choice === "refresh") {
+	if (choice === "refresh" || (choice === true && state === "historical")) {
 		return {
 			action: "update",
 			state: "historical",
-			reason: "legacy explicit refresh policy",
+			reason:
+				choice === "refresh"
+					? "legacy explicit refresh policy"
+					: "legacy boolean approval refreshed historical developer_instructions",
 		};
 	}
 	if (choice === true || choice === "preserve-or-add") {
@@ -957,7 +961,7 @@ function legacyPluginDeveloperInstructionsDecision(
 	}
 	return {
 		action: "preserve",
-		state: "custom",
+		state,
 		reason: "legacy explicit skip policy",
 	};
 }
@@ -974,6 +978,7 @@ async function resolvePluginDeveloperInstructionsDecision(
 		if (options.pluginDeveloperInstructionsPrompt) {
 			return legacyPluginDeveloperInstructionsDecision(
 				await options.pluginDeveloperInstructionsPrompt(configPath),
+				"missing",
 			);
 		}
 		const install = await askYesNoDefaultYes(
@@ -1002,13 +1007,25 @@ async function resolvePluginDeveloperInstructionsDecision(
 	}
 
 	if (state === "historical") {
-		const update = options.pluginDeveloperInstructionsPrompt
+		const updateDecision = options.pluginDeveloperInstructionsPrompt
 			? legacyPluginDeveloperInstructionsDecision(
 					await options.pluginDeveloperInstructionsPrompt(configPath),
-				).action === "update"
+					state,
+				)
 			: await askYesNoDefaultYes(
 					`Plugin mode: update OMX developer_instructions bootstrap at "${configPath}"? [Y/n]: `,
-				);
+				)
+				? {
+						action: "update",
+						state,
+						reason: "recognized historical OMX developer_instructions",
+					} satisfies PluginDeveloperInstructionsDecision
+				: {
+						action: "preserve",
+						state,
+						reason: "historical OMX developer_instructions preserved",
+					} satisfies PluginDeveloperInstructionsDecision;
+		const update = updateDecision.action === "update";
 		return update
 			? {
 					action: "update",
@@ -1495,7 +1512,18 @@ async function cleanupPluginModeLegacyPrompts(
 	return summary;
 }
 
-function stripPluginModeLegacyRootDefaults(config: string): string {
+function removeRootTomlKey(config: string, key: string): string {
+	const range = findRootTomlKeyRange(config, key);
+	if (!range) return config;
+	const before = config.slice(0, range.start);
+	const after = config.slice(range.end).replace(/^\r?\n?/, "\n");
+	return `${before}${after}`;
+}
+
+function stripPluginModeLegacyRootDefaults(
+	config: string,
+	developerInstructionsDecision: PluginDeveloperInstructionsDecision,
+): string {
 	const lines = config.split(/\r?\n/);
 	const firstTableIndex = lines.findIndex((line) => /^\s*\[/.test(line));
 	const boundary = firstTableIndex >= 0 ? firstTableIndex : lines.length;
@@ -1522,17 +1550,20 @@ function stripPluginModeLegacyRootDefaults(config: string): string {
 		) {
 			continue;
 		}
-		if (
-			index < boundary &&
-			/^\s*developer_instructions\s*=/.test(line) &&
-			line.includes("You have oh-my-codex installed.")
-		) {
-			continue;
-		}
 		result.push(line);
 	}
 
-	return result.join("\n").replace(/\n{3,}/g, "\n\n");
+	let nextConfig = result.join("\n").replace(/\n{3,}/g, "\n\n");
+	if (
+		developerInstructionsDecision.action === "update" &&
+		developerInstructionsDecision.state === "historical" &&
+		classifyPluginDeveloperInstructions(
+			readRootDeveloperInstructions(nextConfig),
+		) === "historical"
+	) {
+		nextConfig = removeRootTomlKey(nextConfig, "developer_instructions");
+	}
+	return nextConfig;
 }
 
 function rootHasTomlKey(config: string, key: string): boolean {
@@ -1868,6 +1899,7 @@ async function cleanupPluginModeLegacyConfig(
 	backupContext: SetupBackupContext,
 	options: Pick<SetupOptions, "dryRun" | "verbose"> & {
 		preserveFirstPartyMcp?: boolean;
+		developerInstructionsDecision: PluginDeveloperInstructionsDecision;
 	},
 ): Promise<boolean> {
 	if (!existsSync(configPath)) return false;
@@ -1880,7 +1912,10 @@ async function cleanupPluginModeLegacyConfig(
 	config = stripFirstPartyOmxMcpSections(config);
 	config = stripExistingOmxBlocks(config).cleaned;
 	config = stripExistingSharedMcpRegistryBlock(config).cleaned;
-	config = stripPluginModeLegacyRootDefaults(config);
+	config = stripPluginModeLegacyRootDefaults(
+		config,
+		options.developerInstructionsDecision,
+	);
 	config = stripOmxSeededBehavioralDefaults(config);
 	config = stripOmxFeatureFlags(config);
 	config = stripManagedCodexHookTrustState(config);
@@ -2361,6 +2396,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				preserveFirstPartyMcp:
 					shouldOfferFirstPartyMcpRemoval &&
 					!removeFirstPartyMcpRegistrations,
+				developerInstructionsDecision: pluginDeveloperInstructionsDecision,
 			},
 		);
 		if (configCleaned) summary.config.removed += 1;

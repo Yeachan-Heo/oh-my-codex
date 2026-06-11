@@ -1946,7 +1946,7 @@ describe("omx setup install mode behavior", () => {
 						installMode: "plugin",
 						pluginDeveloperInstructionsPrompt: async () => {
 							promptCount += 1;
-							return "refresh";
+							return true;
 						},
 					});
 
@@ -1960,6 +1960,75 @@ describe("omx setup install mode behavior", () => {
 						config,
 						/You have oh-my-codex installed\\. AGENTS\\.md/,
 					);
+					assert.equal(
+						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
+						1,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves managed classic developer_instructions when plugin migration refresh is declined", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+					await writeFile(
+						configPath,
+						`developer_instructions = ${JSON.stringify(OMX_DEVELOPER_INSTRUCTIONS)}\n`,
+					);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginDeveloperInstructionsPrompt: async () => false,
+					});
+
+					const config = await readFile(configPath, "utf-8");
+					assert.match(config, /You have oh-my-codex installed\. AGENTS\.md/);
+					assert.doesNotMatch(config, /<omx version=/);
+					assert.equal(
+						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
+						1,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves edited classic developer_instructions containing the legacy phrase", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+					const edited = `${OMX_DEVELOPER_INSTRUCTIONS}\nCustom local rule: keep this line.`;
+					await writeFile(
+						configPath,
+						`developer_instructions = ${JSON.stringify(edited)}\n`,
+					);
+
+					let promptCount = 0;
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginDeveloperInstructionsPrompt: async () => {
+							promptCount += 1;
+							return true;
+						},
+					});
+
+					assert.equal(promptCount, 0);
+					const config = await readFile(configPath, "utf-8");
+					assert.match(config, /You have oh-my-codex installed\. AGENTS\.md/);
+					assert.match(config, /Custom local rule: keep this line/);
+					assert.doesNotMatch(config, /<omx version=/);
 					assert.equal(
 						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
 						1,
@@ -2563,8 +2632,10 @@ describe("omx setup install mode behavior", () => {
 					assert.match(config, /^plugin_hooks = true$/m);
 					assert.doesNotMatch(
 						config,
-						/^\s*(?:notify|developer_instructions)\s*=|^\s*\[mcp_servers[.\]]/m,
+						/^\s*(?:notify)\s*=|^\s*\[mcp_servers[.\]]/m,
 					);
+					assert.match(config, /^developer_instructions\s*=/m);
+					assert.match(config, /You have oh-my-codex installed\. AGENTS\.md/);
 				});
 			});
 		} finally {
