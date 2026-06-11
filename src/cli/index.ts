@@ -1176,7 +1176,10 @@ function tmuxPaneBelongsToSession(paneId: string, sessionName: string): boolean 
 }
 
 function buildDetachedHistoryPruneHookCommand(leaderPaneId: string): string {
-  return `if-shell -F '#{==:#{session_attached},0}' 'clear-history -t ${leaderPaneId}'`;
+  // The leader pane can be gone by the time the hook fires (e.g. crashed
+  // leader with a lingering session); suppress errors so tmux does not queue
+  // "(null):0: can't find pane" for the next attaching client.
+  return `if-shell -F '#{==:#{session_attached},0}' 'run-shell -b "tmux clear-history -t ${leaderPaneId} >/dev/null 2>&1 || true"'`;
 }
 
 function buildDetachedHistoryPruneHookSlot(sessionName: string, leaderPaneId: string): string {
