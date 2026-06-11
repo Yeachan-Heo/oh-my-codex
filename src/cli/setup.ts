@@ -48,6 +48,7 @@ import {
 	upsertPluginModeRuntimeFeatureFlags,
 	upsertManagedCodexHookTrustState,
 	stripManagedCodexHookTrustState,
+	OMX_DEVELOPER_INSTRUCTIONS,
 	OMX_PLUGIN_DEVELOPER_INSTRUCTIONS,
 	hasFirstPartyOmxMcpRegistrations,
 	extractFirstPartyOmxMcpSections,
@@ -902,6 +903,11 @@ function classifyPluginDeveloperInstructions(
 		normalizeDeveloperInstructionsText(LEGACY_PLUGIN_DEVELOPER_INSTRUCTIONS)
 	) {
 		return "current";
+	}
+	if (
+		normalized === normalizeDeveloperInstructionsText(OMX_DEVELOPER_INSTRUCTIONS)
+	) {
+		return "historical";
 	}
 	return "custom";
 }

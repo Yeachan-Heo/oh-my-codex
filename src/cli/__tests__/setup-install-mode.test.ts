@@ -17,7 +17,10 @@ import { parse as parseToml } from "@iarna/toml";
 import { setup } from "../setup.js";
 import { uninstall } from "../uninstall.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../../config/omx-first-party-mcp.js";
-import { OMX_PLUGIN_DEVELOPER_INSTRUCTIONS } from "../../config/generator.js";
+import {
+	OMX_DEVELOPER_INSTRUCTIONS,
+	OMX_PLUGIN_DEVELOPER_INSTRUCTIONS,
+} from "../../config/generator.js";
 
 const packageRoot = process.cwd();
 let previousPathForFakeCodex: string | undefined;
@@ -1915,6 +1918,48 @@ describe("omx setup install mode behavior", () => {
 					const config = await readFile(configPath, "utf-8");
 					assert.match(config, /You have oh-my-codex installed through Codex plugin mode/);
 					assert.doesNotMatch(config, /<omx version=/);
+					assert.equal(
+						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
+						1,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("updates managed classic developer_instructions during plugin migration", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+					await writeFile(
+						configPath,
+						`developer_instructions = ${JSON.stringify(OMX_DEVELOPER_INSTRUCTIONS)}\n`,
+					);
+
+					let promptCount = 0;
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginDeveloperInstructionsPrompt: async () => {
+							promptCount += 1;
+							return "refresh";
+						},
+					});
+
+					assert.equal(promptCount, 1);
+					const config = await readFile(configPath, "utf-8");
+					assert.match(
+						config,
+						/<omx version=\\"1\\">You have oh-my-codex installed through Codex plugin mode/,
+					);
+					assert.doesNotMatch(
+						config,
+						/You have oh-my-codex installed\\. AGENTS\\.md/,
+					);
 					assert.equal(
 						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
 						1,
