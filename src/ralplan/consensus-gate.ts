@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { subagentTrackingPath } from '../subagents/tracker.js';
+import { getBaseStateDir } from '../state/paths.js';
 
 export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
   nativeSubagentEvidenceMissing: 'native_subagent_consensus_evidence_missing',
@@ -141,10 +142,11 @@ export function readLocalRalplanConsensusStateCandidates(
 ): RalplanConsensusSource[] {
   const explicitSession = sessionId !== undefined;
   const sessionIdList = explicitSession ? validateLocalSessionId(sessionId) : readLocalCurrentSessionIds(cwd);
+  const baseStateDir = getBaseStateDir(cwd);
   if (explicitSession && sessionIdList.length === 0) return [];
   const stateRoots = sessionIdList.length > 0
-    ? sessionIdList.map((id) => join(cwd, '.omx', 'state', 'sessions', id))
-    : [join(cwd, '.omx', 'state')];
+    ? sessionIdList.map((id) => join(baseStateDir, 'sessions', id))
+    : [baseStateDir];
 
   const paths = stateRoots.flatMap((dir) => [
     join(dir, 'ralplan-state.json'),
@@ -183,6 +185,12 @@ function extractSequentialConsensusEvidence(value: unknown): {
     ) {
       return { ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
     }
+  }
+
+  const topLevelHandoffArtifacts = asRecord(record.handoff_artifacts);
+  if (topLevelHandoffArtifacts) {
+    const evidence = extractSequentialConsensusEvidence(topLevelHandoffArtifacts);
+    if (evidence) return evidence;
   }
 
   const stateHandoffArtifacts = asRecord(asRecord(record.state)?.handoff_artifacts);
@@ -438,7 +446,7 @@ function trackerBackedNativeReviewProblem(
 
 function currentSessionNativeLeaderThreadId(cwd: string | undefined): string {
   if (!cwd) return '';
-  const sessionState = readJsonState(join(cwd, '.omx', 'state', 'session.json'));
+  const sessionState = readJsonState(join(getBaseStateDir(cwd), 'session.json'));
   return typeof sessionState?.native_session_id === 'string' ? sessionState.native_session_id.trim() : '';
 }
 
@@ -475,7 +483,7 @@ function hasBlockingReviewSignal(value: Record<string, unknown>): boolean {
 }
 
 function readLocalCurrentSessionIds(cwd: string): string[] {
-  const state = readJsonState(join(cwd, '.omx', 'state', 'session.json'));
+  const state = readJsonState(join(getBaseStateDir(cwd), 'session.json'));
   if (typeof state?.cwd === 'string' && state.cwd !== cwd) return [];
   const sessionId = typeof state?.session_id === 'string' ? state.session_id : undefined;
   return sessionId ? validateLocalSessionId(sessionId) : [];
