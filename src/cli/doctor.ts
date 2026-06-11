@@ -2175,18 +2175,28 @@ function checkAgentsMd(
 		`OMX AGENTS contract markers missing; file may have been overwritten by another tool. ` +
 		`Run "omx setup ${scopeFlag} --merge-agents" to preserve local guidance while restoring OMX-managed sections, ` +
 		`or "omx setup ${scopeFlag} --force" to replace it after backup.`;
+	const pluginMissingAgentsRepairMessage =
+		`persistent AGENTS.md is missing in plugin mode; session-scoped AGENTS.md can carry runtime overlay only, ` +
+		`so durable orchestration guidance is degraded. Run "omx setup ${scopeFlag} --force" and accept AGENTS.md defaults`;
 
 	if (scope === "user") {
 		const userAgentsMd = join(codexHomeDir, "AGENTS.md");
 		if (existsSync(userAgentsMd)) {
+			const content = readFileSync(userAgentsMd, "utf-8");
 			if (installMode === "plugin") {
+				if (!hasOmxAgentsContract(content)) {
+					return {
+						name: "AGENTS.md",
+						status: "warn",
+						message: `${repairMessage} Path: ${userAgentsMd}`,
+					};
+				}
 				return {
 					name: "AGENTS.md",
 					status: "pass",
-					message: `optional plugin-mode AGENTS.md defaults found in ${userAgentsMd}; contract validation skipped`,
+					message: `persistent plugin-mode AGENTS.md found in ${userAgentsMd}`,
 				};
 			}
-			const content = readFileSync(userAgentsMd, "utf-8");
 			if (!hasOmxAgentsContract(content)) {
 				return {
 					name: "AGENTS.md",
@@ -2203,8 +2213,8 @@ function checkAgentsMd(
 		if (installMode === "plugin") {
 			return {
 				name: "AGENTS.md",
-				status: "pass",
-				message: `optional plugin-mode AGENTS.md defaults not installed in ${userAgentsMd}`,
+				status: "fail",
+				message: `${pluginMissingAgentsRepairMessage}. Path: ${userAgentsMd}`,
 			};
 		}
 		return {
@@ -2216,15 +2226,21 @@ function checkAgentsMd(
 
 	const projectAgentsMd = join(process.cwd(), "AGENTS.md");
 	if (existsSync(projectAgentsMd)) {
+		const content = readFileSync(projectAgentsMd, "utf-8");
 		if (installMode === "plugin") {
+			if (!hasOmxAgentsContract(content)) {
+				return {
+					name: "AGENTS.md",
+					status: "warn",
+					message: `${repairMessage} Path: ${projectAgentsMd}`,
+				};
+			}
 			return {
 				name: "AGENTS.md",
 				status: "pass",
-				message:
-					"optional plugin-mode AGENTS.md defaults found in project root; contract validation skipped",
+				message: "persistent plugin-mode AGENTS.md found in project root",
 			};
 		}
-		const content = readFileSync(projectAgentsMd, "utf-8");
 		if (!hasOmxAgentsContract(content)) {
 			return {
 				name: "AGENTS.md",
@@ -2241,9 +2257,8 @@ function checkAgentsMd(
 	if (installMode === "plugin") {
 		return {
 			name: "AGENTS.md",
-			status: "pass",
-			message:
-				"optional plugin-mode AGENTS.md defaults not installed in project root",
+			status: "fail",
+			message: `${pluginMissingAgentsRepairMessage}. Path: ${projectAgentsMd}`,
 		};
 	}
 	return {

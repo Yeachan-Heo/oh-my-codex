@@ -220,6 +220,90 @@ command = "node"
 		}
 	});
 
+	it("reports a failed check in plugin mode when persistent AGENTS.md is missing", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-agents-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await mkdir(join(wd, ".omx"), { recursive: true });
+			await writeFile(
+				join(wd, ".omx", "setup-scope.json"),
+				JSON.stringify({
+					scope: "user",
+					installMode: "plugin",
+					mcpMode: "none",
+				}),
+			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				[
+					'developer_instructions = "You have oh-my-codex installed through Codex plugin mode. AGENTS.md is the orchestration brain and main control surface."',
+					"plugin_hooks = true",
+					"goals = true",
+					"",
+				].join("\n"),
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/\[XX\] AGENTS\.md: persistent AGENTS\.md is missing in plugin mode/,
+			);
+			assert.match(
+				res.stdout,
+				/session-scoped AGENTS\.md can carry runtime overlay only/,
+			);
+			assert.match(
+				res.stdout,
+				/Run "omx setup --scope user --force" and accept AGENTS\.md defaults/,
+			);
+			assert.doesNotMatch(
+				res.stdout,
+				/optional plugin-mode AGENTS\.md defaults not installed/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("warns in plugin mode when persistent AGENTS.md exists without OMX contract markers", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-agents-contract-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await mkdir(join(wd, ".omx"), { recursive: true });
+			await writeFile(
+				join(wd, ".omx", "setup-scope.json"),
+				JSON.stringify({
+					scope: "user",
+					installMode: "plugin",
+					mcpMode: "none",
+				}),
+			);
+			await writeFile(join(codexDir, "config.toml"), "plugin_hooks = true\ngoals = true\n");
+			await writeFile(join(codexDir, "AGENTS.md"), "# local instructions\n");
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(res.stdout, /\[!!\] AGENTS\.md: OMX AGENTS contract markers missing/);
+			assert.match(res.stdout, /omx setup --scope user --merge-agents/);
+			assert.doesNotMatch(res.stdout, /optional plugin-mode AGENTS\.md defaults found/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("passes when user AGENTS.md contains the generated OMX contract marker", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-agents-contract-ok-"));
 		try {

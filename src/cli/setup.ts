@@ -851,7 +851,7 @@ async function promptForPluginAgentsMdDefault(
 	destinationPath: string,
 ): Promise<boolean> {
 	if (!process.stdin.isTTY || !process.stdout.isTTY) {
-		return false;
+		return !existsSync(destinationPath);
 	}
 	const rl = createInterface({
 		input: process.stdin,
@@ -860,12 +860,12 @@ async function promptForPluginAgentsMdDefault(
 	try {
 		const answer = (
 			await rl.question(
-				`Plugin mode: install OMX AGENTS.md defaults at "${destinationPath}"? [y/N]: `,
+				`Plugin mode: install/update OMX AGENTS.md defaults at "${destinationPath}"? [Y/n]: `,
 			)
 		)
 			.trim()
 			.toLowerCase();
-		return answer === "y" || answer === "yes";
+		return answer === "" || answer === "y" || answer === "yes";
 	} finally {
 		rl.close();
 	}
@@ -1750,39 +1750,6 @@ async function cleanupPluginModeLegacyConfig(
 	return true;
 }
 
-async function cleanupPluginModeLegacyAgentsMd(
-	agentsMdPath: string,
-	backupContext: SetupBackupContext,
-	options: Pick<SetupOptions, "dryRun" | "verbose">,
-): Promise<boolean> {
-	if (!existsSync(agentsMdPath)) return false;
-	const fileInfo = await lstat(agentsMdPath);
-	if (fileInfo.isSymbolicLink()) {
-		if (options.verbose) {
-			console.log(
-				`  preserved symlinked AGENTS.md at ${agentsMdPath}; plugin mode only removes direct legacy OMX-generated files`,
-			);
-		}
-		return false;
-	}
-
-	const content = await readFile(agentsMdPath, "utf-8");
-	if (!isOmxGeneratedAgentsMd(content)) return false;
-
-	if (await ensureBackup(agentsMdPath, true, backupContext, options)) {
-		// backup created for pre-existing AGENTS.md
-	}
-	if (!options.dryRun) {
-		await rm(agentsMdPath, { force: true });
-	}
-	if (options.verbose) {
-		console.log(
-			`  ${options.dryRun ? "would remove" : "removed"} legacy OMX-generated AGENTS.md`,
-		);
-	}
-	return true;
-}
-
 export async function setup(options: SetupOptions = {}): Promise<void> {
 	const {
 		force = false,
@@ -1918,10 +1885,15 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					scopeDirs.codexConfigFile,
 				)
 		: false;
+	const pluginAgentsMdIsSymlink = existsSync(pluginAgentsMdDst)
+		? (await lstat(pluginAgentsMdDst)).isSymbolicLink()
+		: false;
 	const usePluginAgentsMdDefault = isPluginInstallMode
-		? pluginAgentsMdPrompt
-			? await pluginAgentsMdPrompt(pluginAgentsMdDst)
-			: await promptForPluginAgentsMdDefault(pluginAgentsMdDst)
+		? force
+			? !pluginAgentsMdIsSymlink
+			: pluginAgentsMdPrompt
+				? await pluginAgentsMdPrompt(pluginAgentsMdDst)
+				: await promptForPluginAgentsMdDefault(pluginAgentsMdDst)
 		: false;
 
 	console.log("oh-my-codex setup");
@@ -2433,18 +2405,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	// Step 6: Generate AGENTS.md
 	console.log("[6/8] Generating AGENTS.md...");
 	if (isPluginInstallMode) {
-		const agentsMdRemoved = await cleanupPluginModeLegacyAgentsMd(
-			pluginAgentsMdDst,
-			backupContext,
-			{ dryRun, verbose },
-		);
-		if (agentsMdRemoved) {
-			summary.agentsMd.removed += 1;
-			console.log(
-				`  ${dryRun ? "Would remove" : "Removed"} legacy OMX-generated AGENTS.md for plugin mode.\n`,
-			);
-		}
-
 		if (usePluginAgentsMdDefault) {
 			const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
 			if (existsSync(agentsMdSrc)) {
@@ -2506,9 +2466,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		} else {
 			summary.agentsMd.skipped += 1;
 			console.log(
-				agentsMdRemoved
-					? "  Plugin-mode AGENTS.md defaults not selected.\n"
-					: "  AGENTS.md generation skipped; no legacy OMX-generated AGENTS.md found and defaults not selected.\n",
+				existsSync(pluginAgentsMdDst)
+					? "  Plugin-mode AGENTS.md defaults not selected; existing AGENTS.md left untouched.\n"
+					: "  Plugin-mode AGENTS.md defaults not selected; no AGENTS.md was generated.\n",
 			);
 		}
 	} else {
@@ -2743,7 +2703,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		);
 		console.log("  3. Browse plugin-provided skills with /skills");
 		console.log(
-			"  4. Optional AGENTS.md and developer_instructions defaults are only installed when selected during plugin-mode setup",
+			"  4. Plugin-mode AGENTS.md defaults provide persistent orchestration guidance; developer_instructions is an optional bootstrap",
 		);
 		console.log(
 			"  5. Native agent role TOML files written to .codex/agents/ for agent_type routing",

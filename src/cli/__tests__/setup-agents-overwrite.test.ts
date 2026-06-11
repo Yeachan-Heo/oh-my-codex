@@ -326,7 +326,7 @@ describe('omx setup AGENTS refresh behavior', () => {
         force: true,
       });
 
-      assert.match(output, /AGENTS\.md generation skipped; no legacy OMX-generated AGENTS\.md found and defaults not selected\./);
+      assert.match(output, /Plugin-mode AGENTS\.md defaults not selected; existing AGENTS\.md left untouched\./);
       assert.equal(await readlink(codexAgentsPath), dotfilesAgentsPath);
       assert.match(await readFile(codexAgentsPath, 'utf-8'), /Dotfiles-owned guidance\./);
       assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
