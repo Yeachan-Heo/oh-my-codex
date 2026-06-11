@@ -12,6 +12,10 @@ Use this skill when a task depends on current external best practices, version-a
 
 Produce a cited, reusable best-practice answer or handoff that separates current external evidence from repo-local facts and dependency-selection decisions. For pre-planning investigation, this is the ordinary first research wrapper: gather official/upstream evidence, then hand it to `$ralplan` or the caller as planning input. Do not present `$best-practice-research` as a final architecture component or as a validator-gated research loop.
 
+## Terminal By Default
+
+This skill is terminal and read-only by default. It gathers evidence and produces a cited recommendation with a handoff, then stops. Do not write or edit files, create or amend commits, run mutating commands, or otherwise modify repository state under this skill — even when the question has clear implementation implications. When implementation is warranted, stop and hand off rather than continuing: name `$ralplan` for planning and `$ultragoal`, `$team`, or `executor` for execution, and resume only after the user explicitly switches to that workflow.
+
 ## Activate When
 
 - The user asks for best practices, recommended approach, current guidance, official recommendations, standards, or version-aware external behavior.
@@ -71,7 +75,7 @@ Produce a cited, reusable best-practice answer or handoff that separates current
 <what this research does not decide>
 
 ### Handoff
-<planning/execution/test implications>
+<planning/execution/test implications; name the next workflow — `$ralplan` for planning, `$ultragoal`/`$team`/`executor` for execution — and note that this skill stops here unless the user explicitly switches workflows>
 ```
 
 ## Stop Rules
@@ -79,5 +83,6 @@ Produce a cited, reusable best-practice answer or handoff that separates current
 - Stop after a source-backed recommendation is reusable by the caller.
 - Stop and route upward if the task becomes dependency comparison, broad architecture, or implementation.
 - Do not continue researching when remaining work would only polish wording rather than change the recommendation.
+- This skill never implements. After delivering the recommendation and handoff, stop; do not modify repo files or repo state. Resume only when the user explicitly switches to a planning or implementation workflow named in the handoff.
 
 Task: {{ARGUMENTS}}
