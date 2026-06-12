@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
+import { readModeState } from '../../modes/base.js';
 import {
   runPipeline,
   canResumePipeline,
@@ -394,6 +395,70 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.status, 'failed');
       assert.equal(result.failedStage, 'code-review');
       assert.match(result.error ?? '', /Autopilot quality gates were not clean after 2 cycle/);
+    });
+
+
+    it('final completion write replaces stale BLOCK verdict state with clean artifacts', async () => {
+      let reviewRuns = 0;
+      const stages: PipelineStage[] = [
+        makeStage('ralplan', { artifacts: { plan: 'approved' } }),
+        makeStage('ultragoal', { artifacts: { implemented: true } }),
+        {
+          name: 'code-review',
+          async run(): Promise<StageResult> {
+            reviewRuns += 1;
+            const clean = reviewRuns > 1;
+            return {
+              status: 'completed',
+              artifacts: {
+                review_verdict: {
+                  stage: 'code-review',
+                  recommendation: clean ? 'APPROVE' : 'REQUEST CHANGES',
+                  architectural_status: clean ? 'CLEAR' : 'BLOCK',
+                  clean,
+                  artifact_path: clean ? '.omx/reviews/final-clean.json' : '.omx/reviews/stale-block.json',
+                },
+                return_to_ralplan_reason: clean ? null : 'Stale BLOCK must be replaced after clean review.',
+              },
+              duration_ms: 0,
+            };
+          },
+        },
+        makeStage('ultraqa', {
+          artifacts: {
+            qa_verdict: {
+              stage: 'ultraqa',
+              clean: true,
+              skipped: false,
+              url: 'https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42',
+            },
+            return_to_ralplan_reason: null,
+          },
+        }),
+      ];
+
+      const result = await runPipeline({
+        name: 'stale-block-finalization',
+        task: 'finalization replaces stale blockers',
+        stages,
+        cwd: tempDir,
+      });
+
+      assert.equal(result.status, 'completed');
+      assert.equal(reviewRuns, 2);
+      const ext = await readPipelineState(tempDir);
+      const modeState = await readModeState('autopilot', tempDir);
+      assert.equal(modeState?.active, false);
+      assert.equal(modeState?.current_phase, 'complete');
+      assert.equal((ext?.review_verdict as { recommendation?: string } | undefined)?.recommendation, 'APPROVE');
+      assert.equal((ext?.review_verdict as { architectural_status?: string } | undefined)?.architectural_status, 'CLEAR');
+      assert.equal((ext?.review_verdict as { clean?: boolean } | undefined)?.clean, true);
+      assert.equal((ext?.qa_verdict as { clean?: boolean } | undefined)?.clean, true);
+      assert.equal(ext?.return_to_ralplan_reason, null);
+      assert.ok(ext?.handoff_artifacts?.code_review, 'clean code-review artifact should be preserved in terminal state');
+      assert.ok(ext?.handoff_artifacts?.ultraqa, 'clean ultraqa artifact should be preserved in terminal state');
+      assert.equal((ext?.pipeline_stage_results as Record<string, unknown> | undefined)?.['code-review'] !== undefined, true);
+      assert.equal((ext?.pipeline_stage_results as Record<string, unknown> | undefined)?.ultraqa !== undefined, true);
     });
 
     it('passes artifacts between stages', async () => {

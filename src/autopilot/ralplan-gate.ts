@@ -38,40 +38,50 @@ function ralplanHandoff(state: JsonObject | null | undefined): JsonObject | null
   return safeObject(handoffArtifacts(state)?.ralplan);
 }
 
-function gateSources(input: AutopilotRalplanUltragoalGateInput) {
-  const sources: Array<{ source: string; value: unknown }> = [];
-  for (const [label, state] of [
-    ['next-autopilot-state', input.nextState],
-    ['current-autopilot-state', input.currentState],
-  ] as const) {
-    if (!state) continue;
-    sources.push({ source: label, value: state });
-    const handoffs = handoffArtifacts(state);
-    if (handoffs) {
-      sources.push({
-        source: `${label}:handoff_artifacts`,
-        value: withParentReturnToRalplanContext(handoffs, state),
-      });
-    }
-    const ralplan = ralplanHandoff(state);
-    if (ralplan) {
-      sources.push({
-        source: `${label}:handoff_artifacts.ralplan`,
-        value: withParentReturnToRalplanContext(ralplan, state),
-      });
-    }
+function sourcesForState(label: string, state: JsonObject | null | undefined): Array<{ source: string; value: unknown }> {
+  if (!state) return [];
+  const sources: Array<{ source: string; value: unknown }> = [{ source: label, value: state }];
+  const handoffs = handoffArtifacts(state);
+  if (handoffs) {
+    sources.push({
+      source: `${label}:handoff_artifacts`,
+      value: withParentReturnToRalplanContext(handoffs, state),
+    });
+  }
+  const ralplan = ralplanHandoff(state);
+  if (ralplan) {
+    sources.push({
+      source: `${label}:handoff_artifacts.ralplan`,
+      value: withParentReturnToRalplanContext(ralplan, state),
+    });
   }
   return sources;
+}
+
+function gateSources(input: AutopilotRalplanUltragoalGateInput) {
+  return [
+    ...sourcesForState('next-autopilot-state', input.nextState),
+    ...sourcesForState('current-autopilot-state', input.currentState),
+  ];
 }
 
 export function canAdvanceAutopilotRalplanToUltragoal(
   input: AutopilotRalplanUltragoalGateInput,
 ): AutopilotRalplanUltragoalGateDecision {
-  const evidence = buildRalplanConsensusGateFromSources(gateSources(input), {
+  const options = {
     cwd: input.cwd,
     sessionId: input.sessionId,
     requireNativeSubagents: true,
-  });
+  };
+  const nextStateEvidence = buildRalplanConsensusGateFromSources(
+    sourcesForState('next-autopilot-state', input.nextState),
+    options,
+  );
+  const evidence = nextStateEvidence.complete
+    || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview
+    || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing
+    ? nextStateEvidence
+    : buildRalplanConsensusGateFromSources(gateSources(input), options);
   if (evidence.complete) {
     return {
       allowed: true,

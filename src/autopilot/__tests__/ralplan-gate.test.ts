@@ -281,6 +281,105 @@ describe('autopilot ralplan gate', () => {
     });
   }
 
+
+  it('accepts fresh next-state consensus over stale invalid current-state consensus', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-fresh-next-valid-'));
+    const sessionId = 'sess-autopilot-fresh-next-valid';
+    const trackingPath = subagentTrackingPath(cwd);
+    try {
+      await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(trackingPath, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            updated_at: '2026-06-12T10:03:00.000Z',
+            threads: {
+              'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: '2026-06-12T09:59:00.000Z', last_seen_at: '2026-06-12T09:59:00.000Z', turn_count: 1 },
+              'thread-architect-fresh': { thread_id: 'thread-architect-fresh', kind: 'subagent', first_seen_at: '2026-06-12T10:02:00.000Z', last_seen_at: '2026-06-12T10:02:00.000Z', completed_at: '2026-06-12T10:02:00.000Z', turn_count: 1 },
+              'thread-critic-fresh': { thread_id: 'thread-critic-fresh', kind: 'subagent', first_seen_at: '2026-06-12T10:03:00.000Z', last_seen_at: '2026-06-12T10:03:00.000Z', completed_at: '2026-06-12T10:03:00.000Z', turn_count: 1 },
+            },
+          },
+        },
+      }, null, 2));
+
+      const nextState = {
+        current_phase: 'ralplan',
+        review_cycle: 2,
+        handoff_artifacts: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              review_cycle: 2,
+              session_id: sessionId,
+              thread_id: 'thread-architect-fresh',
+              artifact_path: '.omx/artifacts/architect-fresh.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-06-12T10:02:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              review_cycle: 2,
+              session_id: sessionId,
+              thread_id: 'thread-critic-fresh',
+              artifact_path: '.omx/artifacts/critic-fresh.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-06-12T10:03:00.000Z',
+            },
+          },
+        },
+      };
+      const currentState = {
+        current_phase: 'ralplan',
+        return_to_ralplan_reason: 'Code review requested a plan update.',
+        review_cycle: 1,
+        handoff_artifacts: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'block',
+              review_cycle: 1,
+              session_id: sessionId,
+              thread_id: 'thread-architect-stale',
+              artifact_path: '.omx/artifacts/architect-stale.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-06-12T10:00:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              review_cycle: 1,
+              session_id: sessionId,
+              thread_id: 'thread-critic-stale',
+              artifact_path: '.omx/artifacts/critic-stale.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-06-12T10:01:00.000Z',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, nextState, currentState });
+
+      assert.equal(decision.allowed, true);
+      assert.equal(decision.evidence?.source, 'next-autopilot-state');
+      assert.equal(decision.evidence?.blockedReason, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects native review evidence from the session leader even when malformed tracking marks it as subagent', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-leader-spoof-'));
     const sessionId = 'sess-autopilot-leader-spoof';
