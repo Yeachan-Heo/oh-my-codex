@@ -1,0 +1,85 @@
+name: Manual npm publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, e.g. v0.18.11'
+        required: true
+        type: string
+      allow_without_provenance:
+        description: 'Fallback to npm publish without provenance if Rekor/Sigstore tlog creation fails'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish npm package
+    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Verify tag/package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          test "${{ inputs.tag }}" = "v${VERSION}"
+          if npm view "oh-my-codex@${VERSION}" version >/dev/null 2>&1; then
+            echo "oh-my-codex@${VERSION} already exists on npm; skipping"
+            exit 0
+          fi
+      - run: npm pack --dry-run
+      - name: Configure npm auth
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${NODE_AUTH_TOKEN:-}"
+          printf "//registry.npmjs.org/:_authToken=%s\nregistry=https://registry.npmjs.org/\nalways-auth=true\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+          npm whoami
+      - name: Publish to npm
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          if npm publish --access public --provenance 2>&1 | tee npm-publish.log; then
+            echo "Published oh-my-codex@${VERSION} with provenance"
+          elif grep -Eiq 'TLOG_CREATE_ENTRY_ERROR|tlog|rekor|transparency log' npm-publish.log && [ "${{ inputs.allow_without_provenance }}" = "true" ]; then
+            echo "::warning::Provenance publish failed due to Sigstore/Rekor tlog outage; retrying without provenance"
+            npm publish --access public
+          else
+            exit 1
+          fi
+      - name: Verify npm publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          for i in $(seq 1 20); do
+            if [ "$(npm view "oh-my-codex@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]; then
+              npm view oh-my-codex version dist-tags --json
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "npm did not expose oh-my-codex@${VERSION} in time" >&2
+          exit 1

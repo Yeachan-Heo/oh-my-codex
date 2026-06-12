@@ -4,6 +4,61 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.12] - 2026-06-12
+
+Patch release for the post-`0.18.11` release-prep train: first-party MCP sibling detection is narrower, manual npm publishing is documented in CI, runtime/HUD/plugin/autopilot safeguards are tightened, Windows hook and state-input paths are safer, and release prep reconciles the main workflow history for `0.18.12`.
+
+### Changed
+
+- **Release and publication workflow is clearer** — manual npm publication workflow support and npm auth configuration are captured, while `0.18.12` release prep reconciles the main workflow history without tagging, merging main, or publishing locally.
+- **Runtime and automation gates are stricter** — Autopilot final gates, best-practice-research read-only boundaries, ralplan consensus guards, and deep-interview patch artifact handling are hardened.
+- **Plugin and generated guidance handling is safer** — persistent AGENTS guidance, plugin agent merge repair, developer-instruction prompt policy, setup plugin mode inference, and cleanup preservation are tightened.
+
+### Fixed
+
+- **Windows and CLI state paths are safer** — Windows hook shims preserve `Path`, emit `omx.cmd`, use absolute PowerShell hook paths, handle UTF-8 BOM for non-ASCII installs, and `omx state` gains a Windows-safe input surface.
+- **HUD/session visibility is more reliable** — dev version labels, stale HUD cleanup, HUD owner matching, terminal skill-active visibility, cancel hook-visible run-dir state, and detached history pruning tolerate more edge cases.
+- **MCP sibling detection is narrower** — post-traffic first-party MCP sibling capping avoids overmatching unrelated same-parent processes.
+
+### PRs
+
+- #2760, #2762, #2765, #2766, #2768, #2771, #2773, #2774, #2776, #2798, #2800, #2801, #2802, #2805, #2806, #2810, #2812
+
+### Issues
+
+- No open GitHub issues or open PRs were present at release prep time; release scope is represented by the merged PR and direct-commit inventory in the release notes.
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.12.md`.
+
+
+## [0.18.11] - 2026-06-09
+
+Patch release for the post-`0.18.10` cleanup train: the `omx explore` command surface is hard-deprecated, `omx doctor` gains Spark/model lane routing diagnostics, launch-time tmux HUD splitting is safer in cramped windows, and the catalog registers the wiki skill manifest entry.
+
+### Changed
+
+- **`omx explore` command surface is hard-deprecated** — the explore command surface is fully retired and remaining `omx explore` mentions are removed from global AGENTS guidance.
+- **Catalog gains the wiki skill manifest entry** — the wiki skill manifest entry is registered so the skill is discoverable through the standard manifest surface.
+
+### Fixed
+
+- **`omx doctor` surfaces Spark/model lane routing** — doctor adds a Spark/model lane routing diagnostic so misrouted model lanes are visible during diagnosis.
+- **Launch-time HUD is safer in cramped tmux windows** — the launch-time HUD split is skipped inside cramped existing tmux windows to avoid unusable pane splits during startup.
+
+### PRs
+
+- #2746, #2747, #2750, #2755, #2758
+
+### Issues
+
+- No separately closed GitHub issues were found for the `v0.18.10..HEAD` release range; the release scope is represented by the merged PR inventory above.
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.11.md`.
+
 ## [0.18.9] - 2026-06-03
 
 Patch release for the post-`0.18.8` update/runtime reliability train: stable/dev update channels, source-install packaging, Windows npm fallback, project-local runtime state lookup, cmux/tmux question rendering, deep-interview visibility/grounding, Autopilot/Ultragoal/review gate clarity, HUD pane scoping, and CI/release evidence hardening.

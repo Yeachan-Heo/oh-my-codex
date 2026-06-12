@@ -1,39 +1,43 @@
-# oh-my-codex 0.18.9
+# oh-my-codex 0.18.12
 
-`0.18.9` is a patch release after `0.18.8` for update-channel reliability, project-local runtime state lookup, tmux/cmux question rendering, Autopilot/Ultragoal gate visibility, and release/CI hardening. It preserves existing package layout and CLI compatibility while tightening how dev-source updates, review lanes, HUD reconciliation, and release evidence behave.
+
+> Draft status: release-prep PR body source before tagging. Keep publication proof updates in `docs/qa/release-readiness-0.18.12.md` after PR CI, tag workflow, GitHub release creation, and npm publication.
+
+`0.18.12` is a patch release after `0.18.11` focused on release-workflow reconciliation, safer runtime automation gates, plugin guidance preservation, Windows hook/state robustness, and HUD/session cleanup. It preserves the existing CLI/package contract while tightening release and operator edge cases discovered after `0.18.11`.
 
 ## Highlights
 
-- **Stable/dev update channels are explicit** — OMX update now distinguishes stable and dev channels, dev-source updates build installable package artifacts from a local checkout, and Windows update paths fall back to `npm.cmd` when direct `npm` lookup fails.
-- **Project-local runtime state lookup is safer** — SessionStart project memory lookup works with boxed `OMX_ROOT`, and project-local `omx resume` history listing preserves the intended project history during isolated launches.
-- **Deep-interview and question panes are more robust** — `omx question` delivers env vars through an export/prefix path under cmux/tmux shims, short panes keep deep-interview questions visible, and deep-interview handoffs are grounded in repo docs before execution.
-- **Autopilot, review, and Ultragoal gates are clearer** — Autopilot ralplan write guards are phase-aware, review subagent model/effort choices are respected, and Ultragoal HUD stays active until goals finish.
-- **HUD and CI reliability improved** — repeated tmux HUD reconciliation stays scoped to the emitting pane, fork PR CI avoids self-hosted skips, and self-hosted prerequisite install is hardened.
+- **Release workflow history is reconciled for 0.18.12** — the release prep branch carries the main manual npm publishing workflow and npm auth configuration history forward while keeping the local prep boundary intact: no tag, no main merge, and no local npm publish.
+- **Automation and planning gates are stricter** — Autopilot final gates, best-practice-research read-only enforcement, ralplan consensus guards, deep-interview artifact writes, and Windows-safe `omx state` input handling reduce unsafe or confusing execution paths.
+- **Plugin guidance handling is safer** — persistent AGENTS guidance, setup plugin agent merge repair, developer-instruction prompt policy, setup mode inference, JSON fallback, and cleanup preservation are all hardened.
+- **HUD/session behavior is more reliable** — stale HUD cleanup, dev version labels, owner matching, terminal skill-active visibility, cancel run-dir visibility, and detached history pruning are tightened.
+- **Windows hook paths are safer** — hook shims preserve `Path`, emit `omx.cmd`, use absolute PowerShell hook paths, and include UTF-8 BOM handling for non-ASCII install paths.
 
 ## Fixes / compatibility
 
-- Existing update, HUD, Autopilot, Ultragoal, deep-interview, and project-local state files remain compatible; this release tightens fallback behavior and release evidence without intentional breaking changes.
-- `0.18.8` post-publish evidence cleanup commits are included as internal release-readiness hygiene in the compare range.
-- Nested `crates/omx-sparkshell/Cargo.lock` remains a standalone historical lockfile recording `omx-sparkshell` `0.1.0`; workspace package versioning is governed by root `Cargo.toml` and root `Cargo.lock`, both bumped for `0.18.9`.
+- Existing CLI, plugin, native-agent, HUD, state, hook, and package layout contracts remain compatible with `0.18.11`.
+- The release keeps npm/package layout compatibility and updates root/plugin/Cargo metadata to `0.18.12`.
+- Open GitHub PR and issue inventory was empty at release prep time.
 
 ## Merged PR inventory
 
-#2713, #2711, #2710, #2709, #2708, #2706, #2704, #2703, #2702, #2699, #2697, #2693, #2691, #2690.
+#2760, #2762, #2765, #2766, #2768, #2771, #2773, #2774, #2776, #2798, #2800, #2801, #2802, #2805, #2806, #2810, #2812.
 
 ## Validation
 
-Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.9.md`.
+Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.12.md`.
 
-Local gates before tagging include version sync, build, lint/no-unused, native-agent/plugin-bundle verification, catalog docs check, full tests, targeted compatibility/runtime tests, live OMX/Codex smoke where prerequisites are available, mandatory UltraQA, release body generation and review, `git diff --check`, `npm pack --dry-run`, packed-install smoke, and native asset/manifest verification evidence.
+Local release-prep gates include build, version sync for `v0.18.12`, lint, no-unused, native-agent verification, plugin mirror/bundle checks, catalog docs check, focused hook/state tests, `npm pack --dry-run`, and `git diff --check`. Branch CI, tag-triggered release workflow, GitHub release proof, and npm publication proof remain post-PR/tag publication gates.
 
-The GitHub release workflow remains the authoritative cross-platform native asset gate after tag push, including the uploaded `native-release-manifest.json`. During publication, npm provenance signing hit repeated Fulcio `ECONNRESET` failures; a temporary GitHub Actions fallback published the exact `v0.18.9` tag artifact with `npm publish --provenance=false`, matching the prior release-train outage procedure.
+The GitHub release workflow remains the authoritative cross-platform native asset gate after tag push, including the uploaded `native-release-manifest.json`.
 
 ## Contributors
 
-Thanks to the contributors who landed the `v0.18.8...v0.18.9` delta:
+Thanks to the contributors who landed the `v0.18.11...v0.18.12` delta:
 
 - [@Yeachan-Heo](https://github.com/Yeachan-Heo)
+- [@app/dependabot](https://github.com/apps/dependabot)
 - [@iqdoctor](https://github.com/iqdoctor)
-- [@Bongseop-Kim](https://github.com/Bongseop-Kim)
+- [@lifrary](https://github.com/lifrary)
 
-**Full Changelog**: [`v0.18.8...v0.18.9`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.8...v0.18.9)
+**Full Changelog**: [`v0.18.11...v0.18.12`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.11...v0.18.12)
