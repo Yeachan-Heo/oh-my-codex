@@ -33,11 +33,27 @@ export interface RalplanConsensusSource {
   value: unknown;
 }
 
+type ConsensusResolution = {
+  kind: 'valid';
+  ralplan_architect_review: Record<string, unknown>;
+  ralplan_critic_review: Record<string, unknown>;
+} | {
+  kind: 'invalid';
+  ralplan_architect_review: Record<string, unknown> | null;
+  ralplan_critic_review: Record<string, unknown> | null;
+  blockedDetails: string[];
+};
+
 export function buildRalplanConsensusGateFromSources(
   sources: RalplanConsensusSource[],
   options: RalplanNativeSubagentConsensusOptions = {},
 ): RalplanConsensusGateEvidence {
   let nativeBlockedEvidence: {
+    ralplan_architect_review: Record<string, unknown>;
+    ralplan_critic_review: Record<string, unknown>;
+    source: string;
+  } | null = null;
+  let validEvidence: {
     ralplan_architect_review: Record<string, unknown>;
     ralplan_critic_review: Record<string, unknown>;
     source: string;
@@ -50,8 +66,13 @@ export function buildRalplanConsensusGateFromSources(
   } | null = null;
 
   for (const candidate of sources) {
-    const evidence = extractSequentialConsensusEvidence(candidate.value);
-    if (evidence) {
+    const evidence = resolveConsensusEvidence(candidate.value);
+    if (evidence?.kind === 'invalid') {
+      invalidCompleteEvidence ??= { ...evidence, source: candidate.source };
+      continue;
+    }
+
+    if (evidence?.kind === 'valid') {
       if (
         options.requireNativeSubagents
         && !hasTrackerBackedNativeRalplanLanes(evidence, options)
@@ -59,19 +80,7 @@ export function buildRalplanConsensusGateFromSources(
         nativeBlockedEvidence ??= { ...evidence, source: candidate.source };
         continue;
       }
-      return {
-        complete: true,
-        sequence: ['architect-review', 'critic-review'],
-        ralplan_architect_review: evidence.ralplan_architect_review,
-        ralplan_critic_review: evidence.ralplan_critic_review,
-        source: candidate.source,
-        blockedReason: null,
-      };
-    }
-
-    const invalidEvidence = extractInvalidCompleteConsensusEvidence(candidate.value);
-    if (invalidEvidence) {
-      invalidCompleteEvidence ??= { ...invalidEvidence, source: candidate.source };
+      validEvidence ??= { ...evidence, source: candidate.source };
     }
   }
 
@@ -84,6 +93,17 @@ export function buildRalplanConsensusGateFromSources(
       source: invalidCompleteEvidence.source,
       blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview,
       blockedDetails: invalidCompleteEvidence.blockedDetails,
+    };
+  }
+
+  if (validEvidence) {
+    return {
+      complete: true,
+      sequence: ['architect-review', 'critic-review'],
+      ralplan_architect_review: validEvidence.ralplan_architect_review,
+      ralplan_critic_review: validEvidence.ralplan_critic_review,
+      source: validEvidence.source,
+      blockedReason: null,
     };
   }
 
@@ -116,12 +136,22 @@ export function buildRalplanConsensusGateForCwd(
   cwd: string,
   options: { artifacts?: Record<string, unknown>; sessionId?: string; requireNativeSubagents?: boolean } = {},
 ): RalplanConsensusGateEvidence {
+  const localStateCandidates = readLocalRalplanConsensusStateCandidates(cwd, options.sessionId)
+    .map((candidate) => ({
+      ...candidate,
+      value: options.artifacts
+        ? withParentReturnToRalplanContext(candidate.value, options.artifacts)
+        : candidate.value,
+    }));
   return buildRalplanConsensusGateFromSources([
     ...(options.artifacts ? [
       { source: 'stage-context-artifacts', value: options.artifacts },
-      { source: 'stage-context-ralplan-artifact', value: options.artifacts.ralplan },
+      {
+        source: 'stage-context-ralplan-artifact',
+        value: withParentReturnToRalplanContext(options.artifacts.ralplan, options.artifacts),
+      },
     ] : []),
-    ...readLocalRalplanConsensusStateCandidates(cwd, options.sessionId),
+    ...localStateCandidates,
   ], {
     cwd,
     sessionId: options.sessionId,
@@ -164,48 +194,42 @@ export function readLocalRalplanConsensusStateCandidates(
   });
 }
 
-function extractSequentialConsensusEvidence(value: unknown): {
-  ralplan_architect_review: Record<string, unknown>;
-  ralplan_critic_review: Record<string, unknown>;
-} | null {
+function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
 
-  const gate = record.ralplanConsensusGate ?? record.ralplan_consensus_gate;
-  if (gate && typeof gate === 'object') {
-    const gateRecord = gate as Record<string, unknown>;
-    const architectReview = asRecord(
-      gateRecord.ralplan_architect_review ?? gateRecord.architectReview ?? gateRecord.architect_review,
-    );
-    const criticReview = asRecord(
-      gateRecord.ralplan_critic_review ?? gateRecord.criticReview ?? gateRecord.critic_review,
-    );
-    if (
-      gateRecord.complete === true
-      && hasArchitectThenCriticSequence(gateRecord)
-      && isApproveReview(architectReview, 'architect')
-      && isApproveReview(criticReview, 'critic')
-      && isCriticNotBeforeArchitect(architectReview, criticReview)
-    ) {
-      return { ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
-    }
-  }
+  const returnToRalplanCycle = isReturnToRalplanCycle(record);
+  const advancedReviewCycle = explicitFreshnessReviewCycle(record);
+  const staleReturnToRalplanCycle = returnToRalplanCycle && advancedReviewCycle === null;
+  const directGate = resolveDirectGate(record);
+  if (directGate?.kind === 'invalid') return directGate;
+  if (
+    directGate
+    && (
+      !returnToRalplanCycle
+      || (advancedReviewCycle !== null && reviewsCarryFreshnessCycle(directGate, advancedReviewCycle))
+    )
+  ) return directGate;
 
-  const handoffArtifactsAreStale = isReturnToRalplanCycle(record);
+  const handoffArtifactsAreStale = staleReturnToRalplanCycle;
   const topLevelHandoffArtifacts = handoffArtifactsAreStale ? null : asRecord(record.handoff_artifacts);
   if (topLevelHandoffArtifacts) {
-    const evidence = extractSequentialConsensusEvidence(topLevelHandoffArtifacts);
+    const evidence = resolveConsensusEvidence(withParentReturnToRalplanContext(topLevelHandoffArtifacts, record));
     if (evidence) return evidence;
   }
 
   const stateRecord = asRecord(record.state);
-  const stateHandoffArtifacts = handoffArtifactsAreStale || (stateRecord && isReturnToRalplanCycle(stateRecord))
+  const stateHasOwnReturnLoopContext = stateRecord !== null && isReturnToRalplanCycle(stateRecord);
+  const stateHandoffArtifacts = handoffArtifactsAreStale && !stateHasOwnReturnLoopContext
     ? null
     : asRecord(stateRecord?.handoff_artifacts);
   if (stateHandoffArtifacts) {
-    const evidence = extractSequentialConsensusEvidence(stateHandoffArtifacts);
+    const stateContext = stateHasOwnReturnLoopContext ? stateRecord : record;
+    const evidence = resolveConsensusEvidence(withParentReturnToRalplanContext(stateHandoffArtifacts, stateContext));
     if (evidence) return evidence;
   }
+
+  if (returnToRalplanCycle && advancedReviewCycle === null) return null;
 
   const directArchitectReview = asRecord(record.ralplan_architect_review);
   const directCriticReview = asRecord(record.ralplan_critic_review);
@@ -214,8 +238,17 @@ function extractSequentialConsensusEvidence(value: unknown): {
     && isApproveReview(directArchitectReview, 'architect')
     && isApproveReview(directCriticReview, 'critic')
     && isCriticNotBeforeArchitect(directArchitectReview, directCriticReview)
+    && (
+      !returnToRalplanCycle
+      || (advancedReviewCycle !== null && reviewPairCarriesFreshnessCycle(
+        directArchitectReview,
+        directCriticReview,
+        advancedReviewCycle,
+      ))
+    )
   ) {
     return {
+      kind: 'valid',
       ralplan_architect_review: directArchitectReview,
       ralplan_critic_review: directCriticReview,
     };
@@ -234,8 +267,16 @@ function extractSequentialConsensusEvidence(value: unknown): {
       isApproveReview(architectReview, 'architect')
       && isApproveReview(criticReview, 'critic')
       && isCriticNotBeforeArchitect(architectReview, criticReview)
+      && (
+        !returnToRalplanCycle
+        || (advancedReviewCycle !== null && reviewPairCarriesFreshnessCycle(
+          architectReview,
+          criticReview,
+          advancedReviewCycle,
+        ))
+      )
     ) {
-      return { ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
+      return { kind: 'valid', ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
     }
   }
 
@@ -248,22 +289,23 @@ function extractSequentialConsensusEvidence(value: unknown): {
       isApproveReview(architectReview, 'architect')
       && isApproveReview(criticReview, 'critic')
       && isCriticNotBeforeArchitect(architectReview, criticReview)
+      && (
+        !returnToRalplanCycle
+        || (advancedReviewCycle !== null && reviewPairCarriesFreshnessCycle(
+          architectReview,
+          criticReview,
+          advancedReviewCycle,
+        ))
+      )
     ) {
-      return { ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
+      return { kind: 'valid', ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
     }
   }
 
   return null;
 }
 
-function extractInvalidCompleteConsensusEvidence(value: unknown): {
-  ralplan_architect_review: Record<string, unknown> | null;
-  ralplan_critic_review: Record<string, unknown> | null;
-  blockedDetails: string[];
-} | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-
+function resolveDirectGate(record: Record<string, unknown>): ConsensusResolution | null {
   const gate = record.ralplanConsensusGate ?? record.ralplan_consensus_gate;
   if (gate && typeof gate === 'object') {
     const gateRecord = gate as Record<string, unknown>;
@@ -273,16 +315,34 @@ function extractInvalidCompleteConsensusEvidence(value: unknown): {
     const criticReview = asRecord(
       gateRecord.ralplan_critic_review ?? gateRecord.criticReview ?? gateRecord.critic_review,
     );
-    if (gateRecord.complete === true && hasArchitectThenCriticSequence(gateRecord)) {
+    if (
+      gateRecord.complete === true
+      && hasArchitectThenCriticSequence(gateRecord)
+      && isApproveReview(architectReview, 'architect')
+      && isApproveReview(criticReview, 'critic')
+      && isCriticNotBeforeArchitect(architectReview, criticReview)
+    ) {
+      return {
+        kind: 'valid',
+        ralplan_architect_review: architectReview,
+        ralplan_critic_review: criticReview,
+      };
+    }
+
+    if (gateRecord.complete === true) {
       const blockedDetails = [
         ...reviewApprovalProblems(architectReview, 'architect'),
         ...reviewApprovalProblems(criticReview, 'critic'),
       ];
+      if (!hasArchitectThenCriticSequence(gateRecord)) {
+        blockedDetails.push('consensus review sequence is not architect-review then critic-review');
+      }
       if (!isCriticNotBeforeArchitect(architectReview, criticReview)) {
         blockedDetails.push('critic review is ordered before architect review');
       }
       if (blockedDetails.length > 0) {
         return {
+          kind: 'invalid',
           ralplan_architect_review: architectReview,
           ralplan_critic_review: criticReview,
           blockedDetails,
@@ -291,13 +351,69 @@ function extractInvalidCompleteConsensusEvidence(value: unknown): {
     }
   }
 
-  const stateHandoffArtifacts = asRecord(asRecord(record.state)?.handoff_artifacts);
-  if (stateHandoffArtifacts) {
-    const evidence = extractInvalidCompleteConsensusEvidence(stateHandoffArtifacts);
-    if (evidence) return evidence;
-  }
-
   return null;
+}
+
+export function withParentReturnToRalplanContext(value: unknown, parent: Record<string, unknown>): unknown {
+  const reason = parent.return_to_ralplan_reason ?? parent.returnToRalplanReason;
+  if (typeof reason !== 'string' || reason.trim() === '' || !value || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  const parentReviewCycle = numericValue(
+    parent.return_to_ralplan_parent_review_cycle
+      ?? parent.returnToRalplanParentReviewCycle
+      ?? parent.review_cycle
+      ?? parent.reviewCycle,
+  );
+  const inheritedReviewCycle = record.review_cycle ?? record.reviewCycle ?? parent.review_cycle ?? parent.reviewCycle;
+  return {
+    ...record,
+    review_cycle: inheritedReviewCycle,
+    current_phase: parent.current_phase ?? parent.currentPhase ?? 'ralplan',
+    return_to_ralplan_reason: reason,
+    return_to_ralplan_parent_review_cycle: parentReviewCycle,
+  };
+}
+
+function explicitFreshnessReviewCycle(record: Record<string, unknown>): number | null {
+  const parentReviewCycle = numericValue(
+    record.return_to_ralplan_parent_review_cycle ?? record.returnToRalplanParentReviewCycle,
+  );
+  const candidateReviewCycle = numericValue(record.review_cycle ?? record.reviewCycle);
+  return parentReviewCycle !== null
+    && candidateReviewCycle !== null
+    && candidateReviewCycle > parentReviewCycle
+    ? candidateReviewCycle
+    : null;
+}
+
+function reviewsCarryFreshnessCycle(evidence: ConsensusResolution, reviewCycle: number): boolean {
+  return evidence.kind === 'valid'
+    && reviewPairCarriesFreshnessCycle(
+      evidence.ralplan_architect_review,
+      evidence.ralplan_critic_review,
+      reviewCycle,
+    );
+}
+
+function reviewPairCarriesFreshnessCycle(
+  architectReview: Record<string, unknown> | null,
+  criticReview: Record<string, unknown> | null,
+  reviewCycle: number,
+): boolean {
+  return reviewCarriesFreshnessCycle(architectReview, reviewCycle)
+    && reviewCarriesFreshnessCycle(criticReview, reviewCycle);
+}
+
+function reviewCarriesFreshnessCycle(review: Record<string, unknown> | null, reviewCycle: number): boolean {
+  const cycle = numericValue(review?.review_cycle ?? review?.reviewCycle);
+  return cycle !== null && cycle >= reviewCycle;
+}
+
+function numericValue(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

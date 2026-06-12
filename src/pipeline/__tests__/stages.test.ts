@@ -658,6 +658,124 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
+  it('run rejects stale nested ralplan artifacts when parent return-to-ralplan context is present', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    const result = await stage.run(makeCtx({
+      artifacts: {
+        return_to_ralplan_reason: 'Code review requested a plan update.',
+        review_cycle: 1,
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              completed_at: '2026-06-12T09:00:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-06-12T09:05:00.000Z',
+            },
+          },
+        },
+      },
+    }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'ralplan_consensus_evidence_missing');
+    assert.equal(gate.complete, false);
+    assert.equal(gate.blockedReason, 'missing_sequential_architect_then_critic_approval');
+  });
+
+  it('run accepts nested ralplan artifacts when review_cycle explicitly advances past parent loopback', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    const result = await stage.run(makeCtx({
+      artifacts: {
+        return_to_ralplan_reason: 'Code review requested a plan update.',
+        review_cycle: 1,
+        ralplan: {
+          review_cycle: 2,
+          ralplanConsensusGate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              review_cycle: 2,
+              completed_at: '2026-06-12T10:00:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              review_cycle: 2,
+              completed_at: '2026-06-12T10:05:00.000Z',
+            },
+          },
+        },
+      },
+    }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
+
+    assert.equal(result.status, 'completed');
+    assert.equal(result.error, undefined);
+    assert.equal(gate.complete, true);
+    assert.equal(gate.blockedReason, null);
+  });
+
+  it('run rejects nested ralplan artifacts when only the container review_cycle advances', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    const result = await stage.run(makeCtx({
+      artifacts: {
+        return_to_ralplan_reason: 'Code review requested a plan update.',
+        review_cycle: 1,
+        ralplan: {
+          review_cycle: 2,
+          ralplanConsensusGate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              completed_at: '2026-06-12T10:00:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-06-12T10:05:00.000Z',
+            },
+          },
+        },
+      },
+    }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'ralplan_consensus_evidence_missing');
+    assert.equal(gate.complete, false);
+    assert.equal(gate.blockedReason, 'missing_sequential_architect_then_critic_approval');
+  });
+
   it('canSkip returns false when nested code-review artifacts are non-clean', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });

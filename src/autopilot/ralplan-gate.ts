@@ -1,6 +1,7 @@
 import {
   buildRalplanConsensusGateFromSources,
   RALPLAN_CONSENSUS_BLOCKED_REASONS,
+  withParentReturnToRalplanContext,
   type RalplanConsensusGateEvidence,
 } from '../ralplan/consensus-gate.js';
 
@@ -46,9 +47,19 @@ function gateSources(input: AutopilotRalplanUltragoalGateInput) {
     if (!state) continue;
     sources.push({ source: label, value: state });
     const handoffs = handoffArtifacts(state);
-    if (handoffs) sources.push({ source: `${label}:handoff_artifacts`, value: handoffs });
+    if (handoffs) {
+      sources.push({
+        source: `${label}:handoff_artifacts`,
+        value: withParentReturnToRalplanContext(handoffs, state),
+      });
+    }
     const ralplan = ralplanHandoff(state);
-    if (ralplan) sources.push({ source: `${label}:handoff_artifacts.ralplan`, value: ralplan });
+    if (ralplan) {
+      sources.push({
+        source: `${label}:handoff_artifacts.ralplan`,
+        value: withParentReturnToRalplanContext(ralplan, state),
+      });
+    }
   }
   return sources;
 }

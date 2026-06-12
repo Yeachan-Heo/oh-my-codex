@@ -190,6 +190,8 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
     if (shouldReturnToRalplan) {
       reviewCycle += 1;
+      artifacts.current_phase = 'ralplan';
+      artifacts.review_cycle = reviewCycle;
     }
 
     const handoffArtifacts = normalizeHandoffArtifactKeys(handoffArtifactsByStage);

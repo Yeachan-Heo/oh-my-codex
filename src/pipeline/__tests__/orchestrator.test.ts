@@ -233,6 +233,75 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(Object.prototype.hasOwnProperty.call(ext?.handoff_artifacts ?? {}, 'review_verdict'), false);
     });
 
+    it('threads return-loop review cycle into the rerun ralplan stage context', async () => {
+      const plansDir = join(tempDir, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(join(plansDir, 'prd-stale.md'), '# Plan\n');
+      await writeFile(join(plansDir, 'test-spec-stale.md'), '# Test Spec\n');
+
+      let ralplanRuns = 0;
+      const structuralRalplan = createRalplanStage();
+      const staleRalplanArtifacts = {
+        ralplanConsensusGate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            verdict: 'approve',
+            completed_at: '2026-06-12T09:00:00.000Z',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            verdict: 'approve',
+            completed_at: '2026-06-12T09:05:00.000Z',
+          },
+        },
+      };
+
+      const ralplanStage: PipelineStage = {
+        name: 'ralplan',
+        async run(ctx: StageContext): Promise<StageResult> {
+          ralplanRuns += 1;
+          if (ralplanRuns === 1) {
+            return {
+              status: 'completed',
+              artifacts: staleRalplanArtifacts,
+              duration_ms: 0,
+            };
+          }
+          assert.equal(ctx.artifacts.current_phase, 'ralplan');
+          assert.equal(ctx.artifacts.return_to_ralplan_reason, 'Review requested a plan update.');
+          assert.equal(ctx.artifacts.review_cycle, 1);
+          return structuralRalplan.run(ctx);
+        },
+      };
+
+      const result = await runPipeline({
+        name: 'review-loop-stale-ralplan-test',
+        task: 'reject stale ralplan consensus after review loopback',
+        stages: [
+          ralplanStage,
+          makeStage('code-review', {
+            artifacts: {
+              review_verdict: {
+                recommendation: 'REQUEST CHANGES',
+                architectural_status: 'CLEAR',
+                clean: false,
+              },
+              return_to_ralplan_reason: 'Review requested a plan update.',
+            },
+          }),
+        ],
+        cwd: tempDir,
+        maxRalphIterations: 3,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'ralplan');
+      assert.equal(ralplanRuns, 2);
+      assert.equal(result.stageResults.ralplan.error, 'ralplan_consensus_evidence_missing');
+    });
+
     it('returns to ralplan rather than deep-interview after default quality-gate failures', async () => {
       const order: string[] = [];
       let qaRuns = 0;
