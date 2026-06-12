@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.11] - 2026-06-09
+
+Patch release for the post-`0.18.10` cleanup train: the `omx explore` command surface is hard-deprecated, `omx doctor` gains Spark/model lane routing diagnostics, launch-time tmux HUD splitting is safer in cramped windows, and the catalog registers the wiki skill manifest entry.
+
+### Changed
+
+- **`omx explore` command surface is hard-deprecated** — the explore command surface is fully retired and remaining `omx explore` mentions are removed from global AGENTS guidance.
+- **Catalog gains the wiki skill manifest entry** — the wiki skill manifest entry is registered so the skill is discoverable through the standard manifest surface.
+
+### Fixed
+
+- **`omx doctor` surfaces Spark/model lane routing** — doctor adds a Spark/model lane routing diagnostic so misrouted model lanes are visible during diagnosis.
+- **Launch-time HUD is safer in cramped tmux windows** — the launch-time HUD split is skipped inside cramped existing tmux windows to avoid unusable pane splits during startup.
+
+### PRs
+
+- #2746, #2747, #2750, #2755, #2758
+
+### Issues
+
+- No separately closed GitHub issues were found for the `v0.18.10..HEAD` release range; the release scope is represented by the merged PR inventory above.
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.11.md`.
+
 ## [0.18.9] - 2026-06-03
 
 Patch release for the post-`0.18.8` update/runtime reliability train: stable/dev update channels, source-install packaging, Windows npm fallback, project-local runtime state lookup, cmux/tmux question rendering, deep-interview visibility/grounding, Autopilot/Ultragoal/review gate clarity, HUD pane scoping, and CI/release evidence hardening.
