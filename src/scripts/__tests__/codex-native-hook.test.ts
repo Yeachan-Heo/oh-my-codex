@@ -5903,6 +5903,121 @@ exit 0
     }
   });
 
+  it("allows deep-interview apply_patch artifact writes from freeform patch text while blocking outside paths", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-apply-patch-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-di-apply-patch");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-di-apply-patch", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: "sess-di-apply-patch",
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-apply-patch" }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-di-apply-patch",
+      });
+
+      const allowedAddFile = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-apply-patch",
+          tool_name: "apply_patch",
+          tool_use_id: "tool-di-apply-patch-add",
+          tool_input: {
+            input: "*** Begin Patch\n*** Add File: .omx/context/findings.md\n+# Findings\n*** End Patch\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedAddFile.outputJson, null);
+
+      const allowedUpdateFile = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-apply-patch",
+          tool_name: "ApplyPatch",
+          tool_use_id: "tool-di-apply-patch-update",
+          tool_input: {
+            input: "*** Begin Patch\n*** Update File: .omx/specs/deep-interview-demo.md\n@@\n-old\n+new\n*** End Patch\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedUpdateFile.outputJson, null);
+
+      const allowedStateWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-apply-patch",
+          tool_name: "apply_patch",
+          tool_use_id: "tool-di-apply-patch-state",
+          tool_input: {
+            input: "*** Begin Patch\n*** Add File: .omx/state/deep-interview-notes.json\n+{}\n*** End Patch\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedStateWrite.outputJson, null);
+
+      const blockedOutsidePath = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-apply-patch",
+          tool_name: "apply_patch",
+          tool_use_id: "tool-di-apply-patch-outside",
+          tool_input: {
+            input: "*** Begin Patch\n*** Add File: src/implementation.ts\n+export const x = 1;\n*** End Patch\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedOutsidePath.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedOutsidePath.outputJson as { reason?: string } | null)?.reason ?? ""), /Deep-interview is active/);
+
+      const blockedMixedPaths = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-apply-patch",
+          tool_name: "apply_patch",
+          tool_use_id: "tool-di-apply-patch-mixed",
+          tool_input: {
+            input: "*** Begin Patch\n*** Add File: .omx/context/ok.md\n+ok\n*** Add File: src/leak.ts\n+leak\n*** End Patch\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedMixedPaths.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedUnparseablePatch = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-apply-patch",
+          tool_name: "apply_patch",
+          tool_use_id: "tool-di-apply-patch-empty",
+          tool_input: { input: "not a recognizable patch" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedUnparseablePatch.outputJson as { decision?: string } | null)?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows Autopilot ralplan planning artifacts while blocking implementation writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-autopilot-ralplan-artifact-"));
     try {

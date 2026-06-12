@@ -2708,6 +2708,44 @@ function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
   return candidates.map((candidate) => safeString(candidate).trim()).filter(Boolean);
 }
 
+const APPLY_PATCH_TOOL_NAMES = new Set(["apply_patch", "ApplyPatch"]);
+
+function isApplyPatchToolName(toolName: string): boolean {
+  return APPLY_PATCH_TOOL_NAMES.has(toolName);
+}
+
+function readApplyPatchText(payload: CodexHookPayload): string {
+  const input = safeObject(payload.tool_input);
+  for (const key of ["input", "patch", "content", "text", "command"]) {
+    const value = safeString(input[key]).trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function extractApplyPatchTargetPaths(patchText: string): string[] {
+  if (!patchText) return [];
+  const paths: string[] = [];
+  for (const match of patchText.matchAll(/^\s*\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+?)\s*$/gm)) {
+    const candidate = safeString(match[1]).trim();
+    if (candidate) paths.push(candidate);
+  }
+  for (const match of patchText.matchAll(/^\s*\*\*\*\s+Move\s+to:\s*(.+?)\s*$/gm)) {
+    const candidate = safeString(match[1]).trim();
+    if (candidate) paths.push(candidate);
+  }
+  return paths;
+}
+
+function collectImplementationToolPathCandidates(
+  payload: CodexHookPayload,
+  toolName: string,
+  structuredCandidates: string[],
+): string[] {
+  if (!isApplyPatchToolName(toolName)) return structuredCandidates;
+  return [...structuredCandidates, ...extractApplyPatchTargetPaths(readApplyPatchText(payload))];
+}
+
 function isNullDeviceRedirectTarget(target: string): boolean {
   const normalized = target.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
   return normalized === "/dev/null" || normalized === "nul";
@@ -2930,8 +2968,9 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   if (toolName === "Bash") {
     blocked = !isAllowedDeepInterviewBashWrite(cwd, command);
   } else if (DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-    blocked = pathCandidates.length === 0
-      || !pathCandidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
+    const candidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    blocked = candidates.length === 0
+      || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
   }
 
   if (!blocked) return null;
