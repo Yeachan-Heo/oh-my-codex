@@ -1,37 +1,43 @@
-# oh-my-codex 0.18.11
+# oh-my-codex 0.18.12
 
-`0.18.11` is a patch release after `0.18.10` that completes the `omx explore` command-surface deprecation, adds Spark/model lane routing diagnostics to `omx doctor`, and hardens launch-time tmux HUD behavior. It preserves existing package layout and CLI compatibility while removing stale explore guidance and narrowing HUD/diagnostic edge cases.
+
+> Draft status: release-prep PR body source before tagging. Keep publication proof updates in `docs/qa/release-readiness-0.18.12.md` after PR CI, tag workflow, GitHub release creation, and npm publication.
+
+`0.18.12` is a patch release after `0.18.11` focused on release-workflow reconciliation, safer runtime automation gates, plugin guidance preservation, Windows hook/state robustness, and HUD/session cleanup. It preserves the existing CLI/package contract while tightening release and operator edge cases discovered after `0.18.11`.
 
 ## Highlights
 
-- **`omx explore` command surface is hard-deprecated** — the explore command surface is fully retired, and remaining `omx explore` mentions are removed from global AGENTS guidance so generated agent docs stop pointing at the deprecated lane.
-- **`omx doctor` gains Spark/model lane routing diagnostics** — doctor now surfaces Spark/model lane routing state so misrouted model lanes are visible during diagnosis.
-- **Launch-time HUD is safer in cramped tmux windows** — the launch-time HUD split is skipped inside cramped existing tmux windows, preventing unusable pane splits during startup.
-- **Catalog gains the wiki skill manifest entry** — the wiki skill manifest entry is registered in the catalog so the skill is discoverable through the standard manifest surface.
+- **Release workflow history is reconciled for 0.18.12** — the release prep branch carries the main manual npm publishing workflow and npm auth configuration history forward while keeping the local prep boundary intact: no tag, no main merge, and no local npm publish.
+- **Automation and planning gates are stricter** — Autopilot final gates, best-practice-research read-only enforcement, ralplan consensus guards, deep-interview artifact writes, and Windows-safe `omx state` input handling reduce unsafe or confusing execution paths.
+- **Plugin guidance handling is safer** — persistent AGENTS guidance, setup plugin agent merge repair, developer-instruction prompt policy, setup mode inference, JSON fallback, and cleanup preservation are all hardened.
+- **HUD/session behavior is more reliable** — stale HUD cleanup, dev version labels, owner matching, terminal skill-active visibility, cancel run-dir visibility, and detached history pruning are tightened.
+- **Windows hook paths are safer** — hook shims preserve `Path`, emit `omx.cmd`, use absolute PowerShell hook paths, and include UTF-8 BOM handling for non-ASCII install paths.
 
 ## Fixes / compatibility
 
-- Existing CLI, plugin, generated-agent, HUD, and diagnostic contracts remain compatible; this release retires the already-deprecated `omx explore` surface and narrows HUD/diagnostic edge cases without intentional breaking changes.
-- The release retains npm/package layout compatibility with `0.18.10`.
-- Two direct-to-dev `docs(model)` commits (`0d7a3899`, `6567fd3b`) are included in the compare range and net to no docs change after the misattributed model-switching guidance was reverted.
+- Existing CLI, plugin, native-agent, HUD, state, hook, and package layout contracts remain compatible with `0.18.11`.
+- The release keeps npm/package layout compatibility and updates root/plugin/Cargo metadata to `0.18.12`.
+- Open GitHub PR and issue inventory was empty at release prep time.
 
 ## Merged PR inventory
 
-#2746, #2747, #2750, #2755, #2758.
+#2760, #2762, #2765, #2766, #2768, #2771, #2773, #2774, #2776, #2798, #2800, #2801, #2802, #2805, #2806, #2810, #2812.
 
 ## Validation
 
-Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.11.md`.
+Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.12.md`.
 
-Local gates before tagging include version sync, build, CLI smoke (`omx --help`, `omx doctor`), `npm pack` + packed-install smoke, release body generation and review, `git diff --check`, branch CI, tag-triggered release workflow, GitHub release proof, and npm publication proof.
+Local release-prep gates include build, version sync for `v0.18.12`, lint, no-unused, native-agent verification, plugin mirror/bundle checks, catalog docs check, focused hook/state tests, `npm pack --dry-run`, and `git diff --check`. Branch CI, tag-triggered release workflow, GitHub release proof, and npm publication proof remain post-PR/tag publication gates.
 
 The GitHub release workflow remains the authoritative cross-platform native asset gate after tag push, including the uploaded `native-release-manifest.json`.
 
 ## Contributors
 
-Thanks to the contributors who landed the `v0.18.10...v0.18.11` delta:
+Thanks to the contributors who landed the `v0.18.11...v0.18.12` delta:
 
 - [@Yeachan-Heo](https://github.com/Yeachan-Heo)
-- [@simongonzalezdc](https://github.com/simongonzalezdc)
+- [@app/dependabot](https://github.com/apps/dependabot)
+- [@iqdoctor](https://github.com/iqdoctor)
+- [@lifrary](https://github.com/lifrary)
 
-**Full Changelog**: [`v0.18.10...v0.18.11`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.10...v0.18.11)
+**Full Changelog**: [`v0.18.11...v0.18.12`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.11...v0.18.12)
