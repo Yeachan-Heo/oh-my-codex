@@ -31,6 +31,7 @@ export interface RalplanNativeSubagentConsensusOptions {
 export interface RalplanConsensusSource {
   source: string;
   value: unknown;
+  sessionId?: string;
 }
 
 type ConsensusResolution = {
@@ -52,6 +53,7 @@ export function buildRalplanConsensusGateFromSources(
     ralplan_architect_review: Record<string, unknown>;
     ralplan_critic_review: Record<string, unknown>;
     source: string;
+    options: RalplanNativeSubagentConsensusOptions;
   } | null = null;
   let validEvidence: {
     ralplan_architect_review: Record<string, unknown>;
@@ -67,6 +69,10 @@ export function buildRalplanConsensusGateFromSources(
 
   for (const candidate of sources) {
     const evidence = resolveConsensusEvidence(candidate.value);
+    const candidateOptions = {
+      ...options,
+      sessionId: options.sessionId ?? candidate.sessionId,
+    };
     if (evidence?.kind === 'invalid') {
       invalidCompleteEvidence ??= { ...evidence, source: candidate.source };
       continue;
@@ -75,9 +81,9 @@ export function buildRalplanConsensusGateFromSources(
     if (evidence?.kind === 'valid') {
       if (
         options.requireNativeSubagents
-        && !hasTrackerBackedNativeRalplanLanes(evidence, options)
+        && !hasTrackerBackedNativeRalplanLanes(evidence, candidateOptions)
       ) {
-        nativeBlockedEvidence ??= { ...evidence, source: candidate.source };
+        nativeBlockedEvidence ??= { ...evidence, source: candidate.source, options: candidateOptions };
         continue;
       }
       validEvidence ??= { ...evidence, source: candidate.source };
@@ -116,8 +122,9 @@ export function buildRalplanConsensusGateFromSources(
       source: nativeBlockedEvidence.source,
       blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing,
       blockedDetails: [
-        trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_architect_review, 'architect', options),
-        trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_critic_review, 'critic', options),
+        trackerBackedNativeReviewPairProblem(nativeBlockedEvidence, nativeBlockedEvidence.options),
+        trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_architect_review, 'architect', nativeBlockedEvidence.options),
+        trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_critic_review, 'critic', nativeBlockedEvidence.options),
       ].filter((detail): detail is string => Boolean(detail)),
     };
   }
@@ -175,22 +182,25 @@ export function readLocalRalplanConsensusStateCandidates(
   const scopedStateDir = getBaseStateDir(cwd);
   const localStateDir = localBaseStateDir(cwd);
   if (explicitSession && sessionIdList.length === 0) return [];
-  const stateRoots = sessionIdList.length > 0
+  const stateRoots: Array<{ dir: string; sessionId?: string }> = sessionIdList.length > 0
     ? uniquePaths(sessionIdList.flatMap((id) => [
       join(scopedStateDir, 'sessions', id),
       join(localStateDir, 'sessions', id),
-    ]))
-    : [localStateDir];
+    ])).map((dir) => ({
+      dir,
+      sessionId: sessionIdFromStateRoot(dir),
+    }))
+    : [{ dir: localStateDir }];
 
-  const paths = stateRoots.flatMap((dir) => [
-    join(dir, 'ralplan-state.json'),
-    join(dir, 'autopilot-state.json'),
+  const paths = stateRoots.flatMap(({ dir, sessionId }) => [
+    { path: join(dir, 'ralplan-state.json'), sessionId },
+    { path: join(dir, 'autopilot-state.json'), sessionId },
   ]);
 
-  return paths.flatMap((path) => {
+  return paths.flatMap(({ path, sessionId }) => {
     const state = readJsonState(path);
     if (!state) return [];
-    return [{ source: path, value: state }];
+    return [{ source: path, value: state, sessionId }];
   });
 }
 
@@ -504,9 +514,7 @@ function hasTrackerBackedNativeRalplanLanes(
   },
   options: RalplanNativeSubagentConsensusOptions,
 ): boolean {
-  const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
-  const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
-  if (!architectThreadId || !criticThreadId || architectThreadId === criticThreadId) return false;
+  if (trackerBackedNativeReviewPairProblem(evidence, options)) return false;
   return isTrackerBackedNativeReview(evidence.ralplan_architect_review, 'architect', options)
     && isTrackerBackedNativeReview(evidence.ralplan_critic_review, 'critic', options);
 }
@@ -515,12 +523,38 @@ function nativeReviewThreadId(review: Record<string, unknown> | null): string {
   return typeof review?.thread_id === 'string' ? review.thread_id.trim() : '';
 }
 
+function trackerBackedNativeReviewPairProblem(
+  evidence: {
+    ralplan_architect_review: Record<string, unknown> | null;
+    ralplan_critic_review: Record<string, unknown> | null;
+  },
+  options: RalplanNativeSubagentConsensusOptions,
+): string | null {
+  const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
+  const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
+  if (architectThreadId && criticThreadId && architectThreadId === criticThreadId) {
+    return 'architect and critic reviews must reference distinct native subagent tracker threads';
+  }
+
+  const transitionSessionId = typeof options.sessionId === 'string' ? options.sessionId.trim() : '';
+  const architectSessionId = transitionSessionId || nativeReviewSessionId(evidence.ralplan_architect_review);
+  const criticSessionId = transitionSessionId || nativeReviewSessionId(evidence.ralplan_critic_review);
+  if (!architectSessionId || !criticSessionId) return null;
+  return architectSessionId === criticSessionId
+    ? null
+    : `architect and critic reviews must resolve to the same native subagent tracker session; architect session_id=${architectSessionId}, critic session_id=${criticSessionId}`;
+}
+
 function isTrackerBackedNativeReview(
   review: Record<string, unknown> | null,
   agentRole: 'architect' | 'critic',
   options: RalplanNativeSubagentConsensusOptions,
 ): boolean {
   return trackerBackedNativeReviewProblem(review, agentRole, options) === null;
+}
+
+function nativeReviewSessionId(review: Record<string, unknown> | null): string {
+  return typeof review?.session_id === 'string' ? review.session_id.trim() : '';
 }
 
 function trackerBackedNativeReviewProblem(
@@ -540,13 +574,11 @@ function trackerBackedNativeReviewProblem(
       : '';
   const reviewSessionId = typeof review.session_id === 'string' ? review.session_id.trim() : '';
   const threadId = typeof review.thread_id === 'string' ? review.thread_id.trim() : '';
-  const artifactPath = typeof review.artifact_path === 'string' ? review.artifact_path.trim() : '';
   const trackerPath = typeof review.tracker_path === 'string' ? review.tracker_path.trim() : '';
   if (!sessionId) issues.push(`${agentRole} review cannot resolve session_id`);
-  if (!reviewSessionId || reviewSessionId !== sessionId) issues.push(`${agentRole} review session_id=${reviewSessionId || 'missing'} does not match ${sessionId || 'missing'}`);
+  if (reviewSessionId && reviewSessionId !== sessionId) issues.push(`${agentRole} review session_id=${reviewSessionId} does not match ${sessionId || 'missing'}`);
   if (!threadId) issues.push(`${agentRole} review missing thread_id`);
-  if (!artifactPath) issues.push(`${agentRole} review missing artifact_path`);
-  if (!trackerPath || !trackerPath.endsWith('subagent-tracking.json')) issues.push(`${agentRole} review missing subagent-tracking.json tracker_path`);
+  if (trackerPath && !trackerPath.endsWith('subagent-tracking.json')) issues.push(`${agentRole} review tracker_path=${trackerPath} is not subagent-tracking.json`);
   const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
   if (!cwd) issues.push(`${agentRole} review cannot resolve cwd for tracker lookup`);
 
@@ -565,6 +597,8 @@ function trackerBackedNativeReviewProblem(
     || (leaderThreadId && leaderThreadId === threadId && thread.kind !== 'subagent')
   ) return `${agentRole} tracker thread ${threadId} is the session leader`;
   if (thread.kind !== 'subagent') return `${agentRole} tracker thread ${threadId} has kind=${String(thread.kind || 'missing')}`;
+  const completedAt = typeof thread.completed_at === 'string' ? thread.completed_at.trim() : '';
+  if (!completedAt) return `${agentRole} tracker thread ${threadId} is not completed`;
   return null;
 }
 
@@ -615,6 +649,13 @@ function readLocalCurrentSessionIds(cwd: string): string[] {
 
 function localBaseStateDir(cwd: string): string {
   return join(resolveWorkingDirectoryForState(cwd), '.omx', 'state');
+}
+
+function sessionIdFromStateRoot(path: string): string | undefined {
+  const normalized = path.replace(/\\/g, '/');
+  const match = /\/sessions\/([^/]+)$/.exec(normalized);
+  const sessionId = match?.[1];
+  return sessionId && validateLocalSessionId(sessionId).length > 0 ? sessionId : undefined;
 }
 
 function uniquePaths(paths: string[]): string[] {
