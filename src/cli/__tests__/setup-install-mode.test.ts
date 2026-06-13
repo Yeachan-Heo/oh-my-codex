@@ -2697,7 +2697,7 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
-	it("archives stale legacy prompts and refreshes generated native agents when plugin mode refreshes", async () => {
+	it("archives stale legacy prompts and preserves modified native agents when plugin mode refreshes", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -2710,16 +2710,14 @@ describe("omx setup install mode behavior", () => {
 						promptPath,
 						"---\ndescription: stale legacy executor prompt\n---\n\nold executor body\n",
 					);
-					await writeFile(
-						agentPath,
-						[
-							"# oh-my-codex agent: planner",
-							'name = "planner"',
-							'description = "stale legacy generated planner"',
-							'developer_instructions = """old planner body"""',
-							"",
-						].join("\n"),
-					);
+					const staleAgentToml = [
+						"# oh-my-codex agent: planner",
+						'name = "planner"',
+						'description = "stale legacy generated planner"',
+						'developer_instructions = """old planner body"""',
+						"",
+					].join("\n");
+					await writeFile(agentPath, staleAgentToml);
 
 					const output = await captureConsoleOutput(async () => {
 						await setup({ scope: "user", installMode: "plugin" });
@@ -2727,10 +2725,7 @@ describe("omx setup install mode behavior", () => {
 
 					assert.equal(existsSync(promptPath), false);
 					assert.equal(existsSync(agentPath), true);
-					assert.match(
-						await readFile(agentPath, "utf-8"),
-						/^name = "planner"$/m,
-					);
+					assert.equal(await readFile(agentPath, "utf-8"), staleAgentToml);
 					assert.match(
 						output,
 						/Archived and removed .* legacy OMX-managed prompt file/,
@@ -2757,7 +2752,7 @@ describe("omx setup install mode behavior", () => {
 								join(backupRoot, entry, ".codex", "agents", "planner.toml"),
 							),
 						),
-						true,
+						false,
 					);
 				});
 			});
