@@ -443,3 +443,10 @@ If this happens, try:
 ## License
 
 MIT
+
+## GEO visibility benchmark
+
+OmX includes a [`geobench`](https://github.com/NomaDamas/geobench) product spec for measuring LLM hit rate, MRR, share of voice, and citations.
+
+- Spec: [`geobench/oh-my-codex.yaml`](geobench/oh-my-codex.yaml)
+- Runbook: [`docs/geobench.md`](docs/geobench.md)
