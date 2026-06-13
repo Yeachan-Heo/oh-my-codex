@@ -68,6 +68,7 @@ const DEV_INSTALL_SOURCE = 'github:Yeachan-Heo/oh-my-codex#dev';
 const DEV_REPOSITORY_URL = 'https://github.com/Yeachan-Heo/oh-my-codex.git';
 const DEV_REPOSITORY_BRANCH = 'dev';
 const DEV_UPDATE_TIMEOUT_MS = 300000;
+const SKIP_NATIVE_AGENT_REFRESH_ENV = 'OMX_SKIP_NATIVE_AGENT_REFRESH';
 
 export function resolveUpdateChannelConfig(channel: UpdateChannel = 'stable'): UpdateChannelConfig {
   if (channel === 'dev') {
@@ -445,6 +446,7 @@ export function runDeferredGlobalUpdate(
       ...process.env,
       OMX_DEFERRED_UPDATE_LOG: logPath,
       OMX_DEFERRED_UPDATE_PARENT_PID: String(parentPid),
+      [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1',
     };
 
     const command = platform === 'win32' ? 'powershell.exe' : 'sh';

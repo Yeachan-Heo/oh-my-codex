@@ -88,6 +88,90 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
     }
   });
 
+  it('preserves user-customized installable native agent TOMLs during normal setup refresh', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const executorPath = join(wd, '.codex', 'agents', 'executor.toml');
+      const installed = await readFile(executorPath, 'utf-8');
+      const customized = installed
+        .replace(/^model = ".*"$/m, 'model = "gpt-5.4"')
+        .replace(/^model_reasoning_effort = ".*"$/m, 'model_reasoning_effort = "low"');
+      assert.notEqual(customized, installed);
+      await writeFile(executorPath, customized);
+
+      await setup({ scope: 'project' });
+
+      assert.equal(await readFile(executorPath, 'utf-8'), customized);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('overwrites customized native agent TOMLs only when setup force is explicit', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const executorPath = join(wd, '.codex', 'agents', 'executor.toml');
+      const installed = await readFile(executorPath, 'utf-8');
+      const customized = installed
+        .replace(/^model = ".*"$/m, 'model = "gpt-5.4"')
+        .replace(/^model_reasoning_effort = ".*"$/m, 'model_reasoning_effort = "low"');
+      await writeFile(executorPath, customized);
+
+      await setup({ scope: 'project', force: true });
+
+      const refreshed = await readFile(executorPath, 'utf-8');
+      assert.notEqual(refreshed, customized);
+      assert.match(refreshed, /^# oh-my-codex agent: executor$/m);
+      assert.doesNotMatch(refreshed, /^model = "gpt-5\.4"$/m);
+      assert.doesNotMatch(refreshed, /^model_reasoning_effort = "low"$/m);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('skips native agent TOMLs entirely during background update-check setup refreshes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
+    const previousCwd = process.cwd();
+    const previousSkipNativeAgentRefresh = process.env.OMX_SKIP_NATIVE_AGENT_REFRESH;
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const executorPath = join(wd, '.codex', 'agents', 'executor.toml');
+      const installed = await readFile(executorPath, 'utf-8');
+      const customized = installed
+        .replace(/^model = ".*"$/m, 'model = "gpt-5.4"')
+        .replace(/^model_reasoning_effort = ".*"$/m, 'model_reasoning_effort = "low"');
+      await writeFile(executorPath, customized);
+
+      process.env.OMX_SKIP_NATIVE_AGENT_REFRESH = '1';
+      await setup({ scope: 'project', force: true });
+
+      assert.equal(await readFile(executorPath, 'utf-8'), customized);
+    } finally {
+      if (typeof previousSkipNativeAgentRefresh === 'string') process.env.OMX_SKIP_NATIVE_AGENT_REFRESH = previousSkipNativeAgentRefresh;
+      else delete process.env.OMX_SKIP_NATIVE_AGENT_REFRESH;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves setup-owned prompt assets and removes unknown prompts on --force', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
     const previousCwd = process.cwd();

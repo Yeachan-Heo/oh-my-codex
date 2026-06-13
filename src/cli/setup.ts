@@ -21,6 +21,7 @@ import { spawnSync } from "child_process";
 import { createInterface } from "readline/promises";
 import { homedir } from "os";
 import TOML from "@iarna/toml";
+import { createHash } from "crypto";
 import {
 	codexHome,
 	codexConfigPath,
@@ -165,6 +166,7 @@ interface SetupOptions {
 	scope?: SetupScope;
 	verbose?: boolean;
 	agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
+	skipNativeAgentRefresh?: boolean;
 	setupScopePrompt?: (defaultScope: SetupScope) => Promise<SetupScope>;
 	persistedSetupReviewPrompt?: (
 		preferences: Partial<PersistedSetupScope>,
@@ -251,6 +253,7 @@ const PROJECT_GITIGNORE_ENTRIES = [
 const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
+const SKIP_NATIVE_AGENT_REFRESH_ENV = "OMX_SKIP_NATIVE_AGENT_REFRESH";
 const HARD_DEPRECATED_SKILL_NAMES = new Set(["web-clone"]);
 const TEAM_MODE_SKILL_NAMES = new Set(["team", "worker"]);
 const TEAM_MODE_PROMPT_NAMES = new Set(["team-executor"]);
@@ -1955,6 +1958,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		teamMode: requestedTeamMode,
 		scope: requestedScope,
 		verbose = false,
+		skipNativeAgentRefresh: requestedSkipNativeAgentRefresh = false,
 		setupScopePrompt,
 		persistedSetupReviewPrompt,
 		installModePrompt,
@@ -2033,6 +2037,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		)
 		?? "enabled";
 	const isTeamModeEnabled = teamModeEnabled(resolvedTeamMode);
+	const skipNativeAgentRefresh =
+		requestedSkipNativeAgentRefresh ||
+		process.env[SKIP_NATIVE_AGENT_REFRESH_ENV] === "1";
 	const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
 	const existingConfigForMcpMigration = existsSync(scopeDirs.codexConfigFile)
 		? await readFile(scopeDirs.codexConfigFile, "utf-8")
@@ -2307,7 +2314,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 	// Step 4: Install native agent configs
 	console.log("[4/8] Installing native agent configs...");
-	if (isPluginInstallMode) {
+	if (skipNativeAgentRefresh) {
+		summary.nativeAgents = createEmptyCategorySummary();
+		console.log(
+			"  Native agent refresh skipped for background update-check setup refresh.\n",
+		);
+	} else if (isPluginInstallMode) {
 		summary.nativeAgents = await refreshNativeAgentConfigs(
 			pkgRoot,
 			scopeDirs.nativeAgentsDir,
@@ -3135,6 +3147,144 @@ async function syncManagedContent(
 	}
 }
 
+interface NativeAgentInstallManifestEntry {
+	sha256: string;
+}
+
+interface NativeAgentInstallManifest {
+	version: 1;
+	files: Record<string, NativeAgentInstallManifestEntry>;
+}
+
+function hashContent(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+function nativeAgentInstallManifestPath(agentsDir: string): string {
+	return join(agentsDir, "..", ".omx", "native-agents.json");
+}
+
+async function readNativeAgentInstallManifest(
+	agentsDir: string,
+): Promise<NativeAgentInstallManifest> {
+	const manifestPath = nativeAgentInstallManifestPath(agentsDir);
+	if (!existsSync(manifestPath)) return { version: 1, files: {} };
+
+	try {
+		const parsed = JSON.parse(await readFile(manifestPath, "utf-8")) as {
+			version?: unknown;
+			files?: unknown;
+		};
+		if (
+			parsed.version !== 1 ||
+			!parsed.files ||
+			typeof parsed.files !== "object"
+		) {
+			return { version: 1, files: {} };
+		}
+
+		const files: Record<string, NativeAgentInstallManifestEntry> = {};
+		for (const [fileName, entry] of Object.entries(
+			parsed.files as Record<string, unknown>,
+		)) {
+			if (!fileName.endsWith(".toml")) continue;
+			if (!entry || typeof entry !== "object") continue;
+			const sha256 = (entry as { sha256?: unknown }).sha256;
+			if (typeof sha256 === "string" && /^[0-9a-f]{64}$/i.test(sha256)) {
+				files[fileName] = { sha256: sha256.toLowerCase() };
+			}
+		}
+		return { version: 1, files };
+	} catch {
+		return { version: 1, files: {} };
+	}
+}
+
+async function writeNativeAgentInstallManifest(
+	agentsDir: string,
+	manifest: NativeAgentInstallManifest,
+): Promise<void> {
+	const manifestPath = nativeAgentInstallManifestPath(agentsDir);
+	await mkdir(dirname(manifestPath), { recursive: true });
+	const sortedFiles = Object.fromEntries(
+		Object.entries(manifest.files).sort(([left], [right]) =>
+			left.localeCompare(right),
+		),
+	);
+	await writeFile(
+		manifestPath,
+		JSON.stringify({ version: 1, files: sortedFiles }, null, 2) + "\n",
+	);
+}
+
+async function syncNativeAgentToml(
+	content: string,
+	dstPath: string,
+	summary: SetupCategorySummary,
+	backupContext: SetupBackupContext,
+	options: Pick<SetupOptions, "dryRun" | "verbose" | "force">,
+	verboseLabel: string,
+	manifest: NativeAgentInstallManifest,
+): Promise<void> {
+	const fileName = basename(dstPath);
+	const nextHash = hashContent(content);
+	const destinationExists = existsSync(dstPath);
+
+	if (!destinationExists) {
+		if (!options.dryRun) {
+			await mkdir(dirname(dstPath), { recursive: true });
+			await writeFile(dstPath, content);
+			manifest.files[fileName] = { sha256: nextHash };
+		}
+		summary.updated += 1;
+		if (options.verbose) {
+			console.log(
+				`  ${options.dryRun ? "would update" : "updated"} ${verboseLabel}`,
+			);
+		}
+		return;
+	}
+
+	const existing = await readFile(dstPath, "utf-8");
+	const existingHash = hashContent(existing);
+	if (existing === content) {
+		if (!options.dryRun) {
+			manifest.files[fileName] = { sha256: nextHash };
+		}
+		summary.unchanged += 1;
+		return;
+	}
+
+	const priorHash = manifest.files[fileName]?.sha256;
+	const safeToOverwrite = options.force || priorHash === existingHash;
+	if (!safeToOverwrite) {
+		summary.skipped += 1;
+		if (options.verbose) {
+			console.log(
+				`  skipped ${verboseLabel} (local modifications preserved; use --force to overwrite)`,
+			);
+		}
+		return;
+	}
+
+	if (await ensureBackup(dstPath, true, backupContext, options)) {
+		summary.backedUp += 1;
+	}
+
+	if (!options.dryRun) {
+		await mkdir(dirname(dstPath), { recursive: true });
+		await writeFile(dstPath, content);
+		manifest.files[fileName] = { sha256: nextHash };
+	}
+
+	summary.updated += 1;
+	if (options.verbose) {
+		console.log(
+			`  ${options.dryRun ? "would update" : "updated"} ${verboseLabel}`,
+		);
+	}
+}
+
 async function syncManagedWindowsNativeHookShim(
 	codexHomeDir: string,
 	pkgRoot: string,
@@ -3399,6 +3549,7 @@ async function refreshNativeAgentConfigs(
 		await mkdir(agentsDir, { recursive: true });
 	}
 
+	const nativeAgentManifest = await readNativeAgentInstallManifest(agentsDir);
 	const manifest = tryReadCatalogManifest();
 	const agentStatusByName = manifest
 		? getCatalogAgentStatusByName(manifest)
@@ -3439,13 +3590,14 @@ async function refreshNativeAgentConfigs(
 			codexHomeOverride: join(agentsDir, ".."),
 		});
 		const dst = join(agentsDir, `${name}.toml`);
-		await syncManagedContent(
+		await syncNativeAgentToml(
 			toml,
 			dst,
 			summary,
 			backupContext,
 			options,
 			`native agent ${name}.toml`,
+			nativeAgentManifest,
 		);
 	}
 
@@ -3489,6 +3641,7 @@ async function refreshNativeAgentConfigs(
 			}
 			if (!options.dryRun) {
 				await rm(staleAgentPath, { force: true });
+				delete nativeAgentManifest.files[file];
 			}
 			summary.removed += 1;
 			if (options.verbose) {
@@ -3500,6 +3653,10 @@ async function refreshNativeAgentConfigs(
 				console.log(`  ${prefix} ${file} (status: ${label}${reason})`);
 			}
 		}
+	}
+
+	if (!options.dryRun) {
+		await writeNativeAgentInstallManifest(agentsDir, nativeAgentManifest);
 	}
 
 	return summary;
