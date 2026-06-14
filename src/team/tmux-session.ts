@@ -2329,6 +2329,15 @@ export function killWorkerByPaneId(workerPaneId: string, leaderPaneId?: string):
   runTmux(['kill-pane', '-t', workerPaneId]);
 }
 
+export function paneHasOmxInstanceTag(paneId: string | null | undefined, instanceId: string | null | undefined): boolean {
+  const normalizedPaneId = normalizePaneTarget(paneId);
+  const expectedInstanceId = typeof instanceId === 'string' ? instanceId.trim() : '';
+  if (!normalizedPaneId || !expectedInstanceId) return false;
+  const result = runTmux(['show-option', '-qv', '-p', '-t', normalizedPaneId, OMX_PANE_INSTANCE_OPTION]);
+  if (!result.ok) return false;
+  return result.stdout.trim() === expectedInstanceId;
+}
+
 export async function killWorkerByPaneIdAsync(workerPaneId: string, leaderPaneId?: string): Promise<void> {
   if (!workerPaneId.startsWith('%')) return;
   // Guard: never kill the leader's own pane.
@@ -2358,6 +2367,7 @@ export interface PaneTeardownOptions {
 
 export interface SharedSessionShutdownTopology {
   livePaneIds: string[];
+  teamWorkerPaneIds: string[];
   leaderPaneId: string | null;
   hudPaneIds: string[];
 }
@@ -2404,6 +2414,7 @@ function normalizePaneTargets(
 export function resolveSharedSessionShutdownTopology(
   sessionName: string,
   preferredLeaderPaneId?: string | null,
+  teamName?: string | null,
 ): SharedSessionShutdownTopology {
   const panes = listPanes(sessionName);
   const livePaneIds = panes
@@ -2413,14 +2424,26 @@ export function resolveSharedSessionShutdownTopology(
   if (panes.length === 0) {
     return {
       livePaneIds,
+      teamWorkerPaneIds: [],
       leaderPaneId: fallbackLeaderPaneId,
       hudPaneIds: [],
     };
   }
 
-  const resolvedLeaderPaneId = normalizePaneTarget(
-    chooseTeamLeaderPaneId(panes, fallbackLeaderPaneId ?? ''),
-  ) ?? fallbackLeaderPaneId;
+  const normalizedTeamName = typeof teamName === 'string' ? teamName.trim() : '';
+  const normalizedTeamWorkerPaneIds = normalizedTeamName
+    ? panes
+      .filter((pane) => !isHudWatchPane(pane))
+      .filter((pane) => paneLooksLikeTeamWorkerPane(pane, normalizedTeamName))
+      .map((pane) => pane.paneId)
+      .filter((paneId) => paneId.startsWith('%'))
+    : [];
+  const workerPaneIdSet = new Set(normalizedTeamWorkerPaneIds);
+  const resolvedLeaderPaneId = chooseSharedSessionShutdownLeaderPaneId(
+    panes,
+    fallbackLeaderPaneId,
+    workerPaneIdSet,
+  );
   const hudPaneIds = panes
     .filter((pane) => pane.paneId !== resolvedLeaderPaneId)
     .filter((pane) => isHudWatchPane(pane))
@@ -2429,9 +2452,143 @@ export function resolveSharedSessionShutdownTopology(
 
   return {
     livePaneIds,
+    teamWorkerPaneIds: normalizedTeamWorkerPaneIds,
     leaderPaneId: resolvedLeaderPaneId,
     hudPaneIds,
   };
+}
+
+function chooseSharedSessionShutdownLeaderPaneId(
+  panes: TmuxPaneInfo[],
+  preferredLeaderPaneId: string | null,
+  teamWorkerPaneIds: ReadonlySet<string>,
+): string | null {
+  const preferred = panes.find((pane) => pane.paneId === preferredLeaderPaneId);
+  if (preferred && !isHudWatchPane(preferred) && !teamWorkerPaneIds.has(preferred.paneId)) {
+    return preferred.paneId;
+  }
+  return null;
+}
+
+function paneLooksLikeTeamWorkerPane(pane: TmuxPaneInfo, teamName: string): boolean {
+  const command = `${pane.startCommand || ''} ${pane.currentCommand || ''}`.replace(/\\/g, '/');
+  if (!command.trim() || !teamName) return false;
+  if (command.includes(`/team/${teamName}/runtime/worker-`) && command.includes('-startup.sh')) {
+    return true;
+  }
+  const commandVariants = [command, ...decodePowerShellEncodedCommands(command)];
+  return commandVariants.some((candidate) => (
+    commandHasTeamWorkerEnvMarker(candidate, 'OMX_TEAM_INTERNAL_WORKER', teamName)
+    || commandHasTeamWorkerEnvMarker(candidate, 'OMX_TEAM_WORKER', teamName)
+  ));
+}
+
+function commandHasTeamWorkerEnvMarker(command: string, envName: string, teamName: string): boolean {
+  const normalized = command.replace(/\\/g, '/');
+  const key = escapeRegExp(envName);
+  const workerValue = `${escapeRegExp(teamName)}/worker-[A-Za-z0-9_-]+`;
+  const shellAssignment = new RegExp(
+    `(?:^|[\\s;])(?:export\\s+)?(?:["']${key}=${workerValue}|${key}=(?:["']?${workerValue}))`,
+    'g',
+  );
+  const powerShellAssignment = new RegExp(`(?:^|;)\\s*\\$env:${key}\\s*=\\s*["']?${workerValue}`, 'gi');
+  return hasWorkerCliAfterEnvAssignment(
+    normalized,
+    shellAssignment,
+    hasSafeShellEnvAssignmentContext,
+    shellTailInvokesWorkerCli,
+  )
+    || hasWorkerCliAfterEnvAssignment(
+      normalized,
+      powerShellAssignment,
+      () => true,
+      powerShellTailInvokesWorkerCli,
+    );
+}
+
+function hasWorkerCliAfterEnvAssignment(
+  command: string,
+  assignmentPattern: RegExp,
+  contextIsSafe: (command: string, matchIndex: number) => boolean = () => true,
+  tailInvokesWorkerCli: (tail: string) => boolean = shellTailInvokesWorkerCli,
+): boolean {
+  assignmentPattern.lastIndex = 0;
+  for (const match of command.matchAll(assignmentPattern)) {
+    const matchIndex = match.index ?? 0;
+    if (!contextIsSafe(command, matchIndex)) continue;
+    const afterAssignment = command.slice(matchIndex + match[0].length);
+    if (tailInvokesWorkerCli(afterAssignment)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const WORKER_CLI_TOKEN_PATTERN = String.raw`(?:"[^"]*(?:^|[\/\\])?(?:codex|claude|gemini)(?:\.(?:js|mjs|cjs|cmd|exe|bat|ps1))?"|'[^']*(?:^|[\/\\])?(?:codex|claude|gemini)(?:\.(?:js|mjs|cjs|cmd|exe|bat|ps1))?'|(?:\S*[\/\\])?(?:codex|claude|gemini)(?:\.(?:js|mjs|cjs|cmd|exe|bat|ps1))?)`;
+
+function shellTailInvokesWorkerCli(tail: string): boolean {
+  const directTail = stripShellAssignmentTailPrefix(tail);
+  const directCliPattern = new RegExp(`^(?:exec\\s+)?${WORKER_CLI_TOKEN_PATTERN}(?:[\\s;"'\`]|$)`, 'i');
+  if (directCliPattern.test(directTail)) return true;
+
+  const shellCommandPattern = /(?:^|\s)-(?:c|lc)\s+(?:"([^"]*)"|'([^']*)'|(\S+))/gi;
+  for (const match of directTail.matchAll(shellCommandPattern)) {
+    const commandText = match[1] ?? match[2] ?? match[3] ?? '';
+    const execCliPattern = new RegExp(`(?:^|[\\s;&|])exec\\s+${WORKER_CLI_TOKEN_PATTERN}(?:[\\s;"'\`]|$)`, 'i');
+    if (execCliPattern.test(commandText)) return true;
+  }
+  return false;
+}
+
+function stripShellAssignmentTailPrefix(tail: string): string {
+  let value = tail.trimStart();
+  while (value.startsWith("'") || value.startsWith('"')) {
+    value = value.slice(1).trimStart();
+  }
+  const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|\S+)\s+/;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const match = value.match(envAssignmentPattern);
+    if (match) {
+      value = value.slice(match[0].length).trimStart();
+      changed = true;
+    }
+  }
+  return value;
+}
+
+function powerShellTailInvokesWorkerCli(tail: string): boolean {
+  return /(?:^|[\s;&|"'`\/\\])(?:codex|claude|gemini)(?:\.(?:js|mjs|cjs|cmd|exe|bat|ps1))?(?:[\s;"'`]|$)/i.test(tail);
+}
+
+function hasSafeShellEnvAssignmentContext(command: string, matchIndex: number): boolean {
+  const prefix = command.slice(0, matchIndex).trimEnd();
+  if (!prefix) return true;
+  const segment = prefix.split(/&&|\|\||[;|]/).pop()?.trimEnd() ?? '';
+  if (!segment) return true;
+  return /(?:^|\s)(?:env|export)(?:\s+(?:'[^']*'|"[^"]*"|\S+))*$/.test(segment)
+    || /(?:^|\s)worker[-_]wrapper(?:\s+(?:'[^']*'|"[^"]*"|\S+))*$/.test(segment);
+}
+
+function decodePowerShellEncodedCommands(command: string): string[] {
+  const decoded: string[] = [];
+  const encodedCommandPattern = /(?:^|\s)-(?:EncodedCommand|enc|e)(?:\s+|:)([A-Za-z0-9+/=]+)/gi;
+  for (const match of command.matchAll(encodedCommandPattern)) {
+    const encoded = match[1];
+    if (!encoded) continue;
+    try {
+      const text = Buffer.from(encoded, 'base64').toString('utf16le').trim();
+      if (text) decoded.push(text.replace(/\\/g, '/'));
+    } catch {
+      // Ignore malformed pane command fragments; they are not team ownership evidence.
+    }
+  }
+  return decoded;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

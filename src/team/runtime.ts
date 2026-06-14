@@ -26,6 +26,7 @@ import {
   isWorkerPaneOpen,
   getWorkerPanePid,
   killWorkerByPaneIdAsync,
+  paneHasOmxInstanceTag,
   restoreStandaloneHudPane,
   teardownWorkerPanes,
   unregisterResizeHook,
@@ -372,14 +373,16 @@ export function applyCreatedInteractiveSessionToConfig(
 
 function collectShutdownPaneIds(params: {
   config: TeamConfig;
-  livePaneIds?: string[];
+  candidatePaneIds?: string[];
+  includePersistedWorkerPaneIds?: boolean;
   restoredStandaloneHudPaneId?: string | null;
   leaderPaneId?: string | null;
   hudPaneId?: string | null;
 }): string[] {
   const {
     config,
-    livePaneIds = [],
+    candidatePaneIds = [],
+    includePersistedWorkerPaneIds = true,
     restoredStandaloneHudPaneId = null,
     leaderPaneId = config.leader_pane_id,
     hudPaneId = config.hud_pane_id,
@@ -394,8 +397,8 @@ function collectShutdownPaneIds(params: {
 
   const paneIds = new Set<string>();
   for (const paneId of [
-    ...config.workers.map((worker) => worker.pane_id),
-    ...livePaneIds,
+    ...(includePersistedWorkerPaneIds ? config.workers.map((worker) => worker.pane_id) : []),
+    ...candidatePaneIds,
   ]) {
     if (typeof paneId !== 'string') continue;
     const normalized = paneId.trim();
@@ -3774,16 +3777,20 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   const hudPaneId = config.hud_pane_id;
   if (config.worker_launch_mode === 'interactive') {
     const sharedSessionTopology = sessionName.includes(':')
-      ? resolveSharedSessionShutdownTopology(sessionName, leaderPaneId)
+      ? resolveSharedSessionShutdownTopology(sessionName, leaderPaneId, sanitized)
       : null;
-    const effectiveLeaderPaneId = sharedSessionTopology?.leaderPaneId ?? leaderPaneId;
-    const effectiveHudPaneId = sharedSessionTopology?.hudPaneIds.find((paneId) => paneId === hudPaneId)
-      ?? sharedSessionTopology?.hudPaneIds[0]
-      ?? hudPaneId;
-    const livePaneIds = sharedSessionTopology?.livePaneIds ?? listPaneIds(sessionName);
+    const effectiveLeaderPaneId = sharedSessionTopology ? sharedSessionTopology.leaderPaneId : leaderPaneId;
+    const trustedHudRestoreLeaderPaneId = sharedSessionTopology
+      ? (paneHasOmxInstanceTag(effectiveLeaderPaneId, leaderSessionId) ? effectiveLeaderPaneId : null)
+      : effectiveLeaderPaneId;
+    const effectiveHudPaneId = sharedSessionTopology
+      ? (sharedSessionTopology.hudPaneIds.find((paneId) => paneId === hudPaneId) ?? null)
+      : hudPaneId;
+    const shutdownCandidatePaneIds = sharedSessionTopology?.teamWorkerPaneIds ?? listPaneIds(sessionName);
     let shutdownPaneIds = collectShutdownPaneIds({
       config,
-      livePaneIds,
+      candidatePaneIds: shutdownCandidatePaneIds,
+      includePersistedWorkerPaneIds: !sharedSessionTopology,
       leaderPaneId: effectiveLeaderPaneId,
       hudPaneId: effectiveHudPaneId,
     });
@@ -3818,15 +3825,21 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (effectiveHudPaneId) {
       await killWorkerByPaneIdAsync(effectiveHudPaneId, effectiveLeaderPaneId ?? undefined);
       if (sessionName.includes(':')) {
-        restoredHudPaneId = restoreStandaloneHudPane(effectiveLeaderPaneId, cwd);
+        restoredHudPaneId = restoreStandaloneHudPane(trustedHudRestoreLeaderPaneId, cwd);
         if (!restoredHudPaneId) {
-          console.warn(`[team shutdown] ${sanitized}: failed to restore standalone HUD pane`);
+          const reason = trustedHudRestoreLeaderPaneId
+            ? 'failed to restore standalone HUD pane'
+            : 'skipped standalone HUD restore because leader pane ownership could not be verified';
+          console.warn(`[team shutdown] ${sanitized}: ${reason}`);
         }
       }
     }
     shutdownPaneIds = collectShutdownPaneIds({
       config,
-      livePaneIds: listPaneIds(sessionName),
+      candidatePaneIds: sessionName.includes(':')
+        ? resolveSharedSessionShutdownTopology(sessionName, effectiveLeaderPaneId, sanitized).teamWorkerPaneIds
+        : listPaneIds(sessionName),
+      includePersistedWorkerPaneIds: !sessionName.includes(':'),
       restoredStandaloneHudPaneId: restoredHudPaneId,
       leaderPaneId: effectiveLeaderPaneId,
       hudPaneId: effectiveHudPaneId,
