@@ -368,6 +368,28 @@ function tokenizeShellCommandWithBoundaries(commandText: string): ShellToken[] |
       continue;
     }
 
+    // Grouping / command-substitution openers act as command-position
+    // boundaries so the command-head walk resumes after them, mirroring the
+    // legacy `[\n;&|(]` boundary set. This catches a real command immediately
+    // after `(`, `((`, `$(` (command substitution), or a backtick — e.g.
+    // `(apply_patch …)`, `true | (apply_patch …)`, `x=$(apply_patch …)`. We
+    // are outside quotes here, so a literal like `grep "(apply_patch"` is left
+    // intact and not split.
+    if (char === "(" || char === ")" || char === "`") {
+      pushCurrent();
+      nextTokenStartsCommand = true;
+      continue;
+    }
+
+    // `{` is a group opener only as its own word (`{ apply_patch …; }`):
+    // require an empty pending token (preceded by start/whitespace/boundary)
+    // and a following whitespace/newline so brace expansion (`{a,b}`) and
+    // parameter expansion (`${VAR}`) are left intact.
+    if (char === "{" && current === "" && /\s/.test(trimmed[index + 1] ?? " ")) {
+      nextTokenStartsCommand = true;
+      continue;
+    }
+
     if (/\s/.test(char)) {
       pushCurrent();
       continue;

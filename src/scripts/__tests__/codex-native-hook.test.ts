@@ -5938,6 +5938,19 @@ exit 0
       );
       assert.equal(allowedGrep.outputJson, null);
 
+      const allowedSubshellGrep = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-grep",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-grep-subshell",
+          tool_input: { command: '(grep -n "apply_patch" dist/scripts/codex-native-hook.js)' },
+        },
+        { cwd },
+      );
+      assert.equal(allowedSubshellGrep.outputJson, null);
+
       const blockedApplyPatch = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -5986,6 +5999,13 @@ exit 0
         { id: "tool-di-apply-patch-exec-env-assignment", command: `exec env FOO=bar apply_patch <<'EOF'${heredocBody}` },
         { id: "tool-di-apply-patch-absolute-path", command: `/usr/bin/apply_patch <<'EOF'${heredocBody}` },
         { id: "tool-di-apply-patch-relative-path", command: `./apply_patch <<'EOF'${heredocBody}` },
+        { id: "tool-di-apply-patch-subshell", command: `(apply_patch <<'EOF'${heredocBody}\n)` },
+        { id: "tool-di-apply-patch-subshell-spaced", command: `( apply_patch <<'EOF'${heredocBody}\n)` },
+        { id: "tool-di-apply-patch-double-subshell", command: `((apply_patch <<'EOF'${heredocBody}\n))` },
+        { id: "tool-di-apply-patch-pipe-subshell", command: `true | (apply_patch <<'EOF'${heredocBody}\n)` },
+        { id: "tool-di-apply-patch-subshell-env", command: `(env apply_patch <<'EOF'${heredocBody}\n)` },
+        { id: "tool-di-apply-patch-command-substitution", command: `x=$(apply_patch <<'EOF'${heredocBody}\n)` },
+        { id: "tool-di-apply-patch-brace-group", command: `{ apply_patch <<'EOF'${heredocBody}\n}` },
       ];
       for (const form of blockedRealApplyPatchForms) {
         const blockedForm = await dispatchCodexNativeHook(
