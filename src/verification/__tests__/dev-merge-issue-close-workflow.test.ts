@@ -9,6 +9,8 @@ const {
   buildMaintainerCloseComment,
   buildMaintainerPrComment,
   collectLinkedLocalIssueNumbers,
+  isResourceNotAccessibleError,
+  postMergedPrFollowUpComment,
 } = require(join(process.cwd(), '.github', 'scripts', 'dev-merge-issue-close.cjs')) as {
   buildMaintainerCloseComment: ({ prNumber }: { prNumber: number }) => string;
   buildMaintainerPrComment: ({ issueNumbers }: { issueNumbers: number[] }) => string;
@@ -18,6 +20,17 @@ const {
     owner: string;
     repo: string;
   }) => number[];
+  isResourceNotAccessibleError: (error: unknown) => boolean;
+  postMergedPrFollowUpComment: (input: {
+    github: {
+      rest: { issues: { createComment: (args: Record<string, unknown>) => Promise<unknown> } };
+    };
+    core: { warning: (message: string) => void };
+    owner: string;
+    repo: string;
+    prNumber: number;
+    issueNumbers: number[];
+  }) => Promise<{ posted: boolean; error?: unknown }>;
 };
 
 describe('dev merge issue close workflow', () => {
@@ -34,9 +47,16 @@ describe('dev merge issue close workflow', () => {
     assert.match(workflow, /require\('\.\/\.github\/scripts\/dev-merge-issue-close\.cjs'\)/);
     assert.match(workflow, /title:\s*pullRequest\.title/);
     assert.match(workflow, /body:\s*pullRequest\.body/);
-    assert.match(workflow, /buildMaintainerPrComment/);
-    assert.match(workflow, /issue_number:\s*pullRequest\.number/);
+    assert.match(workflow, /postMergedPrFollowUpComment\(\{/);
+    assert.match(workflow, /prNumber:\s*pullRequest\.number/);
     assert.match(workflow, /issueNumbers:\s*closedIssueNumbers/);
+    // Linked issue closure stays enforced: the workflow still closes issues directly.
+    assert.match(workflow, /github\.rest\.issues\.update\(\{[\s\S]*state:\s*'closed'/);
+    // The best-effort PR comment must run only after issues are closed.
+    assert.match(
+      workflow,
+      /closedIssueNumbers\.length === 0[\s\S]*postMergedPrFollowUpComment\(\{/,
+    );
     assert.doesNotMatch(workflow, /commit/i);
     assert.doesNotMatch(workflow, /discussion/i);
   });
@@ -99,4 +119,75 @@ describe('dev merge issue close workflow', () => {
     assert.match(comment, /Issue creators can try it with `omx update --dev`/);
     assert.match(comment, /let us know whether it resolves the issue/);
   });
+  it('posts the PR follow-up comment on the success path', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const warnings: string[] = [];
+    const github = {
+      rest: {
+        issues: {
+          createComment: async (args: Record<string, unknown>) => {
+            calls.push(args);
+            return { data: { id: 1 } };
+          },
+        },
+      },
+    };
+    const core = { warning: (message: string) => warnings.push(message) };
+
+    const result = await postMergedPrFollowUpComment({
+      github,
+      core,
+      owner: 'Yeachan-Heo',
+      repo: 'oh-my-codex',
+      prNumber: 2825,
+      issueNumbers: [2824],
+    });
+
+    assert.deepEqual(result, { posted: true });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].owner, 'Yeachan-Heo');
+    assert.equal(calls[0].repo, 'oh-my-codex');
+    assert.equal(calls[0].issue_number, 2825);
+    assert.match(String(calls[0].body), /Closed explicitly linked issue after this PR was merged into `dev`: #2824\./);
+    assert.deepEqual(warnings, []);
+  });
+
+  it('treats a 403 PR comment as best-effort and does not fail the workflow', async () => {
+    const warnings: string[] = [];
+    const error = Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+    const github = {
+      rest: {
+        issues: {
+          createComment: async () => {
+            throw error;
+          },
+        },
+      },
+    };
+    const core = { warning: (message: string) => warnings.push(message) };
+
+    const result = await postMergedPrFollowUpComment({
+      github,
+      core,
+      owner: 'Yeachan-Heo',
+      repo: 'oh-my-codex',
+      prNumber: 2825,
+      issueNumbers: [2824],
+    });
+
+    assert.equal(result.posted, false);
+    assert.equal(result.error, error);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Skipped best-effort PR follow-up comment on #2825/);
+    assert.match(warnings[0], /403 Resource not accessible by integration/);
+    assert.match(warnings[0], /Linked issue closure already succeeded/);
+  });
+
+  it('detects the 403 resource-not-accessible error by status and message', () => {
+    assert.equal(isResourceNotAccessibleError({ status: 403 }), true);
+    assert.equal(isResourceNotAccessibleError({ message: 'Resource not accessible by integration' }), true);
+    assert.equal(isResourceNotAccessibleError({ status: 404, message: 'Not Found' }), false);
+    assert.equal(isResourceNotAccessibleError(undefined), false);
+  });
+
 });

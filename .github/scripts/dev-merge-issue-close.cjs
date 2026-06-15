@@ -108,8 +108,42 @@ function buildMaintainerPrComment({ issueNumbers }) {
   ].join('\n');
 }
 
+function isResourceNotAccessibleError(error) {
+  if (!error) return false;
+  if (error.status === 403 || error.status === '403') return true;
+  return /resource not accessible by integration/i.test(error.message || '');
+}
+
+async function postMergedPrFollowUpComment({ github, core, owner, repo, prNumber, issueNumbers }) {
+  const body = buildMaintainerPrComment({ issueNumbers });
+
+  try {
+    await github.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: prNumber,
+      body,
+    });
+    return { posted: true };
+  } catch (error) {
+    const detail = error && error.message ? error.message : String(error);
+    if (isResourceNotAccessibleError(error)) {
+      core.warning(
+        `Skipped best-effort PR follow-up comment on #${prNumber}: GitHub returned 403 Resource not accessible by integration. Linked issue closure already succeeded, so the workflow is not failing.`,
+      );
+    } else {
+      core.warning(
+        `Skipped best-effort PR follow-up comment on #${prNumber}: ${detail}. Linked issue closure already succeeded, so the workflow is not failing.`,
+      );
+    }
+    return { posted: false, error };
+  }
+}
+
 module.exports = {
   buildMaintainerCloseComment,
   buildMaintainerPrComment,
   collectLinkedLocalIssueNumbers,
+  isResourceNotAccessibleError,
+  postMergedPrFollowUpComment,
 };

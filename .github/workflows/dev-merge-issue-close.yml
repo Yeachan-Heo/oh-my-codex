@@ -23,8 +23,8 @@ jobs:
           script: |
             const {
               buildMaintainerCloseComment,
-              buildMaintainerPrComment,
               collectLinkedLocalIssueNumbers,
+              postMergedPrFollowUpComment,
             } = require('./.github/scripts/dev-merge-issue-close.cjs');
 
             const pullRequest = context.payload.pull_request;
@@ -86,11 +86,13 @@ jobs:
               return;
             }
 
-            await github.rest.issues.createComment({
+            await postMergedPrFollowUpComment({
+              github,
+              core,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: pullRequest.number,
-              body: buildMaintainerPrComment({ issueNumbers: closedIssueNumbers }),
+              prNumber: pullRequest.number,
+              issueNumbers: closedIssueNumbers,
             });
 
             core.notice(`Closed linked issues after merge to dev: ${closedIssueNumbers.map((issueNumber) => `#${issueNumber}`).join(', ')}`);
