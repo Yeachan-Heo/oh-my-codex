@@ -2849,7 +2849,14 @@ export async function startTeam(
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
 
     if (workerLaunchMode === 'interactive') {
-      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups);
+      const createdSession = createTeamSession(
+        sanitized,
+        workerCount,
+        leaderCwd,
+        sharedWorkerLaunchArgs,
+        workerStartups,
+        { ownerSessionId: leaderSessionId },
+      );
       sessionName = createdSession.name;
       sessionCreated = true;
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);

@@ -1558,6 +1558,141 @@ process.on('SIGTERM', () => process.exit(0));`,
     assert.equal(shouldPrekillInteractiveShutdownProcessTrees('omx-team-alpha'), true);
   });
 
+  it('startTeam tags interactive panes with the derived tmux-pane leader identity when session id is unavailable', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-pane-derived-owner-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevSessionId = process.env.OMX_SESSION_ID;
+    const prevCodexSessionId = process.env.CODEX_SESSION_ID;
+    const prevGenericSessionId = process.env.SESSION_ID;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevSkipReadyWait = process.env.OMX_TEAM_SKIP_READY_WAIT;
+    let runtime: TeamRuntime | null = null;
+
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-pane-derived-owner-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*)
+        echo "120"
+        ;;
+      *)
+        echo "leader:0 %1"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"-t %2 -F #{pane_pid}"*)
+        echo "2000002222"
+        ;;
+      *"pane_current_command"*)
+        printf "%%1\\tnode\\t'codex'\\n"
+        ;;
+      *)
+        printf "%%1\\n"
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*)
+        echo "%2"
+        ;;
+      *)
+        echo "%3"
+        ;;
+    esac
+    exit 0
+    ;;
+  set-option|resize-pane|select-layout|set-window-option|select-pane|set-hook|run-shell|send-keys|kill-pane|kill-session)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          binaries: [{
+            name: 'gemini',
+            content: '#!/bin/sh\nexit 0\n',
+          }],
+          env: {
+            OMX_SESSION_ID: undefined,
+            CODEX_SESSION_ID: undefined,
+            SESSION_ID: undefined,
+          },
+        },
+        async ({ tmuxLogPath }) => {
+          process.env.TMUX = 'leader-session,stub,0';
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+          process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
+
+          runtime = await withoutTeamWorkerEnv(() =>
+            startTeam(
+              'pane-derived-owner',
+              'derived pane owner',
+              'executor',
+              1,
+              [{ subject: 's', description: 'd', owner: 'worker-1' }],
+              cwd,
+            ));
+
+          const manifest = JSON.parse(
+            await readFile(join(cwd, '.omx', 'state', 'team', runtime.teamName, 'manifest.v2.json'), 'utf-8'),
+          ) as { leader?: { session_id?: string } };
+          assert.equal(manifest.leader?.session_id, '%1');
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /set-option -p -t %1 @omx_pane_instance_id %1/);
+          assert.match(tmuxLog, /set-option -p -t %2 @omx_pane_instance_id %1/);
+          assert.match(tmuxLog, /set-option -p -t %3 @omx_pane_instance_id %1/);
+          assert.match(tmuxLog, /exec env OMX_SESSION_ID='%1' OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%1' .*hud --watch/);
+
+          await shutdownTeam(runtime.teamName, cwd, { force: true });
+          runtime = null;
+        },
+      );
+    } finally {
+      const runtimeToShutdown = runtime as TeamRuntime | null;
+      if (runtimeToShutdown) {
+        await shutdownTeam(runtimeToShutdown.teamName, cwd, { force: true }).catch(() => {});
+      }
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevSessionId === 'string') process.env.OMX_SESSION_ID = prevSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      if (typeof prevCodexSessionId === 'string') process.env.CODEX_SESSION_ID = prevCodexSessionId;
+      else delete process.env.CODEX_SESSION_ID;
+      if (typeof prevGenericSessionId === 'string') process.env.SESSION_ID = prevGenericSessionId;
+      else delete process.env.SESSION_ID;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevSkipReadyWait === 'string') process.env.OMX_TEAM_SKIP_READY_WAIT = prevSkipReadyWait;
+      else delete process.env.OMX_TEAM_SKIP_READY_WAIT;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('startTeam accepts native Windows tmux clients even when TMUX env vars are absent', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-win32-no-env-'));
     const prevTmux = process.env.TMUX;

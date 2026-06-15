@@ -55,6 +55,15 @@ export interface TeamSession {
   resizeHookTarget: string | null;
 }
 
+export interface CreateTeamSessionOptions {
+  /**
+   * Stable leader ownership id persisted to tmux pane options. This must match
+   * the manifest leader.session_id so shutdown can restore the leader HUD only
+   * when the pane still belongs to the same OMX/team runtime.
+   */
+  ownerSessionId?: string | null;
+}
+
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
 const MODEL_INSTRUCTIONS_FILE_KEY = 'model_instructions_file';
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
@@ -313,11 +322,7 @@ export function chooseTeamLeaderPaneId(panes: TmuxPaneInfo[], preferredPaneId: s
 }
 
 function findHudPaneIds(target: string, leaderPaneId: string): string[] {
-  const panes = listPanes(target);
-  return panes
-    .filter((pane) => pane.paneId !== leaderPaneId)
-    .filter((pane) => isHudWatchPane(pane))
-    .map((pane) => pane.paneId);
+  return findHudWatchPaneIds(listPanes(target), leaderPaneId, { leaderPaneId });
 }
 
 function findOwnedHudPaneIds(target: string, leaderPaneId: string): string[] {
@@ -1318,6 +1323,7 @@ export function createTeamSession(
     workerCli?: TeamWorkerCli;
     workerRole?: string;
   }> = [],
+  options: CreateTeamSessionOptions = {},
 ): TeamSession {
   if (!isTmuxAvailable()) {
     throw new Error('tmux is not available');
@@ -1357,7 +1363,7 @@ export function createTeamSession(
       throw new Error(`failed to parse current tmux target: ${context.stdout}`);
     }
     const teamTarget = `${sessionName}:${windowIndex}`;
-    const instanceId = (process.env.OMX_SESSION_ID || '').trim();
+    const instanceId = (options.ownerSessionId ?? process.env.OMX_SESSION_ID ?? '').trim();
     if (instanceId) {
       const tagResult = runTmux(['set-option', '-t', sessionName, OMX_INSTANCE_OPTION, instanceId]);
       if (!tagResult.ok) {
