@@ -2751,6 +2751,39 @@ function isNullDeviceRedirectTarget(target: string): boolean {
   return normalized === "/dev/null" || normalized === "nul";
 }
 
+// Matches `apply_patch` only at a shell command position (statement start, or
+// after a pipe/`;`/`&`/`(` boundary, optionally via `sudo`/`command`/`exec`),
+// so read-only diagnostics that merely mention the literal token (e.g.
+// `grep -n "apply_patch" file`) are not misread as write intent.
+function commandInvokesApplyPatch(command: string): boolean {
+  return /(?:^|[\n;&|(]|&&|\|\|)\s*(?:sudo\s+|command\s+|exec\s+)?apply_patch\b/.test(command);
+}
+
+// Collects same-command literal variable assignments (`NAME="value"`), skipping
+// any value that involves expansion (`$`, backticks) so unresolved/dynamic
+// targets stay conservatively blocked.
+function extractCommandLiteralAssignments(command: string): Map<string, string> {
+  const assignments = new Map<string, string>();
+  const pattern = /(?:^|[\n;&|(]|&&|\|\|)\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"$`]*)"|'([^']*)'|([^\s"'$`;&|<>]+))/g;
+  for (const match of command.matchAll(pattern)) {
+    const name = safeString(match[1]).trim();
+    if (!name) continue;
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    assignments.set(name, value);
+  }
+  return assignments;
+}
+
+// Resolves a redirect/tee target of the form `$NAME`/`${NAME}` against
+// same-command literal assignments; non-variable or unresolved targets are
+// returned unchanged so they remain subject to the allowed-path check.
+function resolveCommandRedirectTarget(target: string, assignments: Map<string, string>): string {
+  const variableMatch = target.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/);
+  if (!variableMatch) return target;
+  const resolved = assignments.get(safeString(variableMatch[1]));
+  return resolved !== undefined ? resolved : target;
+}
+
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
   for (const match of command.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
@@ -2761,7 +2794,7 @@ function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
 }
 
 function commandHasDeepInterviewWriteIntent(command: string): boolean {
-  return /\bapply_patch\b/.test(command)
+  return commandInvokesApplyPatch(command)
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
@@ -2770,10 +2803,12 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
-  const targets = extractDeepInterviewCommandRedirectTargets(command);
+  const assignments = extractCommandLiteralAssignments(command);
+  const targets = extractDeepInterviewCommandRedirectTargets(command)
+    .map((target) => resolveCommandRedirectTarget(target, assignments));
   for (const match of command.matchAll(/\btee\s+(?:-a\s+)?(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
-    if (candidate) targets.push(candidate);
+    if (candidate) targets.push(resolveCommandRedirectTarget(candidate, assignments));
   }
   return targets;
 }
