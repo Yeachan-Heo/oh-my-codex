@@ -5976,6 +5976,35 @@ exit 0
         { cwd },
       );
       assert.equal((blockedEnvWrapperApplyPatch.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const heredocBody = "\n*** Begin Patch\n*** Add File: src/leak.ts\n+export const x = 1;\n*** End Patch\nEOF";
+      const blockedRealApplyPatchForms: Array<{ id: string; command: string }> = [
+        { id: "tool-di-apply-patch-env-i", command: `env -i apply_patch <<'EOF'${heredocBody}` },
+        { id: "tool-di-apply-patch-env-unset", command: `env -u FOO apply_patch <<'EOF'${heredocBody}` },
+        { id: "tool-di-apply-patch-env-i-assignment", command: `env -i FOO=bar apply_patch <<'EOF'${heredocBody}` },
+        { id: "tool-di-apply-patch-assignment-env", command: `FOO=bar env apply_patch <<'EOF'${heredocBody}` },
+        { id: "tool-di-apply-patch-exec-env-assignment", command: `exec env FOO=bar apply_patch <<'EOF'${heredocBody}` },
+        { id: "tool-di-apply-patch-absolute-path", command: `/usr/bin/apply_patch <<'EOF'${heredocBody}` },
+        { id: "tool-di-apply-patch-relative-path", command: `./apply_patch <<'EOF'${heredocBody}` },
+      ];
+      for (const form of blockedRealApplyPatchForms) {
+        const blockedForm = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-grep",
+            tool_name: "Bash",
+            tool_use_id: form.id,
+            tool_input: { command: form.command },
+          },
+          { cwd },
+        );
+        assert.equal(
+          (blockedForm.outputJson as { decision?: string } | null)?.decision,
+          "block",
+          `expected deep-interview to block real apply_patch form: ${form.command}`,
+        );
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

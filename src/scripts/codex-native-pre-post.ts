@@ -488,6 +488,77 @@ function findGitCommandTokenIndex(tokens: ShellToken[]): number {
   return -1;
 }
 
+const APPLY_PATCH_COMMAND_WRAPPER_TOKENS = new Set(["sudo", "command", "exec"]);
+
+// Detects a real `apply_patch` invocation at a shell command position using the
+// same tokenized command-head walk the git commit guard uses
+// (`findGitCommandTokenIndex`): after every statement boundary skip leading
+// inline `NAME=VALUE` assignments, the `env` executable with its full option
+// grammar (`-i`/`--ignore-environment`, `-u`/`--unset`/`--unset=`, `-C`/`-S`,
+// `--`, interleaved assignments), and `sudo`/`command`/`exec` wrappers — in any
+// order — then match when the resolved command token's basename is
+// `apply_patch`. This blocks path-qualified (`/usr/bin/apply_patch`,
+// `./apply_patch`), env-flag (`env -i apply_patch`, `env -u FOO apply_patch`),
+// and reordered (`FOO=bar env apply_patch`, `exec env FOO=bar apply_patch`)
+// forms, while read-only diagnostics that merely mention the literal token
+// (e.g. `grep -n "apply_patch" file`) are not misread as write intent. Heredoc
+// bodies are stripped first so patch payloads cannot break tokenization.
+export function commandInvokesApplyPatch(command: string): boolean {
+  const tokens = tokenizeShellCommandWithBoundaries(removeHereDocBodies(command));
+  if (!tokens) return false;
+
+  for (let commandStart = 0; commandStart < tokens.length; commandStart = nextCommandStart(tokens, commandStart)) {
+    let index = commandStart;
+    const commandEnd = nextCommandStart(tokens, commandStart);
+
+    let advanced = true;
+    while (advanced && index < commandEnd) {
+      advanced = false;
+
+      while (index < commandEnd && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) {
+        index += 1;
+        advanced = true;
+      }
+
+      while (index < commandEnd && isEnvExecutableToken(tokens[index]?.value ?? "")) {
+        index += 1;
+        advanced = true;
+        while (index < commandEnd) {
+          const token = tokens[index]?.value ?? "";
+          if (token === "--") {
+            index += 1;
+            break;
+          }
+          if (isInlineShellEnvAssignment(token)) {
+            index += 1;
+            continue;
+          }
+          if (token === "-i" || token === "--ignore-environment" || token.startsWith("--unset=")) {
+            index += 1;
+            continue;
+          }
+          if (token.startsWith("-")) {
+            index += envOptionConsumesNextValue(token) ? 2 : 1;
+            continue;
+          }
+          break;
+        }
+      }
+
+      while (index < commandEnd && APPLY_PATCH_COMMAND_WRAPPER_TOKENS.has((tokens[index]?.value ?? "").toLowerCase())) {
+        index += 1;
+        advanced = true;
+      }
+    }
+
+    if (index < commandEnd && shellCommandBasename(tokens[index]?.value ?? "") === "apply_patch") return true;
+    if (commandEnd <= commandStart) break;
+    commandStart = commandEnd - 1;
+  }
+
+  return false;
+}
+
 function tokenValues(tokens: ShellToken[]): string[] {
   return tokens.map((token) => token.value);
 }
