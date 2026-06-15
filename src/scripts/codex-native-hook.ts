@@ -2752,11 +2752,15 @@ function isNullDeviceRedirectTarget(target: string): boolean {
 }
 
 // Matches `apply_patch` only at a shell command position (statement start, or
-// after a pipe/`;`/`&`/`(` boundary, optionally via `sudo`/`command`/`exec`),
-// so read-only diagnostics that merely mention the literal token (e.g.
-// `grep -n "apply_patch" file`) are not misread as write intent.
+// after a pipe/`;`/`&`/`(` boundary, optionally via an `env` prefix and/or
+// zero-or-more leading `NAME=VALUE` assignments and a `sudo`/`command`/`exec`
+// wrapper), so read-only diagnostics that merely mention the literal token
+// (e.g. `grep -n "apply_patch" file`) are not misread as write intent, while
+// real env-prefixed invocations (`FOO=bar apply_patch`, `env FOO=bar
+// apply_patch`) stay blocked — mirroring the git commit guard's handling of
+// leading env assignments / `env` wrapper prefixes.
 function commandInvokesApplyPatch(command: string): boolean {
-  return /(?:^|[\n;&|(]|&&|\|\|)\s*(?:sudo\s+|command\s+|exec\s+)?apply_patch\b/.test(command);
+  return /(?:^|[\n;&|(]|&&|\|\|)\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s'"]+)\s+)*(?:sudo\s+|command\s+|exec\s+)?apply_patch\b/.test(command);
 }
 
 // Collects same-command literal variable assignments (`NAME="value"`), skipping

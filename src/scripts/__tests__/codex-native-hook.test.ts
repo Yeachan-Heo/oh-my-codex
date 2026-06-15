@@ -5950,6 +5950,32 @@ exit 0
         { cwd },
       );
       assert.equal((blockedApplyPatch.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedEnvAssignmentApplyPatch = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-grep",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-apply-patch-env-assignment",
+          tool_input: { command: "FOO=bar apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: src/leak.ts\n+export const x = 1;\n*** End Patch\nEOF" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedEnvAssignmentApplyPatch.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedEnvWrapperApplyPatch = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-grep",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-apply-patch-env-wrapper",
+          tool_input: { command: "env FOO=bar apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: src/leak.ts\n+export const x = 1;\n*** End Patch\nEOF" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedEnvWrapperApplyPatch.outputJson as { decision?: string } | null)?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
