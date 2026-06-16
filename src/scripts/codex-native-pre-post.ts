@@ -325,6 +325,11 @@ function tokenizeShellCommandWithBoundaries(commandText: string): ShellToken[] |
   let quote: "'" | "\"" | null = null;
   let escaping = false;
   let nextTokenStartsCommand = false;
+  // Command substitution executes even inside double quotes, so we track an
+  // active `"$(…)"` (paren depth) or `` "`…`" `` (backtick) substitution to
+  // restore double-quote mode once it closes.
+  let dquoteSubstParenDepth = 0;
+  let backtickFromDquote = false;
 
   const pushCurrent = () => {
     if (!current) return;
@@ -357,6 +362,25 @@ function tokenizeShellCommandWithBoundaries(commandText: string): ShellToken[] |
         if (isDoubleQuotedShellEscapeTarget(trimmed[index + 1])) escaping = true;
         else current += char;
       }
+      // Command substitution runs inside double quotes, so `"$(cmd …)"` and
+      // `` "`cmd …`" `` are real invocations, not literal mentions. Treat the
+      // opener as a command-position boundary and parse the substitution body
+      // unquoted so the command-head walk resumes, then restore double-quote
+      // mode when it closes. Parameter expansion (`${VAR}`), `$HOME`, and an
+      // escaped `\$(` stay literal text (no false positive on `grep "(x"`).
+      else if (char === "$" && trimmed[index + 1] === "(") {
+        pushCurrent();
+        nextTokenStartsCommand = true;
+        index += 1;
+        dquoteSubstParenDepth = 1;
+        quote = null;
+      }
+      else if (char === "`") {
+        pushCurrent();
+        nextTokenStartsCommand = true;
+        backtickFromDquote = true;
+        quote = null;
+      }
       else current += char;
       continue;
     }
@@ -375,9 +399,29 @@ function tokenizeShellCommandWithBoundaries(commandText: string): ShellToken[] |
     // `(apply_patch …)`, `true | (apply_patch …)`, `x=$(apply_patch …)`. We
     // are outside quotes here, so a literal like `grep "(apply_patch"` is left
     // intact and not split.
+    // Closing backtick of a command substitution opened inside double quotes
+    // ends the substitution and restores the surrounding double-quoted literal.
+    if (char === "`" && backtickFromDquote) {
+      pushCurrent();
+      backtickFromDquote = false;
+      quote = "\"";
+      continue;
+    }
+
     if (char === "(" || char === ")" || char === "`") {
       pushCurrent();
       nextTokenStartsCommand = true;
+      // Track paren depth of a `"$(…)"` substitution opened inside double
+      // quotes so the matching `)` restores double-quote mode (nested `$(`
+      // and `(` inside it are balanced before we return to the literal).
+      if (dquoteSubstParenDepth > 0) {
+        if (char === "(") {
+          dquoteSubstParenDepth += 1;
+        } else if (char === ")") {
+          dquoteSubstParenDepth -= 1;
+          if (dquoteSubstParenDepth === 0) quote = "\"";
+        }
+      }
       continue;
     }
 

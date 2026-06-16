@@ -5951,6 +5951,22 @@ exit 0
       );
       assert.equal(allowedSubshellGrep.outputJson, null);
 
+      // Double-quoted spans that merely mention the literal token, expand a
+      // parameter, or run a substitution that is not `apply_patch` stay allowed
+      // — the quoted-substitution fix must not over-block read-only diagnostics.
+      const allowedQuotedMention = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-grep",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-grep-quoted-mention",
+          tool_input: { command: 'echo "${apply_patch} $(echo apply_patch)"' },
+        },
+        { cwd },
+      );
+      assert.equal(allowedQuotedMention.outputJson, null);
+
       const blockedApplyPatch = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -6006,6 +6022,11 @@ exit 0
         { id: "tool-di-apply-patch-subshell-env", command: `(env apply_patch <<'EOF'${heredocBody}\n)` },
         { id: "tool-di-apply-patch-command-substitution", command: `x=$(apply_patch <<'EOF'${heredocBody}\n)` },
         { id: "tool-di-apply-patch-brace-group", command: `{ apply_patch <<'EOF'${heredocBody}\n}` },
+        // Command substitution runs even inside double quotes, so quoting the
+        // already-blocked `$(…)` / `` `…` `` form must not bypass the guard.
+        { id: "tool-di-apply-patch-quoted-command-substitution", command: `echo "$(apply_patch <<'EOF'${heredocBody}\n)"` },
+        { id: "tool-di-apply-patch-quoted-backtick", command: `echo "\`apply_patch <<'EOF'${heredocBody}\`"` },
+        { id: "tool-di-apply-patch-quoted-command-substitution-prefixed", command: `echo "patched: $(apply_patch <<'EOF'${heredocBody}\n) done"` },
       ];
       for (const form of blockedRealApplyPatchForms) {
         const blockedForm = await dispatchCodexNativeHook(
