@@ -1464,6 +1464,156 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("suppresses child-agent SessionStart and Stop before the canonical leader session is reconciled (#2831)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-no-canonical-"));
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = join(cwd, "codex-home");
+      await writeJson(join(process.env.CODEX_HOME, ".omx-config.json"), {
+        notifications: {
+          enabled: true,
+          verbosity: "session",
+          telegram: { enabled: true, botToken: "123:abc", chatId: "456" },
+        },
+      });
+      const stateDir = join(cwd, ".omx", "state");
+      const leaderNativeSessionId = "codex-leader-thread-no-canonical";
+      const childNativeSessionId = "codex-child-thread-no-canonical";
+      await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "hooks", "record-lifecycle.mjs"),
+        [
+          "import { appendFileSync } from 'node:fs';",
+          "export async function onHookEvent(event) {",
+          "  appendFileSync('hook-events.jsonl', `${JSON.stringify({ event: event.event })}\\n`);",
+          "}",
+        ].join("\n"),
+      );
+      const transcriptPath = join(cwd, "no-canonical-subagent-rollout.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: childNativeSessionId,
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: leaderNativeSessionId,
+                  agent_role: "explorer",
+                },
+              },
+            },
+          },
+        })}\n`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: childNativeSessionId,
+          transcript_path: transcriptPath,
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      assert.equal(
+        existsSync(join(cwd, "hook-events.jsonl")),
+        false,
+        "child SessionStart must be suppressed even before the canonical leader session is reconciled",
+      );
+      assert.equal(
+        existsSync(join(stateDir, "session.json")),
+        false,
+        "child SessionStart must not be promoted into a root/leader session",
+      );
+
+      const tracking = JSON.parse(
+        await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"),
+      ) as {
+        sessions?: Record<string, {
+          leader_thread_id?: string;
+          threads?: Record<string, { kind?: string; mode?: string }>;
+        }>;
+      };
+      assert.equal(tracking.sessions?.[leaderNativeSessionId]?.leader_thread_id, leaderNativeSessionId);
+      assert.equal(tracking.sessions?.[leaderNativeSessionId]?.threads?.[childNativeSessionId]?.kind, "subagent");
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: childNativeSessionId,
+          thread_id: childNativeSessionId,
+          turn_id: "no-canonical-child-stop-turn",
+        },
+        { cwd },
+      );
+
+      assert.equal(
+        existsSync(join(cwd, "hook-events.jsonl")),
+        false,
+        "child Stop must be suppressed when the start was recognized as subagent-scoped",
+      );
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves root/leader SessionStart dispatch at session verbosity (#2831)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-root-session-start-preserved-"));
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = join(cwd, "codex-home");
+      await writeJson(join(process.env.CODEX_HOME, ".omx-config.json"), {
+        notifications: {
+          enabled: true,
+          verbosity: "session",
+          telegram: { enabled: true, botToken: "123:abc", chatId: "456" },
+        },
+      });
+      await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "hooks", "record-lifecycle.mjs"),
+        [
+          "import { appendFileSync } from 'node:fs';",
+          "export async function onHookEvent(event) {",
+          "  appendFileSync('hook-events.jsonl', `${JSON.stringify({ event: event.event })}\\n`);",
+          "}",
+        ].join("\n"),
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "codex-root-thread-preserved",
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const hookEvents = await readFile(join(cwd, "hook-events.jsonl"), "utf-8");
+      assert.match(
+        hookEvents,
+        /"event":"session-start"/,
+        "root/leader SessionStart must still dispatch at session verbosity",
+      );
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a self-parented native role thread as subagent evidence", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-self-parented-subagent-"));
     try {
