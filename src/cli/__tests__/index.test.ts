@@ -52,6 +52,7 @@ import {
   prepareCodexHomeForLaunch,
   persistProjectLaunchRuntimeAuthState,
   persistProjectLaunchRuntimeProjectTrustState,
+  cleanupRuntimeCodexHome,
   runtimeCodexHomePath,
   buildDetachedSessionBootstrapSteps,
   buildDetachedTmuxSessionName,
@@ -2201,6 +2202,90 @@ describe("project launch scope helpers", () => {
         existsSync(join(runtimeCodexHome, "sessions", "2026", "06", "03", "rollout-session-2712.jsonl")),
         true,
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("creates durable project Codex transcript links for project launches", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-links-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-history-links", {});
+      const runtimeCodexHome = runtimeCodexHomePath(wd, "session-history-links");
+
+      assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+      assert.equal((await lstat(join(runtimeCodexHome, "sessions"))).isSymbolicLink(), true);
+      assert.equal((await lstat(join(runtimeCodexHome, "history.jsonl"))).isSymbolicLink(), true);
+      assert.equal((await lstat(join(runtimeCodexHome, "session_index.jsonl"))).isSymbolicLink(), true);
+      await writeFile(
+        join(runtimeCodexHome, "sessions", "linked-rollout.jsonl"),
+        '{"type":"session_meta"}\n',
+      );
+      await writeFile(join(runtimeCodexHome, "history.jsonl"), '{"session_id":"linked"}\n');
+      await writeFile(join(runtimeCodexHome, "session_index.jsonl"), '{"id":"linked"}\n');
+
+      await cleanupRuntimeCodexHome(
+        prepared.runtimeCodexHomeForCleanup,
+        prepared.projectLocalCodexHomeForCleanup,
+      );
+
+      assert.equal(
+        await readFile(join(projectCodexHome, "sessions", "linked-rollout.jsonl"), "utf-8"),
+        '{"type":"session_meta"}\n',
+      );
+      assert.equal(await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"linked"}\n');
+      assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"linked"}\n');
+      assert.equal(existsSync(runtimeCodexHome), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("copies non-symlink runtime Codex transcript artifacts before cleanup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-copyback-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-history-copyback", {});
+      const runtimeCodexHome = runtimeCodexHomePath(wd, "session-history-copyback");
+      await rm(join(runtimeCodexHome, "sessions"), { recursive: true, force: true });
+      await rm(join(runtimeCodexHome, "history.jsonl"), { force: true });
+      await rm(join(runtimeCodexHome, "session_index.jsonl"), { force: true });
+      await mkdir(join(runtimeCodexHome, "sessions", "2026", "06", "16"), { recursive: true });
+      await writeFile(
+        join(runtimeCodexHome, "sessions", "2026", "06", "16", "rollout-session-2835.jsonl"),
+        '{"type":"session_meta","payload":{"id":"session-2835"}}\n',
+      );
+      await writeFile(join(runtimeCodexHome, "history.jsonl"), '{"session_id":"session-2835"}\n');
+      await writeFile(join(runtimeCodexHome, "session_index.jsonl"), '{"id":"session-2835"}\n');
+      await writeFile(join(runtimeCodexHome, "auth.json"), '{"token":"opaque"}\n');
+
+      await cleanupRuntimeCodexHome(
+        prepared.runtimeCodexHomeForCleanup,
+        prepared.projectLocalCodexHomeForCleanup,
+      );
+
+      assert.equal(
+        await readFile(join(projectCodexHome, "sessions", "2026", "06", "16", "rollout-session-2835.jsonl"), "utf-8"),
+        '{"type":"session_meta","payload":{"id":"session-2835"}}\n',
+      );
+      assert.equal(await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"session-2835"}\n');
+      assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"session-2835"}\n');
+      assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), '{"token":"opaque"}\n');
+      assert.equal(existsSync(runtimeCodexHome), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -823,14 +823,68 @@ const PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES = new Set([
   "auth.json",
 ]);
 
+const PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES = new Set([
+  "sessions",
+  "history.jsonl",
+  "session_index.jsonl",
+]);
+
 // Mirroring these files into the runtime CODEX_HOME would cause Codex to load
 // them as user-scope config alongside the canonical project-scope copies under
 // <cwd>/.codex, duplicating every native hook and asking the user to re-trust
 // hooks on every launch. See GH issue #2470.
 const PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES = new Set(["hooks.json"]);
 
+function shouldMirrorProjectLaunchRuntimeEntry(entryName: string, includeHistoryArtifacts: boolean): boolean {
+  if (PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entryName)) return true;
+  if (isCodexSqliteArtifact(entryName)) return includeHistoryArtifacts;
+  return true;
+}
+
 function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
   return PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES.has(entryName);
+}
+
+async function persistProjectLaunchRuntimeHistoryArtifacts(
+  runtimeCodexHome: string | undefined,
+  projectCodexHome: string | undefined,
+): Promise<void> {
+  if (!runtimeCodexHome || !projectCodexHome) return;
+  if (!existsSync(runtimeCodexHome)) return;
+  await mkdir(projectCodexHome, { recursive: true });
+
+  for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+    const source = join(runtimeCodexHome, entryName);
+    if (!existsSync(source)) continue;
+    const sourceStat = await lstat(source);
+    if (sourceStat.isSymbolicLink()) continue;
+    const destination = join(projectCodexHome, entryName);
+    if (sourceStat.isDirectory()) {
+      await cp(source, destination, { recursive: true, force: true, verbatimSymlinks: true });
+      continue;
+    }
+    if (sourceStat.isFile()) {
+      await copyFile(source, destination);
+    }
+  }
+}
+
+async function ensureProjectLaunchRuntimeHistoryLinks(
+  runtimeCodexHome: string,
+  projectCodexHome: string,
+): Promise<void> {
+  await mkdir(projectCodexHome, { recursive: true });
+  for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+    const runtimeEntry = join(runtimeCodexHome, entryName);
+    if (existsSync(runtimeEntry)) continue;
+    const projectEntry = join(projectCodexHome, entryName);
+    if (entryName === "sessions") {
+      await mkdir(projectEntry, { recursive: true });
+    } else if (!existsSync(projectEntry)) {
+      await writeFile(projectEntry, "");
+    }
+    await linkOrCopyCodexHomeEntry(projectEntry, runtimeEntry);
+  }
 }
 
 export async function persistProjectLaunchRuntimeAuthState(
@@ -867,10 +921,13 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
   await rm(runtimeCodexHome, { recursive: true, force: true });
   await mkdir(runtimeCodexHome, { recursive: true });
 
-  if (!existsSync(projectCodexHome)) return runtimeCodexHome;
+  if (!existsSync(projectCodexHome)) {
+    await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
+    return runtimeCodexHome;
+  }
 
   for (const entry of await readdir(projectCodexHome, { withFileTypes: true })) {
-    if (isCodexSqliteArtifact(entry.name) && !options.includeHistoryArtifacts) continue;
+    if (!shouldMirrorProjectLaunchRuntimeEntry(entry.name, options.includeHistoryArtifacts === true)) continue;
     if (PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES.has(entry.name)) continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
@@ -889,6 +946,8 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     }
     await linkOrCopyCodexHomeEntry(source, destination);
   }
+  await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
+
 
   return runtimeCodexHome;
 }
@@ -964,6 +1023,10 @@ export async function cleanupRuntimeCodexHome(
 ): Promise<void> {
   if (!runtimeCodexHomeForCleanup) return;
   await persistProjectLaunchRuntimeAuthState(
+    runtimeCodexHomeForCleanup,
+    projectCodexHomeForPersistence,
+  );
+  await persistProjectLaunchRuntimeHistoryArtifacts(
     runtimeCodexHomeForCleanup,
     projectCodexHomeForPersistence,
   );
