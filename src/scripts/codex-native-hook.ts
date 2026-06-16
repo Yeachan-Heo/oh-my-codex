@@ -4249,28 +4249,50 @@ export async function dispatchCodexNativeHook(
   if (hookEventName === "SessionStart" && nativeSessionId) {
     const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
     const subagentSessionStart = readNativeSubagentSessionStartMetadata(transcriptPath);
-    if (subagentSessionStart && canonicalSessionId) {
+    if (subagentSessionStart) {
+      // A native child/subagent SessionStart carries a parent_thread_id in its
+      // transcript session_meta. Treat it as a child-agent lifecycle event for
+      // notification suppression and subagent tracking even when the canonical
+      // leader session has not been reconciled yet (#2831). A child start must
+      // never promote itself into a root/leader session or emit an independent
+      // session-start notification at session/minimal verbosity.
       isSubagentSessionStart = true;
-      const belongsToCanonicalSession = await nativeSubagentSessionStartBelongsToCanonicalSession(
-        cwd,
-        canonicalSessionId,
-        currentSessionState,
-        subagentSessionStart,
-      );
-      if (belongsToCanonicalSession) {
-        resolvedNativeSessionId = nativeSessionId;
-        await recordNativeSubagentSessionStart(
+      if (canonicalSessionId) {
+        const belongsToCanonicalSession = await nativeSubagentSessionStartBelongsToCanonicalSession(
           cwd,
           canonicalSessionId,
-          nativeSessionId,
+          currentSessionState,
           subagentSessionStart,
-          transcriptPath,
         );
+        if (belongsToCanonicalSession) {
+          resolvedNativeSessionId = nativeSessionId;
+          await recordNativeSubagentSessionStart(
+            cwd,
+            canonicalSessionId,
+            nativeSessionId,
+            subagentSessionStart,
+            transcriptPath,
+          );
+        } else {
+          skipCanonicalSessionStartContext = true;
+          resolvedNativeSessionId =
+            safeString(currentSessionState?.native_session_id).trim() || nativeSessionId;
+          await recordIgnoredNativeSubagentSessionStart(
+            cwd,
+            canonicalSessionId,
+            nativeSessionId,
+            subagentSessionStart,
+            transcriptPath,
+          );
+        }
       } else {
+        // No canonical leader session is resolved in this worktree yet. Still
+        // register the child thread under its parent so its later Stop is
+        // recognized as subagent-scoped, skip leader SessionStart context, and
+        // do not reconcile the child as a new root session.
         skipCanonicalSessionStartContext = true;
-        resolvedNativeSessionId =
-          safeString(currentSessionState?.native_session_id).trim() || nativeSessionId;
-        await recordIgnoredNativeSubagentSessionStart(
+        resolvedNativeSessionId = nativeSessionId;
+        await recordNativeSubagentSessionStart(
           cwd,
           canonicalSessionId,
           nativeSessionId,
