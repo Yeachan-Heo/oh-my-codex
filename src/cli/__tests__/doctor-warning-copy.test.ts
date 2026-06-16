@@ -20,6 +20,7 @@ import {
 } from "./packaged-explore-harness-lock.js";
 import {
 	checkExploreHarness,
+	checkExternalCodexProcessGuards,
 	checkNativeHookDistSmoke,
 	classifyPostCompactHookStdout,
 } from "../doctor.js";
@@ -155,6 +156,69 @@ function buildHooksJsonWithPostCompactCommand(
 }
 
 describe("omx doctor onboarding warning copy", () => {
+	it("warns about external LaunchAgents that kill Codex app-server MCP children", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-external-guard-"));
+		try {
+			const home = join(wd, "home");
+			const launchAgentsDir = join(home, "Library", "LaunchAgents");
+			const scriptsDir = join(home, ".omx", "scripts");
+			const scriptPath = join(scriptsDir, "codex_mcp_child_guard.sh");
+			await mkdir(launchAgentsDir, { recursive: true });
+			await mkdir(scriptsDir, { recursive: true });
+			await writeFile(
+				scriptPath,
+				[
+					"#!/usr/bin/env bash",
+					"CODEX_MCP_GUARD_DEDUPE_APP_CHILDREN=1",
+					"app_pid=123",
+					"pgrep -P \"$app_pid\"",
+					"kill 456",
+					"",
+				].join("\n"),
+			);
+			await writeFile(
+				join(launchAgentsDir, "com.example.codex-mcp-child-guard.plist"),
+				[
+					'<?xml version="1.0" encoding="UTF-8"?>',
+					'<plist version="1.0">',
+					"<dict>",
+					"<key>Label</key>",
+					"<string>com.example.codex-mcp-child-guard</string>",
+					"<key>ProgramArguments</key>",
+					"<array>",
+					`<string>${scriptPath}</string>`,
+					"<string>cleanup</string>",
+					"</array>",
+					"</dict>",
+					"</plist>",
+					"",
+				].join("\n"),
+			);
+
+			const check = await checkExternalCodexProcessGuards({
+				platform: "darwin",
+				homeDir: home,
+			});
+
+			assert.ok(check);
+			assert.equal(check.name, "External process guards");
+			assert.equal(check.status, "warn");
+			assert.match(check.message, /com\.example\.codex-mcp-child-guard/);
+			assert.match(check.message, /Codex app-server MCP child dedupe/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("skips external process guard checks outside macOS", async () => {
+		const check = await checkExternalCodexProcessGuards({
+			platform: "linux",
+			homeDir: "/tmp/unused",
+		});
+
+		assert.equal(check, null);
+	});
+
 	it("warns that the built-in explore harness is not ready on Windows", () => {
 		const check = checkExploreHarness("win32", {} as NodeJS.ProcessEnv);
 
