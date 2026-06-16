@@ -210,6 +210,56 @@ describe("omx doctor onboarding warning copy", () => {
 		}
 	});
 
+	it("follows XML-decoded HOME-relative LaunchAgent script paths", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-external-home-guard-"));
+		try {
+			const home = join(wd, "home");
+			const launchAgentsDir = join(home, "Library", "LaunchAgents");
+			const scriptsDir = join(home, ".omx", "scripts");
+			const scriptPath = join(scriptsDir, "codex&mcp_guard.sh");
+			await mkdir(launchAgentsDir, { recursive: true });
+			await mkdir(scriptsDir, { recursive: true });
+			await writeFile(
+				scriptPath,
+				[
+					"#!/usr/bin/env bash",
+					"CODEX_MCP_GUARD_DEDUPE_APP_CHILDREN=1",
+					"kill 456",
+					"",
+				].join("\n"),
+			);
+			await writeFile(
+				join(launchAgentsDir, "com.example.codex-encoded-guard.plist"),
+				[
+					'<?xml version="1.0" encoding="UTF-8"?>',
+					'<plist version="1.0">',
+					"<dict>",
+					"<key>Label</key>",
+					"<string>com.example.codex&amp;encoded-guard</string>",
+					"<key>ProgramArguments</key>",
+					"<array>",
+					"<string>$HOME/.omx/scripts/codex&amp;mcp_guard.sh</string>",
+					"</array>",
+					"</dict>",
+					"</plist>",
+					"",
+				].join("\n"),
+			);
+
+			const check = await checkExternalCodexProcessGuards({
+				platform: "darwin",
+				homeDir: home,
+			});
+
+			assert.ok(check);
+			assert.equal(check.status, "warn");
+			assert.match(check.message, /com\.example\.codex&encoded-guard/);
+			assert.match(check.message, /Codex app-server MCP child dedupe/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("skips external process guard checks outside macOS", async () => {
 		const check = await checkExternalCodexProcessGuards({
 			platform: "linux",

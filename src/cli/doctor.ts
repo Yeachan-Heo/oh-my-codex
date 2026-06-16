@@ -1164,9 +1164,18 @@ interface ExternalCodexProcessGuardOptions {
 	homeDir?: string;
 }
 
+function decodeBasicXmlEntities(value: string): string {
+	return value
+		.replaceAll("&amp;", "&")
+		.replaceAll("&lt;", "<")
+		.replaceAll("&gt;", ">")
+		.replaceAll("&quot;", '"')
+		.replaceAll("&apos;", "'");
+}
+
 function extractPlistStrings(content: string): string[] {
 	return [...content.matchAll(/<string>([^<]+)<\/string>/g)].map((match) =>
-		match[1]?.trim() ?? "",
+		decodeBasicXmlEntities(match[1]?.trim() ?? ""),
 	);
 }
 
@@ -1174,7 +1183,7 @@ function extractPlistLabel(content: string, fallback: string): string {
 	const labelMatch = content.match(
 		/<key>Label<\/key>\s*<string>([^<]+)<\/string>/,
 	);
-	return labelMatch?.[1]?.trim() || fallback;
+	return decodeBasicXmlEntities(labelMatch?.[1]?.trim() || fallback);
 }
 
 async function readExistingTextFile(path: string): Promise<string> {
@@ -1183,6 +1192,16 @@ async function readExistingTextFile(path: string): Promise<string> {
 	} catch {
 		return "";
 	}
+}
+
+function expandLaunchAgentPath(value: string, homeDir: string): string {
+	if (value === "~") return homeDir;
+	if (value.startsWith("~/")) return join(homeDir, value.slice(2));
+	if (value === "$HOME") return homeDir;
+	if (value.startsWith("$HOME/")) return join(homeDir, value.slice(6));
+	if (value === "${HOME}") return homeDir;
+	if (value.startsWith("${HOME}/")) return join(homeDir, value.slice(8));
+	return value;
 }
 
 function classifyExternalCodexProcessGuard(
@@ -1249,9 +1268,10 @@ export async function checkExternalCodexProcessGuards(
 
 		let combinedContent = plistContent;
 		for (const value of extractPlistStrings(plistContent)) {
-			if (!value.startsWith("/")) continue;
-			if (!existsSync(value)) continue;
-			combinedContent += `\n${await readExistingTextFile(value)}`;
+			const expandedValue = expandLaunchAgentPath(value, homeDir);
+			if (!expandedValue.startsWith("/")) continue;
+			if (!existsSync(expandedValue)) continue;
+			combinedContent += `\n${await readExistingTextFile(expandedValue)}`;
 		}
 
 		const reason = classifyExternalCodexProcessGuard(
