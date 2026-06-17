@@ -26,7 +26,7 @@ import {
   isWorkerPaneOpen,
   getWorkerPanePid,
   killWorkerByPaneIdAsync,
-  paneHasOmxTeamOwnerTag,
+  paneHasOmxInstanceTag,
   readPaneTeamOwnerTagResult,
   restoreStandaloneHudPane,
   teardownWorkerPanes,
@@ -444,6 +444,22 @@ function isSharedSessionHudPaneReclaimable(params: {
   if (owner.status === 'missing') return leaderOwnedHudPaneIds.includes(paneId);
   onOwnerReadError?.(paneId, owner.error);
   return false;
+}
+
+function isTrustedSharedSessionLeaderPaneForHudRestore(params: {
+  paneId: string | null;
+  teamPaneOwnerId: string;
+  legacyInstanceId: string;
+}): boolean {
+  const { paneId, teamPaneOwnerId, legacyInstanceId } = params;
+  if (!paneId) return false;
+  const expectedOwnerId = teamPaneOwnerId.trim();
+  if (expectedOwnerId) {
+    const owner = readPaneTeamOwnerTagResult(paneId);
+    if (owner.status === 'value') return owner.value === expectedOwnerId;
+    if (owner.status === 'error') return false;
+  }
+  return paneHasOmxInstanceTag(paneId, legacyInstanceId);
 }
 
 export function shouldPrekillInteractiveShutdownProcessTrees(sessionName: string): boolean {
@@ -3832,7 +3848,11 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       console.warn(`[team shutdown] ${sanitized}: skipped shared-session ${kind} ${paneId} because team owner tag could not be read: ${error}`);
     };
     const trustedHudRestoreLeaderPaneId = sharedSessionTopology
-      ? (paneHasOmxTeamOwnerTag(effectiveLeaderPaneId, tmuxPaneOwnerId) ? effectiveLeaderPaneId : null)
+      ? (isTrustedSharedSessionLeaderPaneForHudRestore({
+        paneId: effectiveLeaderPaneId,
+        teamPaneOwnerId: tmuxPaneOwnerId,
+        legacyInstanceId: leaderSessionId,
+      }) ? effectiveLeaderPaneId : null)
       : effectiveLeaderPaneId;
     const effectiveHudPaneId = sharedSessionTopology
       ? (sharedSessionTopology.hudPaneIds.find((paneId) => isSharedSessionHudPaneReclaimable({

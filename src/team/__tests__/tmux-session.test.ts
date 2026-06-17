@@ -85,6 +85,18 @@ function withMockedExistsSync<T>(mock: typeof fs.existsSync, fn: () => T): T {
   }
 }
 
+function withMockedStatSync<T>(mock: typeof fs.statSync, fn: () => T): T {
+  const original = fs.statSync;
+  fs.statSync = mock;
+  syncBuiltinESMExports();
+  try {
+    return fn();
+  } finally {
+    fs.statSync = original;
+    syncBuiltinESMExports();
+  }
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -4324,6 +4336,265 @@ esac
     } finally {
       await rm(teamLaunchCwd, { recursive: true, force: true });
       await rm(leaderPaneCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the team launch cwd when the live leader pane cwd is unusable', async () => {
+    const teamLaunchCwd = await mkdtemp(join(tmpdir(), 'omx-standalone-team-launch-cwd-fallback-'));
+    const deletedLeaderPaneCwd = await mkdtemp(join(tmpdir(), 'omx-standalone-deleted-leader-pane-cwd-'));
+    await rm(deletedLeaderPaneCwd, { recursive: true, force: true });
+
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-deleted-leader-cwd-standalone-hud-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  display-message)
+    case "$*" in
+      *"#{pane_current_path}"*)
+        echo "${deletedLeaderPaneCwd}"
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *"-c ${teamLaunchCwd} "*)
+        echo "%44"
+        exit 0
+        ;;
+      *"-c ${deletedLeaderPaneCwd} "*)
+        echo "deleted cwd should not be used" >&2
+        exit 1
+        ;;
+      *)
+        echo "unexpected cwd: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  run-shell|select-pane|resize-pane|set-hook)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          const paneId = restoreStandaloneHudPane('%11', teamLaunchCwd, {
+            sessionId: 'current-session-for-hud',
+          });
+          assert.equal(paneId, '%44');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /display-message -p -t %11 #\{pane_current_path\}/);
+          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\} -c ${escapeRegExp(teamLaunchCwd)} `));
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window .* -c ${escapeRegExp(deletedLeaderPaneCwd)} `));
+          assert.match(tmuxLog, /select-pane -t %11/);
+        },
+      );
+    } finally {
+      await rm(teamLaunchCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps MSYS drive-style live leader cwd candidates without raw stat prefiltering', async () => {
+    const liveLeaderCwd = '/c/live';
+    const fallbackCwd = 'C:\\fallback';
+    const fakeCygpathDir = await mkdtemp(join(tmpdir(), 'omx-msys-live-cygpath-'));
+    const previousPath = process.env.PATH;
+    const previousMsystem = process.env.MSYSTEM;
+    const previousOstype = process.env.OSTYPE;
+    const previousWsl = process.env.WSL_DISTRO_NAME;
+    const previousWslInterop = process.env.WSL_INTEROP;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const statCalls: string[] = [];
+
+    try {
+      const cygpathPath = join(fakeCygpathDir, 'cygpath');
+      await writeFile(cygpathPath, '#!/bin/sh\nprintf "%s\\n" "$2"\n');
+      await chmod(cygpathPath, 0o755);
+      process.env.PATH = `${fakeCygpathDir}:${previousPath ?? ''}`;
+      process.env.MSYSTEM = 'MINGW64';
+      process.env.OSTYPE = 'msys';
+      delete process.env.WSL_DISTRO_NAME;
+      delete process.env.WSL_INTEROP;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+      await withMockTmuxFixture(
+        'omx-tmux-msys-live-cwd-standalone-hud-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  display-message)
+    case "$*" in
+      *"#{pane_current_path}"*)
+        echo "${liveLeaderCwd}"
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *"-c ${liveLeaderCwd} "*)
+        echo "%44"
+        exit 0
+        ;;
+      *"-c ${fallbackCwd} "*)
+        echo "fallback cwd should not be used when MSYS live cwd succeeds" >&2
+        exit 1
+        ;;
+      *)
+        echo "unexpected cwd: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  run-shell|select-pane|resize-pane|set-hook)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          const paneId = withMockedStatSync(
+            ((pathLike: fs.PathLike) => {
+              const value = String(pathLike);
+              statCalls.push(value);
+              if (value === fallbackCwd) return { isDirectory: () => true } as fs.Stats;
+              return { isDirectory: () => false } as fs.Stats;
+            }) as typeof fs.statSync,
+            () => restoreStandaloneHudPane('%11', fallbackCwd, { sessionId: 'current-session-for-hud' }),
+          );
+          assert.equal(paneId, '%44');
+          assert.equal(statCalls.includes(liveLeaderCwd), false);
+          assert.equal(statCalls.includes(fallbackCwd), true);
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /display-message -p -t %11 #\{pane_current_path\}/);
+          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\} -c ${escapeRegExp(liveLeaderCwd)} `));
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window .* -c ${escapeRegExp(fallbackCwd)} `));
+          assert.match(tmuxLog, /select-pane -t %11/);
+        },
+      );
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousMsystem === 'string') process.env.MSYSTEM = previousMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof previousOstype === 'string') process.env.OSTYPE = previousOstype;
+      else delete process.env.OSTYPE;
+      if (typeof previousWsl === 'string') process.env.WSL_DISTRO_NAME = previousWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof previousWslInterop === 'string') process.env.WSL_INTEROP = previousWslInterop;
+      else delete process.env.WSL_INTEROP;
+      await rm(fakeCygpathDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back after an unusable MSYS drive-style live leader cwd split attempt fails', async () => {
+    const liveLeaderCwd = '/c/deleted-live';
+    const fallbackCwd = 'C:\\fallback';
+    const fakeCygpathDir = await mkdtemp(join(tmpdir(), 'omx-msys-deleted-live-cygpath-'));
+    const previousPath = process.env.PATH;
+    const previousMsystem = process.env.MSYSTEM;
+    const previousOstype = process.env.OSTYPE;
+    const previousWsl = process.env.WSL_DISTRO_NAME;
+    const previousWslInterop = process.env.WSL_INTEROP;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const statCalls: string[] = [];
+
+    try {
+      const cygpathPath = join(fakeCygpathDir, 'cygpath');
+      await writeFile(cygpathPath, '#!/bin/sh\nprintf "%s\\n" "$2"\n');
+      await chmod(cygpathPath, 0o755);
+      process.env.PATH = `${fakeCygpathDir}:${previousPath ?? ''}`;
+      process.env.MSYSTEM = 'MINGW64';
+      process.env.OSTYPE = 'msys';
+      delete process.env.WSL_DISTRO_NAME;
+      delete process.env.WSL_INTEROP;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+      await withMockTmuxFixture(
+        'omx-tmux-msys-deleted-live-cwd-standalone-hud-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  display-message)
+    case "$*" in
+      *"#{pane_current_path}"*)
+        echo "${liveLeaderCwd}"
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *"-c ${liveLeaderCwd} "*)
+        echo "deleted live cwd cannot be used" >&2
+        exit 1
+        ;;
+      *"-c ${fallbackCwd} "*)
+        echo "%44"
+        exit 0
+        ;;
+      *)
+        echo "unexpected cwd: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  run-shell|select-pane|resize-pane|set-hook)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          const paneId = withMockedStatSync(
+            ((pathLike: fs.PathLike) => {
+              const value = String(pathLike);
+              statCalls.push(value);
+              if (value === fallbackCwd) return { isDirectory: () => true } as fs.Stats;
+              return { isDirectory: () => false } as fs.Stats;
+            }) as typeof fs.statSync,
+            () => restoreStandaloneHudPane('%11', fallbackCwd, { sessionId: 'current-session-for-hud' }),
+          );
+          assert.equal(paneId, '%44');
+          assert.equal(statCalls.includes(liveLeaderCwd), false);
+          assert.equal(statCalls.includes(fallbackCwd), true);
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          const liveAttemptIndex = tmuxLog.indexOf(`-c ${liveLeaderCwd} `);
+          const fallbackAttemptIndex = tmuxLog.indexOf(`-c ${fallbackCwd} `);
+          assert.ok(liveAttemptIndex >= 0, 'deleted MSYS live cwd should still be attempted');
+          assert.ok(fallbackAttemptIndex > liveAttemptIndex, 'fallback should be attempted after live split failure');
+          assert.match(tmuxLog, /select-pane -t %11/);
+        },
+      );
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousMsystem === 'string') process.env.MSYSTEM = previousMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof previousOstype === 'string') process.env.OSTYPE = previousOstype;
+      else delete process.env.OSTYPE;
+      if (typeof previousWsl === 'string') process.env.WSL_DISTRO_NAME = previousWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof previousWslInterop === 'string') process.env.WSL_INTEROP = previousWslInterop;
+      else delete process.env.WSL_INTEROP;
+      await rm(fakeCygpathDir, { recursive: true, force: true });
     }
   });
 

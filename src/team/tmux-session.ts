@@ -1,6 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve } from 'path';
 import {
@@ -358,6 +358,60 @@ function readPaneCurrentPath(paneId: string): string | null {
   if (!result.ok) return null;
   const path = result.stdout.split('\n')[0]?.trim() ?? '';
   return path === '' ? null : path;
+}
+
+function pathIsUsableDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+type RestoreCwdCandidateSource = 'explicit' | 'live' | 'fallback';
+
+type RestoreCwdCandidate = {
+  source: RestoreCwdCandidateSource;
+  rawPath: string;
+};
+
+function isMsysDriveSlashPath(path: string): boolean {
+  return /^\/[A-Za-z](?:\/|$)/.test(path);
+}
+
+function uniqueRestoreCwdCandidates(
+  candidates: Array<{source: RestoreCwdCandidateSource; rawPath: string | null | undefined}>,
+): RestoreCwdCandidate[] {
+  const seen = new Set<string>();
+  const result: RestoreCwdCandidate[] = [];
+  for (const candidate of candidates) {
+    const normalized = typeof candidate.rawPath === 'string' ? candidate.rawPath.trim() : '';
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push({ source: candidate.source, rawPath: normalized });
+  }
+  return result;
+}
+
+function shouldAttemptRestoreCwdCandidate(candidate: RestoreCwdCandidate): boolean {
+  if (candidate.source === 'live' && isMsysOrGitBash() && isMsysDriveSlashPath(candidate.rawPath)) {
+    return true;
+  }
+
+  return pathIsUsableDirectory(candidate.rawPath);
+}
+
+function resolveStandaloneHudRestoreCwdCandidates(
+  leaderPaneId: string,
+  fallbackCwd: string,
+  explicitCwd?: string | null,
+): RestoreCwdCandidate[] {
+  const liveLeaderCwd = readPaneCurrentPath(leaderPaneId);
+  return uniqueRestoreCwdCandidates([
+    { source: 'explicit', rawPath: explicitCwd },
+    { source: 'live', rawPath: liveLeaderCwd },
+    { source: 'fallback', rawPath: fallbackCwd },
+  ]).filter(shouldAttemptRestoreCwdCandidate);
 }
 
 const MAX_FRACTIONAL_SLEEP_MS = 60_000;
@@ -1646,25 +1700,34 @@ export function restoreStandaloneHudPane(
     return existingHudPaneId;
   }
 
-  const restoreCwd = options.cwd?.trim() || readPaneCurrentPath(normalizedLeaderPaneId) || cwd;
   const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: options.sessionId, leaderPaneId: normalizedLeaderPaneId })} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
-  const hudCwd = translatePathForMsys(restoreCwd);
-  const hudResult = runTmux([
-    'split-window',
-    '-v',
-    '-l',
-    String(HUD_TMUX_TEAM_HEIGHT_LINES),
-    '-t',
+  let hudResult: ReturnType<typeof runTmux> | null = null;
+  for (const restoreCwd of resolveStandaloneHudRestoreCwdCandidates(
     normalizedLeaderPaneId,
-    '-d',
-    '-P',
-    '-F',
-    '#{pane_id}',
-    '-c',
-    hudCwd,
-    hudCmd,
-  ]);
-  if (!hudResult.ok) return null;
+    cwd,
+    options.cwd,
+  )) {
+    const candidateResult = runTmux([
+      'split-window',
+      '-v',
+      '-l',
+      String(HUD_TMUX_TEAM_HEIGHT_LINES),
+      '-t',
+      normalizedLeaderPaneId,
+      '-d',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      '-c',
+      translatePathForMsys(restoreCwd.rawPath),
+      hudCmd,
+    ]);
+    if (candidateResult.ok) {
+      hudResult = candidateResult;
+      break;
+    }
+  }
+  if (!hudResult?.ok) return null;
 
   const paneId = hudResult.stdout.split('\n')[0]?.trim() ?? '';
   if (!paneId.startsWith('%')) return null;

@@ -7168,6 +7168,109 @@ esac
     }
   });
 
+  it('shutdownTeam restores standalone HUD for legacy leaders with only an instance tag', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-legacy-leader-instance-'));
+    const teamName = 'team-legacy-leader-instance';
+    const legacySessionId = 'legacy-leader-session';
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-legacy-leader-instance-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{pane_current_path}"*)
+        echo "${cwd}"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"-F #{pane_dead} #{pane_pid}"*)
+        exit 1
+        ;;
+      *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\texec env OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%%11' node /tmp/bin/omx.js hud --watch\\n%%13\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-legacy-leader-instance/worker-1 codex\\n"
+        exit 0
+        ;;
+      *"-t %11 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n"
+        exit 0
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  split-window)
+    printf '%%44\\n'
+    exit 0
+    ;;
+  show-option)
+    case "$*" in
+      *"-p -t %11 @omx_team_pane_owner_id"*)
+        exit 1
+        ;;
+      *"-p -t %12 @omx_team_pane_owner_id"*)
+        exit 1
+        ;;
+      *"-p -t %13 @omx_team_pane_owner_id"*)
+        echo "team:team-legacy-leader-instance"
+        ;;
+      *"-p -t %11 @omx_pane_instance_id"*)
+        echo "${legacySessionId}"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    exit 0
+    ;;
+  kill-pane|resize-pane|select-pane|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          env: { OMX_SESSION_ID: legacySessionId },
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState(teamName, 'shutdown legacy leader instance test', 'executor', 1, cwd);
+          const config = await readTeamConfig(teamName, cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'leader:0';
+          config.leader_pane_id = '%11';
+          config.hud_pane_id = '%12';
+          config.workers[0]!.pane_id = '%13';
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam(teamName, cwd, { force: true });
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /show-option -qv -p -t %11 @omx_team_pane_owner_id/);
+          assert.match(tmuxLog, /show-option -qv -p -t %11 @omx_pane_instance_id/);
+          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
+          assert.match(tmuxLog, /select-pane -t %11/);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam preserves a persisted HUD pane when the team owner tag cannot be read', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-hud-owner-read-error-'));
     const teamName = 'team-hud-owner-read-error';
