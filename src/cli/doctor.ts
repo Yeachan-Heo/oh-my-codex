@@ -39,6 +39,7 @@ import {
 	discoverCodexHookConfigPaths,
 	getManagedCodexHookCommandsForEvent,
 	getMissingManagedCodexHookEvents,
+	hasCodexHooksJsonTopLevelState,
 } from "../config/codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { getDefaultBridge, isBridgeEnabled } from "../runtime/bridge.js";
@@ -1409,6 +1410,15 @@ async function checkNativeHooks(
 				status: "fail",
 				message:
 					'invalid hooks.json; Codex may skip OMX hook coverage until "omx setup --force" repairs it',
+			};
+		}
+		const hasTopLevelState = hasCodexHooksJsonTopLevelState(content);
+		if (hasTopLevelState === true) {
+			return {
+				name: "Native hooks",
+				status: "fail",
+				message:
+					'top-level state in hooks.json is incompatible with Codex 0.140 (unknown field state, expected hooks); run "omx setup --force" to migrate trust state to config.toml and repair hooks.json',
 			};
 		}
 
