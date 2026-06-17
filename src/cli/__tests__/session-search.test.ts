@@ -130,6 +130,47 @@ describe('omx session search', () => {
     }
   });
 
+  it('searches associated madmax boxed run roots without leaking raw run paths', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-search-madmax-'));
+    const home = join(cwd, 'home');
+    const runsRoot = join(cwd, 'runs');
+    const associatedCodexHome = join(runsRoot, 'run-associated', '.omx', 'runtime', 'codex-home', 'omx-madmax-a');
+    const unrelatedCodexHome = join(runsRoot, 'run-unrelated', '.omx', 'runtime', 'codex-home', 'omx-madmax-b');
+    const unrelatedSource = join(cwd, 'unrelated-source');
+    try {
+      await mkdir(unrelatedSource, { recursive: true });
+      await writeRollout(associatedCodexHome, '2026-03-11T12:00:00.000Z', 'rollout-associated.jsonl', [
+        { type: 'session_meta', payload: { id: 'madmax-session', timestamp: '2026-03-11T12:00:00.000Z', cwd } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'associated madmax boxed search target' } },
+      ]);
+      await writeRollout(unrelatedCodexHome, '2026-03-11T12:00:00.000Z', 'rollout-unrelated.jsonl', [
+        { type: 'session_meta', payload: { id: 'unrelated-session', timestamp: '2026-03-11T12:00:00.000Z', cwd: unrelatedSource } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'associated madmax boxed search target unrelated' } },
+      ]);
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: cwd, run_dir: join(runsRoot, 'run-associated') })}\n${JSON.stringify({ source_cwd: unrelatedSource, run_dir: join(runsRoot, 'run-unrelated') })}\n`);
+
+      const result = runOmx(cwd, ['session', 'search', 'associated madmax boxed search target', '--json'], {
+        HOME: home,
+        CODEX_HOME: '',
+        OMX_RUNS_DIR: runsRoot,
+        OMX_ROOT: '',
+        OMX_STATE_ROOT: '',
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const parsed = JSON.parse(result.stdout) as {
+        results: Array<{ session_id: string; transcript_path: string }>;
+        sources: Array<{ codex_home: string }>;
+      };
+      assert.deepEqual(parsed.results.map((result) => result.session_id), ['madmax-session']);
+      assert.ok(parsed.sources.some((source) => source.codex_home === 'madmax:omx-madmax-a'));
+      assert.equal(parsed.sources.some((source) => source.codex_home.includes(runsRoot)), false);
+      assert.equal(parsed.results.some((result) => result.transcript_path.includes(runsRoot)), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('searches only the explicit --codex-home path', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-search-cli-codex-home-'));
     const home = join(cwd, 'home');

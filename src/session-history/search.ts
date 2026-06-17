@@ -59,29 +59,38 @@ export interface SessionSearchSourceReport {
   codex_home: string;
   searched_files: number;
 }
+interface ResolvedSessionSearchCodexHome {
+  dir: string;
+  publicLabel: string;
+}
+
 
 function clampInteger(value: number, fallback: number, max: number): number {
   if (!Number.isInteger(value) || value < 0) return fallback;
   return Math.min(value, max);
 }
 
-async function normalizeExistingCodexHomeDirs(candidates: string[]): Promise<string[]> {
+async function normalizeExistingCodexHomeDirs(candidates: Array<string | ResolvedSessionSearchCodexHome>): Promise<ResolvedSessionSearchCodexHome[]> {
   const seen = new Set<string>();
-  const dirs: string[] = [];
+  const dirs: ResolvedSessionSearchCodexHome[] = [];
   for (const candidate of candidates) {
-    const trimmed = candidate.trim();
+    const rawDir = typeof candidate === 'string' ? candidate : candidate.dir;
+    const trimmed = rawDir.trim();
     if (trimmed === '') continue;
     const absolute = resolve(trimmed);
     if (!existsSync(absolute)) continue;
     const key = await realpath(absolute).catch(() => absolute);
     if (seen.has(key)) continue;
     seen.add(key);
-    dirs.push(absolute);
+    dirs.push({
+      dir: absolute,
+      publicLabel: typeof candidate === 'string' ? absolute : candidate.publicLabel,
+    });
   }
   return dirs;
 }
 
-export async function resolveSessionSearchCodexHomeDirs(options: Pick<SessionSearchOptions, 'cwd' | 'codexHomeDir' | 'codexHomeDirs'> = {}): Promise<string[]> {
+async function resolveSessionSearchCodexHomeSources(options: Pick<SessionSearchOptions, 'cwd' | 'codexHomeDir' | 'codexHomeDirs'> = {}): Promise<ResolvedSessionSearchCodexHome[]> {
   const cwd = options.cwd ?? process.cwd();
   if (options.codexHomeDirs && options.codexHomeDirs.length > 0) {
     return normalizeExistingCodexHomeDirs(options.codexHomeDirs);
@@ -90,7 +99,17 @@ export async function resolveSessionSearchCodexHomeDirs(options: Pick<SessionSea
     return normalizeExistingCodexHomeDirs([options.codexHomeDir]);
   }
   const projectHomes = await discoverProjectRuntimeCodexHomes(cwd);
-  return normalizeExistingCodexHomeDirs([codexHome(), ...projectHomes.map((home) => home.path)]);
+  return normalizeExistingCodexHomeDirs([
+    codexHome(),
+    ...projectHomes.map((home) => ({
+      dir: home.path,
+      publicLabel: home.source === 'madmax-run' ? home.publicLabel ?? 'madmax:runtime-codex-home' : home.path,
+    })),
+  ]);
+}
+
+export async function resolveSessionSearchCodexHomeDirs(options: Pick<SessionSearchOptions, 'cwd' | 'codexHomeDir' | 'codexHomeDirs'> = {}): Promise<string[]> {
+  return (await resolveSessionSearchCodexHomeSources(options)).map((source) => source.dir);
 }
 function normalizeProjectFilter(project: string | undefined, cwd: string): string | undefined {
   if (!project) return undefined;
@@ -302,6 +321,7 @@ async function searchRolloutFile(
     projectFilter?: string;
     cwd: string;
     codexHomeDir: string;
+    codexHomeDisplay: string;
   },
 ): Promise<{ meta: SessionMeta | null; results: SessionSearchResult[] }> {
   const stream = createReadStream(filePath, 'utf-8');
@@ -343,7 +363,7 @@ async function searchRolloutFile(
           session_id: meta.sessionId,
           timestamp: meta.timestamp,
           cwd: meta.cwd,
-          transcript_path: filePath,
+          transcript_path: join(options.codexHomeDisplay, relative(options.codexHomeDir, filePath)),
           transcript_path_relative: relative(options.codexHomeDir, filePath),
           record_type: candidate.recordType,
           line_number: lineNumber,
@@ -370,6 +390,7 @@ async function searchCodexHomeDir(
     sinceCutoff: number | null;
     projectFilter?: string;
     cwd: string;
+    codexHomeDisplay: string;
   },
 ): Promise<{ searchedFiles: number; matchedSessions: Set<string>; results: SessionSearchResult[] }> {
   const rolloutRoot = join(codexHomeDir, 'sessions');
@@ -398,6 +419,7 @@ async function searchCodexHomeDir(
       projectFilter: options.projectFilter,
       cwd: options.cwd,
       codexHomeDir,
+      codexHomeDisplay: options.codexHomeDisplay,
     });
 
     for (const result of fileSearch.results) {
@@ -416,7 +438,7 @@ export async function searchSessionHistory(options: SessionSearchOptions): Promi
   }
 
   const cwd = options.cwd ?? process.cwd();
-  const codexHomeDirs = await resolveSessionSearchCodexHomeDirs(options);
+  const codexHomeSources = await resolveSessionSearchCodexHomeSources(options);
   const limit = clampInteger(options.limit ?? DEFAULT_LIMIT, DEFAULT_LIMIT, MAX_LIMIT) || DEFAULT_LIMIT;
   const context = clampInteger(options.context ?? DEFAULT_CONTEXT, DEFAULT_CONTEXT, MAX_CONTEXT) || DEFAULT_CONTEXT;
   const caseSensitive = options.caseSensitive === true;
@@ -428,8 +450,8 @@ export async function searchSessionHistory(options: SessionSearchOptions): Promi
   const matchedSessions = new Set<string>();
   const sources: SessionSearchSourceReport[] = [];
 
-  for (const codexHomeDir of codexHomeDirs) {
-    const sourceSearch = await searchCodexHomeDir(codexHomeDir, {
+  for (const codexHomeSource of codexHomeSources) {
+    const sourceSearch = await searchCodexHomeDir(codexHomeSource.dir, {
       query,
       context,
       caseSensitive,
@@ -438,9 +460,10 @@ export async function searchSessionHistory(options: SessionSearchOptions): Promi
       sinceCutoff,
       projectFilter,
       cwd,
+      codexHomeDisplay: codexHomeSource.publicLabel,
     });
     searchedFiles += sourceSearch.searchedFiles;
-    sources.push({ codex_home: codexHomeDir, searched_files: sourceSearch.searchedFiles });
+    sources.push({ codex_home: codexHomeSource.publicLabel, searched_files: sourceSearch.searchedFiles });
     for (const sessionId of sourceSearch.matchedSessions) matchedSessions.add(sessionId);
     for (const result of sourceSearch.results) {
       results.push(result);

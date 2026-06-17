@@ -328,6 +328,114 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
     }
   });
 
+  it('includes associated madmax boxed run-root sessions for plain resume', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-madmax-runtime-'));
+    try {
+      const home = join(wd, 'home');
+      const runsRoot = join(wd, 'runs');
+      const projectCodexHome = join(wd, '.codex');
+      const madmaxCodexHome = join(runsRoot, 'run-associated', '.omx', 'runtime', 'codex-home', 'omx-madmax-runtime');
+      const unrelatedCodexHome = join(runsRoot, 'run-unrelated', '.omx', 'runtime', 'codex-home', 'omx-unrelated-runtime');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const associatedRolloutPath = join(madmaxCodexHome, 'sessions', '2026', '06', '17', 'rollout-madmax-session.jsonl');
+      const unrelatedRolloutPath = join(unrelatedCodexHome, 'sessions', '2026', '06', '17', 'rollout-unrelated-session.jsonl');
+      const unrelatedSource = join(wd, 'unrelated-source');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await mkdir(dirname(associatedRolloutPath), { recursive: true });
+      await mkdir(dirname(unrelatedRolloutPath), { recursive: true });
+      await mkdir(unrelatedSource, { recursive: true });
+      await writeFile(associatedRolloutPath, '{"type":"session_meta","payload":{"id":"madmax-session"}}\n');
+      await writeFile(unrelatedRolloutPath, '{"type":"session_meta","payload":{"id":"unrelated-session"}}\n');
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: wd, run_dir: join(runsRoot, 'run-associated') })}\n${JSON.stringify({ source_cwd: unrelatedSource, run_dir: join(runsRoot, 'run-unrelated') })}\n`);
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(fakeCodexPath, `#!/bin/sh
+printf 'fake-codex:%s\n' "$*"
+if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-madmax-session.jsonl" ]; then echo madmax-rollout-present=yes; else echo madmax-rollout-present=no; fi
+if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-unrelated-session.jsonl" ]; then echo unrelated-rollout-present=yes; else echo unrelated-rollout-present=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume'], {
+        HOME: home,
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume\b/);
+      assert.match(result.stdout, /madmax-rollout-present=yes/);
+      assert.match(result.stdout, /unrelated-rollout-present=no/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps madmax runtime history deduped across repeated resume cleanup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-madmax-dedupe-'));
+    try {
+      const home = join(wd, 'home');
+      const runsRoot = join(wd, 'runs');
+      const projectCodexHome = join(wd, '.codex');
+      const madmaxCodexHome = join(runsRoot, 'run-associated', '.omx', 'runtime', 'codex-home', 'omx-madmax-runtime');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const associatedRolloutPath = join(madmaxCodexHome, 'sessions', '2026', '06', '17', 'rollout-madmax-session.jsonl');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await mkdir(dirname(associatedRolloutPath), { recursive: true });
+      await writeFile(join(projectCodexHome, 'history.jsonl'), '{"session_id":"project-session"}\n');
+      await writeFile(join(projectCodexHome, 'session_index.jsonl'), '{"id":"project-session"}\n');
+      await writeFile(associatedRolloutPath, '{"type":"session_meta","payload":{"id":"madmax-session"}}\n');
+      await writeFile(join(madmaxCodexHome, 'history.jsonl'), '{"session_id":"madmax-session"}\n');
+      await writeFile(join(madmaxCodexHome, 'session_index.jsonl'), '{"id":"madmax-session"}\n');
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: wd, run_dir: join(runsRoot, 'run-associated') })}\n`);
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(fakeCodexPath, '#!/bin/sh\nprintf \'fake-codex:%s\\n\' "$*"\n');
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+      const env = {
+        HOME: home,
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      };
+
+      const first = runOmx(wd, ['resume'], env);
+      assert.equal(first.status, 0, first.error || first.stderr || first.stdout);
+      const second = runOmx(wd, ['resume'], env);
+      assert.equal(second.status, 0, second.error || second.stderr || second.stdout);
+
+      assert.equal(
+        await readFile(join(projectCodexHome, 'history.jsonl'), 'utf-8'),
+        '{"session_id":"project-session"}\n{"session_id":"madmax-session"}\n',
+      );
+      assert.equal(
+        await readFile(join(projectCodexHome, 'session_index.jsonl'), 'utf-8'),
+        '{"id":"project-session"}\n{"id":"madmax-session"}\n',
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('forwards --last to codex resume through the normal launch wrapper', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-cli-'));
     try {
