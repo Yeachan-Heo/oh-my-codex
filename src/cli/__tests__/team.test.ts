@@ -1628,6 +1628,20 @@ case "$1" in
     printf '%%44\\n'
     exit 0
     ;;
+  show-option)
+    case "$*" in
+      *"-p -t %11 @omx_team_pane_owner_id"*)
+        echo "team:shared-shutdown-cli"
+        ;;
+      *"-p -t %12 @omx_team_pane_owner_id"*)
+        echo "team:shared-shutdown-cli"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    exit 0
+    ;;
   kill-pane)
     # Shared-session runtime coverage should validate pane-targeted teardown
     # only. Detached leader-wrapper signal behavior is covered separately in

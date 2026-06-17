@@ -21,6 +21,7 @@ export interface TeamConfig {
   worktree_mode?: WorktreeMode;
   leader_pane_id: string | null;
   hud_pane_id: string | null;
+  tmux_pane_owner_id?: string;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
   next_worker_index?: number;
@@ -232,6 +233,7 @@ export interface TeamManifestV2 {
   worktree_mode?: WorktreeMode;
   leader_pane_id: string | null;
   hud_pane_id: string | null;
+  tmux_pane_owner_id?: string;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
   next_worker_index?: number;

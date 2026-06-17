@@ -26,7 +26,8 @@ import {
   isWorkerPaneOpen,
   getWorkerPanePid,
   killWorkerByPaneIdAsync,
-  paneHasOmxInstanceTag,
+  paneHasOmxTeamOwnerTag,
+  readPaneTeamOwnerTag,
   restoreStandaloneHudPane,
   teardownWorkerPanes,
   unregisterResizeHook,
@@ -360,6 +361,7 @@ export function applyCreatedInteractiveSessionToConfig(
   config.tmux_session = createdSession.name;
   config.leader_pane_id = createdSession.leaderPaneId;
   config.hud_pane_id = createdSession.hudPaneId;
+  config.tmux_pane_owner_id = createdSession.teamPaneOwnerId;
   config.resize_hook_name = createdSession.resizeHookName;
   config.resize_hook_target = createdSession.resizeHookTarget;
   for (let i = 0; i < createdSession.workerPaneIds.length; i++) {
@@ -408,6 +410,18 @@ function collectShutdownPaneIds(params: {
   }
 
   return [...paneIds];
+}
+
+function filterSharedSessionShutdownWorkerPaneIdsByOwner(
+  paneIds: string[],
+  teamPaneOwnerId: string,
+): string[] {
+  const expectedOwnerId = teamPaneOwnerId.trim();
+  if (!expectedOwnerId) return paneIds;
+  return paneIds.filter((paneId) => {
+    const actualOwnerId = readPaneTeamOwnerTag(paneId);
+    return actualOwnerId === null || actualOwnerId === expectedOwnerId;
+  });
 }
 
 export function shouldPrekillInteractiveShutdownProcessTrees(sessionName: string): boolean {
@@ -2855,7 +2869,7 @@ export async function startTeam(
         leaderCwd,
         sharedWorkerLaunchArgs,
         workerStartups,
-        { ownerSessionId: leaderSessionId },
+        { ownerSessionId: leaderSessionId, teamPaneOwnerId: config.tmux_pane_owner_id },
       );
       sessionName = createdSession.name;
       sessionCreated = true;
@@ -3787,13 +3801,18 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       ? resolveSharedSessionShutdownTopology(sessionName, leaderPaneId, sanitized)
       : null;
     const effectiveLeaderPaneId = sharedSessionTopology ? sharedSessionTopology.leaderPaneId : leaderPaneId;
+    const tmuxPaneOwnerId = typeof config.tmux_pane_owner_id === 'string' ? config.tmux_pane_owner_id.trim() : '';
     const trustedHudRestoreLeaderPaneId = sharedSessionTopology
-      ? (paneHasOmxInstanceTag(effectiveLeaderPaneId, leaderSessionId) ? effectiveLeaderPaneId : null)
+      ? (paneHasOmxTeamOwnerTag(effectiveLeaderPaneId, tmuxPaneOwnerId) ? effectiveLeaderPaneId : null)
       : effectiveLeaderPaneId;
     const effectiveHudPaneId = sharedSessionTopology
-      ? (sharedSessionTopology.hudPaneIds.find((paneId) => paneId === hudPaneId) ?? null)
+      ? (sharedSessionTopology.hudPaneIds.find((paneId) => (
+        paneId === hudPaneId && paneHasOmxTeamOwnerTag(paneId, tmuxPaneOwnerId)
+      )) ?? null)
       : hudPaneId;
-    const shutdownCandidatePaneIds = sharedSessionTopology?.teamWorkerPaneIds ?? listPaneIds(sessionName);
+    const shutdownCandidatePaneIds = sharedSessionTopology
+      ? filterSharedSessionShutdownWorkerPaneIdsByOwner(sharedSessionTopology.teamWorkerPaneIds, tmuxPaneOwnerId)
+      : listPaneIds(sessionName);
     let shutdownPaneIds = collectShutdownPaneIds({
       config,
       candidatePaneIds: shutdownCandidatePaneIds,
@@ -3832,7 +3851,9 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (effectiveHudPaneId) {
       await killWorkerByPaneIdAsync(effectiveHudPaneId, effectiveLeaderPaneId ?? undefined);
       if (sessionName.includes(':')) {
-        restoredHudPaneId = restoreStandaloneHudPane(trustedHudRestoreLeaderPaneId, cwd);
+        restoredHudPaneId = restoreStandaloneHudPane(trustedHudRestoreLeaderPaneId, cwd, {
+          sessionId: leaderSessionId,
+        });
         if (!restoredHudPaneId) {
           const reason = trustedHudRestoreLeaderPaneId
             ? 'failed to restore standalone HUD pane'
@@ -3844,7 +3865,10 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     shutdownPaneIds = collectShutdownPaneIds({
       config,
       candidatePaneIds: sessionName.includes(':')
-        ? resolveSharedSessionShutdownTopology(sessionName, effectiveLeaderPaneId, sanitized).teamWorkerPaneIds
+        ? filterSharedSessionShutdownWorkerPaneIdsByOwner(
+          resolveSharedSessionShutdownTopology(sessionName, effectiveLeaderPaneId, sanitized).teamWorkerPaneIds,
+          tmuxPaneOwnerId,
+        )
         : listPaneIds(sessionName),
       includePersistedWorkerPaneIds: !sessionName.includes(':'),
       restoredStandaloneHudPaneId: restoredHudPaneId,
