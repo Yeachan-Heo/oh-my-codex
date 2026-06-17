@@ -35,12 +35,12 @@ describe('resolveQuestionRendererStrategy', () => {
     );
   });
 
-  it('uses inline-tty on Windows when no tmux bridge exists but the current terminal is interactive', () => {
+  it('uses inline-tty when no tmux bridge exists but the current terminal is interactive', () => {
     assert.equal(
       resolveQuestionRendererStrategy(
         {} as NodeJS.ProcessEnv,
         '/usr/bin/tmux',
-        { platform: 'win32', stdinIsTTY: true, stdoutIsTTY: true },
+        { platform: 'linux', stdinIsTTY: true, stdoutIsTTY: true },
       ),
       'inline-tty',
     );

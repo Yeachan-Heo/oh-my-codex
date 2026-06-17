@@ -87,7 +87,7 @@ export function resolveQuestionRendererStrategy(
   if (safeString(env.TMUX).trim() !== '') return 'inside-tmux';
   if (hasExplicitQuestionPaneTarget(env)) return 'inside-tmux';
   if (options?.cwd && readPersistedQuestionReturnTarget(options.cwd, options.sessionId)) return 'inside-tmux';
-  if (platform === 'win32' && hasInteractiveQuestionTty(options)) {
+  if (hasInteractiveQuestionTty(options)) {
     return 'inline-tty';
   }
   return 'unsupported';
