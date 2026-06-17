@@ -415,6 +415,7 @@ function collectShutdownPaneIds(params: {
 function filterSharedSessionShutdownWorkerPaneIdsByOwner(
   paneIds: string[],
   teamPaneOwnerId: string,
+  legacyPersistedWorkerPaneIds: ReadonlySet<string> = new Set<string>(),
   onOwnerReadError?: (paneId: string, error: string) => void,
 ): string[] {
   const expectedOwnerId = teamPaneOwnerId.trim();
@@ -422,7 +423,14 @@ function filterSharedSessionShutdownWorkerPaneIdsByOwner(
   return paneIds.filter((paneId) => {
     const actualOwnerId = readPaneTeamOwnerTagResult(paneId);
     if (actualOwnerId.status === 'value') return actualOwnerId.value === expectedOwnerId;
-    if (actualOwnerId.status === 'missing') return true;
+    if (actualOwnerId.status === 'missing') {
+      // Legacy, already-running Team panes may not have @omx_team_pane_owner_id.
+      // Keep that compatibility path explicitly bounded to panes that are both
+      // live worker-command candidates and persisted in this team's state. This
+      // preserves old Team cleanup without letting arbitrary worker-looking
+      // panes become kill candidates merely because the owner tag is absent.
+      return legacyPersistedWorkerPaneIds.has(paneId);
+    }
     onOwnerReadError?.(paneId, actualOwnerId.error);
     return false;
   });
@@ -436,11 +444,11 @@ function isSharedSessionHudPaneReclaimable(params: {
   onOwnerReadError?: (paneId: string, error: string) => void;
 }): boolean {
   const { paneId, persistedHudPaneId, leaderOwnedHudPaneIds, teamPaneOwnerId, onOwnerReadError } = params;
-  if (paneId !== persistedHudPaneId) return false;
   const expectedOwnerId = teamPaneOwnerId.trim();
   if (!expectedOwnerId) return false;
   const owner = readPaneTeamOwnerTagResult(paneId);
   if (owner.status === 'value') return owner.value === expectedOwnerId;
+  if (paneId !== persistedHudPaneId) return false;
   if (owner.status === 'missing') return leaderOwnedHudPaneIds.includes(paneId);
   onOwnerReadError?.(paneId, owner.error);
   return false;
@@ -3840,6 +3848,11 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       : null;
     const effectiveLeaderPaneId = sharedSessionTopology ? sharedSessionTopology.leaderPaneId : leaderPaneId;
     const tmuxPaneOwnerId = typeof config.tmux_pane_owner_id === 'string' ? config.tmux_pane_owner_id.trim() : '';
+    const legacyPersistedWorkerPaneIds = new Set(
+      config.workers
+        .map((worker) => (typeof worker.pane_id === 'string' ? worker.pane_id.trim() : ''))
+        .filter((paneId) => paneId.startsWith('%')),
+    );
     const ownerReadWarnings = new Set<string>();
     const warnOwnerReadError = (kind: string, paneId: string, error: string): void => {
       const key = `${kind}:${paneId}:${error}`;
@@ -3867,6 +3880,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       ? filterSharedSessionShutdownWorkerPaneIdsByOwner(
         sharedSessionTopology.teamWorkerPaneIds,
         tmuxPaneOwnerId,
+        legacyPersistedWorkerPaneIds,
         (paneId, error) => warnOwnerReadError('worker pane', paneId, error),
       )
       : listPaneIds(sessionName);
@@ -3925,6 +3939,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         ? filterSharedSessionShutdownWorkerPaneIdsByOwner(
           resolveSharedSessionShutdownTopology(sessionName, effectiveLeaderPaneId, sanitized).teamWorkerPaneIds,
           tmuxPaneOwnerId,
+          legacyPersistedWorkerPaneIds,
           (paneId, error) => warnOwnerReadError('worker pane', paneId, error),
         )
         : listPaneIds(sessionName),

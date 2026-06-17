@@ -6610,7 +6610,7 @@ esac
           assert.doesNotMatch(tmuxLog, /kill-pane -t %10/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
           assert.match(tmuxLog, /kill-pane -t %12/);
-          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /split-window/);
           assert.doesNotMatch(tmuxLog, /select-pane -t %11/);
         },
@@ -7072,6 +7072,197 @@ esac
     } finally {
       await rm(cwd, { recursive: true, force: true });
       await rm(leaderPaneCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam preserves unpersisted legacy worker-looking panes without owner tags', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-unpersisted-legacy-worker-'));
+    const teamName = 'team-unpersisted-legacy-worker';
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-unpersisted-legacy-worker-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{pane_current_path}"*)
+        echo "${cwd}"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"-F #{pane_dead} #{pane_pid}"*)
+        exit 1
+        ;;
+      *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\texec env OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%%11' node /tmp/bin/omx.js hud --watch\\n%%13\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-unpersisted-legacy-worker/worker-1 codex\\n%%14\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-unpersisted-legacy-worker/worker-2 codex\\n"
+        exit 0
+        ;;
+      *"-t %11 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n"
+        exit 0
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  split-window)
+    printf '%%44\\n'
+    exit 0
+    ;;
+  show-option)
+    case "$*" in
+      *"-p -t %11 @omx_team_pane_owner_id"*)
+        echo "team:team-unpersisted-legacy-worker"
+        ;;
+      *"-p -t %12 @omx_team_pane_owner_id"*)
+        echo "team:team-unpersisted-legacy-worker"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    exit 0
+    ;;
+  kill-pane|resize-pane|select-pane|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState(teamName, 'shutdown unpersisted legacy worker test', 'executor', 2, cwd);
+          const config = await readTeamConfig(teamName, cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'leader:0';
+          config.leader_pane_id = '%11';
+          config.hud_pane_id = '%12';
+          config.workers[0]!.pane_id = '%13';
+          config.workers[1]!.pane_id = '%99';
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam(teamName, cwd, { force: true });
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %14/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %99/);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam reclaims a matching-owner live HUD when the persisted HUD id is stale', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-stale-hud-live-owner-'));
+    const teamName = 'team-stale-hud-live-owner';
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-stale-hud-live-owner-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{pane_current_path}"*)
+        echo "${cwd}"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"-F #{pane_dead} #{pane_pid}"*)
+        exit 1
+        ;;
+      *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\texec env OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%%11' node /tmp/bin/omx.js hud --watch\\n%%13\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-stale-hud-live-owner/worker-1 codex\\n"
+        exit 0
+        ;;
+      *"-t %11 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n"
+        exit 0
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  split-window)
+    printf '%%44\\n'
+    exit 0
+    ;;
+  show-option)
+    case "$*" in
+      *"-p -t %11 @omx_team_pane_owner_id"*)
+        echo "team:team-stale-hud-live-owner"
+        ;;
+      *"-p -t %12 @omx_team_pane_owner_id"*)
+        echo "team:team-stale-hud-live-owner"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    exit 0
+    ;;
+  kill-pane|resize-pane|select-pane|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState(teamName, 'shutdown stale hud live owner test', 'executor', 1, cwd);
+          const config = await readTeamConfig(teamName, cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'leader:0';
+          config.leader_pane_id = '%11';
+          config.hud_pane_id = '%99';
+          config.workers[0]!.pane_id = '%13';
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam(teamName, cwd, { force: true });
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          const count = (pattern: RegExp): number => [...tmuxLog.matchAll(pattern)].length;
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
+          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %99/);
+          assert.equal(count(/kill-pane -t %12/g), 1);
+          assert.equal(count(new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`, 'g')), 1);
+          assert.match(tmuxLog, /select-pane -t %11/);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 

@@ -3535,6 +3535,105 @@ esac
     }
   });
 
+  it('does not reuse the Team pane owner token as the HUD logical session id', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-hud-session-boundary-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevSessionId = process.env.OMX_SESSION_ID;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-hud-session-boundary-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*)
+        echo "120"
+        ;;
+      *)
+        echo "shared:0 %1"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"-t %2 -F #{pane_pid}"*)
+        echo "2000002222"
+        ;;
+      *"pane_current_command"*)
+        printf "%%1\\tnode\\t'codex'\\n"
+        ;;
+      *)
+        printf "%%1\\n"
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*)
+        echo "%2"
+        ;;
+      *)
+        echo "%3"
+        ;;
+    esac
+    exit 0
+    ;;
+  set-option|resize-pane|select-layout|set-window-option|select-pane|set-hook|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+        `,
+        async ({ logPath }) => {
+          const fakeBinDir = join(logPath, '..');
+          const geminiPath = join(fakeBinDir, 'gemini');
+          await writeFile(geminiPath, '#!/bin/sh\nexit 0\n');
+          await chmod(geminiPath, 0o755);
+
+          process.env.TMUX = '1';
+          process.env.TMUX_PANE = '%1';
+          delete process.env.OMX_SESSION_ID;
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+
+          const session = createTeamSession('HUD Session Boundary', 1, cwd, [], undefined, {
+            teamPaneOwnerId: 'team:explicit-owner-boundary',
+          });
+          assert.equal(session.hudPaneId, '%3');
+          assert.equal(session.teamPaneOwnerId, 'team:explicit-owner-boundary');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /set-option -p -t %1 @omx_team_pane_owner_id team:explicit-owner-boundary/);
+          assert.match(tmuxLog, /set-option -p -t %2 @omx_team_pane_owner_id team:explicit-owner-boundary/);
+          assert.match(tmuxLog, /set-option -p -t %3 @omx_team_pane_owner_id team:explicit-owner-boundary/);
+          assert.match(tmuxLog, /exec env OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%1' .*hud --watch/);
+          assert.doesNotMatch(tmuxLog, /OMX_SESSION_ID='team:explicit-owner-boundary'/);
+        },
+      );
+    } finally {
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevSessionId === 'string') process.env.OMX_SESSION_ID = prevSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('removes only HUD panes owned by the current leader during team startup', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-owned-hud-startup-'));
     const prevTmux = process.env.TMUX;
