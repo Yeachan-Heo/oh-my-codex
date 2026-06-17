@@ -44,6 +44,13 @@ function cleanQualityGate(): object {
         architect: { agentRole: 'architect', evidence: 'architect subagent returned CLEAR' },
       },
     },
+    architectureInvariantGate: {
+      status: 'passed',
+      sourceArtifacts: ['.omx/ultragoal/brief.md', '.omx/ultragoal/goals.json'],
+      invariants: [],
+      evidence: 'architect verified no additional architecture invariants were declared in the brief',
+    },
+
   };
 }
 
@@ -882,6 +889,267 @@ describe('ultragoal artifacts', () => {
       assert.match(ledger, /"qualityGate"/);
       assert.match(ledger, /"aiSlopCleaner"/);
       assert.match(ledger, /"codeReview"/);
+    });
+  });
+
+  it('requires final architecture invariant proof from the brief before clean completion', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: [
+          'Ship the integration safely.',
+          '',
+          '## Architecture Invariants',
+          '- Preserve the existing parser boundary.',
+          '- Do not introduce a second scheduler.',
+        ].join('\n'),
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const objective = started.plan.codexObjective!;
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /missing proof for required invariant from \.omx\/ultragoal\/brief\.md: Preserve the existing parser boundary/i,
+      );
+
+      await checkpointUltragoal(cwd, {
+        goalId: started.goal!.id,
+        status: 'complete',
+        evidence: 'final gates passed',
+        codexGoal: { goal: { objective, status: 'complete' } },
+        qualityGate: {
+          ...cleanQualityGate(),
+          architectureInvariantGate: {
+            status: 'passed',
+            sourceArtifacts: ['.omx/ultragoal/brief.md', '.omx/ultragoal/goals.json'],
+            evidence: 'all declared invariants have implementation, test, and review proof',
+            invariants: [
+              {
+                invariant: 'Preserve the existing parser boundary.',
+                source: '.omx/ultragoal/brief.md#architecture-invariants',
+                status: 'proved',
+                implementationEvidence: 'parser changes stayed inside src/parser without scheduler coupling',
+                testEvidence: 'parser boundary regression test passed',
+                reviewEvidence: 'architect review confirmed parser boundary remained intact',
+              },
+              {
+                invariant: 'Do not introduce a second scheduler.',
+                source: '.omx/ultragoal/brief.md#architecture-invariants',
+                status: 'proved',
+                implementationEvidence: 'implementation reused the existing scheduler entrypoint',
+                testEvidence: 'scheduler singleton regression passed',
+                reviewEvidence: 'architect review confirmed no duplicate scheduler path',
+              },
+            ],
+          },
+        },
+      });
+
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(isUltragoalDone(plan), true);
+    });
+  });
+
+  it('requires final architecture invariant proof from accepted steering annotations', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'Ship the integration safely without a brief invariant section.',
+        goals: [
+          { title: 'Audit steering invariant', objective: 'Accept steering invariant annotation.' },
+          { title: 'Final', objective: 'Complete final milestone.' },
+        ],
+      });
+      const first = await startNextUltragoal(cwd);
+      await steerUltragoal(cwd, {
+        kind: 'annotate_ledger',
+        source: 'finding',
+        evidence: 'Reviewer finding. Architecture invariant: Ledger entries remain append-only',
+        rationale: 'Non-negotiable architecture invariant: Ledger entries remain append-only',
+      });
+      await checkpointUltragoal(cwd, {
+        goalId: first.goal!.id,
+        status: 'complete',
+        evidence: 'steering invariant accepted for final gate coverage',
+        codexGoal: { goal: { objective: first.plan.codexObjective!, status: 'active' } },
+        allowActiveFinalCodexGoal: true,
+      });
+      const final = await startNextUltragoal(cwd);
+      const objective = final.plan.codexObjective!;
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: final.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            architectureInvariantGate: {
+              status: 'passed',
+              sourceArtifacts: ['.omx/ultragoal/ledger.jsonl'],
+              invariants: [],
+              evidence: 'architect verified no additional architecture invariants were declared in the brief',
+            },
+          },
+        }),
+        /missing proof for required invariant from \.omx\/ultragoal\/ledger\.jsonl: Ledger entries remain append-only/i,
+      );
+
+      await checkpointUltragoal(cwd, {
+        goalId: final.goal!.id,
+        status: 'complete',
+        evidence: 'final gates passed',
+        codexGoal: { goal: { objective, status: 'complete' } },
+        qualityGate: {
+          ...cleanQualityGate(),
+          architectureInvariantGate: {
+            status: 'passed',
+            sourceArtifacts: ['.omx/ultragoal/ledger.jsonl'],
+            evidence: 'accepted steering invariant has implementation, test, and review proof',
+            invariants: [
+              {
+                invariant: 'Ledger entries remain append-only',
+                source: '.omx/ultragoal/ledger.jsonl#steering-3-inline-architecture-invariant',
+                status: 'proved',
+                implementationEvidence: 'appendLedger only appends JSONL records',
+                testEvidence: 'ledger append-only regression passed',
+                reviewEvidence: 'architect review confirmed ledger mutation remains append-only',
+              },
+            ],
+          },
+        },
+      });
+
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(isUltragoalDone(plan), true);
+    });
+  });
+
+  it('rejects decorative architecture invariant provenance labels that omit source artifacts', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: [
+          'Ship the integration safely.',
+          '',
+          '## Architecture Invariants',
+          '- Preserve the existing parser boundary.',
+        ].join('\n'),
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const objective = started.plan.codexObjective!;
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            architectureInvariantGate: {
+              status: 'passed',
+              sourceArtifacts: ['review-note: claims brief coverage'],
+              evidence: 'decorative label claims the invariant came from the brief',
+              invariants: [
+                {
+                  invariant: 'Preserve the existing parser boundary.',
+                  source: 'review-note: brief architecture invariant',
+                  status: 'proved',
+                  implementationEvidence: 'parser boundary preserved',
+                  testEvidence: 'parser boundary test passed',
+                  reviewEvidence: 'architect review confirmed parser boundary',
+                },
+              ],
+            },
+          },
+        }),
+        /sourceArtifacts must include required invariant source artifact: \.omx\/ultragoal\/brief\.md/i,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            architectureInvariantGate: {
+              status: 'passed',
+              sourceArtifacts: ['.omx/ultragoal/brief.md'],
+              evidence: 'source artifact is listed but record source is decorative',
+              invariants: [
+                {
+                  invariant: 'Preserve the existing parser boundary.',
+                  source: 'review-note: brief architecture invariant',
+                  status: 'proved',
+                  implementationEvidence: 'parser boundary preserved',
+                  testEvidence: 'parser boundary test passed',
+                  reviewEvidence: 'architect review confirmed parser boundary',
+                },
+              ],
+            },
+          },
+        }),
+        /source must reference one of architectureInvariantGate\.sourceArtifacts|decorative provenance labels/i,
+      );
+    });
+  });
+
+  it('blocks final completion when architecture invariants are unproved or carry blockers', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: '## Domain Invariants\n- Ledger entries remain append-only.',
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const objective = started.plan.codexObjective!;
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            architectureInvariantGate: {
+              status: 'passed',
+              sourceArtifacts: ['.omx/ultragoal/brief.md'],
+              evidence: 'invariant audit found unresolved blocker',
+              invariants: [
+                {
+                  invariant: 'Ledger entries remain append-only.',
+                  source: '.omx/ultragoal/brief.md#domain-invariants',
+                  status: 'blocked',
+                  implementationEvidence: 'mutation path still rewrites prior entries',
+                  testEvidence: 'append-only regression not written',
+                  reviewEvidence: 'architect BLOCK',
+                  blockers: ['existing migration rewrites ledger history'],
+                },
+              ],
+            },
+          },
+        }),
+        /not proved|blocker-resolution work/i,
+      );
+
+      const result = await recordFinalReviewBlockers(cwd, {
+        goalId: started.goal!.id,
+        title: 'Resolve final architecture invariant blockers',
+        objective: 'Prove ledger append-only behavior and rerun final quality gates.',
+        evidence: 'architectureInvariantGate found unproved invariant: Ledger entries remain append-only.',
+        codexGoal: { goal: { objective, status: 'active' } },
+      });
+      assert.equal(result.blockedGoal.status, 'review_blocked');
+      assert.match(result.addedGoal.objective, /ledger append-only/i);
     });
   });
 
