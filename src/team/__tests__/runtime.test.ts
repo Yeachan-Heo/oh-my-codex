@@ -6133,6 +6133,9 @@ case "$1" in
       *"-p -t %12 @omx_team_pane_owner_id"*)
         echo "team:team-shutdown-pane-reconcile"
         ;;
+      *"-p -t %13 @omx_team_pane_owner_id"|*"-p -t %14 @omx_team_pane_owner_id"|*"-p -t %16 @omx_team_pane_owner_id"|*"-p -t %17 @omx_team_pane_owner_id"|*"-p -t %18 @omx_team_pane_owner_id"|*"-p -t %19 @omx_team_pane_owner_id"*)
+        echo "team:team-shutdown-pane-reconcile"
+        ;;
       *)
         exit 1
         ;;
@@ -6656,6 +6659,9 @@ case "$1" in
         ;;
       *"-p -t %12 @omx_team_pane_owner_id"*)
         echo "team:other-team"
+        ;;
+      *"-p -t %13 @omx_team_pane_owner_id"*)
+        echo "team:team-reused-leader-pane"
         ;;
       *)
         exit 1
