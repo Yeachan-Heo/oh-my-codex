@@ -12,7 +12,7 @@ jobs:
   close-linked-issues:
     name: Close explicitly linked issues after dev merge
     if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev'
-    runs-on: [self-hosted, Linux, X64, gajae-layofflabs-2]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
