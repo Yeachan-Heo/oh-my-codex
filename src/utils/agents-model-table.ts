@@ -5,6 +5,8 @@ import { getRootModelName } from '../config/generator.js';
 import {
   DEFAULT_FRONTIER_MODEL,
   DEFAULT_SPARK_MODEL,
+  getAgentModelOverride,
+  getAgentReasoningOverride,
   getEnvConfiguredSparkDefaultModel,
   getEnvConfiguredMainDefaultModel,
   getEnvConfiguredStandardDefaultModel,
@@ -22,6 +24,10 @@ export interface AgentsModelTableContext {
   subagentDefaultModel: string;
 }
 
+interface AgentsModelTableOptions {
+  codexHomeOverride?: string;
+}
+
 function escapeTableCell(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
@@ -33,7 +39,12 @@ function formatRoleLabel(role: string): string {
 function getAgentRecommendedModel(
   agent: AgentDefinition,
   context: AgentsModelTableContext,
+  options: AgentsModelTableOptions = {},
 ): string {
+  const modelOverride = getAgentModelOverride(agent.name, options.codexHomeOverride);
+  if (modelOverride) {
+    return modelOverride;
+  }
   if (agent.exactModel) {
     return agent.exactModel;
   }
@@ -51,6 +62,14 @@ function getAgentRecommendedModel(
     default:
       return context.subagentDefaultModel;
   }
+}
+
+function getAgentReasoningEffort(
+  agent: AgentDefinition,
+  options: AgentsModelTableOptions = {},
+): string {
+  return getAgentReasoningOverride(agent.name, options.codexHomeOverride)
+    ?? agent.reasoningEffort;
 }
 
 function getAgentUseCase(agent: AgentDefinition): string {
@@ -113,6 +132,7 @@ export function resolveAgentsModelTableContext(
 export function buildAgentsModelTable(
   context: AgentsModelTableContext,
   definitions: Record<string, AgentDefinition> = AGENT_DEFINITIONS,
+  options: AgentsModelTableOptions = {},
 ): string {
   const rows = [
     buildTableRow(
@@ -136,8 +156,8 @@ export function buildAgentsModelTable(
     ...getModelTableAgents(definitions).map((agent) =>
       buildTableRow(
         agent.name,
-        getAgentRecommendedModel(agent, context),
-        agent.reasoningEffort,
+        getAgentRecommendedModel(agent, context, options),
+        getAgentReasoningEffort(agent, options),
         getAgentUseCase(agent),
       ),
     ),
@@ -157,10 +177,11 @@ export function buildAgentsModelTable(
 export function renderAgentsModelTableBlock(
   context: AgentsModelTableContext,
   definitions: Record<string, AgentDefinition> = AGENT_DEFINITIONS,
+  options: AgentsModelTableOptions = {},
 ): string {
   return [
     OMX_MODELS_START_MARKER,
-    buildAgentsModelTable(context, definitions),
+    buildAgentsModelTable(context, definitions, options),
     OMX_MODELS_END_MARKER,
   ].join('\n');
 }
@@ -169,8 +190,9 @@ export function upsertAgentsModelTable(
   content: string,
   context: AgentsModelTableContext,
   definitions: Record<string, AgentDefinition> = AGENT_DEFINITIONS,
+  options: AgentsModelTableOptions = {},
 ): string {
-  const block = renderAgentsModelTableBlock(context, definitions);
+  const block = renderAgentsModelTableBlock(context, definitions, options);
   const startIndex = content.indexOf(OMX_MODELS_START_MARKER);
   const endIndex = content.indexOf(OMX_MODELS_END_MARKER);
 

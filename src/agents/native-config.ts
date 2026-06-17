@@ -14,6 +14,7 @@ import {
   getCodexConfigRootModelProvider,
   getEnvConfiguredStandardDefaultModel,
   getAgentReasoningOverride,
+  getAgentModelOverride,
   getMainDefaultModel,
   getSparkDefaultModel,
   getStandardDefaultModel,
@@ -174,6 +175,10 @@ function resolveAgentModel(
   agent: AgentDefinition,
   options: AgentModelResolutionOptions = {},
 ): string {
+  const modelOverride = getAgentModelOverride(agent.name, options.codexHomeOverride);
+  if (modelOverride) {
+    return modelOverride;
+  }
   if (agent.exactModel) {
     return agent.exactModel;
   }

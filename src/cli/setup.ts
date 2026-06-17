@@ -2750,6 +2750,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				),
 				modelTableContext,
 				modelTableDefinitions,
+				{ codexHomeOverride: scopeDirs.codexHomeDir },
 			);
 			if (options.mergeAgents && pluginAgentsMdExists) {
 				if (pluginAgentsMdIsSymlink) {
@@ -2886,6 +2887,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				),
 				modelTableContext,
 				modelTableDefinitions,
+				{ codexHomeOverride: scopeDirs.codexHomeDir },
 			);
 			let changed = true;
 			let canApplyManagedModelRefresh = false;
@@ -2914,10 +2916,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 						const existingIsGeneratedAgentsMd = isOmxGeneratedAgentsMd(existing);
 						managedRefreshContent = teamModeEnabled(resolvedTeamMode)
 							? upsertAgentsModelTable(
-									existing,
-									modelTableContext,
-									modelTableDefinitions,
-								)
+								existing,
+								modelTableContext,
+								modelTableDefinitions,
+								{ codexHomeOverride: scopeDirs.codexHomeDir },
+							)
 							: existingIsGeneratedAgentsMd
 								? rewritten
 								: upsertManagedAgentsBlock(existing, rewritten);

@@ -8,6 +8,7 @@ import {
   DEFAULT_SPARK_MODEL,
   DEFAULT_TEAM_CHILD_MODEL,
   getAgentReasoningOverride,
+  getAgentModelOverride,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
   getModelForMode,
@@ -16,6 +17,7 @@ import {
   getTeamChildModel,
   getTeamLowComplexityModel,
   readAgentReasoningOverrides,
+  readAgentModelOverrides,
   readConfiguredEnvOverrides,
 } from '../models.js';
 
@@ -264,6 +266,26 @@ describe('getModelForMode', () => {
     });
     assert.equal(getAgentReasoningOverride('ARCHITECT'), 'xhigh');
     assert.equal(getAgentReasoningOverride('executor'), undefined);
+  });
+
+  it('reads normalized per-agent model overrides from .omx-config.json', async () => {
+    await writeConfig({
+      agentModels: {
+        Architect: ' gpt-5.5 ',
+        critic: 'gpt-5.4',
+        executor: '',
+        researcher: 42,
+        'bad role': 'gpt-5',
+      },
+    });
+
+    assert.deepEqual(readAgentModelOverrides(), {
+      architect: 'gpt-5.5',
+      critic: 'gpt-5.4',
+    });
+    assert.equal(getAgentModelOverride('ARCHITECT'), 'gpt-5.5');
+    assert.equal(getAgentModelOverride('executor'), undefined);
+    assert.equal(getAgentModelOverride('bad role'), undefined);
   });
 
   it('keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL', async () => {
