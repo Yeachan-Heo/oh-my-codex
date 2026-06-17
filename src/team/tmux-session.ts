@@ -35,7 +35,7 @@ import { resolveOmxCliEntryPath } from '../utils/paths.js';
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
 import { OMX_TMUX_HUD_OWNER_ENV } from '../hud/reconcile.js';
-import { findHudWatchPaneIds, OMX_TMUX_HUD_LEADER_PANE_ENV } from '../hud/tmux.js';
+import { findHudWatchPaneIds, hudPaneMatchesOwner, OMX_TMUX_HUD_LEADER_PANE_ENV } from '../hud/tmux.js';
 
 const OMX_INSTANCE_OPTION = '@omx_instance_id';
 const OMX_PANE_INSTANCE_OPTION = '@omx_pane_instance_id';
@@ -2385,16 +2385,45 @@ export function paneHasOmxInstanceTag(paneId: string | null | undefined, instanc
 export function paneHasOmxTeamOwnerTag(paneId: string | null | undefined, teamOwnerId: string | null | undefined): boolean {
   const expectedTeamOwnerId = typeof teamOwnerId === 'string' ? teamOwnerId.trim() : '';
   if (!expectedTeamOwnerId) return false;
-  return readPaneTeamOwnerTag(paneId) === expectedTeamOwnerId;
+  const result = readPaneTeamOwnerTagResult(paneId);
+  return result.status === 'value' && result.value === expectedTeamOwnerId;
 }
 
 export function readPaneTeamOwnerTag(paneId: string | null | undefined): string | null {
+  const result = readPaneTeamOwnerTagResult(paneId);
+  return result.status === 'value' ? result.value : null;
+}
+
+export type PaneTeamOwnerTagReadResult =
+  | { status: 'value'; value: string }
+  | { status: 'missing' }
+  | { status: 'error'; error: string };
+
+export function readPaneTeamOwnerTagResult(paneId: string | null | undefined): PaneTeamOwnerTagReadResult {
   const normalizedPaneId = normalizePaneTarget(paneId);
-  if (!normalizedPaneId) return null;
-  const result = runTmux(['show-option', '-qv', '-p', '-t', normalizedPaneId, OMX_TEAM_PANE_OWNER_OPTION]);
-  if (!result.ok) return null;
-  const value = result.stdout.trim();
-  return value === '' ? null : value;
+  if (!normalizedPaneId) return { status: 'error', error: 'invalid pane target' };
+  const { result } = spawnPlatformCommandSync('tmux', [
+    'show-option',
+    '-qv',
+    '-p',
+    '-t',
+    normalizedPaneId,
+    OMX_TEAM_PANE_OWNER_OPTION,
+  ], { encoding: 'utf-8' });
+  if (result.error) {
+    return { status: 'error', error: result.error.message };
+  }
+  const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  if (result.status === 0) {
+    return stdout === '' ? { status: 'missing' } : { status: 'value', value: stdout };
+  }
+  const stderr = typeof result.stderr === 'string' ? result.stderr.trim() : '';
+  // tmux reports an unset user option as status 1 with no diagnostic on
+  // supported versions. Treat other failures, including signal/null exits,
+  // as real read errors so shared-pane shutdown fails closed instead of
+  // killing a pane whose owner could not be read.
+  if (result.status === 1 && stderr === '') return { status: 'missing' };
+  return { status: 'error', error: stderr || `tmux show-option exited ${result.status ?? 'unknown'}` };
 }
 
 export async function killWorkerByPaneIdAsync(workerPaneId: string, leaderPaneId?: string): Promise<void> {
@@ -2429,6 +2458,7 @@ export interface SharedSessionShutdownTopology {
   teamWorkerPaneIds: string[];
   leaderPaneId: string | null;
   hudPaneIds: string[];
+  leaderOwnedHudPaneIds: string[];
 }
 
 function normalizePaneTarget(value: string | null | undefined): string | null {
@@ -2486,6 +2516,7 @@ export function resolveSharedSessionShutdownTopology(
       teamWorkerPaneIds: [],
       leaderPaneId: fallbackLeaderPaneId,
       hudPaneIds: [],
+      leaderOwnedHudPaneIds: [],
     };
   }
 
@@ -2508,12 +2539,20 @@ export function resolveSharedSessionShutdownTopology(
     .filter((pane) => isHudWatchPane(pane))
     .map((pane) => pane.paneId)
     .filter((paneId) => paneId.startsWith('%'));
+  const leaderOwnedHudPaneIds = resolvedLeaderPaneId
+    ? panes
+      .filter((pane) => pane.paneId !== resolvedLeaderPaneId)
+      .filter((pane) => hudPaneMatchesOwner(pane, { leaderPaneId: resolvedLeaderPaneId }))
+      .map((pane) => pane.paneId)
+      .filter((paneId) => paneId.startsWith('%'))
+    : [];
 
   return {
     livePaneIds,
     teamWorkerPaneIds: normalizedTeamWorkerPaneIds,
     leaderPaneId: resolvedLeaderPaneId,
     hudPaneIds,
+    leaderOwnedHudPaneIds,
   };
 }
 
