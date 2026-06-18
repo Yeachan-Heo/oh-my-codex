@@ -13,6 +13,7 @@ import {
   readSkillActiveState,
   readVisibleSkillActiveStateForStateDir,
   type SkillActiveStateLike,
+  type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
   isTrustedSubagentThread,
@@ -40,7 +41,7 @@ import {
 } from "../team/state.js";
 import { omxNotepadPath, resolveProjectMemoryPath } from "../utils/paths.js";
 import { findGitLayout } from "../utils/git-layout.js";
-import { getBaseStateDir, getStateFilePath, getStatePath } from "../mcp/state-paths.js";
+import { getBaseStateDir, getStateFilePath, getStatePath, getAuthoritativeActiveStatePaths } from "../mcp/state-paths.js";
 import {
   detectKeywords,
   detectPrimaryKeyword,
@@ -2227,6 +2228,76 @@ function isStopExempt(payload: CodexHookPayload): boolean {
   );
 }
 
+async function readModeStateWithStopSource(
+  mode: "autopilot" | "ultrawork" | "ultraqa",
+  cwd: string,
+  sessionId?: string,
+): Promise<{ state: Record<string, unknown>; path: string } | null> {
+  const paths = await getAuthoritativeActiveStatePaths(mode, cwd, sessionId?.trim() || undefined).catch(() => [] as string[]);
+  const path = paths[0];
+  if (!path) return null;
+  const state = await readJsonIfExists(path);
+  return state ? { state, path } : null;
+}
+async function readRawSkillActiveState(path: string): Promise<SkillActiveStateLike | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf-8"));
+    return parsed && typeof parsed === "object" ? parsed as SkillActiveStateLike : null;
+  } catch {
+    return null;
+  }
+}
+
+
+function canonicalStopDisagreement(modeState: Record<string, unknown>, canonicalState: SkillActiveStateLike | null, mode: string, sessionId?: string): string {
+  if (!canonicalState) return "canonical_state_missing";
+  const normalizedSessionId = safeString(sessionId).trim();
+  const activeEntry = listRawActiveSkillEntries(canonicalState).find((entry) => {
+    if (entry.skill !== mode) return false;
+    const entrySessionId = safeString(entry.session_id ?? canonicalState.session_id).trim();
+    return normalizedSessionId ? entrySessionId === normalizedSessionId || entrySessionId === "" : true;
+  });
+  if (!activeEntry) return "canonical_inactive";
+  if (mode === "autopilot") {
+    const phase = safeString(modeState.current_phase ?? modeState.currentPhase).trim();
+    const canonicalPhase = safeString(activeEntry.phase ?? canonicalState.phase).trim();
+    if (phase && canonicalPhase && normalizeAutopilotPhase(phase) !== normalizeAutopilotPhase(canonicalPhase)) {
+      return `canonical_phase:${canonicalPhase}`;
+    }
+  }
+  return "canonical_agrees";
+}
+
+function listRawActiveSkillEntries(state: SkillActiveStateLike | null): SkillActiveEntry[] {
+  if (!state) return [];
+  const entries: SkillActiveEntry[] = [];
+  if (Array.isArray(state.active_skills)) {
+    for (const candidate of state.active_skills) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const raw = candidate as unknown as Record<string, unknown>;
+      const skill = safeString(raw.skill).trim();
+      if (!skill || raw.active === false) continue;
+      entries.push({
+        ...raw,
+        skill,
+        phase: safeString(raw.phase).trim() || undefined,
+        session_id: safeString(raw.session_id).trim() || undefined,
+        thread_id: safeString(raw.thread_id).trim() || undefined,
+      });
+    }
+  }
+  const topLevelSkill = safeString(state.skill).trim();
+  if (state.active === true && topLevelSkill) {
+    entries.push({
+      skill: topLevelSkill,
+      phase: safeString(state.phase).trim() || undefined,
+      session_id: safeString(state.session_id).trim() || undefined,
+      thread_id: safeString(state.thread_id).trim() || undefined,
+    });
+  }
+  return entries;
+}
+
 async function buildModeBasedStopOutput(
   mode: "autopilot" | "ultrawork" | "ultraqa",
   cwd: string,
@@ -2238,17 +2309,38 @@ async function buildModeBasedStopOutput(
   if (mode === "autopilot" && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
     return null;
   }
-  const state = await readModeStateForActiveDecision(mode, sessionId?.trim() || undefined, cwd);
+  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId);
+  const state = sourcedState?.state ?? null;
   if (!state || !shouldContinueRun(state)) return null;
+  const rootCanonicalState = await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
+  const canonicalDisagreement = rootCanonicalState
+    ? canonicalStopDisagreement(state, rootCanonicalState, mode, sessionId)
+    : "canonical_state_missing";
+  if (canonicalDisagreement === "canonical_inactive") return null;
   const phase = formatPhase(state.current_phase);
+  if (!rootCanonicalState || mode !== "autopilot") {
+    const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
+      ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
+      : `OMX ${mode} is still active (phase: ${phase}).`;
+    return {
+      decision: "block",
+      reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
+      stopReason: `${mode}_${phase}`,
+      systemMessage,
+    };
+  }
+  const statePath = sourcedState ? formatStopStatePath(cwd, sourcedState.path) : "unknown";
+  const diagnostic = `state: ${statePath}; canonical: ${canonicalDisagreement}`;
   const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
-    ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
-    : `OMX ${mode} is still active (phase: ${phase}).`;
+    ? `OMX autopilot is still active (phase: code-review; ${diagnostic}). Run the required $code-review step before completing or clearing Autopilot state.`
+    : `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}).`;
   return {
     decision: "block",
-    reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
+    reason: `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}); continue the task and gather fresh verification evidence before stopping.`,
     stopReason: `${mode}_${phase}`,
     systemMessage,
+    statePath,
+    canonicalDisagreement,
   };
 }
 

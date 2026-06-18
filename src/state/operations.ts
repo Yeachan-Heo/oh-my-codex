@@ -159,6 +159,32 @@ async function writeClearedSessionScopedModeState(
   await writeAtomicFile(path, JSON.stringify(clearedState, null, 2));
 }
 
+async function clearSessionNativeStopState(baseStateDir: string, sessionId: string): Promise<string[]> {
+  const paths = [
+    join(baseStateDir, 'native-stop-state.json'),
+    join(baseStateDir, 'sessions', sessionId, 'native-stop-state.json'),
+  ];
+  const changed: string[] = [];
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    let state: Record<string, unknown>;
+    try {
+      state = JSON.parse(await readFile(path, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const sessions = state.sessions && typeof state.sessions === 'object' && !Array.isArray(state.sessions)
+      ? { ...(state.sessions as Record<string, unknown>) }
+      : null;
+    if (!sessions || !Object.prototype.hasOwnProperty.call(sessions, sessionId)) continue;
+    delete sessions[sessionId];
+    state.sessions = sessions;
+    await writeAtomicFile(path, JSON.stringify(state, null, 2));
+    changed.push(path);
+  }
+  return changed;
+}
+
 function readModeSupportsStrictValidation(mode: string): mode is SupportedStateReadMode {
   return SUPPORTED_STATE_READ_MODES.includes(mode as SupportedStateReadMode);
 }
@@ -628,6 +654,9 @@ export async function executeStateOperation(
           } else if (existsSync(path)) {
             await unlink(path);
           }
+          const nativeStopCleared = effectiveSessionId
+            ? await clearSessionNativeStopState(baseStateDir, effectiveSessionId)
+            : [];
           if (mode !== SKILL_ACTIVE_STATE_MODE) {
             await syncCanonicalSkillStateForMode({
               cwd,
@@ -638,7 +667,7 @@ export async function executeStateOperation(
               source: 'state-operations',
             });
           }
-          return { payload: { cleared: true, mode, path } };
+          return { payload: { cleared: true, mode, path, ...(nativeStopCleared.length > 0 ? { native_stop_cleared: nativeStopCleared } : {}) } };
         }
 
         const removedPaths: string[] = [];

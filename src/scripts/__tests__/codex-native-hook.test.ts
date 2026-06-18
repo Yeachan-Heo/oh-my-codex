@@ -812,6 +812,83 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("does not block Stop on stale session autopilot mirror when canonical skill state is inactive", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stale-autopilot-mirror-"));
+    try {
+      const sessionId = "sess-stale-autopilot-mirror";
+      await writeJson(join(cwd, ".omx", "state", "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(cwd, ".omx", "state", "skill-active-state.json"), {
+        version: 1,
+        active: false,
+        skill: "",
+        phase: "cancelled",
+        active_skills: [],
+      });
+      await writeJson(join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ultragoal",
+        session_id: sessionId,
+      });
+      await writeJson(join(cwd, ".omx", "state", "sessions", sessionId, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "ultragoal",
+        session_id: sessionId,
+        active_skills: [{ skill: "autopilot", phase: "ultragoal", active: true, session_id: sessionId }],
+      });
+
+      const stdout = runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-stale-autopilot-mirror",
+      }, { cwd });
+
+      assert.deepEqual(parseSingleJsonStdout(stdout), {});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("includes blocking state source and canonical agreement in Stop diagnostics", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-diagnostic-"));
+    try {
+      const sessionId = "sess-autopilot-diagnostic";
+      await writeJson(join(cwd, ".omx", "state", "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(cwd, ".omx", "state", "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "ultragoal",
+        session_id: sessionId,
+        active_skills: [{ skill: "autopilot", phase: "ultragoal", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ultragoal",
+        session_id: sessionId,
+      });
+
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-autopilot-diagnostic",
+      }, { cwd })) as { decision?: string; reason?: string; statePath?: string; canonicalDisagreement?: string };
+
+      assert.equal(output.decision, "block");
+      assert.match(String(output.reason ?? ""), /state: \.omx\/state\/sessions\/sess-autopilot-diagnostic\/autopilot-state\.json/);
+      assert.match(String(output.reason ?? ""), /canonical: canonical_agrees/);
+      assert.equal(output.statePath, ".omx/state/sessions/sess-autopilot-diagnostic/autopilot-state.json");
+      assert.equal(output.canonicalDisagreement, "canonical_agrees");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("emits exactly one parseable JSON object for active Stop CLI continuation", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-json-"));
     try {

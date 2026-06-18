@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -273,4 +274,62 @@ describe('CLI session-scoped state parity', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it('clears current-session autopilot and skill mirrors even when canonical root is inactive', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-clear-stale-autopilot-mirror-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-stale-autopilot-mirror';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({
+        active: false,
+        mode: 'autopilot',
+        current_phase: 'cancelled',
+      }, null, 2));
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        version: 1,
+        active: false,
+        skill: '',
+        phase: 'cancelled',
+        active_skills: [],
+      }, null, 2));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ultragoal',
+      }, null, 2));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        phase: 'ultragoal',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'ultragoal', active: true, session_id: sessionId }],
+      }, null, 2));
+      await writeFile(join(sessionDir, 'native-stop-state.json'), JSON.stringify({
+        sessions: { [sessionId]: { last_signature: 'autopilot-stop|stale' } },
+      }, null, 2));
+
+      const clearAutopilot = runOmx(wd, 'state', 'clear', '--input', `{"mode":"autopilot","session_id":"${sessionId}"}`, '--json');
+      assert.equal(clearAutopilot.status, 0, clearAutopilot.stderr || clearAutopilot.stdout);
+      const clearSkill = runOmx(wd, 'state', 'clear', '--input', `{"mode":"skill-active","session_id":"${sessionId}"}`, '--json');
+      assert.equal(clearSkill.status, 0, clearSkill.stderr || clearSkill.stdout);
+      const cancelForce = runOmx(wd, 'cancel', '--force');
+      assert.equal(cancelForce.status, 0, cancelForce.stderr || cancelForce.stdout);
+
+      const autopilot = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'));
+      assert.equal(autopilot.active, false);
+      assert.equal(autopilot.current_phase, 'cleared');
+      assert.equal(existsSync(join(sessionDir, 'skill-active-state.json')), false);
+      const nativeStop = JSON.parse(await readFile(join(sessionDir, 'native-stop-state.json'), 'utf-8'));
+      assert.deepEqual(nativeStop.sessions, {});
+      const listResult = runOmx(wd, 'state', 'list-active', '--json');
+      assert.equal(listResult.status, 0, listResult.stderr || listResult.stdout);
+      assert.deepEqual(JSON.parse(listResult.stdout), { active_modes: [] });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });
