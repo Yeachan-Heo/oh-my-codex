@@ -10,14 +10,15 @@ Use this skill when users want to install or refresh oh-my-codex for the **curre
 ## Command
 
 ```bash
-omx setup [--force] [--merge-agents] [--dry-run] [--verbose] [--scope <user|project>] [--plugin|--legacy|--install-mode <legacy|plugin>]
+omx setup [--force] [--merge-agents] [--no-merge-agents] [--dry-run] [--verbose] [--scope <user|project>] [--plugin|--legacy|--install-mode <legacy|plugin>]
 ```
 
 If you only want lightweight `AGENTS.md` scaffolding for an existing repo or subtree, use `omx agents-init [path]` instead of full setup.
 
 Supported setup flags (current implementation):
-- `--force`: overwrite/reinstall managed artifacts where applicable
-- `--merge-agents`: when `AGENTS.md` already exists, preserve user-authored content and insert/refresh OMX-managed generated sections between explicit `<!-- OMX:AGENTS:START -->` / `<!-- OMX:AGENTS:END -->` markers
+- `--force`: overwrite/reinstall managed artifacts where applicable (replaces `AGENTS.md` after backup)
+- `--merge-agents`: **default behavior** - when `AGENTS.md` already exists, preserve user-authored content and insert/refresh OMX-managed generated sections between explicit `<!-- OMX:AGENTS:START -->` / `<!-- OMX:AGENTS:END -->` markers. The flag is now redundant except to re-enable merge alongside `--force`
+- `--no-merge-agents`: opt out of the default merge and use the previous behavior (refresh managed sections only, or prompt before overwriting an existing `AGENTS.md`)
 - `--dry-run`: print actions without mutating files
 - `--verbose`: print per-file/per-step details
 - `--scope`: choose install scope (`user`, `project`)
@@ -53,8 +54,7 @@ Supported setup flags (current implementation):
 - Non-interactive setup never blocks for this review prompt: it keeps deterministic CLI/persisted/default behavior for CI and scripted installs.
 - In `user` scope, `omx setup` also prompts for skill delivery mode when no prior install mode is kept; installed plugin cache discovery makes plugin mode the default prompt/non-interactive choice.
 - Local project orchestration file is `./AGENTS.md` (project root).
-- If `AGENTS.md` exists and neither `--force` nor `--merge-agents` is used, interactive TTY runs ask whether to overwrite. Non-interactive runs preserve the file.
-- Use `--merge-agents` to keep existing project guidance while allowing setup to refresh OMX-managed AGENTS sections and the generated model capability table idempotently.
+- If `AGENTS.md` exists, setup now merges by default: it keeps user-authored content and refreshes only the OMX-managed sections (and the generated model capability table) idempotently, so install/update never clobbers local guidance. Pass `--no-merge-agents` to restore the previous behavior (interactive TTY runs ask whether to overwrite; non-interactive runs preserve the file), or `--force` to replace it after backup.
 - Scope targets:
   - `user`: user directories (`~/.codex`, `~/.codex/skills`, `~/.omx/agents`)
   - `project`: local directories (`./.codex`, `./.codex/skills`, `./.omx/agents`)
@@ -64,7 +64,7 @@ Supported setup flags (current implementation):
 - Migration hint: in `user` scope, if historical `~/.agents/skills` still exists alongside `${CODEX_HOME:-~/.codex}/skills`, current setup prints a cleanup hint. **Why the paths differ**: `${CODEX_HOME:-~/.codex}/skills/` is the path current Codex CLI natively loads as its skill root; `~/.agents/skills/` was the skill root in an older Codex CLI release before `~/.codex` became the standard home directory. OMX writes only to the canonical `${CODEX_HOME:-~/.codex}/skills/` path. When both directories exist simultaneously, Codex discovers skills from both trees and may show duplicate entries in Enable/Disable Skills. Archive or remove `~/.agents/skills/` to resolve this.
 - If persisted scope is `project`, `omx` launch automatically uses `CODEX_HOME=./.codex` unless user explicitly overrides `CODEX_HOME`.
 - Plugin mode prompts separately for optional AGENTS.md defaults and optional `developer_instructions` defaults. If `developer_instructions` already exists, setup asks before overwriting it; non-interactive runs preserve it.
-- With `--force` or `--merge-agents`, AGENTS updates may still be skipped if an active OMX session is detected (safety guard).
+- Whether merging (the default), `--merge-agents`, or `--force`, AGENTS updates may still be skipped if an active OMX session is detected (safety guard).
 - Legacy persisted scope values (`project-local`) are automatically migrated to `project` with a one-time warning.
 
 ## Setup-owned configuration surfaces

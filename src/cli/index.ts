@@ -19,6 +19,7 @@ import {
   type SetupScope,
   type SetupTeamMode,
 } from "./setup.js";
+import { resolveMergeAgents } from "./agents-merge-mode.js";
 import { uninstall } from "./uninstall.js";
 import { version } from "./version.js";
 import { tmuxHookCommand } from "./tmux-hook.js";
@@ -287,10 +288,15 @@ Options:
                 Select custom/OpenClaw gateway name for temporary notification mode
   -w, --worktree[=<name>]
                 Launch Codex in a git worktree (detached when no name is given)
-  --force       Force reinstall (overwrite existing files)
+  --force       Force reinstall (overwrite existing files; replaces AGENTS.md
+                after backup)
   --merge-agents
-                Merge OMX-managed AGENTS.md sections into an existing AGENTS.md
-                instead of overwriting user-authored content
+                Merge OMX-managed AGENTS.md sections into an existing AGENTS.md,
+                preserving user-authored content. This is the DEFAULT; the flag
+                is kept for explicitness and to re-enable merge alongside --force
+  --no-merge-agents
+                Disable the default AGENTS.md merge and use the previous behavior
+                (refresh managed sections only / prompt before overwriting)
   --dry-run     Show what would be done without doing it
   --plugin      Use Codex plugin delivery for omx setup and remove legacy OMX-managed user/project components
   --legacy      Use legacy setup delivery for omx setup, overriding persisted plugin mode
@@ -2382,7 +2388,7 @@ export async function main(args: string[]): Promise<void> {
   const flags = new Set(args.filter((a) => a.startsWith("--")));
   const options = {
     force: flags.has("--force"),
-    mergeAgents: flags.has("--merge-agents"),
+    mergeAgents: resolveMergeAgents(flags),
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
