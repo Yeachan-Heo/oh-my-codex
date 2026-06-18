@@ -6535,6 +6535,144 @@ exit 0
     }
   });
 
+  it("allows Ralplan read-only inspection and planning artifact writes while blocking implementation targets", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-ralplan-guard-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-ralplan-guard";
+      const sessionDir = join(stateDir, "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+
+      const preToolUse = async (tool_name: string, tool_use_id: string, tool_input: Record<string, unknown>) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          tool_name,
+          tool_use_id,
+          tool_input,
+        },
+        { cwd },
+      );
+
+      const readOnlyCommands = [
+        "git status --short",
+        "ls -1 .omx/plans",
+        "find .omx/plans -type f -name '*.md'",
+        "grep -RIn \"Scholastic\" doc tests .omx/plans .omx/context",
+        "rg \"Scholastic\" doc tests .omx/plans .omx/context",
+        "sed -n '1,80p' .omx/plans/demo.md",
+        "cat .omx/plans/demo.md",
+        "git status --short; ls -1 .omx/plans; grep -RIn \"Scholastic\" doc tests .omx/plans .omx/context",
+      ];
+      for (const [index, command] of readOnlyCommands.entries()) {
+        const result = await preToolUse("Bash", `tool-ralplan-read-${index}`, { command });
+        assert.equal(result.outputJson, null, `read-only command should be allowed: ${command}`);
+      }
+
+      for (const path of [
+        ".omx/context/findings.md",
+        ".omx/plans/issue-2863.md",
+        ".omx/specs/issue-2863.md",
+        ".omx/state/required-planning-state.json",
+      ]) {
+        const writeResult = await preToolUse("Write", `tool-ralplan-write-${path}`, { file_path: path, content: "ok" });
+        assert.equal(writeResult.outputJson, null, `Write should be allowed for ${path}`);
+      }
+
+      const allowedPatchAdd = await preToolUse("apply_patch", "tool-ralplan-patch-add", {
+        input: "*** Begin Patch\n*** Add File: .omx/plans/issue-2863.md\n+# Plan\n*** End Patch\n",
+      });
+      assert.equal(allowedPatchAdd.outputJson, null);
+
+      const allowedPatchUpdate = await preToolUse("ApplyPatch", "tool-ralplan-patch-update", {
+        input: "*** Begin Patch\n*** Update File: .omx/plans/issue-2863.md\n@@\n-old\n+new\n*** End Patch\n",
+      });
+      assert.equal(allowedPatchUpdate.outputJson, null);
+
+      const allowedRedirect = await preToolUse("Bash", "tool-ralplan-redirect-allow", {
+        command: "printf '\\nmore\\n' >> .omx/plans/issue-2863.md",
+      });
+      assert.equal(allowedRedirect.outputJson, null);
+
+      const allowedTee = await preToolUse("Bash", "tool-ralplan-tee-allow", {
+        command: "printf '\\nmore\\n' | tee -a .omx/specs/issue-2863.md",
+      });
+      assert.equal(allowedTee.outputJson, null);
+
+      const blockedRedirect = await preToolUse("Bash", "tool-ralplan-redirect-block", {
+        command: "printf 'bad' > src/implementation.ts",
+      });
+      assert.equal((blockedRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+      const redirectReason = String((blockedRedirect.outputJson as { reason?: string } | null)?.reason ?? "");
+      assert.match(redirectReason, /Bash redirect write/);
+      assert.match(redirectReason, /src\/implementation\.ts/);
+
+      const blockedEdit = await preToolUse("Edit", "tool-ralplan-edit-block", {
+        file_path: "src/implementation.ts",
+        old_string: "a",
+        new_string: "b",
+      });
+      assert.equal((blockedEdit.outputJson as { decision?: string } | null)?.decision, "block");
+      const editReason = String((blockedEdit.outputJson as { reason?: string } | null)?.reason ?? "");
+      assert.match(editReason, /Edit path/);
+      assert.match(editReason, /src\/implementation\.ts/);
+
+      const blockedMixedPatch = await preToolUse("apply_patch", "tool-ralplan-patch-mixed", {
+        input: "*** Begin Patch\n*** Add File: .omx/plans/ok.md\n+ok\n*** Add File: src/leak.ts\n+leak\n*** End Patch\n",
+      });
+      assert.equal((blockedMixedPatch.outputJson as { decision?: string } | null)?.decision, "block");
+      const mixedReason = String((blockedMixedPatch.outputJson as { reason?: string } | null)?.reason ?? "");
+      assert.match(mixedReason, /apply_patch target/);
+      assert.match(mixedReason, /src\/leak\.ts/);
+
+      const blockedUnparseablePatch = await preToolUse("apply_patch", "tool-ralplan-patch-unparseable", {
+        input: "not a recognizable patch",
+      });
+      assert.equal((blockedUnparseablePatch.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedUnparseablePatch.outputJson as { reason?: string } | null)?.reason ?? ""), /apply_patch target extraction failed/);
+
+      const blockedUnresolvedRedirect = await preToolUse("Bash", "tool-ralplan-redirect-unresolved", {
+        command: "cat > \"$PLAN_PATH\" <<'EOF'\ncontent\nEOF",
+      });
+      assert.equal((blockedUnresolvedRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+      const unresolvedReason = String((blockedUnresolvedRedirect.outputJson as { reason?: string } | null)?.reason ?? "");
+      assert.match(unresolvedReason, /unresolved Bash write target/);
+      assert.match(unresolvedReason, /\$PLAN_PATH/);
+
+      const blockedTraversal = await preToolUse("Write", "tool-ralplan-traversal-block", {
+        file_path: ".omx/plans/../../src/leak.ts",
+        content: "bad",
+      });
+      assert.equal((blockedTraversal.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedTraversal.outputJson as { reason?: string } | null)?.reason ?? ""), /\.omx\/plans\/\.\.\/\.\.\/src\/leak\.ts/);
+
+      const blockedAbsolute = await preToolUse("Write", "tool-ralplan-absolute-block", {
+        file_path: "/tmp/leak.ts",
+        content: "bad",
+      });
+      assert.equal((blockedAbsolute.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedAbsolute.outputJson as { reason?: string } | null)?.reason ?? ""), /\/tmp\/leak\.ts/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows Autopilot ralplan planning artifacts while blocking implementation writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-autopilot-ralplan-artifact-"));
     try {

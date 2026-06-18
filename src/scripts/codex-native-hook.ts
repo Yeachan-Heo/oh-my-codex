@@ -3030,6 +3030,33 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   }
   return targets;
 }
+function formatPlanningWriteBlockDetail(
+  operationClass: string,
+  target: string | undefined,
+  allowedPrefixes: readonly string[],
+): string {
+  const targetDetail = target ? `target ${target}` : "target <unresolved>";
+  return `${operationClass} ${targetDetail} is not under allowed planning artifact paths (${allowedPrefixes.join(", ")})`;
+}
+
+function isUnresolvedVariableTarget(target: string): boolean {
+  const normalized = target.trim().replace(/^['"]|['"]$/g, "");
+  return /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
+}
+
+
+function describeImplementationToolBlock(
+  toolName: string,
+  blockedPath: string | undefined,
+  pathCount: number,
+): string {
+  if (pathCount === 0) {
+    const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target extraction failed" : `${toolName} path`;
+    return `${operationClass} target <unresolved>; only planning artifact paths are allowed (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target" : `${toolName} path`;
+  return formatPlanningWriteBlockDetail(operationClass, blockedPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
+}
 
 function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
@@ -3151,8 +3178,12 @@ function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
 function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
+  if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
+    return `unresolved Bash write target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
   if (blockedTarget) {
-    return `write target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash redirect write";
+    return `${operationClass} target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
   }
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   if (beadsCommand.present && !beadsCommand.allowed) {
@@ -3187,15 +3218,15 @@ async function buildRalplanPreToolUseBoundaryOutput(
       blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
     }
   } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-    const candidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
-    if (candidates.length === 0) {
+    const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    if (toolPathCandidates.length === 0) {
       blocked = true;
-      blockedDetail = `${toolName} did not include a file path; only planning artifact paths or metadata paths are allowed`;
+      blockedDetail = describeImplementationToolBlock(toolName, undefined, toolPathCandidates.length);
     } else {
-      const blockedPath = candidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+      const blockedPath = toolPathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
       blocked = blockedPath !== undefined;
       if (blockedPath !== undefined) {
-        blockedDetail = `path ${blockedPath} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+        blockedDetail = describeImplementationToolBlock(toolName, blockedPath, toolPathCandidates.length);
       }
     }
   }
