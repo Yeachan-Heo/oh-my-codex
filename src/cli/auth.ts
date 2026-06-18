@@ -2,6 +2,7 @@ import { dirname, join } from "path";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { spawnPlatformCommandSync, classifySpawnError } from "../utils/platform-command.js";
 import { readAuthConfig } from "../auth/config.js";
+import { detectAuthFileKind } from "../auth/identity.js";
 import { resolveLiveAuthPath } from "../auth/paths.js";
 import { redactAuthSecrets } from "../auth/redact.js";
 import { addSlotFromAuthFile, listSlots, useSlot } from "../auth/storage.js";
@@ -79,7 +80,13 @@ export async function authCommand(args: string[], env: NodeJS.ProcessEnv = proce
     if (!slot) throw new Error("Usage: omx auth add <slot>");
     const liveAuthPath = resolveLiveAuthPath(cwd, env, home);
     runCodexLogin(cwd, { ...env, CODEX_HOME: dirname(liveAuthPath) });
-    const record = await addSlotFromAuthFile(slot, liveAuthPath, home);
+    const detected = await detectAuthFileKind(liveAuthPath);
+    const record = await addSlotFromAuthFile(slot, liveAuthPath, home, new Date(), {
+      kind: detected.kind === "chatgpt" || detected.kind === "api" ? detected.kind : "unknown",
+      createdFromCodexHome: dirname(liveAuthPath),
+    }, {
+      setCurrent: true,
+    });
     await ensureSubscriptionCodexDefaults(dirname(liveAuthPath));
     console.log(`Added auth slot ${record.slot}`);
     return;

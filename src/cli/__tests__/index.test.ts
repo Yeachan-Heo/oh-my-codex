@@ -68,6 +68,8 @@ import {
   cleanupLaunchOrphanedMcpProcesses,
   reapPostLaunchOrphanedMcpProcesses,
   cleanupPostLaunchModeStateFiles,
+  recordLaunchIdentityMetadata,
+  reconcileLaunchIdentityMetadata,
   resolveBackgroundHelperLaunchMode,
   shouldDetachBackgroundHelper,
   resolveNotifyFallbackWatcherScript,
@@ -91,6 +93,8 @@ import {
   isExistingTmuxWindowTooCrampedForLaunchHud,
 } from "../index.js";
 import { mergeConfig, repairConfigIfNeeded } from "../../config/generator.js";
+import { writeAuthMetadata } from "../../auth/storage.js";
+import { resolveUnifiedSessionIdentityPath, writeUnifiedSessionIdentity } from "../../session-ledger/index.js";
 import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
 import { readAllState } from "../../hud/state.js";
 import { generateOverlay } from "../../hooks/agents-overlay.js";
@@ -1336,6 +1340,75 @@ describe("cleanupPostLaunchModeStateFiles", () => {
   });
 });
 
+describe("recordLaunchIdentityMetadata", () => {
+  it("writes the active auth slot into the launch Codex home sidecar", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-identity-"));
+    const home = join(wd, "home");
+    const codexHome = join(wd, "runtime-codex-home");
+    const previousHome = process.env.HOME;
+
+    try {
+      process.env.HOME = home;
+      await writeAuthMetadata({
+        version: 1,
+        currentSlot: "main",
+        slots: [{
+          slot: "main",
+          createdAt: "2026-06-18T01:00:00.000Z",
+          updatedAt: "2026-06-18T01:00:00.000Z",
+          kind: "chatgpt",
+        }],
+      }, home);
+
+      await recordLaunchIdentityMetadata(wd, "sess-launch-identity", codexHome);
+
+      const sidecar = JSON.parse(
+        await readFile(resolveUnifiedSessionIdentityPath(codexHome, "sess-launch-identity"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(sidecar.version, 1);
+      assert.equal(sidecar.sessionId, "sess-launch-identity");
+      assert.equal(sidecar.identitySlot, "main");
+      assert.equal(sidecar.authMode, "chatgpt");
+    } finally {
+      if (typeof previousHome === "string") process.env.HOME = previousHome;
+      else delete process.env.HOME;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("copies the launch sidecar to the native Codex session id when available", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-identity-native-"));
+    const codexHome = join(wd, "runtime-codex-home");
+
+    try {
+      await writeUnifiedSessionIdentity(codexHome, {
+        version: 1,
+        sessionId: "omx-wrapper-session",
+        identitySlot: "main",
+        authMode: "chatgpt",
+        createdAt: "2026-06-18T01:00:00.000Z",
+      });
+
+      await reconcileLaunchIdentityMetadata(
+        wd,
+        "omx-wrapper-session",
+        codexHome,
+        "native-codex-session",
+      );
+
+      const sidecar = JSON.parse(
+        await readFile(resolveUnifiedSessionIdentityPath(codexHome, "native-codex-session"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(sidecar.version, 1);
+      assert.equal(sidecar.sessionId, "native-codex-session");
+      assert.equal(sidecar.identitySlot, "main");
+      assert.equal(sidecar.authMode, "chatgpt");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("watcher script path resolution", () => {
   it("resolves packaged watcher entrypoints from dist/scripts", () => {
     assert.equal(
@@ -2272,6 +2345,13 @@ describe("project launch scope helpers", () => {
       await writeFile(join(runtimeCodexHome, "history.jsonl"), '{"session_id":"session-2835"}\n');
       await writeFile(join(runtimeCodexHome, "session_index.jsonl"), '{"id":"session-2835"}\n');
       await writeFile(join(runtimeCodexHome, "auth.json"), '{"token":"opaque"}\n');
+      await writeUnifiedSessionIdentity(runtimeCodexHome, {
+        version: 1,
+        sessionId: "session-2835",
+        identitySlot: "main",
+        authMode: "chatgpt",
+        createdAt: "2026-06-16T00:00:00.000Z",
+      });
 
       await cleanupRuntimeCodexHome(
         prepared.runtimeCodexHomeForCleanup,
@@ -2285,6 +2365,11 @@ describe("project launch scope helpers", () => {
       assert.equal(await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"session-2835"}\n');
       assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"session-2835"}\n');
       assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), '{"token":"opaque"}\n');
+      const sidecar = JSON.parse(
+        await readFile(resolveUnifiedSessionIdentityPath(projectCodexHome, "session-2835"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(sidecar.identitySlot, "main");
+      assert.equal(sidecar.authMode, "chatgpt");
       assert.equal(existsSync(runtimeCodexHome), false);
     } finally {
       await rm(wd, { recursive: true, force: true });

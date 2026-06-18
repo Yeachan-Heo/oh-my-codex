@@ -20,6 +20,11 @@ export interface AuthSlotRecord {
   lastUsedAt?: string;
   lastQuotaAt?: string;
   exhaustedAt?: string;
+  displayName?: string;
+  kind?: "chatgpt" | "api" | "unknown";
+  isPrimary?: boolean;
+  workspaceHint?: string;
+  createdFromCodexHome?: string;
 }
 
 export interface AuthMetadata {
@@ -31,6 +36,18 @@ export interface AuthMetadata {
 export interface AtomicWriteOptions {
   mode?: number;
   beforeRename?: (tempPath: string) => void | Promise<void>;
+}
+
+export interface AuthSlotMetadataInput {
+  displayName?: string;
+  kind?: AuthSlotRecord["kind"];
+  isPrimary?: boolean;
+  workspaceHint?: string;
+  createdFromCodexHome?: string;
+}
+
+export interface AddSlotFromAuthFileOptions {
+  setCurrent?: boolean;
 }
 
 export async function atomicWriteFile(
@@ -68,7 +85,19 @@ export async function readAuthMetadata(home?: string): Promise<AuthMetadata> {
     slots: Array.isArray(parsed.slots)
       ? parsed.slots
           .filter((slot): slot is AuthSlotRecord => Boolean(slot && typeof slot.slot === "string"))
-          .map((slot) => ({ ...slot, slot: validateSlotName(slot.slot) }))
+          .map((slot) => ({
+            slot: validateSlotName(slot.slot),
+            createdAt: typeof slot.createdAt === "string" ? slot.createdAt : "",
+            updatedAt: typeof slot.updatedAt === "string" ? slot.updatedAt : "",
+            lastUsedAt: typeof slot.lastUsedAt === "string" ? slot.lastUsedAt : undefined,
+            lastQuotaAt: typeof slot.lastQuotaAt === "string" ? slot.lastQuotaAt : undefined,
+            exhaustedAt: typeof slot.exhaustedAt === "string" ? slot.exhaustedAt : undefined,
+            kind: slot.kind === "chatgpt" || slot.kind === "api" || slot.kind === "unknown" ? slot.kind : undefined,
+            displayName: typeof slot.displayName === "string" ? slot.displayName : undefined,
+            isPrimary: typeof slot.isPrimary === "boolean" ? slot.isPrimary : undefined,
+            workspaceHint: typeof slot.workspaceHint === "string" ? slot.workspaceHint : undefined,
+            createdFromCodexHome: typeof slot.createdFromCodexHome === "string" ? slot.createdFromCodexHome : undefined,
+          }))
       : [],
   };
 }
@@ -81,14 +110,25 @@ export async function writeAuthMetadata(metadata: AuthMetadata, home?: string): 
   });
 }
 
-function upsertSlotRecord(metadata: AuthMetadata, slot: string, nowIso: string): AuthSlotRecord {
+function applySlotMetadata(record: AuthSlotRecord, metadata?: AuthSlotMetadataInput): void {
+  if (!metadata) return;
+  if (metadata.displayName !== undefined) record.displayName = metadata.displayName;
+  if (metadata.kind !== undefined) record.kind = metadata.kind;
+  if (metadata.isPrimary !== undefined) record.isPrimary = metadata.isPrimary;
+  if (metadata.workspaceHint !== undefined) record.workspaceHint = metadata.workspaceHint;
+  if (metadata.createdFromCodexHome !== undefined) record.createdFromCodexHome = metadata.createdFromCodexHome;
+}
+
+function upsertSlotRecord(metadata: AuthMetadata, slot: string, nowIso: string, slotMetadata?: AuthSlotMetadataInput): AuthSlotRecord {
   const safeSlot = validateSlotName(slot);
   const existing = metadata.slots.find((record) => record.slot === safeSlot);
   if (existing) {
     existing.updatedAt = nowIso;
+    applySlotMetadata(existing, slotMetadata);
     return existing;
   }
   const record: AuthSlotRecord = { slot: safeSlot, createdAt: nowIso, updatedAt: nowIso };
+  applySlotMetadata(record, slotMetadata);
   metadata.slots.push(record);
   metadata.slots.sort((a, b) => a.slot.localeCompare(b.slot));
   return record;
@@ -99,6 +139,8 @@ export async function addSlotFromAuthFile(
   liveAuthPath: string,
   home?: string,
   now = new Date(),
+  slotMetadata?: AuthSlotMetadataInput,
+  options: AddSlotFromAuthFileOptions = {},
 ): Promise<AuthSlotRecord> {
   const safeSlot = validateSlotName(slot);
   await assertReadableFile(liveAuthPath, "live Codex auth.json");
@@ -107,7 +149,8 @@ export async function addSlotFromAuthFile(
   const target = resolveSlotPath(safeSlot, home);
   await atomicWriteFile(target, data, { mode: AUTH_FILE_MODE });
   const metadata = await readAuthMetadata(home);
-  const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
+  const record = upsertSlotRecord(metadata, safeSlot, now.toISOString(), slotMetadata);
+  if (options.setCurrent) metadata.currentSlot = safeSlot;
   await writeAuthMetadata(metadata, home);
   return record;
 }

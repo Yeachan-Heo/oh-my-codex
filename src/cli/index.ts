@@ -52,7 +52,12 @@ import { mcpServeCommand } from "./mcp-serve.js";
 import { adaptCommand } from "./adapt.js";
 import { listCommand } from "./list.js";
 import { authCommand } from "./auth.js";
+import { identityCommand } from "./identity.js";
 import { runAuthHotswap } from "../auth/hotswap.js";
+import { switchIdentitySlot, switchIdentitySlotToAuthPath } from "../auth/identity.js";
+import { resolveDefaultCodexHome } from "../auth/paths.js";
+import { readAuthMetadata } from "../auth/storage.js";
+import { copyUnifiedSessionIdentity, findUnifiedEntry, getUnifiedEntryCodexHomePath, refreshUnifiedLedger, writeUnifiedSessionIdentity } from "../session-ledger/index.js";
 import {
   MADMAX_FLAG,
   CODEX_BYPASS_FLAG,
@@ -222,9 +227,12 @@ Usage:
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx auth      Manage Codex OAuth auth slots (add|list|use)
+  omx identity  Inspect/switch Codex identity slots and mixed API/account policy
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
-  omx resume    Resume Codex sessions (supports --project and --codex-home <path>)
+  omx resume    Resume Codex sessions (supports --project and --codex-home <path>; --unified <id>)
+  omx resume --unified <id>
+                Resume/open a unified CLI/API/App session entry in its original identity/source
   omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search prior local session transcripts (--codex-home <path> escape hatch)
@@ -380,6 +388,7 @@ type CliCommand =
   | "doctor"
   | "cleanup"
   | "auth"
+  | "identity"
   | "ask"
   | "question"
   | "adapt"
@@ -409,6 +418,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "question",
   "cleanup",
   "auth",
+  "identity",
   "adapt",
   "explore",
   "autoresearch",
@@ -865,6 +875,21 @@ async function persistProjectLaunchRuntimeJsonlArtifact(source: string, destinat
   await writeFile(destination, lines.length > 0 ? `${lines.join("\n")}\n` : "", "utf-8");
 }
 
+async function persistProjectLaunchRuntimeSessionIdentities(
+  runtimeCodexHome: string,
+  projectCodexHome: string,
+): Promise<void> {
+  const source = join(runtimeCodexHome, ".omx", "session-identity");
+  if (!existsSync(source)) return;
+  const sourceStat = await lstat(source);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) return;
+  await cp(source, join(projectCodexHome, ".omx", "session-identity"), {
+    recursive: true,
+    force: true,
+    verbatimSymlinks: true,
+  });
+}
+
 async function persistProjectLaunchRuntimeHistoryArtifacts(
   runtimeCodexHome: string | undefined,
   projectCodexHome: string | undefined,
@@ -891,6 +916,7 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
       await copyFile(source, destination);
     }
   }
+  await persistProjectLaunchRuntimeSessionIdentities(runtimeCodexHome, projectCodexHome);
 }
 
 async function ensureProjectLaunchRuntimeHistoryLinks(
@@ -2351,6 +2377,7 @@ export async function main(args: string[]): Promise<void> {
     "doctor",
     "cleanup",
     "auth",
+    "identity",
     "ask",
     "question",
     "autoresearch",
@@ -2405,7 +2432,11 @@ export async function main(args: string[]): Promise<void> {
         }
         break;
       case "resume":
-        await launchWithHud(["resume", ...launchArgs]);
+        if (launchArgs[0] === "--unified") {
+          await resumeUnifiedCommand(launchArgs.slice(1));
+        } else {
+          await launchWithHud(["resume", ...launchArgs]);
+        }
         break;
       case "setup":
         await setup({
@@ -2462,6 +2493,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "auth":
         await authCommand(args.slice(1));
+        break;
+      case "identity":
+        await identityCommand(args.slice(1));
         break;
       case "autoresearch":
         await autoresearchCommand(args.slice(1));
@@ -2635,6 +2669,32 @@ async function showStatus(): Promise<void> {
     logCliOperationFailure(err);
     console.log("No active modes.");
   }
+}
+
+async function resumeUnifiedCommand(args: string[]): Promise<void> {
+  const id = args[0];
+  if (!id || id === "--help" || id === "-h") {
+    console.log("Usage: omx resume --unified <session-id-or-fragment>");
+    return;
+  }
+  const entry = findUnifiedEntry(await refreshUnifiedLedger(), id);
+  if (!entry) {
+    throw new Error(`Unified session entry not found: ${id}. Run \`omx session list --unified\` first.`);
+  }
+  if (entry.source === "cli" || entry.source === "api" || entry.source === "omx") {
+    const codexHomePath = getUnifiedEntryCodexHomePath(entry);
+    if (entry.identitySlot) {
+      if (codexHomePath) await switchIdentitySlotToAuthPath(entry.identitySlot, join(codexHomePath, "auth.json"));
+      else await switchIdentitySlot(entry.identitySlot);
+    }
+    const resumeArgs = codexHomePath
+      ? ["resume", "--codex-home", codexHomePath, entry.sessionId]
+      : ["resume", entry.sessionId];
+    await launchWithHud(resumeArgs);
+    return;
+  }
+  console.log(`Open original Codex App session source: ${entry.openTarget ?? entry.sessionId}`);
+  console.log("This App/cloud entry is read-only metadata; OMX will not rewrite it into an API-key session.");
 }
 
 async function reasoningCommand(args: string[]): Promise<void> {
@@ -4595,6 +4655,50 @@ export async function reapPostLaunchOrphanedMcpProcesses(
   }
 }
 
+function resolveLaunchIdentityCodexHome(
+  cwd: string,
+  codexHomeOverride?: string,
+  home = process.env.HOME?.trim() || homedir(),
+): string {
+  return codexHomeOverride?.trim()
+    || resolveCodexHomeForLaunch(cwd, process.env)
+    || resolveDefaultCodexHome(home);
+}
+
+export async function recordLaunchIdentityMetadata(
+  cwd: string,
+  sessionId: string,
+  codexHomeOverride?: string,
+): Promise<void> {
+  const home = process.env.HOME?.trim() || homedir();
+  const metadata = await readAuthMetadata(home);
+  const currentSlot = metadata.currentSlot?.trim();
+  if (!currentSlot) return;
+  const slot = metadata.slots.find((candidate) => candidate.slot === currentSlot);
+  if (!slot) return;
+  const codexHomeDir = resolveLaunchIdentityCodexHome(cwd, codexHomeOverride, home);
+  await writeUnifiedSessionIdentity(codexHomeDir, {
+    version: 1,
+    sessionId,
+    identitySlot: slot.slot,
+    ...(slot.kind ? { authMode: slot.kind } : {}),
+    createdAt: new Date().toISOString(),
+  });
+}
+
+export async function reconcileLaunchIdentityMetadata(
+  cwd: string,
+  sessionId: string,
+  codexHomeOverride?: string,
+  nativeSessionId?: string,
+): Promise<void> {
+  const targetSessionId = nativeSessionId?.trim();
+  if (!targetSessionId || targetSessionId === sessionId) return;
+  const home = process.env.HOME?.trim() || homedir();
+  const codexHomeDir = resolveLaunchIdentityCodexHome(cwd, codexHomeOverride, home);
+  await copyUnifiedSessionIdentity(codexHomeDir, sessionId, targetSessionId);
+}
+
 /**
  * preLaunch: Prepare environment before Codex starts.
  * 1. Best-effort launch-safe orphan cleanup for detached OMX MCP processes
@@ -4652,6 +4756,12 @@ ${launchAppendix}${dirtyWorktreeGuidance}`
   // 3. Write session state
   await resetSessionMetrics(cwd, sessionId);
   await writeSessionStart(cwd, sessionId);
+  try {
+    await recordLaunchIdentityMetadata(cwd, sessionId, codexHomeOverride);
+  } catch (err) {
+    logCliOperationFailure(err);
+    // Non-fatal: launch identity sidecars only improve unified resume accuracy.
+  }
   tagCurrentTmuxSessionWithInstance(sessionId);
 
   // 4. Start notify fallback watcher (best effort)
@@ -5366,9 +5476,11 @@ export async function postLaunch(
 ): Promise<void> {
   // Capture session start time before cleanup (writeSessionEnd deletes session.json)
   let sessionStartedAt: string | undefined;
+  let nativeSessionId: string | undefined;
   try {
     const sessionState = await readSessionState(cwd);
     sessionStartedAt = sessionState?.started_at;
+    nativeSessionId = sessionState?.native_session_id?.trim();
   } catch (err) {
     logCliOperationFailure(err);
     // Non-fatal
@@ -5429,6 +5541,14 @@ export async function postLaunch(
     console.error(
       `[omx] postLaunch: model instructions cleanup failed: ${err instanceof Error ? err.message : err}`,
     );
+  }
+
+  // 1.5. Re-key launch identity metadata to the real Codex session id when hooks recorded it.
+  try {
+    await reconcileLaunchIdentityMetadata(cwd, sessionId, codexHomeOverride, nativeSessionId);
+  } catch (err) {
+    logCliOperationFailure(err);
+    // Non-fatal: unified resume can still fall back to rollout metadata.
   }
 
   // 2. Archive session (write history, delete session.json)

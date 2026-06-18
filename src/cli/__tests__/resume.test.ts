@@ -19,6 +19,7 @@ function runOmx(
     encoding: 'utf-8',
     env: {
       ...process.env,
+      CODEX_SQLITE_HOME: '',
       ...envOverrides,
     },
   });
@@ -492,6 +493,168 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-unrelated-session.jsonl" ]; the
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:resume --help\b/);
       assert.doesNotMatch(result.stdout, /Unknown command: resume/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes unified CLI entries through codex resume in the recorded original identity', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-unified-cli-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      const authDir = join(home, '.omx', 'auth');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const rolloutPath = join(codexHome, 'sessions', '2026', '06', '13', 'rollout-session-unified.jsonl');
+      await mkdir(dirname(rolloutPath), { recursive: true });
+      await mkdir(authDir, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(codexHome, 'auth.json'), '{"access_token":"old"}\n');
+      await writeFile(join(authDir, 'main.json'), '{"access_token":"main-secret"}\n');
+      await writeFile(join(authDir, 'slots.json'), JSON.stringify({ version: 1, currentSlot: 'main', slots: [
+        { slot: 'main', createdAt: 'now', updatedAt: 'now', kind: 'chatgpt' }
+      ] }));
+      await writeFile(rolloutPath, '{"type":"session_meta","payload":{"id":"session-unified","cwd":"/repo","timestamp":"2026-06-13T00:00:00.000Z","omx_auth_slot":"main"}}\n');
+      await writeFile(fakeCodexPath, '#!/bin/sh\nprintf \'fake-codex:%s\\n\' "$*"\nprintf \'auth:%s\\n\' "$(cat "$CODEX_HOME/auth.json")"\n');
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume', '--unified', 'session-unified'], {
+        HOME: home,
+        CODEX_HOME: codexHome,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume session-unified/);
+      assert.match(result.stdout, /main-secret/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes unified runtime Codex home entries from their recorded home', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-unified-runtime-'));
+    try {
+      const home = join(wd, 'home');
+      const authDir = join(home, '.omx', 'auth');
+      const runtimeCodexHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-runtime-a');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const rolloutPath = join(runtimeCodexHome, 'sessions', '2026', '06', '13', 'rollout-runtime-unified.jsonl');
+      await mkdir(dirname(rolloutPath), { recursive: true });
+      await mkdir(authDir, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(runtimeCodexHome, 'auth.json'), '{"access_token":"old-runtime"}\n');
+      await writeFile(join(authDir, 'main.json'), '{"access_token":"main-secret"}\n');
+      await writeFile(join(authDir, 'slots.json'), JSON.stringify({ version: 1, currentSlot: 'main', slots: [
+        { slot: 'main', createdAt: 'now', updatedAt: 'now', kind: 'chatgpt' }
+      ] }));
+      await writeFile(rolloutPath, '{"type":"session_meta","payload":{"id":"runtime-unified","cwd":"/repo","timestamp":"2026-06-13T00:00:00.000Z","omx_auth_slot":"main"}}\n');
+      await writeFile(fakeCodexPath, `#!/bin/sh
+printf 'fake-codex:%s\n' "$*"
+printf 'codex-home:%s\n' "$CODEX_HOME"
+printf 'auth:%s\n' "$(cat "$CODEX_HOME/auth.json")"
+if [ -f "$CODEX_HOME/sessions/2026/06/13/rollout-runtime-unified.jsonl" ]; then echo runtime-rollout-present=yes; else echo runtime-rollout-present=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume', '--unified', 'runtime-unified'], {
+        HOME: home,
+        CODEX_HOME: '',
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const expectedRuntimeCodexHome = await realpath(runtimeCodexHome);
+      assert.match(result.stdout, /fake-codex:resume runtime-unified/);
+      assert.match(result.stdout, new RegExp(`codex-home:${expectedRuntimeCodexHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(result.stdout, /main-secret/);
+      assert.match(result.stdout, /runtime-rollout-present=yes/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes unified madmax entries from their real boxed Codex home', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-unified-madmax-'));
+    try {
+      const home = join(wd, 'home');
+      const runsRoot = join(wd, 'runs');
+      const runDir = join(runsRoot, 'run-associated');
+      const madmaxCodexHome = join(runDir, '.omx', 'runtime', 'codex-home', 'omx-madmax-a');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const rolloutPath = join(madmaxCodexHome, 'sessions', '2026', '06', '13', 'rollout-madmax-unified.jsonl');
+      await mkdir(runDir, { recursive: true });
+      await mkdir(dirname(rolloutPath), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(runDir, '.omxbox-run.json'), JSON.stringify({
+        source_cwd: wd,
+        run_dir: runDir,
+      }));
+      await writeFile(rolloutPath, '{"type":"session_meta","payload":{"id":"madmax-unified","cwd":"/repo","timestamp":"2026-06-13T00:00:00.000Z"}}\n');
+      await writeFile(fakeCodexPath, `#!/bin/sh
+printf 'fake-codex:%s\n' "$*"
+printf 'codex-home:%s\n' "$CODEX_HOME"
+if [ -f "$CODEX_HOME/sessions/2026/06/13/rollout-madmax-unified.jsonl" ]; then echo madmax-rollout-present=yes; else echo madmax-rollout-present=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume', '--unified', 'madmax-unified'], {
+        HOME: home,
+        CODEX_HOME: '',
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const expectedMadmaxCodexHome = await realpath(madmaxCodexHome);
+      assert.match(result.stdout, /fake-codex:resume madmax-unified/);
+      assert.equal(
+        result.stdout.includes(`codex-home:${madmaxCodexHome}`) ||
+          result.stdout.includes(`codex-home:${expectedMadmaxCodexHome}`),
+        true,
+      );
+      assert.match(result.stdout, /madmax-rollout-present=yes/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('opens unified App entries at their original read-only cache target', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-unified-app-'));
+    try {
+      const home = join(wd, 'home');
+      const appDir = join(home, 'Library', 'Application Support', 'com.openai.chat', 'codex-taskItems-v2-default-user');
+      await mkdir(appDir, { recursive: true });
+      const result = runOmx(wd, ['resume', '--unified', 'taskItems'], {
+        HOME: home,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /Open original Codex App session source/);
+      assert.match(result.stdout, /codex-taskItems-v2-default-user/);
+      assert.match(result.stdout, /read-only metadata/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

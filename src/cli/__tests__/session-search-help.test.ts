@@ -23,7 +23,7 @@ describe('omx session help', () => {
     try {
       const mainHelp = runOmx(cwd, ['--help']);
       assert.equal(mainHelp.status, 0, mainHelp.stderr || mainHelp.stdout);
-      assert.match(mainHelp.stdout, /omx resume\s+Resume Codex sessions \(supports --project and --codex-home <path>\)/i);
+      assert.match(mainHelp.stdout, /omx resume\s+Resume Codex sessions \(supports --project and --codex-home <path>; --unified <id>\)/i);
       assert.match(mainHelp.stdout, /omx autoresearch\s+\[DEPRECATED\] Use \$autoresearch; direct CLI launch removed/i);
       assert.match(mainHelp.stdout, /omx session\s+Search prior local session transcripts \(--codex-home <path> escape hatch\)/i);
 

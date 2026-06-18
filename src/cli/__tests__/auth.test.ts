@@ -57,13 +57,25 @@ describe("omx auth CLI", () => {
     try {
       const home = join(wd, "home");
       const codexHome = join(home, ".codex");
+      const authDir = join(home, ".omx", "auth");
       const bin = join(wd, "bin");
       await mkdir(codexHome, { recursive: true });
+      await mkdir(authDir, { recursive: true });
+      await writeFile(join(authDir, "previous.json"), '{"access_token":"previous-secret"}\n');
+      await writeFile(join(authDir, "slots.json"), JSON.stringify({
+        version: 1,
+        currentSlot: "previous",
+        slots: [{ slot: "previous", createdAt: "now", updatedAt: "now", kind: "chatgpt" }],
+      }));
       await writeFakeCodex(bin, `#!/bin/sh\nif [ "$1" = "login" ]; then mkdir -p "$CODEX_HOME"; printf '{"access_token":"sentinel-secret"}\\n' > "$CODEX_HOME/auth.json"; exit 0; fi\necho unexpected "$@" >&2\nexit 2\n`);
       const env = { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` };
       const add = runOmx(wd, ["auth", "add", "work"], env);
       assert.equal(add.status, 0, add.stderr);
       assert.doesNotMatch(add.stdout + add.stderr, /sentinel-secret/);
+      const metadata = JSON.parse(
+        await readFile(join(authDir, "slots.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(metadata.currentSlot, "work");
       const list = runOmx(wd, ["auth", "list", "--json"], env);
       assert.equal(list.status, 0, list.stderr);
       assert.match(list.stdout, /"slot": "work"/);
@@ -72,6 +84,35 @@ describe("omx auth CLI", () => {
       assert.equal(use.status, 0, use.stderr);
       assert.doesNotMatch(use.stdout + use.stderr, /sentinel-secret/);
       assert.equal(await readFile(join(codexHome, "auth.json"), "utf-8"), '{"access_token":"sentinel-secret"}\n');
+      const identityList = runOmx(wd, ["identity", "list"], env);
+      assert.equal(identityList.status, 0, identityList.stderr);
+      assert.match(identityList.stdout, /work/);
+      const doctor = runOmx(wd, ["identity", "doctor", "--json"], env);
+      assert.equal(doctor.status, 0, doctor.stderr);
+      assert.match(doctor.stdout, /"kind": "chatgpt"/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("switches identity slots through the compiled CLI", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-identity-use-"));
+    try {
+      const home = join(wd, "home");
+      const codexHome = join(home, ".codex");
+      const authDir = join(home, ".omx", "auth");
+      await mkdir(authDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(authDir, "main.json"), '{"access_token":"main-secret"}\n');
+      await writeFile(join(authDir, "api.json"), '{"auth_mode":"apikey","OPENAI_API_KEY":"api-secret"}\n');
+      await writeFile(join(authDir, "slots.json"), JSON.stringify({ version: 1, currentSlot: "main", slots: [
+        { slot: "main", createdAt: "now", updatedAt: "now", kind: "chatgpt", isPrimary: true },
+        { slot: "api", createdAt: "now", updatedAt: "now", kind: "api" }
+      ] }, null, 2));
+      const result = runOmx(wd, ["identity", "use", "api"], { HOME: home, CODEX_HOME: codexHome });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(await readFile(join(codexHome, "auth.json"), "utf-8"), '{"auth_mode":"apikey","OPENAI_API_KEY":"api-secret"}\n');
+      assert.doesNotMatch(result.stdout + result.stderr, /api-secret|main-secret/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
