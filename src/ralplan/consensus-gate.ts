@@ -12,6 +12,30 @@ export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
 export type RalplanConsensusBlockedReason =
   typeof RALPLAN_CONSENSUS_BLOCKED_REASONS[keyof typeof RALPLAN_CONSENSUS_BLOCKED_REASONS];
 
+export interface RalplanNativeReviewDiagnostic {
+  role: 'architect' | 'critic';
+  session_id: string | null;
+  thread_id: string | null;
+  tracker_path: string;
+  session_found: boolean;
+  thread_found: boolean;
+  kind: string | null;
+  completed: boolean;
+  problem: string | null;
+}
+
+export interface RalplanConsensusGateDiagnostic {
+  expected_schema: string[];
+  current_session_id: string | null;
+  tracker_path: string;
+  architect: RalplanNativeReviewDiagnostic;
+  critic: RalplanNativeReviewDiagnostic;
+  distinct_thread_ids: boolean | null;
+  pair_problem: string | null;
+  remediation: string[];
+  docs: string;
+}
+
 export interface RalplanConsensusGateEvidence {
   complete: boolean;
   sequence: ['architect-review', 'critic-review'];
@@ -20,6 +44,7 @@ export interface RalplanConsensusGateEvidence {
   source: string | null;
   blockedReason: RalplanConsensusBlockedReason | null;
   blockedDetails?: string[];
+  diagnostic?: RalplanConsensusGateDiagnostic;
 }
 
 export interface RalplanNativeSubagentConsensusOptions {
@@ -121,6 +146,7 @@ export function buildRalplanConsensusGateFromSources(
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_architect_review, 'architect', nativeBlockedEvidence.options),
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_critic_review, 'critic', nativeBlockedEvidence.options),
       ].filter((detail): detail is string => Boolean(detail)),
+      diagnostic: buildTrackerBackedNativeConsensusDiagnostic(nativeBlockedEvidence, nativeBlockedEvidence.options),
     };
   }
 
@@ -568,6 +594,83 @@ function nativeReviewThreadId(review: Record<string, unknown> | null): string {
   return typeof review?.thread_id === 'string' ? review.thread_id.trim() : '';
 }
 
+function currentTransitionSessionId(
+  evidence: {
+    ralplan_architect_review: Record<string, unknown> | null;
+    ralplan_critic_review: Record<string, unknown> | null;
+  },
+  options: RalplanNativeSubagentConsensusOptions,
+): string {
+  const transitionSessionId = typeof options.sessionId === 'string' ? options.sessionId.trim() : '';
+  return transitionSessionId
+    || nativeReviewSessionId(evidence.ralplan_architect_review)
+    || nativeReviewSessionId(evidence.ralplan_critic_review);
+}
+
+function buildTrackerBackedNativeConsensusDiagnostic(
+  evidence: {
+    ralplan_architect_review: Record<string, unknown> | null;
+    ralplan_critic_review: Record<string, unknown> | null;
+  },
+  options: RalplanNativeSubagentConsensusOptions,
+): RalplanConsensusGateDiagnostic {
+  const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+  const trackerPath = cwd ? subagentTrackingPath(cwd) : '.omx/state/subagent-tracking.json';
+  const currentSessionId = currentTransitionSessionId(evidence, options);
+  const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
+  const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
+  return {
+    expected_schema: [
+      '.omx/state/subagent-tracking.json contains:',
+      'sessions["<current_session_id>"].threads["<architect_thread_id>"].kind = "subagent"',
+      'sessions["<current_session_id>"].threads["<critic_thread_id>"].kind = "subagent"',
+      'both threads have completed_at',
+      'architect and critic thread IDs are distinct',
+    ],
+    current_session_id: currentSessionId || null,
+    tracker_path: trackerPath,
+    architect: buildNativeReviewDiagnostic(evidence.ralplan_architect_review, 'architect', options),
+    critic: buildNativeReviewDiagnostic(evidence.ralplan_critic_review, 'critic', options),
+    distinct_thread_ids: architectThreadId && criticThreadId ? architectThreadId !== criticThreadId : null,
+    pair_problem: trackerBackedNativeReviewPairProblem(evidence, options),
+    remediation: [
+      'Re-run native ralplan Architect/Critic reviews.',
+      'Or repair the review artifact so agent_role, provenance_kind, session_id, thread_id, and tracker_path point to completed native subagent threads in the current tracker.',
+    ],
+    docs: 'docs/contracts/ralplan-consensus-gate.md',
+  };
+}
+
+function buildNativeReviewDiagnostic(
+  review: Record<string, unknown> | null,
+  agentRole: 'architect' | 'critic',
+  options: RalplanNativeSubagentConsensusOptions,
+): RalplanNativeReviewDiagnostic {
+  const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+  const trackerPath = cwd ? subagentTrackingPath(cwd) : '.omx/state/subagent-tracking.json';
+  const problem = trackerBackedNativeReviewProblem(review, agentRole, options);
+  const sessionId = review
+    ? (typeof options.sessionId === 'string' && options.sessionId.trim()
+        ? options.sessionId.trim()
+        : nativeReviewSessionId(review))
+    : '';
+  const threadId = nativeReviewThreadId(review);
+  const tracking = cwd && sessionId ? readJsonState(trackerPath) : null;
+  const session = asRecord(asRecord(tracking?.sessions)?.[sessionId]);
+  const thread = asRecord(asRecord(session?.threads)?.[threadId]);
+  const completedAt = typeof thread?.completed_at === 'string' ? thread.completed_at.trim() : '';
+  return {
+    role: agentRole,
+    session_id: sessionId || null,
+    thread_id: threadId || null,
+    tracker_path: trackerPath,
+    session_found: Boolean(session),
+    thread_found: Boolean(thread),
+    kind: typeof thread?.kind === 'string' ? thread.kind : null,
+    completed: Boolean(completedAt),
+    problem,
+  };
+}
 function trackerBackedNativeReviewPairProblem(
   evidence: {
     ralplan_architect_review: Record<string, unknown> | null;

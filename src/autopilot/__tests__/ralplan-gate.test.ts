@@ -914,6 +914,123 @@ describe('autopilot ralplan gate', () => {
     }
   });
 
+  it('explains tracker-backed native review schema and observed missing session values', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-diagnostic-missing-session-'));
+    const sessionId = 'sess-autopilot-diagnostic-missing-session';
+    const trackingPath = subagentTrackingPath(cwd);
+    try {
+      await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(trackingPath, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+      }, null, 2));
+
+      const state = {
+        current_phase: 'ralplan',
+        handoff_artifacts: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-architect',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-06-12T10:02:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-critic',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-06-12T10:03:00.000Z',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, currentState: state });
+      assert.equal(decision.allowed, false);
+      assert.equal(decision.evidence?.diagnostic?.current_session_id, sessionId);
+      assert.equal(decision.evidence?.diagnostic?.architect.session_found, false);
+      assert.equal(decision.evidence?.diagnostic?.architect.thread_found, false);
+      assert.equal(decision.evidence?.diagnostic?.distinct_thread_ids, true);
+      const error = buildAutopilotRalplanUltragoalGateError(decision);
+      assert.match(error, /Expected:/);
+      assert.match(error, /sessions\["<current_session_id>"\]\.threads\["<architect_thread_id>"\]\.kind = "subagent"/);
+      assert.match(error, /current_session_id: sess-autopilot-diagnostic-missing-session/);
+      assert.match(error, /architect thread_id: thread-architect found: no kind=missing completed=no/);
+      assert.match(error, /session_id: sess-autopilot-diagnostic-missing-session session_found=no/);
+      assert.match(error, /Re-run native ralplan Architect\/Critic reviews/);
+      assert.match(error, /docs\/contracts\/ralplan-consensus-gate\.md/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('explains observed tracker thread kind and completion checks', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-diagnostic-thread-values-'));
+    const sessionId = 'sess-autopilot-diagnostic-thread-values';
+    const trackingPath = subagentTrackingPath(cwd);
+    try {
+      await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(trackingPath, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            threads: {
+              'thread-architect': { thread_id: 'thread-architect', kind: 'leader', turn_count: 1 },
+              'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', completed_at: '2026-06-12T10:03:00.000Z', turn_count: 1 },
+            },
+          },
+        },
+      }, null, 2));
+
+      const state = {
+        current_phase: 'ralplan',
+        handoff_artifacts: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-architect',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-critic',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, currentState: state });
+      assert.equal(decision.allowed, false);
+      assert.equal(decision.evidence?.diagnostic?.architect.session_found, true);
+      assert.equal(decision.evidence?.diagnostic?.architect.thread_found, true);
+      assert.equal(decision.evidence?.diagnostic?.architect.kind, 'leader');
+      assert.equal(decision.evidence?.diagnostic?.architect.completed, false);
+      const error = buildAutopilotRalplanUltragoalGateError(decision);
+      assert.match(error, /architect thread_id: thread-architect found: yes kind=leader completed=no/);
+      assert.match(error, /critic thread_id: thread-critic found: yes kind=subagent completed=yes/);
+      assert.match(error, /distinct_thread_ids: yes/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects native review evidence from the session leader even when malformed tracking marks it as subagent', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-leader-spoof-'));
     const sessionId = 'sess-autopilot-leader-spoof';

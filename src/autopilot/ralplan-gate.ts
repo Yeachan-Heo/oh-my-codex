@@ -109,6 +109,36 @@ function ralplanConsensusBlockedReason(evidence: RalplanConsensusGateEvidence): 
 export function buildAutopilotRalplanUltragoalGateError(
   decision: AutopilotRalplanUltragoalGateDecision,
 ): string {
+  const diagnostic = decision.evidence?.diagnostic;
+  if (diagnostic) {
+    const architect = diagnostic.architect;
+    const critic = diagnostic.critic;
+    const renderReview = (label: string, review: typeof architect) => [
+      `  ${label} thread_id: ${review.thread_id ?? 'missing'} found: ${review.thread_found ? 'yes' : 'no'} kind=${review.kind ?? 'missing'} completed=${review.completed ? 'yes' : 'no'}`,
+      `    session_id: ${review.session_id ?? 'missing'} session_found=${review.session_found ? 'yes' : 'no'}`,
+      review.problem ? `    problem: ${review.problem}` : null,
+    ].filter((line): line is string => Boolean(line)).join('\n');
+    return [
+      `Cannot transition ralplan -> ultragoal: ${decision.reason}.`,
+      '',
+      'Expected:',
+      ...diagnostic.expected_schema.map((line) => `  ${line}`),
+      '',
+      'Observed:',
+      `  current_session_id: ${diagnostic.current_session_id ?? 'missing'}`,
+      `  tracker_path: ${diagnostic.tracker_path}`,
+      renderReview('architect', architect),
+      renderReview('critic', critic),
+      `  distinct_thread_ids: ${diagnostic.distinct_thread_ids === null ? 'unknown' : diagnostic.distinct_thread_ids ? 'yes' : 'no'}`,
+      diagnostic.pair_problem ? `  pair_problem: ${diagnostic.pair_problem}` : null,
+      '',
+      'Fix:',
+      ...diagnostic.remediation.map((line) => `  ${line}`),
+      '',
+      'Docs:',
+      `  ${diagnostic.docs}`,
+    ].join('\n');
+  }
   const details = decision.evidence?.blockedDetails?.length
     ? ` Details: ${decision.evidence.blockedDetails.join('; ')}.`
     : '';
