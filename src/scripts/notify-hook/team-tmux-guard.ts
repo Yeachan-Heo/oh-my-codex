@@ -190,10 +190,12 @@ export async function sendPaneInput({
     deleteBufferArgv: pasteArgv.deleteBufferArgv,
   };
 
+  let bufferSet = false;
   try {
     if (typePrompt) {
       try {
         await runProcess('tmux', pasteArgv.setBufferArgv, 3000);
+        bufferSet = true;
       } catch (error) {
         return {
           ok: false,
@@ -254,9 +256,6 @@ export async function sendPaneInput({
       }
       await runProcess('tmux', submit, 3000);
     }
-    if (typePrompt) {
-      await runProcess('tmux', pasteArgv.deleteBufferArgv, 3000).catch(() => {});
-    }
     return { ok: true, sent: true, reason: 'sent', paneTarget: target, argv };
   } catch (error) {
     return {
@@ -267,6 +266,10 @@ export async function sendPaneInput({
       argv,
       error: error instanceof Error ? error.message : safeString(error),
     };
+  } finally {
+    if (bufferSet) {
+      await runProcess('tmux', pasteArgv.deleteBufferArgv, 3000).catch(() => {});
+    }
   }
 }
 

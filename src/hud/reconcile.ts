@@ -382,7 +382,7 @@ export async function reconcileHudForPromptSubmit(
   // recreate the cramped, unreadable 2-line HUD the launch path already
   // declined to add. Default behavior is preserved for normal/unknown heights.
   // (closes #2754)
-  if (hudPaneIds.length === 0 && deps.readCurrentWindowSize) {
+  if (hudPaneIds.length === 0 && (deps.readCurrentWindowSize || !deps.listCurrentWindowPanes)) {
     const readWindowSize = deps.readCurrentWindowSize ?? ((paneId) => readCurrentWindowSize(undefined, paneId));
     const windowHeight = readWindowSize(currentPaneId).height;
     if (isTmuxWindowTooCrampedForHudSplit(windowHeight)) {
