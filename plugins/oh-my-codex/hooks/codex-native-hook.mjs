@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { extname } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -184,6 +185,22 @@ function readConfiguredLauncher() {
   return readPinnedLauncher() ?? { command: 'omx', argsPrefix: [] };
 }
 
+function buildSpawnOptions(command) {
+  const options = {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: process.env,
+  };
+
+  if (process.platform !== 'win32') return options;
+
+  const extension = extname(command).toLowerCase();
+  if (extension === '.exe' || extension === '.com') {
+    return { ...options, windowsHide: true };
+  }
+
+  return { ...options, shell: true, windowsHide: true };
+}
+
 function readJsonFile(path) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));
@@ -318,11 +335,7 @@ async function main() {
   }
 
   const { command, argsPrefix } = launcher;
-  const child = spawn(command, [...argsPrefix, 'codex-native-hook'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env,
-    shell: process.platform === 'win32',
-  });
+  const child = spawn(command, [...argsPrefix, 'codex-native-hook'], buildSpawnOptions(command));
 
   const stdoutChunks = [];
   let stdoutBytes = 0;

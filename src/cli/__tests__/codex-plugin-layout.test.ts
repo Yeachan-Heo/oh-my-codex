@@ -447,6 +447,17 @@ describe('official Codex plugin layout', () => {
     }
   });
 
+  it('keeps the Windows plugin hook launcher on direct node.exe spawn instead of shell wrapping', async () => {
+    const launcher = await readFile(pluginHookLauncherPath, 'utf-8');
+
+    assert.match(launcher, /function buildSpawnOptions\(command\)/);
+    assert.match(launcher, /extname\(command\)\.toLowerCase\(\)/);
+    assert.match(launcher, /extension === '\.exe' \|\| extension === '\.com'/);
+    assert.match(launcher, /return \{ \.\.\.options, windowsHide: true \};/);
+    assert.match(launcher, /return \{ \.\.\.options, shell: true, windowsHide: true \};/);
+    assert.doesNotMatch(launcher, /shell:\s*process\.platform === 'win32'/);
+  });
+
   it('emits Stop JSON when the plugin hook pinned launcher is invalid', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
