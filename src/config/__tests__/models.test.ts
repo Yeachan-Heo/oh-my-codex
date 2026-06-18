@@ -204,6 +204,7 @@ describe('getModelForMode', () => {
   });
 
   it('returns low-complexity team model when configured', async () => {
+    // Intentional legacy model fixture: verifies explicit user config is preserved, not used as a runtime default.
     await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
     assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
   });
@@ -289,6 +290,7 @@ describe('getModelForMode', () => {
   });
 
   it('keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL', async () => {
+    // Intentional legacy model fixture: explicit user config must outrank current spark defaults.
     process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark-fast';
     await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
     assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
