@@ -423,6 +423,16 @@ export function buildGitBranchLabel(
 }
 
 const TERMINAL_OR_INACTIVE_PHASES = new Set(['complete', 'completed', 'cancelled', 'canceled', 'failed', 'inactive', 'cleared']);
+function normalizeCanonicalHudPhase(phase: string | undefined): string | undefined {
+  const raw = sanitizeOptionalString(phase);
+  if (!raw) return undefined;
+  const namespaced = raw.includes(':') ? raw.slice(raw.lastIndexOf(':') + 1) : raw;
+  const normalized = sanitizeOptionalString(namespaced)?.toLowerCase().replace(/_/g, '-');
+  if (!normalized || TERMINAL_OR_INACTIVE_PHASES.has(normalized)) return undefined;
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(normalized)) return undefined;
+  return normalized;
+}
+
 
 function isMissingTerminalOrInactiveDetail(detail: { active?: boolean; current_phase?: string } | null): boolean {
   if (!detail) return true;
@@ -453,12 +463,13 @@ function mergePhase<T extends { active?: boolean; current_phase?: string }>(
   detail: T | null,
   canonicalPhase?: string,
 ): T | null {
+  const normalizedCanonicalPhase = normalizeCanonicalHudPhase(canonicalPhase);
   if (detail?.active === true) {
-    if (!canonicalPhase || detail.current_phase) return detail;
-    return { ...detail, current_phase: canonicalPhase };
+    if (detail.current_phase || !normalizedCanonicalPhase) return detail;
+    return { ...detail, current_phase: normalizedCanonicalPhase };
   }
-  if (!canonicalPhase) return null;
-  return { active: true, current_phase: canonicalPhase } as T;
+  if (!normalizedCanonicalPhase) return null;
+  return { active: true, current_phase: normalizedCanonicalPhase } as T;
 }
 
 async function readCanonicalTeamPhase(cwd: string, teamDetail: TeamStateForHud | null): Promise<string | undefined> {

@@ -180,6 +180,21 @@ if [[ "$cmd" == "display-message" ]]; then
   echo "bad display target: $target / $format" >&2
   exit 1
 fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
+fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
@@ -302,6 +317,21 @@ if [[ "$cmd" == "display-message" ]]; then
     echo "${managedSessionName}"
     exit 0
   fi
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
@@ -435,6 +465,21 @@ if [[ "$cmd" == "display-message" ]]; then
   fi
   echo "bad display target: $target / $format" >&2
   exit 1
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
@@ -575,6 +620,21 @@ if [[ "$cmd" == "display-message" ]]; then
   if [[ "$format" == "#S" && "$target" == "%42" ]]; then echo "${wrongSessionName}"; exit 0; fi
   exit 1
 fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
+fi
 if [[ "$cmd" == "send-keys" ]]; then
   [[ "$*" == *"%99"* ]]
   exit $?
@@ -674,6 +734,21 @@ if [[ "$cmd" == "display-message" ]]; then
   if [[ "$format" == "#{pane_current_command}" && "$target" == "%42" ]]; then echo "codex"; exit 0; fi
   if [[ "$format" == "#S" && "$target" == "%42" ]]; then echo "${wrongSessionName}"; exit 0; fi
   exit 1
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
   echo "send-keys must not run" >&2
@@ -801,6 +876,21 @@ if [[ "$cmd" == "display-message" ]]; then
   fi
   echo "bad display target: $target / $format" >&2
   exit 1
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
@@ -1016,6 +1106,21 @@ if [[ "$cmd" == "display-message" ]]; then
   echo "bad display target: $target / $format" >&2
   exit 1
 fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
+fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
@@ -1148,6 +1253,21 @@ if [[ "$cmd" == "list-panes" ]]; then
   fi
   exit 1
 fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
+fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
@@ -1261,6 +1381,21 @@ if [[ "$cmd" == "list-panes" ]]; then
   echo "can't find session" >&2
   exit 1
 fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
+fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
@@ -1361,6 +1496,21 @@ if [[ "$cmd" == "display-message" ]]; then
   echo "bad display target: $target / $format" >&2
   exit 1
 fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
+fi
 if [[ "$cmd" == "send-keys" ]]; then
   echo "unexpected send-keys to stale mode pane" >&2
   exit 1
@@ -1447,6 +1597,21 @@ if [[ "$cmd" == "display-message" ]]; then
   if [[ "$format" == "#S" && "$target" == "%42" ]]; then echo "unowned-session"; exit 0; fi
   echo "bad display target: $target / $format" >&2
   exit 1
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
   echo "unexpected send-keys without OMX owner" >&2
@@ -1538,6 +1703,21 @@ if [[ "$cmd" == "display-message" ]]; then
   if [[ "$format" == "#{window_id}" && "$target" == "%42" ]]; then echo "@wrong"; exit 0; fi
   echo "bad display target: $target / $format" >&2
   exit 1
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
   echo "unexpected send-keys to wrong window" >&2
@@ -1639,6 +1819,21 @@ fi
 if [[ "$cmd" == "list-panes" ]]; then
   echo "can't find session" >&2
   exit 1
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
   echo "unexpected send-keys" >&2
@@ -1757,6 +1952,21 @@ if [[ "$cmd" == "list-panes" ]]; then
   echo "can't find session" >&2
   exit 1
 fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
+  exit 0
+fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
@@ -1869,6 +2079,21 @@ if [[ "$cmd" == "capture-pane" ]]; then
 Working...
 • Running tests (3m 12s • esc to interrupt)
 EOF
+  exit 0
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${cwd}/tmux-buffer" ]]; then cat "${cwd}/tmux-buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${cwd}/tmux-buffer"
   exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then

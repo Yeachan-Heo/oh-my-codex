@@ -142,6 +142,17 @@ export interface UltragoalAggregateCompletion {
   codexGoal?: unknown;
 }
 
+export interface UltragoalArchitectureInvariantEvidence {
+  invariant: string;
+  source: string;
+  status: 'proved';
+  implementationEvidence: string;
+  testEvidence: string;
+  reviewEvidence: string;
+  blockers?: never;
+}
+
+
 export interface UltragoalPlan {
   version: 1;
   createdAt: string;
@@ -251,6 +262,13 @@ export interface UltragoalQualityGate {
       };
     };
   };
+  architectureInvariantGate: {
+    status: 'passed';
+    sourceArtifacts: string[];
+    invariants: UltragoalArchitectureInvariantEvidence[];
+    evidence: string;
+  };
+
 }
 
 export class UltragoalError extends Error {}
@@ -1174,9 +1192,171 @@ export async function steerUltragoal(cwd: string, proposal: UltragoalSteeringPro
   });
 }
 
-function validateQualityGate(value: unknown): UltragoalQualityGate {
+function normalizeInvariantText(value: string): string {
+  return value.replace(/[`*_~]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+interface RequiredArchitectureInvariant {
+  invariant: string;
+  sourceArtifact: string;
+  source: string;
+}
+
+function requiredInvariantSourceKey(invariant: RequiredArchitectureInvariant): string {
+  return `${normalizeInvariantText(invariant.invariant)}\u0000${invariant.sourceArtifact}`;
+}
+
+function uniqueRequiredArchitectureInvariants(invariants: readonly RequiredArchitectureInvariant[]): RequiredArchitectureInvariant[] {
+  const seen = new Set<string>();
+  const unique: RequiredArchitectureInvariant[] = [];
+  for (const invariant of invariants) {
+    const key = requiredInvariantSourceKey(invariant);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(invariant);
+  }
+  return unique;
+}
+
+function architectureInvariantSectionSlug(label: string): string {
+  return label
+    .replace(/[`*_~]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'architecture-invariants';
+}
+
+function normalizeSourceArtifact(value: string): string {
+  return value.trim().split('#', 1)[0]?.replace(/\\/g, '/') ?? '';
+}
+
+function sourceReferencesArtifact(source: string, artifact: string): boolean {
+  return normalizeSourceArtifact(source) === normalizeSourceArtifact(artifact);
+}
+
+function sourceReferencesAnyArtifact(source: string, artifacts: readonly string[]): boolean {
+  return artifacts.some((artifact) => sourceReferencesArtifact(source, artifact));
+}
+
+function invariantFromInlineDeclaration(line: string): string | undefined {
+  const trimmed = cleanLine(line).replace(/^['"]|['"]$/g, '').trim();
+  const match = /\b(?:(?:non-negotiable|required)\s+)?(?:architecture|architectural|domain)\s+(?:invariants?|constraints?|non-negotiables?)\s*:\s*(.+)$/i.exec(trimmed)
+    ?? /\bnon-negotiables?\s+(?:architecture|architectural|domain)\s+(?:invariants?|constraints?)\s*:\s*(.+)$/i.exec(trimmed);
+  const invariant = match?.[1]?.trim().replace(/[.;]\s*$/, '').trim();
+  return invariant || undefined;
+}
+
+function extractArchitectureInvariantsFromArtifact(text: string, sourceArtifact: string, sourcePrefix?: string): RequiredArchitectureInvariant[] {
+  const lines = text.split(/\r?\n/);
+  const invariants: RequiredArchitectureInvariant[] = [];
+  let inInvariantSection = false;
+  let sectionSlug = 'architecture-invariants';
+  for (const line of lines) {
+    const heading = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const label = heading[1] ?? '';
+      const normalizedLabel = label.toLowerCase();
+      inInvariantSection = /\b(?:architecture|architectural|domain|non-negotiable)\b/.test(normalizedLabel) && /\binvariants?\b|\bconstraints?\b|\bnon-negotiables?\b/.test(normalizedLabel);
+      if (inInvariantSection) sectionSlug = architectureInvariantSectionSlug(label);
+      continue;
+    }
+    const inline = invariantFromInlineDeclaration(line);
+    if (inline) {
+      invariants.push({ invariant: inline, sourceArtifact, source: `${sourceArtifact}#${sourcePrefix ?? 'inline-architecture-invariant'}` });
+      continue;
+    }
+    if (!inInvariantSection) continue;
+    const item = cleanLine(line);
+    if (!item || item === line.trim()) continue;
+    invariants.push({ invariant: item, sourceArtifact, source: `${sourceArtifact}#${sourcePrefix ? `${sourcePrefix}-${sectionSlug}` : sectionSlug}` });
+  }
+  return uniqueRequiredArchitectureInvariants(invariants.map((item) => ({ ...item, invariant: item.invariant.trim() })).filter((item) => item.invariant));
+}
+
+function extractArchitectureInvariantsFromBrief(brief: string): RequiredArchitectureInvariant[] {
+  return extractArchitectureInvariantsFromArtifact(brief, `${ULTRAGOAL_DIR}/${ULTRAGOAL_BRIEF}`);
+}
+
+function extractArchitectureInvariantsFromAcceptedSteering(entries: readonly UltragoalLedgerEntry[]): RequiredArchitectureInvariant[] {
+  const invariants: RequiredArchitectureInvariant[] = [];
+  for (const [index, entry] of entries.entries()) {
+    if (entry.event !== 'steering_accepted' || !entry.steering?.invariant.accepted) continue;
+    const sourcePrefix = `steering-${index + 1}`;
+    const steering = entry.steering;
+    const texts = [
+      entry.evidence,
+      entry.message,
+      steering.evidence,
+      steering.rationale,
+      steering.directiveText,
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    for (const text of texts) {
+      invariants.push(...extractArchitectureInvariantsFromArtifact(text, `${ULTRAGOAL_DIR}/${ULTRAGOAL_LEDGER}`, sourcePrefix));
+    }
+  }
+  return uniqueRequiredArchitectureInvariants(invariants);
+}
+
+async function collectRequiredArchitectureInvariants(cwd: string): Promise<RequiredArchitectureInvariant[]> {
+  const briefInvariants = extractArchitectureInvariantsFromBrief(await readFile(ultragoalBriefPath(cwd), 'utf-8'));
+  const steeringInvariants = extractArchitectureInvariantsFromAcceptedSteering(await readSteeringLedgerEntries(cwd));
+  return uniqueRequiredArchitectureInvariants([...briefInvariants, ...steeringInvariants]);
+}
+
+
+function validateArchitectureInvariantGate(gate: Partial<UltragoalQualityGate>, requiredInvariants: readonly RequiredArchitectureInvariant[]): void {
+  const invariantGate = gate.architectureInvariantGate;
+  if (!invariantGate || typeof invariantGate !== 'object') {
+    throw new UltragoalError('Final quality gate is missing architectureInvariantGate evidence; include derived architecture/domain invariants, source artifacts, implementation/test/review evidence, or record final blockers for unproved invariants.');
+  }
+  if (invariantGate.status !== 'passed') {
+    throw new UltragoalError('Final architecture-invariant gate requires architectureInvariantGate.status="passed"; record blocker-resolution work for unproved invariants.');
+  }
+  if (!Array.isArray(invariantGate.sourceArtifacts)) {
+    throw new UltragoalError('Final architecture-invariant gate requires architectureInvariantGate.sourceArtifacts.');
+  }
+  const sourceArtifacts = invariantGate.sourceArtifacts.map((source) => assertNonEmpty(source, 'architectureInvariantGate.sourceArtifacts[]'));
+  for (const required of requiredInvariants) {
+    if (!sourceArtifacts.some((source) => sourceReferencesArtifact(source, required.sourceArtifact))) {
+      throw new UltragoalError(`Final architecture-invariant gate sourceArtifacts must include required invariant source artifact: ${required.sourceArtifact}`);
+    }
+  }
+  assertNonEmpty(invariantGate.evidence, 'architectureInvariantGate.evidence');
+  if (!Array.isArray(invariantGate.invariants)) {
+    throw new UltragoalError('Final architecture-invariant gate requires architectureInvariantGate.invariants.');
+  }
+  const provided = new Map<string, UltragoalArchitectureInvariantEvidence[]>();
+  for (const invariant of invariantGate.invariants) {
+    if (!invariant || typeof invariant !== 'object') throw new UltragoalError('Final architecture-invariant gate invariants must be objects.');
+    const record = invariant as Partial<UltragoalArchitectureInvariantEvidence> & { blockers?: unknown };
+    const text = assertNonEmpty(record.invariant, 'architectureInvariantGate.invariants[].invariant');
+    const source = assertNonEmpty(record.source, 'architectureInvariantGate.invariants[].source');
+    if (!sourceReferencesAnyArtifact(source, sourceArtifacts)) {
+      throw new UltragoalError(`Final architecture invariant "${text}" source must reference one of architectureInvariantGate.sourceArtifacts; decorative provenance labels are not sufficient.`);
+    }
+    if (record.status !== 'proved') throw new UltragoalError(`Final architecture invariant "${text}" is not proved; record blocker-resolution work before final completion.`);
+    if (record.blockers !== undefined) throw new UltragoalError(`Final architecture invariant "${text}" has blockers; record blocker-resolution work before final completion.`);
+    assertNonEmpty(record.implementationEvidence, 'architectureInvariantGate.invariants[].implementationEvidence');
+    assertNonEmpty(record.testEvidence, 'architectureInvariantGate.invariants[].testEvidence');
+    assertNonEmpty(record.reviewEvidence, 'architectureInvariantGate.invariants[].reviewEvidence');
+    const key = normalizeInvariantText(text);
+    const records = provided.get(key) ?? [];
+    records.push(record as UltragoalArchitectureInvariantEvidence);
+    provided.set(key, records);
+  }
+  for (const required of requiredInvariants) {
+    const matches = provided.get(normalizeInvariantText(required.invariant)) ?? [];
+    if (matches.length === 0) {
+      throw new UltragoalError(`Final architecture-invariant gate is missing proof for required invariant from ${required.sourceArtifact}: ${required.invariant}`);
+    }
+    if (!matches.some((record) => sourceReferencesArtifact(record.source, required.sourceArtifact))) {
+      throw new UltragoalError(`Final architecture-invariant gate proof for required invariant must reference ${required.sourceArtifact}: ${required.invariant}`);
+    }
+  }
+}
+
+function validateQualityGate(value: unknown, requiredInvariants: readonly RequiredArchitectureInvariant[] = []): UltragoalQualityGate {
   if (!value || typeof value !== 'object') {
-    throw new UltragoalError('Final ultragoal completion requires --quality-gate-json with ai-slop-cleaner, verification, and code-review evidence.');
+    throw new UltragoalError('Final ultragoal completion requires --quality-gate-json with ai-slop-cleaner, verification, code-review, and architecture-invariant evidence.');
   }
   const gate = value as Partial<UltragoalQualityGate>;
   const cleaner = gate.aiSlopCleaner;
@@ -1221,6 +1401,7 @@ function validateQualityGate(value: unknown): UltragoalQualityGate {
     throw new UltragoalError('Final code-review must use an independent architect subagent; self-review or default/authoring-lane review cannot approve the ultragoal gate.');
   }
   assertNonEmpty(architect.evidence, 'codeReview.independentReview.architect.evidence');
+  validateArchitectureInvariantGate(gate, requiredInvariants);
   return gate as UltragoalQualityGate;
 }
 
@@ -1366,8 +1547,11 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     }
     if (finalRunCheckpoint && !options.allowActiveFinalCodexGoal) goal.evidence = options.evidence;
   }
+  const requiredArchitectureInvariants = options.status === 'complete' && (aggregateCompletion !== undefined || (isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal))
+    ? await collectRequiredArchitectureInvariants(cwd)
+    : [];
   const qualityGate = options.status === 'complete' && (aggregateCompletion !== undefined || (isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal))
-    ? validateQualityGate(options.qualityGate)
+    ? validateQualityGate(options.qualityGate, requiredArchitectureInvariants)
     : undefined;
   if (aggregateCompletion) {
     plan.aggregateCompletion = aggregateCompletion;

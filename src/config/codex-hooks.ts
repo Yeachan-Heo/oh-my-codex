@@ -44,6 +44,11 @@ export interface ManagedCodexHookTrustState {
   trusted_hash: string;
 }
 
+export interface CodexHooksJsonTrustStateEntry {
+  trusted_hash: string;
+  enabled?: boolean;
+}
+
 export interface DedupedCodexHookConfigPath {
   path: string;
   reason: "unique";
@@ -619,6 +624,42 @@ export async function discoverCodexHookConfigPaths(
   return dedupeCodexHookConfigPaths(candidates, root);
 }
 
+function collectTrustStateEntries(
+  value: unknown,
+): Record<string, CodexHooksJsonTrustStateEntry> {
+  if (!isPlainObject(value)) return {};
+
+  const entries: Record<string, CodexHooksJsonTrustStateEntry> = {};
+  for (const [key, rawEntry] of Object.entries(value)) {
+    if (!isPlainObject(rawEntry) || typeof rawEntry.trusted_hash !== "string") {
+      continue;
+    }
+    entries[key] = {
+      trusted_hash: rawEntry.trusted_hash,
+      ...(typeof rawEntry.enabled === "boolean" ? { enabled: rawEntry.enabled } : {}),
+    };
+  }
+  return entries;
+}
+
+export function extractCodexHooksJsonTrustState(
+  content: string | null | undefined,
+): Record<string, CodexHooksJsonTrustStateEntry> {
+  if (typeof content !== "string") return {};
+  const parsed = parseCodexHooksConfig(content);
+  if (!parsed) return {};
+  return {
+    ...collectTrustStateEntries(parsed.hooks.state),
+    ...collectTrustStateEntries(parsed.root.state),
+  };
+}
+
+export function hasCodexHooksJsonTopLevelState(content: string): boolean | null {
+  const parsed = parseCodexHooksConfig(content);
+  if (!parsed) return null;
+  return Object.hasOwn(parsed.root, "state");
+}
+
 export function mergeManagedCodexHooksConfig(
   existingContent: string | null | undefined,
   pkgRoot: string,
@@ -643,9 +684,7 @@ export function mergeManagedCodexHooksConfig(
 
   const nextRoot = parsed ? cloneJson(parsed.root) : {};
   const nextHooks = parsed ? cloneJson(parsed.hooks) : {};
-  const misplacedHookState = isPlainObject(nextHooks.state)
-    ? cloneJson(nextHooks.state)
-    : {};
+  delete nextRoot.state;
   delete nextHooks.state;
 
   for (const eventName of MANAGED_HOOK_EVENTS) {
@@ -667,31 +706,6 @@ export function mergeManagedCodexHooksConfig(
     ];
   }
 
-  const existingRootState = isPlainObject(nextRoot.state)
-    ? cloneJson(nextRoot.state)
-    : {};
-  const nextState = {
-    ...misplacedHookState,
-    ...existingRootState,
-  };
-
-  const managedTrustState = hooksPath
-    ? buildManagedCodexHookTrustState(hooksPath, pkgRoot, resolvedOptions)
-    : {};
-  for (const [key, hookState] of Object.entries(managedTrustState)) {
-    const existingHookState = isPlainObject(nextState[key])
-      ? nextState[key]
-      : {};
-    nextState[key] = {
-      ...existingHookState,
-      trusted_hash: hookState.trusted_hash,
-    };
-  }
-  if (Object.keys(nextState).length > 0) {
-    nextRoot.state = nextState;
-  } else if (isPlainObject(nextRoot.state)) {
-    delete nextRoot.state;
-  }
 
   if (Object.keys(nextHooks).length > 0) {
     nextRoot.hooks = nextHooks;
@@ -712,9 +726,7 @@ export function removeManagedCodexHooks(
 
   const nextRoot = cloneJson(parsed.root);
   const nextHooks = cloneJson(parsed.hooks);
-  const misplacedHookState = isPlainObject(nextHooks.state)
-    ? cloneJson(nextHooks.state)
-    : {};
+  delete nextRoot.state;
   delete nextHooks.state;
   let removedCount = 0;
 
@@ -742,23 +754,6 @@ export function removeManagedCodexHooks(
   }
 
   const hasRemainingHookEntries = Object.keys(nextHooks).length > 0;
-  if (hasRemainingHookEntries) {
-    const existingRootState = isPlainObject(nextRoot.state)
-      ? cloneJson(nextRoot.state)
-      : {};
-    const nextState = {
-      ...misplacedHookState,
-      ...existingRootState,
-    };
-    if (Object.keys(nextState).length > 0) {
-      nextRoot.state = nextState;
-    } else if (isPlainObject(nextRoot.state)) {
-      delete nextRoot.state;
-    }
-  } else {
-    delete nextRoot.state;
-  }
-
   if (hasRemainingHookEntries) {
     nextRoot.hooks = nextHooks;
   } else {

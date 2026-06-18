@@ -131,6 +131,171 @@ describe('searchSessionHistory', () => {
     }
   });
 
+  it('discovers generated project runtime Codex homes alongside the default home', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-search-project-runtime-'));
+    const defaultCodexHome = join(cwd, 'default-codex-home');
+    const projectRuntimeHome = join(cwd, '.omx', 'runtime', 'codex-home', 'omx-runtime-a');
+    try {
+      await writeRollout(defaultCodexHome, '2026-03-10T12:00:00.000Z', 'rollout-default.jsonl', [
+        {
+          type: 'session_meta',
+          payload: {
+            id: 'default-session',
+            timestamp: '2026-03-10T12:00:00.000Z',
+            cwd,
+          },
+        },
+        {
+          type: 'event_msg',
+          payload: {
+            type: 'user_message',
+            message: 'project runtime discovery should include default history',
+          },
+        },
+      ]);
+      await writeRollout(projectRuntimeHome, '2026-03-11T12:00:00.000Z', 'rollout-runtime.jsonl', [
+        {
+          type: 'session_meta',
+          payload: {
+            id: 'runtime-session',
+            timestamp: '2026-03-11T12:00:00.000Z',
+            cwd,
+          },
+        },
+        {
+          type: 'event_msg',
+          payload: {
+            type: 'user_message',
+            message: 'project runtime discovery should include generated history',
+          },
+        },
+      ]);
+
+      const previousCodexHome = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = defaultCodexHome;
+      try {
+        const report = await searchSessionHistory({
+          query: 'project runtime discovery',
+          cwd,
+          limit: 10,
+        });
+
+        assert.equal(report.results.length, 2);
+        assert.deepEqual(report.results.map((result) => result.session_id).sort(), ['default-session', 'runtime-session']);
+        assert.equal(report.sources.length, 2);
+        assert.ok(report.sources.some((source) => source.codex_home === defaultCodexHome));
+        assert.ok(report.sources.some((source) => source.codex_home === projectRuntimeHome));
+      } finally {
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores non-generated runtime homes under the project runtime root', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-search-non-generated-'));
+    const defaultCodexHome = join(cwd, 'default-codex-home');
+    const generatedRuntimeHome = join(cwd, '.omx', 'runtime', 'codex-home', 'omx-runtime-a');
+    const manualRuntimeHome = join(cwd, '.omx', 'runtime', 'codex-home', 'manual-runtime');
+    try {
+      await writeRollout(defaultCodexHome, '2026-03-10T12:00:00.000Z', 'rollout-default.jsonl', [
+        { type: 'session_meta', payload: { id: 'default-session', timestamp: '2026-03-10T12:00:00.000Z', cwd } },
+      ]);
+      await writeRollout(generatedRuntimeHome, '2026-03-11T12:00:00.000Z', 'rollout-runtime.jsonl', [
+        { type: 'session_meta', payload: { id: 'runtime-session', timestamp: '2026-03-11T12:00:00.000Z', cwd } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'generated runtime only' } },
+      ]);
+      await writeRollout(manualRuntimeHome, '2026-03-12T12:00:00.000Z', 'rollout-manual.jsonl', [
+        { type: 'session_meta', payload: { id: 'manual-session', timestamp: '2026-03-12T12:00:00.000Z', cwd } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'generated runtime only' } },
+      ]);
+
+      const previousCodexHome = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = defaultCodexHome;
+      try {
+        const report = await searchSessionHistory({ query: 'generated runtime only', cwd, limit: 10 });
+
+        assert.deepEqual(report.results.map((result) => result.session_id), ['runtime-session']);
+        assert.ok(report.sources.some((source) => source.codex_home === generatedRuntimeHome));
+        assert.ok(!report.sources.some((source) => source.codex_home === manualRuntimeHome));
+      } finally {
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('searches runtime homes even when default results fill the limit', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-search-limit-runtime-'));
+    const defaultCodexHome = join(cwd, 'default-codex-home');
+    const runtimeCodexHome = join(cwd, '.omx', 'runtime', 'codex-home', 'omx-runtime-a');
+    try {
+      await writeRollout(defaultCodexHome, '2026-03-10T12:00:00.000Z', 'rollout-default.jsonl', [
+        { type: 'session_meta', payload: { id: 'default-session', timestamp: '2026-03-10T12:00:00.000Z', cwd } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'limit saturation match' } },
+      ]);
+      await writeRollout(runtimeCodexHome, '2026-03-11T12:00:00.000Z', 'rollout-runtime.jsonl', [
+        { type: 'session_meta', payload: { id: 'runtime-session', timestamp: '2026-03-11T12:00:00.000Z', cwd } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'limit saturation match' } },
+      ]);
+
+      const previousCodexHome = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = defaultCodexHome;
+      try {
+        const report = await searchSessionHistory({ query: 'limit saturation match', cwd, limit: 1 });
+
+        assert.equal(report.results.length, 1);
+        assert.equal(report.matched_sessions, 1);
+        assert.equal(report.sources.length, 2);
+        assert.equal(report.searched_files, 2);
+        assert.ok(report.sources.some((source) => source.codex_home === runtimeCodexHome && source.searched_files === 1));
+      } finally {
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('honors an explicit Codex home escape hatch', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-search-codex-home-'));
+    const defaultCodexHome = join(cwd, 'default-codex-home');
+    const explicitCodexHome = join(cwd, 'explicit-codex-home');
+    try {
+      await writeRollout(defaultCodexHome, '2026-03-10T12:00:00.000Z', 'rollout-default.jsonl', [
+        {
+          type: 'session_meta',
+          payload: { id: 'default-session', timestamp: '2026-03-10T12:00:00.000Z', cwd },
+        },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'escape hatch target default' } },
+      ]);
+      await writeRollout(explicitCodexHome, '2026-03-11T12:00:00.000Z', 'rollout-explicit.jsonl', [
+        {
+          type: 'session_meta',
+          payload: { id: 'explicit-session', timestamp: '2026-03-11T12:00:00.000Z', cwd },
+        },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'escape hatch target explicit' } },
+      ]);
+
+      const report = await searchSessionHistory({
+        query: 'escape hatch target',
+        cwd,
+        codexHomeDir: explicitCodexHome,
+      });
+
+      assert.equal(report.results.length, 1);
+      assert.equal(report.results[0].session_id, 'explicit-session');
+      assert.deepEqual(report.sources.map((source) => source.codex_home), [explicitCodexHome]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('returns no results cleanly when nothing matches', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-search-'));
     const codexHomeDir = join(cwd, '.codex-home');

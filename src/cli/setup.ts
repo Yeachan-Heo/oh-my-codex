@@ -61,6 +61,7 @@ import {
 	buildManagedCodexNativeHookWindowsShimContent,
 	buildManagedCodexNativeHookWindowsShimPath,
 	mergeManagedCodexHooksConfig,
+	extractCodexHooksJsonTrustState,
 	removeManagedCodexHooks,
 } from "../config/codex-hooks.js";
 import {
@@ -92,6 +93,7 @@ import {
 	hasOmxAgentsContract,
 	hasOmxManagedAgentsSections,
 	isOmxGeneratedAgentsMd,
+	preserveUserOmxPolicyBlocks,
 	upsertManagedAgentsBlock,
 } from "../utils/agents-md.js";
 import { DEFAULT_HUD_CONFIG, type HudPreset } from "../hud/types.js";
@@ -423,6 +425,86 @@ function getBackupContext(
 		backupRoot: join(homedir(), ".omx", "backups", "setup", timestamp),
 		baseRoot: homedir(),
 	};
+}
+
+function escapeTomlBasicString(value: string): string {
+	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function renderHooksJsonTrustStateToml(content: string | null | undefined): string {
+	const trustState = extractCodexHooksJsonTrustState(content);
+	return Object.entries(trustState)
+		.sort(([left], [right]) => left.localeCompare(right))
+		.flatMap(([key, state]) => [
+			`[hooks.state."${escapeTomlBasicString(key)}"]`,
+			`trusted_hash = "${escapeTomlBasicString(state.trusted_hash)}"`,
+			...(typeof state.enabled === "boolean" ? [`enabled = ${state.enabled}`] : []),
+			"",
+		])
+		.join("\n")
+		.trimEnd();
+}
+
+function existingHooksStateKeys(config: string): Set<string> {
+	try {
+		const parsed = TOML.parse(config) as {
+			hooks?: { state?: Record<string, unknown> };
+		};
+		return new Set(Object.keys(parsed.hooks?.state ?? {}));
+	} catch {
+		return new Set();
+	}
+}
+function appendHooksJsonTrustStateToConfig(
+	config: string,
+	hooksContent: string | null | undefined,
+): string {
+	const existingKeys = existingHooksStateKeys(config);
+	const trustState = extractCodexHooksJsonTrustState(hooksContent);
+	const migratableContent = JSON.stringify({
+		state: Object.fromEntries(
+			Object.entries(trustState).filter(([key]) => !existingKeys.has(key)),
+		),
+	});
+	const trustToml = renderHooksJsonTrustStateToml(migratableContent);
+	if (!trustToml) return config;
+	const base = config.trimEnd();
+	return [
+		base,
+		base ? "" : null,
+		"# Migrated from legacy hooks.json state; kept in Codex config.toml because Codex 0.140 rejects top-level hooks.json state.",
+		trustToml,
+		"",
+	].filter((line): line is string => line !== null).join("\n");
+}
+
+async function migrateLegacyHooksJsonTrustStateToConfig(
+	configPath: string,
+	hooksContent: string | null | undefined,
+	backupContext: SetupBackupContext,
+	summary: SetupCategorySummary,
+	options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<void> {
+	const existingConfig = existsSync(configPath)
+		? await readFile(configPath, "utf-8")
+		: "";
+	const nextConfig = appendHooksJsonTrustStateToConfig(existingConfig, hooksContent);
+	if (nextConfig === existingConfig) return;
+	if (
+		await ensureBackup(configPath, existsSync(configPath), backupContext, options)
+	) {
+		summary.backedUp += 1;
+	}
+	if (!options.dryRun) {
+		await mkdir(dirname(configPath), { recursive: true });
+		await writeFile(configPath, nextConfig);
+	}
+	summary.updated += 1;
+	if (options.verbose) {
+		console.log(
+			`  ${options.dryRun ? "would migrate" : "migrated"} legacy hooks.json trust state to ${configPath}`,
+		);
+	}
 }
 
 async function ensureBackup(
@@ -1797,6 +1879,13 @@ async function applyPluginModeHooksConfig(
 	const existingHooksContent = existsSync(hooksPath)
 		? await readFile(hooksPath, "utf-8")
 		: null;
+	await migrateLegacyHooksJsonTrustStateToConfig(
+		configPath,
+		existingHooksContent,
+		backupContext,
+		summary,
+		options,
+	);
 	if (options.pluginScopedHooks) {
 		await cleanupPluginModeManagedHooksJson(
 			existingHooksContent,
@@ -2582,6 +2671,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		const existingHooksContent = existsSync(scopeDirs.codexHooksFile)
 			? await readFile(scopeDirs.codexHooksFile, "utf-8")
 			: null;
+		await migrateLegacyHooksJsonTrustStateToConfig(
+			scopeDirs.codexConfigFile,
+			existingHooksContent,
+			backupContext,
+			summary.config,
+			{ dryRun, verbose },
+		);
 		const hooksConfig = mergeManagedCodexHooksConfig(
 			existingHooksContent,
 			pkgRoot,
@@ -2655,6 +2751,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				),
 				modelTableContext,
 				modelTableDefinitions,
+				{ codexHomeOverride: scopeDirs.codexHomeDir },
 			);
 			if (options.mergeAgents && pluginAgentsMdExists) {
 				if (pluginAgentsMdIsSymlink) {
@@ -2705,8 +2802,14 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					}
 				}
 			} else if (usePluginAgentsMdDefault) {
+				const existingPluginAgentsMd = pluginAgentsMdExists
+					? await readFile(pluginAgentsMdDst, "utf-8")
+					: "";
+				const pluginAgentsMdContent = pluginAgentsMdExists
+					? preserveUserOmxPolicyBlocks(existingPluginAgentsMd, rewritten)
+					: rewritten;
 				const defaultWouldChange = pluginAgentsMdExists
-					? (await readFile(pluginAgentsMdDst, "utf-8")) !== rewritten
+					? existingPluginAgentsMd !== pluginAgentsMdContent
 					: true;
 				if (
 					resolvedScope.scope === "project" &&
@@ -2725,7 +2828,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					console.log("  Stop the active session first, then re-run setup.");
 				} else {
 					const result = await syncManagedAgentsContent(
-						rewritten,
+						pluginAgentsMdContent,
 						pluginAgentsMdDst,
 						summary.agentsMd,
 						backupContext,
@@ -2791,6 +2894,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				),
 				modelTableContext,
 				modelTableDefinitions,
+				{ codexHomeOverride: scopeDirs.codexHomeDir },
 			);
 			let changed = true;
 			let canApplyManagedModelRefresh = false;
@@ -2819,10 +2923,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 						const existingIsGeneratedAgentsMd = isOmxGeneratedAgentsMd(existing);
 						managedRefreshContent = teamModeEnabled(resolvedTeamMode)
 							? upsertAgentsModelTable(
-									existing,
-									modelTableContext,
-									modelTableDefinitions,
-								)
+								existing,
+								modelTableContext,
+								modelTableDefinitions,
+								{ codexHomeOverride: scopeDirs.codexHomeDir },
+							)
 							: existingIsGeneratedAgentsMd
 								? rewritten
 								: upsertManagedAgentsBlock(existing, rewritten);

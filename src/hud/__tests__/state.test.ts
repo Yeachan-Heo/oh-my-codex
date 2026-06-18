@@ -703,6 +703,58 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('keeps session-scoped ralplan phase authoritative over stale canonical autopilot phase', async () => {
+    await withTempRepo('omx-hud-ralplan-session-authority-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-ralplan-advanced';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'ralplan',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'ralplan', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'code-review',
+        session_id: sessionId,
+      }));
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.autopilot, { active: true, mode: 'autopilot', current_phase: 'code-review', session_id: sessionId });
+      assert.equal(stripSgr(renderHud(state, 'focused')).includes('autopilot:code-review'), true);
+    });
+  });
+
+  it('uses canonical phase only when active mode detail has no phase', async () => {
+    await withTempRepo('omx-hud-canonical-fill-missing-phase-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-missing-phase';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'ralplan',
+        phase: 'critic_review',
+        session_id: sessionId,
+        active_skills: [{ skill: 'ralplan', phase: 'critic_review', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        active: true,
+        iteration: 2,
+        session_id: sessionId,
+      }));
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.ralplan, { active: true, iteration: 2, session_id: sessionId, current_phase: 'critic-review' });
+    });
+  });
+
   it('surfaces code-review from canonical skill-active without detail state', async () => {
     await withTempRepo('omx-hud-canonical-code-review-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

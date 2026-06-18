@@ -9,6 +9,8 @@ import {
   addGeneratedAgentsMarker,
   OMX_MANAGED_AGENTS_END_MARKER,
   OMX_MANAGED_AGENTS_START_MARKER,
+  OMX_USER_POLICY_END_MARKER,
+  OMX_USER_POLICY_START_MARKER,
 } from '../../utils/agents-md.js';
 import { resolveAgentsModelTableContext, upsertAgentsModelTable } from '../../utils/agents-model-table.js';
 
@@ -563,6 +565,42 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.equal(await readlink(codexAgentsPath), missingAgentsPath);
       assert.equal(existsSync(missingAgentsPath), false);
       assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves user-owned OMX policy blocks during forced plugin defaults refresh', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-plugin-agents-policy-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const codexAgentsPath = join(home, '.codex', 'AGENTS.md');
+    const policyBlock = [
+      OMX_USER_POLICY_START_MARKER,
+      'Durable local operator rule: never drop this.',
+      OMX_USER_POLICY_END_MARKER,
+    ].join('\n');
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(join(home, '.codex'), { recursive: true });
+      await writeFile(codexAgentsPath, `# Local Instructions\n\n${policyBlock}\n`);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'user',
+        installMode: 'plugin',
+        force: true,
+        pluginDeveloperInstructionsPrompt: async () => false,
+      });
+
+      const agents = await readFile(codexAgentsPath, 'utf-8');
+      assert.match(output, /Generated plugin-mode AGENTS\.md defaults/);
+      assert.match(agents, /# oh-my-codex - Intelligent Multi-Agent Orchestration/);
+      assert.match(agents, /Durable local operator rule: never drop this\./);
+      assert.equal(countOccurrences(agents, OMX_USER_POLICY_START_MARKER), 1);
+      assert.equal(countOccurrences(agents, OMX_USER_POLICY_END_MARKER), 1);
     } finally {
       restoreHome();
       restoreTty();

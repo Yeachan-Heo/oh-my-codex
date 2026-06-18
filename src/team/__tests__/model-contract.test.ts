@@ -192,6 +192,23 @@ describe('team model contract', () => {
     });
   });
 
+  it('honors per-agent model overrides before class and spark fallback routing', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-model-contract-agent-models-'));
+    try {
+      await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+        agentModels: {
+          architect: 'gpt-5.5-architect',
+          explore: 'gpt-5.5-explore',
+        },
+      }));
+
+      assert.equal(resolveAgentDefaultModel('architect', codexHome), 'gpt-5.5-architect');
+      assert.equal(resolveAgentDefaultModel('explore', codexHome), 'gpt-5.5-explore');
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it('keeps assigned worker roles as their own runtime identity', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());

@@ -13,6 +13,7 @@ import {
   readSkillActiveState,
   readVisibleSkillActiveStateForStateDir,
   type SkillActiveStateLike,
+  type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
   isTrustedSubagentThread,
@@ -40,7 +41,7 @@ import {
 } from "../team/state.js";
 import { omxNotepadPath, resolveProjectMemoryPath } from "../utils/paths.js";
 import { findGitLayout } from "../utils/git-layout.js";
-import { getBaseStateDir, getStateFilePath, getStatePath } from "../mcp/state-paths.js";
+import { getBaseStateDir, getStateFilePath, getStatePath, getAuthoritativeActiveStatePaths } from "../mcp/state-paths.js";
 import {
   detectKeywords,
   detectPrimaryKeyword,
@@ -2227,6 +2228,76 @@ function isStopExempt(payload: CodexHookPayload): boolean {
   );
 }
 
+async function readModeStateWithStopSource(
+  mode: "autopilot" | "ultrawork" | "ultraqa",
+  cwd: string,
+  sessionId?: string,
+): Promise<{ state: Record<string, unknown>; path: string } | null> {
+  const paths = await getAuthoritativeActiveStatePaths(mode, cwd, sessionId?.trim() || undefined).catch(() => [] as string[]);
+  const path = paths[0];
+  if (!path) return null;
+  const state = await readJsonIfExists(path);
+  return state ? { state, path } : null;
+}
+async function readRawSkillActiveState(path: string): Promise<SkillActiveStateLike | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf-8"));
+    return parsed && typeof parsed === "object" ? parsed as SkillActiveStateLike : null;
+  } catch {
+    return null;
+  }
+}
+
+
+function canonicalStopDisagreement(modeState: Record<string, unknown>, canonicalState: SkillActiveStateLike | null, mode: string, sessionId?: string): string {
+  if (!canonicalState) return "canonical_state_missing";
+  const normalizedSessionId = safeString(sessionId).trim();
+  const activeEntry = listRawActiveSkillEntries(canonicalState).find((entry) => {
+    if (entry.skill !== mode) return false;
+    const entrySessionId = safeString(entry.session_id ?? canonicalState.session_id).trim();
+    return normalizedSessionId ? entrySessionId === normalizedSessionId || entrySessionId === "" : true;
+  });
+  if (!activeEntry) return "canonical_inactive";
+  if (mode === "autopilot") {
+    const phase = safeString(modeState.current_phase ?? modeState.currentPhase).trim();
+    const canonicalPhase = safeString(activeEntry.phase ?? canonicalState.phase).trim();
+    if (phase && canonicalPhase && normalizeAutopilotPhase(phase) !== normalizeAutopilotPhase(canonicalPhase)) {
+      return `canonical_phase:${canonicalPhase}`;
+    }
+  }
+  return "canonical_agrees";
+}
+
+function listRawActiveSkillEntries(state: SkillActiveStateLike | null): SkillActiveEntry[] {
+  if (!state) return [];
+  const entries: SkillActiveEntry[] = [];
+  if (Array.isArray(state.active_skills)) {
+    for (const candidate of state.active_skills) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const raw = candidate as unknown as Record<string, unknown>;
+      const skill = safeString(raw.skill).trim();
+      if (!skill || raw.active === false) continue;
+      entries.push({
+        ...raw,
+        skill,
+        phase: safeString(raw.phase).trim() || undefined,
+        session_id: safeString(raw.session_id).trim() || undefined,
+        thread_id: safeString(raw.thread_id).trim() || undefined,
+      });
+    }
+  }
+  const topLevelSkill = safeString(state.skill).trim();
+  if (state.active === true && topLevelSkill) {
+    entries.push({
+      skill: topLevelSkill,
+      phase: safeString(state.phase).trim() || undefined,
+      session_id: safeString(state.session_id).trim() || undefined,
+      thread_id: safeString(state.thread_id).trim() || undefined,
+    });
+  }
+  return entries;
+}
+
 async function buildModeBasedStopOutput(
   mode: "autopilot" | "ultrawork" | "ultraqa",
   cwd: string,
@@ -2238,17 +2309,38 @@ async function buildModeBasedStopOutput(
   if (mode === "autopilot" && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
     return null;
   }
-  const state = await readModeStateForActiveDecision(mode, sessionId?.trim() || undefined, cwd);
+  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId);
+  const state = sourcedState?.state ?? null;
   if (!state || !shouldContinueRun(state)) return null;
+  const rootCanonicalState = await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
+  const canonicalDisagreement = rootCanonicalState
+    ? canonicalStopDisagreement(state, rootCanonicalState, mode, sessionId)
+    : "canonical_state_missing";
+  if (canonicalDisagreement === "canonical_inactive") return null;
   const phase = formatPhase(state.current_phase);
+  if (!rootCanonicalState || mode !== "autopilot") {
+    const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
+      ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
+      : `OMX ${mode} is still active (phase: ${phase}).`;
+    return {
+      decision: "block",
+      reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
+      stopReason: `${mode}_${phase}`,
+      systemMessage,
+    };
+  }
+  const statePath = sourcedState ? formatStopStatePath(cwd, sourcedState.path) : "unknown";
+  const diagnostic = `state: ${statePath}; canonical: ${canonicalDisagreement}`;
   const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
-    ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
-    : `OMX ${mode} is still active (phase: ${phase}).`;
+    ? `OMX autopilot is still active (phase: code-review; ${diagnostic}). Run the required $code-review step before completing or clearing Autopilot state.`
+    : `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}).`;
   return {
     decision: "block",
-    reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
+    reason: `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}); continue the task and gather fresh verification evidence before stopping.`,
     stopReason: `${mode}_${phase}`,
     systemMessage,
+    statePath,
+    canonicalDisagreement,
   };
 }
 
@@ -2603,6 +2695,7 @@ const RALPLAN_ALLOWED_WRITE_PREFIXES = [
   ".omx/plans",
   ".omx/specs",
   ".omx/state",
+  ".beads",
 ] as const;
 
 const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
@@ -2690,6 +2783,138 @@ function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boole
 
 function isAllowedRalplanArtifactPath(cwd: string, rawPath: string): boolean {
   return isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
+}
+
+interface RalplanBeadsCommandClassification {
+  present: boolean;
+  allowed: boolean;
+  reason?: string;
+}
+
+function shellTokenizeLiteralCommand(command: string): string[] | null {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+
+  for (const char of command.trim()) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (/[;&|<>`$(){}\n\r]/.test(char)) return null;
+    current += char;
+  }
+
+  if (escaping || quote) return null;
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function findLiteralBdExecutableIndex(tokens: string[]): number {
+  if (tokens[0] === "bd") return 0;
+  if (tokens[0] === "command" || tokens[0] === "builtin" || tokens[0] === "exec" || tokens[0] === "nohup") {
+    return tokens[1] === "bd" ? 1 : -1;
+  }
+  if (tokens[0] !== "env") return -1;
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "bd") return index;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return -1;
+  }
+  return -1;
+}
+
+function isAllowedRalplanBeadsDbPath(cwd: string, rawPath: string): boolean {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
+  let relativePath: string;
+  try {
+    const absolute = resolve(cwd, trimmed);
+    relativePath = relative(cwd, absolute).replace(/\\/g, "/");
+  } catch {
+    return false;
+  }
+  return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
+}
+
+function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): RalplanBeadsCommandClassification {
+  const trimmedCommand = command.trim();
+  const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
+  const hasCompoundBd = /[;&|()]\s*bd(?:\s|$)/.test(command);
+  const tokens = shellTokenizeLiteralCommand(command);
+  const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
+  if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
+
+  if (!tokens || bdExecutableIndex !== 0) {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
+
+  let dbPath = "";
+  let dbValueIndex = -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "--db") {
+      dbPath = tokens[index + 1] ?? "";
+      dbValueIndex = index + 1;
+      break;
+    }
+    if (token.startsWith("--db=")) {
+      dbPath = token.slice("--db=".length);
+      dbValueIndex = index;
+      break;
+    }
+  }
+
+  if (!dbPath) {
+    return { present: true, allowed: false, reason: "Beads tracker command is missing a literal --db .beads/<db> target" };
+  }
+  if (!isAllowedRalplanBeadsDbPath(cwd, dbPath)) {
+    return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
+  }
+
+  const operationTokens = tokens
+    .slice(dbValueIndex + 1)
+    .filter((token) => token && !token.startsWith("-"));
+  const operation = operationTokens[0] ?? "";
+  const suboperation = operationTokens[1] ?? "";
+  if (["create", "update", "edit", "close", "reopen", "status", "dep"].includes(operation)) {
+    return { present: true, allowed: true };
+  }
+  if (operation === "comments" && suboperation === "add") {
+    return { present: true, allowed: true };
+  }
+  return {
+    present: true,
+    allowed: false,
+    reason: operation
+      ? `Beads tracker operation ${operation}${suboperation ? ` ${suboperation}` : ""} is not allowed during planning`
+      : "Beads tracker command is missing an allowed metadata operation",
+  };
 }
 
 function readPreToolUseCommand(payload: CodexHookPayload): string {
@@ -2805,6 +3030,33 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   }
   return targets;
 }
+function formatPlanningWriteBlockDetail(
+  operationClass: string,
+  target: string | undefined,
+  allowedPrefixes: readonly string[],
+): string {
+  const targetDetail = target ? `target ${target}` : "target <unresolved>";
+  return `${operationClass} ${targetDetail} is not under allowed planning artifact paths (${allowedPrefixes.join(", ")})`;
+}
+
+function isUnresolvedVariableTarget(target: string): boolean {
+  const normalized = target.trim().replace(/^['"]|['"]$/g, "");
+  return /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
+}
+
+
+function describeImplementationToolBlock(
+  toolName: string,
+  blockedPath: string | undefined,
+  pathCount: number,
+): string {
+  if (pathCount === 0) {
+    const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target extraction failed" : `${toolName} path`;
+    return `${operationClass} target <unresolved>; only planning artifact paths are allowed (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target" : `${toolName} path`;
+  return formatPlanningWriteBlockDetail(operationClass, blockedPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
+}
 
 function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
@@ -2910,10 +3162,37 @@ async function readActiveRalplanStateForPreToolUse(
 }
 
 function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  const hasAllowedTargets = targets.length > 0
+    && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+
+  if (beadsCommand.present) {
+    return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
+  }
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (/\bomx\s+(?:state\s+(?:write|read|clear)|question)\b/.test(command)) return true;
+  return hasAllowedTargets;
+}
+
+function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
   const targets = extractDeepInterviewCommandWriteTargets(command);
-  return targets.length > 0 && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+  const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
+  if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
+    return `unresolved Bash write target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  if (blockedTarget) {
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash redirect write";
+    return `${operationClass} target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  if (beadsCommand.present && !beadsCommand.allowed) {
+    return beadsCommand.reason ?? "Beads tracker command is not an allowed planning metadata mutation";
+  }
+  if (beadsCommand.present) {
+    return "Beads tracker command also performs an implementation write outside allowed planning metadata";
+  }
+  return "Bash write intent did not identify an allowed planning artifact path or metadata path";
 }
 
 async function buildRalplanPreToolUseBoundaryOutput(
@@ -2936,21 +3215,18 @@ async function buildRalplanPreToolUseBoundaryOutput(
   if (toolName === "Bash") {
     blocked = !isAllowedRalplanBashWrite(cwd, command);
     if (blocked) {
-      const targets = extractDeepInterviewCommandWriteTargets(command);
-      const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
-      blockedDetail = blockedTarget
-        ? `write target ${blockedTarget} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`
-        : "Bash write intent did not identify an allowed planning artifact path";
+      blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
     }
   } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-    if (pathCandidates.length === 0) {
+    const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    if (toolPathCandidates.length === 0) {
       blocked = true;
-      blockedDetail = `${toolName} did not include a file path; only planning artifact paths are allowed`;
+      blockedDetail = describeImplementationToolBlock(toolName, undefined, toolPathCandidates.length);
     } else {
-      const blockedPath = pathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+      const blockedPath = toolPathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
       blocked = blockedPath !== undefined;
       if (blockedPath !== undefined) {
-        blockedDetail = `path ${blockedPath} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+        blockedDetail = describeImplementationToolBlock(toolName, blockedPath, toolPathCandidates.length);
       }
     }
   }
@@ -2970,7 +3246,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
       hookEventName: "PreToolUse",
       additionalContext:
         `${planningModeDescription}. `
-        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, or required `.omx/state/` files. "
+        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, required `.omx/state/` files, or tracker metadata under `.beads/`. "
         + "Do not edit implementation files or run implementation-focused writes from planning phases. "
         + `To execute, first process an explicit handoff such as ${formatExecutionHandoffList(cwd)}, which must emit terminal planning state before implementation begins.`,
     },
@@ -4818,7 +5094,7 @@ export async function runCodexNativeHookCli(): Promise<void> {
     const result = await dispatchCodexNativeHook(payload);
     if (result.outputJson) {
       writeNativeHookJsonStdout(result.outputJson);
-    } else if (result.hookEventName === "Stop") {
+    } else if (result.hookEventName !== "PreCompact" && result.hookEventName !== "PostCompact") {
       writeNativeHookJsonStdout({});
     }
   } catch (error) {

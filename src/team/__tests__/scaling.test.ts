@@ -725,6 +725,86 @@ describe('scaleUp', () => {
       const inbox = await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'workers', 'worker-2', 'inbox.md'), 'utf-8');
       assert.match(inbox, /Task 2/);
       assert.match(inbox, /Role: writer/);
+
+      const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+      assert.ok(tmuxCommands.some((command) => (
+        command === 'set-option -p -t %31 @omx_team_pane_owner_id team:scale-up-role'
+      )));
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back a scaled worker pane when team owner tagging fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-owner-tag-rollback-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-owner-tag-rollback-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        [
+          '#!/bin/sh',
+          'set -eu',
+          `printf '%s\n' "$*" >> "${tmuxLogPath}"`,
+          'case "${1:-}" in',
+          '  -V)',
+          '    echo "tmux 3.2a"',
+          '    ;;',
+          '  split-window)',
+          '    echo "%31"',
+          '    ;;',
+          '  set-option)',
+          '    case "$*" in',
+          '      *"@omx_team_pane_owner_id"*)',
+          '        echo "owner tag failed" >&2',
+          '        exit 1',
+          '        ;;',
+          '    esac',
+          '    ;;',
+          '  list-panes)',
+          '    echo "42424"',
+          '    ;;',
+          '  kill-pane|send-keys|capture-pane)',
+          '    ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState('scale-up-owner-tag-rollback', 'task', 'executor', 1, cwd);
+      await configureScaleUpTeamForDirectDispatch('scale-up-owner-tag-rollback', cwd);
+
+      const result = await scaleUp(
+        'scale-up-owner-tag-rollback',
+        1,
+        'executor',
+        [{ subject: 'new work', description: 'new work', owner: 'worker-2' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /Failed to tag tmux pane for worker-2/);
+
+      const config = await readTeamConfig('scale-up-owner-tag-rollback', cwd);
+      assert.equal(config?.workers.length, 1);
+      assert.equal(await readTask('scale-up-owner-tag-rollback', '1', cwd), null);
+
+      const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+      assert.ok(tmuxCommands.some((command) => (
+        command === 'set-option -p -t %31 @omx_team_pane_owner_id team:scale-up-owner-tag-rollback'
+      )));
+      assert.ok(tmuxCommands.some((command) => command === 'kill-pane -t %31'));
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;

@@ -76,6 +76,7 @@ import {
   resolveCodexHomeForLaunch,
   resolveProjectLocalCodexHomeForLaunch,
 } from "./codex-home.js";
+import { discoverProjectRuntimeCodexHomes } from "./project-runtime-codex-homes.js";
 import { escapeTomlString, readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
 
 export {
@@ -223,10 +224,10 @@ Usage:
   omx auth      Manage Codex OAuth auth slots (add|list|use)
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
-  omx resume    Resume a previous interactive Codex session
+  omx resume    Resume Codex sessions (supports --project and --codex-home <path>)
   omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
-  omx session   Search prior local session transcripts and history artifacts
+  omx session   Search prior local session transcripts (--codex-home <path> escape hatch)
   omx agents-init [path]
                 Bootstrap lightweight AGENTS.md files for a repo/subtree
   omx agents    Manage Codex native agent TOML files
@@ -845,6 +846,25 @@ function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
   return PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES.has(entryName);
 }
 
+function uniqueJsonlLines(contents: string): string[] {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const line of contents.split(/\r?\n/)) {
+    if (line === "" || seen.has(line)) continue;
+    seen.add(line);
+    lines.push(line);
+  }
+  return lines;
+}
+
+async function persistProjectLaunchRuntimeJsonlArtifact(source: string, destination: string): Promise<void> {
+  const existing = existsSync(destination) ? await readFile(destination, "utf-8").catch(() => "") : "";
+  const sourceContents = await readFile(source, "utf-8");
+  const separator = existing === "" || existing.endsWith("\n") || sourceContents === "" ? "" : "\n";
+  const lines = uniqueJsonlLines(`${existing}${separator}${sourceContents}`);
+  await writeFile(destination, lines.length > 0 ? `${lines.join("\n")}\n` : "", "utf-8");
+}
+
 async function persistProjectLaunchRuntimeHistoryArtifacts(
   runtimeCodexHome: string | undefined,
   projectCodexHome: string | undefined,
@@ -861,6 +881,10 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
     const destination = join(projectCodexHome, entryName);
     if (sourceStat.isDirectory()) {
       await cp(source, destination, { recursive: true, force: true, verbatimSymlinks: true });
+      continue;
+    }
+    if (entryName === "history.jsonl" || entryName === "session_index.jsonl") {
+      await persistProjectLaunchRuntimeJsonlArtifact(source, destination);
       continue;
     }
     if (sourceStat.isFile()) {
@@ -887,6 +911,49 @@ async function ensureProjectLaunchRuntimeHistoryLinks(
   }
 }
 
+async function materializeProjectLaunchRuntimeHistoryEntries(
+  runtimeCodexHome: string,
+  sourceCodexHome: string,
+): Promise<void> {
+  for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+    const source = join(sourceCodexHome, entryName);
+    if (!existsSync(source)) continue;
+    const destination = join(runtimeCodexHome, entryName);
+    await rm(destination, { recursive: true, force: true });
+    const sourceStat = await lstat(source);
+    if (sourceStat.isDirectory()) {
+      await cp(source, destination, { recursive: true, force: true, dereference: true });
+      continue;
+    }
+    await copyFile(source, destination);
+  }
+}
+
+async function mergeProjectLaunchRuntimeHistoryEntries(
+  runtimeCodexHome: string,
+  sourceCodexHome: string,
+): Promise<void> {
+  for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+    const source = join(sourceCodexHome, entryName);
+    if (!existsSync(source)) continue;
+    const destination = join(runtimeCodexHome, entryName);
+    const sourceStat = await lstat(source);
+    if (sourceStat.isDirectory()) {
+      await mkdir(destination, { recursive: true });
+      await cp(source, destination, { recursive: true, force: true, dereference: true });
+      continue;
+    }
+    if (existsSync(destination)) {
+      const existing = await readFile(destination, "utf-8").catch(() => "");
+      const addition = await readFile(source, "utf-8");
+      const separator = existing === "" || existing.endsWith("\n") || addition === "" ? "" : "\n";
+      await writeFile(destination, `${existing}${separator}${addition}`, "utf-8");
+      continue;
+    }
+    await copyFile(source, destination);
+  }
+}
+
 export async function persistProjectLaunchRuntimeAuthState(
   runtimeCodexHome: string | undefined,
   projectCodexHome: string | undefined,
@@ -909,6 +976,7 @@ export async function persistProjectLaunchRuntimeAuthState(
  */
 export interface PrepareRuntimeCodexHomeForProjectLaunchOptions {
   includeHistoryArtifacts?: boolean;
+  extraHistoryCodexHomes?: string[];
 }
 
 export async function prepareRuntimeCodexHomeForProjectLaunch(
@@ -947,6 +1015,12 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     await linkOrCopyCodexHomeEntry(source, destination);
   }
   await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
+  if (options.includeHistoryArtifacts === true && (options.extraHistoryCodexHomes?.length ?? 0) > 0) {
+    await materializeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, projectCodexHome);
+    for (const extraCodexHome of options.extraHistoryCodexHomes ?? []) {
+      await mergeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, extraCodexHome);
+    }
+  }
 
 
   return runtimeCodexHome;
@@ -963,6 +1037,7 @@ function resolveProjectSqliteHomeForLaunch(
 
 export interface PrepareCodexHomeForLaunchOptions {
   includeHistoryArtifacts?: boolean;
+  extraHistoryCodexHomes?: string[];
 }
 
 export async function prepareCodexHomeForLaunch(
@@ -977,7 +1052,7 @@ export async function prepareCodexHomeForLaunch(
       cwd,
       sessionId,
       projectLocalCodexHomeForCleanup,
-      { includeHistoryArtifacts: options.includeHistoryArtifacts },
+      { includeHistoryArtifacts: options.includeHistoryArtifacts, extraHistoryCodexHomes: options.extraHistoryCodexHomes },
     );
     return {
       codexHomeOverride: runtimeCodexHome,
@@ -991,6 +1066,98 @@ export async function prepareCodexHomeForLaunch(
     codexHomeOverride: resolveCodexHomeForLaunch(cwd, env),
     projectLocalCodexHomeForCleanup,
   };
+}
+
+export interface ResumeCodexHomeSelection {
+  args: string[];
+  explicitCodexHome?: string;
+  projectOnly: boolean;
+}
+
+export function parseResumeCodexHomeSelection(args: string[]): ResumeCodexHomeSelection {
+  const nextArgs: string[] = [];
+  let explicitCodexHome: string | undefined;
+  let projectOnly = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--codex-home") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("Missing value after --codex-home.");
+      }
+      explicitCodexHome = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--codex-home=")) {
+      explicitCodexHome = arg.slice("--codex-home=".length);
+      if (explicitCodexHome.trim() === "") {
+        throw new Error("Missing value after --codex-home.");
+      }
+      continue;
+    }
+    if (arg === "--project") {
+      projectOnly = true;
+      continue;
+    }
+    nextArgs.push(arg);
+  }
+
+  return {
+    args: nextArgs,
+    explicitCodexHome,
+    projectOnly,
+  };
+}
+
+async function prepareResumeCodexHomeForLaunch(
+  cwd: string,
+  sessionId: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ args: string[]; prepared: PreparedCodexHomeForLaunch }> {
+  const selection = parseResumeCodexHomeSelection(args);
+  if (selection.explicitCodexHome) {
+    return {
+      args: selection.args,
+      prepared: {
+        codexHomeOverride: resolve(selection.explicitCodexHome),
+      },
+    };
+  }
+
+  const projectHomes = await discoverProjectRuntimeCodexHomes(cwd);
+  if (selection.projectOnly) {
+    if (projectHomes.length === 0) {
+      const emptyRuntimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
+      await rm(emptyRuntimeCodexHome, { recursive: true, force: true });
+      await mkdir(join(emptyRuntimeCodexHome, "sessions"), { recursive: true });
+      return {
+        args: selection.args,
+        prepared: {
+          codexHomeOverride: emptyRuntimeCodexHome,
+          runtimeCodexHomeForCleanup: emptyRuntimeCodexHome,
+        },
+      };
+    }
+    const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(cwd, sessionId, projectHomes[0].path, {
+      includeHistoryArtifacts: true,
+      extraHistoryCodexHomes: projectHomes.slice(1).map((home) => home.path),
+    });
+    return {
+      args: selection.args,
+      prepared: {
+        codexHomeOverride: runtimeCodexHome,
+      },
+    };
+  }
+
+  const prepared = await prepareCodexHomeForLaunch(cwd, sessionId, env, {
+    includeHistoryArtifacts: true,
+    extraHistoryCodexHomes: projectHomes.map((home) => home.path),
+  });
+  return { args: selection.args, prepared };
 }
 
 export async function persistProjectLaunchRuntimeProjectTrustState(
@@ -2376,7 +2543,7 @@ export async function main(args: string[]): Promise<void> {
         await showStatus();
         break;
       case "cancel":
-        await cancelModes();
+        await cancelModes(args.slice(1));
         break;
       case "reasoning":
         await reasoningCommand(args.slice(1));
@@ -2635,7 +2802,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
     notifyTempResult.passthroughArgs,
     persistentCodexHomeForLaunch,
   );
-  const normalizedArgs = normalizeCodexLaunchArgs(
+  let normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
   );
   let cwd = launchCwd;
@@ -2701,7 +2868,13 @@ export async function launchWithHud(args: string[]): Promise<void> {
     // Non-fatal: repair failure must not block launch
   }
 
-  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env, {
+  const resumePrepared = normalizedArgs[0] === "resume"
+    ? await prepareResumeCodexHomeForLaunch(launchCwd, sessionId, normalizedArgs, process.env)
+    : null;
+  if (resumePrepared) {
+    normalizedArgs = resumePrepared.args;
+  }
+  const preparedCodexHome = resumePrepared?.prepared ?? await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env, {
     includeHistoryArtifacts: normalizedArgs[0] === "resume",
   });
   const codexHomeOverride = preparedCodexHome.codexHomeOverride;
@@ -6017,10 +6190,11 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
   return refs.sort((a, b) => a.mode.localeCompare(b.mode));
 }
 
-async function cancelModes(): Promise<void> {
+async function cancelModes(args: string[] = []): Promise<void> {
   const { writeFile, readFile } = await import("fs/promises");
   const cwd = process.cwd();
   const nowIso = new Date().toISOString();
+  const force = args.includes("--force");
   try {
     const loadStates = async (refs: ModeStateFileRef[]) => {
       const loaded = new Map<
@@ -6060,6 +6234,8 @@ async function cancelModes(): Promise<void> {
       if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
     }
 
+    const currentSession = await readSessionState(cwd).catch(() => null);
+    const currentSessionId = typeof currentSession?.session_id === "string" ? currentSession.session_id.trim() : "";
     const changed = new Set<string>();
     const reported = new Set<string>();
 
@@ -6116,6 +6292,19 @@ async function cancelModes(): Promise<void> {
     for (const [mode, entry] of states.entries()) {
       if (!changed.has(mode)) continue;
       await writeFile(entry.path, JSON.stringify(entry.state, null, 2));
+    }
+    if (force && currentSessionId) {
+      const stopStateEntries = [...states.entries()].filter(([mode]) => mode === "native-stop");
+      for (const [, entry] of stopStateEntries) {
+        const sessions = entry.state.sessions && typeof entry.state.sessions === "object" && !Array.isArray(entry.state.sessions)
+          ? { ...(entry.state.sessions as Record<string, unknown>) }
+          : null;
+        if (!sessions || !Object.prototype.hasOwnProperty.call(sessions, currentSessionId)) continue;
+        delete sessions[currentSessionId];
+        entry.state.sessions = sessions;
+        await writeFile(entry.path, JSON.stringify(entry.state, null, 2));
+        changed.add("native-stop");
+      }
     }
 
     for (const mode of reported) {

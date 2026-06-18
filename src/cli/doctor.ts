@@ -39,6 +39,7 @@ import {
 	discoverCodexHookConfigPaths,
 	getManagedCodexHookCommandsForEvent,
 	getMissingManagedCodexHookEvents,
+	hasCodexHooksJsonTopLevelState,
 } from "../config/codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { getDefaultBridge, isBridgeEnabled } from "../runtime/bridge.js";
@@ -72,6 +73,7 @@ import { hasOmxAgentsContract } from "../utils/agents-md.js";
 import {
 	OMX_DEFAULT_SPARK_MODEL_ENV,
 	OMX_SPARK_MODEL_ENV,
+	getAgentModelOverride,
 	getCodexConfigRootModelProvider,
 	getEnvConfiguredSparkDefaultModel,
 	getMainDefaultModel,
@@ -1549,6 +1551,15 @@ async function checkNativeHooks(
 					'invalid hooks.json; Codex may skip OMX hook coverage until "omx setup --force" repairs it',
 			};
 		}
+		const hasTopLevelState = hasCodexHooksJsonTopLevelState(content);
+		if (hasTopLevelState === true) {
+			return {
+				name: "Native hooks",
+				status: "fail",
+				message:
+					'top-level state in hooks.json is incompatible with Codex 0.140 (unknown field state, expected hooks); run "omx setup --force" to migrate trust state to config.toml and repair hooks.json',
+			};
+		}
 
 		if (missingEvents.length > 0) {
 			return {
@@ -2184,6 +2195,11 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 	const standardModel = getStandardDefaultModel(codexHomeOverride);
 	const sparkSource = resolveSparkModelSource(codexHomeOverride);
 	const rootProvider = getCodexConfigRootModelProvider(codexHomeOverride);
+	const explicitSparkAgentOverrides = new Map(
+		getInstallableSparkLaneAgentNames()
+			.map((agentName) => [agentName, getAgentModelOverride(agentName, codexHomeOverride)] as const)
+			.filter((entry): entry is readonly [string, string] => typeof entry[1] === "string"),
+	);
 
 	const laneSummary =
 		`lanes: frontier=\`${frontierModel}\`, standard=\`${standardModel}\`, ` +
@@ -2215,6 +2231,21 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 		if (!info.model) {
 			problems.push(
 				`${agentName}.toml has no model field (stale install; run \`omx setup --force\`)`,
+			);
+			continue;
+		}
+		const explicitOverride = explicitSparkAgentOverrides.get(agentName);
+		if (explicitOverride) {
+			if (info.model !== explicitOverride) {
+				problems.push(
+					`${agentName}.toml model is \`${info.model}\` but agentModels.${agentName} explicitly resolves to \`${explicitOverride}\` (stale install; run \`omx setup --force\`)`,
+				);
+				continue;
+			}
+			wired.push(
+				`${agentName} -> \`${info.model}\` (agentModels override)${
+					info.modelProvider ? ` (provider: ${info.modelProvider})` : ""
+				}`,
 			);
 			continue;
 		}

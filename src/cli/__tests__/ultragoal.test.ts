@@ -31,6 +31,12 @@ function cleanQualityGate(): string {
         architect: { agentRole: 'architect', evidence: 'architect subagent returned CLEAR' },
       },
     },
+    architectureInvariantGate: {
+      status: 'passed',
+      sourceArtifacts: ['.omx/ultragoal/brief.md', '.omx/ultragoal/goals.json'],
+      invariants: [],
+      evidence: 'architect verified no additional architecture invariants were declared in the brief',
+    },
   });
 }
 

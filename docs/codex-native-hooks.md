@@ -25,6 +25,7 @@ Compatibility note: Codex CLI 0.129/0.130 treats `hooks` as the canonical stable
 For project scope, `.gitignore` keeps generated `.codex/hooks.json` out of source control.
 `omx uninstall` removes only the OMX-managed wrapper entries from `.codex/hooks.json`; if user hooks remain, the file stays in place.
 Project launches use a session-scoped `.omx/runtime/codex-home/<session>/` mirror for Codex runtime writes; hook review/discovery tools should treat that directory as runtime mirror state and ignore its `hooks.json` surfaces rather than loading them alongside the canonical `.codex/hooks.json`.
+Project-scoped resume and search discovery include generated runtime homes under `.omx/runtime/codex-home/omx-*/sessions`: plain `omx resume` and `omx session search` in a project-scoped repo include those session sources automatically, `omx resume --project` restricts resume to generated project runtime homes, and `--codex-home <path>` is the one-shot escape hatch for both `omx resume` and `omx session search`.
 
 `omx doctor` can confirm that these files exist and are shaped correctly. It does not prove that the same shell/profile can complete an authenticated Codex request; use `codex login status` plus a real `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"` smoke test for that boundary.
 

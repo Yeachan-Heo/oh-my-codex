@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.13] - 2026-06-17
+
+Patch release for the post-`0.18.12` reliability train: project-scoped resume/search discovery is broader, setup and hook handling are safer, ralplan/autopilot consensus gates are fresher, CI/release infrastructure is sturdier, sidecar Team state roots align with runtime behavior, geobench documentation/schema fixes are captured, and release prep selects `0.18.13` rather than `0.19.0` after explicit no-breaking-change review.
+
+### Changed
+
+- **Project resume/search discovery is more complete** — project-scoped runtime Codex homes are included in `omx resume` and `omx session search`, with `--project` and `--codex-home` escape hatches documented for narrower or explicit lookup.
+- **CI and release infrastructure is sturdier** — workflows move to GitHub-hosted runners where appropriate, dev-merge issue-close follow-up comments are best-effort, and the `0.18.12` promotion topology is accounted for before preparing `0.18.13`.
+- **Geobench visibility is documented** — the curated geobench profile, visibility spec, romanization schema, and enriched profile schema are captured for repeatable benchmark configuration.
+
+### Fixed
+
+- **Setup, hooks, and transcript preservation are safer** — generated native-agent TOMLs preserve user customization, setup overwrite behavior is covered, hook JSON state compatibility is hardened, and project Codex transcripts survive cleanup.
+- **Ralplan and Autopilot gates are fresher** — consensus freshness checks, tracker-backed native reviews, target-aware write detection, and Autopilot ralplan handoff validation are tightened.
+- **Team sidecar state roots align with runtime behavior** — sidecar collection uses the Team runtime state root, reducing mismatched state inspection.
+
+### PRs
+
+- #2816, #2817, #2820, #2821, #2824, #2826, #2829, #2831, #2832, #2833, #2836, #2843, #2845, #2846
+
+### Issues
+
+- No open GitHub issues were present at release-scope review time; open PRs #2840, #2839, #2838, and draft #2828 were scoped as fix/docs/warning/safety follow-ups and did not change the `0.18.13` patch decision.
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.13.md`.
+
 ## [0.18.12] - 2026-06-12
 
 Patch release for the post-`0.18.11` release-prep train: first-party MCP sibling detection is narrower, manual npm publishing is documented in CI, runtime/HUD/plugin/autopilot safeguards are tightened, Windows hook and state-input paths are safer, and release prep reconciles the main workflow history for `0.18.12`.
