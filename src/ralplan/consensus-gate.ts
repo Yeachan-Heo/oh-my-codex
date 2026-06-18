@@ -207,13 +207,15 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
   const advancedReviewCycle = explicitFreshnessReviewCycle(record);
   const staleReturnToRalplanCycle = returnToRalplanCycle && advancedReviewCycle === null;
   const directGate = resolveDirectGate(record);
-  if (
-    directGate
-    && (
-      !returnToRalplanCycle
-      || (advancedReviewCycle !== null && reviewsCarryFreshnessCycle(directGate, advancedReviewCycle))
-    )
-  ) return directGate;
+  let deferredOrderedDirectGate: ConsensusResolution | null = null;
+  if (directGate) {
+    if (!returnToRalplanCycle) return directGate;
+    if (advancedReviewCycle !== null) {
+      if (reviewsCarryFreshnessCycle(directGate, advancedReviewCycle)) return directGate;
+    } else if (!hasExplicitReturnToRalplanReviewCycle(record) && consensusEvidenceOrder(directGate) !== null) {
+      deferredOrderedDirectGate = directGate;
+    }
+  }
 
   const handoffArtifactsAreStale = staleReturnToRalplanCycle;
   const topLevelHandoffArtifacts = handoffArtifactsAreStale ? null : asRecord(record.handoff_artifacts);
@@ -232,6 +234,8 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
     const evidence = resolveConsensusEvidence(withParentReturnToRalplanContext(stateHandoffArtifacts, stateContext));
     if (evidence) return evidence;
   }
+
+  if (deferredOrderedDirectGate) return deferredOrderedDirectGate;
 
   if (returnToRalplanCycle && advancedReviewCycle === null) return null;
 
@@ -407,14 +411,20 @@ function isConsensusEvidenceNewerThanSelected(
   if (!selected) return true;
   const evidenceCycle = consensusEvidenceReviewCycle(evidence);
   const selectedCycle = consensusEvidenceReviewCycle(selected);
-  if (evidenceCycle !== null && selectedCycle !== null && evidenceCycle !== selectedCycle) {
-    return evidenceCycle > selectedCycle;
+  if (evidenceCycle !== null || selectedCycle !== null) {
+    if (selectedCycle === null) return true;
+    if (evidenceCycle === null) return false;
+    if (evidenceCycle !== selectedCycle) return evidenceCycle > selectedCycle;
   }
+
   const evidenceOrder = consensusEvidenceOrder(evidence);
   const selectedOrder = consensusEvidenceOrder(selected);
-  if (evidenceOrder !== null && selectedOrder !== null && evidenceOrder !== selectedOrder) {
-    return evidenceOrder > selectedOrder;
+  if (evidenceOrder !== null || selectedOrder !== null) {
+    if (selectedOrder === null) return true;
+    if (evidenceOrder === null) return false;
+    if (evidenceOrder !== selectedOrder) return evidenceOrder > selectedOrder;
   }
+
   return false;
 }
 
@@ -438,6 +448,10 @@ function maxKnownNumber(left: number | null, right: number | null): number | nul
   return Math.max(left, right);
 }
 
+function hasExplicitReturnToRalplanReviewCycle(record: Record<string, unknown>): boolean {
+  return numericValue(record.review_cycle ?? record.reviewCycle) !== null
+    || numericValue(record.return_to_ralplan_parent_review_cycle ?? record.returnToRalplanParentReviewCycle) !== null;
+}
 function reviewPairCarriesFreshnessCycle(
   architectReview: Record<string, unknown> | null,
   criticReview: Record<string, unknown> | null,
