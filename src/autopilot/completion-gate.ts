@@ -25,7 +25,7 @@ function stringField(value: JsonObject, key: string): string {
 }
 
 function isImplementationPhase(phase: AutopilotChildPhase | null): boolean {
-  return phase === 'ultragoal' || phase === 'team' || phase === 'ralph';
+  return phase === 'ultragoal' || phase === 'rework' || phase === 'team' || phase === 'ralph';
 }
 
 function isActiveAutopilotState(state: JsonObject): boolean {

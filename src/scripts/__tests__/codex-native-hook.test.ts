@@ -6958,6 +6958,58 @@ exit 0
     }
   });
 
+  it("allows Autopilot rework implementation writes while ralplan remains guarded", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-autopilot-rework-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-autopilot-rework");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-autopilot-rework", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "rework",
+        session_id: "sess-autopilot-rework",
+        thread_id: "thread-autopilot-rework",
+        active_skills: [
+          {
+            skill: "autopilot",
+            phase: "rework",
+            active: true,
+            session_id: "sess-autopilot-rework",
+            thread_id: "thread-autopilot-rework",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "rework",
+        review_cycle: 2,
+        review_verdict: { clean: false, recommendation: "REQUEST_CHANGES", findings: ["src/implementation.ts"] },
+        session_id: "sess-autopilot-rework",
+        thread_id: "thread-autopilot-rework",
+      });
+
+      const allowedImplementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-rework",
+          thread_id: "thread-autopilot-rework",
+          tool_name: "Edit",
+          tool_use_id: "tool-autopilot-rework-src-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedImplementationEdit.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows null-device fd redirects while deep-interview blocks real Bash writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-null-redirect-"));
     try {

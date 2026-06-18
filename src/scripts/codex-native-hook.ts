@@ -2746,6 +2746,10 @@ function canAutopilotSkillMirrorSupplyRalplanPhase(phase: string): boolean {
   return phase === "" || normalizeAutopilotPhase(phase) === "ralplan";
 }
 
+function isAutopilotReviewReworkPhase(phase: string): boolean {
+  return normalizeAutopilotPhase(phase) === "rework";
+}
+
 function hasExplicitExecutionHandoffSkill(
   state: SkillActiveStateLike | null,
   sessionId: string,
@@ -3151,6 +3155,7 @@ async function readActiveRalplanStateForPreToolUse(
   ));
   if (!hasActiveAutopilotSkill) return null;
   const autopilotStatePhase = safeString(autopilotState.current_phase ?? autopilotState.currentPhase).trim().toLowerCase();
+  if (isAutopilotReviewReworkPhase(autopilotStatePhase)) return null;
   if (!canAutopilotSkillMirrorSupplyRalplanPhase(autopilotStatePhase)) return null;
   const hasRalplanScopedAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
     entry.skill === "autopilot"
