@@ -93,6 +93,7 @@ import {
 	hasOmxAgentsContract,
 	hasOmxManagedAgentsSections,
 	isOmxGeneratedAgentsMd,
+	preserveUserOmxPolicyBlocks,
 	upsertManagedAgentsBlock,
 } from "../utils/agents-md.js";
 import { DEFAULT_HUD_CONFIG, type HudPreset } from "../hud/types.js";
@@ -2801,8 +2802,14 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					}
 				}
 			} else if (usePluginAgentsMdDefault) {
+				const existingPluginAgentsMd = pluginAgentsMdExists
+					? await readFile(pluginAgentsMdDst, "utf-8")
+					: "";
+				const pluginAgentsMdContent = pluginAgentsMdExists
+					? preserveUserOmxPolicyBlocks(existingPluginAgentsMd, rewritten)
+					: rewritten;
 				const defaultWouldChange = pluginAgentsMdExists
-					? (await readFile(pluginAgentsMdDst, "utf-8")) !== rewritten
+					? existingPluginAgentsMd !== pluginAgentsMdContent
 					: true;
 				if (
 					resolvedScope.scope === "project" &&
@@ -2821,7 +2828,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					console.log("  Stop the active session first, then re-run setup.");
 				} else {
 					const result = await syncManagedAgentsContent(
-						rewritten,
+						pluginAgentsMdContent,
 						pluginAgentsMdDst,
 						summary.agentsMd,
 						backupContext,
