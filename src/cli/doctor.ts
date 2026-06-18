@@ -2,10 +2,10 @@
  * omx doctor - Validate oh-my-codex installation
  */
 
-import { existsSync, readFileSync } from "fs";
-import { mkdtemp, readdir, readFile, rm } from "fs/promises";
+import { constants, existsSync, readFileSync } from "fs";
+import { access, chown, lstat, mkdtemp, readdir, readFile, rm } from "fs/promises";
 import { spawnSync } from "child_process";
-import { basename, join } from "path";
+import { basename, join, relative } from "path";
 import { tmpdir } from "os";
 import {
 	codexHome,
@@ -96,6 +96,37 @@ interface Check {
 	status: "pass" | "warn" | "fail";
 	message: string;
 }
+
+interface RepoArtifactIssue {
+	path: string;
+	type: "ownership" | "writability";
+	reason: "root-owned" | "owner-mismatch" | "not-writable";
+	uid?: number;
+	gid?: number;
+}
+
+interface RepoArtifactStats {
+	uid?: number;
+	gid?: number;
+	isSymbolicLink(): boolean;
+	isDirectory(): boolean;
+}
+
+interface RepoArtifactScanOptions {
+	currentUid?: number;
+	currentGid?: number;
+	maxExamples?: number;
+	statPath?: (path: string) => Promise<RepoArtifactStats>;
+	readDir?: (path: string) => Promise<string[]>;
+	accessPath?: (path: string, mode: number) => Promise<void>;
+}
+
+interface RepoArtifactRepairOptions extends RepoArtifactScanOptions {
+	chownPath?: (path: string, uid: number, gid: number) => Promise<void>;
+}
+
+const REPO_ARTIFACT_DIRS = [".omx", ".beads"] as const;
+
 
 interface NativeHookDistSmokeOptions {
 	packageRoot?: string;
@@ -233,6 +264,27 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 			: scopeResolution.source === "config"
 				? " (inferred from Codex plugin config)"
 			: "";
+	if (options.force) {
+		if (options.dryRun) {
+			const check = await checkRepoArtifactOwnership(cwd);
+			if (check.status !== "pass") {
+				console.log(`Dry run: ${check.message}`);
+				console.log();
+			}
+		} else {
+			const repair = await repairRepoArtifactOwnership(cwd);
+			if (repair.repaired > 0 || repair.skipped.length > 0) {
+				console.log(
+					`Repo artifact ownership repair: ${repair.repaired} path(s) repaired${
+						repair.skipped.length > 0
+							? `, ${repair.skipped.length} skipped (${repair.skipped.join("; ")})`
+							: ""
+					}`,
+				);
+				console.log();
+			}
+		}
+	}
 
 	console.log("oh-my-codex doctor");
 	console.log("==================\n");
@@ -336,6 +388,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 8: State directory
 	checks.push(checkDirectory("State dir", paths.stateDir));
+	checks.push(await checkRepoArtifactOwnership(cwd));
 
 	// Check 9: MCP servers configured
 	checks.push(
@@ -865,6 +918,178 @@ function checkDirectory(name: string, path: string): Check {
 		return { name, status: "pass", message: path };
 	}
 	return { name, status: "warn", message: `${path} (not created yet)` };
+}
+
+function currentProcessUid(): number | undefined {
+	return typeof process.getuid === "function" ? process.getuid() : undefined;
+}
+
+function currentProcessGid(): number | undefined {
+	return typeof process.getgid === "function" ? process.getgid() : undefined;
+}
+
+function remediationCommand(repoRoot: string): string {
+	return `sudo chown -R $(id -u):$(id -g) ${JSON.stringify(repoRoot)}`;
+}
+
+function formatArtifactPath(repoRoot: string, path: string): string {
+	const rel = relative(repoRoot, path);
+	return rel === "" ? "." : rel;
+}
+
+function formatArtifactIssue(repoRoot: string, issue: RepoArtifactIssue): string {
+	const owner =
+		typeof issue.uid === "number" && typeof issue.gid === "number"
+			? ` uid=${issue.uid} gid=${issue.gid}`
+			: "";
+	return `${formatArtifactPath(repoRoot, issue.path)} (${issue.reason}${owner})`;
+}
+
+function shouldReportOwnerMismatch(
+	uid: number | undefined,
+	currentUid: number | undefined,
+): boolean {
+	if (typeof uid !== "number") return false;
+	if (uid === 0) return true;
+	return typeof currentUid === "number" && uid !== currentUid;
+}
+
+function isOwnershipIssue(issue: RepoArtifactIssue): boolean {
+	return issue.type === "ownership";
+}
+
+async function collectRepoArtifactOwnershipIssues(
+	repoRoot: string,
+	options: RepoArtifactScanOptions = {},
+): Promise<RepoArtifactIssue[]> {
+	if (process.platform === "win32") return [];
+	const currentUid = options.currentUid ?? currentProcessUid();
+	const maxExamples = options.maxExamples ?? 20;
+	const statPath = options.statPath ?? lstat;
+	const readDir = options.readDir ?? readdir;
+	const accessPath = options.accessPath ?? access;
+	const issues: RepoArtifactIssue[] = [];
+	const visited = new Set<string>();
+
+	async function visit(path: string): Promise<void> {
+		if (issues.length >= maxExamples) return;
+		let info: RepoArtifactStats;
+		try {
+			info = await statPath(path);
+		} catch {
+			return;
+		}
+		if (info.isSymbolicLink()) return;
+
+		const uid = typeof info.uid === "number" ? info.uid : undefined;
+		const gid = typeof info.gid === "number" ? info.gid : undefined;
+		let reason: RepoArtifactIssue["reason"] | null = null;
+		if (uid === 0) reason = "root-owned";
+		else if (shouldReportOwnerMismatch(uid, currentUid)) reason = "owner-mismatch";
+		else {
+			try {
+				await accessPath(path, constants.W_OK);
+			} catch {
+				reason = "not-writable";
+			}
+		}
+		if (reason) {
+			issues.push({
+				path,
+				reason,
+				type: reason === "not-writable" ? "writability" : "ownership",
+				uid,
+				gid,
+			});
+		}
+		if (issues.length >= maxExamples || !info.isDirectory()) return;
+		if (visited.has(path)) return;
+		visited.add(path);
+
+		let entries: string[];
+		try {
+			entries = await readDir(path);
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			await visit(join(path, entry));
+			if (issues.length >= maxExamples) return;
+		}
+	}
+
+	for (const dir of REPO_ARTIFACT_DIRS) {
+		const root = join(repoRoot, dir);
+		if (existsSync(root)) await visit(root);
+	}
+	return issues;
+}
+
+export async function checkRepoArtifactOwnership(
+	repoRoot: string,
+	options: RepoArtifactScanOptions = {},
+): Promise<Check> {
+	const issues = await collectRepoArtifactOwnershipIssues(repoRoot, options);
+	if (issues.length === 0) {
+		return {
+			name: "Repo artifact ownership",
+			status: "pass",
+			message: "repo-local .omx/.beads artifacts are writable by the current user",
+		};
+	}
+
+	const examples = issues
+		.slice(0, options.maxExamples ?? 5)
+		.map((issue) => formatArtifactIssue(repoRoot, issue))
+		.join("; ");
+	const repair = remediationCommand(repoRoot);
+	return {
+		name: "Repo artifact ownership",
+		status: "warn",
+		message: `${issues.length} root-owned, owner-mismatched, or non-writable repo artifact(s): ${examples}. Safe remediation: ${repair}. Automatic repair is only run by \"omx doctor --force\" when the repo root is owned by the current user.`,
+	};
+}
+
+export async function repairRepoArtifactOwnership(
+	repoRoot: string,
+	options: RepoArtifactRepairOptions = {},
+): Promise<{ repaired: number; skipped: string[] }> {
+	if (process.platform === "win32") return { repaired: 0, skipped: [] };
+	const currentUid = options.currentUid ?? currentProcessUid();
+	const currentGid = options.currentGid ?? currentProcessGid();
+	if (typeof currentUid !== "number" || typeof currentGid !== "number") {
+		return { repaired: 0, skipped: ["current uid/gid unavailable"] };
+	}
+	const statPath = options.statPath ?? lstat;
+	const repoInfo = await statPath(repoRoot);
+	if (repoInfo.uid !== currentUid) {
+		return { repaired: 0, skipped: ["repo root is not owned by the current user"] };
+	}
+	const issues = await collectRepoArtifactOwnershipIssues(repoRoot, {
+		...options,
+		currentUid,
+		currentGid,
+		maxExamples: Number.MAX_SAFE_INTEGER,
+		statPath,
+	});
+	const ownershipIssues = issues.filter(isOwnershipIssue);
+	const writabilityIssues = issues.filter((issue) => !isOwnershipIssue(issue));
+	const chownPath = options.chownPath ?? chown;
+	let repaired = 0;
+	const skipped: string[] = [];
+	for (const issue of writabilityIssues) {
+		skipped.push(`${formatArtifactPath(repoRoot, issue.path)}: not writable by current user`);
+	}
+	for (const issue of ownershipIssues) {
+		try {
+			await chownPath(issue.path, currentUid, currentGid);
+			repaired++;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			skipped.push(`${formatArtifactPath(repoRoot, issue.path)}: ${message}`);
+		}
+	}
+	return { repaired, skipped };
 }
 
 function validateToml(content: string): string | null {
