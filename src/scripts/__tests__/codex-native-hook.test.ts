@@ -3172,6 +3172,64 @@ standardMaxRounds = 15
     }
   });
 
+  it("nudges next-goal prompts when a completed Codex goal cleanup step remains", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-prompt-"));
+    try {
+      await writeJson(join(cwd, ".omx", "goals", "performance", "latency", "state.json"), {
+        version: 1,
+        workflow: "performance-goal",
+        slug: "latency",
+        objective: "Reduce latency",
+        status: "complete",
+        completedAt: "2026-05-20T00:00:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "UserPromptSubmit",
+        cwd,
+        session_id: "sess-completed-goal-prompt",
+        thread_id: "thread-completed-goal-prompt",
+        prompt: "Start the next performance goal now",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.match(output, /run \/goal clear/);
+      assert.match(output, /before calling create_goal/);
+      assert.match(output, /hooks only nudge and must not mutate Codex goal state/);
+      assert.doesNotMatch(output, /cleared Codex goal state/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Stop when a final answer starts another goal over completed state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        aggregateCompletion: { status: "complete", completedAt: "2026-05-20T00:00:00.000Z" },
+        goals: [{ id: "G001-done", status: "complete", objective: "Done" }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-completed-goal-stop",
+        thread_id: "thread-completed-goal-stop",
+        last_assistant_message: "Starting another ultragoal now; create_goal payload follows.",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "completed_codex_goal_cleanup_required");
+      assert.match(output, /run \/goal clear/);
+      assert.match(output, /before calling create_goal/);
+      assert.match(output, /hooks only nudge and must not mutate Codex goal state/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks ultragoal Stop for concise generic goal completion claims", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-generic-complete-stop-"));
     try {

@@ -88,6 +88,9 @@ import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDec
 import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
+import {
+  buildCodexGoalTerminalCleanupNotice,
+} from "../goal-workflows/codex-goal-snapshot.js";
 import { getRunContinuationSnapshot, shouldContinueRun } from "../runtime/run-loop.js";
 import {
   parseUltragoalSteeringDirective,
@@ -2395,6 +2398,63 @@ function reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(goal: Record<str
     && /\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/i.test(evidence);
 }
 
+function looksLikeNewGoalPrompt(text: string): boolean {
+  return /(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(text);
+}
+
+async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<string | null> {
+  const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
+  const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
+  const ultragoals = Array.isArray(ultragoal?.goals) ? ultragoal.goals.map(safeObject) : [];
+  if (safeString(aggregateCompletion.status) === "complete" || (ultragoals.length > 0 && ultragoals.every((goal) => safeString(goal.status) === "complete"))) {
+    return buildCodexGoalTerminalCleanupNotice("Ultragoal completion");
+  }
+
+  const performanceRoot = join(cwd, ".omx", "goals", "performance");
+  for (const entry of await readdir(performanceRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const state = await readJsonIfExists(join(performanceRoot, entry.name, "state.json"));
+    if (state?.workflow === "performance-goal" && safeString(state.status) === "complete") {
+      return buildCodexGoalTerminalCleanupNotice("Performance-goal completion");
+    }
+  }
+
+  const autoresearchRoot = join(cwd, ".omx", "goals", "autoresearch");
+  for (const entry of await readdir(autoresearchRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const mission = await readJsonIfExists(join(autoresearchRoot, entry.name, "mission.json"));
+    if (mission?.workflow === "autoresearch-goal" && safeString(mission.status) === "complete") {
+      return buildCodexGoalTerminalCleanupNotice("Autoresearch-goal completion");
+    }
+  }
+
+  return null;
+}
+
+async function buildCompletedGoalCleanupPromptWarning(cwd: string, prompt: string): Promise<string | null> {
+  if (!looksLikeNewGoalPrompt(prompt)) return null;
+  const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
+  if (!notice) return null;
+  return `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
+}
+
+async function buildCompletedGoalCleanupStopOutput(payload: CodexHookPayload, cwd: string): Promise<Record<string, unknown> | null> {
+  const text = [
+    safeString(payload.last_user_message ?? payload.lastUserMessage),
+    safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
+  ].join("\n");
+  if (!looksLikeNewGoalPrompt(text)) return null;
+  const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
+  if (!notice) return null;
+  const systemMessage = `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
+  return {
+    decision: "block",
+    reason: systemMessage,
+    stopReason: "completed_codex_goal_cleanup_required",
+    systemMessage,
+  };
+}
+
 async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Promise<{ workflow: string; command: string; remediation?: string } | null> {
   const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
   const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
@@ -4651,7 +4711,8 @@ export async function dispatchCodexNativeHook(
 
   if (hookEventName === "UserPromptSubmit") {
     const prompt = readPromptText(payload);
-    goalWorkflowAdditionalContext = await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(() => null);
+    goalWorkflowAdditionalContext = await buildCompletedGoalCleanupPromptWarning(cwd, prompt).catch(() => null)
+      ?? await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(() => null);
     ultragoalSteeringAdditionalContext = prompt && !isSubagentPromptSubmit
       ? await applyUserPromptUltragoalSteering(cwd, prompt).catch((error) => `OMX native UserPromptSubmit rejected bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${error instanceof Error ? error.message : String(error)}`)
       : null;
@@ -4834,7 +4895,7 @@ export async function dispatchCodexNativeHook(
   } else if (hookEventName === "Stop") {
     outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
       skipRalphStopBlock: isSubagentStop,
-    });
+    }) ?? await buildCompletedGoalCleanupStopOutput(payload, cwd);
   }
 
   return {

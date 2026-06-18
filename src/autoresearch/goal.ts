@@ -4,6 +4,8 @@ import { join, relative } from 'node:path';
 import { slugifyMissionName } from './contracts.js';
 import {
   formatCodexGoalReconciliation,
+  buildCompletedCodexGoalRemediation,
+  buildCodexGoalTerminalCleanupNotice,
   parseCodexGoalSnapshot,
   reconcileCodexGoalSnapshot,
   type CodexGoalSnapshot,
@@ -325,11 +327,20 @@ export async function buildAutoresearchGoalHandoff(cwd: string, slug: string, no
     'Codex goal integration constraints:',
     '- This shell command does not mutate hidden Codex /goal state; it writes durable OMX artifacts and prints this handoff only.',
     '- First call get_goal. If no active goal exists, call create_goal with the payload below.',
+    `- If get_goal reports status complete before create_goal, do not call create_goal over it. ${buildCompletedCodexGoalRemediation('Autoresearch-goal preflight')}`,
     '- If a different active Codex goal exists, finish/checkpoint that goal before starting this autoresearch goal.',
     '- Iterate research until the professor-critic evaluator records a concrete pass/fail/blocker artifact.',
     '- Do not call update_goal({status: "complete"}) until the professor-critic verdict is pass and the objective audit proves the mission complete; then call get_goal again and run omx autoresearch-goal complete --codex-goal-json with the fresh snapshot.',
+    '- After omx autoresearch-goal complete succeeds, treat `/goal clear` as the explicit terminal cleanup step before another same-thread goal.',
     '- If validation fails or blocks, keep iterating or report the blocker with the recorded evidence; do not revive deprecated omx autoresearch.',
     '',
+    ...(mission.status === 'complete'
+      ? [
+        '',
+        'Terminal Codex goal cleanup:',
+        buildCodexGoalTerminalCleanupNotice('Autoresearch-goal completion'),
+      ]
+      : []),
     'create_goal payload:',
     JSON.stringify(createPayload, null, 2),
     '',

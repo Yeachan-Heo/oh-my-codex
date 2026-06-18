@@ -149,7 +149,7 @@ The final ultragoal story is not complete until the active agent has run the fin
 
 - The shell command cannot directly invoke Codex interactive `/goal`; it emits a model-facing handoff for the active Codex agent.
 - Ultragoal intentionally does not invoke `/goal clear` or hidden `thread/goal/clear`; the model-facing tool surface only provides `get_goal`, `create_goal`, and `update_goal`.
-- After a completed aggregate ultragoal run, clear the Codex goal manually with `/goal clear` before starting another ultragoal run in the same session/thread.
+- After a completed aggregate ultragoal run, `/goal clear` is the explicit terminal cleanup step before starting another goal in the same Codex thread/session: `create_goal` starts, `update_goal({status: "complete"})` marks terminal success, and `/goal clear` removes the completed thread goal for the next same-thread goal. OMX prints this next step but does not invoke hidden clear routes.
 - Never call `create_goal` when `get_goal` reports a different active goal.
 - Never call `update_goal` unless the aggregate run or legacy per-story goal is actually complete.
 - In aggregate mode, intermediate story checkpoints require a matching `active` Codex snapshot; final story completion requires a matching `complete` snapshot after `update_goal`.
