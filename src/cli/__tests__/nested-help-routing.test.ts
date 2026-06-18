@@ -25,6 +25,7 @@ function runOmx(cwd: string, argv: string[]) {
 describe('nested help routing', () => {
   for (const [argv, expectedUsage] of [
     [['adapt', '--help'], /Usage:\s*omx adapt <target> <probe\|status\|init\|envelope\|doctor>/i],
+    [['app', '--help'], /Usage:\s*omx app doctor \[--json\]/i],
     [['ask', '--help'], /Usage:\s*omx ask <claude\|gemini> <question or task>/i],
     [['question', '--help'], /omx question - OMX-owned blocking user question entrypoint/i],
     [['autoresearch', '--help'], /hard-deprecated legacy command surface[\s\S]*\$autoresearch/i],
