@@ -92,7 +92,7 @@ export function escapeTomlBasicString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function quoteWindowsCommandPart(value: string): string {
+function quoteWindowsShellArgument(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
 
@@ -224,7 +224,7 @@ export function buildManagedCodexNativeHookCommand(
     const codexHomeDir = options.codexHomeDir ?? dirname(pkgRoot);
     const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
     const powerShellPath = resolveWindowsPowerShellPath(options.env);
-    return `${quoteWindowsCommandPart(powerShellPath)} -NoProfile -ExecutionPolicy Bypass -File ${quoteWindowsCommandPart(shimPath)}`;
+    return `${powerShellPath} -NoProfile -ExecutionPolicy Bypass -File ${quoteWindowsShellArgument(shimPath)}`;
   }
 
   return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(hookScript)}`;

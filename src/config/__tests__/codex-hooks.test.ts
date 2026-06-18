@@ -52,7 +52,7 @@ describe("codex hooks helpers", () => {
     );
   });
 
-  it("uses an absolute PowerShell ProcessStartInfo shim for Windows managed hook commands", () => {
+  it("uses a cmd.exe-compatible Windows shim command without quoting the executable", () => {
     const config = buildManagedCodexHooksConfig(
       "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
       {
@@ -67,9 +67,35 @@ describe("codex hooks helpers", () => {
 
     assert.equal(
       command,
-      '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     );
     assert.doesNotMatch(command ?? "", /codex-native-hook\.js/);
+    assert.doesNotMatch(command ?? "", /^"[A-Z]:\\/i);
+  });
+
+  it("emits Windows hooks.json entries with only the cmd-compatible command field", () => {
+    const config = buildManagedCodexHooksConfig(
+      "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
+      {
+        platform: "win32",
+        codexHomeDir: "C:\\Users\\Ada Lovelace\\.codex",
+        env: { SystemRoot: "C:\\Windows" },
+      },
+    );
+    const serialized = JSON.parse(JSON.stringify(config)) as {
+      hooks?: Record<string, Array<{ hooks?: Array<Record<string, unknown>> }>>;
+      state?: unknown;
+    };
+    const commandHook = serialized.hooks?.SessionStart?.[0]?.hooks?.[0];
+
+    assert.equal(serialized.state, undefined);
+    assert.equal(commandHook?.type, "command");
+    assert.equal(commandHook?.commandWindows, undefined);
+    assert.equal(commandHook?.command_windows, undefined);
+    assert.equal(
+      commandHook?.command,
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+    );
   });
 
   it("derives the PowerShell path from windir when SystemRoot is absent", () => {
@@ -84,7 +110,7 @@ describe("codex hooks helpers", () => {
 
     assert.equal(
       command,
-      '"E:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      'E:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     );
   });
 
@@ -124,7 +150,7 @@ describe("codex hooks helpers", () => {
 
     assert.ok(commands.includes("echo keep-me"));
     assert.ok(commands.includes(
-      '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     ));
   });
 
