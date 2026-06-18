@@ -1232,6 +1232,24 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	it("materializes replacement plugin caches without exposing a missing cache directory", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const cacheDir = await seedSameVersionPluginCacheWithStaleHooks(codexHomeDir);
+					await setup({ scope: "user", installMode: "plugin" });
+
+					assert.equal(existsSync(cacheDir), true);
+					assert.equal(existsSync(join(cacheDir, ".codex-plugin", "plugin.json")), true);
+					assert.equal(existsSync(join(cacheDir, "hooks", "codex-native-hook.mjs")), true);
+					assert.equal(existsSync(join(cacheDir, "hooks", "omx-command.json")), true);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 
 	it("reports stale plugin discovery cache invalidation during dry-run without deleting it", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));

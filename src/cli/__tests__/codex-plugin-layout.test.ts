@@ -635,6 +635,36 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
+  it('emits no stdout and exits zero when the plugin PreCompact pinned launcher is invalid', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'PreCompact',
+        session_id: 'sess-plugin-invalid-launcher-precompact',
+      }));
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /invalid plugin hook launcher/);
+    });
+  });
+
+  it('emits no stdout and exits zero when the plugin PostCompact command cannot spawn', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'PostCompact', session_id: 'sess-plugin-missing-command-postcompact' }),
+        {
+          OMX_NATIVE_HOOK_COMMAND: join(cacheRoot, 'bin', 'missing-omx-command'),
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stdout, '');
+    });
+  });
+
   it('keeps non-Stop plugin hook launcher failures fail-closed without Stop JSON', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');

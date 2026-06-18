@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { cp, readdir, readFile, rm, writeFile } from "fs/promises";
+import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
@@ -338,10 +338,32 @@ export async function materializePackagedOmxPluginCache(
 		return { status: "unchanged", cacheDir, version };
 	}
 	if (!options.dryRun) {
-		await rm(cacheDir, { recursive: true, force: true });
-		await cp(packagedMarketplace.pluginRoot, cacheDir, { recursive: true });
-		await applyTeamModeToPluginCache(cacheDir, options.teamMode);
-		await writePinnedHookLauncher(cacheDir, packagedMarketplace);
+		const cacheBase = omxPluginCacheBase(codexHomeDir);
+		await mkdir(cacheBase, { recursive: true });
+		const tempDir = join(cacheBase, `.materializing-${version}-${process.pid}-${Date.now()}`);
+		const backupDir = join(cacheBase, `.previous-${version}-${process.pid}-${Date.now()}`);
+		await rm(tempDir, { recursive: true, force: true });
+		await rm(backupDir, { recursive: true, force: true });
+		await cp(packagedMarketplace.pluginRoot, tempDir, { recursive: true });
+		await applyTeamModeToPluginCache(tempDir, options.teamMode);
+		await writePinnedHookLauncher(tempDir, packagedMarketplace);
+		let movedExisting = false;
+		try {
+			if (existsSync(cacheDir)) {
+				await rename(cacheDir, backupDir);
+				movedExisting = true;
+			}
+			await rename(tempDir, cacheDir);
+		} catch (error) {
+			await rm(cacheDir, { recursive: true, force: true });
+			if (movedExisting && existsSync(backupDir)) {
+				await rename(backupDir, cacheDir);
+			}
+			throw error;
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+			await rm(backupDir, { recursive: true, force: true });
+		}
 	}
 	return { status: "materialized", cacheDir, version };
 }

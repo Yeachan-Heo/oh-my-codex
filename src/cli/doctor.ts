@@ -306,6 +306,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 6: Skills installed
 	checks.push(await checkSkills(paths, scopeResolution.installMode));
+	if (scopeResolution.installMode === "plugin") {
+		checks.push(await checkPluginVersionDiagnostics(paths.codexHomeDir));
+	}
 
 	// Check 6.25: Native reviewer roles required by RALPLAN/Autopilot
 	const nativeReviewerRolesCheck = checkNativeReviewerRoles(
@@ -1869,6 +1872,94 @@ async function checkPluginMarketplaceRegistration(
 				"cannot read or parse config.toml for plugin marketplace registration",
 		};
 	}
+}
+
+async function readDoctorInstallStamp(codexHomeDir: string): Promise<{
+	install_channel?: string;
+	dev_base_version?: string;
+	install_revision?: string;
+} | null> {
+	try {
+		const parsed = JSON.parse(
+			await readFile(join(codexHomeDir, ".omx", "install-state.json"), "utf-8"),
+		) as {
+			install_channel?: unknown;
+			dev_base_version?: unknown;
+			install_revision?: unknown;
+		};
+		return {
+			...(typeof parsed.install_channel === "string" ? { install_channel: parsed.install_channel } : {}),
+			...(typeof parsed.dev_base_version === "string" ? { dev_base_version: parsed.dev_base_version } : {}),
+			...(typeof parsed.install_revision === "string" ? { install_revision: parsed.install_revision } : {}),
+		};
+	} catch {
+		return null;
+	}
+}
+
+async function checkPluginVersionDiagnostics(
+	codexHomeDir: string,
+): Promise<Check> {
+	const packagedMarketplace = await resolvePackagedOmxMarketplace(getPackageRoot());
+	if (!packagedMarketplace) {
+		return {
+			name: "Plugin versions",
+			status: "warn",
+			message: `packaged ${OMX_LOCAL_MARKETPLACE_NAME} metadata was not found; reinstall oh-my-codex`,
+		};
+	}
+
+	const [manifestVersion, stamp] = await Promise.all([
+		packagedOmxPluginVersion(packagedMarketplace),
+		readDoctorInstallStamp(codexHomeDir),
+	]);
+	if (!manifestVersion) {
+		return {
+			name: "Plugin versions",
+			status: "warn",
+			message: "packaged plugin manifest has no version; reinstall oh-my-codex",
+		};
+	}
+
+	const cacheDir = join(
+		codexHomeDir,
+		"plugins",
+		"cache",
+		OMX_LOCAL_MARKETPLACE_NAME,
+		"oh-my-codex",
+		manifestVersion,
+	);
+	const cacheState = await readOmxPluginCacheState(cacheDir);
+	if (cacheState?.manifestVersion !== manifestVersion) {
+		return {
+			name: "Plugin versions",
+			status: "warn",
+			message: `expected cache directory ${cacheDir} is not materialized with packaged plugin manifest version ${manifestVersion}; run "omx setup --plugin --force" to refresh the plugin cache`,
+		};
+	}
+
+	if (stamp?.install_channel === "dev") {
+		const devDisplay = stamp.dev_base_version && stamp.install_revision
+			? `v${stamp.dev_base_version}-dev-${stamp.install_revision}`
+			: null;
+		const stampDetail = [
+			`package/plugin manifest version ${manifestVersion}`,
+			devDisplay ? `dev display version ${devDisplay}` : null,
+			stamp.dev_base_version ? `dev_base_version ${stamp.dev_base_version}` : null,
+			stamp.install_revision ? `install_revision ${stamp.install_revision}` : null,
+		].filter(Boolean).join("; ");
+		return {
+			name: "Plugin versions",
+			status: "pass",
+			message: `${stampDetail}; Codex may keep current-session plugin skill metadata until a new Codex session starts`,
+		};
+	}
+
+	return {
+		name: "Plugin versions",
+		status: "pass",
+		message: `cache directory version matches packaged plugin manifest version ${manifestVersion}`,
+	};
 }
 
 const REQUIRED_NATIVE_REVIEWER_ROLES = ["architect", "critic"] as const;
