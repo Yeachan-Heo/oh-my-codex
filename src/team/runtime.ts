@@ -124,7 +124,6 @@ import {
   resolveTeamWorkerLaunchDiagnostics,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   parseTeamWorkerLaunchArgs,
-  splitWorkerLaunchArgs,
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
   type TeamReasoningEffort,
