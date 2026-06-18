@@ -6658,6 +6658,8 @@ exit 0
         "bd --db .beads create 'Issue title'",
         "bd --db $DB create 'Issue title'",
         "DB=.beads/issues.db bd --db $DB create 'Issue title'",
+        "env bd --db /tmp/outside.db create 'Issue title'",
+        "command bd --db /tmp/outside.db create 'Issue title'",
         "bd --db .beads/issues.db export",
         "bd --db .beads/issues.db create 'Issue title' > src/leak.ts",
         "bd --db .beads/issues.db create 'Issue title'; cat > src/leak.ts",

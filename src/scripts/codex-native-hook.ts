@@ -2740,6 +2740,23 @@ function shellTokenizeLiteralCommand(command: string): string[] | null {
   return tokens;
 }
 
+function findLiteralBdExecutableIndex(tokens: string[]): number {
+  if (tokens[0] === "bd") return 0;
+  if (tokens[0] === "command" || tokens[0] === "builtin" || tokens[0] === "exec" || tokens[0] === "nohup") {
+    return tokens[1] === "bd" ? 1 : -1;
+  }
+  if (tokens[0] !== "env") return -1;
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "bd") return index;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return -1;
+  }
+  return -1;
+}
+
 function isAllowedRalplanBeadsDbPath(cwd: string, rawPath: string): boolean {
   const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
   if (!trimmed || trimmed.includes("\0")) return false;
@@ -2757,10 +2774,11 @@ function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): Ralp
   const trimmedCommand = command.trim();
   const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
   const hasCompoundBd = /[;&|()]\s*bd(?:\s|$)/.test(command);
-  if (!startsWithBd && !hasCompoundBd) return { present: false, allowed: false };
-
   const tokens = shellTokenizeLiteralCommand(command);
-  if (!tokens || tokens[0] !== "bd") {
+  const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
+  if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
+
+  if (!tokens || bdExecutableIndex !== 0) {
     return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
   }
 
