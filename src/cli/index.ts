@@ -52,7 +52,10 @@ import { mcpServeCommand } from "./mcp-serve.js";
 import { adaptCommand } from "./adapt.js";
 import { listCommand } from "./list.js";
 import { authCommand } from "./auth.js";
+import { identityCommand } from "./identity.js";
 import { runAuthHotswap } from "../auth/hotswap.js";
+import { switchIdentitySlot } from "../auth/identity.js";
+import { findUnifiedEntry, refreshUnifiedLedger } from "../session-ledger/index.js";
 import {
   MADMAX_FLAG,
   CODEX_BYPASS_FLAG,
@@ -222,9 +225,12 @@ Usage:
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx auth      Manage Codex OAuth auth slots (add|list|use)
+  omx identity  Inspect/switch Codex identity slots and mixed API/account policy
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
-  omx resume    Resume Codex sessions (supports --project and --codex-home <path>)
+  omx resume    Resume Codex sessions (supports --project, --codex-home <path>, and --unified <id>)
+  omx resume --unified <id>
+                Resume/open a unified CLI/API/App session entry in its original identity/source
   omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search prior local session transcripts (--codex-home <path> escape hatch)
@@ -380,6 +386,7 @@ type CliCommand =
   | "doctor"
   | "cleanup"
   | "auth"
+  | "identity"
   | "ask"
   | "question"
   | "adapt"
@@ -409,6 +416,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "question",
   "cleanup",
   "auth",
+  "identity",
   "adapt",
   "explore",
   "autoresearch",
@@ -2351,6 +2359,7 @@ export async function main(args: string[]): Promise<void> {
     "doctor",
     "cleanup",
     "auth",
+    "identity",
     "ask",
     "question",
     "autoresearch",
@@ -2405,7 +2414,11 @@ export async function main(args: string[]): Promise<void> {
         }
         break;
       case "resume":
-        await launchWithHud(["resume", ...launchArgs]);
+        if (launchArgs[0] === "--unified") {
+          await resumeUnifiedCommand(launchArgs.slice(1));
+        } else {
+          await launchWithHud(["resume", ...launchArgs]);
+        }
         break;
       case "setup":
         await setup({
@@ -2462,6 +2475,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "auth":
         await authCommand(args.slice(1));
+        break;
+      case "identity":
+        await identityCommand(args.slice(1));
         break;
       case "autoresearch":
         await autoresearchCommand(args.slice(1));
@@ -2635,6 +2651,25 @@ async function showStatus(): Promise<void> {
     logCliOperationFailure(err);
     console.log("No active modes.");
   }
+}
+
+async function resumeUnifiedCommand(args: string[]): Promise<void> {
+  const id = args[0];
+  if (!id || id === "--help" || id === "-h") {
+    console.log("Usage: omx resume --unified <session-id-or-fragment>");
+    return;
+  }
+  const entry = findUnifiedEntry(await refreshUnifiedLedger(), id);
+  if (!entry) {
+    throw new Error(`Unified session entry not found: ${id}. Run \`omx session list --unified\` first.`);
+  }
+  if (entry.source === "cli" || entry.source === "api" || entry.source === "omx") {
+    if (entry.identitySlot) await switchIdentitySlot(entry.identitySlot);
+    await launchWithHud(["resume", entry.sessionId]);
+    return;
+  }
+  console.log(`Open original Codex App session source: ${entry.openTarget ?? entry.sessionId}`);
+  console.log("This App/cloud entry is read-only metadata; OMX will not rewrite it into an API-key session.");
 }
 
 async function reasoningCommand(args: string[]): Promise<void> {

@@ -19,6 +19,7 @@ function runOmx(
     encoding: 'utf-8',
     env: {
       ...process.env,
+      CODEX_SQLITE_HOME: '',
       ...envOverrides,
     },
   });
@@ -384,6 +385,67 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:resume --help\b/);
       assert.doesNotMatch(result.stdout, /Unknown command: resume/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes unified CLI entries through codex resume in the original identity', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-unified-cli-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      const authDir = join(home, '.omx', 'auth');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const rolloutPath = join(codexHome, 'sessions', '2026', '06', '13', 'rollout-session-unified.jsonl');
+      await mkdir(dirname(rolloutPath), { recursive: true });
+      await mkdir(authDir, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(codexHome, 'auth.json'), '{"access_token":"old"}\n');
+      await writeFile(join(authDir, 'main.json'), '{"access_token":"main-secret"}\n');
+      await writeFile(join(authDir, 'slots.json'), JSON.stringify({ version: 1, currentSlot: 'main', slots: [
+        { slot: 'main', createdAt: 'now', updatedAt: 'now', kind: 'chatgpt' }
+      ] }));
+      await writeFile(rolloutPath, '{"type":"session_meta","payload":{"id":"session-unified","cwd":"/repo","timestamp":"2026-06-13T00:00:00.000Z"}}\n');
+      await writeFile(fakeCodexPath, '#!/bin/sh\nprintf \'fake-codex:%s\\n\' "$*"\nprintf \'auth:%s\\n\' "$(cat "$CODEX_HOME/auth.json")"\n');
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume', '--unified', 'session-unified'], {
+        HOME: home,
+        CODEX_HOME: codexHome,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume session-unified/);
+      assert.match(result.stdout, /main-secret/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('opens unified App entries at their original read-only cache target', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-unified-app-'));
+    try {
+      const home = join(wd, 'home');
+      const appDir = join(home, 'Library', 'Application Support', 'com.openai.chat', 'codex-taskItems-v2-default-user');
+      await mkdir(appDir, { recursive: true });
+      const result = runOmx(wd, ['resume', '--unified', 'taskItems'], {
+        HOME: home,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /Open original Codex App session source/);
+      assert.match(result.stdout, /codex-taskItems-v2-default-user/);
+      assert.match(result.stdout, /read-only metadata/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

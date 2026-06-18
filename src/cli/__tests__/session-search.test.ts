@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -83,6 +83,59 @@ describe('omx session search', () => {
       assert.equal(parsed.results[0].session_id, 'session-a');
       assert.equal(parsed.results[0].cwd, cwd);
       assert.match(parsed.results[0].snippet, /team api/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('lists and searches unified CLI and App metadata without mutating App cache', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-unified-cli-'));
+    const home = join(cwd, 'home');
+    const codexHomeDir = join(home, '.codex');
+    const appSupport = join(home, 'Library', 'Application Support', 'com.openai.chat');
+    try {
+      await mkdir(codexHomeDir, { recursive: true });
+      await writeFile(join(codexHomeDir, 'auth.json'), '{"auth_mode":"apikey","OPENAI_API_KEY":"secret"}\n');
+      await writeRollout(codexHomeDir, '2026-03-10T12:00:00.000Z', 'rollout-session-unified.jsonl', [
+        { type: 'session_meta', payload: { id: 'session-unified', timestamp: '2026-03-10T12:00:00.000Z', cwd } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'hidden deep transcript marker sk-supersecret999' } },
+      ]);
+      const appDir = join(appSupport, 'codex-taskDetails-v1-user');
+      await mkdir(appDir, { recursive: true });
+
+      const list = runOmx(cwd, ['session', 'list', '--unified', '--json'], {
+        HOME: home,
+        CODEX_HOME: codexHomeDir,
+      });
+      assert.equal(list.status, 0, list.stderr || list.stdout);
+      const parsed = JSON.parse(list.stdout) as { entries: Array<{ sessionId: string; source: string }> };
+      assert.equal(parsed.entries.some((entry) => entry.sessionId === 'session-unified' && entry.source === 'api'), true);
+      assert.equal(parsed.entries.some((entry) => entry.sessionId === 'codex-taskDetails-v1-user' && entry.source === 'app'), true);
+      const ledger = await readFile(join(home, '.omx', 'state', 'session-ledger.jsonl'), 'utf-8');
+      assert.match(ledger, /session-unified/);
+      assert.doesNotMatch(ledger, /secret/);
+
+      const search = runOmx(cwd, ['session', 'search', 'taskDetails', '--unified', '--json'], {
+        HOME: home,
+        CODEX_HOME: codexHomeDir,
+      });
+      assert.equal(search.status, 0, search.stderr || search.stdout);
+      assert.match(search.stdout, /codex-taskDetails-v1-user/);
+
+      const shallowSearch = runOmx(cwd, ['session', 'search', 'hidden deep transcript', '--unified', '--json'], {
+        HOME: home,
+        CODEX_HOME: codexHomeDir,
+      });
+      assert.equal(shallowSearch.status, 0, shallowSearch.stderr || shallowSearch.stdout);
+      assert.equal((JSON.parse(shallowSearch.stdout) as { entries: unknown[] }).entries.length, 0);
+
+      const deepSearch = runOmx(cwd, ['session', 'search', 'hidden deep transcript', '--unified', '--deep', '--json'], {
+        HOME: home,
+        CODEX_HOME: codexHomeDir,
+      });
+      assert.equal(deepSearch.status, 0, deepSearch.stderr || deepSearch.stdout);
+      assert.match(deepSearch.stdout, /session-unified/);
+      assert.doesNotMatch(deepSearch.stdout, /sk-supersecret999/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
