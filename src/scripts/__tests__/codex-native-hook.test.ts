@@ -598,6 +598,32 @@ describe("codex native hook dispatch", () => {
     );
   });
 
+  it("emits no-op JSON stdout for PreToolUse non-Bash tools with null output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-pretool-nonbash-noop-"));
+    try {
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: JSON.stringify({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-cli-pretool-nonbash-noop",
+          thread_id: "thread-cli-pretool-nonbash-noop",
+          turn_id: "turn-cli-pretool-nonbash-noop",
+          tool_name: "Read",
+          tool_input: { file_path: "package.json" },
+        }),
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("emits parseable no-op JSON stdout for inactive Stop CLI runs", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-noop-json-"));
     try {
@@ -611,6 +637,32 @@ describe("codex native hook dispatch", () => {
       const output = parseSingleJsonStdout(stdout);
 
       assert.deepEqual(output, {});
+      assert.equal(existsSync(join(cwd, ".omx", "state")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits no-op JSON stdout for Stop payloads with no runtime output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-null-output-"));
+    try {
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: JSON.stringify({
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-cli-stop-null-output",
+          thread_id: "thread-cli-stop-null-output",
+          turn_id: "turn-cli-stop-null-output",
+          stop_hook_active: true,
+        }),
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
       assert.equal(existsSync(join(cwd, ".omx", "state")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
