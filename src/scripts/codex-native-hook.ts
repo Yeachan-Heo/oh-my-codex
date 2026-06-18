@@ -559,7 +559,15 @@ function sanitizeCodexHookOutput(
 ): Record<string, unknown> | null {
   if (!output || hookEventName !== "PreToolUse") return output;
   const systemMessage = safeString(output.systemMessage).trim();
-  return systemMessage ? { systemMessage } : {};
+  if (systemMessage) return { systemMessage };
+
+  const reason = safeString(output.reason).trim();
+  const hookSpecificOutput = output.hookSpecificOutput;
+  const additionalContext = hookSpecificOutput && typeof hookSpecificOutput === "object"
+    ? safeString((hookSpecificOutput as { additionalContext?: unknown }).additionalContext).trim()
+    : "";
+  const derivedSystemMessage = [reason, additionalContext].filter(Boolean).join("\n\n");
+  return derivedSystemMessage ? { systemMessage: derivedSystemMessage } : {};
 }
 
 export function mapCodexHookEventToOmxEvent(
