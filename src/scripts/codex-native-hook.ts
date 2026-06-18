@@ -2603,6 +2603,7 @@ const RALPLAN_ALLOWED_WRITE_PREFIXES = [
   ".omx/plans",
   ".omx/specs",
   ".omx/state",
+  ".beads",
 ] as const;
 
 const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
@@ -2690,6 +2691,120 @@ function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boole
 
 function isAllowedRalplanArtifactPath(cwd: string, rawPath: string): boolean {
   return isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
+}
+
+interface RalplanBeadsCommandClassification {
+  present: boolean;
+  allowed: boolean;
+  reason?: string;
+}
+
+function shellTokenizeLiteralCommand(command: string): string[] | null {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+
+  for (const char of command.trim()) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (/[;&|<>`$(){}\n\r]/.test(char)) return null;
+    current += char;
+  }
+
+  if (escaping || quote) return null;
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function isAllowedRalplanBeadsDbPath(cwd: string, rawPath: string): boolean {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
+  let relativePath: string;
+  try {
+    const absolute = resolve(cwd, trimmed);
+    relativePath = relative(cwd, absolute).replace(/\\/g, "/");
+  } catch {
+    return false;
+  }
+  return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
+}
+
+function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): RalplanBeadsCommandClassification {
+  const trimmedCommand = command.trim();
+  const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
+  const hasCompoundBd = /[;&|()]\s*bd(?:\s|$)/.test(command);
+  if (!startsWithBd && !hasCompoundBd) return { present: false, allowed: false };
+
+  const tokens = shellTokenizeLiteralCommand(command);
+  if (!tokens || tokens[0] !== "bd") {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
+
+  let dbPath = "";
+  let dbValueIndex = -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "--db") {
+      dbPath = tokens[index + 1] ?? "";
+      dbValueIndex = index + 1;
+      break;
+    }
+    if (token.startsWith("--db=")) {
+      dbPath = token.slice("--db=".length);
+      dbValueIndex = index;
+      break;
+    }
+  }
+
+  if (!dbPath) {
+    return { present: true, allowed: false, reason: "Beads tracker command is missing a literal --db .beads/<db> target" };
+  }
+  if (!isAllowedRalplanBeadsDbPath(cwd, dbPath)) {
+    return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
+  }
+
+  const operationTokens = tokens
+    .slice(dbValueIndex + 1)
+    .filter((token) => token && !token.startsWith("-"));
+  const operation = operationTokens[0] ?? "";
+  const suboperation = operationTokens[1] ?? "";
+  if (["create", "update", "edit", "close", "reopen", "status", "dep"].includes(operation)) {
+    return { present: true, allowed: true };
+  }
+  if (operation === "comments" && suboperation === "add") {
+    return { present: true, allowed: true };
+  }
+  return {
+    present: true,
+    allowed: false,
+    reason: operation
+      ? `Beads tracker operation ${operation}${suboperation ? ` ${suboperation}` : ""} is not allowed during planning`
+      : "Beads tracker command is missing an allowed metadata operation",
+  };
 }
 
 function readPreToolUseCommand(payload: CodexHookPayload): string {
@@ -2910,10 +3025,33 @@ async function readActiveRalplanStateForPreToolUse(
 }
 
 function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  const hasAllowedTargets = targets.length > 0
+    && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+
+  if (beadsCommand.present) {
+    return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
+  }
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (/\bomx\s+(?:state\s+(?:write|read|clear)|question)\b/.test(command)) return true;
+  return hasAllowedTargets;
+}
+
+function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
   const targets = extractDeepInterviewCommandWriteTargets(command);
-  return targets.length > 0 && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+  const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
+  if (blockedTarget) {
+    return `write target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  if (beadsCommand.present && !beadsCommand.allowed) {
+    return beadsCommand.reason ?? "Beads tracker command is not an allowed planning metadata mutation";
+  }
+  if (beadsCommand.present) {
+    return "Beads tracker command also performs an implementation write outside allowed planning metadata";
+  }
+  return "Bash write intent did not identify an allowed planning artifact path or metadata path";
 }
 
 async function buildRalplanPreToolUseBoundaryOutput(
@@ -2936,21 +3074,18 @@ async function buildRalplanPreToolUseBoundaryOutput(
   if (toolName === "Bash") {
     blocked = !isAllowedRalplanBashWrite(cwd, command);
     if (blocked) {
-      const targets = extractDeepInterviewCommandWriteTargets(command);
-      const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
-      blockedDetail = blockedTarget
-        ? `write target ${blockedTarget} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`
-        : "Bash write intent did not identify an allowed planning artifact path";
+      blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
     }
   } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-    if (pathCandidates.length === 0) {
+    const candidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    if (candidates.length === 0) {
       blocked = true;
-      blockedDetail = `${toolName} did not include a file path; only planning artifact paths are allowed`;
+      blockedDetail = `${toolName} did not include a file path; only planning artifact paths or metadata paths are allowed`;
     } else {
-      const blockedPath = pathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+      const blockedPath = candidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
       blocked = blockedPath !== undefined;
       if (blockedPath !== undefined) {
-        blockedDetail = `path ${blockedPath} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+        blockedDetail = `path ${blockedPath} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
       }
     }
   }
@@ -2970,7 +3105,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
       hookEventName: "PreToolUse",
       additionalContext:
         `${planningModeDescription}. `
-        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, or required `.omx/state/` files. "
+        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, required `.omx/state/` files, or tracker metadata under `.beads/`. "
         + "Do not edit implementation files or run implementation-focused writes from planning phases. "
         + `To execute, first process an explicit handoff such as ${formatExecutionHandoffList(cwd)}, which must emit terminal planning state before implementation begins.`,
     },

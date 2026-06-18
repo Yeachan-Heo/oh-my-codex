@@ -6513,6 +6513,209 @@ exit 0
     }
   });
 
+  it("allows Ralplan Beads tracker metadata writes during planning", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-ralplan-beads-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-ralplan-beads");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-ralplan-beads", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-ralplan-beads",
+        thread_id: "thread-ralplan-beads",
+        active_skills: [
+          {
+            skill: "ralplan",
+            phase: "planning",
+            active: true,
+            session_id: "sess-ralplan-beads",
+            thread_id: "thread-ralplan-beads",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-ralplan-beads",
+        thread_id: "thread-ralplan-beads",
+      });
+
+      const allowedWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ralplan-beads",
+          thread_id: "thread-ralplan-beads",
+          tool_name: "Write",
+          tool_use_id: "tool-ralplan-beads-write",
+          tool_input: { file_path: ".beads/issues.db", content: "metadata" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedWrite.outputJson, null);
+
+      const allowedEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ralplan-beads",
+          thread_id: "thread-ralplan-beads",
+          tool_name: "Edit",
+          tool_use_id: "tool-ralplan-beads-edit",
+          tool_input: { file_path: ".beads/tasks/issue.json", old_string: "old", new_string: "new" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedEdit.outputJson, null);
+
+      const allowedPatch = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ralplan-beads",
+          thread_id: "thread-ralplan-beads",
+          tool_name: "apply_patch",
+          tool_use_id: "tool-ralplan-beads-apply-patch",
+          tool_input: {
+            input: "*** Begin Patch\n*** Add File: .beads/tasks/issue.json\n+{}\n*** End Patch\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedPatch.outputJson, null);
+
+      const allowedCommands = [
+        "bd --db .beads/issues.db create 'Issue title'",
+        "bd --db .beads/issues.db update OMX-1 --title 'Issue title'",
+        "bd --db .beads/issues.db edit OMX-1 --title 'Issue title'",
+        "bd --db .beads/issues.db comments add OMX-1 'evidence'",
+        "bd --db .beads/issues.db close OMX-1",
+        "bd --db .beads/issues.db reopen OMX-1",
+        "bd --db .beads/issues.db status OMX-1",
+        "bd --db .beads/issues.db dep add OMX-1 OMX-2",
+      ];
+
+      for (const [index, command] of allowedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-ralplan-beads",
+            thread_id: "thread-ralplan-beads",
+            tool_name: "Bash",
+            tool_use_id: `tool-ralplan-beads-bd-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson, null, `expected Beads metadata command to be allowed: ${command}`);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks unsafe Beads tracker targets and mixed implementation writes during Autopilot ralplan planning", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-autopilot-beads-block-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-autopilot-beads-block");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-autopilot-beads-block", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "ralplan",
+        session_id: "sess-autopilot-beads-block",
+        thread_id: "thread-autopilot-beads-block",
+        active_skills: [
+          {
+            skill: "autopilot",
+            phase: "ralplan",
+            active: true,
+            session_id: "sess-autopilot-beads-block",
+            thread_id: "thread-autopilot-beads-block",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        session_id: "sess-autopilot-beads-block",
+        thread_id: "thread-autopilot-beads-block",
+      });
+
+      const blockedCommands = [
+        "bd --db /tmp/outside.db create 'Issue title'",
+        "bd --db ../outside.db create 'Issue title'",
+        "bd --db .beads create 'Issue title'",
+        "bd --db $DB create 'Issue title'",
+        "DB=.beads/issues.db bd --db $DB create 'Issue title'",
+        "bd --db .beads/issues.db export",
+        "bd --db .beads/issues.db create 'Issue title' > src/leak.ts",
+        "bd --db .beads/issues.db create 'Issue title'; cat > src/leak.ts",
+      ];
+
+      for (const [index, command] of blockedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-autopilot-beads-block",
+            thread_id: "thread-autopilot-beads-block",
+            tool_name: "Bash",
+            tool_use_id: `tool-autopilot-beads-block-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(
+          (result.outputJson as { decision?: string } | null)?.decision,
+          "block",
+          `expected unsafe Beads command to be blocked: ${command}`,
+        );
+      }
+
+      const mentionWithImplementationWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-beads-block",
+          thread_id: "thread-autopilot-beads-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-autopilot-beads-mention-write",
+          tool_input: { command: "echo bd --db .beads/issues.db create > src/leak.ts" },
+        },
+        { cwd },
+      );
+      assert.equal((mentionWithImplementationWrite.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((mentionWithImplementationWrite.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/leak\.ts/);
+
+      const blockedImplementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-beads-block",
+          thread_id: "thread-autopilot-beads-block",
+          tool_name: "Edit",
+          tool_use_id: "tool-autopilot-beads-src-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedImplementationEdit.outputJson as { decision?: string } | null)?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows null-device fd redirects while deep-interview blocks real Bash writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-null-redirect-"));
     try {
