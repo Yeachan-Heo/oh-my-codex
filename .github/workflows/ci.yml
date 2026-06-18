@@ -122,6 +122,7 @@ jobs:
 
           function isTs(path) {
             return /^src\/.*\.(ts|tsx|mts|cts)$/.test(path)
+              || /^src\/compat\/fixtures\//.test(path)
               || /^playground\/.*\.(ts|tsx|js|mjs|cjs|json)$/.test(path);
           }
 

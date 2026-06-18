@@ -48,11 +48,22 @@ describe("repo artifact ownership doctor check", () => {
 			const artifact = join(wd, ".beads", "state.json");
 			await mkdir(join(wd, ".beads"), { recursive: true });
 			await writeFile(artifact, "{}\n");
-
+			const currentUid = 1000;
+			const currentGid = 1000;
 			const check = await checkRepoArtifactOwnership(wd, {
-				currentUid: 1000,
+				currentUid,
 				accessPath: async (path) => {
 					if (path === artifact) throw new Error("not writable");
+				},
+				statPath: async (path) => {
+					const info = await lstat(path);
+					return new Proxy(info, {
+						get(target, property, receiver) {
+							if (property === "uid") return currentUid;
+							if (property === "gid") return currentGid;
+							return Reflect.get(target, property, receiver);
+						},
+					});
 				},
 			});
 

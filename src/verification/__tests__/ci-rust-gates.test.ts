@@ -168,6 +168,11 @@ describe('CI Rust gates', () => {
     assert.equal(sourceChange.full_suite, 'false');
     assert.equal(sourceChange.ts_changed, 'true');
 
+    const compatFixtureChange = classifyChangedPaths(['src/compat/fixtures/doctor/install-onboarding.stdout.txt']);
+    assert.equal(compatFixtureChange.full_suite, 'false');
+    assert.equal(compatFixtureChange.ts_changed, 'true');
+    assert.equal(compatFixtureChange.reason, 'targeted');
+
     const workflowChange = classifyChangedPaths(['.github/workflows/ci.yml']);
     assert.equal(workflowChange.full_suite, 'true');
     assert.equal(workflowChange.shared_config_changed, 'true');
