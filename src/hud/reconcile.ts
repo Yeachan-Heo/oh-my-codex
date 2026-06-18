@@ -178,11 +178,24 @@ function hasCompleteGeometry(pane: TmuxPaneSnapshot): boolean {
   );
 }
 
-function needsHudTopologyRecreate(pane: TmuxPaneSnapshot): boolean {
+function needsHudTopologyRecreate(pane: TmuxPaneSnapshot, leaderPane?: TmuxPaneSnapshot): boolean {
   if (!hasCompleteGeometry(pane)) return false;
-  const spansWindowWidth = pane.paneLeft === 0 && pane.paneWidth === pane.windowWidth;
+  const expectedLeft = typeof leaderPane?.paneLeft === 'number' ? leaderPane.paneLeft : 0;
+  const expectedWidth = typeof leaderPane?.paneWidth === 'number' ? leaderPane.paneWidth : pane.windowWidth;
+  const spansExpectedWidth = pane.paneLeft === expectedLeft && pane.paneWidth === expectedWidth;
   const touchesWindowBottom = pane.paneBottom === (pane.windowHeight ?? 0) - 1;
-  return !spansWindowWidth || !touchesWindowBottom;
+  return !spansExpectedWidth || !touchesWindowBottom;
+}
+
+function shouldCreateFullWidthHud(leaderPane?: TmuxPaneSnapshot): boolean {
+  return Boolean(
+    leaderPane
+    && typeof leaderPane.paneLeft === 'number'
+    && typeof leaderPane.paneWidth === 'number'
+    && typeof leaderPane.windowWidth === 'number'
+    && leaderPane.paneLeft === 0
+    && leaderPane.paneWidth === leaderPane.windowWidth,
+  );
 }
 
 function needsHudHeightResize(pane: TmuxPaneSnapshot, desiredHeight: number): boolean {
@@ -310,11 +323,14 @@ export async function reconcileHudForPromptSubmit(
     omxTeamStateRoot: env.OMX_TEAM_STATE_ROOT,
     rootSource: env.OMX_TEAM_STATE_ROOT ? 'team-env' : env.OMX_ROOT ? 'omx-root-env' : env.OMX_STATE_ROOT ? 'omx-state-root-env' : 'cwd-default',
   });
+  const leaderPane = currentPaneId
+    ? panes.find((pane) => pane.paneId === currentPaneId && !isHudWatchPane(pane))
+    : undefined;
 
   const singleHudPane = hudPaneIds.length === 1
     ? panes.find((pane) => pane.paneId === hudPaneIds[0])
     : undefined;
-  if (singleHudPane && !needsHudTopologyRecreate(singleHudPane)) {
+  if (singleHudPane && !needsHudTopologyRecreate(singleHudPane, leaderPane)) {
     const shouldResize = needsHudHeightResize(singleHudPane, desiredHeight);
     const resized = shouldResize ? resizePane(singleHudPane.paneId, desiredHeight) : true;
     if (resized) ensureHudResizeHook(singleHudPane.paneId, currentPaneId, desiredHeight, cwd, deps);
@@ -330,7 +346,7 @@ export async function reconcileHudForPromptSubmit(
     const hudPanes = hudPaneIds
       .map((paneId) => panes.find((pane) => pane.paneId === paneId))
       .filter((pane): pane is TmuxPaneSnapshot => Boolean(pane));
-    const keeperPane = hudPanes.find((pane) => !needsHudTopologyRecreate(pane));
+    const keeperPane = hudPanes.find((pane) => !needsHudTopologyRecreate(pane, leaderPane));
 
     if (keeperPane) {
       for (const paneId of hudPaneIds.filter((paneId) => paneId !== keeperPane.paneId)) {
@@ -348,7 +364,8 @@ export async function reconcileHudForPromptSubmit(
   }
   const createFullWidth = hudPaneIds
     .map((paneId) => panes.find((pane) => pane.paneId === paneId))
-    .some((pane) => Boolean(pane && needsHudTopologyRecreate(pane)));
+    .some((pane) => Boolean(pane && needsHudTopologyRecreate(pane, leaderPane)))
+    && (!leaderPane || shouldCreateFullWidthHud(leaderPane));
 
   if (!resolvedSessionId) {
     return {
