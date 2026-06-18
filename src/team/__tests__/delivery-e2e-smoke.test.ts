@@ -22,6 +22,7 @@ import { drainPendingTeamDispatch } from '../../scripts/notify-hook/team-dispatc
 import { teamCommand } from '../../cli/team.js';
 
 function buildFakeTmux(tmuxLogPath: string): string {
+  const bufferPath = `${tmuxLogPath}.buffer`;
   return `#!/usr/bin/env bash
 set -eu
 echo "$@" >> "${tmuxLogPath}"
@@ -29,6 +30,23 @@ cmd="$1"
 shift || true
 if [[ "$cmd" == "capture-pane" ]]; then
   printf "› ready\\n"
+  exit 0
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${bufferPath}"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${bufferPath}" ]]; then
+    cat "${bufferPath}"
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${bufferPath}"
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "display-message" ]]; then
@@ -320,7 +338,10 @@ describe('team message delivery end-to-end smoke tests', () => {
         assert.equal(result.status, 0, result.stderr || result.stdout);
 
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.match(tmuxLog, /send-keys -t %95 -l Team worker-leader-fallback:/);
+        assert.match(tmuxLog, /set-buffer -b omx-pane-input-.* -- Team worker-leader-fallback:/);
+        assert.match(tmuxLog, /show-buffer -b omx-pane-input-/);
+        assert.match(tmuxLog, /send-keys -t %95 C-u/);
+        assert.match(tmuxLog, /paste-buffer -t %95 -b omx-pane-input-.* -p -d/);
         assert.match(tmuxLog, /msg\(s\) pending|msg\(s\) for leader/);
       });
     } finally {
