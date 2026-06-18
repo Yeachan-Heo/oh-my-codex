@@ -60,6 +60,19 @@ describe('modes/base Autopilot gate integration', () => {
     }
   });
 
+  it('updateModeState rejects direct ralplan to rework skips', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-ralplan-rework-skip-'));
+    try {
+      await writeAutopilotState(wd, { current_phase: 'ralplan' });
+      await assert.rejects(
+        () => updateModeState('autopilot', { current_phase: 'rework' }, wd),
+        /Cannot skip Autopilot ultragoal gate/i,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('updateModeState rejects ralplan to code-review skips even with user-supplied pipeline fields', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-ralplan-skip-pipeline-fields-'));
     try {

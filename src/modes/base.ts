@@ -63,6 +63,7 @@ const AUTOPILOT_CHILD_PHASE_ORDER: AutopilotChildPhase[] = [
   'deep-interview',
   'ralplan',
   'ultragoal',
+  'rework',
   'team',
   'ralph',
   'code-review',
