@@ -53,6 +53,7 @@ import { adaptCommand } from "./adapt.js";
 import { listCommand } from "./list.js";
 import { authCommand } from "./auth.js";
 import { identityCommand } from "./identity.js";
+import { appCommand } from "./app.js";
 import { runAuthHotswap } from "../auth/hotswap.js";
 import { switchIdentitySlot, switchIdentitySlotToAuthPath } from "../auth/identity.js";
 import { resolveDefaultCodexHome } from "../auth/paths.js";
@@ -228,6 +229,7 @@ Usage:
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx auth      Manage Codex OAuth auth slots (add|list|use)
   omx identity  Inspect/switch Codex identity slots and mixed API/account policy
+  omx app       Configure Codex App local project actions and identity/session diagnostics
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
   omx resume    Resume Codex sessions (supports --project and --codex-home <path>; --unified <id>)
@@ -389,6 +391,7 @@ type CliCommand =
   | "cleanup"
   | "auth"
   | "identity"
+  | "app"
   | "ask"
   | "question"
   | "adapt"
@@ -419,6 +422,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "cleanup",
   "auth",
   "identity",
+  "app",
   "adapt",
   "explore",
   "autoresearch",
@@ -2378,6 +2382,7 @@ export async function main(args: string[]): Promise<void> {
     "cleanup",
     "auth",
     "identity",
+    "app",
     "ask",
     "question",
     "autoresearch",
@@ -2496,6 +2501,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "identity":
         await identityCommand(args.slice(1));
+        break;
+      case "app":
+        await appCommand(args.slice(1));
         break;
       case "autoresearch":
         await autoresearchCommand(args.slice(1));

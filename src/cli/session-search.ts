@@ -145,7 +145,8 @@ function normalizeUnifiedProjectFilter(project: string | undefined, cwd: string)
 }
 
 function unifiedEntryTime(entry: UnifiedSessionEntry): number {
-  const parsed = Date.parse(entry.updatedAt ?? entry.createdAt ?? '');
+  const timestamp = entry.updatedAt ?? entry.createdAt ?? '';
+  const parsed = Date.parse(timestamp);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
