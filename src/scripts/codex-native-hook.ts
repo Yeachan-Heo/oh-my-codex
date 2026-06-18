@@ -550,6 +550,15 @@ function readHookEventName(payload: CodexHookPayload): CodexHookEventName | null
   return null;
 }
 
+function sanitizeCodexHookOutput(
+  hookEventName: CodexHookEventName | null,
+  output: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!output || hookEventName !== "PreToolUse") return output;
+  const systemMessage = safeString(output.systemMessage).trim();
+  return systemMessage ? { systemMessage } : {};
+}
+
 export function mapCodexHookEventToOmxEvent(
   hookEventName: CodexHookEventName | null,
 ): string | null {
@@ -4938,6 +4947,9 @@ function buildMalformedStdinHookOutput(
   const systemMessage =
     `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
   const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
+  if (inferredHookEventName === "PreToolUse") {
+    return { systemMessage };
+  }
   if (inferredHookEventName === "Stop" || (!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))) {
     return {
       decision: "block",
@@ -4980,11 +4992,14 @@ async function buildOversizedStdinHookOutput(
   rawHookEventName: CodexHookEventName | null,
   cwd: string,
 ): Promise<Record<string, unknown>> {
+  const systemMessage =
+    `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
+  if (rawHookEventName === "PreToolUse") {
+    return { systemMessage };
+  }
   if (rawHookEventName === "Stop") {
     return await buildOversizedStopActiveWorkflowOutput(cwd) ?? {};
   }
-  const systemMessage =
-    `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
   return {
     continue: false,
     stopReason: "native_hook_stdin_oversized",
@@ -5098,7 +5113,7 @@ export async function runCodexNativeHookCli(): Promise<void> {
 
     const result = await dispatchCodexNativeHook(payload);
     if (result.outputJson) {
-      writeNativeHookJsonStdout(result.outputJson);
+      writeNativeHookJsonStdout(sanitizeCodexHookOutput(result.hookEventName, result.outputJson) ?? {});
     } else if (result.hookEventName !== "PreCompact" && result.hookEventName !== "PostCompact") {
       writeNativeHookJsonStdout({});
     }

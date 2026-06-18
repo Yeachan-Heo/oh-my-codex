@@ -526,9 +526,9 @@ describe("codex native hook dispatch", () => {
         hookSpecificOutput?: unknown;
       };
 
-      assert.equal(output.continue, false);
+      assert.equal(output.continue, undefined);
       assert.equal(output.decision, undefined);
-      assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+      assert.equal(output.stopReason, undefined);
       assert.equal(output.hookSpecificOutput, undefined);
       assert.match(
         String(output.systemMessage ?? ""),
@@ -644,6 +644,51 @@ describe("codex native hook dispatch", () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.equal(result.stderr, "");
       assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits PreToolUse CLI advisory JSON with only systemMessage", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-pretool-schema-safe-"));
+    try {
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "sess-cli-pretool-schema-safe",
+        thread_id: "thread-cli-pretool-schema-safe",
+        turn_id: "turn-cli-pretool-schema-safe",
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf dist" },
+      }, { cwd }));
+
+      assert.deepEqual(output, {
+        systemMessage:
+          "Destructive Bash command detected (`rm -rf dist`). Confirm the target and expected side effects before running it.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits PreToolUse CLI block JSON with only systemMessage", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-pretool-block-schema-safe-"));
+    try {
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "sess-cli-pretool-block-schema-safe",
+        thread_id: "thread-cli-pretool-block-schema-safe",
+        turn_id: "turn-cli-pretool-block-schema-safe",
+        tool_name: "Bash",
+        tool_input: { command: 'OMX_LORE_COMMIT_GUARD=1 git commit -m "fix tests"' },
+      }, { cwd }));
+
+      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
+      assert.match(String(output.systemMessage ?? ""), /Lore protocol/);
+      assert.equal(output.decision, undefined);
+      assert.equal(output.stopReason, undefined);
+      assert.equal(output.hookSpecificOutput, undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
