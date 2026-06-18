@@ -4,7 +4,6 @@ import { join, relative } from 'node:path';
 import {
   formatCodexGoalReconciliation,
   buildCompletedCodexGoalRemediation,
-  buildCodexGoalTerminalCleanupNotice,
   parseCodexGoalSnapshot,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
