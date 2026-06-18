@@ -91,6 +91,25 @@ OMX also checks for npm updates at launch on a throttled cadence and prompts bef
 
 **Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. That plugin bundles the mirrored skill surface plus plugin-scoped companion metadata for official Codex lifecycle hooks, optional MCP compatibility servers, and apps. It is still **not** a replacement for `npm install -g oh-my-codex` plus `omx setup`: plugin-scoped hooks launch the installed `omx` CLI, legacy setup mode installs native agents and prompts, and plugin setup mode relies on plugin discovery for bundled skills while archiving/removing legacy OMX-managed prompts/native-agent TOMLs so stale role files cannot shadow plugin behavior. Plugin mode still needs a persistent scope `AGENTS.md` (`~/.codex/AGENTS.md` for user setup or `./AGENTS.md` for project setup) as the durable orchestration guidance layer; session-scoped AGENTS files only compose that durable guidance with runtime overlays and are not a replacement.
 
+### Identity and Unified Sessions
+
+OMX keeps Codex account/API-key mixing explicit instead of pretending that local API-key runs and ChatGPT App/cloud tasks share one backend session. The default policy is `primary=chatgpt-main`, `api=allowed-mixed`, and `bridge=open-original`.
+
+Useful commands:
+
+```bash
+omx identity doctor
+omx identity list
+omx identity use chatgpt-main
+omx identity policy
+omx session list --unified
+omx session search "project or title" --unified
+omx session search "transcript phrase" --unified --deep
+omx resume --unified <session-id-or-fragment>
+```
+
+`omx identity doctor` explains the active `CODEX_HOME`, auth mode, matched auth slot, and likely causes of App/API session mismatch. Unified session indexing writes only local metadata and summaries to `~/.omx/state/session-ledger.jsonl`; `--deep` performs a temporary deeper local read for search and does not persist full transcripts. App task caches under `~/Library/Application Support/com.openai.chat` are read-only discovery sources, and `omx resume --unified` opens/resumes each entry in its original source rather than injecting transcripts across identities.
+
 Then work normally inside Codex:
 
 ```text

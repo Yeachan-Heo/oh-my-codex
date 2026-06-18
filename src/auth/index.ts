@@ -1,4 +1,5 @@
 export * from "./config.js";
+export * from "./identity.js";
 export * from "./paths.js";
 export * from "./quota-detector.js";
 export * from "./redact.js";

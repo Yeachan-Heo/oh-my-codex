@@ -35,6 +35,50 @@ describe("auth slot storage", () => {
     }
   });
 
+  it("stores non-sensitive identity metadata for slots", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, ".codex", "auth.json");
+      await mkdir(join(home, ".codex"), { recursive: true });
+      await writeFile(live, '{"auth_mode":"apikey","OPENAI_API_KEY":"secret"}\n');
+      await addSlotFromAuthFile("api-work", live, home, new Date("2026-05-24T00:00:00.000Z"), {
+        displayName: "API Work",
+        kind: "api",
+        isPrimary: false,
+        workspaceHint: "platform",
+        createdFromCodexHome: join(home, ".codex"),
+      });
+      const metadata = await readAuthMetadata(home);
+      assert.equal(metadata.slots[0]?.displayName, "API Work");
+      assert.equal(metadata.slots[0]?.kind, "api");
+      assert.equal(metadata.slots[0]?.workspaceHint, "platform");
+      assert.doesNotMatch(JSON.stringify(metadata), /secret/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("drops unknown fields when reading slot metadata", async () => {
+    const home = await tempHome();
+    try {
+      const authDir = resolveOmxAuthDir(home);
+      await mkdir(authDir, { recursive: true });
+      await writeFile(resolveSlotPath("work", home), "{}\n");
+      await writeFile(join(authDir, "slots.json"), JSON.stringify({
+        version: 1,
+        currentSlot: "work",
+        slots: [
+          { slot: "work", createdAt: "now", updatedAt: "now", kind: "chatgpt", token: "secret-token" },
+        ],
+      }));
+      const metadata = await readAuthMetadata(home);
+      assert.equal(metadata.slots[0]?.slot, "work");
+      assert.doesNotMatch(JSON.stringify(metadata), /secret-token/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("uses owner-only modes for auth directory and files", async () => {
     if (process.platform === "win32") return;
     const home = await tempHome();

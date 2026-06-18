@@ -1,11 +1,15 @@
 import { searchSessionHistory, type SessionSearchReport, type SessionSearchOptions } from '../session-history/search.js';
+import { refreshUnifiedLedger, searchUnifiedEntries, type UnifiedSessionEntry } from '../session-ledger/index.js';
 
 const HELP = `omx session - Search prior local session history
 
 Usage:
+  omx session list --unified [--json]
   omx session search <query> [options]
 
 Options:
+  --unified           Include CLI/API/App metadata in one local view
+  --deep              Reserved for explicit deeper local reads; v1 does not persist full-text indexes
   --limit <n>          Maximum results to return (default: 10)
   --session <id>       Restrict to a specific session id or id fragment
   --since <spec>       Restrict by recency (examples: 7d, 24h, 2026-03-10)
@@ -27,6 +31,8 @@ const HELP_TOKENS = new Set(['--help', '-h', 'help']);
 export interface ParsedSessionSearchArgs {
   options: SessionSearchOptions;
   json: boolean;
+  unified: boolean;
+  deep: boolean;
 }
 
 function parsePositiveInteger(value: string, flag: string): number {
@@ -48,6 +54,12 @@ export function parseSessionSearchArgs(args: string[]): ParsedSessionSearchArgs 
     const token = args[index];
     if (token === '--json') {
       json = true;
+      continue;
+    }
+    if (token === '--unified') {
+      continue;
+    }
+    if (token === '--deep') {
       continue;
     }
     if (token === '--case-sensitive') {
@@ -103,7 +115,26 @@ export function parseSessionSearchArgs(args: string[]): ParsedSessionSearchArgs 
     throw new Error(`Missing search query.\n${HELP}`);
   }
 
-  return { options, json };
+  return { options, json, unified: args.includes('--unified'), deep: args.includes('--deep') };
+}
+
+function parseUnifiedListArgs(args: string[]): { json: boolean; deep: boolean } {
+  const allowed = new Set(['--json', '--unified', '--deep']);
+  for (const arg of args) {
+    if (!allowed.has(arg)) throw new Error(`Unknown option: ${arg}`);
+  }
+  return { json: args.includes('--json'), deep: args.includes('--deep') };
+}
+
+function formatUnifiedEntries(entries: UnifiedSessionEntry[]): string {
+  if (entries.length === 0) return 'No unified session entries found.';
+  return entries.map((entry) => [
+    `${entry.sessionId} [${entry.source}${entry.identitySlot ? `/${entry.identitySlot}` : ''}]`,
+    `  time: ${entry.updatedAt ?? entry.createdAt ?? 'unknown'}`,
+    `  cwd: ${entry.cwd ?? 'unknown'}`,
+    `  title: ${entry.title ?? 'unknown'}`,
+    `  open: ${entry.openTarget ?? entry.resumeCommand ?? 'unknown'}`,
+  ].join('\n')).join('\n\n');
 }
 
 function formatReport(report: SessionSearchReport): string {
@@ -134,6 +165,20 @@ export async function sessionCommand(args: string[]): Promise<void> {
     return;
   }
 
+  if (subcommand === 'list') {
+    const parsed = parseUnifiedListArgs(args.slice(1));
+    if (!args.includes('--unified')) {
+      throw new Error(`omx session list currently requires --unified.\n${HELP}`);
+    }
+    const entries = await refreshUnifiedLedger({ deep: parsed.deep });
+    if (parsed.json) {
+      console.log(JSON.stringify({ entries }, null, 2));
+      return;
+    }
+    console.log(formatUnifiedEntries(entries));
+    return;
+  }
+
   if (subcommand !== 'search') {
     throw new Error(`Unknown session subcommand: ${subcommand}\n${HELP}`);
   }
@@ -144,6 +189,16 @@ export async function sessionCommand(args: string[]): Promise<void> {
   }
 
   const parsed = parseSessionSearchArgs(args.slice(1));
+  if (parsed.unified) {
+    const entries = searchUnifiedEntries(await refreshUnifiedLedger({ deep: parsed.deep }), parsed.options.query)
+      .slice(0, parsed.options.limit ?? 10);
+    if (parsed.json) {
+      console.log(JSON.stringify({ query: parsed.options.query, entries }, null, 2));
+      return;
+    }
+    console.log(formatUnifiedEntries(entries));
+    return;
+  }
   const report = await searchSessionHistory(parsed.options);
   if (parsed.json) {
     console.log(JSON.stringify(report, null, 2));
