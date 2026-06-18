@@ -8,8 +8,129 @@ import {
   buildAutopilotRalplanUltragoalGateError,
   canAdvanceAutopilotRalplanToUltragoal,
 } from '../ralplan-gate.js';
+import { buildRalplanConsensusGateFromSources } from '../../ralplan/consensus-gate.js';
 
 describe('autopilot ralplan gate', () => {
+  it('rejects direct consensus when architect review is not approving', () => {
+    const evidence = buildRalplanConsensusGateFromSources([{
+      source: 'direct-architect-comment',
+      value: {
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            verdict: 'comment',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            verdict: 'approve',
+          },
+        },
+      },
+    }]);
+
+    assert.equal(evidence.complete, false);
+    assert.equal(evidence.blockedReason, 'non_approving_ralplan_consensus_review');
+    assert.match(evidence.blockedDetails?.join('\n') ?? '', /architect review verdict=comment is not approve/);
+  });
+
+  it('rejects direct consensus when critic review is not approving', () => {
+    const evidence = buildRalplanConsensusGateFromSources([{
+      source: 'direct-critic-reject',
+      value: {
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            verdict: 'approve',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            verdict: 'reject',
+          },
+        },
+      },
+    }]);
+
+    assert.equal(evidence.complete, false);
+    assert.equal(evidence.blockedReason, 'non_approving_ralplan_consensus_review');
+    assert.match(evidence.blockedDetails?.join('\n') ?? '', /critic review verdict=reject is not approve/);
+  });
+
+  it('accepts direct consensus when architect and critic reviews approve in order', () => {
+    const evidence = buildRalplanConsensusGateFromSources([{
+      source: 'direct-approval',
+      value: {
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            verdict: 'approve',
+            completed_at: '2026-06-12T10:02:00.000Z',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            verdict: 'approve',
+            completed_at: '2026-06-12T10:03:00.000Z',
+          },
+        },
+      },
+    }]);
+
+    assert.equal(evidence.complete, true);
+    assert.equal(evidence.blockedReason, null);
+    assert.equal(evidence.source, 'direct-approval');
+  });
+
+  it('accepts fresh valid consensus before stale invalid consensus', () => {
+    const evidence = buildRalplanConsensusGateFromSources([
+      {
+        source: 'fresh-valid',
+        value: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              completed_at: '2026-06-12T10:02:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-06-12T10:03:00.000Z',
+            },
+          },
+        },
+      },
+      {
+        source: 'stale-invalid',
+        value: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'iterate',
+              completed_at: '2026-06-12T09:58:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-06-12T09:59:00.000Z',
+            },
+          },
+        },
+      },
+    ]);
+
+    assert.equal(evidence.complete, true);
+    assert.equal(evidence.blockedReason, null);
+    assert.equal(evidence.source, 'fresh-valid');
+  });
   it('rejects invalid next-state complete consensus before falling back to older valid current state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-next-invalid-terminal-'));
     const sessionId = 'sess-autopilot-next-invalid-terminal';

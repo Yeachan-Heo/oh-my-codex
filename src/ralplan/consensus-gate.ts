@@ -55,17 +55,7 @@ export function buildRalplanConsensusGateFromSources(
     source: string;
     options: RalplanNativeSubagentConsensusOptions;
   } | null = null;
-  let validEvidence: {
-    ralplan_architect_review: Record<string, unknown>;
-    ralplan_critic_review: Record<string, unknown>;
-    source: string;
-  } | null = null;
-  let invalidCompleteEvidence: {
-    ralplan_architect_review: Record<string, unknown> | null;
-    ralplan_critic_review: Record<string, unknown> | null;
-    source: string;
-    blockedDetails: string[];
-  } | null = null;
+  let firstCompleteEvidence: (ConsensusResolution & { source: string }) | null = null;
 
   for (const candidate of sources) {
     const evidence = resolveConsensusEvidence(candidate.value);
@@ -73,8 +63,11 @@ export function buildRalplanConsensusGateFromSources(
       ...options,
       sessionId: options.sessionId ?? candidate.sessionId,
     };
+
     if (evidence?.kind === 'invalid') {
-      invalidCompleteEvidence ??= { ...evidence, source: candidate.source };
+      if (isConsensusEvidenceNewerThanSelected(evidence, firstCompleteEvidence)) {
+        firstCompleteEvidence = { ...evidence, source: candidate.source };
+      }
       continue;
     }
 
@@ -86,29 +79,31 @@ export function buildRalplanConsensusGateFromSources(
         nativeBlockedEvidence ??= { ...evidence, source: candidate.source, options: candidateOptions };
         continue;
       }
-      validEvidence ??= { ...evidence, source: candidate.source };
+      if (isConsensusEvidenceNewerThanSelected(evidence, firstCompleteEvidence)) {
+        firstCompleteEvidence = { ...evidence, source: candidate.source };
+      }
     }
   }
 
-  if (invalidCompleteEvidence) {
+  if (firstCompleteEvidence?.kind === 'invalid') {
     return {
       complete: false,
       sequence: ['architect-review', 'critic-review'],
-      ralplan_architect_review: invalidCompleteEvidence.ralplan_architect_review,
-      ralplan_critic_review: invalidCompleteEvidence.ralplan_critic_review,
-      source: invalidCompleteEvidence.source,
+      ralplan_architect_review: firstCompleteEvidence.ralplan_architect_review,
+      ralplan_critic_review: firstCompleteEvidence.ralplan_critic_review,
+      source: firstCompleteEvidence.source,
       blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview,
-      blockedDetails: invalidCompleteEvidence.blockedDetails,
+      blockedDetails: firstCompleteEvidence.blockedDetails,
     };
   }
 
-  if (validEvidence) {
+  if (firstCompleteEvidence?.kind === 'valid') {
     return {
       complete: true,
       sequence: ['architect-review', 'critic-review'],
-      ralplan_architect_review: validEvidence.ralplan_architect_review,
-      ralplan_critic_review: validEvidence.ralplan_critic_review,
-      source: validEvidence.source,
+      ralplan_architect_review: firstCompleteEvidence.ralplan_architect_review,
+      ralplan_critic_review: firstCompleteEvidence.ralplan_critic_review,
+      source: firstCompleteEvidence.source,
       blockedReason: null,
     };
   }
@@ -212,7 +207,6 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
   const advancedReviewCycle = explicitFreshnessReviewCycle(record);
   const staleReturnToRalplanCycle = returnToRalplanCycle && advancedReviewCycle === null;
   const directGate = resolveDirectGate(record);
-  if (directGate?.kind === 'invalid') return directGate;
   if (
     directGate
     && (
@@ -399,12 +393,49 @@ function explicitFreshnessReviewCycle(record: Record<string, unknown>): number |
 }
 
 function reviewsCarryFreshnessCycle(evidence: ConsensusResolution, reviewCycle: number): boolean {
-  return evidence.kind === 'valid'
-    && reviewPairCarriesFreshnessCycle(
-      evidence.ralplan_architect_review,
-      evidence.ralplan_critic_review,
-      reviewCycle,
-    );
+  return reviewPairCarriesFreshnessCycle(
+    evidence.ralplan_architect_review,
+    evidence.ralplan_critic_review,
+    reviewCycle,
+  );
+}
+
+function isConsensusEvidenceNewerThanSelected(
+  evidence: ConsensusResolution,
+  selected: (ConsensusResolution & { source: string }) | null,
+): boolean {
+  if (!selected) return true;
+  const evidenceCycle = consensusEvidenceReviewCycle(evidence);
+  const selectedCycle = consensusEvidenceReviewCycle(selected);
+  if (evidenceCycle !== null && selectedCycle !== null && evidenceCycle !== selectedCycle) {
+    return evidenceCycle > selectedCycle;
+  }
+  const evidenceOrder = consensusEvidenceOrder(evidence);
+  const selectedOrder = consensusEvidenceOrder(selected);
+  if (evidenceOrder !== null && selectedOrder !== null && evidenceOrder !== selectedOrder) {
+    return evidenceOrder > selectedOrder;
+  }
+  return false;
+}
+
+function consensusEvidenceReviewCycle(evidence: ConsensusResolution): number | null {
+  return maxKnownNumber(
+    numericValue(evidence.ralplan_architect_review?.review_cycle ?? evidence.ralplan_architect_review?.reviewCycle),
+    numericValue(evidence.ralplan_critic_review?.review_cycle ?? evidence.ralplan_critic_review?.reviewCycle),
+  );
+}
+
+function consensusEvidenceOrder(evidence: ConsensusResolution): number | null {
+  return maxKnownNumber(
+    reviewOrderValue(evidence.ralplan_architect_review ?? {}),
+    reviewOrderValue(evidence.ralplan_critic_review ?? {}),
+  );
+}
+
+function maxKnownNumber(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.max(left, right);
 }
 
 function reviewPairCarriesFreshnessCycle(

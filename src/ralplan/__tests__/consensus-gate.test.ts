@@ -406,6 +406,45 @@ describe('ralplan consensus gate state roots', () => {
     }
   });
 
+  it('ignores stale invalid local ralplan state consensus during a return-to-ralplan cycle', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-stale-invalid-local-state-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            verdict: 'iterate',
+            completed_at: '2026-06-11T16:00:00.000Z',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            verdict: 'approve',
+            completed_at: '2026-06-11T16:05:00.000Z',
+          },
+        },
+      }, null, 2));
+
+      const gate = buildRalplanConsensusGateForCwd(cwd, {
+        artifacts: {
+          current_phase: 'ralplan',
+          return_to_ralplan_reason: 'Code review requested changes.',
+          review_cycle: 1,
+        },
+      });
+
+      assert.equal(gate.complete, false);
+      assert.equal(gate.blockedReason, 'missing_sequential_architect_then_critic_approval');
+      assert.equal(gate.source, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects local nested handoff consensus when only the local container review_cycle advances', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-local-container-only-'));
     try {
