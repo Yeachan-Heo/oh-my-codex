@@ -2577,6 +2577,33 @@ export async function main(args: string[]): Promise<void> {
   }
 }
 
+type StaleCurrentAutopilotStatus = {
+  phase: string;
+};
+
+function sanitizedStatusString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+async function readStaleCurrentAutopilotStatus(cwd: string): Promise<StaleCurrentAutopilotStatus | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(join(getBaseStateDir(cwd), "current-autopilot.json"), "utf-8"));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const state = parsed as Record<string, unknown>;
+  if (state.active !== true) return null;
+  const phase = sanitizedStatusString(state.current_phase) ?? sanitizedStatusString(state.currentPhase);
+  const sessionId = sanitizedStatusString(state.session_id) ?? sanitizedStatusString(state.sessionId);
+  const tmuxPaneId = sanitizedStatusString(state.tmux_pane_id) ?? sanitizedStatusString(state.tmuxPaneId);
+  if (!phase && !sessionId && !tmuxPaneId) return null;
+  return { phase: phase ?? "active" };
+}
+
 async function showStatus(): Promise<void> {
   const { readFile } = await import("fs/promises");
   const cwd = process.cwd();
@@ -2598,15 +2625,24 @@ async function showStatus(): Promise<void> {
       }
       return false;
     };
-    if (!(await hasActiveWorkflowMode(refs))) {
+    let hasAuthoritativeActiveMode = await hasActiveWorkflowMode(refs);
+    if (!hasAuthoritativeActiveMode) {
       const runDirRefs = await listHookVisibleRunDirStateRefs(cwd);
-      if (await hasActiveWorkflowMode(runDirRefs)) refs = runDirRefs;
+      if (await hasActiveWorkflowMode(runDirRefs)) {
+        refs = runDirRefs;
+        hasAuthoritativeActiveMode = true;
+      }
     }
     const states = refs.map((ref) => ref.path);
     const ultragoalState = await readUltragoalState(cwd).catch(() => null);
     if (states.length === 0) {
       if (ultragoalState?.active) {
         console.log(`ultragoal: ACTIVE (phase: ${ultragoalState.status})`);
+        return;
+      }
+      const staleAutopilot = await readStaleCurrentAutopilotStatus(cwd);
+      if (staleAutopilot) {
+        console.log(`autopilot: STALE (phase: ${staleAutopilot.phase})`);
         return;
       }
       console.log("No active modes.");
@@ -2630,6 +2666,12 @@ async function showStatus(): Promise<void> {
     }
     if (ultragoalState?.active) {
       console.log(`ultragoal: ACTIVE (phase: ${ultragoalState.status})`);
+    }
+    if (!hasAuthoritativeActiveMode && !ultragoalState?.active) {
+      const staleAutopilot = await readStaleCurrentAutopilotStatus(cwd);
+      if (staleAutopilot) {
+        console.log(`autopilot: STALE (phase: ${staleAutopilot.phase})`);
+      }
     }
   } catch (err) {
     logCliOperationFailure(err);
