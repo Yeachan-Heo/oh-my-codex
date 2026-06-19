@@ -72,7 +72,7 @@ codex --version
 npm install -g oh-my-codex
 omx setup
 # from the git project you want Codex to edit; choose a task-specific name
-omx --worktree=feat/task --madmax --high
+omx --worktree=feat/task --madmax --xhigh
 ```
 
 If you do not have Codex CLI yet and want npm to manage it:
@@ -94,6 +94,9 @@ OMX also checks for npm updates at launch on a throttled cadence and prompts bef
 Then work normally inside Codex:
 
 ```text
+# Durable objective/checkpoints for a long task:
+/goal Create a safe authentication refactor plan, implement it, and verify login, logout, and refresh-token behavior.
+
 $deep-interview "clarify the authentication change"
 $ralplan "approve the auth plan and review tradeoffs"
 $prometheus-strict "stress-test the plan before durable execution"
@@ -141,7 +144,7 @@ omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
 Launch OMX the recommended way from a git project:
 
 ```bash
-omx --worktree=feat/task --madmax --high
+omx --worktree=feat/task --madmax --xhigh
 ```
 
 On macOS/Linux interactive terminals with `tmux` available, this starts the
@@ -155,14 +158,14 @@ checkout, which is the safer default when using `--madmax`. Replace
 `--madmax` is OMX shorthand for Codex
 `--dangerously-bypass-approvals-and-sandbox`. It removes the normal approval and
 sandbox guardrails, so only use it in trusted repositories and environments.
-`--high` is shorthand for `-c model_reasoning_effort="high"`.
+`--high` and `--xhigh` are shorthand for `-c model_reasoning_effort="high|xhigh"`; a normal strong session is `omx --madmax --xhigh` (or `omx --worktree=feat/task --madmax --xhigh` from a git project).
 
 When you use `--madmax` from a git repository, prefer a worktree launch instead
 of running directly in the current checkout. For repeatable or concurrent work,
 use a named worktree:
 
 ```bash
-omx --worktree=feature/auth --madmax --high
+omx --worktree=feature/auth --madmax --xhigh
 ```
 
 If you are outside a git repository, omit `--worktree`; worktree launches
@@ -172,8 +175,8 @@ For concurrent `--madmax` sessions, do **not** run them all in the same
 directory. Give each session its own named worktree:
 
 ```bash
-omx --worktree=feature/auth --madmax --high
-omx --worktree=fix/flaky-tests --madmax --high
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
 `--worktree` / `-w` with no name creates or reuses a detached launch worktree at
@@ -226,12 +229,28 @@ process still runs inside that already-open terminal pane.
 Then try the canonical workflow:
 
 ```text
-$deep-interview "clarify the authentication change"
-$ralplan "approve the safest implementation path"
-$ultragoal "turn the approved path into durable Codex goals"
+# Copy/pasteable durable-goal example:
+/goal Ship the checkout bug fix with a durable objective, checkpoints for reproduction, implementation, regression tests, and final verification.
+
+$ralplan "approve the checkout bug-fix plan and review tradeoffs"
+$ultrawork "execute the approved checkout fix with checkpoint evidence"
 ```
 
 Use `$team` when an active Ultragoal story needs coordinated parallel work, or `$ralph` when one persistent owner should keep pushing to completion without a multi-goal ledger.
+
+### `/goal` and skill selection
+
+Start a normal strong session with `omx --madmax --xhigh` (or add `--worktree=<task>` in a git repo). Inside that session, pick the execution spine that matches the work: `$autopilot` for the full supervised planning-to-execution loop, `$ultrawork` when you want durable checkpointed execution, or `$ralph` when one persistent owner should keep pushing to completion. Use `/goal` when the task itself needs a durable objective/checkpoint structure that Codex should keep reconciling across turns.
+
+Add only 2-5 relevant skills by default. More skills are allowed when the task scope justifies them, but loading a large catalog is usually a context-budget and attention-quality problem, not a hard parser/runtime blocker. Treat it as a concrete runtime blocker only when a command actually errors.
+
+Anti-pattern:
+
+```text
+omx --madmax --xhigh
+# Then immediately load 20 skills "just in case" before stating the task.
+# This bloats session context and makes the model spend attention on irrelevant workflows.
+```
 
 ## A simple mental model
 
@@ -251,10 +270,10 @@ Most users should think of OMX as **better task routing + better workflow + bett
 2. After install or real OMX version bumps, run `omx setup` yourself when you're ready, or use `omx update` when you also want npm to check for and install the latest build before refreshing setup
 3. Run `omx doctor`
 4. Run a real execution smoke test: `codex login status` and `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"`
-5. Launch with a named worktree from a git repo, for example `omx --worktree=feat/task --madmax --high`; if you run concurrent `--madmax` sessions, use distinct named worktrees such as `--worktree=feature/auth`
+5. Launch with a named worktree from a git repo, for example `omx --worktree=feat/task --madmax --xhigh`; if you run concurrent `--madmax` sessions, use distinct named worktrees such as `--worktree=feature/auth`
 6. Use `$deep-interview "..."` when the request or boundaries are still unclear
 7. Use `$ralplan "..."` to approve the plan and review tradeoffs
-8. Use `$ultragoal "..."` to turn the approved plan into durable goals and ledger checkpoints
+8. Use `$ultragoal`, `$ultrawork`, `$autopilot`, or `$ralph` when the task needs an execution spine; add `/goal` when durable objective/checkpoint structure should be explicit
 
 ## Recommended workflow
 
@@ -276,6 +295,7 @@ Inside an Ultragoal story, use `$team` only when that story benefits from coordi
 | `$ralph "..."` | persistent completion and verification loops |
 | `$team "..."` | coordinated parallel execution when the work is big enough |
 | `/skills` | browsing installed skills and supporting helpers |
+| `/goal ...` | durable objective/checkpoint structure for tasks that must reconcile progress across turns |
 
 ## Advanced / operator surfaces
 
