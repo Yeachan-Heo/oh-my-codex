@@ -35,7 +35,7 @@ Sequential task execution wastes time when tasks are independent. Ultrawork keep
 - When useful, run a direct-tool lane and one or more background evidence lanes at the same time. Evidence lanes can cover docs, tests, regression mapping, or bounded repo analysis.
 - Fire independent agent calls simultaneously -- never serialize independent work.
 - Always pass the `model` parameter explicitly when delegating.
-- Read `docs/shared/agent-tiers.md` before first delegation for agent selection guidance.
+- Read `references/agent-tiers.md` before first delegation for agent selection guidance.
 - Auto-delegate `researcher` when official docs, version-aware framework guidance, best practices, or external dependency behavior materially affect task correctness; treat it as an evidence lane, not a replacement primary workflow.
 - Use `run_in_background: true` for operations over ~30 seconds (installs, builds, tests).
 - Run quick commands (git status, file reads, simple checks) in the foreground.
@@ -44,7 +44,7 @@ Sequential task execution wastes time when tasks are independent. Ultrawork keep
 </Execution_Policy>
 
 <Steps>
-1. **Read agent reference**: Load `docs/shared/agent-tiers.md` for tier selection.
+1. **Read agent reference**: Load `references/agent-tiers.md` for tier selection.
 2. **Context + certainty check**:
    - State the task intent in one sentence.
    - List the constraints and unknowns that could invalidate a quick fix.
