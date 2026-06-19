@@ -29,10 +29,10 @@ oh-my-codex setup
   Done.
 
 [2/7] Installing agent prompts...
-  Installed 30 agent prompts.
+  Installed 37 agent prompts.
 
 [3/7] Installing skills...
-  Installed 40 skills.
+  Installed 46 skills.
 
 [4/7] Updating config.toml...
   Done.
@@ -69,8 +69,8 @@ oh-my-codex doctor
   [OK] Node.js: v20+
   [OK] Codex home: ~/.codex
   [OK] Config: config.toml has OMX entries
-  [OK] Prompts: 30 agent prompts installed
-  [OK] Skills: 40 skills installed
+  [OK] Prompts: 37 agent prompts installed
+  [OK] Skills: 46 skills installed
   [OK] AGENTS.md: found in project root
   [OK] State dir: .omx/state
   [OK] MCP Servers: 4 servers configured (OMX present)
@@ -112,8 +112,8 @@ The generated `AGENTS.md` in your project root acts as the orchestration brain. 
 
 - Delegation rules (when to use which agent)
 - Model routing guidance in AGENTS.md (complexity/role-based routing)
-- 30-agent catalog with descriptions
-- 40 skill descriptions with trigger patterns
+- 37-agent catalog with descriptions
+- 46 skill descriptions with trigger patterns
 - Team compositions for common workflows
 - Verification protocols
 
@@ -379,8 +379,8 @@ Expected:
 
 | Component | Count | Location |
 |-----------|-------|----------|
-| Agent prompts | 30 | `~/.codex/prompts/*.md` |
-| Skills | 40 | `~/.codex/skills/*/SKILL.md` |
+| Agent prompts | 37 | `~/.codex/prompts/*.md` |
+| Skills | 46 | `~/.codex/skills/*/SKILL.md` |
 | MCP servers | 4 | Configured in `~/.codex/config.toml` |
 | CLI commands | 11+ | `omx (launch), setup, doctor, team, version, tmux-hook, hud, status, cancel, reasoning, help` |
 | AGENTS.md | 1 | Project root (generated) |

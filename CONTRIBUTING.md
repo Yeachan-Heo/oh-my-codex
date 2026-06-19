@@ -51,8 +51,8 @@ unset OMX_TEAM_WORKER OMX_TEAM_STATE_ROOT OMX_TEAM_LEADER_CWD OMX_TEAM_WORKER_CL
 ## Project structure
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
-- `prompts/` -- 30 agent prompt markdown files (installed to `~/.codex/prompts/`)
-- `skills/` -- 39 skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
+- `prompts/` -- 37 agent prompt markdown files (installed to `~/.codex/prompts/`)
+- `skills/` -- 46 skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
 - `templates/` -- `AGENTS.md` orchestration brain template
 
 ### Adding a new agent prompt
