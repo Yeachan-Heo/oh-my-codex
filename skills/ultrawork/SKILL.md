@@ -34,8 +34,8 @@ Sequential task execution wastes time when tasks are independent. Ultrawork keep
 - Prefer direct tool work when the task is small, coupled, or blocked on immediate local context. Delegate only when the work is independent enough to benefit from parallel execution.
 - When useful, run a direct-tool lane and one or more background evidence lanes at the same time. Evidence lanes can cover docs, tests, regression mapping, or bounded repo analysis.
 - Fire independent agent calls simultaneously -- never serialize independent work.
-- Always pass the `model` parameter explicitly when delegating.
-- Read `docs/shared/agent-tiers.md` before first delegation for agent selection guidance.
+- When delegating through Codex native subagents, set an explicit installed `agent_type` and use `reasoning_effort` for intensity.
+- Pass `model` only when the user, repo config, or task requires a concrete override.
 - Auto-delegate `researcher` when official docs, version-aware framework guidance, best practices, or external dependency behavior materially affect task correctness; treat it as an evidence lane, not a replacement primary workflow.
 - Use `run_in_background: true` for operations over ~30 seconds (installs, builds, tests).
 - Run quick commands (git status, file reads, simple checks) in the foreground.
@@ -44,7 +44,7 @@ Sequential task execution wastes time when tasks are independent. Ultrawork keep
 </Execution_Policy>
 
 <Steps>
-1. **Read agent reference**: Load `docs/shared/agent-tiers.md` for tier selection.
+1. **Select delegation lane**: Choose the subagent role by responsibility and choose the reasoning intensity from the self-contained routing rules below.
 2. **Context + certainty check**:
    - State the task intent in one sentence.
    - List the constraints and unknowns that could invalidate a quick fix.
@@ -71,9 +71,9 @@ Sequential task execution wastes time when tasks are independent. Ultrawork keep
 </Steps>
 
 <Tool_Usage>
-- Use LOW-tier delegation for simple lookups and bounded evidence gathering.
-- Use STANDARD-tier delegation for standard implementation and regression work.
-- Use THOROUGH-tier delegation for complex analysis, architectural review, or risky multi-file changes.
+- LOW intensity: use `agent_type="explore"` for repo lookup, `writer` for lightweight docs, or a tightly scoped `executor` lane with `reasoning_effort="low"` for narrow, non-invasive work.
+- STANDARD intensity: use `agent_type="executor"`, `debugger`, or `test-engineer` with `reasoning_effort="medium"` for normal implementation, debugging, and regression work.
+- THOROUGH intensity: use `agent_type="architect"`, `critic`, `code-reviewer`, or a high-impact `executor` lane with `reasoning_effort="xhigh"` for architectural, security-sensitive, or broad multi-file changes.
 - Prefer a direct-tool lane when the immediate next step is blocked on local context.
 - Prefer background evidence lanes when you can learn something useful in parallel with implementation.
 - Use `run_in_background: true` for package installs, builds, and test suites.

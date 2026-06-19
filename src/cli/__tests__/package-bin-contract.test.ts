@@ -25,6 +25,28 @@ type NpmPackDryRunResult = {
 };
 
 describe('package bin contract', () => {
+  it('keeps packaged skill guidance independent from repo-local agent tier docs', () => {
+    const skillGuidancePaths = [
+      'skills/ultrawork/SKILL.md',
+      'skills/ecomode/SKILL.md',
+      'plugins/oh-my-codex/skills/ultrawork/SKILL.md',
+    ];
+
+    for (const relativePath of skillGuidancePaths) {
+      const content = readFileSync(join(process.cwd(), relativePath), 'utf-8');
+      assert.doesNotMatch(
+        content,
+        /docs\/shared\/agent-tiers\.md/,
+        `${relativePath} should not require repository-local agent tier docs after installation`,
+      );
+      assert.doesNotMatch(
+        content,
+        /references\/agent-tiers\.md/,
+        `${relativePath} should not require an unsupported nested skill reference directory`,
+      );
+    }
+  });
+
   it('declares omx with an explicit relative bin path and avoids packaging platform-specific native binaries', () => {
     const packageJsonPath = join(process.cwd(), 'package.json');
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as PackageJson;

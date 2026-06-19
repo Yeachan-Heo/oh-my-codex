@@ -45,11 +45,11 @@ Ecomode is a modifier that combines with execution modes:
 
 ## Agent Selection in Ecomode
 
-**FIRST ACTION:** Before delegating any work, read the agent reference file:
-```
-Read file: docs/shared/agent-tiers.md
-```
-This provides the complete agent tier matrix, MCP tool assignments, and selection guidance.
+Ecomode is deprecated, so do not add a repository-doc read prerequisite before delegation. If legacy ecomode routing needs to be interpreted, use this self-contained mapping:
+
+- LOW intensity: prefer `agent_type="explore"` for search, `writer` for documentation, or a tightly scoped `executor` lane with `reasoning_effort="low"`.
+- STANDARD intensity: use `agent_type="executor"`, `debugger`, or `test-engineer` with `reasoning_effort="medium"` when LOW is insufficient.
+- THOROUGH intensity: use `agent_type="architect"`, `critic`, or high-impact `executor` with `reasoning_effort="xhigh"` only when essential.
 
 **Ecomode preference order:**
 
