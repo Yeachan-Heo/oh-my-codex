@@ -56,7 +56,7 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['test:team:cross-rebase-smoke:compiled'], 'node dist/scripts/run-test-files.js dist/team/__tests__/cross-rebase-smoke.test.js');
     assert.equal(pkg.scripts?.['test:node'], 'node dist/scripts/run-test-files.js dist');
     assert.equal(pkg.scripts?.test, 'npm run build && npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check');
-    assert.equal(pkg.scripts?.['test:ci:compiled'], 'npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check');
+    assert.equal(pkg.scripts?.['test:ci:compiled'], 'node dist/scripts/run-compiled-ci.js');
     assert.equal(
       pkg.scripts?.['coverage:team-critical'],
       'npm run build && npm run coverage:team-critical:compiled',
