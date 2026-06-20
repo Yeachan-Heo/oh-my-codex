@@ -44,6 +44,7 @@ import {
   type DeepInterviewRuntimeConfig,
 } from '../config/deep-interview.js';
 import { inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
+import { resolveAutopilotPlannerRouting } from '../autopilot/planner-routing.js';
 
 export interface KeywordMatch {
   keyword: string;
@@ -769,6 +770,9 @@ async function persistStatefulSkillSeedState(
             skip_reason: null,
             rationale: 'Autopilot starts at the deep-interview gate by default; clear bounded tasks may skip only with an explicit persisted skip reason.',
           },
+      planning_routing: existingState.planning_routing && typeof existingState.planning_routing === 'object'
+        ? existingState.planning_routing
+        : resolveAutopilotPlannerRouting(process.env.CODEX_HOME),
     };
   }
 

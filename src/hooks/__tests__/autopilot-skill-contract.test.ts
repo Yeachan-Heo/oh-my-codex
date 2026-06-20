@@ -57,6 +57,14 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /do not progress to `\$ultragoal`, `\$team`, `\$ralph`, or implementation/i);
   });
 
+  it('documents dedicated planner routing when Autopilot main is cheap or mini', () => {
+    assert.match(autopilotSkill, /planning_routing/i);
+    assert.match(autopilotSkill, /cheap\/mini lane[\s\S]*`\[main\]`/i);
+    assert.match(autopilotSkill, /dedicated `\[planner\]`/i);
+    assert.match(ralplanSkill, /`agentModels\.planner`/i);
+    assert.match(ralplanSkill, /initial Planner draft/i);
+  });
+
   it('documents optional deep-interview execution contract validation without broadness inference', () => {
     assert.match(autopilotSkill, /execution_contract_required:true/i);
     assert.match(autopilotSkill, /execution_contract/i);
