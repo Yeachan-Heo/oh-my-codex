@@ -395,6 +395,10 @@ type CliCommand =
   | "hud"
   | "sidecar"
   | "state"
+  | "notepad"
+  | "project-memory"
+  | "trace"
+  | "code-intel"
   | "wiki"
   | "mcp-serve"
   | "status"
@@ -423,6 +427,10 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "hud",
   "sidecar",
   "state",
+  "notepad",
+  "project-memory",
+  "trace",
+  "code-intel",
   "wiki",
   "mcp-serve",
   "ralph",
