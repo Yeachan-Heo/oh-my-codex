@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.14] - 2026-06-20
+
+Patch release for the post-`0.18.13` reliability train: agent/model routing diagnostics are clearer, goal/planning workflows are safer, plugin and native-hook behavior is sturdier, HUD/Team/tmux edge cases are tightened, doctor catches root-owned repo artifacts, and resume search discovers madmax run histories.
+
+### Changed
+
+- **Agent/model routing is more transparent** — per-agent model overrides and launch diagnostics expose selected roles, tiers, and launch arguments without changing the default CLI/package contract.
+- **Goal and planning workflow guidance is clearer** — completed Codex goal cleanup, Ralplan transition diagnostics, supervised Autopilot review rework, Beads metadata handling, and goal/skill docs reduce stale or ambiguous handoffs.
+- **Doctor and resume discovery cover more local cases** — root-owned repo artifact detection and madmax run-history discovery improve troubleshooting and continuation.
+
+### Fixed
+
+- **Plugin, setup, and native hooks are safer** — plugin AGENTS policy blocks survive setup, dev plugin cache diagnostics are clearer, bundled skill agent tier references are present, native hooks succeed on null output, PreToolUse stdout/schema behavior is preserved, and Windows native hook command launching avoids shell wrapping.
+- **HUD, Team, and tmux behavior is sturdier** — stale Autopilot HUD state, cramped guard rendering, standalone pane-scoped HUD state, paste-buffer cleanup, worker AGENTS guidance, and HUD pane ownership on shutdown are hardened.
+- **Ralplan and Autopilot gates are fresher** — Ralplan consensus approval/freshness checks, guard/HUD phase authority, stale Autopilot stop state, and Ultragoal architecture invariant handling are tightened.
+
+### PRs
+
+- #2912, #2906, #2905, #2900, #2899, #2897, #2896, #2895, #2894, #2889, #2888, #2884, #2879, #2878, #2877, #2875, #2874, #2873, #2861, #2859, #2852, #2850, #2848, #2828
+
+### Issues
+
+- Held open PRs #2902, #2856, #2840, #2839, and #2838 are excluded from this release candidate unless already in `origin/dev`; prep confirmed they are open and `BEHIND` on base `dev`.
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.14.md`.
+
 ## [0.18.13] - 2026-06-17
 
 Patch release for the post-`0.18.12` reliability train: project-scoped resume/search discovery is broader, setup and hook handling are safer, ralplan/autopilot consensus gates are fresher, CI/release infrastructure is sturdier, sidecar Team state roots align with runtime behavior, geobench documentation/schema fixes are captured, and release prep selects `0.18.13` rather than `0.19.0` after explicit no-breaking-change review.
