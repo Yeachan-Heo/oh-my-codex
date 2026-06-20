@@ -151,6 +151,8 @@ const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blocked"]);
 const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
+const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
+const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
 const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
@@ -2714,6 +2716,144 @@ function readPayloadTurnId(payload: CodexHookPayload): string {
   return safeString(payload.turn_id ?? payload.turnId).trim();
 }
 
+interface NativeSubagentCapacityBlocker {
+  schema_version: 1;
+  reason: "agent_thread_limit_reached";
+  session_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  tool_name?: string;
+  error_summary: string;
+  observed_at: string;
+  expires_at: string;
+}
+
+function nativeSubagentCapacityBlockerPath(stateDir: string): string {
+  return join(stateDir, NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE);
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function payloadEvidenceText(payload: CodexHookPayload): string {
+  return [
+    safeString(payload.tool_name),
+    stringifyUnknown(payload.tool_response),
+    stringifyUnknown(payload.response),
+    stringifyUnknown(payload.error),
+    stringifyUnknown(payload.message),
+  ].filter(Boolean).join("\n");
+}
+
+function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
+  const evidence = payloadEvidenceText(payload);
+  if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
+  const toolName = safeString(payload.tool_name).trim();
+  return !toolName || /(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName);
+}
+
+function summarizeCapacityFailure(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "agent thread limit reached";
+  const match = normalized.match(/[^.?!\n\r]*agent thread limit reached[^.?!\n\r]*/i);
+  return (match?.[0] ?? normalized).slice(0, 500);
+}
+
+async function recordNativeSubagentCapacityBlocker(
+  cwd: string,
+  stateDir: string,
+  payload: CodexHookPayload,
+): Promise<void> {
+  if (!isNativeSubagentCapacityFailure(payload)) return;
+  const nowMs = Date.now();
+  const blocker: NativeSubagentCapacityBlocker = {
+    schema_version: 1,
+    reason: "agent_thread_limit_reached",
+    ...(readPayloadSessionId(payload) ? { session_id: readPayloadSessionId(payload) } : {}),
+    ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
+    ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
+    ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
+    error_summary: summarizeCapacityFailure(payloadEvidenceText(payload)),
+    observed_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS).toISOString(),
+  };
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(nativeSubagentCapacityBlockerPath(stateDir), JSON.stringify({
+    ...blocker,
+    cwd,
+  }, null, 2));
+}
+
+function isFreshNativeSubagentCapacityBlocker(
+  blocker: Record<string, unknown> | null,
+  cwd: string,
+  payload: CodexHookPayload,
+  nowMs = Date.now(),
+): blocker is NativeSubagentCapacityBlocker & Record<string, unknown> {
+  if (!blocker) return false;
+  if (safeString(blocker.reason) !== "agent_thread_limit_reached") return false;
+  const expiresAtMs = Date.parse(safeString(blocker.expires_at));
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return false;
+  const blockerCwd = safeString(blocker.cwd).trim();
+  if (blockerCwd) {
+    try {
+      if (resolve(blockerCwd) !== resolve(cwd)) return false;
+    } catch {
+      return false;
+    }
+  }
+  const blockerSessionId = safeString(blocker.session_id).trim();
+  const payloadSessionId = readPayloadSessionId(payload);
+  return !blockerSessionId || !payloadSessionId || blockerSessionId === payloadSessionId;
+}
+
+function inputContainsCloseAgentRequest(value: unknown): boolean {
+  if (typeof value === "string") return /\bclose_agent\b/i.test(value);
+  if (!value || typeof value !== "object") return false;
+  try {
+    return /\bclose_agent\b/i.test(JSON.stringify(value));
+  } catch {
+    return false;
+  }
+}
+
+function isCloseAgentToolUse(payload: CodexHookPayload): boolean {
+  const toolName = safeString(payload.tool_name).trim();
+  if (/\bclose_agent\b/i.test(toolName)) return true;
+  if (/multi_tool_use\.parallel/i.test(toolName) && inputContainsCloseAgentRequest(payload.tool_input)) return true;
+  return inputContainsCloseAgentRequest(payload.tool_input) && /multi_agent|agent|tool_use/i.test(toolName);
+}
+
+async function buildNativeSubagentCapacityCloseGuardOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+): Promise<Record<string, unknown> | null> {
+  if (!isCloseAgentToolUse(payload)) return null;
+  const blocker = await readJsonIfExists(nativeSubagentCapacityBlockerPath(stateDir));
+  if (!isFreshNativeSubagentCapacityBlocker(blocker, cwd, payload)) return null;
+
+  const evidence = safeString(blocker.error_summary).trim() || "agent thread limit reached";
+  return {
+    decision: "block",
+    reason: "Native subagent capacity was exhausted recently; model-level close_agent cleanup is blocked because close_agent can hang indefinitely on stale handles.",
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        `OMX blocked ${safeString(payload.tool_name).trim() || "close_agent"} before it could start: a recent native subagent capacity failure was recorded (${evidence}). `
+        + "Do not call multi_agent_v1.close_agent, and do not batch close_agent through multi_tool_use.parallel, as stale native handles can hang the whole turn. "
+        + "Treat this as a bounded capacity blocker: persist/report the blocker evidence, avoid further native subagent cleanup from the model turn, and recover via runtime-level cleanup or a fresh Codex session.",
+    },
+  };
+}
+
 async function resolveInternalSessionIdForPayload(
   cwd: string,
   payloadSessionId: string,
@@ -4893,8 +5033,10 @@ export async function dispatchCodexNativeHook(
       : "";
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
+    await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
     if (detectMcpTransportFailure(payload)) {
       await markTeamTransportFailure(cwd, payload);
     }
