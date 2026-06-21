@@ -312,7 +312,12 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	checks.push(checkNodeVersion());
 
 	// Check 2.5: Explore harness readiness
-	checks.push(checkExploreHarness());
+	const exploreRoutingState = await resolveExploreRoutingState(paths.configPath);
+	checks.push(
+		checkExploreHarness(process.platform, process.env, {
+			exploreRoutingEnabled: exploreRoutingState.enabled,
+		}),
+	);
 
 	// Check 3: Codex home directory
 	checks.push(checkDirectory("Codex home", paths.codexHomeDir));
@@ -346,7 +351,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (runtimeMirrorCheck) checks.push(runtimeMirrorCheck);
 
 	// Check 4.5: Explore routing default
-	checks.push(await checkExploreRouting(paths.configPath));
+	checks.push(checkExploreRoutingFromState(exploreRoutingState));
 
 	// Check 4.6: Lore commit guard default
 	checks.push(await checkLoreCommitGuard(paths.configPath));
@@ -827,7 +832,19 @@ function checkNodeVersion(): Check {
 export function checkExploreHarness(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = process.env,
+	options: { exploreRoutingEnabled?: boolean } = {},
 ): Check {
+	const override = env[EXPLORE_BIN_ENV]?.trim();
+	const exploreRoutingEnabled = options.exploreRoutingEnabled ?? isExploreCommandRoutingEnabled(env);
+	if (!override && !exploreRoutingEnabled) {
+		return {
+			name: "Explore Harness",
+			status: "pass",
+			message:
+				"skipped: omx explore is hard-deprecated and explore routing is disabled by default; use omx sparkshell for shell-native read-only evidence",
+		};
+	}
+
 	const packageRoot = getPackageRoot();
 	const manifestPath = join(packageRoot, "crates", "omx-explore", "Cargo.toml");
 	if (!existsSync(manifestPath)) {
@@ -839,7 +856,6 @@ export function checkExploreHarness(
 		};
 	}
 
-	const override = env[EXPLORE_BIN_ENV]?.trim();
 	if (override) {
 		const resolved = join(packageRoot, override);
 		if (existsSync(override) || existsSync(resolved)) {
@@ -1220,10 +1236,53 @@ async function checkModelContextRecommendation(
 	}
 }
 
-async function checkExploreRouting(configPath: string): Promise<Check> {
-	const envValue = process.env[OMX_EXPLORE_CMD_ENV];
+type ExploreRoutingState =
+	| { source: "env"; enabled: boolean }
+	| { source: "config"; enabled: boolean }
+	| { source: "default"; enabled: false; reason: "missing-config" | "unset" }
+	| { source: "unreadable"; enabled: false };
+
+async function resolveExploreRoutingState(
+	configPath: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<ExploreRoutingState> {
+	const envValue = env[OMX_EXPLORE_CMD_ENV];
 	if (typeof envValue === "string") {
-		if (isExploreCommandRoutingEnabled(process.env)) {
+		return { source: "env", enabled: isExploreCommandRoutingEnabled(env) };
+	}
+
+	if (!existsSync(configPath)) {
+		return { source: "default", enabled: false, reason: "missing-config" };
+	}
+
+	try {
+		const content = await readFile(configPath, "utf-8");
+		const parsed = parseToml(content) as {
+			env?: Record<string, unknown>;
+			shell_environment_policy?: { set?: Record<string, unknown> };
+		};
+		const configuredValue =
+			parsed?.shell_environment_policy?.set?.USE_OMX_EXPLORE_CMD ??
+			parsed?.env?.USE_OMX_EXPLORE_CMD;
+
+		if (typeof configuredValue === "string") {
+			return {
+				source: "config",
+				enabled: isExploreCommandRoutingEnabled({
+					USE_OMX_EXPLORE_CMD: configuredValue,
+				}),
+			};
+		}
+
+		return { source: "default", enabled: false, reason: "unset" };
+	} catch {
+		return { source: "unreadable", enabled: false };
+	}
+}
+
+function checkExploreRoutingFromState(state: ExploreRoutingState): Check {
+	if (state.source === "env") {
+		if (state.enabled) {
 			return {
 				name: "Explore routing",
 				status: "warn",
@@ -1239,54 +1298,39 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
 		};
 	}
 
-	if (!existsSync(configPath)) {
+	if (state.source === "config") {
+		if (state.enabled) {
+			return {
+				name: "Explore routing",
+				status: "warn",
+				message:
+					'deprecated compatibility routing enabled in config.toml; set USE_OMX_EXPLORE_CMD = "0" under [shell_environment_policy.set] and use normal Codex repo inspection or omx sparkshell instead',
+			};
+		}
 		return {
 			name: "Explore routing",
 			status: "pass",
-			message: "deprecated by default (config.toml not found yet)",
+			message:
+				"deprecated compatibility routing disabled in config.toml (recommended)",
 		};
 	}
 
-	try {
-		const content = await readFile(configPath, "utf-8");
-		const parsed = parseToml(content) as {
-			env?: Record<string, unknown>;
-			shell_environment_policy?: { set?: Record<string, unknown> };
-		};
-		const configuredValue =
-			parsed?.shell_environment_policy?.set?.USE_OMX_EXPLORE_CMD ??
-			parsed?.env?.USE_OMX_EXPLORE_CMD;
-
-		if (typeof configuredValue === "string") {
-			if (isExploreCommandRoutingEnabled({
-				USE_OMX_EXPLORE_CMD: configuredValue,
-			})) {
-				return {
-					name: "Explore routing",
-					status: "warn",
-					message:
-						'deprecated compatibility routing enabled in config.toml; set USE_OMX_EXPLORE_CMD = "0" under [shell_environment_policy.set] and use normal Codex repo inspection or omx sparkshell instead',
-				};
-			}
-			return {
-				name: "Explore routing",
-				status: "pass",
-				message: "deprecated compatibility routing disabled in config.toml (recommended)",
-			};
-		}
-
-		return {
-			name: "Explore routing",
-			status: "pass",
-			message: "deprecated by default",
-		};
-	} catch {
+	if (state.source === "unreadable") {
 		return {
 			name: "Explore routing",
 			status: "fail",
 			message: "cannot read config.toml for explore routing check",
 		};
 	}
+
+	return {
+		name: "Explore routing",
+		status: "pass",
+		message:
+			state.reason === "missing-config"
+				? "deprecated by default (config.toml not found yet)"
+				: "deprecated by default",
+	};
 }
 
 const LORE_COMMIT_GUARD_EXPLICIT_OPT_OUT_VALUES = new Set([
