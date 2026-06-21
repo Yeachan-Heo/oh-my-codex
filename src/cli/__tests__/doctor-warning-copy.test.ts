@@ -155,13 +155,33 @@ function buildHooksJsonWithPostCompactCommand(
 }
 
 describe("omx doctor onboarding warning copy", () => {
-	it("warns that the built-in explore harness is not ready on Windows", () => {
+	it("does not warn about the Windows explore harness when deprecated explore routing is disabled by default", () => {
 		const check = checkExploreHarness("win32", {} as NodeJS.ProcessEnv);
+
+		assert.equal(check.name, "Explore Harness");
+		assert.equal(check.status, "pass");
+		assert.match(check.message, /omx explore is hard-deprecated/i);
+		assert.match(check.message, /explore routing is disabled by default/i);
+		assert.match(check.message, /omx sparkshell/i);
+		assert.doesNotMatch(check.message, /not ready on Windows/i);
+	});
+
+	it("still warns about the Windows built-in explore harness when deprecated routing is explicitly enabled", () => {
+		const check = checkExploreHarness("win32", { USE_OMX_EXPLORE_CMD: "1" } as NodeJS.ProcessEnv);
 
 		assert.equal(check.name, "Explore Harness");
 		assert.equal(check.status, "warn");
 		assert.match(check.message, /not ready on Windows/i);
 		assert.match(check.message, /OMX_EXPLORE_BIN/);
+		assert.match(check.message, /omx sparkshell/i);
+	});
+
+	it("preserves warnings for explicit custom explore harness overrides", () => {
+		const check = checkExploreHarness("win32", { OMX_EXPLORE_BIN: "missing-custom-harness.exe" } as NodeJS.ProcessEnv);
+
+		assert.equal(check.name, "Explore Harness");
+		assert.equal(check.status, "warn");
+		assert.match(check.message, /OMX_EXPLORE_BIN is set but path was not found/);
 	});
 
 	it("treats user-managed MCP servers as preserved under CLI-first defaults", async () => {
@@ -679,6 +699,7 @@ enabled = true
 					CODEX_HOME: join(home, ".codex"),
 					PATH: fakeBin,
 					OMX_EXPLORE_BIN: "",
+					USE_OMX_EXPLORE_CMD: "1",
 				});
 				if (shouldSkipForSpawnPermissions(res.error)) return;
 				assert.equal(res.status, 0, res.stderr || res.stdout);
@@ -750,6 +771,7 @@ enabled = true
 						CODEX_HOME: join(home, ".codex"),
 						PATH: fakeBin,
 						OMX_EXPLORE_BIN: "",
+						USE_OMX_EXPLORE_CMD: "1",
 					});
 					if (shouldSkipForSpawnPermissions(res.error)) return;
 					assert.equal(res.status, 0, res.stderr || res.stdout);

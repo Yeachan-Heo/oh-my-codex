@@ -1,8 +1,16 @@
 import { statSync } from 'fs';
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'child_process';
+import {
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnOptions,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
+} from 'child_process';
 import { basename, delimiter, dirname, extname, join, resolve } from 'path';
 
 type ExistsSyncLike = (path: string) => boolean;
+type SpawnLike = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 type SpawnSyncLike = typeof spawnSync;
 
 export type SpawnErrorKind = 'missing' | 'blocked' | 'error';
@@ -16,6 +24,11 @@ export interface PlatformCommandSpec {
 export interface ProbedPlatformCommand {
   spec: PlatformCommandSpec;
   result: SpawnSyncReturns<string>;
+}
+
+export interface SpawnedPlatformCommand {
+  spec: PlatformCommandSpec;
+  child: ChildProcess;
 }
 
 const WINDOWS_DEFAULT_PATHEXT = ['.com', '.exe', '.bat', '.cmd', '.ps1'];
@@ -305,4 +318,24 @@ export function spawnPlatformCommandSync(
   };
   const retryResult = spawnImpl(retrySpec.command, retrySpec.args, spawnOptions);
   return { spec: retrySpec, result: retryResult };
+}
+
+export function spawnPlatformCommand(
+  command: string,
+  args: string[],
+  options: SpawnOptions = {},
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  existsImpl: ExistsSyncLike = existsFileSync,
+  spawnImpl: SpawnLike = spawn,
+): SpawnedPlatformCommand {
+  const spec = buildPlatformCommandSpec(command, args, platform, env, existsImpl);
+  const baseOptions = platform === 'win32' ? { ...options, windowsHide: true } : options;
+  const spawnOptions = shouldUseWindowsVerbatimArguments(platform, spec)
+    ? { ...baseOptions, windowsVerbatimArguments: true }
+    : baseOptions;
+  return {
+    spec,
+    child: spawnImpl(spec.command, spec.args, spawnOptions),
+  };
 }
