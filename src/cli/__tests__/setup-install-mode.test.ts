@@ -156,6 +156,77 @@ describe("notify setup scope", () => {
 		}
 	});
 
+	it("does not write OMX legacy notify during Windows user-scope setup", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-windows-user-no-notify-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await mkdir(codexHomeDir, { recursive: true });
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", hookCommandPlatform: "win32" });
+				});
+
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.doesNotMatch(config, /^notify\s*=/m);
+				assert.doesNotMatch(config, /notify-hook\.js|notify-dispatcher\.js/);
+				assert.match(config, /^hooks = true$/m);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves explicit user notify during Windows user-scope setup", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-windows-user-notify-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await mkdir(codexHomeDir, { recursive: true });
+				await writeFile(
+					join(codexHomeDir, "config.toml"),
+					'notify = ["node", "/tmp/user-notify.js"]\napproval_policy = "on-failure"\n',
+				);
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", hookCommandPlatform: "win32" });
+				});
+
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.match(config, /^notify = \["node", "\/tmp\/user-notify\.js"\]$/m);
+				assert.doesNotMatch(config, /notify-dispatcher\.js/);
+				assert.match(config, /^approval_policy = "on-failure"$/m);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("removes stale OMX-managed notify during Windows user-scope setup", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-windows-stale-notify-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await mkdir(codexHomeDir, { recursive: true });
+				const staleHook = join(
+					"C:\\Users\\Ada\\AppData\\Roaming\\npm\\node_modules\\oh-my-codex",
+					"dist",
+					"scripts",
+					"notify-hook.js",
+				);
+				await writeFile(
+					join(codexHomeDir, "config.toml"),
+					`notify = ["node", "${staleHook.replace(/\\/g, "\\\\")}"]\napproval_policy = "on-failure"\n`,
+				);
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", hookCommandPlatform: "win32" });
+				});
+
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.doesNotMatch(config, /^notify\s*=/m);
+				assert.doesNotMatch(config, /notify-hook\.js|notify-dispatcher\.js/);
+				assert.match(config, /^approval_policy = "on-failure"$/m);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("wraps and restores an existing user notify", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-user-notify-"));
 		try {
@@ -166,7 +237,7 @@ describe("notify setup scope", () => {
 					'notify = ["node", "/tmp/user-notify.js"]\napproval_policy = "on-failure"\n',
 				);
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user" });
+					await setup({ scope: "user", hookCommandPlatform: "linux" });
 				});
 
 				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
@@ -184,7 +255,7 @@ describe("notify setup scope", () => {
 				assert.deepEqual(metadata.omxNotify?.slice(0, 1), ["node"]);
 
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user" });
+					await setup({ scope: "user", hookCommandPlatform: "linux" });
 				});
 				const rerunConfig = await readFile(
 					join(codexHomeDir, "config.toml"),
@@ -257,7 +328,7 @@ describe("notify setup scope", () => {
 				);
 
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user" });
+					await setup({ scope: "user", hookCommandPlatform: "linux" });
 				});
 
 				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
@@ -320,7 +391,7 @@ describe("notify setup scope", () => {
 				);
 
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user" });
+					await setup({ scope: "user", hookCommandPlatform: "linux" });
 				});
 
 				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
@@ -382,7 +453,7 @@ describe("notify setup scope", () => {
 				);
 
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user" });
+					await setup({ scope: "user", hookCommandPlatform: "linux" });
 				});
 
 				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
@@ -445,7 +516,7 @@ approval_policy = "on-failure"
 				);
 
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user" });
+					await setup({ scope: "user", hookCommandPlatform: "linux" });
 				});
 
 				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
@@ -479,7 +550,7 @@ approval_policy = "on-failure"
 				);
 
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user" });
+					await setup({ scope: "user", hookCommandPlatform: "linux" });
 				});
 
 				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");

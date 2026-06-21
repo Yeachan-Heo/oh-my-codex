@@ -20,6 +20,15 @@ installs and older Codex versions that do not report `plugin_hooks`:
 - `.codex/hooks.json` → registers the OMX-managed native hook command while preserving non-OMX hook entries already in the file
 - `.codex/config.toml` → also records `hooks.state."<hooks.json>:<event>:<group>:<handler>".trusted_hash` for the OMX-owned wrappers so recent Codex releases do not require a manual `/hooks` review for setup-managed hooks
 
+Windows compatibility note: user-scope setup does not install or refresh the
+OMX-managed legacy top-level `notify = [...]` hook on Windows. Native Codex
+hooks remain enabled through `[features].hooks = true` and `hooks.json`; the
+legacy notify path can receive large turn payloads as command-line arguments and
+hit Windows process creation limits before the OMX notify script starts.
+Explicit user-owned `notify` commands are preserved, but OMX-managed
+`notify-hook.js` / `notify-dispatcher.js` entries are removed during Windows
+setup refresh.
+
 Compatibility note: Codex CLI 0.129/0.130 treats `hooks` as the canonical stable feature key and keeps `codex_hooks` only as a legacy alias. Some public hook examples may still show `[features].codex_hooks = true`; OMX-generated fallback config intentionally emits `[features].hooks = true` while setup/uninstall migration paths still accept and normalize older `codex_hooks` entries so existing user configs do not lose hook enablement.
 
 For project scope, `.gitignore` keeps generated `.codex/hooks.json` out of source control.

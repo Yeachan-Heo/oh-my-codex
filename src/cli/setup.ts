@@ -159,6 +159,7 @@ interface PluginDeveloperInstructionsDecision {
 interface SetupOptions {
 	codexFeaturesProbe?: () => string | null;
 	codexVersionProbe?: () => string | null;
+	hookCommandPlatform?: NodeJS.Platform;
 	force?: boolean;
 	mergeAgents?: boolean;
 	dryRun?: boolean;
@@ -2652,6 +2653,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				statusLinePreset,
 				forceStatusLinePreset: force,
 				codexHookFeatureFlag,
+				hookCommandPlatform: options.hookCommandPlatform,
 			},
 		);
 		resolvedConfig = managedConfig.finalConfig;
@@ -4067,8 +4069,9 @@ async function buildNotifyMergePlan(
 	pkgRoot: string,
 	codexHomeDir: string,
 	scope: SetupScope,
+	platform: NodeJS.Platform = process.platform,
 ): Promise<NotifyMergePlan> {
-	if (scope === "project") {
+	if (scope === "project" || platform === "win32") {
 		return { notifyCommand: false };
 	}
 
@@ -4156,6 +4159,7 @@ async function updateManagedConfig(
 		statusLinePreset?: HudPreset;
 		forceStatusLinePreset?: boolean;
 		codexHookFeatureFlag: CodexHookFeatureFlag;
+		hookCommandPlatform?: NodeJS.Platform;
 	},
 ): Promise<ManagedConfigResult> {
 	const existing = existsSync(configPath)
@@ -4185,12 +4189,13 @@ async function updateManagedConfig(
 		pkgRoot,
 		codexHomeDir,
 		scope,
+		options.hookCommandPlatform,
 	);
 	const finalConfig = buildMergedConfig(existing, pkgRoot, {
 		includeTui: omxManagesTui,
 		codexHooksFile: hooksPath,
 		codexHomeDir,
-		hookCommandPlatform: process.platform,
+		hookCommandPlatform: options.hookCommandPlatform ?? process.platform,
 		codexHookFeatureFlag: options.codexHookFeatureFlag,
 		modelOverride,
 		sharedMcpServers: sharedMcpRegistry.servers,
