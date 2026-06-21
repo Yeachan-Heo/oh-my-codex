@@ -1030,6 +1030,71 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('reports stale current-autopilot when authoritative HUD state is inactive', async () => {
+    await withTempRepo('omx-hud-current-autopilot-stale-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-current-autopilot-stale';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'current-autopilot.json'), JSON.stringify({
+        active: true,
+        current_phase: 'complete',
+        session_id: sessionId,
+        tmux_pane_id: '%10',
+      }));
+
+      const state = await readAllState(cwd);
+      const rendered = stripSgr(renderHud(state, 'focused'));
+
+      assert.equal(state.autopilot, null);
+      assert.equal(state.staleAutopilot?.active, true);
+      assert.equal(state.staleAutopilot?.source, 'current-autopilot-stale');
+      assert.equal(state.staleAutopilot?.current_phase, 'complete');
+      assert.equal(state.staleAutopilot?.session_id, sessionId);
+      assert.equal(state.staleAutopilot?.tmux_pane_id, '%10');
+      assert.match(rendered, /autopilot:stale:complete/);
+      assert.doesNotMatch(rendered, /No active modes/);
+    });
+  });
+
+  it('prefers authoritative active autopilot over stale current-autopilot mirror', async () => {
+    await withTempRepo('omx-hud-current-autopilot-authoritative-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-current-autopilot-authoritative';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'ralplan',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'ralplan', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ralplan',
+        session_id: sessionId,
+      }));
+      await writeFile(join(rootStateDir, 'current-autopilot.json'), JSON.stringify({
+        active: true,
+        current_phase: 'complete',
+        session_id: sessionId,
+        tmux_pane_id: '%10',
+      }));
+
+      const state = await readAllState(cwd);
+      const rendered = stripSgr(renderHud(state, 'focused'));
+
+      assert.equal(state.staleAutopilot, null);
+      assert.equal(state.autopilot?.current_phase, 'ralplan');
+      assert.match(rendered, /autopilot:ralplan/);
+      assert.doesNotMatch(rendered, /autopilot:stale/);
+    });
+  });
+
   it('does not surface root canonical workflow entries without current-session ownership', async () => {
     await withTempRepo('omx-hud-root-stale-owner-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

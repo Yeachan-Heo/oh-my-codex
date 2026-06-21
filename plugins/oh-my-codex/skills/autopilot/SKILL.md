@@ -37,7 +37,8 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 
 2. **Phase `ralplan`** — consensus planning gate
    - Ground the task with pre-context intake and the deep-interview artifact.
-   - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts.
+   - Current ownership rule: Autopilot records `planning_routing` in state before heavy planning. When the Autopilot/main model resolves to a cheap/mini lane (for example `o4-mini`, `*-mini`, `*spark*`, or an explicitly cheap/economy/lite model name), the initial planning/decomposition owner is dedicated `[planner]`; otherwise `[main]` may keep ownership for backward compatibility. A configured `agentModels.planner` is an explicit opt-in that forces dedicated `[planner]` ownership even when `[main]` is not cheap/mini.
+   - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts. If `planning_routing.owner` is `planner`, use the dedicated `[planner]` role for the initial Planner draft/decomposition before the Architect→Critic consensus gates.
    - PRD/test-spec files alone are not completion evidence. Ralplan may hand off only after durable consensus evidence records a subsequent `Architect` approval first and a subsequent `Critic` approval second.
    - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input.
    - If either review is missing, blocked, out of order, or non-approving, remain in `ralplan` or report an explicit blocker/max-iteration outcome; do not progress to `$ultragoal`, `$team`, `$ralph`, or implementation.

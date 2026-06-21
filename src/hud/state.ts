@@ -51,6 +51,10 @@ async function readAuthoritativeModeState<T>(cwd: string, mode: string): Promise
   return readJsonFile<T>(getStateFilePath(`${mode}-state.json`, cwd, sessionId));
 }
 
+async function readCurrentAutopilotState(cwd: string): Promise<AutopilotStateForHud | null> {
+  return readJsonFile<AutopilotStateForHud>(join(getBaseStateDir(cwd), 'current-autopilot.json'));
+}
+
 function isValidPreset(value: unknown): value is ResolvedHudConfig['preset'] {
   return value === 'minimal' || value === 'focused' || value === 'full';
 }
@@ -497,6 +501,26 @@ function activeAutopilotPhase(autopilot: AutopilotStateForHud | null): string | 
   return sanitizeOptionalString(autopilot.current_phase)?.toLowerCase().replace(/_/g, '-');
 }
 
+function isReportableCurrentAutopilotState(autopilot: AutopilotStateForHud | null): boolean {
+  if (autopilot?.active !== true) return false;
+  return sanitizeOptionalString(autopilot.current_phase) !== undefined
+    || sanitizeOptionalString(autopilot.session_id) !== undefined
+    || sanitizeOptionalString(autopilot.tmux_pane_id) !== undefined;
+}
+
+function buildStaleCurrentAutopilotState(autopilot: AutopilotStateForHud | null): AutopilotStateForHud | null {
+  if (!isReportableCurrentAutopilotState(autopilot)) return null;
+  const reportable = autopilot as AutopilotStateForHud;
+  return {
+    ...reportable,
+    active: true,
+    mode: reportable.mode ?? 'autopilot',
+    source: 'current-autopilot-stale',
+    stale_reason: 'current-autopilot-not-authoritative',
+  };
+}
+
+
 function withLateGateSource<T extends { source?: LateGateHudSource }>(
   state: T | null,
   source: LateGateHudSource,
@@ -540,6 +564,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     autoresearchDetail,
     ultraqaDetail,
     teamDetail,
+    currentAutopilotDetail,
   ] = await Promise.all([
     readAuthoritativeModeState<RalphStateForHud>(cwd, 'ralph'),
     readUltragoalState(cwd),
@@ -550,6 +575,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     readAuthoritativeModeState<AutoresearchStateForHud>(cwd, 'autoresearch'),
     readAuthoritativeModeState<UltraqaStateForHud>(cwd, 'ultraqa'),
     readAuthoritativeModeState<TeamStateForHud>(cwd, 'team'),
+    readCurrentAutopilotState(cwd),
   ]);
 
   const ralph = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralph', ralphDetail)
@@ -561,6 +587,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
   const autopilot = shouldSurfaceCanonicalSkill(canonicalSkills, 'autopilot', autopilotDetail)
     ? mergePhase(autopilotDetail?.active === true ? autopilotDetail : null, canonicalPhaseForSkill(canonicalSkills, 'autopilot'))
     : null;
+  const staleAutopilot = autopilot ? null : buildStaleCurrentAutopilotState(currentAutopilotDetail);
   const ralplan = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralplan', ralplanDetail)
     ? mergePhase(ralplanDetail?.active === true ? ralplanDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ralplan'))
     : null;
@@ -629,5 +656,6 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     hudNotify,
     session,
     runtimeSnapshot,
+    staleAutopilot,
   };
 }

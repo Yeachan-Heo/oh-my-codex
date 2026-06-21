@@ -1,6 +1,6 @@
 # oh-my-codex 0.18.14
 
-> Draft status: release-prep PR body source before tagging. Keep publication proof updates in `docs/qa/release-readiness-0.18.14.md` after PR CI, tag workflow, GitHub release creation, and npm publication.
+> Release note status: pre-tag release-prep draft. Local validation evidence is tracked in `docs/qa/release-readiness-0.18.14.md`; final PR CI, dev/main promotion, tag workflow, GitHub release proof, and npm proof remain publication-stage evidence to append after those gates run.
 
 `0.18.14` is a patch release after `0.18.13` focused on safer workflow orchestration, clearer agent/model routing diagnostics, sturdier plugin/HUD/team behavior, and release-candidate hygiene from the current `origin/dev` delta. It preserves the existing CLI/package contract while tightening setup, hook, HUD, Team, Ralplan, Autopilot, Ultragoal, and plugin-bundle edge cases discovered after `0.18.13`.
 
@@ -48,19 +48,14 @@ Primary merged PR and commit evidence in the current `origin/main..origin/dev` c
 - #2828 — Preserve HUD pane ownership on shutdown.
 - Direct commits — explain Ralplan transition validator diagnostics and add supervised Autopilot review rework phase.
 
+## Issues
+
+Held open PRs #2902, #2856, #2840, #2839, and #2838 remain outside this release candidate. They are behind `dev` and are treated as owner-confirmation/user-facing contract holds rather than `0.18.14` release blockers.
+
 ## Validation
 
 Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.14.md`.
 
 Release-prep gates include version sync for `v0.18.14`, build, native-agent verification, plugin mirror/bundle checks, catalog docs check, dogfooding of built CLI surfaces, `npm pack --dry-run`, and `git diff --check`. Branch CI, dev/main promotion, tag-triggered release workflow, GitHub release proof, and npm publication proof remain publication-stage gates.
-
-The GitHub release workflow remains the authoritative cross-platform native asset gate after tag push, including the uploaded `native-release-manifest.json`.
-
-## Contributors
-
-Thanks to the contributors who landed the `v0.18.13...v0.18.14` delta:
-
-- [@Bellman](https://github.com/Bellman)
-- [@jihun-jeong](https://github.com/jihun-jeong)
 
 **Full Changelog**: [`v0.18.13...v0.18.14`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.13...v0.18.14)

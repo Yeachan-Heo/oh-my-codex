@@ -7364,6 +7364,207 @@ exit 0
     }
   });
 
+  it("records native subagent capacity exhaustion from spawn_agent PostToolUse output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-record-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-record",
+          thread_id: "thread-subagent-capacity-record",
+          turn_id: "turn-subagent-capacity-record",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: {
+            error: "collab spawn failed: agent thread limit reached",
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+
+      const blocker = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "native-subagent-capacity-blocker.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(blocker.reason, "agent_thread_limit_reached");
+      assert.equal(blocker.session_id, "sess-subagent-capacity-record");
+      assert.equal(blocker.thread_id, "thread-subagent-capacity-record");
+      assert.equal(blocker.tool_name, "multi_agent_v1.spawn_agent");
+      assert.match(String(blocker.error_summary), /agent thread limit reached/);
+      assert.ok(Date.parse(String(blocker.expires_at)) > Date.parse(String(blocker.observed_at)));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks close_agent cleanup after recent native subagent capacity exhaustion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-block-"));
+    try {
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-block",
+          thread_id: "thread-subagent-capacity-close-block",
+          turn_id: "turn-subagent-capacity-close-block",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: "collab spawn failed: agent thread limit reached",
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-block",
+          thread_id: "thread-subagent-capacity-close-block",
+          tool_name: "multi_agent_v1.close_agent",
+          tool_input: { target: "019ecc36-stale" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /agent thread limit reached/);
+      assert.match(JSON.stringify(result.outputJson), /multi_agent_v1\.close_agent/);
+      assert.match(JSON.stringify(result.outputJson), /multi_tool_use\.parallel/);
+      assert.match(JSON.stringify(result.outputJson), /bounded capacity blocker/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits schema-safe PreToolUse CLI stdout for close_agent capacity blocks", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-subagent-capacity-close-block-"));
+    try {
+      parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PostToolUse",
+        cwd,
+        session_id: "sess-cli-subagent-capacity-close-block",
+        thread_id: "thread-cli-subagent-capacity-close-block",
+        turn_id: "turn-cli-subagent-capacity-close-block",
+        tool_name: "multi_agent_v1.spawn_agent",
+        tool_response: "collab spawn failed: agent thread limit reached",
+      }, { cwd }));
+
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "sess-cli-subagent-capacity-close-block",
+        thread_id: "thread-cli-subagent-capacity-close-block",
+        tool_name: "multi_agent_v1.close_agent",
+        tool_input: { target: "019ecc36-stale" },
+      }, { cwd }));
+
+      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
+      assert.match(String(output.systemMessage ?? ""), /agent thread limit reached/);
+      assert.match(String(output.systemMessage ?? ""), /Do not call multi_agent_v1\.close_agent/);
+      assert.equal(output.decision, undefined);
+      assert.equal(output.hookSpecificOutput, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks parallel close_agent cleanup after recent native subagent capacity exhaustion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-parallel-close-block-"));
+    try {
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-parallel-close-block",
+          thread_id: "thread-subagent-capacity-parallel-close-block",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: "agent thread limit reached",
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-parallel-close-block",
+          thread_id: "thread-subagent-capacity-parallel-close-block",
+          tool_name: "multi_tool_use.parallel",
+          tool_input: {
+            tool_uses: [
+              { recipient_name: "multi_agent_v1.close_agent", parameters: { target: "stale-1" } },
+              { recipient_name: "multi_agent_v1.close_agent", parameters: { target: "stale-2" } },
+            ],
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Do not call multi_agent_v1\.close_agent/);
+      assert.match(JSON.stringify(result.outputJson), /do not batch close_agent through multi_tool_use\.parallel/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block close_agent without a recent native capacity blocker", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-no-blocker-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-no-blocker",
+          thread_id: "thread-subagent-capacity-close-no-blocker",
+          tool_name: "multi_agent_v1.close_agent",
+          tool_input: { target: "completed-agent" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block close_agent when the native capacity blocker is expired", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-expired-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeJson(join(stateDir, "native-subagent-capacity-blocker.json"), {
+        schema_version: 1,
+        reason: "agent_thread_limit_reached",
+        session_id: "sess-subagent-capacity-close-expired",
+        error_summary: "agent thread limit reached",
+        observed_at: "2026-06-20T00:00:00.000Z",
+        expires_at: "2026-06-20T00:30:00.000Z",
+        cwd,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-expired",
+          thread_id: "thread-subagent-capacity-close-expired",
+          tool_name: "multi_agent_v1.close_agent",
+          tool_input: { target: "completed-agent" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("warns on PreToolUse for vague sloppy fallback implementation framing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-slop-warn-"));
     try {
