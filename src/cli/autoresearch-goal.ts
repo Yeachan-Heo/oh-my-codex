@@ -13,6 +13,7 @@ import {
 import {
   CodexGoalSnapshotError,
   formatCodexGoalReconciliation,
+  buildCodexGoalTerminalCleanupNotice,
   readCodexGoalSnapshotInput,
 } from '../goal-workflows/codex-goal-snapshot.js';
 
@@ -145,6 +146,7 @@ export async function autoresearchGoalCommand(args: string[]): Promise<void> {
       else {
         console.log(`autoresearch-goal complete: ${result.mission.slug}`);
         console.log('Codex goal reconciliation: matched a fresh complete get_goal snapshot; OMX mission completion is now durable.');
+        console.log(buildCodexGoalTerminalCleanupNotice('Autoresearch-goal completion'));
       }
       return;
     }

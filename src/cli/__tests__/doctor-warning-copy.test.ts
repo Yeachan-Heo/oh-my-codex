@@ -1190,6 +1190,12 @@ OMX_LORE_COMMIT_GUARD = "truee"
 				res.stdout,
 				/Prompts: plugin mode intentionally omits setup-owned prompts; Codex plugin discovery supplies workflow surfaces/,
 			);
+			assert.match(
+				res.stdout,
+				new RegExp(
+					`Plugin versions: package/plugin manifest version ${manifestVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; dev display version v0\\.18\\.11-dev-deadbeefcafefeed; dev_base_version 0\\.18\\.11; install_revision deadbeefcafefeed; Codex may keep current-session plugin skill metadata until a new Codex session starts`,
+				),
+			);
 			assert.doesNotMatch(
 				res.stdout,
 				/expected setup-owned hooks\.json is missing/,

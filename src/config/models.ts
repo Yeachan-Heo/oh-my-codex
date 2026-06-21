@@ -16,6 +16,9 @@
  *   },
  *   "agentReasoning": {
  *     "architect": "xhigh"
+ *   },
+ *   "agentModels": {
+ *     "architect": "gpt-5.5"
  *   }
  * }
  *
@@ -39,6 +42,7 @@ export type ConfiguredAgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
 
 interface OmxConfigFile {
   agentReasoning?: Record<string, unknown>;
+  agentModels?: Record<string, unknown>;
   env?: OmxConfigEnv;
   models?: ModelsConfig;
 }
@@ -174,6 +178,31 @@ export function getAgentReasoningOverride(
   const normalized = normalizeAgentName(agentName);
   if (!normalized) return undefined;
   return readAgentReasoningOverrides(codexHomeOverride)[normalized];
+}
+
+export function readAgentModelOverrides(
+  codexHomeOverride?: string,
+): Record<string, string> {
+  const config = readOmxConfigFile(codexHomeOverride);
+  const raw = config?.agentModels;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const role = normalizeAgentName(key);
+    const model = normalizeConfiguredValue(value);
+    if (role && model) resolved[role] = model;
+  }
+  return resolved;
+}
+
+export function getAgentModelOverride(
+  agentName: string | undefined,
+  codexHomeOverride?: string,
+): string | undefined {
+  const normalized = normalizeAgentName(agentName);
+  if (!normalized) return undefined;
+  return readAgentModelOverrides(codexHomeOverride)[normalized];
 }
 
 export function readActiveProviderEnvOverrides(

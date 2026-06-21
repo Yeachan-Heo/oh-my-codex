@@ -71,7 +71,7 @@ async function finalizeResolvedPane(paneId: string, reason: string, expectedCwd:
 
 async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: any): Promise<any> {
   const paneResult = await runProcess('tmux', ['display-message', '-p', '-t', paneTarget, '#{pane_id}']);
-  const paneId = safeString(paneResult.stdout).trim();
+  const paneId = safeString(paneResult.stdout).trim() || (safeString(paneTarget).trim().match(/^%\d+$/) ? safeString(paneTarget).trim() : '');
   if (!paneId) return { paneTarget: null, reason: 'target_not_found' };
 
   let startCommand = '';

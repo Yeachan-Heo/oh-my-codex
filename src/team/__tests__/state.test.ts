@@ -44,6 +44,7 @@ import {
   readDispatchRequest,
   readMonitorSnapshot,
   resolveDispatchLockTimeoutMs,
+  writeTeamManifestV2,
 } from '../state.js';
 import { normalizeDispatchRequest } from '../state/dispatch.js';
 
@@ -300,6 +301,32 @@ describe('team state', () => {
 
       const m2 = await migrateV1ToV2('team-mig', cwd);
       assert.deepEqual(m2, onDisk1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('backfills missing or blank tmux pane owner ids in legacy manifests', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-pane-owner-backfill-'));
+    try {
+      await initTeamState('team-pane-owner-backfill', 't', 'executor', 1, cwd);
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-pane-owner-backfill', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+      delete manifest.tmux_pane_owner_id;
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const loadedManifest = await readTeamManifestV2('team-pane-owner-backfill', cwd);
+      const loadedConfig = await readTeamConfig('team-pane-owner-backfill', cwd);
+      assert.equal(loadedManifest?.tmux_pane_owner_id, 'team:team-pane-owner-backfill');
+      assert.equal(loadedConfig?.tmux_pane_owner_id, 'team:team-pane-owner-backfill');
+
+      await writeTeamManifestV2({
+        ...loadedManifest!,
+        tmux_pane_owner_id: '   ',
+      }, cwd);
+
+      const blankNormalized = await readTeamManifestV2('team-pane-owner-backfill', cwd);
+      assert.equal(blankNormalized?.tmux_pane_owner_id, 'team:team-pane-owner-backfill');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

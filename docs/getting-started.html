@@ -48,8 +48,8 @@ omx doctor</code></pre>
 omx exec --skip-git-repo-check -C . &quot;Reply with exactly OMX-EXEC-OK&quot;</code></pre>
 
       <h2>Recommended Launch</h2>
-      <pre><code>omx --worktree=feat/task --madmax --high # trusted git repo, named launch worktree
-omx --worktree=fix/flaky-tests --madmax --high   # concurrent trusted session, separate worktree
+      <pre><code>omx --worktree=feat/task --madmax --xhigh # trusted git repo, named launch worktree
+omx --worktree=fix/flaky-tests --madmax --xhigh   # concurrent trusted session, separate worktree
 omx                                              # standard launch</code></pre>
       <p><code>--madmax</code> maps to Codex <code>--dangerously-bypass-approvals-and-sandbox</code>, so use it only in trusted repositories and environments. Prefer a named <code>--worktree=&lt;name&gt;</code> with <code>--madmax</code> when launching from a git repository; if you are outside git, omit <code>--worktree</code>. For multiple concurrent <code>--madmax</code> sessions, give each session a distinct named worktree instead of sharing one checkout.</p>
       <p><code>--worktree</code> or <code>-w</code> with no name creates or reuses a detached launch worktree. Treat that unnamed form as a one-off convenience: after the source checkout advances, a later unnamed launch can fail with <code>worktree_target_mismatch</code> until the old detached worktree is removed. <code>--worktree=&lt;name&gt;</code>, <code>--worktree &lt;name&gt;</code>, or <code>-w &lt;name&gt;</code> creates or reuses a named launch worktree and branch. OMX consumes the worktree flag before starting Codex.</p>
@@ -60,11 +60,22 @@ omx                                              # standard launch</code></pre>
         <li>Install or update OMX globally.</li>
         <li>After install or real OMX version bumps, rerun <code>omx setup</code> yourself when you're ready, use <code>omx update</code> when you also want npm to update OMX first, or set <code>OMX_AUTO_UPDATE=defer</code> for no-prompt deferred launch-time updates.</li>
         <li>Run <code>omx doctor</code>, then the <code>codex login status</code> plus <code>omx exec</code> smoke test above.</li>
-        <li>Start Codex CLI with <code>omx</code>.</li>
+        <li>Start Codex CLI with <code>omx --madmax --xhigh</code> for a normal strong trusted session, or add <code>--worktree=&lt;task&gt;</code> when launching from a git repository.</li>
         <li>Use <code>$deep-interview "clarify the auth change"</code> when intent or boundaries are still unclear.</li>
         <li>Use <code>$ralplan "approve the auth plan and review tradeoffs"</code> to lock the implementation plan; hand off only after Architect review evidence and then Critic review evidence are recorded.</li>
-        <li>Choose <code>$ralph "carry the approved plan to completion"</code> or <code>$team 3:executor "execute the approved plan in parallel"</code> based on execution style.</li>
+        <li>Choose <code>$autopilot</code>, <code>$ultrawork</code>, or <code>$ralph</code> as the execution spine when appropriate; add <code>/goal</code> when the task needs durable objective/checkpoint structure.</li>
       </ol>
+
+      <h2><code>/goal</code> and Skill Selection</h2>
+      <p>Use <code>/goal</code> when Codex should keep a durable objective and checkpoint structure across turns. Start with a focused execution spine, then add only the relevant supporting skills.</p>
+      <pre><code>omx --madmax --xhigh
+/goal Ship the checkout bug fix with checkpoints for reproduction, implementation, regression tests, and final verification.
+$ralplan "approve the checkout bug-fix plan and review tradeoffs"
+$ultrawork "execute the approved checkout fix with checkpoint evidence"</code></pre>
+      <p>By default, add only 2-5 relevant skills. More is allowed when the task scope justifies it, but loading a large catalog is usually a context-budget and attention-quality problem, not a hard parser/runtime blocker unless a concrete command errors.</p>
+      <pre><code># Anti-pattern: loading 20 skills by default before the task is known.
+omx --madmax --xhigh
+# /skills: add 20 unrelated skills "just in case"</code></pre>
 
       <h2>Prompt Instruction Source</h2>
       <p>OMX layers project instructions by default (extends Codex behavior, does not replace/bypass Codex core system policies):</p>

@@ -44,6 +44,11 @@ export interface UltraworkStateForHud {
 export interface AutopilotStateForHud {
   active: boolean;
   current_phase?: string;
+  mode?: string;
+  session_id?: string;
+  tmux_pane_id?: string;
+  source?: 'authoritative' | 'current-autopilot-stale';
+  stale_reason?: string;
 }
 
 /** Ralplan state for HUD display */
@@ -135,6 +140,7 @@ export interface HudRenderContext {
   metrics: HudMetrics | null;
   hudNotify: HudNotifyState | null;
   session: SessionStateForHud | null;
+  staleAutopilot?: AutopilotStateForHud | null;
   /** Rust-authored runtime snapshot (present when bridge is enabled and snapshot.json exists). */
   runtimeSnapshot?: import('../runtime/bridge.js').RuntimeSnapshot | null;
 }

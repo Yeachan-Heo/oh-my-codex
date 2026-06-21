@@ -8,6 +8,7 @@ import {
   DEFAULT_SPARK_MODEL,
   DEFAULT_TEAM_CHILD_MODEL,
   getAgentReasoningOverride,
+  getAgentModelOverride,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
   getModelForMode,
@@ -16,6 +17,7 @@ import {
   getTeamChildModel,
   getTeamLowComplexityModel,
   readAgentReasoningOverrides,
+  readAgentModelOverrides,
   readConfiguredEnvOverrides,
 } from '../models.js';
 
@@ -202,6 +204,7 @@ describe('getModelForMode', () => {
   });
 
   it('returns low-complexity team model when configured', async () => {
+    // Intentional legacy model fixture: verifies explicit user config is preserved, not used as a runtime default.
     await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
     assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
   });
@@ -266,7 +269,28 @@ describe('getModelForMode', () => {
     assert.equal(getAgentReasoningOverride('executor'), undefined);
   });
 
+  it('reads normalized per-agent model overrides from .omx-config.json', async () => {
+    await writeConfig({
+      agentModels: {
+        Architect: ' gpt-5.5 ',
+        critic: 'gpt-5.4',
+        executor: '',
+        researcher: 42,
+        'bad role': 'gpt-5',
+      },
+    });
+
+    assert.deepEqual(readAgentModelOverrides(), {
+      architect: 'gpt-5.5',
+      critic: 'gpt-5.4',
+    });
+    assert.equal(getAgentModelOverride('ARCHITECT'), 'gpt-5.5');
+    assert.equal(getAgentModelOverride('executor'), undefined);
+    assert.equal(getAgentModelOverride('bad role'), undefined);
+  });
+
   it('keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL', async () => {
+    // Intentional legacy model fixture: explicit user config must outrank current spark defaults.
     process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark-fast';
     await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
     assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');

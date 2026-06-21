@@ -55,6 +55,7 @@ omx performance-goal complete --slug startup-latency --evidence "final evaluator
    - call `create_goal` only when no active goal exists and the objective is explicit;
    - work only against the evaluator contract;
    - after evaluator pass and completion audit, call `update_goal({status: "complete"})`, call `get_goal` again, and pass that snapshot to `omx performance-goal complete --codex-goal-json`;
+   - after `omx performance-goal complete` succeeds, run `/goal clear` in the Codex UI before starting another goal in this same thread/session; OMX prints this terminal cleanup step but does not invoke hidden clear routes;
 3. Optimize in small reversible patches.
 4. Run the evaluator and related regression tests.
 5. Record each pass/fail/blocker with `checkpoint`.
@@ -63,3 +64,5 @@ omx performance-goal complete --slug startup-latency --evidence "final evaluator
 ## Completion Gate
 
 A performance goal is incomplete unless `.omx/goals/performance/<slug>/state.json` contains a `lastValidation.status` of `pass` and `omx performance-goal complete` receives a matching complete Codex `get_goal` snapshot via `--codex-goal-json`. Passing ordinary tests alone is not sufficient unless they are the declared evaluator contract.
+
+Lifecycle: `create_goal` starts the Codex thread goal, `update_goal({status: "complete"})` marks terminal success after the evaluator and audit pass, and `/goal clear` removes the completed thread goal when another same-thread goal is needed. OMX shell commands and hooks reconcile snapshots and print the cleanup instruction; they must not mutate hidden Codex goal state.

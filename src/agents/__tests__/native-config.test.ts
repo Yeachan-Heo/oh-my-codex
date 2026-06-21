@@ -133,6 +133,33 @@ describe("agents/native-config", () => {
     }
   });
 
+  it("lets agentModels override exact pins without stale exact-mini guidance", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-agent-models-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentModels: {
+          architect: "gpt-5.5",
+        },
+        agentReasoning: {
+          architect: "xhigh",
+        },
+      }));
+
+      const toml = generateAgentToml(AGENT_DEFINITIONS.architect, "Architect prompt", {
+        codexHomeOverride: codexHome,
+      });
+
+      assert.match(toml, /model = "gpt-5\.5"/);
+      assert.match(toml, /model_reasoning_effort = "xhigh"/);
+      assert.match(toml, /resolved_model: gpt-5\.5/);
+      assert.doesNotMatch(toml, /model = "gpt-5\.4-mini"/);
+      assert.doesNotMatch(toml, /exact gpt-5\.4-mini model/);
+      assert.doesNotMatch(toml, /resolved_model: gpt-5\.4-mini/);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
 
   it("pins ralplan thesis/antithesis and researcher to exact gpt-5.4-mini without downgrading judgment roles", () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.5";

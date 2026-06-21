@@ -10,6 +10,7 @@ Options:
   --session <id>       Restrict to a specific session id or id fragment
   --since <spec>       Restrict by recency (examples: 7d, 24h, 2026-03-10)
   --project <scope>    Filter by project context: current | all | <cwd-fragment>
+  --codex-home <path>  Search only the supplied Codex home (escape hatch)
   --context <n>        Snippet context characters (default: 80)
   --case-sensitive     Match query using exact case
   --json               Emit structured JSON
@@ -53,7 +54,7 @@ export function parseSessionSearchArgs(args: string[]): ParsedSessionSearchArgs 
       options.caseSensitive = true;
       continue;
     }
-    if (token === '--limit' || token === '--session' || token === '--since' || token === '--project' || token === '--context') {
+    if (token === '--limit' || token === '--session' || token === '--since' || token === '--project' || token === '--context' || token === '--codex-home') {
       const next = args[index + 1];
       if (!next || next.startsWith('-')) {
         throw new Error(`Missing value after ${token}.`);
@@ -63,6 +64,7 @@ export function parseSessionSearchArgs(args: string[]): ParsedSessionSearchArgs 
       if (token === '--since') options.since = next;
       if (token === '--project') options.project = next;
       if (token === '--context') options.context = parsePositiveInteger(next, token);
+      if (token === '--codex-home') options.codexHomeDir = next;
       index += 1;
       continue;
     }
@@ -84,6 +86,10 @@ export function parseSessionSearchArgs(args: string[]): ParsedSessionSearchArgs 
     }
     if (token.startsWith('--context=')) {
       options.context = parsePositiveInteger(token.slice('--context='.length), '--context');
+      continue;
+    }
+    if (token.startsWith('--codex-home=')) {
+      options.codexHomeDir = token.slice('--codex-home='.length);
       continue;
     }
     if (token.startsWith('-')) {

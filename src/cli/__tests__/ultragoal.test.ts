@@ -31,6 +31,12 @@ function cleanQualityGate(): string {
         architect: { agentRole: 'architect', evidence: 'architect subagent returned CLEAR' },
       },
     },
+    architectureInvariantGate: {
+      status: 'passed',
+      sourceArtifacts: ['.omx/ultragoal/brief.md', '.omx/ultragoal/goals.json'],
+      invariants: [],
+      evidence: 'architect verified no additional architecture invariants were declared in the brief',
+    },
   });
 }
 
@@ -177,6 +183,42 @@ describe('cli/ultragoal', () => {
       assert.equal(checkpoint.exitCode, undefined);
       const parsed = JSON.parse(checkpoint.stdout.join('\n')) as { summary: { complete: number } };
       assert.equal(parsed.summary.complete, 1);
+    });
+  });
+
+  it('prints explicit terminal cleanup after final checkpoint without claiming hidden clear', async () => {
+    await withCwd(async (cwd) => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- Final milestone']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+      const goals = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { codexObjective: string };
+
+      const checkpoint = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-final-milestone',
+        '--status', 'complete',
+        '--evidence', 'tests and final review passed',
+        '--codex-goal-json', JSON.stringify({ goal: { objective: goals.codexObjective, status: 'complete' } }),
+        '--quality-gate-json', cleanQualityGate(),
+      ]));
+
+      const output = checkpoint.stdout.join('\n');
+      assert.equal(checkpoint.exitCode, undefined);
+      assert.match(output, /Terminal next step for another goal in this same Codex thread\/session: run \/goal clear/);
+      assert.match(output, /OMX shell commands and hooks do not call \/goal clear or hidden thread\/goal\/clear routes/);
+      assert.doesNotMatch(output, /cleared Codex goal state/i);
+    });
+  });
+
+  it('places completed-goal preflight remediation before create_goal guidance', async () => {
+    await withCwd(async () => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));
+      const next = await capture(() => ultragoalCommand(['complete-goals']));
+      const output = next.stdout.join('\n');
+
+      assert.match(output, /get_goal reports status complete before create_goal/);
+      assert.match(output, /Run \/goal clear in the Codex UI before starting another goal/);
+      assert.ok(output.indexOf('get_goal reports status complete before create_goal') < output.indexOf('create_goal payload'));
+      assert.match(output, /OMX did not and cannot clear hidden Codex goal state/);
     });
   });
 

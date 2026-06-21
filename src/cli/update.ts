@@ -952,6 +952,9 @@ async function executeUpdate(
   console.log(
     `[omx] Updated ${channelConfig.channel} channel${versionSummary}. Restart to use new code.`,
   );
+  if (channelConfig.channel === 'dev') {
+    console.log('[omx] Dev display version may differ from the package/plugin manifest version; start a new Codex session if /skills still shows stale OMX plugin skill metadata.');
+  }
   return { status: 'updated', currentVersion: current, latestVersion: latest };
 }
 

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import {
   CodexGoalSnapshotError,
   formatCodexGoalReconciliation,
+  buildCodexGoalTerminalCleanupNotice,
   readCodexGoalSnapshotInput,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
@@ -159,7 +160,10 @@ export async function performanceGoalCommand(args: string[]): Promise<void> {
         codexGoal: await readCodexGoalSnapshotInput(readValue(rest, '--codex-goal-json'), cwd),
       });
       if (json) printJson({ ok: true, state, instruction: buildPerformanceGoalInstruction(state) });
-      else printStatus(state);
+      else {
+        printStatus(state);
+        console.log(buildCodexGoalTerminalCleanupNotice('Performance-goal completion'));
+      }
       return;
     }
 

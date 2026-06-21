@@ -11,6 +11,28 @@ import {
 } from '../tmux-hook-engine.js';
 
 export const PANE_READINESS_UNVERIFIED_REASON = 'pane_readiness_unverified';
+let nextTmuxBufferId = 0;
+
+function buildSafePasteArgv(target: string, prompt: string): {
+  bufferName: string;
+  setBufferArgv: string[];
+  showBufferArgv: string[];
+  clearComposerArgv: string[];
+  pasteBufferArgv: string[];
+  deleteBufferArgv: string[];
+} {
+  nextTmuxBufferId += 1;
+  const bufferName = `omx-pane-input-${process.pid}-${Date.now()}-${nextTmuxBufferId}`;
+  return {
+    bufferName,
+    setBufferArgv: ['set-buffer', '-b', bufferName, '--', prompt],
+    showBufferArgv: ['show-buffer', '-b', bufferName],
+    clearComposerArgv: ['send-keys', '-t', target, 'C-u'],
+    pasteBufferArgv: ['paste-buffer', '-t', target, '-b', bufferName, '-p', '-d'],
+    deleteBufferArgv: ['delete-buffer', '-b', bufferName],
+  };
+}
+
 
 export function mapPaneInjectionReadinessReason(reason: any): any {
   return reason === 'pane_running_shell' ? 'agent_not_running' : reason;
@@ -145,24 +167,82 @@ export async function sendPaneInput({
     ? Math.max(0, Math.floor(submitKeyPresses))
     : 2;
   const literalPrompt = safeString(prompt);
-  const argv = normalizedSubmitKeyPresses === 0
-    ? {
-      typeArgv: ['send-keys', '-t', target, '-l', literalPrompt],
-      submitArgv: [] as string[][],
-    }
+  const submitArgv = normalizedSubmitKeyPresses === 0
+    ? [] as string[][]
     : buildSendKeysArgv({
       paneTarget: target,
       prompt: literalPrompt,
       dryRun: false,
       submitKeyPresses: normalizedSubmitKeyPresses,
-    });
-  if (!argv) {
+    })?.submitArgv;
+  if (!submitArgv) {
     return { ok: false, sent: false, reason: 'send_failed', paneTarget: target };
   }
+  const pasteArgv = buildSafePasteArgv(target, literalPrompt);
+  const argv = {
+    typeArgv: pasteArgv.pasteBufferArgv,
+    submitArgv,
+    bufferName: pasteArgv.bufferName,
+    setBufferArgv: pasteArgv.setBufferArgv,
+    showBufferArgv: pasteArgv.showBufferArgv,
+    clearComposerArgv: pasteArgv.clearComposerArgv,
+    pasteBufferArgv: pasteArgv.pasteBufferArgv,
+    deleteBufferArgv: pasteArgv.deleteBufferArgv,
+  };
 
+  let bufferSet = false;
   try {
     if (typePrompt) {
-      await runProcess('tmux', argv.typeArgv, 3000);
+      try {
+        await runProcess('tmux', pasteArgv.setBufferArgv, 3000);
+        bufferSet = true;
+      } catch (error) {
+        return {
+          ok: false,
+          sent: false,
+          reason: 'buffer_set_failed',
+          paneTarget: target,
+          argv,
+          error: error instanceof Error ? error.message : safeString(error),
+        };
+      }
+      let verifiedBuffer;
+      try {
+        verifiedBuffer = await runProcess('tmux', pasteArgv.showBufferArgv, 3000);
+      } catch (error) {
+        return {
+          ok: false,
+          sent: false,
+          reason: 'buffer_show_failed',
+          paneTarget: target,
+          argv,
+          error: error instanceof Error ? error.message : safeString(error),
+        };
+      }
+      if (verifiedBuffer.stdout !== literalPrompt) {
+        return {
+          ok: false,
+          sent: false,
+          reason: 'buffer_verify_failed',
+          paneTarget: target,
+          argv,
+          expectedBytes: literalPrompt.length,
+          actualBytes: verifiedBuffer.stdout.length,
+        };
+      }
+      try {
+        await runProcess('tmux', pasteArgv.clearComposerArgv, 3000);
+        await runProcess('tmux', pasteArgv.pasteBufferArgv, 3000);
+      } catch (error) {
+        return {
+          ok: false,
+          sent: false,
+          reason: 'buffer_paste_failed',
+          paneTarget: target,
+          argv,
+          error: error instanceof Error ? error.message : safeString(error),
+        };
+      }
     }
     if (queueFirstSubmit && argv.submitArgv.length > 0) {
       await runProcess('tmux', ['send-keys', '-t', target, 'Tab'], 3000);
@@ -186,6 +266,10 @@ export async function sendPaneInput({
       argv,
       error: error instanceof Error ? error.message : safeString(error),
     };
+  } finally {
+    if (bufferSet) {
+      await runProcess('tmux', pasteArgv.deleteBufferArgv, 3000).catch(() => {});
+    }
   }
 }
 

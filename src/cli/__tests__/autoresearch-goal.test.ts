@@ -183,6 +183,42 @@ describe('cli/autoresearch-goal', () => {
     });
   });
 
+  it('prints explicit terminal cleanup after successful completion without claiming hidden clear', async () => {
+    await withCwd(async () => {
+      await capture(() => autoresearchGoalCommand([
+          'create',
+          '--topic', 'Cleanup guidance',
+          '--rubric', 'Professor critic requires a pass.',
+        ]));
+        await capture(() => autoresearchGoalCommand([
+          'verdict',
+          '--slug', 'cleanup-guidance',
+          '--verdict', 'pass',
+          '--evidence', 'critic approved',
+        ]));
+
+        const objective = [
+          'Autoresearch goal: Cleanup guidance',
+          '',
+          'Research methodology / professor-critic rubric:',
+          'Professor critic requires a pass.',
+          '',
+          'Completion gate: record a passing professor-critic verdict with omx autoresearch-goal verdict --slug cleanup-guidance --verdict pass --evidence "<critic artifact/evidence>". After the objective audit passes, call update_goal({status: "complete"}), call get_goal again, then run omx autoresearch-goal complete --slug cleanup-guidance --codex-goal-json "<fresh get_goal JSON or path>".',
+        ].join('\n');
+        const completed = await capture(() => autoresearchGoalCommand([
+          'complete',
+          '--slug', 'cleanup-guidance',
+          '--codex-goal-json', JSON.stringify({ goal: { objective, status: 'complete' } }),
+        ]));
+
+        const output = completed.stdout.join('\n');
+        assert.equal(completed.exitCode, undefined);
+        assert.match(output, /Terminal next step for another goal in this same Codex thread\/session: run \/goal clear/);
+        assert.match(output, /OMX shell commands and hooks do not call \/goal clear or hidden thread\/goal\/clear routes/);
+        assert.doesNotMatch(output, /cleared Codex goal state/i);
+    });
+  });
+
   it('requires matching complete Codex goal proof for completion', async () => {
     await withCwd(async (cwd) => {
       await capture(() => autoresearchGoalCommand([

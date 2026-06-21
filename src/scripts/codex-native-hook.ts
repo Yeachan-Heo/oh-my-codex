@@ -13,6 +13,7 @@ import {
   readSkillActiveState,
   readVisibleSkillActiveStateForStateDir,
   type SkillActiveStateLike,
+  type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
   isTrustedSubagentThread,
@@ -40,7 +41,7 @@ import {
 } from "../team/state.js";
 import { omxNotepadPath, resolveProjectMemoryPath } from "../utils/paths.js";
 import { findGitLayout } from "../utils/git-layout.js";
-import { getBaseStateDir, getStateFilePath, getStatePath } from "../mcp/state-paths.js";
+import { getBaseStateDir, getStateFilePath, getStatePath, getAuthoritativeActiveStatePaths } from "../mcp/state-paths.js";
 import {
   detectKeywords,
   detectPrimaryKeyword,
@@ -87,6 +88,9 @@ import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDec
 import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
+import {
+  buildCodexGoalTerminalCleanupNotice,
+} from "../goal-workflows/codex-goal-snapshot.js";
 import { getRunContinuationSnapshot, shouldContinueRun } from "../runtime/run-loop.js";
 import {
   parseUltragoalSteeringDirective,
@@ -147,6 +151,8 @@ const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blocked"]);
 const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
+const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
+const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
 const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
@@ -547,6 +553,23 @@ function readHookEventName(payload: CodexHookPayload): CodexHookEventName | null
     return raw;
   }
   return null;
+}
+
+function sanitizeCodexHookOutput(
+  hookEventName: CodexHookEventName | null,
+  output: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!output || hookEventName !== "PreToolUse") return output;
+  const systemMessage = safeString(output.systemMessage).trim();
+  if (systemMessage) return { systemMessage };
+
+  const reason = safeString(output.reason).trim();
+  const hookSpecificOutput = output.hookSpecificOutput;
+  const additionalContext = hookSpecificOutput && typeof hookSpecificOutput === "object"
+    ? safeString((hookSpecificOutput as { additionalContext?: unknown }).additionalContext).trim()
+    : "";
+  const derivedSystemMessage = [reason, additionalContext].filter(Boolean).join("\n\n");
+  return derivedSystemMessage ? { systemMessage: derivedSystemMessage } : {};
 }
 
 export function mapCodexHookEventToOmxEvent(
@@ -2227,6 +2250,76 @@ function isStopExempt(payload: CodexHookPayload): boolean {
   );
 }
 
+async function readModeStateWithStopSource(
+  mode: "autopilot" | "ultrawork" | "ultraqa",
+  cwd: string,
+  sessionId?: string,
+): Promise<{ state: Record<string, unknown>; path: string } | null> {
+  const paths = await getAuthoritativeActiveStatePaths(mode, cwd, sessionId?.trim() || undefined).catch(() => [] as string[]);
+  const path = paths[0];
+  if (!path) return null;
+  const state = await readJsonIfExists(path);
+  return state ? { state, path } : null;
+}
+async function readRawSkillActiveState(path: string): Promise<SkillActiveStateLike | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf-8"));
+    return parsed && typeof parsed === "object" ? parsed as SkillActiveStateLike : null;
+  } catch {
+    return null;
+  }
+}
+
+
+function canonicalStopDisagreement(modeState: Record<string, unknown>, canonicalState: SkillActiveStateLike | null, mode: string, sessionId?: string): string {
+  if (!canonicalState) return "canonical_state_missing";
+  const normalizedSessionId = safeString(sessionId).trim();
+  const activeEntry = listRawActiveSkillEntries(canonicalState).find((entry) => {
+    if (entry.skill !== mode) return false;
+    const entrySessionId = safeString(entry.session_id ?? canonicalState.session_id).trim();
+    return normalizedSessionId ? entrySessionId === normalizedSessionId || entrySessionId === "" : true;
+  });
+  if (!activeEntry) return "canonical_inactive";
+  if (mode === "autopilot") {
+    const phase = safeString(modeState.current_phase ?? modeState.currentPhase).trim();
+    const canonicalPhase = safeString(activeEntry.phase ?? canonicalState.phase).trim();
+    if (phase && canonicalPhase && normalizeAutopilotPhase(phase) !== normalizeAutopilotPhase(canonicalPhase)) {
+      return `canonical_phase:${canonicalPhase}`;
+    }
+  }
+  return "canonical_agrees";
+}
+
+function listRawActiveSkillEntries(state: SkillActiveStateLike | null): SkillActiveEntry[] {
+  if (!state) return [];
+  const entries: SkillActiveEntry[] = [];
+  if (Array.isArray(state.active_skills)) {
+    for (const candidate of state.active_skills) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const raw = candidate as unknown as Record<string, unknown>;
+      const skill = safeString(raw.skill).trim();
+      if (!skill || raw.active === false) continue;
+      entries.push({
+        ...raw,
+        skill,
+        phase: safeString(raw.phase).trim() || undefined,
+        session_id: safeString(raw.session_id).trim() || undefined,
+        thread_id: safeString(raw.thread_id).trim() || undefined,
+      });
+    }
+  }
+  const topLevelSkill = safeString(state.skill).trim();
+  if (state.active === true && topLevelSkill) {
+    entries.push({
+      skill: topLevelSkill,
+      phase: safeString(state.phase).trim() || undefined,
+      session_id: safeString(state.session_id).trim() || undefined,
+      thread_id: safeString(state.thread_id).trim() || undefined,
+    });
+  }
+  return entries;
+}
+
 async function buildModeBasedStopOutput(
   mode: "autopilot" | "ultrawork" | "ultraqa",
   cwd: string,
@@ -2238,17 +2331,38 @@ async function buildModeBasedStopOutput(
   if (mode === "autopilot" && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
     return null;
   }
-  const state = await readModeStateForActiveDecision(mode, sessionId?.trim() || undefined, cwd);
+  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId);
+  const state = sourcedState?.state ?? null;
   if (!state || !shouldContinueRun(state)) return null;
+  const rootCanonicalState = await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
+  const canonicalDisagreement = rootCanonicalState
+    ? canonicalStopDisagreement(state, rootCanonicalState, mode, sessionId)
+    : "canonical_state_missing";
+  if (canonicalDisagreement === "canonical_inactive") return null;
   const phase = formatPhase(state.current_phase);
+  if (!rootCanonicalState || mode !== "autopilot") {
+    const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
+      ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
+      : `OMX ${mode} is still active (phase: ${phase}).`;
+    return {
+      decision: "block",
+      reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
+      stopReason: `${mode}_${phase}`,
+      systemMessage,
+    };
+  }
+  const statePath = sourcedState ? formatStopStatePath(cwd, sourcedState.path) : "unknown";
+  const diagnostic = `state: ${statePath}; canonical: ${canonicalDisagreement}`;
   const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
-    ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
-    : `OMX ${mode} is still active (phase: ${phase}).`;
+    ? `OMX autopilot is still active (phase: code-review; ${diagnostic}). Run the required $code-review step before completing or clearing Autopilot state.`
+    : `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}).`;
   return {
     decision: "block",
-    reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
+    reason: `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}); continue the task and gather fresh verification evidence before stopping.`,
     stopReason: `${mode}_${phase}`,
     systemMessage,
+    statePath,
+    canonicalDisagreement,
   };
 }
 
@@ -2292,6 +2406,63 @@ function reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(goal: Record<str
     && /\bcomplete(?:d)?\b/i.test(evidence)
     && /microgoal/i.test(evidence)
     && /\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/i.test(evidence);
+}
+
+function looksLikeNewGoalPrompt(text: string): boolean {
+  return /(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(text);
+}
+
+async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<string | null> {
+  const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
+  const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
+  const ultragoals = Array.isArray(ultragoal?.goals) ? ultragoal.goals.map(safeObject) : [];
+  if (safeString(aggregateCompletion.status) === "complete" || (ultragoals.length > 0 && ultragoals.every((goal) => safeString(goal.status) === "complete"))) {
+    return buildCodexGoalTerminalCleanupNotice("Ultragoal completion");
+  }
+
+  const performanceRoot = join(cwd, ".omx", "goals", "performance");
+  for (const entry of await readdir(performanceRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const state = await readJsonIfExists(join(performanceRoot, entry.name, "state.json"));
+    if (state?.workflow === "performance-goal" && safeString(state.status) === "complete") {
+      return buildCodexGoalTerminalCleanupNotice("Performance-goal completion");
+    }
+  }
+
+  const autoresearchRoot = join(cwd, ".omx", "goals", "autoresearch");
+  for (const entry of await readdir(autoresearchRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const mission = await readJsonIfExists(join(autoresearchRoot, entry.name, "mission.json"));
+    if (mission?.workflow === "autoresearch-goal" && safeString(mission.status) === "complete") {
+      return buildCodexGoalTerminalCleanupNotice("Autoresearch-goal completion");
+    }
+  }
+
+  return null;
+}
+
+async function buildCompletedGoalCleanupPromptWarning(cwd: string, prompt: string): Promise<string | null> {
+  if (!looksLikeNewGoalPrompt(prompt)) return null;
+  const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
+  if (!notice) return null;
+  return `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
+}
+
+async function buildCompletedGoalCleanupStopOutput(payload: CodexHookPayload, cwd: string): Promise<Record<string, unknown> | null> {
+  const text = [
+    safeString(payload.last_user_message ?? payload.lastUserMessage),
+    safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
+  ].join("\n");
+  if (!looksLikeNewGoalPrompt(text)) return null;
+  const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
+  if (!notice) return null;
+  const systemMessage = `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
+  return {
+    decision: "block",
+    reason: systemMessage,
+    stopReason: "completed_codex_goal_cleanup_required",
+    systemMessage,
+  };
 }
 
 async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Promise<{ workflow: string; command: string; remediation?: string } | null> {
@@ -2545,6 +2716,144 @@ function readPayloadTurnId(payload: CodexHookPayload): string {
   return safeString(payload.turn_id ?? payload.turnId).trim();
 }
 
+interface NativeSubagentCapacityBlocker {
+  schema_version: 1;
+  reason: "agent_thread_limit_reached";
+  session_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  tool_name?: string;
+  error_summary: string;
+  observed_at: string;
+  expires_at: string;
+}
+
+function nativeSubagentCapacityBlockerPath(stateDir: string): string {
+  return join(stateDir, NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE);
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function payloadEvidenceText(payload: CodexHookPayload): string {
+  return [
+    safeString(payload.tool_name),
+    stringifyUnknown(payload.tool_response),
+    stringifyUnknown(payload.response),
+    stringifyUnknown(payload.error),
+    stringifyUnknown(payload.message),
+  ].filter(Boolean).join("\n");
+}
+
+function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
+  const evidence = payloadEvidenceText(payload);
+  if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
+  const toolName = safeString(payload.tool_name).trim();
+  return !toolName || /(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName);
+}
+
+function summarizeCapacityFailure(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "agent thread limit reached";
+  const match = normalized.match(/[^.?!\n\r]*agent thread limit reached[^.?!\n\r]*/i);
+  return (match?.[0] ?? normalized).slice(0, 500);
+}
+
+async function recordNativeSubagentCapacityBlocker(
+  cwd: string,
+  stateDir: string,
+  payload: CodexHookPayload,
+): Promise<void> {
+  if (!isNativeSubagentCapacityFailure(payload)) return;
+  const nowMs = Date.now();
+  const blocker: NativeSubagentCapacityBlocker = {
+    schema_version: 1,
+    reason: "agent_thread_limit_reached",
+    ...(readPayloadSessionId(payload) ? { session_id: readPayloadSessionId(payload) } : {}),
+    ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
+    ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
+    ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
+    error_summary: summarizeCapacityFailure(payloadEvidenceText(payload)),
+    observed_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS).toISOString(),
+  };
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(nativeSubagentCapacityBlockerPath(stateDir), JSON.stringify({
+    ...blocker,
+    cwd,
+  }, null, 2));
+}
+
+function isFreshNativeSubagentCapacityBlocker(
+  blocker: Record<string, unknown> | null,
+  cwd: string,
+  payload: CodexHookPayload,
+  nowMs = Date.now(),
+): blocker is NativeSubagentCapacityBlocker & Record<string, unknown> {
+  if (!blocker) return false;
+  if (safeString(blocker.reason) !== "agent_thread_limit_reached") return false;
+  const expiresAtMs = Date.parse(safeString(blocker.expires_at));
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return false;
+  const blockerCwd = safeString(blocker.cwd).trim();
+  if (blockerCwd) {
+    try {
+      if (resolve(blockerCwd) !== resolve(cwd)) return false;
+    } catch {
+      return false;
+    }
+  }
+  const blockerSessionId = safeString(blocker.session_id).trim();
+  const payloadSessionId = readPayloadSessionId(payload);
+  return !blockerSessionId || !payloadSessionId || blockerSessionId === payloadSessionId;
+}
+
+function inputContainsCloseAgentRequest(value: unknown): boolean {
+  if (typeof value === "string") return /\bclose_agent\b/i.test(value);
+  if (!value || typeof value !== "object") return false;
+  try {
+    return /\bclose_agent\b/i.test(JSON.stringify(value));
+  } catch {
+    return false;
+  }
+}
+
+function isCloseAgentToolUse(payload: CodexHookPayload): boolean {
+  const toolName = safeString(payload.tool_name).trim();
+  if (/\bclose_agent\b/i.test(toolName)) return true;
+  if (/multi_tool_use\.parallel/i.test(toolName) && inputContainsCloseAgentRequest(payload.tool_input)) return true;
+  return inputContainsCloseAgentRequest(payload.tool_input) && /multi_agent|agent|tool_use/i.test(toolName);
+}
+
+async function buildNativeSubagentCapacityCloseGuardOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+): Promise<Record<string, unknown> | null> {
+  if (!isCloseAgentToolUse(payload)) return null;
+  const blocker = await readJsonIfExists(nativeSubagentCapacityBlockerPath(stateDir));
+  if (!isFreshNativeSubagentCapacityBlocker(blocker, cwd, payload)) return null;
+
+  const evidence = safeString(blocker.error_summary).trim() || "agent thread limit reached";
+  return {
+    decision: "block",
+    reason: "Native subagent capacity was exhausted recently; model-level close_agent cleanup is blocked because close_agent can hang indefinitely on stale handles.",
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        `OMX blocked ${safeString(payload.tool_name).trim() || "close_agent"} before it could start: a recent native subagent capacity failure was recorded (${evidence}). `
+        + "Do not call multi_agent_v1.close_agent, and do not batch close_agent through multi_tool_use.parallel, as stale native handles can hang the whole turn. "
+        + "Treat this as a bounded capacity blocker: persist/report the blocker evidence, avoid further native subagent cleanup from the model turn, and recover via runtime-level cleanup or a fresh Codex session.",
+    },
+  };
+}
+
 async function resolveInternalSessionIdForPayload(
   cwd: string,
   payloadSessionId: string,
@@ -2603,6 +2912,7 @@ const RALPLAN_ALLOWED_WRITE_PREFIXES = [
   ".omx/plans",
   ".omx/specs",
   ".omx/state",
+  ".beads",
 ] as const;
 
 const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
@@ -2653,6 +2963,10 @@ function canAutopilotSkillMirrorSupplyRalplanPhase(phase: string): boolean {
   return phase === "" || normalizeAutopilotPhase(phase) === "ralplan";
 }
 
+function isAutopilotReviewReworkPhase(phase: string): boolean {
+  return normalizeAutopilotPhase(phase) === "rework";
+}
+
 function hasExplicitExecutionHandoffSkill(
   state: SkillActiveStateLike | null,
   sessionId: string,
@@ -2690,6 +3004,138 @@ function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boole
 
 function isAllowedRalplanArtifactPath(cwd: string, rawPath: string): boolean {
   return isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
+}
+
+interface RalplanBeadsCommandClassification {
+  present: boolean;
+  allowed: boolean;
+  reason?: string;
+}
+
+function shellTokenizeLiteralCommand(command: string): string[] | null {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+
+  for (const char of command.trim()) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (/[;&|<>`$(){}\n\r]/.test(char)) return null;
+    current += char;
+  }
+
+  if (escaping || quote) return null;
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function findLiteralBdExecutableIndex(tokens: string[]): number {
+  if (tokens[0] === "bd") return 0;
+  if (tokens[0] === "command" || tokens[0] === "builtin" || tokens[0] === "exec" || tokens[0] === "nohup") {
+    return tokens[1] === "bd" ? 1 : -1;
+  }
+  if (tokens[0] !== "env") return -1;
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "bd") return index;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return -1;
+  }
+  return -1;
+}
+
+function isAllowedRalplanBeadsDbPath(cwd: string, rawPath: string): boolean {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
+  let relativePath: string;
+  try {
+    const absolute = resolve(cwd, trimmed);
+    relativePath = relative(cwd, absolute).replace(/\\/g, "/");
+  } catch {
+    return false;
+  }
+  return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
+}
+
+function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): RalplanBeadsCommandClassification {
+  const trimmedCommand = command.trim();
+  const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
+  const hasCompoundBd = /[;&|()]\s*bd(?:\s|$)/.test(command);
+  const tokens = shellTokenizeLiteralCommand(command);
+  const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
+  if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
+
+  if (!tokens || bdExecutableIndex !== 0) {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
+
+  let dbPath = "";
+  let dbValueIndex = -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "--db") {
+      dbPath = tokens[index + 1] ?? "";
+      dbValueIndex = index + 1;
+      break;
+    }
+    if (token.startsWith("--db=")) {
+      dbPath = token.slice("--db=".length);
+      dbValueIndex = index;
+      break;
+    }
+  }
+
+  if (!dbPath) {
+    return { present: true, allowed: false, reason: "Beads tracker command is missing a literal --db .beads/<db> target" };
+  }
+  if (!isAllowedRalplanBeadsDbPath(cwd, dbPath)) {
+    return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
+  }
+
+  const operationTokens = tokens
+    .slice(dbValueIndex + 1)
+    .filter((token) => token && !token.startsWith("-"));
+  const operation = operationTokens[0] ?? "";
+  const suboperation = operationTokens[1] ?? "";
+  if (["create", "update", "edit", "close", "reopen", "status", "dep"].includes(operation)) {
+    return { present: true, allowed: true };
+  }
+  if (operation === "comments" && suboperation === "add") {
+    return { present: true, allowed: true };
+  }
+  return {
+    present: true,
+    allowed: false,
+    reason: operation
+      ? `Beads tracker operation ${operation}${suboperation ? ` ${suboperation}` : ""} is not allowed during planning`
+      : "Beads tracker command is missing an allowed metadata operation",
+  };
 }
 
 function readPreToolUseCommand(payload: CodexHookPayload): string {
@@ -2805,6 +3251,33 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   }
   return targets;
 }
+function formatPlanningWriteBlockDetail(
+  operationClass: string,
+  target: string | undefined,
+  allowedPrefixes: readonly string[],
+): string {
+  const targetDetail = target ? `target ${target}` : "target <unresolved>";
+  return `${operationClass} ${targetDetail} is not under allowed planning artifact paths (${allowedPrefixes.join(", ")})`;
+}
+
+function isUnresolvedVariableTarget(target: string): boolean {
+  const normalized = target.trim().replace(/^['"]|['"]$/g, "");
+  return /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
+}
+
+
+function describeImplementationToolBlock(
+  toolName: string,
+  blockedPath: string | undefined,
+  pathCount: number,
+): string {
+  if (pathCount === 0) {
+    const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target extraction failed" : `${toolName} path`;
+    return `${operationClass} target <unresolved>; only planning artifact paths are allowed (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target" : `${toolName} path`;
+  return formatPlanningWriteBlockDetail(operationClass, blockedPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
+}
 
 function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
@@ -2899,6 +3372,7 @@ async function readActiveRalplanStateForPreToolUse(
   ));
   if (!hasActiveAutopilotSkill) return null;
   const autopilotStatePhase = safeString(autopilotState.current_phase ?? autopilotState.currentPhase).trim().toLowerCase();
+  if (isAutopilotReviewReworkPhase(autopilotStatePhase)) return null;
   if (!canAutopilotSkillMirrorSupplyRalplanPhase(autopilotStatePhase)) return null;
   const hasRalplanScopedAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
     entry.skill === "autopilot"
@@ -2910,10 +3384,37 @@ async function readActiveRalplanStateForPreToolUse(
 }
 
 function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  const hasAllowedTargets = targets.length > 0
+    && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+
+  if (beadsCommand.present) {
+    return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
+  }
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (/\bomx\s+(?:state\s+(?:write|read|clear)|question)\b/.test(command)) return true;
+  return hasAllowedTargets;
+}
+
+function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
   const targets = extractDeepInterviewCommandWriteTargets(command);
-  return targets.length > 0 && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+  const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
+  if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
+    return `unresolved Bash write target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  if (blockedTarget) {
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash redirect write";
+    return `${operationClass} target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  if (beadsCommand.present && !beadsCommand.allowed) {
+    return beadsCommand.reason ?? "Beads tracker command is not an allowed planning metadata mutation";
+  }
+  if (beadsCommand.present) {
+    return "Beads tracker command also performs an implementation write outside allowed planning metadata";
+  }
+  return "Bash write intent did not identify an allowed planning artifact path or metadata path";
 }
 
 async function buildRalplanPreToolUseBoundaryOutput(
@@ -2936,21 +3437,18 @@ async function buildRalplanPreToolUseBoundaryOutput(
   if (toolName === "Bash") {
     blocked = !isAllowedRalplanBashWrite(cwd, command);
     if (blocked) {
-      const targets = extractDeepInterviewCommandWriteTargets(command);
-      const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
-      blockedDetail = blockedTarget
-        ? `write target ${blockedTarget} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`
-        : "Bash write intent did not identify an allowed planning artifact path";
+      blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
     }
   } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-    if (pathCandidates.length === 0) {
+    const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    if (toolPathCandidates.length === 0) {
       blocked = true;
-      blockedDetail = `${toolName} did not include a file path; only planning artifact paths are allowed`;
+      blockedDetail = describeImplementationToolBlock(toolName, undefined, toolPathCandidates.length);
     } else {
-      const blockedPath = pathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+      const blockedPath = toolPathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
       blocked = blockedPath !== undefined;
       if (blockedPath !== undefined) {
-        blockedDetail = `path ${blockedPath} is not under allowed planning artifact paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+        blockedDetail = describeImplementationToolBlock(toolName, blockedPath, toolPathCandidates.length);
       }
     }
   }
@@ -2970,7 +3468,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
       hookEventName: "PreToolUse",
       additionalContext:
         `${planningModeDescription}. `
-        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, or required `.omx/state/` files. "
+        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, required `.omx/state/` files, or tracker metadata under `.beads/`. "
         + "Do not edit implementation files or run implementation-focused writes from planning phases. "
         + `To execute, first process an explicit handoff such as ${formatExecutionHandoffList(cwd)}, which must emit terminal planning state before implementation begins.`,
     },
@@ -4361,7 +4859,8 @@ export async function dispatchCodexNativeHook(
 
   if (hookEventName === "UserPromptSubmit") {
     const prompt = readPromptText(payload);
-    goalWorkflowAdditionalContext = await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(() => null);
+    goalWorkflowAdditionalContext = await buildCompletedGoalCleanupPromptWarning(cwd, prompt).catch(() => null)
+      ?? await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(() => null);
     ultragoalSteeringAdditionalContext = prompt && !isSubagentPromptSubmit
       ? await applyUserPromptUltragoalSteering(cwd, prompt).catch((error) => `OMX native UserPromptSubmit rejected bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${error instanceof Error ? error.message : String(error)}`)
       : null;
@@ -4534,8 +5033,10 @@ export async function dispatchCodexNativeHook(
       : "";
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
+    await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
     if (detectMcpTransportFailure(payload)) {
       await markTeamTransportFailure(cwd, payload);
     }
@@ -4544,7 +5045,7 @@ export async function dispatchCodexNativeHook(
   } else if (hookEventName === "Stop") {
     outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
       skipRalphStopBlock: isSubagentStop,
-    });
+    }) ?? await buildCompletedGoalCleanupStopOutput(payload, cwd);
   }
 
   return {
@@ -4657,6 +5158,9 @@ function buildMalformedStdinHookOutput(
   const systemMessage =
     `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
   const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
+  if (inferredHookEventName === "PreToolUse") {
+    return { systemMessage };
+  }
   if (inferredHookEventName === "Stop" || (!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))) {
     return {
       decision: "block",
@@ -4699,11 +5203,14 @@ async function buildOversizedStdinHookOutput(
   rawHookEventName: CodexHookEventName | null,
   cwd: string,
 ): Promise<Record<string, unknown>> {
+  const systemMessage =
+    `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
+  if (rawHookEventName === "PreToolUse") {
+    return { systemMessage };
+  }
   if (rawHookEventName === "Stop") {
     return await buildOversizedStopActiveWorkflowOutput(cwd) ?? {};
   }
-  const systemMessage =
-    `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
   return {
     continue: false,
     stopReason: "native_hook_stdin_oversized",
@@ -4817,8 +5324,8 @@ export async function runCodexNativeHookCli(): Promise<void> {
 
     const result = await dispatchCodexNativeHook(payload);
     if (result.outputJson) {
-      writeNativeHookJsonStdout(result.outputJson);
-    } else if (result.hookEventName === "Stop") {
+      writeNativeHookJsonStdout(sanitizeCodexHookOutput(result.hookEventName, result.outputJson) ?? {});
+    } else if (result.hookEventName !== "PreCompact" && result.hookEventName !== "PostCompact") {
       writeNativeHookJsonStdout({});
     }
   } catch (error) {

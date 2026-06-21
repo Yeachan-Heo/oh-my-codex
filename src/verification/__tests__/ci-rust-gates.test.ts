@@ -69,11 +69,13 @@ describe('CI Rust gates', () => {
   it('runs fork pull-request CI on GitHub-hosted runners instead of skipping lane detection', () => {
     const workflow = readCiWorkflow();
     const changesJob = jobBlock(workflow, 'changes');
+    const ciStatusJob = jobBlock(workflow, 'ci-status');
 
     assert.doesNotMatch(changesJob, /head\.repo\.full_name == github\.repository/);
     assert.doesNotMatch(changesJob, /^\s+if:\s*github\.event_name != 'pull_request'/m);
-    assert.match(workflow, /head\.repo\.full_name != github\.repository && 'ubuntu-latest' \|\| 'gajae-layofflabs-2'/);
-    assert.match(jobBlock(workflow, 'ci-status'), /head\.repo\.full_name != github\.repository && 'ubuntu-latest' \|\| 'gajae-layofflabs-2'/);
+    assert.match(changesJob, /^\s+runs-on:\s*ubuntu-latest$/m);
+    assert.match(ciStatusJob, /^\s+runs-on:\s*ubuntu-latest$/m);
+    assert.doesNotMatch(workflow, /runs-on:.*(?:self-hosted|gajae-layofflabs|gajae-code-heavy)/);
   });
 
   it('detects changed-file lanes once and exposes fail-closed outputs for targeted CI', () => {
@@ -165,6 +167,11 @@ describe('CI Rust gates', () => {
     const sourceChange = classifyChangedPaths(['src/verification/ci-status.ts']);
     assert.equal(sourceChange.full_suite, 'false');
     assert.equal(sourceChange.ts_changed, 'true');
+
+    const compatFixtureChange = classifyChangedPaths(['src/compat/fixtures/doctor/install-onboarding.stdout.txt']);
+    assert.equal(compatFixtureChange.full_suite, 'false');
+    assert.equal(compatFixtureChange.ts_changed, 'true');
+    assert.equal(compatFixtureChange.reason, 'targeted');
 
     const workflowChange = classifyChangedPaths(['.github/workflows/ci.yml']);
     assert.equal(workflowChange.full_suite, 'true');

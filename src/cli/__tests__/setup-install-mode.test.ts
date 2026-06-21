@@ -21,6 +21,10 @@ import {
 	OMX_DEVELOPER_INSTRUCTIONS,
 	OMX_PLUGIN_DEVELOPER_INSTRUCTIONS,
 } from "../../config/generator.js";
+import {
+	materializePackagedOmxPluginCache,
+	resolvePackagedOmxMarketplace,
+} from "../plugin-marketplace.js";
 
 const packageRoot = process.cwd();
 let previousPathForFakeCodex: string | undefined;
@@ -1227,6 +1231,38 @@ describe("omx setup install mode behavior", () => {
 					assert.match(output, /Invalidated 1 stale Codex plugin discovery cache entry/);
 					assert.match(output, /Installed local Codex plugin cache/);
 				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+	it("materializes replacement plugin caches without removing the existing cache root", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const cacheDir = await seedSameVersionPluginCacheWithStaleHooks(codexHomeDir);
+				const staleOnlyPath = join(cacheDir, "stale-only.txt");
+				await writeFile(staleOnlyPath, "stale\n");
+				const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packagedMarketplace, "expected packaged OMX plugin marketplace fixture");
+
+				let observedPreparedCache = false;
+				await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace, {
+					onCacheDirPrepared: async (preparedCacheDir) => {
+						if (preparedCacheDir !== cacheDir) return;
+						observedPreparedCache = true;
+						assert.equal(existsSync(cacheDir), true, "cache root must remain present before overlay replacement starts");
+						assert.equal(existsSync(join(cacheDir, ".codex-plugin", "plugin.json")), true);
+						assert.equal(existsSync(join(cacheDir, "hooks", "codex-native-hook.mjs")), true);
+					},
+				});
+
+				assert.equal(observedPreparedCache, true, "test hook should observe cache root during replacement");
+				assert.equal(existsSync(cacheDir), true);
+				assert.equal(existsSync(join(cacheDir, ".codex-plugin", "plugin.json")), true);
+				assert.equal(existsSync(join(cacheDir, "hooks", "codex-native-hook.mjs")), true);
+				assert.equal(existsSync(join(cacheDir, "hooks", "omx-command.json")), true);
+				assert.equal(existsSync(staleOnlyPath), false, "overlay cleanup should remove stale files after refreshed files are present");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });

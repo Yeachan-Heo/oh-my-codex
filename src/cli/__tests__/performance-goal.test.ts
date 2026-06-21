@@ -124,6 +124,31 @@ describe('cli/performance-goal', () => {
     });
   });
 
+  it('prints explicit terminal cleanup after successful completion without claiming hidden clear', async () => {
+    await withCwd(async () => {
+      await capture(() => performanceGoalCommand([
+        'create',
+        '--objective', 'Reduce tail latency',
+        '--evaluator-command', 'node bench.js',
+        '--evaluator-contract', 'PASS when p99 latency improves.',
+        '--slug', 'tail-latency',
+      ]));
+      await capture(() => performanceGoalCommand(['checkpoint', '--slug', 'tail-latency', '--status', 'pass', '--evidence', 'bench pass']));
+
+      const completed = await capture(() => performanceGoalCommand([
+        'complete',
+        '--slug', 'tail-latency',
+        '--codex-goal-json', '{"goal":{"objective":"Reduce tail latency","status":"complete"}}',
+      ]));
+
+      const output = completed.stdout.join('\n');
+      assert.equal(completed.exitCode, undefined);
+      assert.match(output, /Terminal next step for another goal in this same Codex thread\/session: run \/goal clear/);
+      assert.match(output, /OMX shell commands and hooks do not call \/goal clear or hidden thread\/goal\/clear routes/);
+      assert.doesNotMatch(output, /cleared Codex goal state/i);
+    });
+  });
+
   it('requires matching complete Codex goal proof for completion', async () => {
     await withCwd(async () => {
       await capture(() => performanceGoalCommand([

@@ -1190,7 +1190,7 @@ describe("worker bootstrap", () => {
   });
 
 
-  it("generateWorkerRootAgentsContent includes hardcoded paths and role prompt without base AGENTS", () => {
+  it("generateWorkerRootAgentsContent includes hardcoded paths and role prompt", () => {
     const content = generateWorkerRootAgentsContent({
       teamName: "root-team",
       workerName: "worker-3",
@@ -1205,8 +1205,6 @@ describe("worker bootstrap", () => {
     assert.match(content, /Inbox path: \/tmp\/state\/team\/root-team\/workers\/worker-3\/inbox\.md/);
     assert.match(content, /mailbox\/worker-3\.json/);
     assert.match(content, /<identity>You are Writer\.<\/identity>/);
-    assert.doesNotMatch(content, /# Project Instructions/);
-    assert.doesNotMatch(content, /# User Instructions/);
   });
 
   it("writeWorkerRoleInstructionsFile layers role prompt on top of team worker instructions", async () => {
@@ -1272,7 +1270,7 @@ describe("worker bootstrap", () => {
     }
   });
 
-  it("generateWorkerRootAgentsContent hardcodes runtime paths and role prompt without inherited AGENTS", () => {
+  it("generateWorkerRootAgentsContent hardcodes runtime paths and role prompt", () => {
     const content = generateWorkerRootAgentsContent({
       teamName: "root-team",
       workerName: "worker-2",
@@ -1289,17 +1287,19 @@ describe("worker bootstrap", () => {
     assert.match(content, /Leader mailbox path: \/tmp\/project\/.omx\/state\/team\/root-team\/mailbox\/leader-fixed\.json/);
     assert.match(content, /You are operating as the \*\*writer\*\* role/);
     assert.match(content, /<identity>You are Writer\.<\/identity>/);
-    assert.doesNotMatch(content, /# Project Instructions/);
-    assert.doesNotMatch(content, /# User Instructions/);
   });
 
-  it("writeWorkerWorktreeRootAgentsFile writes disposable root AGENTS and remove restores tracked content", async () => {
+  it("writeWorkerWorktreeRootAgentsFile composes project AGENTS while remove restores tracked content", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-worker-root-agents-"));
     const worktree = join(cwd, "worktree");
     try {
       await mkdir(join(cwd, ".omx", "state", "team", "restore-team", "workers", "worker-1"), { recursive: true });
       await mkdir(worktree, { recursive: true });
-      await writeFile(join(worktree, "AGENTS.md"), "# Base tracked AGENTS\n", "utf8");
+      await writeFile(
+        join(worktree, "AGENTS.md"),
+        "# Base tracked AGENTS\n\nMUST_PRESERVE_PROJECT_GUIDANCE_SENTINEL\n",
+        "utf8",
+      );
 
       const outPath = await writeWorkerWorktreeRootAgentsFile({
         teamName: "restore-team",
@@ -1312,13 +1312,52 @@ describe("worker bootstrap", () => {
       });
 
       const generated = await readFile(outPath, "utf8");
+      assert.match(generated, /# Base tracked AGENTS/);
+      assert.match(generated, /MUST_PRESERVE_PROJECT_GUIDANCE_SENTINEL/);
       assert.match(generated, /Team Worker Runtime Instructions/);
       assert.match(generated, /Writer role prompt/);
 
       await removeWorkerWorktreeRootAgentsFile("restore-team", "worker-1", join(cwd, ".omx", "state"), worktree);
       const restored = await readFile(join(worktree, "AGENTS.md"), "utf8");
-      assert.equal(restored, "# Base tracked AGENTS\n");
+      assert.equal(restored, "# Base tracked AGENTS\n\nMUST_PRESERVE_PROJECT_GUIDANCE_SENTINEL\n");
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("writeWorkerWorktreeRootAgentsFile composes user AGENTS before project and runtime guidance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-worker-root-agents-"));
+    const worktree = join(cwd, "worktree");
+    const codexHome = join(cwd, "codex-home");
+    const restoreCodexHome = setMockCodexHome(codexHome);
+    try {
+      await mkdir(join(cwd, ".omx", "state", "team", "compose-team", "workers", "worker-1"), { recursive: true });
+      await mkdir(worktree, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, "AGENTS.md"), "# User Instructions\n\nUSER_SENTINEL\n", "utf8");
+      await writeFile(join(worktree, "AGENTS.md"), "# Project Instructions\n\nPROJECT_SENTINEL\n", "utf8");
+
+      const outPath = await writeWorkerWorktreeRootAgentsFile({
+        teamName: "compose-team",
+        workerName: "worker-1",
+        workerRole: "writer",
+        rolePromptContent: "<identity>Writer role prompt</identity>",
+        teamStateRoot: join(cwd, ".omx", "state"),
+        leaderCwd: cwd,
+        worktreePath: worktree,
+      });
+
+      const generated = await readFile(outPath, "utf8");
+      assert.match(generated, /# User Instructions/);
+      assert.match(generated, /USER_SENTINEL/);
+      assert.match(generated, /# Project Instructions/);
+      assert.match(generated, /PROJECT_SENTINEL/);
+      assert.match(generated, /# Team Worker Runtime Instructions/);
+      assert.match(generated, /<identity>Writer role prompt<\/identity>/);
+      assert.ok(generated.indexOf("USER_SENTINEL") < generated.indexOf("PROJECT_SENTINEL"));
+      assert.ok(generated.indexOf("PROJECT_SENTINEL") < generated.indexOf("Team Worker Runtime Instructions"));
+    } finally {
+      restoreCodexHome();
       await rm(cwd, { recursive: true, force: true });
     }
   });
