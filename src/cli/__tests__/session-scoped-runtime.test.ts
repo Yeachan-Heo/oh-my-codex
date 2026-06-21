@@ -199,6 +199,116 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('reports stale current-autopilot in status when no authoritative active modes exist', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-status-stale-current-autopilot-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-stale-autopilot' }, null, 2));
+      const currentAutopilotPath = join(stateDir, 'current-autopilot.json');
+      const currentAutopilot = {
+        active: true,
+        current_phase: 'complete',
+        session_id: 'sess-stale-autopilot',
+        tmux_pane_id: '%42',
+      };
+      await writeFile(currentAutopilotPath, JSON.stringify(currentAutopilot, null, 2));
+
+      const statusResult = runOmx(wd, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /autopilot: STALE \(phase: complete\)/);
+      assert.doesNotMatch(statusResult.stdout, /No active modes\./);
+
+      const listResult = runOmx(wd, 'state', 'list-active', '--json');
+      assert.equal(listResult.status, 0, listResult.stderr || listResult.stdout);
+      assert.deepEqual(JSON.parse(listResult.stdout), { active_modes: [] });
+      assert.deepEqual(JSON.parse(await readFile(currentAutopilotPath, 'utf-8')), currentAutopilot);
+      assert.equal(statusResult.stdout.trim(), 'autopilot: STALE (phase: complete)');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports stale current-autopilot alongside inactive authoritative modes only', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-status-stale-current-autopilot-with-inactive-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-stale-autopilot-inactive';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      const currentAutopilotPath = join(stateDir, 'current-autopilot.json');
+      const currentAutopilot = {
+        active: true,
+        current_phase: 'complete',
+        session_id: sessionId,
+        tmux_pane_id: '%43',
+      };
+      await writeFile(currentAutopilotPath, JSON.stringify(currentAutopilot, null, 2));
+      await writeFile(join(sessionDir, 'deep-interview-state.json'), JSON.stringify({
+        active: false,
+        mode: 'deep-interview',
+        current_phase: 'cleared',
+      }, null, 2));
+
+      const statusResult = runOmx(wd, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /deep-interview: inactive \(phase: cleared\)/);
+      assert.match(statusResult.stdout, /autopilot: STALE \(phase: complete\)/);
+      assert.doesNotMatch(statusResult.stdout, /No active modes\./);
+      assert.deepEqual(JSON.parse(await readFile(currentAutopilotPath, 'utf-8')), currentAutopilot);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers authoritative active autopilot over stale current-autopilot in status', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-status-active-autopilot-precedence-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-active-autopilot';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(stateDir, 'current-autopilot.json'), JSON.stringify({
+        active: true,
+        current_phase: 'complete',
+        session_id: 'stale-session',
+        tmux_pane_id: '%99',
+      }, null, 2));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ralplan',
+      }, null, 2));
+
+      const statusResult = runOmx(wd, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /autopilot: ACTIVE \(phase: ralplan\)/);
+      assert.doesNotMatch(statusResult.stdout, /STALE/);
+      assert.doesNotMatch(statusResult.stdout, /phase: complete/);
+      assert.doesNotMatch(statusResult.stdout, /No active modes\./);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores unreportable current-autopilot in status', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-status-unreportable-current-autopilot-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'current-autopilot.json'), JSON.stringify({ active: true }, null, 2));
+
+      const statusResult = runOmx(wd, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /No active modes\./);
+      assert.doesNotMatch(statusResult.stdout, /STALE/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('cancels linked ultrawork when Ralph is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-link-'));
     try {

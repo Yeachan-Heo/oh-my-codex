@@ -21,7 +21,11 @@ import { evaluateRalphCompletionAuditEvidence } from '../ralph/completion-audit.
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
-import { isAutopilotSuccessfulTerminalState, validateAutopilotCompletionTransition } from '../autopilot/completion-gate.js';
+import {
+  hasCleanAutopilotReviewAndQaEvidence,
+  isAutopilotSuccessfulTerminalState,
+  validateAutopilotCompletionTransition,
+} from '../autopilot/completion-gate.js';
 import { readUltragoalState } from '../hud/state.js';
 import {
   SKILL_ACTIVE_STATE_MODE,
@@ -56,6 +60,7 @@ const AUTOPILOT_CHILD_PHASE_ORDER: AutopilotChildPhase[] = [
   'deep-interview',
   'ralplan',
   'ultragoal',
+  'rework',
   'team',
   'ralph',
   'code-review',
@@ -216,6 +221,29 @@ function hasExplicitStateField(
       customState != null
       && Object.prototype.hasOwnProperty.call(customState as Record<string, unknown>, key)
     );
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown>): void {
+  if (!isAutopilotSuccessfulTerminalState(state) || !hasCleanAutopilotReviewAndQaEvidence(state)) return;
+
+  const reviewVerdict = state.review_verdict;
+  const qaVerdict = state.qa_verdict;
+  const nestedState = { ...objectRecord(state.state) };
+  const handoffArtifacts = { ...objectRecord(nestedState.handoff_artifacts ?? state.handoff_artifacts) };
+
+  handoffArtifacts.code_review = reviewVerdict;
+  handoffArtifacts.ultraqa = qaVerdict;
+  state.handoff_artifacts = handoffArtifacts;
+  state.return_to_ralplan_reason = null;
+  nestedState.handoff_artifacts = handoffArtifacts;
+  nestedState.review_verdict = reviewVerdict;
+  nestedState.qa_verdict = qaVerdict;
+  nestedState.return_to_ralplan_reason = null;
+  state.state = nestedState;
 }
 
 export async function listStateStatuses(
@@ -470,6 +498,10 @@ export async function executeStateOperation(
               return;
             }
             Object.assign(mergedRaw, runOutcomeValidation.state);
+          }
+
+          if (mode === 'autopilot') {
+            normalizeCleanAutopilotCompletionEvidence(mergedRaw);
           }
 
           const currentAutopilotChildPhase = mode === 'autopilot'

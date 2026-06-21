@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import {
   CodexGoalSnapshotError,
   formatCodexGoalReconciliation,
+  buildCodexGoalTerminalCleanupNotice,
   readCodexGoalSnapshotInput,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
@@ -486,6 +487,10 @@ export async function ultragoalCommand(args: string[]): Promise<void> {
         const goal = plan.goals.find((candidate: UltragoalItem) => candidate.id === goalId);
         console.log(`ultragoal checkpoint: ${goalId} -> ${goal?.status ?? status}`);
         printStatus(plan);
+        const summary = summarizeUltragoalPlan(plan);
+        if (status === 'complete' && (summary.aggregateComplete || summary.artifactComplete)) {
+          console.log(buildCodexGoalTerminalCleanupNotice('Ultragoal completion'));
+        }
       }
       return;
     }

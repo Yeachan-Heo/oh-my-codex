@@ -37,7 +37,8 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 
 2. **Phase `ralplan`** — consensus planning gate
    - Ground the task with pre-context intake and the deep-interview artifact.
-   - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts.
+   - Current ownership rule: Autopilot records `planning_routing` in state before heavy planning. When the Autopilot/main model resolves to a cheap/mini lane (for example `o4-mini`, `*-mini`, `*spark*`, or an explicitly cheap/economy/lite model name), the initial planning/decomposition owner is dedicated `[planner]`; otherwise `[main]` may keep ownership for backward compatibility. A configured `agentModels.planner` is an explicit opt-in that forces dedicated `[planner]` ownership even when `[main]` is not cheap/mini.
+   - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts. If `planning_routing.owner` is `planner`, use the dedicated `[planner]` role for the initial Planner draft/decomposition before the Architect→Critic consensus gates.
    - PRD/test-spec files alone are not completion evidence. Ralplan may hand off only after durable consensus evidence records a subsequent `Architect` approval first and a subsequent `Critic` approval second.
    - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input.
    - If either review is missing, blocked, out of order, or non-approving, remain in `ralplan` or report an explicit blocker/max-iteration outcome; do not progress to `$ultragoal`, `$team`, `$ralph`, or implementation.
@@ -53,7 +54,7 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
    - Run `$code-review` on the diff/artifacts produced by `$ultragoal`.
    - A clean review means final recommendation `APPROVE` with architectural status `CLEAR`.
    - `COMMENT`, `REQUEST CHANGES`, any architectural `WATCH`/`BLOCK`, or any unresolved finding is not clean.
-   - If not clean, increment the review cycle, persist `review_verdict`, set `return_to_ralplan_reason`, and transition back to Phase `ralplan`.
+   - If not clean because the implementation must be repaired, increment the review cycle, persist `review_verdict`, set `current_phase:"rework"`, and carry the findings as the sanctioned execution-fix input. Return to Phase `ralplan` only when the review shows the plan/requirements are wrong or incomplete.
 
 5. **Phase `ultraqa`** — adversarial QA gate
    - Run `$ultraqa` after a clean code review when user-facing behavior, workflows, CLI/runtime behavior, integration surfaces, or regression risk warrant adversarial QA.
@@ -84,7 +85,7 @@ Before Phase `deep-interview` or `ralplan` starts or resumes:
 - Always execute the recommended phases in order: `deep-interview`, then `ralplan`, then `ultragoal`, then `code-review`, then `ultraqa`.
 - `$team` is conditional and explicit: use it only within an Ultragoal story when parallel execution materially improves throughput, quality, or safety.
 - Never skip directly from vague/freeform expansion to implementation; unclear input must be clarified and planned through `$deep-interview` and `$ralplan`.
-- A non-clean `$code-review` or failed `$ultraqa` always returns to `$ralplan`; do not patch findings ad hoc outside the loop.
+- A non-clean `$code-review` that requires implementation repair enters Phase `rework`; a non-clean review that changes the plan/requirements, or failed `$ultraqa`, returns to `$ralplan`.
 - Each phase must write/update Autopilot state before handing off.
 - Use existing hooks, `.omx/state`, `$deep-interview`, `$ralplan`, `$ultragoal`, optional `$team`, `$code-review`, `$ultraqa`, and pipeline primitives; do not invent a separate execution framework.
 - Preserve legacy compatibility: if a user explicitly requests the old Ralph execution lane, use `$ralph` as an intentional alternate execution phase, but do not present it as Autopilot's default recommended loop.
@@ -140,8 +141,9 @@ Required fields:
 - **On missing ralplan consensus evidence**: keep `current_phase:"ralplan"`, persist `ralplan_consensus_gate.complete:false` with `blocked_reason`, and report an explicit blocker or max-iteration outcome instead of handing off to execution.
 - **On ultragoal -> code-review**: set `current_phase:"code-review"`, persist implementation/test/ledger evidence under `handoff_artifacts.ultragoal`.
 - **On code-review -> ultraqa**: set `current_phase:"ultraqa"` only after a real `$code-review` stage/subagent has produced durable evidence; persist the clean review under `handoff_artifacts.code_review` with its source thread/tool/stage reference. Do not author `review_verdict:{clean:true}` from the leader's own summary.
+- **On non-clean code-review requiring implementation repair**: increment `review_cycle`, set `current_phase:"rework"`, persist `review_verdict`, persist the phase handoff under `handoff_artifacts.code_review`, and keep the fix scoped to the review findings before returning to `code-review`.
 - **On clean review + passed/skipped QA**: set `active:false`, `current_phase:"complete"`, persist `review_verdict:{recommendation:"APPROVE", architectural_status:"CLEAR", clean:true}`, `qa_verdict:{clean:true, skipped:<boolean>, reason:<string|null>}`, and `completed_at` only when both gates have durable source evidence. Required evidence is either (a) actual `$code-review`/`$ultraqa` stage or native-subagent/thread/tool records, or (b) for QA only, an explicit persisted skip reason for a documented docs-only/trivially non-runtime condition. If that evidence is missing, keep the active phase at `code-review` or `ultraqa` and record a blocker instead of self-attesting a clean gate.
-- **On non-clean review or failed QA**: increment `iteration` and `review_cycle`, set `current_phase:"ralplan"`, persist `review_verdict` or `qa_verdict`, persist the phase handoff, and set `return_to_ralplan_reason` to a concise findings-driven reason.
+- **On non-clean review requiring plan changes or failed QA**: increment `iteration` and `review_cycle`, set `current_phase:"ralplan"`, persist `review_verdict` or `qa_verdict`, persist the phase handoff, and set `return_to_ralplan_reason` to a concise findings-driven reason.
 - **Legacy Ralph state**: if a user explicitly selected the legacy Ralph execution lane, phase names and handoff keys may include `ralph`; preserve and resume them rather than rewriting history to Ultragoal.
 - **On cancellation**: run `$cancel`; preserve progress for resume rather than deleting handoff artifacts.
 </State_Management>
@@ -151,6 +153,7 @@ When the user says `continue`, `resume`, or `keep going` while Autopilot is acti
 - `deep-interview`: clarify requirements and record the handoff artifact.
 - `ralplan`: run/update consensus planning from current handoffs and any `return_to_ralplan_reason`.
 - `ultragoal`: execute the approved plan durably and record verification/ledger evidence.
+- `rework`: perform only the implementation fixes required by the current code-review findings, record fresh implementation/verification evidence, and return to `code-review`.
 - `team`: continue explicit team work only when it is nested under the active Ultragoal story and report evidence back to the leader.
 - `code-review`: review the current diff and decide clean vs return-to-ralplan.
 - `ultraqa`: run or explicitly skip adversarial QA based on the documented condition, then finish if clean or transition to `ralplan` with findings if not clean.
@@ -167,7 +170,7 @@ Autopilot may be represented by the configurable pipeline orchestrator (`src/pip
 deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa
 ```
 
-Pipeline state should use `current_phase` values that match the same phase names (`deep-interview`, `ralplan`, `ultragoal`, `code-review`, `ultraqa`, `complete`, `failed`) and should carry `iteration`, `review_cycle`, `handoff_artifacts`, `review_verdict`, `qa_verdict`, and `return_to_ralplan_reason` alongside stage results. `$team` is not a default pipeline stage; it is an explicit conditional execution engine inside an Ultragoal story.
+Pipeline state should use `current_phase` values that match the same phase names (`deep-interview`, `ralplan`, `ultragoal`, `rework`, `code-review`, `ultraqa`, `complete`, `failed`) and should carry `iteration`, `review_cycle`, `handoff_artifacts`, `review_verdict`, `qa_verdict`, and `return_to_ralplan_reason` alongside stage results. `$team` is not a default pipeline stage; it is an explicit conditional execution engine inside an Ultragoal story.
 </Pipeline_Orchestrator>
 
 <Escalation_And_Stop_Conditions>
@@ -181,6 +184,7 @@ Pipeline state should use `current_phase` values that match the same phase names
 - [ ] Phase `deep-interview` produced/updated clarified requirements or a concise spec
 - [ ] Phase `ralplan` produced/updated approved planning artifacts and durable sequential evidence from a subsequent `Architect` approval followed by a subsequent `Critic` approval
 - [ ] Phase `ultragoal` implemented and verified the plan with fresh evidence and durable ledger/checkpoint references
+- [ ] Phase `rework` was used for implementation-only review fixes when applicable, with findings scoped to a fresh code-review cycle
 - [ ] `$team` was used only if the active Ultragoal story needed coordinated parallel work, or explicitly recorded as not needed
 - [ ] Phase `code-review` returned a clean verdict (`APPROVE` + `CLEAR`)
 - [ ] Phase `ultraqa` passed, or was explicitly skipped because the change was docs-only/trivially non-runtime with evidence

@@ -31,6 +31,9 @@ Use this workflow when a research mission should be bound to Codex goal-mode foc
 5. Completion is blocked until professor-critic validation records `verdict=pass`. After the mission audit passes, call `update_goal({status: "complete"})`, call `get_goal` again, then run:
    `omx autoresearch-goal complete --slug <slug> --codex-goal-json <get_goal-json-or-path>`
 6. Treat the completion command as read-only reconciliation plus durable OMX state update; hooks and shell commands must not mutate Codex goal state.
+7. After the completion command succeeds, run `/goal clear` in the Codex UI before starting another goal in this same thread/session. OMX prints this terminal cleanup step but does not invoke hidden clear routes.
 
 ## Completion gate
 A passing professor-critic artifact and a matching complete Codex `get_goal` snapshot are required. Assistant prose, partial tests, or a failed/blocked verdict are not sufficient.
+
+Lifecycle: `create_goal` starts the Codex thread goal, `update_goal({status: "complete"})` marks terminal success after the professor-critic and audit pass, and `/goal clear` removes the completed thread goal when another same-thread goal is needed. OMX shell commands and hooks reconcile snapshots and print the cleanup instruction; they must not mutate hidden Codex goal state.

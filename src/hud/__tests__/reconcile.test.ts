@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcile.js';
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from '../constants.js';
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
@@ -1767,6 +1770,61 @@ describe('reconcileHudForPromptSubmit cramped-window guard (#2754)', () => {
     assert.equal(result.status, 'skipped_window_too_cramped');
     assert.equal(result.paneId, null);
     assert.deepEqual(created, []);
+  });
+
+  it('uses the default tmux window-size reader when production deps omit an injected reader', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-cramped-'));
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const tmuxLogPath = join(cwd, 'tmux.log');
+    const tmuxBin = join(fakeBinDir, 'tmux');
+    const originalPath = process.env.PATH;
+
+    try {
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(
+        tmuxBin,
+        `#!/usr/bin/env bash
+set -eu
+printf '[%s]' "$@" >> "${tmuxLogPath}"
+printf '\n' >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  printf '160\t${crampedHeight}'
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  printf '%%1\\037codex\\0370\\0370\\037160\\03724\\03723\\037160\\037${crampedHeight}\\037codex\\037/repo'
+fi
+`,
+      );
+      await chmod(tmuxBin, 0o755);
+      process.env.PATH = `${fakeBinDir}:${originalPath ?? ''}`;
+
+      const created: string[] = [];
+      const result = await reconcileHudForPromptSubmit('/repo', {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        sessionId: 'sess-a',
+        sessionIds: ['sess-a'],
+        createHudWatchPane: (_cwd, cmd) => {
+          created.push(cmd);
+          return '%9';
+        },
+        resizeTmuxPane: () => true,
+        unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+        registerHudResizeHook: noOpRegisterHudResizeHook,
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+
+      assert.equal(result.status, 'skipped_window_too_cramped');
+      assert.equal(result.paneId, null);
+      assert.deepEqual(created, []);
+      const log = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(log, /\[list-panes\]\[-t\]\[%1\]/);
+      assert.match(log, /\[display-message\]\[-p\]\[-t\]\[%1\]\[#\{window_width\}\t#\{window_height\}\]/);
+    } finally {
+      process.env.PATH = originalPath;
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('creates the HUD on prompt submit when the existing window has room', async () => {

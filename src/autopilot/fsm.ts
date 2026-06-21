@@ -2,6 +2,7 @@ const AUTOPILOT_CHILD_PHASES = [
   'deep-interview',
   'ralplan',
   'ultragoal',
+  'rework',
   'team',
   'ralph',
   'code-review',
@@ -31,6 +32,7 @@ function normalizePhaseText(value: unknown): string {
   const normalized = safeString(value).toLowerCase().replace(/_/g, '-').replace(/^autopilot:/, '');
   if (normalized === 'completed') return 'complete';
   if (normalized === 'planning' || normalized === 'replan') return 'ralplan';
+  if (normalized === 'fix' || normalized === 'review-fix' || normalized === 'implementation-fix') return 'rework';
   return normalized;
 }
 

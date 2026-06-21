@@ -9,6 +9,7 @@ import {
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
   resolveTeamWorkerLaunchArgs,
+  resolveTeamWorkerLaunchDiagnostics,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   resolveTeamLowComplexityDefaultModel,
 } from '../model-contract.js';
@@ -215,6 +216,52 @@ describe('team model contract', () => {
       assert.equal(resolveAgentReasoningEffort('explore'), 'low');
       assert.equal(resolveAgentDefaultModel('style-reviewer'), expectedLowComplexityModel());
       assert.equal(resolveAgentReasoningEffort('style-reviewer'), 'low');
+    });
+  });
+
+  it('reports requested versus actual worker launch resolution for role defaults', () => {
+    withIsolatedDefaultModelEnv(() => {
+      assert.deepEqual(
+        resolveTeamWorkerLaunchDiagnostics({
+          requestedAgentType: 'architect',
+          fallbackModel: resolveAgentDefaultModel('architect'),
+          preferredReasoning: resolveAgentReasoningEffort('architect'),
+        }),
+        {
+          requestedAgentType: 'architect',
+          requestedDefaultModel: 'gpt-5.5',
+          requestedDefaultReasoning: 'high',
+          actualModel: 'gpt-5.5',
+          actualReasoning: 'high',
+          modelSource: 'fallback',
+          reasoningSource: 'role-default',
+          inheritedParentModel: false,
+          actualLaunchArgs: ['-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.5'],
+        },
+      );
+    });
+  });
+
+  it('reports inherited parent model separately from role default reasoning', () => {
+    withIsolatedDefaultModelEnv(() => {
+      const diagnostics = resolveTeamWorkerLaunchDiagnostics({
+        requestedAgentType: 'explore',
+        inheritedArgs: ['--model', 'parent-session-model'],
+        fallbackModel: resolveAgentDefaultModel('explore'),
+        preferredReasoning: resolveAgentReasoningEffort('explore'),
+      });
+
+      assert.equal(diagnostics.requestedDefaultModel, expectedLowComplexityModel());
+      assert.equal(diagnostics.actualModel, 'parent-session-model');
+      assert.equal(diagnostics.modelSource, 'inherited');
+      assert.equal(diagnostics.reasoningSource, 'role-default');
+      assert.equal(diagnostics.inheritedParentModel, true);
+      assert.deepEqual(diagnostics.actualLaunchArgs, [
+        '-c',
+        'model_reasoning_effort="low"',
+        '--model',
+        'parent-session-model',
+      ]);
     });
   });
 });

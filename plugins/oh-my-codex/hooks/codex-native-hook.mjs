@@ -119,6 +119,18 @@ function detectStopHookInput(input) {
   }
 }
 
+function detectCompactHookInput(input) {
+  const text = input.toString('utf8');
+  try {
+    const parsed = JSON.parse(text);
+    const eventName = parsed?.hook_event_name ?? parsed?.hookEventName ?? parsed?.event ?? parsed?.name;
+    return eventName === 'PreCompact' || eventName === 'PostCompact';
+  } catch {
+    const eventName = extractTopLevelHookEventName(text);
+    return eventName === 'PreCompact' || eventName === 'PostCompact';
+  }
+}
+
 async function readBoundedStdin() {
   const chunks = [];
   let totalBytes = 0;
@@ -150,11 +162,19 @@ function writeStopFallback(stopReason, detail) {
   process.exitCode = 0;
 }
 
-function failLauncher(error, isStop, stopReason = 'plugin_stop_hook_launcher_failure') {
+function writeCompactFallback() {
+  process.exitCode = 0;
+}
+
+function failLauncher(error, isStop, isCompact, stopReason = 'plugin_stop_hook_launcher_failure') {
   const detail = error instanceof Error ? error.message : String(error);
   console.error(`[oh-my-codex] ${detail}`);
   if (isStop) {
     writeStopFallback(stopReason, detail);
+    return;
+  }
+  if (isCompact) {
+    writeCompactFallback();
     return;
   }
   process.exitCode = 1;
@@ -309,6 +329,7 @@ function writeJsonNoop() {
 async function main() {
   const { input, oversized, totalBytes } = await readBoundedStdin();
   const isStop = detectStopHookInput(input);
+  const isCompact = detectCompactHookInput(input);
 
   if (oversized) {
     const message = `plugin hook stdin exceeded ${MAX_WRAPPER_STDIN_BYTES} bytes before launcher delegation; totalBytes>${totalBytes}`;
@@ -330,7 +351,7 @@ async function main() {
   try {
     launcher = readConfiguredLauncher();
   } catch (error) {
-    failLauncher(error, isStop);
+    failLauncher(error, isStop, isCompact);
     return;
   }
 
@@ -361,7 +382,7 @@ async function main() {
           child.kill();
         }
       }
-    } else {
+    } else if (!isCompact) {
       process.stdout.write(chunk);
     }
   });
@@ -390,6 +411,11 @@ async function main() {
       return;
     }
 
+    if (isCompact) {
+      process.exitCode = 0;
+      return;
+    }
+
     if (isStop && stdoutBytes === 0) {
       if (childSpawnError) {
         writeStopFallback('plugin_stop_hook_launcher_spawn_error', `failed to launch ${command} codex-native-hook: ${childSpawnError.message}`);
@@ -408,6 +434,18 @@ async function main() {
         return;
       }
       writeStopFallback('plugin_stop_hook_launcher_empty_stdout', 'codex-native-hook exited successfully without producing Stop hook JSON');
+      return;
+    }
+
+    if (isCompact) {
+      if (childSpawnError) {
+        console.error(`[oh-my-codex] failed to launch ${command} codex-native-hook: ${childSpawnError.message}`);
+      } else if (signal) {
+        console.error(`[oh-my-codex] codex-native-hook terminated by ${signal}`);
+      } else if (code && code !== 0) {
+        console.error(`[oh-my-codex] codex-native-hook exited with code ${code}`);
+      }
+      process.exitCode = 0;
       return;
     }
 

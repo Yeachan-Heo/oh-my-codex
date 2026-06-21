@@ -121,9 +121,9 @@ import { codexPromptsDir } from '../utils/paths.js';
 import { isTerminalPhase, type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
   resolveTeamWorkerLaunchArgs,
+  resolveTeamWorkerLaunchDiagnostics,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   parseTeamWorkerLaunchArgs,
-  splitWorkerLaunchArgs,
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
   type TeamReasoningEffort,
@@ -2332,34 +2332,32 @@ export function resolveWorkerLaunchArgsFromEnv(
     ? ['--model', inheritedLeaderModel.trim()]
     : [];
   const fallbackModel = resolveAgentDefaultModel(agentType, env.CODEX_HOME);
-
-  // Detect if an explicit reasoning override exists before resolving (for log source labelling)
-  const preEnvArgs = splitWorkerLaunchArgs(env.OMX_TEAM_WORKER_LAUNCH_ARGS);
-  const preAllArgs = [...preEnvArgs, ...inheritedArgs];
-  const hasExplicitReasoning = parseTeamWorkerLaunchArgs(preAllArgs).reasoningOverride !== null;
-
-  const resolved = resolveTeamWorkerLaunchArgs({
+  const diagnostics = resolveTeamWorkerLaunchDiagnostics({
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,
     inheritedArgs,
     fallbackModel,
     preferredReasoning,
+    requestedAgentType: agentType,
   });
 
-  // Extract resolved model and thinking level from result args for startup log
-  const resolvedParsed = parseTeamWorkerLaunchArgs(resolved);
-  const resolvedModel = resolvedParsed.modelOverride ?? fallbackModel ?? 'default';
-  const reasoningMatch = resolvedParsed.reasoningOverride?.match(/model_reasoning_effort\s*=\s*"?(\w+)"?/);
-  const thinkingLevel = reasoningMatch?.[1] ?? 'none';
-  const source = hasExplicitReasoning
-    ? 'explicit'
-    : (preferredReasoning ? 'role-default' : 'none/default-none');
+  const resolved = diagnostics.actualLaunchArgs;
+  const resolvedModel = diagnostics.actualModel ?? diagnostics.requestedDefaultModel ?? 'default';
+  const thinkingLevel = diagnostics.actualReasoning ?? 'none';
+  const source = diagnostics.reasoningSource === 'none'
+    ? 'none/default-none'
+    : diagnostics.reasoningSource;
+  const modelSource = diagnostics.modelSource;
+  const inheritedParentModel = diagnostics.inheritedParentModel ? 'yes' : 'no';
+  const requestedRole = diagnostics.requestedAgentType ?? 'unknown';
+  const requestedDefaultModel = diagnostics.requestedDefaultModel ?? 'none';
+  const requestedDefaultReasoning = diagnostics.requestedDefaultReasoning ?? 'none';
   const effectiveWorkerCli = workerCliOverride ?? resolveEffectiveWorkerCliForStartupLog(resolved, env);
   if (effectiveWorkerCli === 'claude') {
     console.log('[omx:team] worker startup resolution: model=claude source=local-settings');
   } else if (effectiveWorkerCli === 'gemini') {
     console.log('[omx:team] worker startup resolution: model=gemini source=local-settings');
   } else {
-    console.log(`[omx:team] worker startup resolution: model=${resolvedModel} thinking_level=${thinkingLevel} source=${source}`);
+    console.log(`[omx:team] worker startup resolution: requested_role=${requestedRole} requested_default_model=${requestedDefaultModel} requested_default_reasoning=${requestedDefaultReasoning} actual_model=${resolvedModel} thinking_level=${thinkingLevel} model_source=${modelSource} reasoning_source=${source} inherited_parent_model=${inheritedParentModel}`);
   }
 
   return resolved;

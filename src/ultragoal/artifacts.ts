@@ -3,6 +3,7 @@ import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:f
 import { join, relative } from 'node:path';
 import {
   formatCodexGoalReconciliation,
+  buildCompletedCodexGoalRemediation,
   parseCodexGoalSnapshot,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
@@ -1710,6 +1711,7 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
     '',
     'Codex goal integration constraints:',
     '- First call get_goal. If no active goal exists, call create_goal with the payload below.',
+    `- If get_goal reports status complete before create_goal, do not call create_goal over it. ${buildCompletedCodexGoalRemediation('Ultragoal preflight')}`,
     '- If a different active Codex goal exists, finish/checkpoint that goal before starting this ultragoal.',
     '- Ultragoal cannot call /goal clear from the model/shell tool surface. For another per-story goal in the same session/thread after a completed Codex goal, manually run /goal clear in the Codex UI before creating the next goal.',
     '- If get_goal returns a different completed legacy/thread goal and create_goal rejects because this thread already has a completed goal, continue only from a Codex goal context with no active/completed conflicting goal in the same repo/worktree and create the payload there.',
@@ -1736,6 +1738,9 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
     finalStory
       ? `  omx ultragoal checkpoint --goal-id ${goal.id} --status complete --evidence "<tests/files/PR evidence>" --codex-goal-json "<fresh complete get_goal JSON or path>" --quality-gate-json "<quality gate JSON or path>"`
       : null,
+    finalStory
+      ? '- After the final checkpoint command succeeds, treat `/goal clear` as the explicit terminal cleanup step before another same-thread goal.'
+      : null,
     '- If blocked or failed, checkpoint with --status failed and the failure evidence; rerun complete-goals --retry-failed to resume.',
     '',
     'create_goal payload:',
@@ -1761,6 +1766,7 @@ function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: Ultragoal
     '- Codex goal = the whole ultragoal run; OMX G001/G002/etc. = ledger stories.',
     '- First call get_goal. If no active goal exists, call create_goal with the aggregate payload below.',
     '- If get_goal reports the same aggregate objective as active, continue this OMX story without creating a new Codex goal.',
+    `- If get_goal reports status complete before create_goal, do not call create_goal over it. ${buildCompletedCodexGoalRemediation('Ultragoal preflight')}`,
     '- If a different active or incomplete Codex goal exists, finish/checkpoint that goal before starting this ultragoal; do not replace hidden Codex state from the shell.',
     '- Ultragoal does not call /goal clear. After a completed aggregate run, manually run /goal clear in the Codex UI before starting another ultragoal run in the same session/thread.',
     finalStory
@@ -1777,6 +1783,9 @@ function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: Ultragoal
       : null,
     finalStory
       ? '- If final $code-review is clean (APPROVE + CLEAR + independent code-reviewer and architect subagent evidence), call update_goal({status: "complete"}), call get_goal again for a fresh complete snapshot, then checkpoint with --quality-gate-json.'
+      : null,
+    finalStory
+      ? '- After the final checkpoint command succeeds, treat `/goal clear` as the explicit terminal cleanup step before another same-thread goal.'
       : null,
     `- Checkpoint this OMX story with a fresh get_goal snapshot whose objective matches the aggregate payload and whose status is ${checkpointStatus}:`,
     finalStory

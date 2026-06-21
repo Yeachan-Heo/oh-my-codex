@@ -105,6 +105,12 @@ function renderAutopilot(ctx: HudRenderContext): string | null {
   return yellow(`autopilot:${phase}`);
 }
 
+function renderStaleAutopilot(ctx: HudRenderContext): string | null {
+  if (!ctx.staleAutopilot) return null;
+  const phase = sanitizeDynamicText(ctx.staleAutopilot.current_phase || 'active') || 'active';
+  return yellow(`autopilot:stale:${phase}`);
+}
+
 function renderRalplan(ctx: HudRenderContext): string | null {
   if (!ctx.ralplan) return null;
   const iteration = ctx.ralplan.iteration;
@@ -298,6 +304,7 @@ const MINIMAL_ELEMENTS: ElementRenderer[] = [
   renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
+  renderStaleAutopilot,
   renderTurns,
 ];
 
@@ -312,6 +319,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
+  renderStaleAutopilot,
   renderTurns,
   renderTokens,
   renderQuota,
@@ -330,6 +338,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderCodeReview,
   renderUltraqa,
   renderExecutionSummary,
+  renderStaleAutopilot,
   renderTurns,
   renderTokens,
   renderQuota,

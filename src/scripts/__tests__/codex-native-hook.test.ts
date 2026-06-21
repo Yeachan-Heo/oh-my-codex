@@ -526,9 +526,9 @@ describe("codex native hook dispatch", () => {
         hookSpecificOutput?: unknown;
       };
 
-      assert.equal(output.continue, false);
+      assert.equal(output.continue, undefined);
       assert.equal(output.decision, undefined);
-      assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+      assert.equal(output.stopReason, undefined);
       assert.equal(output.hookSpecificOutput, undefined);
       assert.match(
         String(output.systemMessage ?? ""),
@@ -644,6 +644,133 @@ describe("codex native hook dispatch", () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.equal(result.stderr, "");
       assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits PreToolUse CLI advisory JSON with only systemMessage", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-pretool-schema-safe-"));
+    try {
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "sess-cli-pretool-schema-safe",
+        thread_id: "thread-cli-pretool-schema-safe",
+        turn_id: "turn-cli-pretool-schema-safe",
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf dist" },
+      }, { cwd }));
+
+      assert.deepEqual(output, {
+        systemMessage:
+          "Destructive Bash command detected (`rm -rf dist`). Confirm the target and expected side effects before running it.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits PreToolUse CLI block JSON with only systemMessage", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-pretool-block-schema-safe-"));
+    try {
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "sess-cli-pretool-block-schema-safe",
+        thread_id: "thread-cli-pretool-block-schema-safe",
+        turn_id: "turn-cli-pretool-block-schema-safe",
+        tool_name: "Bash",
+        tool_input: { command: 'OMX_LORE_COMMIT_GUARD=1 git commit -m "fix tests"' },
+      }, { cwd }));
+
+      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
+      assert.match(String(output.systemMessage ?? ""), /Lore protocol/);
+      assert.equal(output.decision, undefined);
+      assert.equal(output.stopReason, undefined);
+      assert.equal(output.hookSpecificOutput, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves ralplan PreToolUse planning guard as schema-safe CLI systemMessage", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-ralplan-pretool-boundary-"));
+    const sessionId = "sess-cli-ralplan-pretool-boundary";
+    const stateDir = join(cwd, ".omx", "state");
+    try {
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "critic-review",
+        session_id: sessionId,
+      });
+
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-cli-ralplan-pretool-boundary",
+        tool_name: "Edit",
+        tool_input: { file_path: "src/runtime.ts", old_string: "a", new_string: "b" },
+      }, { cwd }));
+
+      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
+      assert.match(String(output.systemMessage ?? ""), /Ralplan is active \(phase: critic-review\)/);
+      assert.match(String(output.systemMessage ?? ""), /implementation\/write tools are blocked/);
+      assert.match(String(output.systemMessage ?? ""), /Write only planning artifacts/);
+      assert.equal(output.decision, undefined);
+      assert.equal(output.reason, undefined);
+      assert.equal(output.hookSpecificOutput, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves deep-interview PreToolUse planning guard as schema-safe CLI systemMessage", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-deep-interview-pretool-boundary-"));
+    const sessionId = "sess-cli-deep-interview-pretool-boundary";
+    const stateDir = join(cwd, ".omx", "state");
+    try {
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: sessionId,
+      });
+
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-cli-deep-interview-pretool-boundary",
+        tool_name: "Write",
+        tool_input: { file_path: "src/runtime.ts", content: "export const changed = true;\n" },
+      }, { cwd }));
+
+      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
+      assert.match(String(output.systemMessage ?? ""), /Deep-interview is active \(phase: intent-first\)/);
+      assert.match(String(output.systemMessage ?? ""), /implementation\/write tools are blocked/);
+      assert.match(String(output.systemMessage ?? ""), /requirements\/spec mode/);
+      assert.equal(output.decision, undefined);
+      assert.equal(output.reason, undefined);
+      assert.equal(output.hookSpecificOutput, undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3122,6 +3249,64 @@ standardMaxRounds = 15
       assert.notEqual(result.outputJson?.decision, "block");
       assert.doesNotMatch(JSON.stringify(result.outputJson), /omx performance-goal complete --slug latency/);
       assert.doesNotMatch(JSON.stringify(result.outputJson), /get_goal snapshot reconciliation/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("nudges next-goal prompts when a completed Codex goal cleanup step remains", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-prompt-"));
+    try {
+      await writeJson(join(cwd, ".omx", "goals", "performance", "latency", "state.json"), {
+        version: 1,
+        workflow: "performance-goal",
+        slug: "latency",
+        objective: "Reduce latency",
+        status: "complete",
+        completedAt: "2026-05-20T00:00:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "UserPromptSubmit",
+        cwd,
+        session_id: "sess-completed-goal-prompt",
+        thread_id: "thread-completed-goal-prompt",
+        prompt: "Start the next performance goal now",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.match(output, /run \/goal clear/);
+      assert.match(output, /before calling create_goal/);
+      assert.match(output, /hooks only nudge and must not mutate Codex goal state/);
+      assert.doesNotMatch(output, /cleared Codex goal state/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Stop when a final answer starts another goal over completed state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        aggregateCompletion: { status: "complete", completedAt: "2026-05-20T00:00:00.000Z" },
+        goals: [{ id: "G001-done", status: "complete", objective: "Done" }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-completed-goal-stop",
+        thread_id: "thread-completed-goal-stop",
+        last_assistant_message: "Starting another ultragoal now; create_goal payload follows.",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "completed_codex_goal_cleanup_required");
+      assert.match(output, /run \/goal clear/);
+      assert.match(output, /before calling create_goal/);
+      assert.match(output, /hooks only nudge and must not mutate Codex goal state/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -6958,6 +7143,58 @@ exit 0
     }
   });
 
+  it("allows Autopilot rework implementation writes while ralplan remains guarded", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-autopilot-rework-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-autopilot-rework");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-autopilot-rework", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "rework",
+        session_id: "sess-autopilot-rework",
+        thread_id: "thread-autopilot-rework",
+        active_skills: [
+          {
+            skill: "autopilot",
+            phase: "rework",
+            active: true,
+            session_id: "sess-autopilot-rework",
+            thread_id: "thread-autopilot-rework",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "rework",
+        review_cycle: 2,
+        review_verdict: { clean: false, recommendation: "REQUEST_CHANGES", findings: ["src/implementation.ts"] },
+        session_id: "sess-autopilot-rework",
+        thread_id: "thread-autopilot-rework",
+      });
+
+      const allowedImplementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-rework",
+          thread_id: "thread-autopilot-rework",
+          tool_name: "Edit",
+          tool_use_id: "tool-autopilot-rework-src-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedImplementationEdit.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows null-device fd redirects while deep-interview blocks real Bash writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-null-redirect-"));
     try {
@@ -7121,6 +7358,207 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records native subagent capacity exhaustion from spawn_agent PostToolUse output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-record-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-record",
+          thread_id: "thread-subagent-capacity-record",
+          turn_id: "turn-subagent-capacity-record",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: {
+            error: "collab spawn failed: agent thread limit reached",
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+
+      const blocker = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "native-subagent-capacity-blocker.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(blocker.reason, "agent_thread_limit_reached");
+      assert.equal(blocker.session_id, "sess-subagent-capacity-record");
+      assert.equal(blocker.thread_id, "thread-subagent-capacity-record");
+      assert.equal(blocker.tool_name, "multi_agent_v1.spawn_agent");
+      assert.match(String(blocker.error_summary), /agent thread limit reached/);
+      assert.ok(Date.parse(String(blocker.expires_at)) > Date.parse(String(blocker.observed_at)));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks close_agent cleanup after recent native subagent capacity exhaustion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-block-"));
+    try {
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-block",
+          thread_id: "thread-subagent-capacity-close-block",
+          turn_id: "turn-subagent-capacity-close-block",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: "collab spawn failed: agent thread limit reached",
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-block",
+          thread_id: "thread-subagent-capacity-close-block",
+          tool_name: "multi_agent_v1.close_agent",
+          tool_input: { target: "019ecc36-stale" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /agent thread limit reached/);
+      assert.match(JSON.stringify(result.outputJson), /multi_agent_v1\.close_agent/);
+      assert.match(JSON.stringify(result.outputJson), /multi_tool_use\.parallel/);
+      assert.match(JSON.stringify(result.outputJson), /bounded capacity blocker/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits schema-safe PreToolUse CLI stdout for close_agent capacity blocks", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-subagent-capacity-close-block-"));
+    try {
+      parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PostToolUse",
+        cwd,
+        session_id: "sess-cli-subagent-capacity-close-block",
+        thread_id: "thread-cli-subagent-capacity-close-block",
+        turn_id: "turn-cli-subagent-capacity-close-block",
+        tool_name: "multi_agent_v1.spawn_agent",
+        tool_response: "collab spawn failed: agent thread limit reached",
+      }, { cwd }));
+
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "sess-cli-subagent-capacity-close-block",
+        thread_id: "thread-cli-subagent-capacity-close-block",
+        tool_name: "multi_agent_v1.close_agent",
+        tool_input: { target: "019ecc36-stale" },
+      }, { cwd }));
+
+      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
+      assert.match(String(output.systemMessage ?? ""), /agent thread limit reached/);
+      assert.match(String(output.systemMessage ?? ""), /Do not call multi_agent_v1\.close_agent/);
+      assert.equal(output.decision, undefined);
+      assert.equal(output.hookSpecificOutput, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks parallel close_agent cleanup after recent native subagent capacity exhaustion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-parallel-close-block-"));
+    try {
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-parallel-close-block",
+          thread_id: "thread-subagent-capacity-parallel-close-block",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: "agent thread limit reached",
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-parallel-close-block",
+          thread_id: "thread-subagent-capacity-parallel-close-block",
+          tool_name: "multi_tool_use.parallel",
+          tool_input: {
+            tool_uses: [
+              { recipient_name: "multi_agent_v1.close_agent", parameters: { target: "stale-1" } },
+              { recipient_name: "multi_agent_v1.close_agent", parameters: { target: "stale-2" } },
+            ],
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Do not call multi_agent_v1\.close_agent/);
+      assert.match(JSON.stringify(result.outputJson), /do not batch close_agent through multi_tool_use\.parallel/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block close_agent without a recent native capacity blocker", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-no-blocker-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-no-blocker",
+          thread_id: "thread-subagent-capacity-close-no-blocker",
+          tool_name: "multi_agent_v1.close_agent",
+          tool_input: { target: "completed-agent" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block close_agent when the native capacity blocker is expired", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-expired-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeJson(join(stateDir, "native-subagent-capacity-blocker.json"), {
+        schema_version: 1,
+        reason: "agent_thread_limit_reached",
+        session_id: "sess-subagent-capacity-close-expired",
+        error_summary: "agent thread limit reached",
+        observed_at: "2026-06-20T00:00:00.000Z",
+        expires_at: "2026-06-20T00:30:00.000Z",
+        cwd,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-close-expired",
+          thread_id: "thread-subagent-capacity-close-expired",
+          tool_name: "multi_agent_v1.close_agent",
+          tool_input: { target: "completed-agent" },
+        },
+        { cwd },
+      );
+
       assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });

@@ -2441,7 +2441,7 @@ describe('state operations directory initialization', () => {
   });
 
   it('denies Autopilot implementation-phase completion before the code-review gate', async () => {
-    for (const phase of ['ultragoal', 'team', 'ralph']) {
+    for (const phase of ['ultragoal', 'rework', 'team', 'ralph']) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${phase}-complete-deny-`));
       try {
         await withOmxRootEnv(wd, async () => {
@@ -2483,7 +2483,7 @@ describe('state operations directory initialization', () => {
   });
 
   it('denies Autopilot implementation-phase skip directly to ultraqa', async () => {
-    for (const phase of ['ultragoal', 'team', 'ralph']) {
+    for (const phase of ['ultragoal', 'rework', 'team', 'ralph']) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${phase}-ultraqa-skip-deny-`));
       try {
         await withOmxRootEnv(wd, async () => {
@@ -2563,6 +2563,120 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('allows Autopilot code-review REQUEST_CHANGES to enter implementation rework', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-review-rework-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-review-rework';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({ active: true, mode: 'autopilot', current_phase: 'code-review', review_cycle: 1 }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'rework',
+          review_cycle: 2,
+          state: {
+            handoff_artifacts: {
+              code_review: {
+                stage: 'code-review',
+                recommendation: 'REQUEST_CHANGES',
+                architectural_status: 'CLEAR',
+                clean: false,
+                artifact_path: '.omx/reviews/code-review-cycle-1.json',
+                findings: ['Fix src/implementation.ts'],
+              },
+            },
+            review_verdict: {
+              stage: 'code-review',
+              recommendation: 'REQUEST_CHANGES',
+              architectural_status: 'CLEAR',
+              clean: false,
+              artifact_path: '.omx/reviews/code-review-cycle-1.json',
+              findings: ['Fix src/implementation.ts'],
+            },
+            return_to_ralplan_reason: null,
+          },
+        });
+
+        assert.equal(response.isError, undefined);
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+        assert.equal(state.active, true);
+        assert.equal(state.current_phase, 'rework');
+        assert.equal(state.review_cycle, 2);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces stale blocking review state when Autopilot completes with clean latest evidence', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-clean-clears-stale-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-clean-clears-stale';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'ultraqa',
+            return_to_ralplan_reason: 'Earlier code-review BLOCK required fixes.',
+            handoff_artifacts: {
+              code_review: { stage: 'code-review', recommendation: 'REQUEST_CHANGES', architectural_status: 'BLOCK', clean: false, artifact_path: '.omx/reviews/stale-block.json' },
+              ultraqa: null,
+            },
+            state: {
+              review_verdict: { stage: 'code-review', recommendation: 'REQUEST_CHANGES', architectural_status: 'BLOCK', clean: false, artifact_path: '.omx/reviews/stale-block.json' },
+              qa_verdict: null,
+              return_to_ralplan_reason: 'Earlier code-review BLOCK required fixes.',
+            },
+          }, null, 2),
+        );
+
+        const cleanReview = { stage: 'code-review', recommendation: 'APPROVE', architectural_status: 'CLEAR', clean: true, artifact_path: '.omx/reviews/code-review-cycle-2.json' };
+        const cleanQa = { stage: 'ultraqa', clean: true, skipped: false, url: 'https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/2864' };
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: false,
+          current_phase: 'complete',
+          completed_at: '2026-06-18T05:00:00.000Z',
+          state: {
+            review_verdict: cleanReview,
+            qa_verdict: cleanQa,
+          },
+        });
+
+        assert.equal(response.isError, undefined);
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+        const nestedState = state.state as Record<string, unknown>;
+        const handoffArtifacts = nestedState.handoff_artifacts as Record<string, unknown>;
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.deepEqual(state.review_verdict, cleanReview);
+        assert.deepEqual(state.qa_verdict, cleanQa);
+        assert.equal(state.return_to_ralplan_reason, null);
+        assert.deepEqual(nestedState.review_verdict, cleanReview);
+        assert.deepEqual(nestedState.qa_verdict, cleanQa);
+        assert.equal(nestedState.return_to_ralplan_reason, null);
+        assert.deepEqual(handoffArtifacts.code_review, cleanReview);
+        assert.deepEqual(handoffArtifacts.ultraqa, cleanQa);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('denies Autopilot ultraqa completion without clean review and QA evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ultraqa-complete-evidence-deny-'));
     try {
@@ -2606,7 +2720,7 @@ describe('state operations directory initialization', () => {
   });
 
   it('denies Autopilot implementation and code-review terminalization via inactive ultraqa phase', async () => {
-    for (const phase of ['ultragoal', 'team', 'ralph', 'code-review']) {
+    for (const phase of ['ultragoal', 'rework', 'team', 'ralph', 'code-review']) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${phase}-inactive-ultraqa-deny-`));
       try {
         await withOmxRootEnv(wd, async () => {

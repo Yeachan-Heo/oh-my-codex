@@ -562,6 +562,7 @@ describe('runtime', () => {
   });
 
   it('resolveWorkerLaunchArgsFromEnv reads low-complexity model from config when present', async () => {
+    // Intentional legacy model fixture: verifies explicit low-complexity config survives worker launch resolution.
     await withIsolatedDefaultModelEnvAsync(async () => {
       const previousCodexHome = process.env.CODEX_HOME;
       const tempCodexHome = await mkdtemp(join(tmpdir(), 'omx-codex-home-'));

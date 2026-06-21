@@ -2571,6 +2571,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		} else if (pluginCacheMaterialize.status === "unchanged") {
 			console.log("  Local Codex plugin cache already exposes packaged OMX skills.");
 		}
+		if (pluginCacheMaterialize.status === "materialized" || pluginCacheMaterialize.status === "unchanged") {
+			console.log("  Start a new Codex session if /skills still shows stale OMX plugin skill metadata; the current session may keep its in-memory plugin registry until restart.");
+		}
 		if (shouldSyncSharedMcpRegistry) {
 			resolvedConfig = await syncSharedMcpRegistryIntoConfig(
 				scopeDirs.codexConfigFile,

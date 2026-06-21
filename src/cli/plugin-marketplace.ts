@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { cp, readdir, readFile, rm, writeFile } from "fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
@@ -309,6 +309,64 @@ async function writePinnedHookLauncher(
 	);
 }
 
+async function pathIsDirectory(path: string): Promise<boolean> {
+	try {
+		return (await lstat(path)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+async function copyFileAtomically(sourcePath: string, destinationPath: string): Promise<void> {
+	const tempPath = `${destinationPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	try {
+		await cp(sourcePath, tempPath, { force: true });
+		if (await pathIsDirectory(destinationPath)) {
+			await rm(destinationPath, { recursive: true, force: true });
+		}
+		await rename(tempPath, destinationPath);
+	} catch (error) {
+		await rm(tempPath, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+interface OverlayDirectoryOptions {
+	onDestinationRootReady?: (destinationDir: string) => void | Promise<void>;
+}
+
+async function overlayDirectoryKeepingRootPresent(sourceDir: string, destinationDir: string, options: OverlayDirectoryOptions = {}): Promise<void> {
+	await mkdir(destinationDir, { recursive: true });
+	await options.onDestinationRootReady?.(destinationDir);
+	const sourceEntries = await readdir(sourceDir, { withFileTypes: true });
+	const sourceNames = new Set(sourceEntries.map((entry) => entry.name));
+
+	for (const entry of sourceEntries) {
+		const sourcePath = join(sourceDir, entry.name);
+		const destinationPath = join(destinationDir, entry.name);
+		if (entry.isDirectory()) {
+			if (existsSync(destinationPath) && !(await pathIsDirectory(destinationPath))) {
+				await rm(destinationPath, { recursive: true, force: true });
+			}
+			await overlayDirectoryKeepingRootPresent(sourcePath, destinationPath);
+		} else if (entry.isFile()) {
+			await copyFileAtomically(sourcePath, destinationPath);
+		}
+	}
+
+	let destinationEntries;
+	try {
+		destinationEntries = await readdir(destinationDir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	await Promise.all(
+		destinationEntries
+			.filter((entry) => !sourceNames.has(entry.name))
+			.map((entry) => rm(join(destinationDir, entry.name), { recursive: true, force: true })),
+	);
+}
+
 async function applyTeamModeToPluginCache(
 	cacheDir: string,
 	teamMode: SetupTeamMode | undefined,
@@ -328,7 +386,7 @@ export interface OmxPluginCacheMaterializeResult {
 export async function materializePackagedOmxPluginCache(
 	codexHomeDir: string,
 	packagedMarketplace: PackagedOmxMarketplace | null,
-	options: { dryRun?: boolean; teamMode?: SetupTeamMode } = {},
+	options: { dryRun?: boolean; teamMode?: SetupTeamMode; onCacheDirPrepared?: (cacheDir: string) => void | Promise<void> } = {},
 ): Promise<OmxPluginCacheMaterializeResult> {
 	if (!packagedMarketplace) return { status: "unavailable" };
 	const version = await packagedOmxPluginVersion(packagedMarketplace);
@@ -338,10 +396,20 @@ export async function materializePackagedOmxPluginCache(
 		return { status: "unchanged", cacheDir, version };
 	}
 	if (!options.dryRun) {
-		await rm(cacheDir, { recursive: true, force: true });
-		await cp(packagedMarketplace.pluginRoot, cacheDir, { recursive: true });
-		await applyTeamModeToPluginCache(cacheDir, options.teamMode);
-		await writePinnedHookLauncher(cacheDir, packagedMarketplace);
+		const cacheBase = omxPluginCacheBase(codexHomeDir);
+		await mkdir(cacheBase, { recursive: true });
+		const tempDir = join(cacheBase, `.materializing-${version}-${process.pid}-${Date.now()}`);
+		await rm(tempDir, { recursive: true, force: true });
+		await cp(packagedMarketplace.pluginRoot, tempDir, { recursive: true });
+		await applyTeamModeToPluginCache(tempDir, options.teamMode);
+		await writePinnedHookLauncher(tempDir, packagedMarketplace);
+		try {
+			await overlayDirectoryKeepingRootPresent(tempDir, cacheDir, {
+				onDestinationRootReady: options.onCacheDirPrepared,
+			});
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	}
 	return { status: "materialized", cacheDir, version };
 }

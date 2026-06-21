@@ -100,6 +100,51 @@ describe('ralplan consensus gate state roots', () => {
     assert.match(gate.blockedDetails?.join(' ') ?? '', /sequence is not architect-review then critic-review/i);
   });
 
+  it('lets fresh ordered direct consensus displace stale no-order invalid direct consensus', () => {
+    const gate = buildRalplanConsensusGateFromSources([
+      {
+        source: 'stale-invalid-no-order',
+        value: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'iterate',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+            },
+          },
+        },
+      },
+      {
+        source: 'fresh-valid-with-order',
+        value: {
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              completed_at: '2026-06-12T10:00:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-06-12T10:05:00.000Z',
+            },
+          },
+        },
+      },
+    ]);
+
+    assert.equal(gate.complete, true);
+    assert.equal(gate.source, 'fresh-valid-with-order');
+    assert.equal(gate.blockedReason, null);
+  });
+
   it('ignores ambient root consensus unless the ambient session is bound to this cwd', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-local-'));
     const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-ambient-'));
@@ -401,6 +446,78 @@ describe('ralplan consensus gate state roots', () => {
 
       assert.equal(gate.complete, false);
       assert.equal(gate.blockedReason, 'missing_sequential_architect_then_critic_approval');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores stale invalid local ralplan state consensus during a return-to-ralplan cycle', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-stale-invalid-local-state-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            verdict: 'iterate',
+            completed_at: '2026-06-11T16:00:00.000Z',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            verdict: 'approve',
+            completed_at: '2026-06-11T16:05:00.000Z',
+          },
+        },
+      }, null, 2));
+
+      const gate = buildRalplanConsensusGateForCwd(cwd, {
+        artifacts: {
+          current_phase: 'ralplan',
+          return_to_ralplan_reason: 'Code review requested changes.',
+          review_cycle: 1,
+        },
+      });
+
+      assert.equal(gate.complete, false);
+      assert.equal(gate.blockedReason, 'missing_sequential_architect_then_critic_approval');
+      assert.equal(gate.source, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves ordered invalid direct consensus in a return-to-ralplan cycle without review_cycle', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-ordered-invalid-return-'));
+    try {
+      const gate = buildRalplanConsensusGateForCwd(cwd, {
+        artifacts: {
+          current_phase: 'ralplan',
+          return_to_ralplan_reason: 'Code review requested changes.',
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'iterate',
+              completed_at: '2026-06-12T10:00:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-06-12T10:05:00.000Z',
+            },
+          },
+        },
+      });
+
+      assert.equal(gate.complete, false);
+      assert.equal(gate.source, 'stage-context-artifacts');
+      assert.equal(gate.blockedReason, 'non_approving_ralplan_consensus_review');
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /architect.*verdict=iterate/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

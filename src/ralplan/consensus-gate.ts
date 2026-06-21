@@ -12,6 +12,30 @@ export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
 export type RalplanConsensusBlockedReason =
   typeof RALPLAN_CONSENSUS_BLOCKED_REASONS[keyof typeof RALPLAN_CONSENSUS_BLOCKED_REASONS];
 
+export interface RalplanNativeReviewDiagnostic {
+  role: 'architect' | 'critic';
+  session_id: string | null;
+  thread_id: string | null;
+  tracker_path: string;
+  session_found: boolean;
+  thread_found: boolean;
+  kind: string | null;
+  completed: boolean;
+  problem: string | null;
+}
+
+export interface RalplanConsensusGateDiagnostic {
+  expected_schema: string[];
+  current_session_id: string | null;
+  tracker_path: string;
+  architect: RalplanNativeReviewDiagnostic;
+  critic: RalplanNativeReviewDiagnostic;
+  distinct_thread_ids: boolean | null;
+  pair_problem: string | null;
+  remediation: string[];
+  docs: string;
+}
+
 export interface RalplanConsensusGateEvidence {
   complete: boolean;
   sequence: ['architect-review', 'critic-review'];
@@ -20,6 +44,7 @@ export interface RalplanConsensusGateEvidence {
   source: string | null;
   blockedReason: RalplanConsensusBlockedReason | null;
   blockedDetails?: string[];
+  diagnostic?: RalplanConsensusGateDiagnostic;
 }
 
 export interface RalplanNativeSubagentConsensusOptions {
@@ -55,17 +80,7 @@ export function buildRalplanConsensusGateFromSources(
     source: string;
     options: RalplanNativeSubagentConsensusOptions;
   } | null = null;
-  let validEvidence: {
-    ralplan_architect_review: Record<string, unknown>;
-    ralplan_critic_review: Record<string, unknown>;
-    source: string;
-  } | null = null;
-  let invalidCompleteEvidence: {
-    ralplan_architect_review: Record<string, unknown> | null;
-    ralplan_critic_review: Record<string, unknown> | null;
-    source: string;
-    blockedDetails: string[];
-  } | null = null;
+  let firstCompleteEvidence: (ConsensusResolution & { source: string }) | null = null;
 
   for (const candidate of sources) {
     const evidence = resolveConsensusEvidence(candidate.value);
@@ -73,8 +88,11 @@ export function buildRalplanConsensusGateFromSources(
       ...options,
       sessionId: options.sessionId ?? candidate.sessionId,
     };
+
     if (evidence?.kind === 'invalid') {
-      invalidCompleteEvidence ??= { ...evidence, source: candidate.source };
+      if (isConsensusEvidenceNewerThanSelected(evidence, firstCompleteEvidence)) {
+        firstCompleteEvidence = { ...evidence, source: candidate.source };
+      }
       continue;
     }
 
@@ -86,29 +104,31 @@ export function buildRalplanConsensusGateFromSources(
         nativeBlockedEvidence ??= { ...evidence, source: candidate.source, options: candidateOptions };
         continue;
       }
-      validEvidence ??= { ...evidence, source: candidate.source };
+      if (isConsensusEvidenceNewerThanSelected(evidence, firstCompleteEvidence)) {
+        firstCompleteEvidence = { ...evidence, source: candidate.source };
+      }
     }
   }
 
-  if (invalidCompleteEvidence) {
+  if (firstCompleteEvidence?.kind === 'invalid') {
     return {
       complete: false,
       sequence: ['architect-review', 'critic-review'],
-      ralplan_architect_review: invalidCompleteEvidence.ralplan_architect_review,
-      ralplan_critic_review: invalidCompleteEvidence.ralplan_critic_review,
-      source: invalidCompleteEvidence.source,
+      ralplan_architect_review: firstCompleteEvidence.ralplan_architect_review,
+      ralplan_critic_review: firstCompleteEvidence.ralplan_critic_review,
+      source: firstCompleteEvidence.source,
       blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview,
-      blockedDetails: invalidCompleteEvidence.blockedDetails,
+      blockedDetails: firstCompleteEvidence.blockedDetails,
     };
   }
 
-  if (validEvidence) {
+  if (firstCompleteEvidence?.kind === 'valid') {
     return {
       complete: true,
       sequence: ['architect-review', 'critic-review'],
-      ralplan_architect_review: validEvidence.ralplan_architect_review,
-      ralplan_critic_review: validEvidence.ralplan_critic_review,
-      source: validEvidence.source,
+      ralplan_architect_review: firstCompleteEvidence.ralplan_architect_review,
+      ralplan_critic_review: firstCompleteEvidence.ralplan_critic_review,
+      source: firstCompleteEvidence.source,
       blockedReason: null,
     };
   }
@@ -126,6 +146,7 @@ export function buildRalplanConsensusGateFromSources(
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_architect_review, 'architect', nativeBlockedEvidence.options),
         trackerBackedNativeReviewProblem(nativeBlockedEvidence.ralplan_critic_review, 'critic', nativeBlockedEvidence.options),
       ].filter((detail): detail is string => Boolean(detail)),
+      diagnostic: buildTrackerBackedNativeConsensusDiagnostic(nativeBlockedEvidence, nativeBlockedEvidence.options),
     };
   }
 
@@ -212,14 +233,15 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
   const advancedReviewCycle = explicitFreshnessReviewCycle(record);
   const staleReturnToRalplanCycle = returnToRalplanCycle && advancedReviewCycle === null;
   const directGate = resolveDirectGate(record);
-  if (directGate?.kind === 'invalid') return directGate;
-  if (
-    directGate
-    && (
-      !returnToRalplanCycle
-      || (advancedReviewCycle !== null && reviewsCarryFreshnessCycle(directGate, advancedReviewCycle))
-    )
-  ) return directGate;
+  let deferredOrderedDirectGate: ConsensusResolution | null = null;
+  if (directGate) {
+    if (!returnToRalplanCycle) return directGate;
+    if (advancedReviewCycle !== null) {
+      if (reviewsCarryFreshnessCycle(directGate, advancedReviewCycle)) return directGate;
+    } else if (!hasExplicitReturnToRalplanReviewCycle(record) && consensusEvidenceOrder(directGate) !== null) {
+      deferredOrderedDirectGate = directGate;
+    }
+  }
 
   const handoffArtifactsAreStale = staleReturnToRalplanCycle;
   const topLevelHandoffArtifacts = handoffArtifactsAreStale ? null : asRecord(record.handoff_artifacts);
@@ -238,6 +260,8 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
     const evidence = resolveConsensusEvidence(withParentReturnToRalplanContext(stateHandoffArtifacts, stateContext));
     if (evidence) return evidence;
   }
+
+  if (deferredOrderedDirectGate) return deferredOrderedDirectGate;
 
   if (returnToRalplanCycle && advancedReviewCycle === null) return null;
 
@@ -399,14 +423,61 @@ function explicitFreshnessReviewCycle(record: Record<string, unknown>): number |
 }
 
 function reviewsCarryFreshnessCycle(evidence: ConsensusResolution, reviewCycle: number): boolean {
-  return evidence.kind === 'valid'
-    && reviewPairCarriesFreshnessCycle(
-      evidence.ralplan_architect_review,
-      evidence.ralplan_critic_review,
-      reviewCycle,
-    );
+  return reviewPairCarriesFreshnessCycle(
+    evidence.ralplan_architect_review,
+    evidence.ralplan_critic_review,
+    reviewCycle,
+  );
 }
 
+function isConsensusEvidenceNewerThanSelected(
+  evidence: ConsensusResolution,
+  selected: (ConsensusResolution & { source: string }) | null,
+): boolean {
+  if (!selected) return true;
+  const evidenceCycle = consensusEvidenceReviewCycle(evidence);
+  const selectedCycle = consensusEvidenceReviewCycle(selected);
+  if (evidenceCycle !== null || selectedCycle !== null) {
+    if (selectedCycle === null) return true;
+    if (evidenceCycle === null) return false;
+    if (evidenceCycle !== selectedCycle) return evidenceCycle > selectedCycle;
+  }
+
+  const evidenceOrder = consensusEvidenceOrder(evidence);
+  const selectedOrder = consensusEvidenceOrder(selected);
+  if (evidenceOrder !== null || selectedOrder !== null) {
+    if (selectedOrder === null) return true;
+    if (evidenceOrder === null) return false;
+    if (evidenceOrder !== selectedOrder) return evidenceOrder > selectedOrder;
+  }
+
+  return false;
+}
+
+function consensusEvidenceReviewCycle(evidence: ConsensusResolution): number | null {
+  return maxKnownNumber(
+    numericValue(evidence.ralplan_architect_review?.review_cycle ?? evidence.ralplan_architect_review?.reviewCycle),
+    numericValue(evidence.ralplan_critic_review?.review_cycle ?? evidence.ralplan_critic_review?.reviewCycle),
+  );
+}
+
+function consensusEvidenceOrder(evidence: ConsensusResolution): number | null {
+  return maxKnownNumber(
+    reviewOrderValue(evidence.ralplan_architect_review ?? {}),
+    reviewOrderValue(evidence.ralplan_critic_review ?? {}),
+  );
+}
+
+function maxKnownNumber(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.max(left, right);
+}
+
+function hasExplicitReturnToRalplanReviewCycle(record: Record<string, unknown>): boolean {
+  return numericValue(record.review_cycle ?? record.reviewCycle) !== null
+    || numericValue(record.return_to_ralplan_parent_review_cycle ?? record.returnToRalplanParentReviewCycle) !== null;
+}
 function reviewPairCarriesFreshnessCycle(
   architectReview: Record<string, unknown> | null,
   criticReview: Record<string, unknown> | null,
@@ -523,6 +594,83 @@ function nativeReviewThreadId(review: Record<string, unknown> | null): string {
   return typeof review?.thread_id === 'string' ? review.thread_id.trim() : '';
 }
 
+function currentTransitionSessionId(
+  evidence: {
+    ralplan_architect_review: Record<string, unknown> | null;
+    ralplan_critic_review: Record<string, unknown> | null;
+  },
+  options: RalplanNativeSubagentConsensusOptions,
+): string {
+  const transitionSessionId = typeof options.sessionId === 'string' ? options.sessionId.trim() : '';
+  return transitionSessionId
+    || nativeReviewSessionId(evidence.ralplan_architect_review)
+    || nativeReviewSessionId(evidence.ralplan_critic_review);
+}
+
+function buildTrackerBackedNativeConsensusDiagnostic(
+  evidence: {
+    ralplan_architect_review: Record<string, unknown> | null;
+    ralplan_critic_review: Record<string, unknown> | null;
+  },
+  options: RalplanNativeSubagentConsensusOptions,
+): RalplanConsensusGateDiagnostic {
+  const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+  const trackerPath = cwd ? subagentTrackingPath(cwd) : '.omx/state/subagent-tracking.json';
+  const currentSessionId = currentTransitionSessionId(evidence, options);
+  const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
+  const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
+  return {
+    expected_schema: [
+      '.omx/state/subagent-tracking.json contains:',
+      'sessions["<current_session_id>"].threads["<architect_thread_id>"].kind = "subagent"',
+      'sessions["<current_session_id>"].threads["<critic_thread_id>"].kind = "subagent"',
+      'both threads have completed_at',
+      'architect and critic thread IDs are distinct',
+    ],
+    current_session_id: currentSessionId || null,
+    tracker_path: trackerPath,
+    architect: buildNativeReviewDiagnostic(evidence.ralplan_architect_review, 'architect', options),
+    critic: buildNativeReviewDiagnostic(evidence.ralplan_critic_review, 'critic', options),
+    distinct_thread_ids: architectThreadId && criticThreadId ? architectThreadId !== criticThreadId : null,
+    pair_problem: trackerBackedNativeReviewPairProblem(evidence, options),
+    remediation: [
+      'Re-run native ralplan Architect/Critic reviews.',
+      'Or repair the review artifact so agent_role, provenance_kind, session_id, thread_id, and tracker_path point to completed native subagent threads in the current tracker.',
+    ],
+    docs: 'docs/contracts/ralplan-consensus-gate.md',
+  };
+}
+
+function buildNativeReviewDiagnostic(
+  review: Record<string, unknown> | null,
+  agentRole: 'architect' | 'critic',
+  options: RalplanNativeSubagentConsensusOptions,
+): RalplanNativeReviewDiagnostic {
+  const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+  const trackerPath = cwd ? subagentTrackingPath(cwd) : '.omx/state/subagent-tracking.json';
+  const problem = trackerBackedNativeReviewProblem(review, agentRole, options);
+  const sessionId = review
+    ? (typeof options.sessionId === 'string' && options.sessionId.trim()
+        ? options.sessionId.trim()
+        : nativeReviewSessionId(review))
+    : '';
+  const threadId = nativeReviewThreadId(review);
+  const tracking = cwd && sessionId ? readJsonState(trackerPath) : null;
+  const session = asRecord(asRecord(tracking?.sessions)?.[sessionId]);
+  const thread = asRecord(asRecord(session?.threads)?.[threadId]);
+  const completedAt = typeof thread?.completed_at === 'string' ? thread.completed_at.trim() : '';
+  return {
+    role: agentRole,
+    session_id: sessionId || null,
+    thread_id: threadId || null,
+    tracker_path: trackerPath,
+    session_found: Boolean(session),
+    thread_found: Boolean(thread),
+    kind: typeof thread?.kind === 'string' ? thread.kind : null,
+    completed: Boolean(completedAt),
+    problem,
+  };
+}
 function trackerBackedNativeReviewPairProblem(
   evidence: {
     ralplan_architect_review: Record<string, unknown> | null;

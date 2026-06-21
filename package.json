@@ -1,6 +1,6 @@
 {
   "name": "oh-my-codex",
-  "version": "0.18.13",
+  "version": "0.18.14",
   "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
   "type": "module",
   "main": "dist/index.js",
@@ -33,7 +33,7 @@
     "test:node": "node dist/scripts/run-test-files.js dist",
     "test:node:cross-platform": "npm run test:node",
     "test": "npm run build && npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check",
-    "test:ci:compiled": "npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check",
+    "test:ci:compiled": "node dist/scripts/run-compiled-ci.js",
     "coverage:team-critical": "npm run build && npm run coverage:team-critical:compiled",
     "coverage:team-critical:compiled": "c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node dist/scripts/run-test-files.js dist/team/__tests__ dist/state/__tests__",
     "coverage:team-critical:cross-platform": "npm run coverage:team-critical",

@@ -33,6 +33,21 @@ export interface ParsedTeamWorkerLaunchArgs {
   modelOverride: string | null;
 }
 
+export type TeamWorkerLaunchModelSource = 'env' | 'inherited' | 'fallback' | 'none';
+export type TeamWorkerLaunchReasoningSource = 'explicit' | 'role-default' | 'none';
+
+export interface ResolvedTeamWorkerLaunchDiagnostics {
+  requestedAgentType?: string;
+  requestedDefaultModel?: string;
+  requestedDefaultReasoning?: TeamReasoningEffort;
+  actualModel?: string;
+  actualReasoning?: TeamReasoningEffort;
+  modelSource: TeamWorkerLaunchModelSource;
+  reasoningSource: TeamWorkerLaunchReasoningSource;
+  inheritedParentModel: boolean;
+  actualLaunchArgs: string[];
+}
+
 export interface ResolveTeamWorkerLaunchArgsOptions {
   existingRaw?: string;
   inheritedArgs?: string[];
@@ -80,6 +95,42 @@ function normalizeOptionalReasoning(reasoning?: TeamReasoningEffort | string | n
     return normalized;
   }
   return undefined;
+}
+
+function extractReasoningEffort(value: string | null): TeamReasoningEffort | undefined {
+  return normalizeOptionalReasoning(
+    value ? extractConfigStringValue(value, REASONING_KEY) : null,
+  );
+}
+
+function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
+  envParsed: ParsedTeamWorkerLaunchArgs;
+  inheritedParsed: ParsedTeamWorkerLaunchArgs;
+  fallbackModel?: string;
+  preferredReasoning?: TeamReasoningEffort;
+  actualLaunchArgs: string[];
+  requestedAgentType?: string;
+}): ResolvedTeamWorkerLaunchDiagnostics {
+  const envModel = normalizeOptionalModel(params.envParsed.modelOverride);
+  const inheritedModel = normalizeOptionalModel(params.inheritedParsed.modelOverride);
+  const fallbackModel = normalizeOptionalModel(params.fallbackModel);
+  const actualParsed = parseTeamWorkerLaunchArgs(params.actualLaunchArgs);
+  const requestedDefaultReasoning = normalizeOptionalReasoning(params.preferredReasoning);
+  const explicitReasoning = extractReasoningEffort(
+    params.envParsed.reasoningOverride ?? params.inheritedParsed.reasoningOverride,
+  );
+
+  return {
+    requestedAgentType: params.requestedAgentType,
+    requestedDefaultModel: fallbackModel,
+    requestedDefaultReasoning,
+    actualModel: normalizeOptionalModel(actualParsed.modelOverride),
+    actualReasoning: extractReasoningEffort(actualParsed.reasoningOverride),
+    modelSource: envModel ? 'env' : inheritedModel ? 'inherited' : fallbackModel ? 'fallback' : 'none',
+    reasoningSource: explicitReasoning ? 'explicit' : requestedDefaultReasoning ? 'role-default' : 'none',
+    inheritedParentModel: !envModel && Boolean(inheritedModel),
+    actualLaunchArgs: [...params.actualLaunchArgs],
+  };
 }
 
 export function splitWorkerLaunchArgs(raw: string | undefined): string[] {
@@ -204,6 +255,25 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
   const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
   const selectedModelProvider = envParsed.modelProviderOverride ?? inheritedParsed.modelProviderOverride ?? undefined;
   return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel, options.preferredReasoning, selectedModelProvider);
+}
+
+export function resolveTeamWorkerLaunchDiagnostics(
+  options: ResolveTeamWorkerLaunchArgsOptions & { requestedAgentType?: string },
+): ResolvedTeamWorkerLaunchDiagnostics {
+  const envArgs = splitWorkerLaunchArgs(options.existingRaw);
+  const inheritedArgs = options.inheritedArgs ?? [];
+  const envParsed = parseTeamWorkerLaunchArgs(envArgs);
+  const inheritedParsed = parseTeamWorkerLaunchArgs(inheritedArgs);
+  const actualLaunchArgs = resolveTeamWorkerLaunchArgs(options);
+
+  return resolveTeamWorkerLaunchDiagnosticsFromParts({
+    envParsed,
+    inheritedParsed,
+    fallbackModel: options.fallbackModel,
+    preferredReasoning: options.preferredReasoning,
+    actualLaunchArgs,
+    requestedAgentType: options.requestedAgentType,
+  });
 }
 
 export function resolveAgentReasoningEffort(
