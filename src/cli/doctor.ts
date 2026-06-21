@@ -1333,11 +1333,6 @@ function checkExploreRoutingFromState(state: ExploreRoutingState): Check {
 	};
 }
 
-async function checkExploreRouting(configPath: string): Promise<Check> {
-	return checkExploreRoutingFromState(await resolveExploreRoutingState(configPath));
-}
-
-
 const LORE_COMMIT_GUARD_EXPLICIT_OPT_OUT_VALUES = new Set([
 	"0",
 	"false",
