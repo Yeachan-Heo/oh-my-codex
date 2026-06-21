@@ -6,8 +6,12 @@ import {
   hasOmxManagedAgentsSections,
   isOmxGeneratedAgentsMd,
   OMX_GENERATED_AGENTS_MARKER,
+  extractUserOmxPolicyBlocks,
   OMX_MANAGED_AGENTS_END_MARKER,
   OMX_MANAGED_AGENTS_START_MARKER,
+  OMX_USER_POLICY_END_MARKER,
+  OMX_USER_POLICY_START_MARKER,
+  preserveUserOmxPolicyBlocks,
 } from '../agents-md.js';
 
 describe('agents-md helpers', () => {
@@ -120,5 +124,50 @@ describe('agents-md helpers', () => {
     ].join('\n');
 
     assert.equal(hasOmxAgentsContract(content), false);
+  });
+
+  it('extracts complete user-owned OMX policy blocks', () => {
+    const content = [
+      '# Local policy',
+      OMX_USER_POLICY_START_MARKER,
+      'Keep durable operator guidance.',
+      OMX_USER_POLICY_END_MARKER,
+      'after',
+    ].join('\n');
+
+    assert.deepEqual(extractUserOmxPolicyBlocks(content), [
+      [
+        OMX_USER_POLICY_START_MARKER,
+        'Keep durable operator guidance.',
+        OMX_USER_POLICY_END_MARKER,
+      ].join('\n'),
+    ]);
+  });
+
+  it('appends missing user-owned OMX policy blocks to regenerated content', () => {
+    const existing = [
+      '# Local policy',
+      OMX_USER_POLICY_START_MARKER,
+      'Keep durable operator guidance.',
+      OMX_USER_POLICY_END_MARKER,
+      '',
+    ].join('\n');
+    const regenerated = `${OMX_GENERATED_AGENTS_MARKER}\n# New defaults\n`;
+
+    const result = preserveUserOmxPolicyBlocks(existing, regenerated);
+
+    assert.match(result, /# New defaults\n\n<!-- USER:OMX:POLICY:START -->\nKeep durable operator guidance\.\n<!-- USER:OMX:POLICY:END -->\n$/);
+  });
+
+  it('does not duplicate a user-owned OMX policy block already present', () => {
+    const policyBlock = [
+      OMX_USER_POLICY_START_MARKER,
+      'Keep durable operator guidance.',
+      OMX_USER_POLICY_END_MARKER,
+    ].join('\n');
+    const existing = `# Local policy\n${policyBlock}\n`;
+    const regenerated = `${OMX_GENERATED_AGENTS_MARKER}\n${policyBlock}\n`;
+
+    assert.equal(preserveUserOmxPolicyBlocks(existing, regenerated), regenerated);
   });
 });

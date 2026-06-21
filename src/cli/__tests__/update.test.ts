@@ -953,6 +953,7 @@ describe('runImmediateUpdate', () => {
       assert.match(logs.join('\n'), /Selected update channel: dev/);
       assert.match(logs.join('\n'), /Install source: github:Yeachan-Heo\/oh-my-codex#dev/);
       assert.match(logs.join('\n'), /Running: clone dev branch, run prepack, then npm install -g the packed tarball/);
+      assert.match(logs.join('\n'), /start a new Codex session if \/skills still shows stale OMX plugin skill metadata/);
       assert.doesNotMatch(logs.join('\n'), /dev.*oh-my-codex@latest/i);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {

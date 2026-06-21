@@ -592,6 +592,28 @@ describe('HUD pane ownership helpers', () => {
 });
 
 describe('dead HUD pane reaper', () => {
+  it('ignores team ACK commands that mention HUD preserve repro text', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        [
+          '%2',
+          'node',
+          "node /repo/dist/cli/omx.js team api send-message --input '{\"body\":\"ACK: hud preserve repro just ack\"}' --json",
+        ].join('\t'),
+      ].join('\n'),
+    );
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: () => {
+        throw new Error('team ACK command should not be classified as a HUD watch pane');
+      },
+    });
+
+    assert.deepEqual(findHudWatchPaneIds(panes), []);
+    assert.deepEqual(result, { reaped: [], preserved: [] });
+  });
+
   it('kills HUD panes whose leader pane is not present in the snapshot', () => {
     const panes = parseTmuxPaneSnapshot(
       [

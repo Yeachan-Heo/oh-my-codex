@@ -81,6 +81,22 @@ describe('checkSparkRouting', () => {
     assert.match(result.message, /stale install/);
   });
 
+  it('passes and reports intentional explore model override instead of stale spark guidance', () => {
+    writeFileSync(join(workDir, '.omx-config.json'), JSON.stringify({
+      agentModels: {
+        explore: 'gpt-5.5-explore',
+      },
+    }));
+    writeExploreToml('name = "explore"\nmodel = "gpt-5.5-explore"\n');
+
+    const result = checkSparkRouting(makePaths(workDir));
+
+    assert.equal(result.status, 'pass');
+    assert.match(result.message, /agentModels override/);
+    assert.match(result.message, /gpt-5\.5-explore/);
+    assert.doesNotMatch(result.message, /stale install/);
+  });
+
   it('warns when the Spark-lane agent routes through a non-default provider', () => {
     writeExploreToml(
       `name = "explore"\nmodel = "${SPARK_DEFAULT}"\nmodel_provider = "my-proxy"\n`,

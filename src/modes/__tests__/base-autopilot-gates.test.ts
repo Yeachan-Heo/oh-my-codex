@@ -60,6 +60,58 @@ describe('modes/base Autopilot gate integration', () => {
     }
   });
 
+  it('updateModeState rejects direct ralplan to rework skips', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-ralplan-rework-skip-'));
+    try {
+      await writeAutopilotState(wd, { current_phase: 'ralplan' });
+      await assert.rejects(
+        () => updateModeState('autopilot', { current_phase: 'rework' }, wd),
+        /Cannot skip Autopilot ultragoal gate/i,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('updateModeState allows code-review REQUEST_CHANGES to enter rework', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-review-rework-'));
+    try {
+      await writeAutopilotState(wd, { current_phase: 'code-review', review_cycle: 1 });
+      await updateModeState('autopilot', {
+        current_phase: 'rework',
+        review_cycle: 2,
+        state: {
+          handoff_artifacts: {
+            code_review: {
+              stage: 'code-review',
+              recommendation: 'REQUEST_CHANGES',
+              architectural_status: 'CLEAR',
+              clean: false,
+              artifact_path: '.omx/reviews/code-review-cycle-1.json',
+              findings: ['Fix src/implementation.ts'],
+            },
+          },
+          review_verdict: {
+            stage: 'code-review',
+            recommendation: 'REQUEST_CHANGES',
+            architectural_status: 'CLEAR',
+            clean: false,
+            artifact_path: '.omx/reviews/code-review-cycle-1.json',
+            findings: ['Fix src/implementation.ts'],
+          },
+          return_to_ralplan_reason: null,
+        },
+      }, wd);
+
+      const raw = JSON.parse(await readFile(join(wd, '.omx', 'state', 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(raw.active, true);
+      assert.equal(raw.current_phase, 'rework');
+      assert.equal(raw.review_cycle, 2);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('updateModeState rejects ralplan to code-review skips even with user-supplied pipeline fields', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-ralplan-skip-pipeline-fields-'));
     try {

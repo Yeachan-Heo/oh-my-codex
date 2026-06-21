@@ -18,6 +18,7 @@ Resolved setup scope: user
   [OK] Legacy skill roots: no ~/.agents/skills overlap detected
   [!!] AGENTS.md: not found in <CODEX_HOME>/AGENTS.md (run omx setup --scope user)
   [!!] State dir: <REPO_STATE_DIR> (not created yet)
+  [OK] Repo artifact ownership: repo-local .omx/.beads artifacts are writable by the current user
   [OK] MCP Servers: 1 user-managed MCP server(s) preserved; first-party OMX MCP omitted by default
   [OK] Prompt triage: config: enabled (default)
 

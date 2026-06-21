@@ -68,6 +68,9 @@ describe('ultragoal docs contract', () => {
       assert.match(doc, /\$code-review/);
       assert.match(doc, /independent review path/i);
       assert.match(doc, /codeReview\.independentReview/);
+      assert.match(doc, /architectureInvariantGate/);
+      assert.match(doc, /architecture-invariant audit/i);
+      assert.match(doc, /implementation, test, and (?:independent )?review evidence/i);
       assert.match(doc, /code-reviewer/);
       assert.match(doc, /architect/);
       assert.match(doc, /same-lane\/self-review/i);

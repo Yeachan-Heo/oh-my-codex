@@ -447,6 +447,17 @@ describe('official Codex plugin layout', () => {
     }
   });
 
+  it('keeps the Windows plugin hook launcher on direct node.exe spawn instead of shell wrapping', async () => {
+    const launcher = await readFile(pluginHookLauncherPath, 'utf-8');
+
+    assert.match(launcher, /function buildSpawnOptions\(command\)/);
+    assert.match(launcher, /extname\(command\)\.toLowerCase\(\)/);
+    assert.match(launcher, /extension === '\.exe' \|\| extension === '\.com'/);
+    assert.match(launcher, /return \{ \.\.\.options, windowsHide: true \};/);
+    assert.match(launcher, /return \{ \.\.\.options, shell: true, windowsHide: true \};/);
+    assert.doesNotMatch(launcher, /shell:\s*process\.platform === 'win32'/);
+  });
+
   it('emits Stop JSON when the plugin hook pinned launcher is invalid', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
@@ -621,6 +632,36 @@ head -c 1100000 /dev/zero | tr '\0' x
       const output = parseSingleJsonStdout(result.stdout);
       assert.equal(output.decision, 'block');
       assert.equal(output.stopReason, 'plugin_stop_hook_launcher_failure');
+    });
+  });
+
+  it('emits no stdout and exits zero when the plugin PreCompact pinned launcher is invalid', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot) => {
+      await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
+
+      const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'PreCompact',
+        session_id: 'sess-plugin-invalid-launcher-precompact',
+      }));
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /invalid plugin hook launcher/);
+    });
+  });
+
+  it('emits no stdout and exits zero when the plugin PostCompact command cannot spawn', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'PostCompact', session_id: 'sess-plugin-missing-command-postcompact' }),
+        {
+          OMX_NATIVE_HOOK_COMMAND: join(cacheRoot, 'bin', 'missing-omx-command'),
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stdout, '');
     });
   });
 

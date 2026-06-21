@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcile.js';
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from '../constants.js';
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
@@ -672,6 +675,94 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(created[1]?.options?.targetPaneId, '%right');
     assert.equal(Object.hasOwn(created[0]?.options ?? {}, 'fullWidth'), false);
     assert.equal(Object.hasOwn(created[1]?.options ?? {}, 'fullWidth'), false);
+  });
+
+  it('keeps pane-scoped standalone HUDs stable when two leaders share a window bottom', async () => {
+    const killed: string[] = [];
+    const created: Array<{ options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
+    const resized: Array<{ paneId: string; heightLines: number }> = [];
+
+    const codexPane = (paneId: string, paneLeft: number, paneWidth: number) => ({
+      paneId,
+      currentCommand: 'codex',
+      startCommand: 'codex',
+      paneLeft,
+      paneWidth,
+      paneBottom: 36,
+      windowWidth: 160,
+      windowHeight: 40,
+    });
+    const hudPane = (paneId: string, sessionId: string, leaderPaneId: string, paneLeft: number, paneWidth: number) => ({
+      paneId,
+      currentCommand: 'node',
+      startCommand: `exec env OMX_SESSION_ID='${sessionId}' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='${leaderPaneId}' node omx hud --watch --preset=focused`,
+      paneLeft,
+      paneWidth,
+      paneHeight: HUD_TMUX_HEIGHT_LINES,
+      paneBottom: 39,
+      windowWidth: 160,
+      windowHeight: 40,
+    });
+
+    const leftRepeatResult = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%left', OMX_SESSION_ID: 'sess-left', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        codexPane('%left', 0, 80),
+        codexPane('%right', 80, 80),
+        hudPane('%hud-left', 'sess-left', '%left', 0, 80),
+        hudPane('%hud-right', 'sess-right', '%right', 80, 80),
+      ],
+      createHudWatchPane: (_cwd, _cmd, options) => {
+        created.push({ options });
+        return '%hud-left-repeat';
+      },
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: (paneId, heightLines) => {
+        resized.push({ paneId, heightLines });
+        return true;
+      },
+      registerHudResizeHook: noOpRegisterHudResizeHook,
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    const rightCreateResult = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%right', OMX_SESSION_ID: 'sess-right', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        codexPane('%left', 0, 80),
+        codexPane('%right', 80, 80),
+        hudPane('%hud-left', 'sess-left', '%left', 0, 80),
+        // This is the launch-time standalone split for pane B. It is pane-scoped,
+        // not full-window width, so prompt-submit/layout reconcile must keep it
+        // instead of killing it and recreating a full-width HUD that competes with
+        // pane A's HUD.
+        hudPane('%hud-right', 'sess-right', '%right', 80, 80),
+      ],
+      createHudWatchPane: (_cwd, _cmd, options) => {
+        created.push({ options });
+        return '%hud-right-repeat';
+      },
+      killTmuxPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+      resizeTmuxPane: (paneId, heightLines) => {
+        resized.push({ paneId, heightLines });
+        return true;
+      },
+      registerHudResizeHook: noOpRegisterHudResizeHook,
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(leftRepeatResult.status, 'unchanged');
+    assert.equal(leftRepeatResult.paneId, '%hud-left');
+    assert.equal(rightCreateResult.status, 'unchanged');
+    assert.equal(rightCreateResult.paneId, '%hud-right');
+    assert.deepEqual(killed, []);
+    assert.deepEqual(created, []);
+    assert.deepEqual(resized, []);
   });
 
   it('collapses same-owner HUD panes that appear during the create race window', async () => {
@@ -1412,7 +1503,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(unregistered, ['%1']);
     assert.deepEqual(killed, ['%2']);
     assert.equal(created.length, 1);
-    assert.equal(created[0]?.options?.fullWidth, true);
+    assert.equal(Object.hasOwn(created[0]?.options ?? {}, 'fullWidth'), false);
     assert.equal(created[0]?.options?.targetPaneId, '%1');
     assert.equal(created[0]?.options?.heightLines, HUD_TMUX_HEIGHT_LINES);
     assert.deepEqual(resized, [{ paneId: '%9', heightLines: HUD_TMUX_HEIGHT_LINES }]);
@@ -1573,7 +1664,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(unregistered, ['%1']);
     assert.deepEqual(killed, ['%bad-a', '%bad-b']);
     assert.equal(created.length, 1);
-    assert.equal(created[0]?.options?.fullWidth, true);
+    assert.equal(Object.hasOwn(created[0]?.options ?? {}, 'fullWidth'), false);
     assert.equal(created[0]?.options?.targetPaneId, '%1');
   });
 
@@ -1679,6 +1770,61 @@ describe('reconcileHudForPromptSubmit cramped-window guard (#2754)', () => {
     assert.equal(result.status, 'skipped_window_too_cramped');
     assert.equal(result.paneId, null);
     assert.deepEqual(created, []);
+  });
+
+  it('uses the default tmux window-size reader when production deps omit an injected reader', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-cramped-'));
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const tmuxLogPath = join(cwd, 'tmux.log');
+    const tmuxBin = join(fakeBinDir, 'tmux');
+    const originalPath = process.env.PATH;
+
+    try {
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(
+        tmuxBin,
+        `#!/usr/bin/env bash
+set -eu
+printf '[%s]' "$@" >> "${tmuxLogPath}"
+printf '\n' >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  printf '160\t${crampedHeight}'
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  printf '%%1\\037codex\\0370\\0370\\037160\\03724\\03723\\037160\\037${crampedHeight}\\037codex\\037/repo'
+fi
+`,
+      );
+      await chmod(tmuxBin, 0o755);
+      process.env.PATH = `${fakeBinDir}:${originalPath ?? ''}`;
+
+      const created: string[] = [];
+      const result = await reconcileHudForPromptSubmit('/repo', {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        sessionId: 'sess-a',
+        sessionIds: ['sess-a'],
+        createHudWatchPane: (_cwd, cmd) => {
+          created.push(cmd);
+          return '%9';
+        },
+        resizeTmuxPane: () => true,
+        unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+        registerHudResizeHook: noOpRegisterHudResizeHook,
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+
+      assert.equal(result.status, 'skipped_window_too_cramped');
+      assert.equal(result.paneId, null);
+      assert.deepEqual(created, []);
+      const log = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(log, /\[list-panes\]\[-t\]\[%1\]/);
+      assert.match(log, /\[display-message\]\[-p\]\[-t\]\[%1\]\[#\{window_width\}\t#\{window_height\}\]/);
+    } finally {
+      process.env.PATH = originalPath;
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('creates the HUD on prompt submit when the existing window has room', async () => {

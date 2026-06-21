@@ -94,8 +94,10 @@ The final ultragoal story is not complete until the active agent has run the fin
 1. Run targeted verification for the story.
 2. Run `ai-slop-cleaner` on changed files only; if there are no relevant edits, the cleaner still runs and records a passed/no-op report.
 3. Rerun verification after the cleaner pass.
-4. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, and `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, and same-lane/self-review are non-clean.
-5. If review is non-clean, do **not** call `update_goal`. Record durable blocker work instead:
+4. Run the architecture-invariant audit: derive non-negotiable architecture/domain invariants from the brief/spec/interview/accepted steering/goal artifacts, list the source artifacts, and prove each required invariant with implementation, test, and independent review evidence.
+5. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence, and `architectureInvariantGate.status: "passed"` proves every required invariant. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, same-lane/self-review, and unproved architecture invariants are non-clean.
+6. If review or invariant proof is non-clean, do **not** call `update_goal`. Record durable blocker work instead:
+
 
    ```sh
    omx ultragoal record-review-blockers --goal-id <id> --title "Resolve final code-review blockers" --objective "<blocker-resolution objective>" --evidence "<review findings>" --codex-goal-json <active-get-goal-json-or-path>
@@ -103,7 +105,8 @@ The final ultragoal story is not complete until the active agent has run the fin
 
    This marks the current story `review_blocked`, appends a pending blocker-resolution story, keeps the Codex goal active, and lets `omx ultragoal complete-goals` start the blocker next. In legacy per-story mode, the blocker may need an available Codex goal context because the old per-story Codex goal remains active/incomplete.
 
-6. If review is clean, call `update_goal({status: "complete"})`, call `get_goal`, and checkpoint with a structured final gate:
+7. If review and invariant proof are clean, call `update_goal({status: "complete"})`, call `get_goal`, and checkpoint with a structured final gate:
+
 
    ```sh
    omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<tests/files/review evidence>" --codex-goal-json <fresh-complete-get-goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>
@@ -123,6 +126,21 @@ The final ultragoal story is not complete until the active agent has run the fin
       "codeReviewer": { "agentRole": "code-reviewer", "evidence": "code-reviewer subagent APPROVE evidence" },
       "architect": { "agentRole": "architect", "evidence": "architect subagent CLEAR evidence" }
     }
+  },
+  "architectureInvariantGate": {
+    "status": "passed",
+    "sourceArtifacts": [".omx/ultragoal/brief.md", ".omx/ultragoal/goals.json"],
+    "evidence": "final invariant audit proved all required architecture/domain invariants",
+    "invariants": [
+      {
+        "invariant": "Preserve the existing parser boundary.",
+        "source": ".omx/ultragoal/brief.md#architecture-invariants",
+        "status": "proved",
+        "implementationEvidence": "changed files preserve the parser boundary",
+        "testEvidence": "parser-boundary regression passed",
+        "reviewEvidence": "architect review confirmed the boundary is intact"
+      }
+    ]
   }
 }
 ```
@@ -131,7 +149,7 @@ The final ultragoal story is not complete until the active agent has run the fin
 
 - The shell command cannot directly invoke Codex interactive `/goal`; it emits a model-facing handoff for the active Codex agent.
 - Ultragoal intentionally does not invoke `/goal clear` or hidden `thread/goal/clear`; the model-facing tool surface only provides `get_goal`, `create_goal`, and `update_goal`.
-- After a completed aggregate ultragoal run, clear the Codex goal manually with `/goal clear` before starting another ultragoal run in the same session/thread.
+- After a completed aggregate ultragoal run, `/goal clear` is the explicit terminal cleanup step before starting another goal in the same Codex thread/session: `create_goal` starts, `update_goal({status: "complete"})` marks terminal success, and `/goal clear` removes the completed thread goal for the next same-thread goal. OMX prints this next step but does not invoke hidden clear routes.
 - Never call `create_goal` when `get_goal` reports a different active goal.
 - Never call `update_goal` unless the aggregate run or legacy per-story goal is actually complete.
 - In aggregate mode, intermediate story checkpoints require a matching `active` Codex snapshot; final story completion requires a matching `complete` snapshot after `update_goal`.

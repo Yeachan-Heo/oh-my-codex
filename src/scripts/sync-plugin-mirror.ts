@@ -59,6 +59,7 @@ const SETUP_OWNED_PLUGIN_MANIFEST_FIELDS = [
 ] as const;
 const OMX_PLUGIN_HOOK_COMMAND =
 	'node "${PLUGIN_ROOT}/hooks/codex-native-hook.mjs"';
+// The launcher itself must not shell-wrap node.exe on Windows; see GH #2858.
 const OMX_PLUGIN_HOOK_LAUNCHER_CONTRACT_MARKER =
 	"omx-plugin-hook-launcher:v1";
 // Plugin-scoped Codex hooks intentionally mirror the setup-managed lifecycle

@@ -13,6 +13,8 @@ describe('autopilot supervisor FSM helpers', () => {
     assert.equal(normalizeAutopilotPhase('deep_interview'), 'deep-interview');
     assert.equal(normalizeAutopilotPhase('waiting_for_user'), 'waiting-for-user');
     assert.equal(normalizeAutopilotPhase('team'), 'team');
+    assert.equal(normalizeAutopilotPhase('review_fix'), 'rework');
+    assert.equal(normalizeAutopilotPhase('implementation-fix'), 'rework');
     assert.equal(normalizeAutopilotPhase('ralph'), 'ralph');
     assert.equal(normalizeAutopilotPhase('completed'), 'complete');
     assert.equal(normalizeAutopilotPhase('planning'), 'ralplan');
@@ -68,6 +70,11 @@ describe('autopilot supervisor FSM helpers', () => {
       active: true,
       current_phase: 'planning',
     }), 'autopilot:ralplan');
+    assert.equal(deriveAutopilotStageLabel({
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'review-fix',
+    }), 'autopilot:rework');
   });
 
   it('does not derive standalone workflow states as Autopilot stage labels', () => {

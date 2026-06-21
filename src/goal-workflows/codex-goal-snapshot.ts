@@ -198,3 +198,15 @@ export function formatCodexGoalReconciliation(reconciliation: CodexGoalReconcili
   const parts = [...reconciliation.errors, ...reconciliation.warnings];
   return parts.join(' ');
 }
+
+export function buildCodexGoalTerminalCleanupNotice(workflowLabel: string): string {
+  return [
+    `${workflowLabel}: Codex goal is complete and OMX durable workflow artifacts are complete.`,
+    'Terminal next step for another goal in this same Codex thread/session: run /goal clear in the Codex UI before calling create_goal for the next OMX goal.',
+    'OMX shell commands and hooks do not call /goal clear or hidden thread/goal/clear routes; if a future Codex tool surface exposes explicit clear/reset, use that tool instead.',
+  ].join('\n');
+}
+
+export function buildCompletedCodexGoalRemediation(workflowLabel: string): string {
+  return `${workflowLabel}: get_goal reports a completed Codex goal still attached to this thread. Run /goal clear in the Codex UI before starting another goal in this same thread/session; OMX did not and cannot clear hidden Codex goal state from shell/hooks.`;
+}

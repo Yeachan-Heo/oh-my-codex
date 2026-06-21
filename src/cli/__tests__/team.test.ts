@@ -1612,7 +1612,7 @@ case "$1" in
         exit 1
         ;;
       *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
-        printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\tnode /tmp/bin/omx.js hud --watch\\n%%13\\tcodex\\tcodex\\n%%14\\tcodex\\tcodex\\n"
+        printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\tnode /tmp/bin/omx.js hud --watch\\n%%13\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=shared-shutdown-cli/worker-1 codex\\n%%14\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=shared-shutdown-cli/worker-2 codex\\n"
         exit 0
         ;;
       *"-t leader:0 -F #{pane_id}"*)
@@ -1626,6 +1626,20 @@ case "$1" in
     ;;
   split-window)
     printf '%%44\\n'
+    exit 0
+    ;;
+  show-option)
+    case "$*" in
+      *"-p -t %11 @omx_team_pane_owner_id"*)
+        echo "team:shared-shutdown-cli"
+        ;;
+      *"-p -t %12 @omx_team_pane_owner_id"*)
+        echo "team:shared-shutdown-cli"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
     exit 0
     ;;
   kill-pane)
@@ -2423,7 +2437,7 @@ describe('teamCommand status', () => {
       assert.match(output, /inspect_hud: tmux capture-pane -p -t %11 -S -400/);
       assert.match(output, /inspect_worker-1: tmux capture-pane -p -t %21 -S -400/);
       assert.match(output, /inspect_worker-2: tmux capture-pane -p -t %22 -S -400/);
-      assert.match(output, /inspect_summary: [\s\S]*command=tmux capture-pane -p -t %22 -S -400/);
+      assert.match(output, /inspect_summary: [\s\S]*command=tmux capture-pane -p -t %21 -S -400/);
       assert.doesNotMatch(output
         .split('\n')
         .filter((line) => !line.includes('--model-inspect'))
@@ -2432,7 +2446,7 @@ describe('teamCommand status', () => {
       logs.length = 0;
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-team', '--model-inspect']));
       const modelInspectOutput = logs.join('\n');
-      assert.match(modelInspectOutput, /inspect_summary: [\s\S]*command=omx sparkshell --tmux-pane %22 --tail-lines 400/);
+      assert.match(modelInspectOutput, /inspect_summary: [\s\S]*command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);

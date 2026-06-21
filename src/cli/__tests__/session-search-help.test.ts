@@ -23,14 +23,15 @@ describe('omx session help', () => {
     try {
       const mainHelp = runOmx(cwd, ['--help']);
       assert.equal(mainHelp.status, 0, mainHelp.stderr || mainHelp.stdout);
-      assert.match(mainHelp.stdout, /omx resume\s+Resume a previous interactive Codex session/i);
+      assert.match(mainHelp.stdout, /omx resume\s+Resume Codex sessions \(supports --project and --codex-home <path>\)/i);
       assert.match(mainHelp.stdout, /omx autoresearch\s+\[DEPRECATED\] Use \$autoresearch; direct CLI launch removed/i);
-      assert.match(mainHelp.stdout, /omx session\s+Search prior local session transcripts/i);
+      assert.match(mainHelp.stdout, /omx session\s+Search prior local session transcripts \(--codex-home <path> escape hatch\)/i);
 
       const sessionHelp = runOmx(cwd, ['session', '--help']);
       assert.equal(sessionHelp.status, 0, sessionHelp.stderr || sessionHelp.stdout);
       assert.match(sessionHelp.stdout, /omx session search <query>/i);
       assert.match(sessionHelp.stdout, /--since <spec>/i);
+      assert.match(sessionHelp.stdout, /--codex-home <path>/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

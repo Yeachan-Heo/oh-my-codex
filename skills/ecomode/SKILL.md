@@ -47,7 +47,7 @@ Ecomode is a modifier that combines with execution modes:
 
 **FIRST ACTION:** Before delegating any work, read the agent reference file:
 ```
-Read file: docs/shared/agent-tiers.md
+Read file: references/agent-tiers.md
 ```
 This provides the complete agent tier matrix, MCP tool assignments, and selection guidance.
 

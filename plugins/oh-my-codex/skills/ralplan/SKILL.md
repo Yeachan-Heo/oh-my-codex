@@ -42,7 +42,7 @@ $plan --consensus --interactive <arguments>
 ```
 
 The consensus workflow:
-1. **Planner** creates an adaptive plan (right-sized to task scope; do not default to exactly five steps) and a compact **RALPLAN-DR summary** before review:
+1. **Planner** creates an adaptive plan (right-sized to task scope; do not default to exactly five steps) and a compact **RALPLAN-DR summary** before review. Current `[main]` vs `[planner]` behavior: standalone `$ralplan` may be authored by the active main planning lane unless the caller/runtime supplies a dedicated planner routing record; inside `$autopilot`, state field `planning_routing.owner:"planner"` means the initial Planner draft/decomposition must use dedicated `[planner]`. Set `.omx-config.json` `agentModels.planner` to opt into a specific planner model and force dedicated planner ownership for complex Autopilot planning even when `[main]` is not cheap/mini. The RALPLAN-DR summary includes:
    - Principles (3-5)
    - Decision Drivers (top 3)
    - Viable Options (>=2) with bounded pros/cons

@@ -55,6 +55,18 @@ openai_base_url = "http://localhost:8317/v1"
 
 Use your actual proxy URL. If the profile-local `~/.codex/config.toml` is missing `openai_base_url`, Codex may send the proxy-issued key to the default endpoint. That can make setup and doctor look fine while real execution fails with 401-style auth errors.
 
+## Root-owned or non-writable repo artifacts
+
+OMX runtime and planning artifacts under repo-local `.omx/` and `.beads/` should be writable by the same operating-system user that runs `omx`. Files created through `sudo`, containers, or service users can become `root:root` or otherwise non-writable, which later blocks normal agents from appending plans, state, logs, or context artifacts.
+
+`omx doctor` scans `.omx/` and `.beads/` when they exist and reports exact root-owned, owner-mismatched, or non-writable paths. The safe manual repair is:
+
+```bash
+sudo chown -R $(id -u):$(id -g) <repo>
+```
+
+Use the repository root for `<repo>`. `omx doctor --force` attempts automatic ownership repair only when the repo root is owned by the invoking user; otherwise it leaves files unchanged and prints manual remediation guidance.
+
 ## Stale `doctor --team` or dead tmux session state
 
 `omx doctor --team`, `omx team resume`, or startup diagnostics can fail when a previous team state references a tmux session that no longer exists. The state may mention `resume_blocker`, or the dead session may be recorded under `.omx/state/team/<team-name>/config.json` or `manifest.v2.json`.

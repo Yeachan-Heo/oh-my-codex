@@ -693,6 +693,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
           review_verdict: unknown;
           qa_verdict: unknown;
           return_to_ralplan_reason: string | null;
+          planning_routing: Record<string, unknown>;
         };
       };
       assert.equal(modeState.mode, 'autopilot');
@@ -732,6 +733,13 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.state.review_verdict, null);
       assert.equal(modeState.state.qa_verdict, null);
       assert.equal(modeState.state.return_to_ralplan_reason, null);
+      assert.deepEqual(modeState.state.planning_routing, {
+        owner: 'main',
+        mainModel: 'gpt-5.5',
+        plannerModel: 'gpt-5.4-mini',
+        reason: 'main_not_cheap_or_mini',
+        explicitPlannerOverride: false,
+      });
       const snapshot = await readFile(join(cwd, '.omx', 'context', 'please-run-and-keep-going-20260225T000000Z.md'), 'utf-8');
       assert.match(snapshot, /activation prompt \/ task seed: please run \$autopilot and keep going/);
       assert.match(snapshot, /scope note: this seed captures the Autopilot activation prompt/);
@@ -739,6 +747,48 @@ describe('keyword detector skill-active-state lifecycle', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('seeds dedicated planner routing in Autopilot state when main is cheap', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-planner-routing-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-keyword-codex-home-'));
+    const previousCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+        models: { autopilot: 'o4-mini' },
+        agentModels: { planner: 'gpt-5.5-planner' },
+      }));
+
+      await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$autopilot implement issue #2918',
+        sessionId: 'sess-planner-routing',
+        threadId: 'thread-planner-routing',
+        turnId: 'turn-planner-routing',
+        nowIso: AUTOPILOT_TEST_NOW,
+      });
+
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-planner-routing', 'autopilot-state.json'), 'utf-8'),
+      ) as { state?: { planning_routing?: Record<string, unknown> } };
+      assert.deepEqual(modeState.state?.planning_routing, {
+        owner: 'planner',
+        mainModel: 'o4-mini',
+        plannerModel: 'gpt-5.5-planner',
+        reason: 'explicit_planner_override',
+        explicitPlannerOverride: true,
+      });
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it('migrates legacy Autopilot context snapshot paths into handoff artifacts', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-legacy-context-'));
     const stateDir = join(cwd, '.omx', 'state');

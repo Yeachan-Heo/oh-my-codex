@@ -3,6 +3,8 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import {
   formatCodexGoalReconciliation,
+  buildCompletedCodexGoalRemediation,
+  buildCodexGoalTerminalCleanupNotice,
   parseCodexGoalSnapshot,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
@@ -292,14 +294,23 @@ export function buildPerformanceGoalInstruction(state: PerformanceGoalState): st
     '',
     'Codex goal integration constraints:',
     '- First call get_goal. If no active goal exists, call create_goal with the payload below.',
+    `- If get_goal reports status complete before create_goal, do not call create_goal over it. ${buildCompletedCodexGoalRemediation('Performance-goal preflight')}`,
     '- If a different active Codex goal exists, finish or checkpoint that goal before starting this performance goal.',
     '- Do not treat this shell command as hidden Codex goal mutation; it only wrote OMX artifacts and this handoff.',
     '- Optimize only against the evaluator command/contract below; do not begin optimization without that evaluator.',
     '- Completion is blocked until evaluator evidence passes and is recorded with `omx performance-goal checkpoint --status pass ...`.',
     '- After evaluator pass and a completion audit prove the objective is complete, call update_goal({status: "complete"}) in the Codex thread, then call get_goal again for a fresh completion snapshot.',
     `- Finish by running: omx performance-goal complete --slug ${state.slug} --evidence "<passing evaluator/tests/files evidence>" --codex-goal-json "<fresh get_goal JSON or path>"`,
+    '- After the complete command succeeds, treat `/goal clear` as the explicit terminal cleanup step before another same-thread goal.',
     '- If the evaluator fails or blocks, checkpoint with --status fail or --status blocked and continue iterating.',
     '',
+    ...(state.status === 'complete'
+      ? [
+        '',
+        'Terminal Codex goal cleanup:',
+        buildCodexGoalTerminalCleanupNotice('Performance-goal completion'),
+      ]
+      : []),
     'create_goal payload:',
     JSON.stringify(createPayload, null, 2),
     '',

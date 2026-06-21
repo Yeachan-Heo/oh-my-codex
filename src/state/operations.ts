@@ -21,7 +21,11 @@ import { evaluateRalphCompletionAuditEvidence } from '../ralph/completion-audit.
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
-import { isAutopilotSuccessfulTerminalState, validateAutopilotCompletionTransition } from '../autopilot/completion-gate.js';
+import {
+  hasCleanAutopilotReviewAndQaEvidence,
+  isAutopilotSuccessfulTerminalState,
+  validateAutopilotCompletionTransition,
+} from '../autopilot/completion-gate.js';
 import { readUltragoalState } from '../hud/state.js';
 import {
   SKILL_ACTIVE_STATE_MODE,
@@ -56,6 +60,7 @@ const AUTOPILOT_CHILD_PHASE_ORDER: AutopilotChildPhase[] = [
   'deep-interview',
   'ralplan',
   'ultragoal',
+  'rework',
   'team',
   'ralph',
   'code-review',
@@ -159,6 +164,32 @@ async function writeClearedSessionScopedModeState(
   await writeAtomicFile(path, JSON.stringify(clearedState, null, 2));
 }
 
+async function clearSessionNativeStopState(baseStateDir: string, sessionId: string): Promise<string[]> {
+  const paths = [
+    join(baseStateDir, 'native-stop-state.json'),
+    join(baseStateDir, 'sessions', sessionId, 'native-stop-state.json'),
+  ];
+  const changed: string[] = [];
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    let state: Record<string, unknown>;
+    try {
+      state = JSON.parse(await readFile(path, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const sessions = state.sessions && typeof state.sessions === 'object' && !Array.isArray(state.sessions)
+      ? { ...(state.sessions as Record<string, unknown>) }
+      : null;
+    if (!sessions || !Object.prototype.hasOwnProperty.call(sessions, sessionId)) continue;
+    delete sessions[sessionId];
+    state.sessions = sessions;
+    await writeAtomicFile(path, JSON.stringify(state, null, 2));
+    changed.push(path);
+  }
+  return changed;
+}
+
 function readModeSupportsStrictValidation(mode: string): mode is SupportedStateReadMode {
   return SUPPORTED_STATE_READ_MODES.includes(mode as SupportedStateReadMode);
 }
@@ -190,6 +221,29 @@ function hasExplicitStateField(
       customState != null
       && Object.prototype.hasOwnProperty.call(customState as Record<string, unknown>, key)
     );
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown>): void {
+  if (!isAutopilotSuccessfulTerminalState(state) || !hasCleanAutopilotReviewAndQaEvidence(state)) return;
+
+  const reviewVerdict = state.review_verdict;
+  const qaVerdict = state.qa_verdict;
+  const nestedState = { ...objectRecord(state.state) };
+  const handoffArtifacts = { ...objectRecord(nestedState.handoff_artifacts ?? state.handoff_artifacts) };
+
+  handoffArtifacts.code_review = reviewVerdict;
+  handoffArtifacts.ultraqa = qaVerdict;
+  state.handoff_artifacts = handoffArtifacts;
+  state.return_to_ralplan_reason = null;
+  nestedState.handoff_artifacts = handoffArtifacts;
+  nestedState.review_verdict = reviewVerdict;
+  nestedState.qa_verdict = qaVerdict;
+  nestedState.return_to_ralplan_reason = null;
+  state.state = nestedState;
 }
 
 export async function listStateStatuses(
@@ -446,6 +500,10 @@ export async function executeStateOperation(
             Object.assign(mergedRaw, runOutcomeValidation.state);
           }
 
+          if (mode === 'autopilot') {
+            normalizeCleanAutopilotCompletionEvidence(mergedRaw);
+          }
+
           const currentAutopilotChildPhase = mode === 'autopilot'
             ? deriveAutopilotChildPhase({ mode: 'autopilot', ...existing })
             : null;
@@ -628,6 +686,9 @@ export async function executeStateOperation(
           } else if (existsSync(path)) {
             await unlink(path);
           }
+          const nativeStopCleared = effectiveSessionId
+            ? await clearSessionNativeStopState(baseStateDir, effectiveSessionId)
+            : [];
           if (mode !== SKILL_ACTIVE_STATE_MODE) {
             await syncCanonicalSkillStateForMode({
               cwd,
@@ -638,7 +699,7 @@ export async function executeStateOperation(
               source: 'state-operations',
             });
           }
-          return { payload: { cleared: true, mode, path } };
+          return { payload: { cleared: true, mode, path, ...(nativeStopCleared.length > 0 ? { native_stop_cleared: nativeStopCleared } : {}) } };
         }
 
         const removedPaths: string[] = [];
