@@ -3676,6 +3676,51 @@ function rootModeStateIsCanonicalForStopContext(
   return true;
 }
 
+function hasExplicitSessionScope(state: Record<string, unknown>): boolean {
+  return safeString(
+    state.owner_omx_session_id
+      ?? state.session_id
+      ?? state.codex_session_id
+      ?? state.owner_codex_session_id,
+  ).trim() !== "";
+}
+
+async function readStateTimestampMs(state: Record<string, unknown>, path: string): Promise<number | null> {
+  return parseTimestampMs(state.updated_at)
+    ?? parseTimestampMs(state.completed_at)
+    ?? parseTimestampMs(state.created_at)
+    ?? await stat(path).then((info) => info.mtimeMs, () => null);
+}
+
+async function unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
+  rootState: Record<string, unknown>,
+  rootPath: string,
+  sessionPath: string,
+  threadId: string,
+): Promise<boolean> {
+  if (hasExplicitSessionScope(rootState)) return false;
+
+  const stateThreadId = safeString(rootState.owner_codex_thread_id ?? rootState.thread_id).trim();
+  if (threadId && stateThreadId && stateThreadId !== threadId) return false;
+
+  const phase = safeString(rootState.current_phase ?? rootState.currentPhase).trim().toLowerCase();
+  if (phase !== "complete" && phase !== "completed") return false;
+
+  const planningComplete = rootState.planning_complete === true || rootState.planningComplete === true;
+  const latestPlanPath = safeString(rootState.latest_plan_path ?? rootState.latestPlanPath).trim();
+  if (!planningComplete || !latestPlanPath) return false;
+
+  const sessionState = await readJsonIfExists(sessionPath);
+  if (!sessionState) return false;
+  const sessionPhase = safeString(sessionState.current_phase ?? sessionState.currentPhase).trim().toLowerCase();
+  if (sessionPhase && TERMINAL_MODE_PHASES.has(sessionPhase)) return false;
+
+  const rootTimestamp = await readStateTimestampMs(rootState, rootPath);
+  const sessionTimestamp = await readStateTimestampMs(sessionState, sessionPath);
+  if (rootTimestamp === null || sessionTimestamp === null) return false;
+  return rootTimestamp > sessionTimestamp;
+}
+
 async function shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
   cwd: string,
   stateDir: string,
@@ -3683,10 +3728,21 @@ async function shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
   sessionId: string,
   threadId: string,
 ): Promise<boolean> {
-  const rootModeState = await readJsonIfExists(join(stateDir, `${skill}-state.json`));
+  const rootModeStatePath = join(stateDir, `${skill}-state.json`);
+  const rootModeState = await readJsonIfExists(rootModeStatePath);
   if (!rootModeState) return false;
-  if (!rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId)) return false;
   if (!isTerminalOrInactiveModeState(rootModeState)) return false;
+
+  const canonicalRoot = rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId);
+  const freshUnscopedRoot = canonicalRoot || skill !== "ralplan"
+    ? false
+    : await unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
+      rootModeState,
+      rootModeStatePath,
+      join(stateDir, "sessions", sessionId, `${skill}-state.json`),
+      threadId,
+    );
+  if (!canonicalRoot && !freshUnscopedRoot) return false;
 
   const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
   const rootSkillState = await readSkillActiveState(rootPath);
