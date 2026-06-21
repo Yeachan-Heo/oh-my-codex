@@ -159,12 +159,12 @@ async function getCurrentVersion(): Promise<string | null> {
   }
 }
 
-function isEnoentSpawnError(error: unknown): boolean {
+function isSpawnErrorCode(error: unknown, codes: string[]): boolean {
   return Boolean(
     error &&
     typeof error === 'object' &&
     'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT',
+    codes.includes(String((error as NodeJS.ErrnoException).code)),
   );
 }
 
@@ -175,10 +175,34 @@ function spawnNpmSync(
   platform: NodeJS.Platform = process.platform,
 ): ReturnType<SpawnSyncLike> {
   const result = spawnProcess('npm', args, options);
-  if (platform === 'win32' && isEnoentSpawnError(result.error)) {
+  if (platform === 'win32' && isSpawnErrorCode(result.error, ['ENOENT'])) {
     return spawnProcess('npm.cmd', args, options);
   }
   return result;
+}
+
+function spawnGlobalNpmInstallSync(
+  installSource: string,
+  options: SpawnSyncOptions,
+  spawnProcess: SpawnSyncLike = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): ReturnType<SpawnSyncLike> {
+  const args = ['install', '-g', installSource];
+  const result = spawnProcess('npm', args, options);
+  if (platform !== 'win32' || !isSpawnErrorCode(result.error, ['ENOENT', 'EINVAL'])) {
+    return result;
+  }
+
+  if (isSpawnErrorCode(result.error, ['ENOENT'])) {
+    const cmdShimResult = spawnProcess('npm.cmd', args, options);
+    if (!isSpawnErrorCode(cmdShimResult.error, ['ENOENT', 'EINVAL'])) {
+      return cmdShimResult;
+    }
+  }
+
+  // Some Windows/npm shim layouts reject direct npm/npm.cmd spawn with EINVAL;
+  // cmd.exe can still resolve and run npm from the user's configured PATH.
+  return spawnProcess('cmd.exe', ['/d', '/s', '/c', 'npm', ...args], options);
 }
 
 function commandFailure(stderr: unknown, status: number | null, label: string): RunGlobalUpdateResult {
@@ -357,8 +381,8 @@ export function runGlobalUpdate(
     return runDevGlobalUpdate(spawnProcess, resolvedPlatform);
   }
 
-  const result = spawnNpmSync(
-    ['install', '-g', installSource],
+  const result = spawnGlobalNpmInstallSync(
+    installSource,
     {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
