@@ -12200,6 +12200,7 @@ exit 0
         mode: "ralplan",
         current_phase: "complete",
         session_id: sessionId,
+        cwd,
       });
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,
@@ -12231,6 +12232,63 @@ exit 0
 
       assert.equal(result.omxEventName, "stop");
       assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps blocking current session ralplan when canonical root inactive ralplan state lacks project context", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralplan-canonical-root-no-cwd-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-ralplan-canonical-root-no-cwd";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: false,
+        skill: "ralplan",
+        phase: "complete",
+        session_id: sessionId,
+        active_skills: [],
+      });
+      await writeJson(join(stateDir, "ralplan-state.json"), {
+        active: false,
+        mode: "ralplan",
+        current_phase: "complete",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: sessionId,
+        }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+        cwd,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_continue_artifact");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -12442,6 +12500,7 @@ exit 0
         active: false,
         mode: "ralplan",
         current_phase: "complete",
+        cwd,
         planning_complete: true,
         latest_plan_path: ".omx/plans/prd-issue-2923.md",
         updated_at: "2026-06-21T08:05:00.000Z",
@@ -12459,6 +12518,128 @@ exit 0
 
       assert.equal(result.omxEventName, "stop");
       assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps blocking current session ralplan when newer unscoped root completion belongs to another worktree", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralplan-cross-worktree-root-complete-"));
+    try {
+      const otherWorktree = join(tmpdir(), "omx-native-hook-other-worktree-2925");
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-ralplan-cross-worktree-root";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: sessionId,
+        }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+        cwd,
+        updated_at: "2026-06-21T08:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: false,
+        skill: "ralplan",
+        phase: "complete",
+        active_skills: [],
+      });
+      await writeJson(join(stateDir, "ralplan-state.json"), {
+        active: false,
+        mode: "ralplan",
+        current_phase: "complete",
+        cwd: otherWorktree,
+        planning_complete: true,
+        latest_plan_path: ".omx/plans/prd-issue-2925.md",
+        updated_at: "2026-06-21T08:05:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          tool_name: "apply_patch",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_continue_artifact");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps blocking current session ralplan when newer unscoped root completion lacks project context", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralplan-root-complete-no-cwd-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-ralplan-root-complete-no-cwd";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: sessionId,
+        }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+        cwd,
+        updated_at: "2026-06-21T08:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: false,
+        skill: "ralplan",
+        phase: "complete",
+        active_skills: [],
+      });
+      await writeJson(join(stateDir, "ralplan-state.json"), {
+        active: false,
+        mode: "ralplan",
+        current_phase: "complete",
+        planning_complete: true,
+        latest_plan_path: ".omx/plans/prd-issue-2925.md",
+        updated_at: "2026-06-21T08:05:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          tool_name: "apply_patch",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_continue_artifact");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -12488,6 +12669,7 @@ exit 0
         mode: "ralplan",
         current_phase: "complete",
         session_id: sessionId,
+        cwd,
       });
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,

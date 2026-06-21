@@ -3558,6 +3558,22 @@ function modeStateMatchesSkillStopContext(
   return true;
 }
 
+function modeStateHasExplicitMatchingCwd(state: Record<string, unknown>, cwd: string): boolean {
+  const stateCwd = safeString(
+    state.cwd
+      ?? state.workingDirectory
+      ?? state.working_directory
+      ?? state.project_path,
+  ).trim();
+  if (!stateCwd) return false;
+
+  try {
+    return resolve(stateCwd) === resolve(cwd);
+  } catch {
+    return false;
+  }
+}
+
 async function readBlockingSkillForStop(
   cwd: string,
   stateDir: string,
@@ -3696,12 +3712,15 @@ async function unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
   rootState: Record<string, unknown>,
   rootPath: string,
   sessionPath: string,
+  cwd: string,
   threadId: string,
 ): Promise<boolean> {
   if (hasExplicitSessionScope(rootState)) return false;
 
   const stateThreadId = safeString(rootState.owner_codex_thread_id ?? rootState.thread_id).trim();
   if (threadId && stateThreadId && stateThreadId !== threadId) return false;
+
+  if (!modeStateHasExplicitMatchingCwd(rootState, cwd)) return false;
 
   const phase = safeString(rootState.current_phase ?? rootState.currentPhase).trim().toLowerCase();
   if (phase !== "complete" && phase !== "completed") return false;
@@ -3733,13 +3752,15 @@ async function shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
   if (!rootModeState) return false;
   if (!isTerminalOrInactiveModeState(rootModeState)) return false;
 
-  const canonicalRoot = rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId);
+  const canonicalRoot = rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId)
+    && (skill !== "ralplan" || modeStateHasExplicitMatchingCwd(rootModeState, cwd));
   const freshUnscopedRoot = canonicalRoot || skill !== "ralplan"
     ? false
     : await unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
       rootModeState,
       rootModeStatePath,
       join(stateDir, "sessions", sessionId, `${skill}-state.json`),
+      cwd,
       threadId,
     );
   if (!canonicalRoot && !freshUnscopedRoot) return false;
