@@ -1147,6 +1147,81 @@ exit 0
     });
   });
 
+  it('does not persist bookkeeping when team is removed after the final liveness check', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'leader-nudge-late-persist-race';
+      const teamDir = join(stateDir, 'team', teamName);
+      const mailboxDir = join(teamDir, 'mailbox');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'leader-nudge-late-persist-race:0',
+        leader_pane_id: '%91',
+        workers: [{ name: 'worker-1', index: 1, pane_id: '%11' }],
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'late-persist-race',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'please review before shutdown completes',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+        ],
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%11 12345']));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, {
+        OMX_NOTIFY_HOOK_FAULT_REMOVE_TEAM_BEFORE_LEADER_ATTENTION_WRITE: teamName,
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      assert.equal(existsSync(teamDir), false, 'fault injection should remove canonical team state during persistence');
+      assert.equal(
+        existsSync(join(teamDir, 'leader-attention.json')),
+        false,
+        'guarded persistence must not recreate leader-attention.json for the removed team',
+      );
+
+      const nudgeStatePath = join(stateDir, 'team-leader-nudge.json');
+      if (existsSync(nudgeStatePath)) {
+        const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
+        assert.equal(nudgeState.progress_by_team?.[teamName], undefined);
+        assert.equal(nudgeState.last_nudged_by_team?.[teamName], undefined);
+        assert.equal(nudgeState.last_idle_nudged_by_team?.[teamName], undefined);
+      }
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'nudge_triggered'
+        && entry.team === teamName
+        && entry.to_worker === 'leader-fixed'
+        && entry.transport === 'none'
+        && entry.result === 'suppressed'
+        && entry.reason === 'team_state_gone_or_shutdown'),
+      'late persistence race should emit diagnostic suppression instead of stale bookkeeping');
+    });
+  });
+
   it('injects leader nudge into a busy live Codex pane so the message can queue', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

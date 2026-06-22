@@ -3,7 +3,7 @@
  * Team leader nudge: remind the leader to check teammate/mailbox state.
  */
 
-import { readFile, writeFile, mkdir, appendFile, readdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, appendFile, readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { readUsableSessionState } from '../../hooks/session.js';
@@ -21,7 +21,6 @@ import {
 import { DEFAULT_MARKER, paneHasActiveTask } from '../tmux-hook-engine.js';
 import { isLeaderRuntimeStale } from '../../team/leader-activity.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
-import { writeTeamLeaderAttention } from '../../team/state.js';
 import { readLatestTeamProgressEvidenceMs } from '../../team/progress-evidence.js';
 import { validateSessionId } from '../../mcp/state-paths.js';
 import { TEAM_NAME_SAFE_PATTERN } from '../../team/contracts.js';
@@ -827,7 +826,64 @@ export async function maybeNudgeTeamLeader({
     }
 
     const unreadLeaderMessageCount = messages.filter((message) => !safeString(message?.delivered_at).trim()).length;
-    const writeProgressBookkeeping = async () => {
+    const recordShutdownSuppression = async (orchestrationIntent = null) => {
+      await recordSuppressedLeaderNudge({
+        logsDir,
+        source,
+        teamName,
+        reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+        orchestrationIntent,
+      });
+    };
+    const persistLeaderNudgeBookkeeping = async ({ orchestrationIntent = null, recordLastNudged = false } = {}) => {
+      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await recordShutdownSuppression(orchestrationIntent);
+        return false;
+      }
+
+      const leaderAttention = {
+        team_name: teamName,
+        updated_at: nowIso,
+        source: 'notify_hook',
+        leader_decision_state: leaderActionState,
+        leader_attention_pending: !!nudgeReason,
+        leader_attention_reason: nudgeReason || null,
+        attention_reasons: nudgeReason ? [nudgeReason] : [],
+        leader_stale: leaderStale,
+        leader_session_active: true,
+        leader_session_id: currentSessionId || ownerSessionId || null,
+        leader_session_stopped_at: null,
+        unread_leader_message_count: unreadLeaderMessageCount,
+        work_remaining: progressSnapshot.workRemaining,
+        stalled_for_ms: null,
+      };
+
+      // Do not call writeTeamLeaderAttention() here: its atomic writer creates
+      // parent directories. A teardown can remove state/team/<team> after the
+      // advisory liveness checks above, and this persistence path must not
+      // recreate the team directory or leader-attention.json for a dead team.
+      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await recordShutdownSuppression(orchestrationIntent);
+        return false;
+      }
+      if (process.env.OMX_NOTIFY_HOOK_FAULT_REMOVE_TEAM_BEFORE_LEADER_ATTENTION_WRITE === teamName) {
+        await rm(join(stateDir, 'team', teamName), { recursive: true, force: true }).catch(() => {});
+      }
+      try {
+        await writeFile(
+          join(stateDir, 'team', teamName, 'leader-attention.json'),
+          JSON.stringify(leaderAttention, null, 2),
+        );
+      } catch {
+        await recordShutdownSuppression(orchestrationIntent);
+        return false;
+      }
+
+      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await recordShutdownSuppression(orchestrationIntent);
+        return false;
+      }
+
       nudgeState.progress_by_team[teamName] = {
         signature: progressSnapshot.signature,
         last_progress_at: effectiveProgressAtIso,
@@ -847,46 +903,23 @@ export async function maybeNudgeTeamLeader({
         stalled_for_ms: null,
         source: source === 'notify_fallback_watcher' ? 'notify_hook' : source,
       };
-      await writeTeamLeaderAttention(teamName, {
-        team_name: teamName,
-        updated_at: nowIso,
-        source: 'notify_hook',
-        leader_decision_state: leaderActionState,
-        leader_attention_pending: !!nudgeReason,
-        leader_attention_reason: nudgeReason || null,
-        attention_reasons: nudgeReason ? [nudgeReason] : [],
-        leader_stale: leaderStale,
-        leader_session_active: true,
-        leader_session_id: currentSessionId || ownerSessionId || null,
-        leader_session_stopped_at: null,
-        unread_leader_message_count: unreadLeaderMessageCount,
-        work_remaining: progressSnapshot.workRemaining,
-        stalled_for_ms: null,
-      }, cwd).catch(() => {});
-    };
-    const markLastNudged = (orchestrationIntent) => {
-      nudgeState.last_nudged_by_team[teamName] = {
-        at: nowIso,
-        last_message_id: newestId || prevMsgId || '',
-        reason: nudgeReason,
-        orchestration_intent: orchestrationIntent,
-      };
-      if (shouldSendAllIdleNudge) {
-        nudgeState.last_idle_nudged_by_team[teamName] = {
+      if (recordLastNudged) {
+        nudgeState.last_nudged_by_team[teamName] = {
           at: nowIso,
-          worker_count: workerNames.length,
+          last_message_id: newestId || prevMsgId || '',
+          reason: nudgeReason,
           orchestration_intent: orchestrationIntent,
         };
+        if (shouldSendAllIdleNudge) {
+          nudgeState.last_idle_nudged_by_team[teamName] = {
+            at: nowIso,
+            worker_count: workerNames.length,
+            orchestration_intent: orchestrationIntent,
+          };
+        }
       }
-    };
-    const recordShutdownSuppression = async (orchestrationIntent = null) => {
-      await recordSuppressedLeaderNudge({
-        logsDir,
-        source,
-        teamName,
-        reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
-        orchestrationIntent,
-      });
+      await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
+      return true;
     };
 
     if (!nudgeReason) {
@@ -894,7 +927,7 @@ export async function maybeNudgeTeamLeader({
         await recordShutdownSuppression();
         continue;
       }
-      await writeProgressBookkeeping();
+      await persistLeaderNudgeBookkeeping();
       continue;
     }
     const orchestrationIntent = resolveLeaderNudgeIntent({ nudgeReason, leaderActionState });
@@ -910,8 +943,9 @@ export async function maybeNudgeTeamLeader({
         await recordShutdownSuppression(orchestrationIntent);
         continue;
       }
-      await writeProgressBookkeeping();
-      markLastNudged(orchestrationIntent);
+      if (!(await persistLeaderNudgeBookkeeping({ orchestrationIntent, recordLastNudged: true }))) {
+        continue;
+      }
       await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, orchestrationIntent, nowIso, {
         tmuxSession,
         leaderPaneId,
@@ -961,8 +995,9 @@ export async function maybeNudgeTeamLeader({
         await recordShutdownSuppression(orchestrationIntent);
         continue;
       }
-      await writeProgressBookkeeping();
-      markLastNudged(orchestrationIntent);
+      if (!(await persistLeaderNudgeBookkeeping({ orchestrationIntent, recordLastNudged: true }))) {
+        continue;
+      }
       await emitLeaderNudgeDeferredEvent(cwd, teamName, deferredReason, orchestrationIntent, nowIso, {
         tmuxSession,
         leaderPaneId,
@@ -1006,8 +1041,9 @@ export async function maybeNudgeTeamLeader({
         await recordShutdownSuppression(orchestrationIntent);
         continue;
       }
-      await writeProgressBookkeeping();
-      markLastNudged(orchestrationIntent);
+      if (!(await persistLeaderNudgeBookkeeping({ orchestrationIntent, recordLastNudged: true }))) {
+        continue;
+      }
       await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
 
       try {
@@ -1071,8 +1107,9 @@ export async function maybeNudgeTeamLeader({
         }
       }
       if (await teamStateAllowsLeaderNudge(stateDir, teamName)) {
-        await writeProgressBookkeeping();
-        markLastNudged(orchestrationIntent);
+        if (!(await persistLeaderNudgeBookkeeping({ orchestrationIntent, recordLastNudged: true }))) {
+          continue;
+        }
         await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
       } else {
         await recordShutdownSuppression(orchestrationIntent);
@@ -1134,6 +1171,4 @@ export async function maybeNudgeTeamLeader({
       }).catch(() => {});
     }
   }
-
-  await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
 }
