@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initTeamState, enqueueDispatchRequest, readDispatchRequest } from '../../team/state.js';
+import { maybeNudgeTeamLeader, setLeaderNudgeTestHooksForTests } from '../../scripts/notify-hook/team-leader-nudge.js';
 
 const NOTIFY_HOOK_SCRIPT = new URL('../../../dist/scripts/notify-hook.js', import.meta.url);
 
@@ -109,6 +110,64 @@ async function writeCanonicalTeamFixture(
       updated_at: nowIso,
     });
   }
+}
+
+
+async function withProcessEnv(env: Record<string, string>, run: () => Promise<void>): Promise<void> {
+  const previous: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    previous[key] = process.env[key];
+    process.env[key] = value;
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function writeLeaderNudgeRaceFixture(cwd: string, teamName: string): Promise<void> {
+  const stateDir = join(cwd, '.omx', 'state');
+  const logsDir = join(cwd, '.omx', 'logs');
+  const teamDir = join(stateDir, 'team', teamName);
+  await mkdir(join(teamDir, 'mailbox'), { recursive: true });
+  await mkdir(logsDir, { recursive: true });
+  await writeJson(join(stateDir, 'team-state.json'), {
+    active: true,
+    team_name: teamName,
+    current_phase: 'team-exec',
+  });
+  await writeJson(join(teamDir, 'config.json'), {
+    name: teamName,
+    tmux_session: `${teamName}:0`,
+    leader_pane_id: '',
+    workers: [{ name: 'worker-1', index: 1, pane_id: '%11' }],
+  });
+  await mkdir(join(teamDir, 'workers', 'worker-1'), { recursive: true });
+  await writeJson(join(teamDir, 'workers', 'worker-1', 'status.json'), {
+    state: 'idle',
+    updated_at: new Date().toISOString(),
+  });
+  await writeJson(join(teamDir, 'mailbox', 'leader-fixed.json'), {
+    worker: 'leader-fixed',
+    messages: [
+      {
+        message_id: `${teamName}-msg-1`,
+        from_worker: 'worker-1',
+        to_worker: 'leader-fixed',
+        body: 'please review',
+        created_at: '2026-02-14T00:00:00.000Z',
+      },
+    ],
+  });
+}
+
+async function readNudgeState(cwd: string): Promise<Record<string, any>> {
+  const nudgeStatePath = join(cwd, '.omx', 'state', 'team-leader-nudge.json');
+  return JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
 }
 
 async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
@@ -1190,12 +1249,29 @@ exit 0
       await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%11 12345']));
       await chmod(fakeTmuxPath, 0o755);
 
-      const result = runNotifyHook(cwd, fakeBinDir, {
-        OMX_NOTIFY_HOOK_FAULT_REMOVE_TEAM_BEFORE_LEADER_ATTENTION_WRITE: teamName,
-      });
-      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+      try {
+        setLeaderNudgeTestHooksForTests({
+          beforeLeaderAttentionRename: async () => {
+            await rm(teamDir, { recursive: true, force: true });
+          },
+        });
+        await withProcessEnv({
+          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_TEAM_LEADER_NUDGE_MS: '10000',
+          OMX_TEAM_LEADER_STALE_MS: '10000',
+        }, async () => {
+          await maybeNudgeTeamLeader({
+            cwd,
+            stateDir,
+            logsDir,
+            preComputedLeaderStale: true,
+          });
+        });
+      } finally {
+        setLeaderNudgeTestHooksForTests();
+      }
 
-      assert.equal(existsSync(teamDir), false, 'fault injection should remove canonical team state during persistence');
+      assert.equal(existsSync(teamDir), false, 'test seam should remove canonical team state during persistence');
       assert.equal(
         existsSync(join(teamDir, 'leader-attention.json')),
         false,
@@ -1219,6 +1295,112 @@ exit 0
         && entry.result === 'suppressed'
         && entry.reason === 'team_state_gone_or_shutdown'),
       'late persistence race should emit diagnostic suppression instead of stale bookkeeping');
+    });
+  });
+
+  it('rolls back team nudge bookkeeping when shutdown wins immediately before global nudge-state write', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'nudge-before-global-race';
+      const preservedTeam = 'preserved-live-team';
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+
+      await writeLeaderNudgeRaceFixture(cwd, teamName);
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(join(cwd, 'tmux.log'), ['%11 12345']));
+      await chmod(fakeTmuxPath, 0o755);
+      await writeJson(join(stateDir, 'team-leader-nudge.json'), {
+        progress_by_team: { [preservedTeam]: { signature: 'keep' } },
+        last_nudged_by_team: { [preservedTeam]: { at: '2026-02-14T00:00:00.000Z' } },
+        last_idle_nudged_by_team: { [preservedTeam]: { at: '2026-02-14T00:00:00.000Z' } },
+      });
+
+      try {
+        setLeaderNudgeTestHooksForTests({
+          beforeGlobalNudgeStateRename: async () => {
+            await rm(join(stateDir, 'team', teamName), { recursive: true, force: true });
+          },
+        });
+        await withProcessEnv({
+          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_TEAM_LEADER_NUDGE_MS: '10000',
+          OMX_TEAM_LEADER_STALE_MS: '10000',
+        }, async () => {
+          await maybeNudgeTeamLeader({
+            cwd,
+            stateDir,
+            logsDir,
+            preComputedLeaderStale: true,
+          });
+        });
+      } finally {
+        setLeaderNudgeTestHooksForTests();
+      }
+
+      assert.equal(existsSync(join(stateDir, 'team', teamName)), false);
+      assert.equal(existsSync(join(stateDir, 'team', teamName, 'leader-attention.json')), false);
+      const nudgeState = await readNudgeState(cwd);
+      assert.equal(nudgeState.progress_by_team?.[teamName], undefined);
+      assert.equal(nudgeState.last_nudged_by_team?.[teamName], undefined);
+      assert.equal(nudgeState.last_idle_nudged_by_team?.[teamName], undefined);
+      assert.deepEqual(nudgeState.progress_by_team?.[preservedTeam], { signature: 'keep' });
+      assert.equal(nudgeState.last_nudged_by_team?.[preservedTeam]?.at, '2026-02-14T00:00:00.000Z');
+      assert.equal(nudgeState.last_idle_nudged_by_team?.[preservedTeam]?.at, '2026-02-14T00:00:00.000Z');
+    });
+  });
+
+  it('rolls back team nudge bookkeeping when shutdown wins during global nudge-state write', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'nudge-during-global-race';
+      const preservedTeam = 'preserved-live-team';
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+
+      await writeLeaderNudgeRaceFixture(cwd, teamName);
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(join(cwd, 'tmux.log'), ['%11 12345']));
+      await chmod(fakeTmuxPath, 0o755);
+      await writeJson(join(stateDir, 'team-leader-nudge.json'), {
+        progress_by_team: { [preservedTeam]: { signature: 'keep' } },
+        last_nudged_by_team: { [preservedTeam]: { at: '2026-02-14T00:00:00.000Z' } },
+        last_idle_nudged_by_team: { [preservedTeam]: { at: '2026-02-14T00:00:00.000Z' } },
+      });
+
+      try {
+        setLeaderNudgeTestHooksForTests({
+          afterGlobalNudgeStateRename: async () => {
+            await rm(join(stateDir, 'team', teamName), { recursive: true, force: true });
+          },
+        });
+        await withProcessEnv({
+          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_TEAM_LEADER_NUDGE_MS: '10000',
+          OMX_TEAM_LEADER_STALE_MS: '10000',
+        }, async () => {
+          await maybeNudgeTeamLeader({
+            cwd,
+            stateDir,
+            logsDir,
+            preComputedLeaderStale: true,
+          });
+        });
+      } finally {
+        setLeaderNudgeTestHooksForTests();
+      }
+
+      assert.equal(existsSync(join(stateDir, 'team', teamName)), false);
+      assert.equal(existsSync(join(stateDir, 'team', teamName, 'leader-attention.json')), false);
+      const nudgeState = await readNudgeState(cwd);
+      assert.equal(nudgeState.progress_by_team?.[teamName], undefined);
+      assert.equal(nudgeState.last_nudged_by_team?.[teamName], undefined);
+      assert.equal(nudgeState.last_idle_nudged_by_team?.[teamName], undefined);
+      assert.deepEqual(nudgeState.progress_by_team?.[preservedTeam], { signature: 'keep' });
+      assert.equal(nudgeState.last_nudged_by_team?.[preservedTeam]?.at, '2026-02-14T00:00:00.000Z');
+      assert.equal(nudgeState.last_idle_nudged_by_team?.[preservedTeam]?.at, '2026-02-14T00:00:00.000Z');
     });
   });
 

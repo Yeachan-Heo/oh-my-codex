@@ -3,7 +3,7 @@
  * Team leader nudge: remind the leader to check teammate/mailbox state.
  */
 
-import { readFile, writeFile, mkdir, appendFile, readdir, rm } from 'fs/promises';
+import { readFile, writeFile, mkdir, appendFile, readdir, rename, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { readUsableSessionState } from '../../hooks/session.js';
@@ -37,6 +37,65 @@ const ACK_LIKE_PATTERNS = [
   /^(?:on it|will do|i(?:'|')ll do it|working on it)[.!]*$/i,
 ];
 
+let atomicJsonWriteCounter = 0;
+
+// Synchronous test-only callbacks let regression tests emulate filesystem races
+// without shipping env-gated destructive fault injection in the notify hook.
+const leaderNudgeTestHooks = {
+  beforeLeaderAttentionRename: null,
+  afterLeaderAttentionRename: null,
+  beforeGlobalNudgeStateRename: null,
+  afterGlobalNudgeStateRename: null,
+};
+
+export function setLeaderNudgeTestHooksForTests(hooks = {}) {
+  leaderNudgeTestHooks.beforeLeaderAttentionRename = typeof hooks.beforeLeaderAttentionRename === 'function'
+    ? hooks.beforeLeaderAttentionRename
+    : null;
+  leaderNudgeTestHooks.afterLeaderAttentionRename = typeof hooks.afterLeaderAttentionRename === 'function'
+    ? hooks.afterLeaderAttentionRename
+    : null;
+  leaderNudgeTestHooks.beforeGlobalNudgeStateRename = typeof hooks.beforeGlobalNudgeStateRename === 'function'
+    ? hooks.beforeGlobalNudgeStateRename
+    : null;
+  leaderNudgeTestHooks.afterGlobalNudgeStateRename = typeof hooks.afterGlobalNudgeStateRename === 'function'
+    ? hooks.afterGlobalNudgeStateRename
+    : null;
+}
+
+async function atomicWriteJsonNoParentCreate(path, value, { beforeRename = null, afterRename = null } = {}) {
+  const tempPath = `${path}.${process.pid}.${Date.now()}.${++atomicJsonWriteCounter}.tmp`;
+  try {
+    await writeFile(tempPath, JSON.stringify(value, null, 2));
+    if (beforeRename) await beforeRename(tempPath);
+    await rename(tempPath, path);
+    if (afterRename) await afterRename(path);
+  } catch (error) {
+    await unlink(tempPath).catch(() => {});
+    throw error;
+  }
+}
+
+function cloneLeaderNudgeState(state) {
+  return {
+    ...(state && typeof state === 'object' ? state : {}),
+    last_nudged_by_team: { ...(state?.last_nudged_by_team || {}) },
+    last_idle_nudged_by_team: { ...(state?.last_idle_nudged_by_team || {}) },
+    progress_by_team: { ...(state?.progress_by_team || {}) },
+  };
+}
+
+function removeTeamFromLeaderNudgeState(state, teamName) {
+  if (state?.progress_by_team && typeof state.progress_by_team === 'object') {
+    delete state.progress_by_team[teamName];
+  }
+  if (state?.last_nudged_by_team && typeof state.last_nudged_by_team === 'object') {
+    delete state.last_nudged_by_team[teamName];
+  }
+  if (state?.last_idle_nudged_by_team && typeof state.last_idle_nudged_by_team === 'object') {
+    delete state.last_idle_nudged_by_team[teamName];
+  }
+}
 
 async function teamStateAllowsLeaderNudge(stateDir, teamName) {
   const teamDir = join(stateDir, 'team', teamName);
@@ -835,6 +894,15 @@ export async function maybeNudgeTeamLeader({
         orchestrationIntent,
       });
     };
+    const cleanupTeamPersistence = async () => {
+      await unlink(join(stateDir, 'team', teamName, 'leader-attention.json')).catch(() => {});
+      const latestState = await readJsonIfExists(nudgeStatePath, nudgeState);
+      const cleanedState = cloneLeaderNudgeState(latestState);
+      removeTeamFromLeaderNudgeState(cleanedState, teamName);
+      nudgeState = cleanedState;
+      await atomicWriteJsonNoParentCreate(nudgeStatePath, cleanedState).catch(() => {});
+    };
+
     const persistLeaderNudgeBookkeeping = async ({ orchestrationIntent = null, recordLastNudged = false } = {}) => {
       if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
         await recordShutdownSuppression(orchestrationIntent);
@@ -858,33 +926,37 @@ export async function maybeNudgeTeamLeader({
         stalled_for_ms: null,
       };
 
-      // Do not call writeTeamLeaderAttention() here: its atomic writer creates
-      // parent directories. A teardown can remove state/team/<team> after the
-      // advisory liveness checks above, and this persistence path must not
-      // recreate the team directory or leader-attention.json for a dead team.
-      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
-        await recordShutdownSuppression(orchestrationIntent);
-        return false;
-      }
-      if (process.env.OMX_NOTIFY_HOOK_FAULT_REMOVE_TEAM_BEFORE_LEADER_ATTENTION_WRITE === teamName) {
-        await rm(join(stateDir, 'team', teamName), { recursive: true, force: true }).catch(() => {});
-      }
+      const leaderAttentionPath = join(stateDir, 'team', teamName, 'leader-attention.json');
       try {
-        await writeFile(
-          join(stateDir, 'team', teamName, 'leader-attention.json'),
-          JSON.stringify(leaderAttention, null, 2),
-        );
+        await atomicWriteJsonNoParentCreate(leaderAttentionPath, leaderAttention, {
+          beforeRename: async (tempPath) => {
+            if (leaderNudgeTestHooks.beforeLeaderAttentionRename) {
+              await leaderNudgeTestHooks.beforeLeaderAttentionRename({ stateDir, teamName, tempPath });
+            }
+            if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+              throw new Error('team_state_gone_or_shutdown_before_leader_attention_rename');
+            }
+          },
+          afterRename: async () => {
+            if (leaderNudgeTestHooks.afterLeaderAttentionRename) {
+              await leaderNudgeTestHooks.afterLeaderAttentionRename({ stateDir, teamName, path: leaderAttentionPath });
+            }
+          },
+        });
       } catch {
+        await unlink(leaderAttentionPath).catch(() => {});
         await recordShutdownSuppression(orchestrationIntent);
         return false;
       }
 
       if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await cleanupTeamPersistence();
         await recordShutdownSuppression(orchestrationIntent);
         return false;
       }
 
-      nudgeState.progress_by_team[teamName] = {
+      const nextNudgeState = cloneLeaderNudgeState(nudgeState);
+      nextNudgeState.progress_by_team[teamName] = {
         signature: progressSnapshot.signature,
         last_progress_at: effectiveProgressAtIso,
         observed_at: nowIso,
@@ -904,21 +976,50 @@ export async function maybeNudgeTeamLeader({
         source: source === 'notify_fallback_watcher' ? 'notify_hook' : source,
       };
       if (recordLastNudged) {
-        nudgeState.last_nudged_by_team[teamName] = {
+        nextNudgeState.last_nudged_by_team[teamName] = {
           at: nowIso,
           last_message_id: newestId || prevMsgId || '',
           reason: nudgeReason,
           orchestration_intent: orchestrationIntent,
         };
         if (shouldSendAllIdleNudge) {
-          nudgeState.last_idle_nudged_by_team[teamName] = {
+          nextNudgeState.last_idle_nudged_by_team[teamName] = {
             at: nowIso,
             worker_count: workerNames.length,
             orchestration_intent: orchestrationIntent,
           };
         }
       }
-      await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
+
+      try {
+        await atomicWriteJsonNoParentCreate(nudgeStatePath, nextNudgeState, {
+          beforeRename: async (tempPath) => {
+            if (leaderNudgeTestHooks.beforeGlobalNudgeStateRename) {
+              await leaderNudgeTestHooks.beforeGlobalNudgeStateRename({ stateDir, teamName, tempPath });
+            }
+            if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+              throw new Error('team_state_gone_or_shutdown_before_nudge_state_rename');
+            }
+          },
+          afterRename: async () => {
+            if (leaderNudgeTestHooks.afterGlobalNudgeStateRename) {
+              await leaderNudgeTestHooks.afterGlobalNudgeStateRename({ stateDir, teamName, path: nudgeStatePath });
+            }
+          },
+        });
+      } catch {
+        await cleanupTeamPersistence();
+        await recordShutdownSuppression(orchestrationIntent);
+        return false;
+      }
+
+      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await cleanupTeamPersistence();
+        await recordShutdownSuppression(orchestrationIntent);
+        return false;
+      }
+
+      nudgeState = nextNudgeState;
       return true;
     };
 
