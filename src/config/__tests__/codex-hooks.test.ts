@@ -52,7 +52,7 @@ describe("codex hooks helpers", () => {
     );
   });
 
-  it("uses a cmd.exe-compatible Windows shim command without quoting the executable", () => {
+  it("uses a PowerShell -Command-safe Windows shim command with single-quoted literals", () => {
     const config = buildManagedCodexHooksConfig(
       "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
       {
@@ -67,10 +67,11 @@ describe("codex hooks helpers", () => {
 
     assert.equal(
       command,
-      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      "& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File 'C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1'",
     );
     assert.doesNotMatch(command ?? "", /codex-native-hook\.js/);
     assert.doesNotMatch(command ?? "", /^"[A-Z]:\\/i);
+    assert.doesNotMatch(command ?? "", /\\"/);
   });
 
   it("emits Windows hooks.json entries with only the cmd-compatible command field", () => {
@@ -94,7 +95,7 @@ describe("codex hooks helpers", () => {
     assert.equal(commandHook?.command_windows, undefined);
     assert.equal(
       commandHook?.command,
-      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      "& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File 'C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1'",
     );
   });
 
@@ -110,7 +111,7 @@ describe("codex hooks helpers", () => {
 
     assert.equal(
       command,
-      'E:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      "& 'E:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File 'C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1'",
     );
   });
 
@@ -150,7 +151,7 @@ describe("codex hooks helpers", () => {
 
     assert.ok(commands.includes("echo keep-me"));
     assert.ok(commands.includes(
-      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      "& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File 'C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1'",
     ));
   });
 
