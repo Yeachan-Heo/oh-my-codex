@@ -1007,6 +1007,133 @@ describe('notify-hook team leader nudge', () => {
     });
   });
 
+  it('suppresses leader mailbox nudge when team state disappears before injection', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'leader-nudge-teardown-race';
+      const teamDir = join(stateDir, 'team', teamName);
+      const mailboxDir = join(teamDir, 'mailbox');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'leader-nudge-teardown-race:0',
+        leader_pane_id: '%91',
+        workers: [{ name: 'worker-1', index: 1, pane_id: '%11' }],
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'late-after-shutdown',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'Done; please review',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+        ],
+      });
+
+      const quotedTeamDir = JSON.stringify(teamDir);
+      await writeFile(fakeTmuxPath, `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  case "$format" in
+    "#{pane_id}") echo "$target" ;;
+    "#{pane_in_mode}") echo "0" ;;
+    "#{pane_current_command}") echo "codex" ;;
+    "#{pane_start_command}") echo "codex" ;;
+    "#S") echo "leader-nudge-teardown-race" ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%11 12345"
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  rm -rf ${quotedTeamDir}
+  echo "› Ready"
+  exit 0
+fi
+if [[ "$cmd" == "set-buffer" ]]; then
+  printf '%s' "\${@: -1}" > "${tmuxLogPath}.buffer"
+  exit 0
+fi
+if [[ "$cmd" == "show-buffer" ]]; then
+  if [[ -f "${tmuxLogPath}.buffer" ]]; then cat "${tmuxLogPath}.buffer"; fi
+  exit 0
+fi
+if [[ "$cmd" == "paste-buffer" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -f "${tmuxLogPath}.buffer" ]]; then
+    echo "send-keys -t \${target} -l $(cat "${tmuxLogPath}.buffer")" >> "${tmuxLogPath}"
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "delete-buffer" ]]; then
+  rm -f "${tmuxLogPath}.buffer"
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+exit 0
+`);
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      assert.equal(existsSync(teamDir), false, 'teardown race should remove the canonical team state');
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %91 -l Team leader-nudge-teardown-race:/);
+      assert.doesNotMatch(tmuxLog, /paste-buffer -t %91/);
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'nudge_triggered'
+        && entry.team === teamName
+        && entry.to_worker === 'leader-fixed'
+        && entry.transport === 'none'
+        && entry.result === 'suppressed'
+        && entry.reason === 'team_state_gone_or_shutdown'),
+      'teardown-race leader mailbox nudge should be diagnostic suppression, not an actionable injection');
+    });
+  });
+
   it('injects leader nudge into a busy live Codex pane so the message can queue', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

@@ -28,6 +28,7 @@ import { TEAM_NAME_SAFE_PATTERN } from '../../team/contracts.js';
 import { isDeepInterviewStateActive } from './auto-nudge.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
+const TEAM_SHUTDOWN_NO_INJECTION_REASON = 'team_state_gone_or_shutdown';
 const LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON = 'pane_already_shows_same_classified_state';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
 const ACK_WITHOUT_START_EVIDENCE_REASON = 'ack_without_start_evidence';
@@ -36,6 +37,50 @@ const ACK_LIKE_PATTERNS = [
   /^(?:ok|okay|k|roger|copy|received|got it|understood|sounds good)[.!]*$/i,
   /^(?:on it|will do|i(?:'|')ll do it|working on it)[.!]*$/i,
 ];
+
+
+async function teamStateAllowsLeaderNudge(stateDir, teamName) {
+  const teamDir = join(stateDir, 'team', teamName);
+  if (!existsSync(teamDir)) return false;
+  if (existsSync(join(teamDir, 'shutdown.json'))) return false;
+
+  const phase = await readJsonIfExists(join(teamDir, 'phase.json'), null);
+  const currentPhase = safeString(phase?.current_phase || phase?.phase || '').trim();
+  if (currentPhase && isTerminalPhase(currentPhase)) return false;
+
+  return true;
+}
+
+async function recordSuppressedLeaderNudge({
+  logsDir,
+  source,
+  teamName,
+  reason,
+  orchestrationIntent = null,
+}) {
+  const nowIso = new Date().toISOString();
+  await logTmuxHookEvent(logsDir, {
+    timestamp: nowIso,
+    type: 'team_leader_nudge_suppressed',
+    team: teamName,
+    worker: 'leader-fixed',
+    to_worker: 'leader-fixed',
+    reason,
+    orchestration_intent: orchestrationIntent,
+    tmux_injection_attempted: false,
+    source_type: 'leader_nudge',
+  }).catch(() => {});
+  await appendTeamDeliveryLog(logsDir, {
+    event: 'nudge_triggered',
+    source,
+    team: teamName,
+    to_worker: 'leader-fixed',
+    transport: 'none',
+    result: 'suppressed',
+    reason,
+    orchestration_intent: orchestrationIntent,
+  }).catch(() => {});
+}
 
 function normalizeValidSessionId(value) {
   const trimmed = safeString(value).trim();
@@ -613,6 +658,15 @@ export async function maybeNudgeTeamLeader({
   const leaderStale = typeof preComputedLeaderStale === 'boolean' ? preComputedLeaderStale : false;
 
   for (const teamName of candidateTeamNames) {
+    if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+      await recordSuppressedLeaderNudge({
+        logsDir,
+        source,
+        teamName,
+        reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+      });
+      continue;
+    }
     let tmuxSession = '';
     let leaderPaneId = '';
     let ownerSessionId = '';
@@ -772,6 +826,16 @@ export async function maybeNudgeTeamLeader({
       text = `Team ${teamName}: ${messages.length} msg(s) for leader. ${buildMailboxCheckReminder(teamName)}`;
     }
 
+    if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+      await recordSuppressedLeaderNudge({
+        logsDir,
+        source,
+        teamName,
+        reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+      });
+      continue;
+    }
+
     const unreadLeaderMessageCount = messages.filter((message) => !safeString(message?.delivered_at).trim()).length;
     nudgeState.progress_by_team[teamName] = {
       signature: progressSnapshot.signature,
@@ -811,6 +875,16 @@ export async function maybeNudgeTeamLeader({
 
     if (!nudgeReason) continue;
     const orchestrationIntent = resolveLeaderNudgeIntent({ nudgeReason, leaderActionState });
+    if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+      await recordSuppressedLeaderNudge({
+        logsDir,
+        source,
+        teamName,
+        reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+        orchestrationIntent,
+      });
+      continue;
+    }
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
     const markedText = `${capped} ${DEFAULT_MARKER}`;
 
@@ -827,6 +901,16 @@ export async function maybeNudgeTeamLeader({
           worker_count: workerNames.length,
           orchestration_intent: orchestrationIntent,
         };
+      }
+      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await recordSuppressedLeaderNudge({
+          logsDir,
+          source,
+          teamName,
+          reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+          orchestrationIntent,
+        });
+        continue;
       }
       await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, orchestrationIntent, nowIso, {
         tmuxSession,
@@ -886,6 +970,16 @@ export async function maybeNudgeTeamLeader({
           orchestration_intent: orchestrationIntent,
         };
       }
+      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await recordSuppressedLeaderNudge({
+          logsDir,
+          source,
+          teamName,
+          reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+          orchestrationIntent,
+        });
+        continue;
+      }
       await emitLeaderNudgeDeferredEvent(cwd, teamName, deferredReason, orchestrationIntent, nowIso, {
         tmuxSession,
         leaderPaneId,
@@ -939,7 +1033,19 @@ export async function maybeNudgeTeamLeader({
         };
       }
 
-      await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
+      if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+        await recordSuppressedLeaderNudge({
+          logsDir,
+          source,
+          teamName,
+          reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+          orchestrationIntent,
+        });
+        continue;
+      }
+      if (await teamStateAllowsLeaderNudge(stateDir, teamName)) {
+        await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
+      }
 
       try {
         await logTmuxHookEvent(logsDir, {
@@ -970,6 +1076,17 @@ export async function maybeNudgeTeamLeader({
         visible_injection_suppressed: true,
         suppression_reason: LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON,
       }).catch(() => {});
+      continue;
+    }
+
+    if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
+      await recordSuppressedLeaderNudge({
+        logsDir,
+        source,
+        teamName,
+        reason: TEAM_SHUTDOWN_NO_INJECTION_REASON,
+        orchestrationIntent,
+      });
       continue;
     }
 
@@ -1010,7 +1127,9 @@ export async function maybeNudgeTeamLeader({
         };
       }
 
-      await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
+      if (await teamStateAllowsLeaderNudge(stateDir, teamName)) {
+        await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
+      }
 
       try {
         await logTmuxHookEvent(logsDir, {
