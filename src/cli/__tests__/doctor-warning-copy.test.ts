@@ -21,6 +21,7 @@ import {
 import {
 	checkExploreHarness,
 	checkExternalCodexProcessGuards,
+	buildPostCompactSmokeSpawnInvocation,
 	checkNativeHookDistSmoke,
 	classifyPostCompactHookStdout,
 } from "../doctor.js";
@@ -1833,6 +1834,28 @@ command = "node"
 		);
 		assert.equal(unsupportedJson?.status, "fail");
 		assert.match(unsupportedJson?.message ?? "", /must emit no stdout/);
+	});
+
+	it("routes Windows PostCompact smoke validation through PowerShell -Command", () => {
+		const expectedCommand =
+			"& 'C:\\Program Files\\PowerShell\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File 'C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1'";
+		const invocation = buildPostCompactSmokeSpawnInvocation(expectedCommand, {
+			platform: "win32",
+			env: { SystemRoot: "C:\\Windows" },
+		});
+
+		assert.equal(
+			invocation.command,
+			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+		);
+		assert.deepEqual(invocation.args, [
+			"-NoProfile",
+			"-ExecutionPolicy",
+			"Bypass",
+			"-Command",
+			expectedCommand,
+		]);
+		assert.equal(invocation.shell, false);
 	});
 
 	it("verbose doctor smoke-validates the current PostCompact command with no stdout", async () => {

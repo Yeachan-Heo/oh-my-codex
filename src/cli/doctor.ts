@@ -37,6 +37,7 @@ import {
 	MANAGED_HOOK_EVENTS,
 	buildManagedCodexNativeHookCommand,
 	discoverCodexHookConfigPaths,
+	resolveWindowsPowerShellPath,
 	getManagedCodexHookCommandsForEvent,
 	getMissingManagedCodexHookEvents,
 	hasCodexHooksJsonTopLevelState,
@@ -1956,6 +1957,42 @@ export function classifyPostCompactHookStdout(stdout: string): Check | null {
 	}
 }
 
+
+interface PostCompactSmokeSpawnInvocation {
+	command: string;
+	args: string[];
+	shell: boolean;
+}
+
+export function buildPostCompactSmokeSpawnInvocation(
+	expectedCommand: string,
+	options: {
+		platform?: NodeJS.Platform;
+		env?: NodeJS.ProcessEnv;
+	} = {},
+): PostCompactSmokeSpawnInvocation {
+	const platform = options.platform ?? process.platform;
+	if (platform === "win32") {
+		return {
+			command: resolveWindowsPowerShellPath(options.env),
+			args: [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				expectedCommand,
+			],
+			shell: false,
+		};
+	}
+
+	return {
+		command: expectedCommand,
+		args: [],
+		shell: true,
+	};
+}
+
 async function checkNativePostCompactHookRuntime(
 	hooksPath: string,
 	cwd: string,
@@ -1998,7 +2035,8 @@ async function checkNativePostCompactHookRuntime(
 			cwd: smokeCwd,
 			session_id: "omx-doctor-postcompact-smoke",
 		});
-		const result = spawnSync(expectedCommand, {
+		const smokeInvocation = buildPostCompactSmokeSpawnInvocation(expectedCommand);
+		const result = spawnSync(smokeInvocation.command, smokeInvocation.args, {
 			cwd,
 			encoding: "utf-8",
 			env: {
@@ -2006,7 +2044,7 @@ async function checkNativePostCompactHookRuntime(
 				OMX_NATIVE_HOOK_DOCTOR_SMOKE: "1",
 			},
 			input: payload,
-			shell: true,
+			shell: smokeInvocation.shell,
 			timeout: 5_000,
 		});
 
