@@ -65,6 +65,7 @@
     "Cargo.toml",
     "Cargo.lock",
     "dist/",
+    "docs/",
     "crates/",
     "!crates/**/.omx/**",
     "skills/",
@@ -106,5 +107,16 @@
   "overrides": {
     "ajv": ">=8.18.0",
     "hono": ">=4.11.10"
+  },
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "directories": {
+    "doc": "docs"
   }
 }
