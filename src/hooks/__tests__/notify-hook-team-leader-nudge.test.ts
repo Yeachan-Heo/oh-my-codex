@@ -1122,6 +1122,19 @@ exit 0
       assert.doesNotMatch(tmuxLog, /send-keys -t %91 -l Team leader-nudge-teardown-race:/);
       assert.doesNotMatch(tmuxLog, /paste-buffer -t %91/);
 
+      const nudgeStatePath = join(stateDir, 'team-leader-nudge.json');
+      if (existsSync(nudgeStatePath)) {
+        const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
+        assert.equal(nudgeState.progress_by_team?.[teamName], undefined);
+        assert.equal(nudgeState.last_nudged_by_team?.[teamName], undefined);
+        assert.equal(nudgeState.last_idle_nudged_by_team?.[teamName], undefined);
+      }
+      assert.equal(
+        existsSync(join(teamDir, 'leader-attention.json')),
+        false,
+        'removed team must not get recreated by leader-attention bookkeeping',
+      );
+
       const deliveryLog = await readTeamDeliveryLog(cwd);
       assert.ok(deliveryLog.some((entry) =>
         entry.event === 'nudge_triggered'
