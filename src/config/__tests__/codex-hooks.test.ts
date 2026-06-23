@@ -26,12 +26,18 @@ import {
 describe("codex hooks helpers", () => {
 
   it("uses the current JavaScript runtime for managed hook commands", () => {
-    const config = buildManagedCodexHooksConfig("/repo");
+    const config = buildManagedCodexHooksConfig("/repo", { platform: "linux" });
     const command = (config.hooks.SessionStart[0] as { hooks?: Array<{ command?: string }> } | undefined)?.hooks?.[0]?.command;
+    const expectedScriptPath = join(
+      "/repo",
+      "dist",
+      "scripts",
+      "codex-native-hook.js",
+    ).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
     assert.equal(
       command,
-      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`,
+      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "${expectedScriptPath}"`,
     );
   });
 
@@ -67,7 +73,7 @@ describe("codex hooks helpers", () => {
 
     assert.equal(
       command,
-      '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      '& "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     );
     assert.doesNotMatch(command ?? "", /codex-native-hook\.js/);
   });
@@ -84,8 +90,22 @@ describe("codex hooks helpers", () => {
 
     assert.equal(
       command,
-      '"E:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      '& "E:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     );
+  });
+
+  it("uses PowerShell's call operator for quoted Windows hook executables", () => {
+    const command = buildManagedCodexNativeHookCommand(
+      "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
+      {
+        platform: "win32",
+        codexHomeDir: "C:\\Users\\Ada Lovelace\\.codex",
+        env: { SystemRoot: "C:\\Windows" },
+      },
+    );
+
+    assert.match(command, /^& "/);
+    assert.doesNotMatch(command, /^"[^"]+" -NoProfile/);
   });
 
   it("falls back to the default Windows install root when no env hints exist", () => {
@@ -124,7 +144,7 @@ describe("codex hooks helpers", () => {
 
     assert.ok(commands.includes("echo keep-me"));
     assert.ok(commands.includes(
-      '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+      '& "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
     ));
   });
 
@@ -254,6 +274,7 @@ describe("codex hooks helpers", () => {
           },
         }),
         "/repo",
+        { platform: "linux" },
       ),
     ) as { hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> };
 
@@ -288,9 +309,12 @@ describe("codex hooks helpers", () => {
   });
 
   it("matches Codex's normalized command hook hash identity", async () => {
-    const state = buildManagedCodexHookTrustState("/hooks.json", "/repo");
-    const command =
-      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`;
+    const state = buildManagedCodexHookTrustState("/hooks.json", "/repo", {
+      platform: "linux",
+    });
+    const command = buildManagedCodexNativeHookCommand("/repo", {
+      platform: "linux",
+    });
     const expectedIdentity = {
       event_name: "pre_tool_use",
       hooks: [
@@ -646,7 +670,7 @@ describe("codex hooks helpers", () => {
   });
 
   it("registers managed compact hook wrappers", () => {
-    const config = buildManagedCodexHooksConfig("/repo");
+    const config = buildManagedCodexHooksConfig("/repo", { platform: "linux" });
     assert.ok(config.hooks.PreCompact?.length);
     assert.ok(config.hooks.PostCompact?.length);
     const preCompact = config.hooks.PreCompact as Array<{ hooks?: Array<{ command?: string }> }>;
@@ -688,7 +712,11 @@ describe("codex hooks helpers", () => {
     assert.equal(getMissingManagedCodexHookEvents("{ invalid json"), null);
   });
 
-  it("ignores runtime codex-home hook mirrors before hook loading", async () => {
+  it("ignores runtime codex-home hook mirrors before hook loading", {
+    skip: process.platform === "win32"
+      ? "Windows symlink creation requires elevated privileges in this test"
+      : false,
+  }, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-hook-dedupe-"));
     try {
       const canonicalPath = join(cwd, ".codex", "hooks.json");
@@ -708,7 +736,11 @@ describe("codex hooks helpers", () => {
     }
   });
 
-  it("de-dupes hook config paths by realpath outside runtime mirrors", async () => {
+  it("de-dupes hook config paths by realpath outside runtime mirrors", {
+    skip: process.platform === "win32"
+      ? "Windows symlink creation requires elevated privileges in this test"
+      : false,
+  }, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-hook-realpath-dedupe-"));
     try {
       const canonicalPath = join(cwd, ".codex", "hooks.json");

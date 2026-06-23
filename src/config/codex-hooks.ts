@@ -224,7 +224,7 @@ export function buildManagedCodexNativeHookCommand(
     const codexHomeDir = options.codexHomeDir ?? dirname(pkgRoot);
     const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
     const powerShellPath = resolveWindowsPowerShellPath(options.env);
-    return `${quoteWindowsCommandPart(powerShellPath)} -NoProfile -ExecutionPolicy Bypass -File ${quoteWindowsCommandPart(shimPath)}`;
+    return `& ${quoteWindowsCommandPart(powerShellPath)} -NoProfile -ExecutionPolicy Bypass -File ${quoteWindowsCommandPart(shimPath)}`;
   }
 
   return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(hookScript)}`;
