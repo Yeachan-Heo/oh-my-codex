@@ -22,7 +22,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v6
@@ -110,7 +110,7 @@ jobs:
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -155,7 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-native]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/download-artifact@v8
@@ -220,7 +220,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [publish-native-assets]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: native-release-assets
@@ -240,7 +240,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [smoke-verify-native]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -256,7 +256,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [smoke-packed-install]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 20
