@@ -26,6 +26,12 @@ export function resolveCodexHome(options: Pick<OmxCodexProfileOptions, 'codexHom
   return options.codexHome ?? (env.CODEX_HOME?.trim() || join(homedir(), '.codex'));
 }
 
+function assertSafeCodexProfileName(profileName: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profileName)) {
+    throw new Error(`Invalid Codex profile name: ${profileName}`);
+  }
+}
+
 export async function readCodexConfig(path: string): Promise<Record<string, unknown> | null> {
   try {
     const parsed = parseToml(await readFile(path, 'utf-8')) as unknown;
@@ -40,6 +46,7 @@ export async function resolveCodexProfile(options: OmxCodexProfileOptions = {}):
   const baseConfigPath = join(codexHome, 'config.toml');
   const baseConfig = await readCodexConfig(baseConfigPath) ?? {};
   const profileName = options.profile?.trim() || undefined;
+  if (profileName) assertSafeCodexProfileName(profileName);
   const profileConfigPath = profileName ? join(codexHome, `${profileName}.config.toml`) : undefined;
   const profileConfig = profileConfigPath ? await readCodexConfig(profileConfigPath) : null;
   if (profileName && !profileConfig) {
@@ -69,14 +76,23 @@ export function codexProfileToApiEnv(profile: OmxCodexProfileResolution): NodeJS
 }
 
 function mergeConfig(base: Record<string, unknown>, overlay: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...base };
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (!isSafeConfigKey(key)) continue;
+    result[key] = value;
+  }
   for (const [key, value] of Object.entries(overlay)) {
+    if (!isSafeConfigKey(key)) continue;
     const existing = result[key];
     result[key] = isRecord(existing) && isRecord(value)
       ? mergeConfig(existing, value)
       : value;
   }
   return result;
+}
+
+function isSafeConfigKey(key: string): boolean {
+  return key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

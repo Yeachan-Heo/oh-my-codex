@@ -121,11 +121,11 @@ export class OmxHttpTransport {
   }
 }
 
-export async function* parseSseStream<T = unknown>(response: Response): AsyncGenerator<OmxSseEvent<T>> {
+export async function* parseSseStream<T = unknown>(response: Response, options: { signal?: AbortSignal } = {}): AsyncGenerator<OmxSseEvent<T>> {
   if (!response.body) return;
   const decoder = new TextDecoder();
   let buffer = '';
-  for await (const chunk of responseBodyChunks(response.body)) {
+  for await (const chunk of responseBodyChunks(response.body, options.signal)) {
     buffer += decoder.decode(chunk, { stream: true });
     let separator = findSseFrameSeparator(buffer);
     while (separator) {
@@ -142,6 +142,7 @@ export async function* parseSseStream<T = unknown>(response: Response): AsyncGen
 }
 
 interface ReadableStreamReaderLike {
+  cancel?: (reason?: unknown) => Promise<void>;
   read: () => Promise<{ done: boolean; value?: Uint8Array }>;
   releaseLock?: () => void;
 }
@@ -154,22 +155,48 @@ function hasReader(body: unknown): body is ReadableStreamLike {
   return Boolean(body && typeof body === 'object' && 'getReader' in body && typeof (body as ReadableStreamLike).getReader === 'function');
 }
 
-async function* responseBodyChunks(body: Response['body']): AsyncGenerator<Uint8Array> {
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new OmxSdkError('OMX SDK stream was aborted');
+}
+
+async function* responseBodyChunks(body: Response['body'], signal?: AbortSignal): AsyncGenerator<Uint8Array> {
+  throwIfAborted(signal);
   if (hasReader(body)) {
     const reader = body.getReader();
+    let completed = false;
+    const onAbort = () => {
+      void reader.cancel?.(signal?.reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
       while (true) {
+        throwIfAborted(signal);
         const { done, value } = await reader.read();
-        if (done) break;
+        throwIfAborted(signal);
+        if (done) {
+          completed = true;
+          break;
+        }
         if (value) yield value;
       }
     } finally {
+      signal?.removeEventListener('abort', onAbort);
+      if (!completed) {
+        try {
+          await reader.cancel?.(signal?.reason);
+        } catch {
+          // Ignore cleanup errors so the consumer sees the original stream outcome.
+        }
+      }
       reader.releaseLock?.();
     }
     return;
   }
 
   for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+    throwIfAborted(signal);
     yield chunk;
   }
 }

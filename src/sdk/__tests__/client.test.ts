@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile, mkdir, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile, mkdir, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { initTeamState, listDispatchRequests } from '../../team/state.js';
@@ -14,6 +14,7 @@ import {
   parseSseStream,
   readOmxDaemonState,
   readOmxDaemonToken,
+  readOmxApiDaemonStatus,
   startOmxApiDaemon,
   resolveOmxApiClientOptions,
   OmxTeamClient,
@@ -114,6 +115,39 @@ describe('OmxClient', () => {
     assert.deepEqual(events.map((event) => event.data), [{ delta: 'a' }, { delta: 'b' }]);
     assert.equal(events[0]?.event, 'one');
   });
+
+  it('cancels SSE body reads when the caller aborts the stream signal', async () => {
+    const controller = new AbortController();
+    const body = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(new TextEncoder().encode('data: {"a":1}\n\n'));
+      },
+    });
+    const stream = parseSseStream(new Response(body), { signal: controller.signal });
+
+    assert.deepEqual((await stream.next()).value?.data, { a: 1 });
+    controller.abort(new Error('stop stream'));
+    await assert.rejects(stream.next(), /stop stream/);
+  });
+
+  it('cancels SSE body reads when the caller stops consuming early', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(new TextEncoder().encode('data: {"a":1}\n\n'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    for await (const event of parseSseStream(new Response(body))) {
+      assert.deepEqual(event.data, { a: 1 });
+      break;
+    }
+
+    assert.equal(cancelled, true);
+  });
 });
 
 describe('OMX API daemon helpers', () => {
@@ -123,7 +157,7 @@ describe('OMX API daemon helpers', () => {
       const stateFile = join(dir, 'daemon.json');
       const tokenFile = daemonTokenFileForState(stateFile);
       await writeFile(stateFile, JSON.stringify({
-        pid: 123,
+        pid: process.pid,
         host: '127.0.0.1',
         port: 15151,
         backend: 'mock',
@@ -145,6 +179,43 @@ describe('OMX API daemon helpers', () => {
     }
   });
 
+  it('formats IPv6 loopback daemon state URLs and token matching safely', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-state-ipv6-'));
+    try {
+      const stateFile = join(dir, 'daemon.json');
+      const tokenFile = daemonTokenFileForState(stateFile);
+      await writeFile(stateFile, JSON.stringify({
+        pid: process.pid,
+        host: '::1',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: 1,
+        local_bearer_token_file: tokenFile,
+      }));
+      await writeFile(tokenFile, 'abc123\n');
+      await chmod(tokenFile, 0o600);
+
+      assert.deepEqual(await resolveOmxApiClientOptions({ stateFile, env: {} }), {
+        baseUrl: 'http://[::1]:15151',
+        bearerToken: 'abc123',
+        fetchImpl: undefined,
+        timeoutMs: undefined,
+      });
+      assert.deepEqual(await resolveOmxApiClientOptions({ stateFile, env: { OMX_API_BASE_URL: 'http://[::1]:15151' } }), {
+        baseUrl: 'http://[::1]:15151',
+        bearerToken: 'abc123',
+        fetchImpl: undefined,
+        timeoutMs: undefined,
+      });
+
+      const status = await readOmxApiDaemonStatus(stateFile);
+      assert.equal(status.status, 'running');
+      assert.equal(status.baseUrl, 'http://[::1]:15151');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
 
 
   it('uses daemon token fallback when OMX_API_BASE_URL matches daemon state', async () => {
@@ -153,7 +224,7 @@ describe('OMX API daemon helpers', () => {
       const stateFile = join(dir, 'daemon.json');
       const tokenFile = daemonTokenFileForState(stateFile);
       await writeFile(stateFile, JSON.stringify({
-        pid: 123,
+        pid: process.pid,
         host: '127.0.0.1',
         port: 15151,
         backend: 'mock',
@@ -180,7 +251,7 @@ describe('OMX API daemon helpers', () => {
       const stateFile = join(dir, 'daemon.json');
       const tokenFile = daemonTokenFileForState(stateFile);
       await writeFile(stateFile, JSON.stringify({
-        pid: 123,
+        pid: process.pid,
         host: '127.0.0.1',
         port: 15151,
         backend: 'mock',
@@ -207,7 +278,7 @@ describe('OMX API daemon helpers', () => {
       const stateFile = join(dir, 'daemon.json');
       const tokenFile = daemonTokenFileForState(stateFile);
       await writeFile(stateFile, JSON.stringify({
-        pid: 123,
+        pid: process.pid,
         host: '127.0.0.1',
         port: 15151,
         backend: 'mock',
@@ -218,6 +289,7 @@ describe('OMX API daemon helpers', () => {
       await chmod(tokenFile, 0o600);
 
       for (const baseUrl of [
+        'https://127.0.0.1:15151',
         'http://user:pass@127.0.0.1:15151',
         'http://127.0.0.1:15151/proxy',
         'http://127.0.0.1:15151?target=proxy',
@@ -232,6 +304,86 @@ describe('OMX API daemon helpers', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('ignores daemon state with non-loopback hosts', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-nonlocal-state-'));
+    try {
+      const stateFile = join(dir, 'daemon.json');
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123,
+        host: 'example.com',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: 1,
+      }));
+
+      assert.equal(await readOmxDaemonState(stateFile), null);
+      assert.deepEqual(await resolveOmxApiClientOptions({ stateFile, env: { OMX_API_PORT: '15557' } }), {
+        baseUrl: 'http://127.0.0.1:15557',
+        bearerToken: undefined,
+        fetchImpl: undefined,
+        timeoutMs: undefined,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not read daemon token files outside the daemon state directory or through symlinks', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-token-boundary-'));
+    try {
+      const stateDir = join(dir, 'state');
+      const stateFile = join(stateDir, 'daemon.json');
+      const outsideToken = join(dir, 'outside.token');
+      const symlinkToken = join(stateDir, 'linked.token');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(outsideToken, 'outside-token\n');
+      await chmod(outsideToken, 0o600);
+      await symlink(outsideToken, symlinkToken);
+
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123,
+        host: '127.0.0.1',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: 1,
+        local_bearer_token_file: outsideToken,
+      }));
+      assert.equal(await readOmxDaemonToken(stateFile), undefined);
+
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123,
+        host: '127.0.0.1',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: 1,
+        local_bearer_token_file: symlinkToken,
+      }));
+      assert.equal(await readOmxDaemonToken(stateFile), undefined);
+
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123,
+        host: '127.0.0.1',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: 1,
+        local_bearer_token_file: stateFile,
+      }));
+      assert.equal(await readOmxDaemonToken(stateFile), undefined);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exports the documented SDK surface from the package root', async () => {
+    const root = await import('../../index.js');
+    assert.equal(typeof root.OmxClient, 'function');
+    assert.equal(typeof root.OmxRuntimeClient, 'function');
+    assert.equal(typeof root.OmxTimeoutError, 'function');
+    assert.equal(typeof root.startOmxApiDaemon, 'function');
+    assert.equal('OmxHttpTransport' in root, false);
+    assert.equal('assertSafeCodexProfileName' in root, false);
   });
 
   it('does not forward OMX_API_LOCAL_BEARER to unrelated OMX_API_BASE_URL', async () => {
@@ -356,6 +508,51 @@ describe('OMX API daemon helpers', () => {
     }
   });
 
+  it('ignores daemon state with an unusable backend or start timestamp', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-bad-state-shape-'));
+    try {
+      const stateFile = join(dir, 'daemon.json');
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123,
+        host: '127.0.0.1',
+        port: 15151,
+        backend: 'custom',
+        started_at_unix: 1,
+      }));
+      assert.equal(await readOmxDaemonState(stateFile), null);
+
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123,
+        host: '127.0.0.1',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: '1',
+      }));
+      assert.equal(await readOmxDaemonState(stateFile), null);
+
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123.4,
+        host: '127.0.0.1',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: 1,
+      }));
+      assert.equal(await readOmxDaemonState(stateFile), null);
+
+      await writeFile(stateFile, JSON.stringify({
+        pid: 123,
+        host: '127.0.0.1',
+        port: 15151,
+        backend: 'mock',
+        started_at_unix: 1,
+        local_bearer_token_file: 42,
+      }));
+      assert.equal(await readOmxDaemonState(stateFile), null);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores daemon state with an unusable port', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-bad-state-port-'));
     try {
@@ -385,7 +582,7 @@ describe('OMX API daemon helpers', () => {
     try {
       const stateFile = join(dir, 'daemon.json');
       await writeFile(stateFile, JSON.stringify({
-        pid: 123,
+        pid: process.pid,
         host: '127.0.0.1',
         port: 16667,
         backend: 'mock',
@@ -395,6 +592,31 @@ describe('OMX API daemon helpers', () => {
       assert.equal(defaultOmxApiStateFile().includes('/tmp/omx-api-daemon.json'), false);
       assert.deepEqual(await resolveOmxApiClientOptions({ env: { OMX_API_STATE_FILE: stateFile } }), {
         baseUrl: 'http://127.0.0.1:16667',
+        bearerToken: undefined,
+        fetchImpl: undefined,
+        timeoutMs: undefined,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports not-running for stale daemon status files', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-status-stale-'));
+    try {
+      const stateFile = join(dir, 'daemon.json');
+      await writeFile(stateFile, JSON.stringify({
+        pid: 99_999_999,
+        host: '127.0.0.1',
+        port: 16667,
+        backend: 'mock',
+        started_at_unix: 1,
+      }));
+      await writeFile(daemonTokenFileForState(stateFile), 'stale-token\n');
+
+      assert.deepEqual(await readOmxApiDaemonStatus(stateFile), { status: 'not-running' });
+      assert.deepEqual(await resolveOmxApiClientOptions({ stateFile, env: { OMX_API_PORT: '15558' } }), {
+        baseUrl: 'http://127.0.0.1:15558',
         bearerToken: undefined,
         fetchImpl: undefined,
         timeoutMs: undefined,
@@ -437,6 +659,50 @@ describe('OMX API daemon helpers', () => {
       '--state-file',
       '/tmp/omx-api.json',
     ]);
+    assert.deepEqual(buildOmxApiServeArgs({
+      host: '[::1]',
+      port: 14510,
+      backend: 'mock',
+      stateFile: '/tmp/omx-api.json',
+    }).slice(0, 3), [
+      'serve',
+      '--host',
+      '::1',
+    ]);
+  });
+
+  it('rejects non-loopback daemon start hosts before spawning', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-host-'));
+    try {
+      await assert.rejects(
+        startOmxApiDaemon({
+          binaryPath: join(dir, 'missing-api'),
+          stateFile: join(dir, 'daemon.json'),
+          host: '0.0.0.0',
+          startupTimeoutMs: 100,
+        }),
+        /loopback host/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid daemon ports before spawning', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-port-'));
+    try {
+      await assert.rejects(
+        startOmxApiDaemon({
+          binaryPath: join(dir, 'missing-api'),
+          stateFile: join(dir, 'daemon.json'),
+          port: 65_536,
+          startupTimeoutMs: 100,
+        }),
+        /ports must be integers/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
 
@@ -458,6 +724,66 @@ exit 0
         /exited before writing daemon state|did not write daemon state/,
       );
       assert.equal(await readOmxDaemonState(stateFile), null);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to replace live daemon state files', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-live-state-'));
+    try {
+      const stateFile = join(dir, 'daemon.json');
+      await writeFile(stateFile, JSON.stringify({
+        pid: process.pid,
+        host: '127.0.0.1',
+        port: 19999,
+        backend: 'mock',
+        started_at_unix: 1,
+      }));
+
+      await assert.rejects(
+        startOmxApiDaemon({ binaryPath: join(dir, 'missing-api'), stateFile, startupTimeoutMs: 100 }),
+        /refusing to replace live omx-api daemon state/,
+      );
+      assert.equal((await readOmxDaemonState(stateFile))?.pid, process.pid);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes stale in-directory custom daemon token files before startup', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-stale-custom-token-'));
+    try {
+      const stateFile = join(dir, 'daemon.json');
+      const customToken = join(dir, 'custom.token');
+      await writeFile(customToken, 'stale-token\n');
+      await chmod(customToken, 0o600);
+      await writeFile(stateFile, JSON.stringify({
+        pid: 99_999_999,
+        host: '127.0.0.1',
+        port: 19999,
+        backend: 'mock',
+        started_at_unix: 1,
+        local_bearer_token_file: customToken,
+      }));
+      const script = join(dir, 'stub-api');
+      await writeFile(script, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+const valueAfter = (flag) => args[args.indexOf(flag) + 1];
+const stateFile = valueAfter('--state-file');
+const host = valueAfter('--host');
+const port = Number(valueAfter('--port'));
+const backend = valueAfter('--backend');
+fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, host, port, backend, started_at_unix: 1 }));
+process.on('SIGTERM', () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+      await chmod(script, 0o755);
+
+      const daemon = await startOmxApiDaemon({ binaryPath: script, stateFile, port: 16673, startupTimeoutMs: 1_000 });
+      await assert.rejects(stat(customToken), /ENOENT/);
+      await daemon.stop({ timeoutMs: 50 });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -510,6 +836,39 @@ setInterval(() => {}, 1000);
       assert.equal(daemon.baseUrl, 'http://127.0.0.1:16666');
       await daemon.stop({ timeoutMs: 50 });
       assert.equal(await readOmxDaemonState(stateFile), null);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes bracketed IPv6 loopback daemon start hosts', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-ipv6-host-'));
+    try {
+      const script = join(dir, 'stub-api');
+      await writeFile(script, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+const valueAfter = (flag) => args[args.indexOf(flag) + 1];
+const stateFile = valueAfter('--state-file');
+const host = valueAfter('--host');
+const port = Number(valueAfter('--port'));
+const backend = valueAfter('--backend');
+fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, host, port, backend, started_at_unix: 1 }));
+process.on('SIGTERM', () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+      await chmod(script, 0o755);
+      const daemon = await startOmxApiDaemon({
+        binaryPath: script,
+        stateFile: join(dir, 'daemon.json'),
+        host: '[::1]',
+        port: 16674,
+        startupTimeoutMs: 1_000,
+      });
+
+      assert.equal(daemon.state.host, '::1');
+      assert.equal(daemon.baseUrl, 'http://[::1]:16674');
+      await daemon.stop({ timeoutMs: 50 });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -661,6 +1020,63 @@ setInterval(() => {}, 1000);
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('does not remove a malformed replacement state file on daemon stop', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-malformed-replacement-'));
+    try {
+      const script = join(dir, 'stub-api');
+      await writeFile(script, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+const valueAfter = (flag) => args[args.indexOf(flag) + 1];
+const stateFile = valueAfter('--state-file');
+const host = valueAfter('--host');
+const port = Number(valueAfter('--port'));
+const backend = valueAfter('--backend');
+fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, host, port, backend, started_at_unix: 1 }));
+process.on('SIGTERM', () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+      await chmod(script, 0o755);
+      const stateFile = join(dir, 'daemon.json');
+      const daemon = await startOmxApiDaemon({ binaryPath: script, stateFile, port: 16672, startupTimeoutMs: 1_000 });
+      await writeFile(stateFile, '{replacement-not-json');
+
+      await daemon.stop({ timeoutMs: 50 });
+      assert.equal(await readFile(stateFile, 'utf-8'), '{replacement-not-json');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not remove an unsafe custom token path on daemon stop', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-sdk-daemon-external-token-'));
+    try {
+      const outsideToken = join(dir, 'outside.token');
+      await writeFile(outsideToken, 'do-not-delete\n');
+      await mkdir(join(dir, 'state'), { recursive: true });
+      const script = join(dir, 'stub-api');
+      await writeFile(script, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+const valueAfter = (flag) => args[args.indexOf(flag) + 1];
+const stateFile = valueAfter('--state-file');
+const host = valueAfter('--host');
+const port = Number(valueAfter('--port'));
+const backend = valueAfter('--backend');
+fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, host, port, backend, started_at_unix: 1, local_bearer_token_file: ${JSON.stringify(outsideToken)} }));
+process.on('SIGTERM', () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+      await chmod(script, 0o755);
+      const daemon = await startOmxApiDaemon({ binaryPath: script, stateFile: join(dir, 'state', 'daemon.json'), port: 16671, startupTimeoutMs: 1_000 });
+
+      await daemon.stop({ timeoutMs: 50 });
+      assert.equal(await readFile(outsideToken, 'utf-8'), 'do-not-delete\n');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 
@@ -761,7 +1177,6 @@ describe('OmxTeamClient', () => {
 
       const events = await team.readEvents({ teamName: 'sdk-tasks' });
       assert.equal(typeof events.count, 'number');
-      assert.equal((await team.operation('read-events', { team_name: 'sdk-tasks' })).count, events.count);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -814,6 +1229,13 @@ describe('OmxCatalogClient and runtime command builders', () => {
     const runtime = new OmxRuntimeClient({ cwd: process.cwd() });
     assert.deepEqual(runtime.buildForkArgs({ last: true }), ['fork', '--last']);
     assert.throws(() => buildOmxExecSkillArgs({ skill: 'bad skill' }), /Invalid OMX skill name/);
+    assert.throws(() => buildCodexForkArgs({ prompt: '--dangerously-bypass-approvals-and-sandbox' }), /positional arguments must not start/);
+    assert.throws(() => buildOmxResumeArgs({ sessionId: '-c' }), /positional arguments must not start/);
+    assert.throws(() => buildOmxResumeArgs({ profile: '../gpt55' }), /Invalid Codex profile name/);
+    assert.throws(() => buildOmxExecSkillArgs({ skill: 'ralph', profile: '-c' }), /Invalid Codex profile name/);
+    assert.throws(() => buildOmxResumeArgs({ model: '--dangerously-bypass-approvals-and-sandbox' }), /model: option values must not start/);
+    assert.throws(() => buildCodexForkArgs({ last: true, all: true }), /choose only one/);
+    assert.throws(() => buildOmxResumeArgs({ last: true, sessionId: 'session-1' }), /choose only one/);
   });
 
   it('allows runtime launcher stdout to be captured with custom spawn options', async () => {
@@ -850,19 +1272,33 @@ describe('Codex profile resolution', () => {
   it('layers a Codex profile config and maps API-relevant env', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'omx-sdk-codex-home-'));
     try {
-      await writeFile(join(codexHome, 'config.toml'), 'model = "base-model"\nmodel_provider = "base-provider"\n');
+      await writeFile(join(codexHome, 'config.toml'), 'model = "base-model"\nmodel_provider = "base-provider"\n"__proto__" = "polluted"\n');
       await writeFile(join(codexHome, 'gpt55.config.toml'), 'model = "gpt-5.5"\nmodel_reasoning_effort = "high"\n');
 
       const profile = await resolveCodexProfile({ profile: 'gpt55', codexHome, env: {} });
       assert.equal(profile.model, 'gpt-5.5');
       assert.equal(profile.modelProvider, 'base-provider');
       assert.equal(profile.reasoningEffort, 'high');
+      assert.equal(Object.prototype.hasOwnProperty.call(profile.config, '__proto__'), false);
       assert.deepEqual(codexProfileToApiEnv(profile), {
         OMX_API_CODEX_PROFILE: 'gpt55',
         OMX_API_GENERATE_MODEL: 'gpt-5.5',
         OMX_API_CODEX_MODEL_PROVIDER: 'base-provider',
         OMX_API_CODEX_REASONING_EFFORT: 'high',
       });
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unsafe Codex profile names before reading profile config paths', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-sdk-codex-unsafe-profile-'));
+    try {
+      await writeFile(join(codexHome, 'config.toml'), 'model = "base-model"\n');
+      await assert.rejects(
+        resolveCodexProfile({ profile: '../gpt55', codexHome, env: {} }),
+        /Invalid Codex profile name/,
+      );
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }

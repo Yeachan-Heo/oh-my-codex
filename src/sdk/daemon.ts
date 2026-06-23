@@ -6,6 +6,14 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { resolveApiBinaryPathWithHydration } from '../cli/api.js';
 import { OmxSdkError } from './errors.js';
+import {
+  daemonBaseUrl,
+  daemonHostsMatch,
+  isLoopbackHost,
+  normalizeLoopbackHost,
+  processIsAlive,
+  tokenPathAllowedForState,
+} from './internal.js';
 import { codexProfileToApiEnv, resolveCodexProfile } from './profile.js';
 import {
   daemonTokenFileForState,
@@ -39,9 +47,12 @@ export interface OmxApiDaemonStatus {
 }
 
 export function buildOmxApiServeArgs(options: Required<Pick<StartOmxApiDaemonOptions, 'host' | 'port' | 'backend' | 'stateFile'>>): string[] {
+  assertLoopbackHost(options.host);
+  assertDaemonPort(options.port);
+  const host = normalizeLoopbackHost(options.host);
   return [
     'serve',
-    '--host', options.host,
+    '--host', host,
     '--port', String(options.port),
     '--backend', options.backend,
     '--state-file', options.stateFile,
@@ -77,7 +88,7 @@ export class OmxApiDaemon {
   }
 
   get baseUrl(): string {
-    return `http://${this.state.host}:${this.state.port}`;
+    return daemonBaseUrl(this.state.host, this.state.port);
   }
 
   async stop(options: { timeoutMs?: number; cleanupState?: boolean } = {}): Promise<void> {
@@ -102,17 +113,19 @@ export class OmxApiDaemon {
 export async function readOmxApiDaemonStatus(stateFile = defaultOmxApiStateFile()): Promise<OmxApiDaemonStatus> {
   const daemon = await readOmxDaemonState(stateFile);
   if (!daemon) return { status: 'not-running' };
+  if (!processIsAlive(daemon.pid)) return { status: 'not-running' };
   return {
     status: 'running',
     daemon,
-    baseUrl: `http://${daemon.host}:${daemon.port}`,
+    baseUrl: daemonBaseUrl(daemon.host, daemon.port),
     bearerToken: await readOmxDaemonToken(stateFile),
   };
 }
 
 export async function startOmxApiDaemon(options: StartOmxApiDaemonOptions = {}): Promise<OmxApiDaemon> {
-  const host = options.host ?? '127.0.0.1';
+  const host = normalizeDaemonBindHost(options.host ?? '127.0.0.1');
   const port = options.port ?? 14510;
+  assertDaemonPort(port);
   const backend = options.backend ?? 'mock';
   const managedState = options.stateFile ? undefined : await managedOmxApiStateFile();
   const stateFile = resolve(options.stateFile ?? managedState?.stateFile ?? defaultOmxApiStateFile());
@@ -186,6 +199,23 @@ function applyProfileEnvDefaults(env: NodeJS.ProcessEnv, profileEnv: NodeJS.Proc
   }
 }
 
+function assertLoopbackHost(host: string): void {
+  if (!isLoopbackHost(host)) {
+    throw new OmxSdkError(`omx-api SDK daemons must bind to a loopback host, got ${host}`);
+  }
+}
+
+function assertDaemonPort(port: number): void {
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new OmxSdkError(`omx-api SDK daemon ports must be integers from 0 to 65535, got ${port}`);
+  }
+}
+
+function normalizeDaemonBindHost(host: string): string {
+  assertLoopbackHost(host);
+  return normalizeLoopbackHost(host);
+}
+
 
 
 async function managedOmxApiStateFile(): Promise<{ stateFile: string; stateDir: string }> {
@@ -195,9 +225,17 @@ async function managedOmxApiStateFile(): Promise<{ stateFile: string; stateDir: 
 }
 
 async function removeStaleDaemonStateFiles(stateFile: string): Promise<void> {
+  const current = await readOmxDaemonState(stateFile);
+  if (current && processIsAlive(current.pid)) {
+    throw new OmxSdkError(`refusing to replace live omx-api daemon state at ${stateFile} (pid ${current.pid})`);
+  }
+  const tokenPaths = new Set<string>([daemonTokenFileForState(stateFile)]);
+  if (current?.local_bearer_token_file && tokenPathAllowedForState(current.local_bearer_token_file, stateFile)) {
+    tokenPaths.add(current.local_bearer_token_file);
+  }
   await Promise.all([
     rm(stateFile, { force: true }),
-    rm(daemonTokenFileForState(stateFile), { force: true }),
+    ...[...tokenPaths].map((tokenPath) => rm(tokenPath, { force: true })),
   ]);
 }
 
@@ -208,7 +246,7 @@ function stateMatchesSpawnedDaemon(state: OmxDaemonState, expected: {
   backend: OmxApiBackend;
 }): boolean {
   return state.pid === expected.child.pid
-    && state.host === expected.host
+    && daemonHostsMatch(state.host, expected.host)
     && state.backend === expected.backend
     && (expected.port === 0 ? state.port > 0 : state.port === expected.port);
 }
@@ -249,9 +287,13 @@ function withStderr(message: string, stderr: string): string {
 async function cleanupDaemonStateFiles(stateFile: string, expectedState: OmxDaemonState): Promise<void> {
   const current = await readOmxDaemonState(stateFile);
   if (current && current.pid !== expectedState.pid) return;
+  if (!current && existsSync(stateFile)) return;
+  const tokenPath = expectedState.local_bearer_token_file && tokenPathAllowedForState(expectedState.local_bearer_token_file, stateFile)
+    ? expectedState.local_bearer_token_file
+    : daemonTokenFileForState(stateFile);
   await Promise.all([
     rm(stateFile, { force: true }),
-    rm(expectedState.local_bearer_token_file ?? daemonTokenFileForState(stateFile), { force: true }),
+    rm(tokenPath, { force: true }),
   ]);
 }
 

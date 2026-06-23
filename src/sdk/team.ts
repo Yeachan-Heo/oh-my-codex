@@ -174,10 +174,6 @@ export class OmxTeamClient {
     this.cwd = options.cwd ?? process.cwd();
   }
 
-  async operation(operation: TeamApiOperation, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    return await runTeamOperation(operation, args, this.cwd);
-  }
-
   async sendMessage(request: OmxTeamSendMessageRequest): Promise<OmxTeamSendMessageResult> {
     return asSendMessageResult(await runTeamOperation('send-message', {
       team_name: request.teamName,

@@ -1,7 +1,8 @@
 export * from './client.js';
 export * from './daemon.js';
 export * from './errors.js';
-export * from './http.js';
+export type { OmxFetch } from './http.js';
+export { parseSseFrame, parseSseStream } from './http.js';
 export * from './types.js';
 export * from './workspace.js';
 export * from './team.js';

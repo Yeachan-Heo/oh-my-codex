@@ -13,7 +13,7 @@ The OMX TypeScript SDK is a **Node.js 20+** public, importable surface for build
 
 The SDK intentionally stays local-first and Node-only. It imports `node:fs`, `node:child_process`, and other Node runtime modules through the public root export. It talks to loopback `omx-api` endpoints and reads workspace files; it does not introduce cloud credentials or remote state.
 
-The HTTP timeout covers request setup and response headers. Streaming helpers return async iterators; pass `{ signal }` as the second method argument to cancel long-running streams or requests.
+The HTTP timeout covers request setup and response headers. Streaming helpers return async iterators; pass `{ signal }` as the second method argument to cancel long-running streams or requests. Breaking out of the async iterator cancels the response body reader.
 
 ## Public API surface
 
@@ -28,7 +28,7 @@ This SDK publishes the following root exports from `oh-my-codex`:
 | Skill and agent catalog | `OmxCatalogClient` |
 | Runtime launch helpers | `OmxRuntimeClient`, `OmxRuntimeSpawnOptions`, `buildCodexSessionArgs`, `buildCodexForkArgs`, `buildOmxResumeArgs`, `buildOmxExecSkillArgs` |
 | Codex profile mapping | `resolveCodexHome`, `readCodexConfig`, `resolveCodexProfile`, `codexProfileToApiEnv` |
-| Transport and errors | `OmxHttpTransport`, `OmxHttpError`, `OmxSdkError`, `parseSseFrame`, `parseSseStream` |
+| Transport and errors | `OmxHttpError`, `OmxSdkError`, `OmxTimeoutError`, `parseSseFrame`, `parseSseStream`, `OmxFetch` |
 | Types | request, response, daemon, SSE, workspace, team, and JSON helper types exported from `src/sdk/types.ts` and the typed SDK modules |
 
 The SDK scope is local Node.js automation for the current OMX installation. Browser, edge runtime, and multi-tenant server APIs should use separate entrypoints when added.
@@ -60,9 +60,11 @@ const client = new OmxClient({
 
 await client.health();
 await client.models();
+await client.telemetry();
 await client.responses.create({ model: 'omx-mock', input: 'ping' });
 await client.chat.completions.create({ messages: [{ role: 'user', content: 'ping' }] });
 await client.images.generate({ prompt: 'a tiny robot' });
+await client.stop();
 ```
 
 Streaming endpoints return async iterators over parsed SSE frames. The parser intentionally handles the OMX subset of SSE (`event:` and `data:` fields), ignores comments/`id`/`retry`, parses JSON `data:` payloads when possible, and otherwise returns the raw data string:
@@ -84,7 +86,8 @@ for await (const event of stream) {
 `omx api`, spawns it in the background for the current Node process, waits for its daemon
 state file, and returns an `OmxApiDaemon` controller. SDK-managed daemons use a unique temporary
 state file in a private temporary directory by default; pass `stateFile` only when you intentionally
-want a stable discovery path.
+want a stable discovery path. SDK daemon helpers accept loopback bind hosts only. IPv6 loopback
+state (`::1`) is formatted as a bracketed URL (`http://[::1]:PORT`) for client discovery.
 
 ```ts
 const daemon = await startOmxApiDaemon({
@@ -98,6 +101,7 @@ await daemon.stop();
 ```
 
 For an already-running daemon, use `OmxClient.fromEnv()` or `readOmxApiDaemonStatus()`.
+Status reads require both a valid daemon state file and a live recorded process id.
 Resolution order is:
 
 1. explicit `baseUrl`
@@ -109,11 +113,12 @@ Bearer-token resolution is intentionally conservative. Reuse a single `OmxClient
 `OmxClient.fromEnv()` reads the daemon state and token files during client construction. The SDK
 uses an explicit `bearerToken` option for any target. It uses `OMX_API_LOCAL_BEARER` only for
 state-file/default-port local discovery, not for arbitrary `baseUrl` / `OMX_API_BASE_URL` targets.
-It reads a daemon token file only when the client target is resolved from the daemon state file, or
-when an explicit `baseUrl` / `OMX_API_BASE_URL` exactly matches that daemon state's scheme, host,
-and port with no embedded credentials, path, query, or fragment.
-On Unix, token files must be owned by the current user and not be group/world-readable. On Windows,
-token confidentiality relies on the file's existing ACLs.
+It reads a daemon token file only when the client target is resolved from a loopback daemon state
+file, or when an explicit `baseUrl` / `OMX_API_BASE_URL` exactly matches that daemon state's
+scheme, host, and port with no embedded credentials, path, query, or fragment. Token files must
+stay beside the daemon state file; symlinked token files and token paths outside that directory are
+ignored. On Unix, token files must be owned by the current user and not be group/world-readable. On
+Windows, token confidentiality relies on the file's existing ACLs.
 
 If you start `omx-api` outside `startOmxApiDaemon()` with a custom or legacy state-file path,
 pass that path explicitly with `OmxClient.fromEnv({ stateFile })` or set `OMX_API_STATE_FILE`.
@@ -193,7 +198,6 @@ This MVP exposes stable local building blocks, not the whole interactive OMX CLI
 
 Track these items for future SDK iterations:
 
-- Document stream cancellation expectations: callers should fully consume streams or break/return from the async iterator; future SDK work can cancel the underlying reader explicitly.
 - Consider parent-crash daemon cleanup for SDK-managed daemons. Today normal `daemon.stop()` cleanup is covered; abrupt process death can still orphan a sidecar.
 - Decide whether strict host matching (`localhost` vs `127.0.0.1`) should remain security-first behavior or get normalized for convenience.
 - Consider changing SDK-managed daemon default port from `14510` to `0` in a future compatibility-safe pass. When callers pass `port: 0`, the daemon state must report the OS-assigned port before the SDK accepts it.
@@ -283,6 +287,8 @@ console.log(runtime.buildSkillArgs({
 `fork()` uses `codex fork` directly because OMX currently exposes `omx resume` but not an
 `omx fork` subcommand. `runSkill()` uses `omx exec "$skill prompt"` so AGENTS.md routing,
 hooks, installed skills, and OMX runtime state still behave like a normal CLI invocation.
+`resume()` and `fork()` reject conflicting session selectors, and reject session ids, prompt strings,
+and model values that start with `-` so caller-provided values cannot be parsed as launcher flags.
 Runtime launcher methods inherit terminal stdio by default. Pass `spawnOptions`, `omxSpawnOptions`,
 or `codexSpawnOptions` when a consumer needs to capture stdout/stderr or run detached:
 

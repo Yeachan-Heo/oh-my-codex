@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncReturns, type StdioOptions } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from 'node:child_process';
 import { join } from 'node:path';
 import { getPackageRoot } from '../utils/package.js';
 
@@ -29,7 +29,6 @@ export interface OmxSessionCommandOptions {
   madmax?: boolean;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | string;
   direct?: boolean;
-  extraArgs?: string[];
 }
 
 export interface OmxWorkflowCommandOptions {
@@ -40,7 +39,6 @@ export interface OmxWorkflowCommandOptions {
   madmax?: boolean;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | string;
   direct?: boolean;
-  extraArgs?: string[];
 }
 
 export function defaultOmxBin(packageRoot = getPackageRoot()): string {
@@ -48,14 +46,18 @@ export function defaultOmxBin(packageRoot = getPackageRoot()): string {
 }
 
 export function buildCodexSessionArgs(command: 'resume' | 'fork', options: OmxSessionCommandOptions = {}): string[] {
+  assertSingleSessionSelector(options);
   const args: string[] = [command];
   if (options.last) args.push('--last');
   if (options.all) args.push('--all');
+  if (options.profile) assertSafeProfileName(options.profile);
   if (options.profile) args.push('--profile', options.profile);
-  if (options.model) args.push('--model', options.model);
+  const model = normalizedModelOption(options.model);
+  if (model) args.push('--model', model);
   if (options.madmax) args.push('--dangerously-bypass-approvals-and-sandbox');
   if (options.reasoningEffort) args.push('-c', `model_reasoning_effort=${JSON.stringify(options.reasoningEffort)}`);
-  if (options.extraArgs) args.push(...options.extraArgs);
+  if (options.sessionId) assertSafePositionalArg(options.sessionId, 'sessionId');
+  if (options.prompt) assertSafePositionalArg(options.prompt, 'prompt');
   if (options.sessionId) args.push(options.sessionId);
   if (options.prompt) args.push(options.prompt);
   return args;
@@ -77,11 +79,12 @@ export function buildOmxExecSkillArgs(options: OmxWorkflowCommandOptions): strin
   assertSafeRuntimeName(options.skill, 'skill');
   const args = ['exec'];
   if (options.direct) args.push('--direct');
+  if (options.profile) assertSafeProfileName(options.profile);
   if (options.profile) args.push('--profile', options.profile);
-  if (options.model) args.push('--model', options.model);
+  const model = normalizedModelOption(options.model);
+  if (model) args.push('--model', model);
   if (options.madmax) args.push('--madmax');
   if (options.reasoningEffort) args.push('-c', `model_reasoning_effort=${JSON.stringify(options.reasoningEffort)}`);
-  if (options.extraArgs) args.push(...options.extraArgs);
   const skillPrompt = options.prompt?.trim()
     ? `$${options.skill} ${options.prompt.trim()}`
     : `$${options.skill}`;
@@ -92,6 +95,38 @@ export function buildOmxExecSkillArgs(options: OmxWorkflowCommandOptions): strin
 function assertSafeRuntimeName(value: string, label: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
     throw new Error(`Invalid OMX ${label} name: ${value}`);
+  }
+}
+
+function assertSafeProfileName(value: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+    throw new Error(`Invalid Codex profile name: ${value}`);
+  }
+}
+
+function assertSafePositionalArg(value: string, label: string): void {
+  if (value.startsWith('-')) {
+    throw new Error(`Invalid OMX ${label}: positional arguments must not start with '-'`);
+  }
+}
+
+function normalizedModelOption(value: string | undefined): string | undefined {
+  const model = value?.trim();
+  if (!model) return undefined;
+  if (model.startsWith('-')) {
+    throw new Error("Invalid Codex model: option values must not start with '-'");
+  }
+  return model;
+}
+
+function assertSingleSessionSelector(options: Pick<OmxSessionCommandOptions, 'last' | 'all' | 'sessionId'>): void {
+  const selectors = [
+    options.last ? 'last' : undefined,
+    options.all ? 'all' : undefined,
+    options.sessionId ? 'sessionId' : undefined,
+  ].filter(Boolean);
+  if (selectors.length > 1) {
+    throw new Error(`Invalid Codex session selector: choose only one of ${selectors.join(', ')}`);
   }
 }
 
@@ -136,16 +171,6 @@ export class OmxRuntimeClient {
 
   runSkill(options: OmxWorkflowCommandOptions): ChildProcess {
     return this.spawnOmx(this.buildSkillArgs(options));
-  }
-
-  runOmxSync(args: string[], options: { input?: string; timeoutMs?: number } = {}): SpawnSyncReturns<string> {
-    return spawnSync(process.execPath, [this.omxBin, ...args], {
-      cwd: this.cwd,
-      env: this.env,
-      input: options.input,
-      timeout: options.timeoutMs,
-      encoding: 'utf-8',
-    });
   }
 
   private spawnOmx(args: string[]): ChildProcess {

@@ -1,7 +1,8 @@
-import { readFile, stat } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { OmxHttpTransport, parseSseStream, type OmxFetch } from './http.js';
+import { daemonBaseUrl, daemonHostsMatch, isLoopbackHost, processIsAlive, tokenPathAllowedForState } from './internal.js';
 import type {
   OmxChatCompletionRequest,
   OmxChatCompletionResult,
@@ -54,7 +55,12 @@ export async function readOmxDaemonState(stateFile = defaultOmxApiStateFile()): 
 export async function readOmxDaemonToken(stateFile = defaultOmxApiStateFile()): Promise<string | undefined> {
   const state = await readOmxDaemonState(stateFile);
   if (!state) return undefined;
-  const tokenPath = state?.local_bearer_token_file ?? daemonTokenFileForState(stateFile);
+  return await readOmxDaemonTokenForState(state, stateFile);
+}
+
+async function readOmxDaemonTokenForState(state: OmxDaemonState, stateFile: string): Promise<string | undefined> {
+  const tokenPath = state.local_bearer_token_file ?? daemonTokenFileForState(stateFile);
+  if (!tokenPathAllowedForState(tokenPath, stateFile)) return undefined;
   try {
     if (!await tokenFileIsSafe(tokenPath)) return undefined;
     const token = (await readFile(tokenPath, 'utf-8')).trim();
@@ -70,7 +76,6 @@ export async function resolveOmxApiClientOptions(options: OmxClientDiscoveryOpti
   const stateFile = options.stateFile ?? (envStateFile || defaultOmxApiStateFile());
   const explicitToken = () => options.bearerToken;
   const localEnvToken = () => env.OMX_API_LOCAL_BEARER;
-  const tokenForState = async () => explicitToken() ?? localEnvToken() ?? await readOmxDaemonToken(stateFile);
   const tokenForBaseUrl = async (baseUrl: string) => explicitToken() ?? await readOmxDaemonTokenForBaseUrl(baseUrl, stateFile);
   if (options.baseUrl) {
     return {
@@ -89,30 +94,35 @@ export async function resolveOmxApiClientOptions(options: OmxClientDiscoveryOpti
       timeoutMs: options.timeoutMs,
     };
   }
-  const state = await readOmxDaemonState(stateFile);
+  const state = await readLiveOmxDaemonState(stateFile);
   const fallbackPort = parseOmxApiPort(env.OMX_API_PORT);
   return {
-    baseUrl: state ? `http://${state.host}:${state.port}` : `http://127.0.0.1:${fallbackPort}`,
-    bearerToken: state ? await tokenForState() : explicitToken() ?? localEnvToken(),
+    baseUrl: state ? daemonBaseUrl(state.host, state.port) : `http://127.0.0.1:${fallbackPort}`,
+    bearerToken: state ? explicitToken() ?? localEnvToken() ?? await readOmxDaemonTokenForState(state, stateFile) : explicitToken() ?? localEnvToken(),
     fetchImpl: options.fetchImpl,
     timeoutMs: options.timeoutMs,
   };
 }
 
 async function readOmxDaemonTokenForBaseUrl(baseUrl: string, stateFile: string): Promise<string | undefined> {
-  const state = await readOmxDaemonState(stateFile);
+  const state = await readLiveOmxDaemonState(stateFile);
   if (!state || !baseUrlMatchesDaemonState(baseUrl, state)) return undefined;
-  return await readOmxDaemonToken(stateFile);
+  return await readOmxDaemonTokenForState(state, stateFile);
+}
+
+async function readLiveOmxDaemonState(stateFile: string): Promise<OmxDaemonState | null> {
+  const state = await readOmxDaemonState(stateFile);
+  return state && processIsAlive(state.pid) ? state : null;
 }
 
 function baseUrlMatchesDaemonState(baseUrl: string, state: OmxDaemonState): boolean {
   try {
     const parsed = new URL(baseUrl);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (parsed.protocol !== 'http:') return false;
     if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
     if (parsed.pathname.replace(/\/+$/, '') !== '') return false;
-    const port = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80;
-    return parsed.hostname === state.host && port === state.port;
+    const port = parsed.port ? Number(parsed.port) : 80;
+    return daemonHostsMatch(parsed.hostname, state.host) && port === state.port;
   } catch {
     return false;
   }
@@ -120,7 +130,8 @@ function baseUrlMatchesDaemonState(baseUrl: string, state: OmxDaemonState): bool
 
 async function tokenFileIsSafe(path: string): Promise<boolean> {
   try {
-    const stats = await stat(path);
+    const stats = await lstat(path);
+    if (stats.isSymbolicLink()) return false;
     if (!stats.isFile()) return false;
     if (process.platform !== 'win32') {
       if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) return false;
@@ -142,19 +153,29 @@ function parseOmxApiPort(raw: string | undefined): number {
 
 function isDaemonState(value: unknown): value is OmxDaemonState {
   const port = (value as OmxDaemonState | undefined)?.port;
+  const host = (value as OmxDaemonState | undefined)?.host;
+  const backend = (value as OmxDaemonState | undefined)?.backend;
+  const startedAt = (value as OmxDaemonState | undefined)?.started_at_unix;
+  const tokenFile = (value as OmxDaemonState | undefined)?.local_bearer_token_file;
   return Boolean(
     value
       && typeof value === 'object'
       && !Array.isArray(value)
       && typeof (value as OmxDaemonState).pid === 'number'
-      && typeof (value as OmxDaemonState).host === 'string'
+      && Number.isInteger((value as OmxDaemonState).pid)
+      && (value as OmxDaemonState).pid > 0
+      && typeof host === 'string'
+      && isLoopbackHost(host)
+      && (backend === 'mock' || backend === 'real-private')
+      && typeof startedAt === 'number'
+      && Number.isFinite(startedAt)
       && typeof port === 'number'
       && Number.isInteger(port)
       && port > 0
-      && port <= 65_535,
+      && port <= 65_535
+      && (tokenFile === undefined || typeof tokenFile === 'string'),
   );
 }
-
 
 type RequestPayload = Record<string, unknown>;
 
@@ -201,7 +222,7 @@ function extractText(result: OmxResponseResult | OmxChatCompletionResult): strin
 }
 
 export class OmxClient {
-  readonly transport: OmxHttpTransport;
+  private readonly transport: OmxHttpTransport;
 
   constructor(options: OmxClientOptions = {}) {
     this.transport = new OmxHttpTransport({
@@ -250,7 +271,7 @@ export class OmxClient {
         body: requestBody(request, true),
         ...requestOptions(options, 'text/event-stream'),
       });
-      return parseSseStream(response);
+      return parseSseStream(response, { signal: options.signal });
     },
   };
 
@@ -269,7 +290,7 @@ export class OmxClient {
           body: requestBody(request, true),
           ...requestOptions(options, 'text/event-stream'),
         });
-        return parseSseStream(response);
+        return parseSseStream(response, { signal: options.signal });
       },
     },
   };
@@ -288,7 +309,7 @@ export class OmxClient {
         body: requestBody(request, true),
         ...requestOptions(options, 'text/event-stream'),
       });
-      return parseSseStream(response);
+      return parseSseStream(response, { signal: options.signal });
     },
   };
 
