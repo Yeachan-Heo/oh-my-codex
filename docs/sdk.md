@@ -9,7 +9,7 @@ The OMX TypeScript SDK is a **Node.js 20+** public, importable surface for build
 3. **`OmxWorkspace`** — read-only helpers for `.omx/state` workspace/runtime files.
 4. **`OmxTeamClient`** — wrappers over the existing file-backed team API operations.
 5. **`OmxCatalogClient`** — bundled skill/agent catalog and skill prompt helpers.
-6. **`OmxRuntimeClient`** — launcher wrappers for `omx exec`, `omx resume`, and `codex fork`.
+6. **`OmxRuntimeClient`** — launcher wrappers for plain `omx exec` prompts, `$skill` prompts, `omx resume`, and `codex fork`.
 
 The SDK intentionally stays local-first and Node-only. It imports `node:fs`, `node:child_process`, and other Node runtime modules through the public root export. It talks to loopback `omx-api` endpoints and reads workspace files; it does not introduce cloud credentials or remote state.
 
@@ -26,7 +26,7 @@ This SDK publishes the following root exports from `oh-my-codex`:
 | Workspace state reads | `OmxWorkspace` |
 | Team state operations | `OmxTeamClient`, `OmxTeamApiError` |
 | Skill and agent catalog | `OmxCatalogClient` |
-| Runtime launch helpers | `OmxRuntimeClient`, `OmxRuntimeSpawnOptions`, `buildCodexSessionArgs`, `buildCodexForkArgs`, `buildOmxResumeArgs`, `buildOmxExecSkillArgs` |
+| Runtime launch helpers | `OmxRuntimeClient`, `OmxRuntimeSpawnOptions`, `buildCodexSessionArgs`, `buildCodexForkArgs`, `buildOmxResumeArgs`, `buildOmxExecArgs`, `buildOmxExecSkillArgs` |
 | Codex profile mapping | `resolveCodexHome`, `readCodexConfig`, `resolveCodexProfile`, `codexProfileToApiEnv` |
 | Transport and errors | `OmxHttpError`, `OmxSdkError`, `OmxTimeoutError`, `parseSseFrame`, `parseSseStream`, `OmxFetch` |
 | Types | request, response, daemon, SSE, workspace, team, and JSON helper types exported from `src/sdk/types.ts` and the typed SDK modules |
@@ -152,7 +152,15 @@ const daemon = await startOmxApiDaemon({
 });
 
 const runtime = new OmxRuntimeClient({ cwd: process.cwd() });
-const child = runtime.runSkill({
+const child = runtime.runPrompt({
+  prompt: 'Inspect this repo and summarize the release risks.',
+  profile: 'gpt55',
+  model: 'gpt-5.5',
+  reasoningEffort: 'high',
+  madmax: true,
+});
+
+const workflowChild = runtime.runSkill({
   skill: 'ralph',
   prompt: 'finish the SDK verification',
   profile: 'gpt55',
@@ -188,6 +196,7 @@ This MVP exposes stable local building blocks, not the whole interactive OMX CLI
 | Daemon lifecycle | **Yes** | `startOmxApiDaemon()` starts/stops the native sidecar and manages private temporary state by default. |
 | Workspace state reads | **Yes** | `OmxWorkspace` reads session/HUD/mode state without mutating runtime state. |
 | Team queue/mailbox | **Yes** | `OmxTeamClient` supports mailbox sends, broadcasts, delivery/notified marks, summaries, task lifecycle wrappers, event/state reads, worker heartbeat/inbox/identity wrappers, approvals, monitor snapshots, and cleanup operations. It still does not spawn tmux workers or own the full team pipeline. |
+| Plain OMX prompts | **Yes, launcher wrapper** | `OmxRuntimeClient.runPrompt()` launches `omx exec` with the prompt as one argv element and optional `profile`, `model`, `reasoningEffort`, `madmax`, `direct`, `json`, and `outputLastMessage` settings. AGENTS.md routing, hooks, and OMX runtime setup still come from the CLI path. |
 | Skills/workflows (`$ralph`, `$team`, `$ultrawork`, etc.) | **Yes, launcher wrapper** | `OmxCatalogClient` lists/reads bundled skill definitions and builds `$skill` prompts. `OmxRuntimeClient.runSkill()` launches `omx exec` with that prompt. Skill protocol/state remains CLI/AGENTS/SKILL.md-owned. |
 | `fork` / session branching | **Yes, launcher wrapper** | `OmxRuntimeClient.fork()` spawns `codex fork` because there is no separate `omx fork` command. `buildCodexForkArgs()` is exposed for dry-run/testing. |
 | `omx resume` / session picker | **Yes, launcher wrapper** | `OmxRuntimeClient.resume()` spawns `omx resume`; `buildOmxResumeArgs()` supports `--last`, `--all`, session id, prompt, profile, model, reasoning effort, and madmax/bypass. |
@@ -252,7 +261,7 @@ await team.transitionTaskStatus({
 });
 ```
 
-## Skills, agents, resume, and fork
+## Prompts, skills, agents, resume, and fork
 
 The SDK exposes two intentionally separate surfaces:
 
@@ -269,6 +278,15 @@ console.log(catalog.listSkills().map((skill) => skill.name));
 console.log(await catalog.readSkill('ralph'));
 
 const runtime = new OmxRuntimeClient({ cwd: process.cwd() });
+console.log(runtime.buildPromptArgs({
+  prompt: 'Inspect this repo and summarize release risks.',
+  profile: 'gpt55',
+  model: 'gpt-5.5',
+  reasoningEffort: 'high',
+  madmax: true,
+  json: true,
+  outputLastMessage: 'last-message.txt',
+}));
 console.log(runtime.buildSkillArgs({
   skill: 'ralph',
   prompt: 'verify the SDK',
@@ -279,18 +297,22 @@ console.log(runtime.buildSkillArgs({
 }));
 
 // Real launcher calls:
+// runtime.runPrompt({ prompt: 'Inspect this repo.', profile: 'gpt55', madmax: true });
 // runtime.runSkill({ skill: 'ralph', prompt: 'verify the SDK', profile: 'gpt55' });
 // runtime.resume({ last: true, profile: 'gpt55' });
 // runtime.fork({ last: true, profile: 'gpt55', prompt: 'try an alternate approach' });
 ```
 
 `fork()` uses `codex fork` directly because OMX currently exposes `omx resume` but not an
-`omx fork` subcommand. `runSkill()` uses `omx exec "$skill prompt"` so AGENTS.md routing,
-hooks, installed skills, and OMX runtime state still behave like a normal CLI invocation.
+`omx fork` subcommand. `runPrompt()` uses `omx exec` with the prompt as one argv element.
+`runSkill()` uses `omx exec` with the `$skill prompt` string as one argv element. AGENTS.md routing,
+hooks, installed skills, and OMX runtime state still behave like normal CLI invocations.
 `resume()` and `fork()` reject conflicting session selectors, and reject session ids, prompt strings,
 and model values that start with `-` so caller-provided values cannot be parsed as launcher flags.
 Runtime launcher methods inherit terminal stdio by default. Pass `spawnOptions`, `omxSpawnOptions`,
-or `codexSpawnOptions` when a consumer needs to capture stdout/stderr or run detached:
+or `codexSpawnOptions` when a consumer needs to capture stdout/stderr or run detached. These
+objects accept only `stdio`, `detached`, `windowsHide`, and `signal`; unsupported child-process
+options such as `shell` are rejected before spawn:
 
 ```ts
 const capturedRuntime = new OmxRuntimeClient({

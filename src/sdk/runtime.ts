@@ -31,6 +31,17 @@ export interface OmxSessionCommandOptions {
   direct?: boolean;
 }
 
+export interface OmxExecCommandOptions {
+  prompt: string;
+  profile?: string;
+  model?: string;
+  madmax?: boolean;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | string;
+  direct?: boolean;
+  json?: boolean;
+  outputLastMessage?: string;
+}
+
 export interface OmxWorkflowCommandOptions {
   skill: string;
   prompt?: string;
@@ -39,6 +50,8 @@ export interface OmxWorkflowCommandOptions {
   madmax?: boolean;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | string;
   direct?: boolean;
+  json?: boolean;
+  outputLastMessage?: string;
 }
 
 export function defaultOmxBin(packageRoot = getPackageRoot()): string {
@@ -75,9 +88,29 @@ export function buildCodexForkArgs(options: OmxSessionCommandOptions = {}): stri
   return buildCodexSessionArgs('fork', options);
 }
 
+export function buildOmxExecArgs(options: OmxExecCommandOptions): string[] {
+  const args: string[] = ['exec'];
+  appendOmxExecOptions(args, options);
+  const prompt = normalizedPromptOption(options.prompt);
+  args.push(prompt);
+  return args;
+}
+
 export function buildOmxExecSkillArgs(options: OmxWorkflowCommandOptions): string[] {
-  assertSafeRuntimeName(options.skill, 'skill');
   const args = ['exec'];
+  assertSafeRuntimeName(options.skill, 'skill');
+  appendOmxExecOptions(args, options);
+  const skillPrompt = options.prompt?.trim()
+    ? `$${options.skill} ${options.prompt.trim()}`
+    : `$${options.skill}`;
+  args.push(skillPrompt);
+  return args;
+}
+
+function appendOmxExecOptions(
+  args: string[],
+  options: Pick<OmxExecCommandOptions, 'direct' | 'profile' | 'model' | 'madmax' | 'reasoningEffort' | 'json' | 'outputLastMessage'>,
+): void {
   if (options.direct) args.push('--direct');
   if (options.profile) assertSafeProfileName(options.profile);
   if (options.profile) args.push('--profile', options.profile);
@@ -85,11 +118,26 @@ export function buildOmxExecSkillArgs(options: OmxWorkflowCommandOptions): strin
   if (model) args.push('--model', model);
   if (options.madmax) args.push('--madmax');
   if (options.reasoningEffort) args.push('-c', `model_reasoning_effort=${JSON.stringify(options.reasoningEffort)}`);
-  const skillPrompt = options.prompt?.trim()
-    ? `$${options.skill} ${options.prompt.trim()}`
-    : `$${options.skill}`;
-  args.push(skillPrompt);
-  return args;
+  if (options.json) args.push('--json');
+  const outputLastMessage = normalizedOptionValue(options.outputLastMessage, 'outputLastMessage');
+  if (outputLastMessage) args.push('--output-last-message', outputLastMessage);
+}
+
+
+const RUNTIME_SPAWN_OPTION_KEYS = new Set(['stdio', 'detached', 'windowsHide', 'signal']);
+
+function sanitizeRuntimeSpawnOptions(options: OmxRuntimeSpawnOptions, label: string): OmxRuntimeSpawnOptions {
+  for (const key of Object.keys(options as Record<string, unknown>)) {
+    if (!RUNTIME_SPAWN_OPTION_KEYS.has(key)) {
+      throw new Error(`Unsupported OMX runtime spawn option ${label}.${key}`);
+    }
+  }
+  return {
+    ...(options.stdio === undefined ? {} : { stdio: options.stdio }),
+    ...(options.detached === undefined ? {} : { detached: options.detached }),
+    ...(options.windowsHide === undefined ? {} : { windowsHide: options.windowsHide }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
 }
 
 function assertSafeRuntimeName(value: string, label: string): void {
@@ -110,13 +158,25 @@ function assertSafePositionalArg(value: string, label: string): void {
   }
 }
 
-function normalizedModelOption(value: string | undefined): string | undefined {
-  const model = value?.trim();
-  if (!model) return undefined;
-  if (model.startsWith('-')) {
-    throw new Error("Invalid Codex model: option values must not start with '-'");
+function normalizedPromptOption(value: string): string {
+  if (!value.trim()) {
+    throw new Error('Invalid OMX prompt: prompt must not be empty');
   }
-  return model;
+  assertSafePositionalArg(value, 'prompt');
+  return value;
+}
+
+function normalizedModelOption(value: string | undefined): string | undefined {
+  return normalizedOptionValue(value, 'model');
+}
+
+function normalizedOptionValue(value: string | undefined, label: string): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (normalized.startsWith('-')) {
+    throw new Error(`Invalid Codex ${label}: option values must not start with '-'`);
+  }
+  return normalized;
 }
 
 function assertSingleSessionSelector(options: Pick<OmxSessionCommandOptions, 'last' | 'all' | 'sessionId'>): void {
@@ -157,6 +217,10 @@ export class OmxRuntimeClient {
     return buildCodexForkArgs(options);
   }
 
+  buildPromptArgs(options: OmxExecCommandOptions): string[] {
+    return buildOmxExecArgs(options);
+  }
+
   buildSkillArgs(options: OmxWorkflowCommandOptions): string[] {
     return buildOmxExecSkillArgs(options);
   }
@@ -173,21 +237,25 @@ export class OmxRuntimeClient {
     return this.spawnOmx(this.buildSkillArgs(options));
   }
 
+  runPrompt(options: OmxExecCommandOptions): ChildProcess {
+    return this.spawnOmx(this.buildPromptArgs(options));
+  }
+
   private spawnOmx(args: string[]): ChildProcess {
-    return spawn(process.execPath, [this.omxBin, ...args], this.toSpawnOptions(this.omxSpawnOptions));
+    return spawn(process.execPath, [this.omxBin, ...args], this.toSpawnOptions(this.omxSpawnOptions, 'omxSpawnOptions'));
   }
 
   private spawnCodex(args: string[]): ChildProcess {
-    return spawn(this.codexBin, args, this.toSpawnOptions(this.codexSpawnOptions));
+    return spawn(this.codexBin, args, this.toSpawnOptions(this.codexSpawnOptions, 'codexSpawnOptions'));
   }
 
-  private toSpawnOptions(specificOptions: OmxRuntimeSpawnOptions): SpawnOptions {
+  private toSpawnOptions(specificOptions: OmxRuntimeSpawnOptions, specificLabel: string): SpawnOptions {
     return {
       cwd: this.cwd,
       env: this.env,
       stdio: 'inherit',
-      ...this.spawnOptions,
-      ...specificOptions,
+      ...sanitizeRuntimeSpawnOptions(this.spawnOptions, 'spawnOptions'),
+      ...sanitizeRuntimeSpawnOptions(specificOptions, specificLabel),
     };
   }
 }

@@ -20,7 +20,9 @@ import {
   OmxTeamClient,
   OmxCatalogClient,
   OmxRuntimeClient,
+  type OmxRuntimeSpawnOptions,
   buildCodexForkArgs,
+  buildOmxExecArgs,
   buildOmxExecSkillArgs,
   buildOmxResumeArgs,
   resolveCodexProfile,
@@ -380,6 +382,7 @@ describe('OMX API daemon helpers', () => {
     const root = await import('../../index.js');
     assert.equal(typeof root.OmxClient, 'function');
     assert.equal(typeof root.OmxRuntimeClient, 'function');
+    assert.equal(typeof root.buildOmxExecArgs, 'function');
     assert.equal(typeof root.OmxTimeoutError, 'function');
     assert.equal(typeof root.startOmxApiDaemon, 'function');
     assert.equal('OmxHttpTransport' in root, false);
@@ -1195,7 +1198,32 @@ describe('OmxCatalogClient and runtime command builders', () => {
     assert.throws(() => catalog.skillPath('../ralph'), /Invalid OMX skill name/);
   });
 
-  it('builds resume, fork, and skill command argv with profile support', () => {
+  it('builds prompt, resume, fork, and skill command argv with profile support', () => {
+    assert.deepEqual(buildOmxExecArgs({
+      prompt: 'evolve the circle packing task',
+      profile: 'gpt55',
+      model: 'gpt-5.5',
+      reasoningEffort: 'high',
+      madmax: true,
+      direct: true,
+      json: true,
+      outputLastMessage: 'last-message.txt',
+    }), [
+      'exec',
+      '--direct',
+      '--profile',
+      'gpt55',
+      '--model',
+      'gpt-5.5',
+      '--madmax',
+      '-c',
+      'model_reasoning_effort="high"',
+      '--json',
+      '--output-last-message',
+      'last-message.txt',
+      'evolve the circle packing task',
+    ]);
+
     assert.deepEqual(buildOmxResumeArgs({
       last: true,
       profile: 'gpt55',
@@ -1226,8 +1254,19 @@ describe('OmxCatalogClient and runtime command builders', () => {
       direct: true,
     }), ['exec', '--direct', '--profile', 'gpt55', '--model', 'gpt-5.5', '--madmax', '-c', 'model_reasoning_effort="high"', '$ralph verify SDK']);
 
+    assert.deepEqual(buildOmxExecSkillArgs({
+      skill: 'ralph',
+      prompt: 'verify SDK',
+      json: true,
+      outputLastMessage: 'skill-last-message.txt',
+    }), ['exec', '--json', '--output-last-message', 'skill-last-message.txt', '$ralph verify SDK']);
+
     const runtime = new OmxRuntimeClient({ cwd: process.cwd() });
+    assert.deepEqual(runtime.buildPromptArgs({ prompt: 'ship it' }), ['exec', 'ship it']);
     assert.deepEqual(runtime.buildForkArgs({ last: true }), ['fork', '--last']);
+    assert.throws(() => buildOmxExecArgs({ prompt: '' }), /prompt must not be empty/);
+    assert.throws(() => buildOmxExecArgs({ prompt: '--dangerously-bypass-approvals-and-sandbox' }), /positional arguments must not start/);
+    assert.throws(() => buildOmxExecArgs({ prompt: 'ship it', outputLastMessage: '--json' }), /outputLastMessage: option values must not start/);
     assert.throws(() => buildOmxExecSkillArgs({ skill: 'bad skill' }), /Invalid OMX skill name/);
     assert.throws(() => buildCodexForkArgs({ prompt: '--dangerously-bypass-approvals-and-sandbox' }), /positional arguments must not start/);
     assert.throws(() => buildOmxResumeArgs({ sessionId: '-c' }), /positional arguments must not start/);
@@ -1249,7 +1288,7 @@ describe('OmxCatalogClient and runtime command builders', () => {
         spawnOptions: { stdio: ['ignore', 'pipe', 'pipe'] },
       });
 
-      const child = runtime.runSkill({ skill: 'ralph', prompt: 'verify SDK' });
+      const child = runtime.runPrompt({ prompt: 'verify SDK', profile: 'gpt55', json: true });
       let stdout = '';
       child.stdout?.setEncoding('utf-8');
       child.stdout?.on('data', (chunk) => {
@@ -1261,7 +1300,42 @@ describe('OmxCatalogClient and runtime command builders', () => {
       });
 
       assert.equal(code, 0);
-      assert.deepEqual(JSON.parse(stdout), { argv: ['exec', '$ralph verify SDK'] });
+      assert.deepEqual(JSON.parse(stdout), { argv: ['exec', '--profile', 'gpt55', '--json', 'verify SDK'] });
+
+      const childSkill = runtime.runSkill({ skill: 'ralph', prompt: 'verify SDK' });
+      let skillStdout = '';
+      childSkill.stdout?.setEncoding('utf-8');
+      childSkill.stdout?.on('data', (chunk) => {
+        skillStdout += chunk;
+      });
+      const skillCode = await new Promise<number | null>((resolvePromise, reject) => {
+        childSkill.once('error', reject);
+        childSkill.once('close', resolvePromise);
+      });
+
+      assert.equal(skillCode, 0);
+      assert.deepEqual(JSON.parse(skillStdout), { argv: ['exec', '$ralph verify SDK'] });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unsupported runtime spawn option keys before spawning', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-sdk-runtime-spawn-options-'));
+    try {
+      const omxBin = join(cwd, 'omx-stub.js');
+      await writeFile(omxBin, `process.stdout.write('should not spawn');
+`);
+      const runtime = new OmxRuntimeClient({
+        cwd,
+        omxBin,
+        spawnOptions: { stdio: ['ignore', 'pipe', 'pipe'], shell: true } as unknown as OmxRuntimeSpawnOptions,
+      });
+
+      assert.throws(
+        () => runtime.runPrompt({ prompt: 'verify SDK' }),
+        /Unsupported OMX runtime spawn option spawnOptions\.shell/,
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
