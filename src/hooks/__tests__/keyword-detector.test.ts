@@ -230,6 +230,23 @@ describe('keyword detector team compatibility', () => {
     assert.equal(match.keyword.toLowerCase(), '$ultragoal');
   });
 
+
+  it('maps minimax workflow invocations to the minimax skill', () => {
+    const explicit = detectPrimaryKeyword('$minimax harden this public API change');
+    assert.ok(explicit);
+    assert.equal(explicit.skill, 'minimax');
+    assert.equal(explicit.keyword.toLowerCase(), '$minimax');
+
+    const prose = detectPrimaryKeyword('run the minimax workflow on this risky refactor');
+    assert.ok(prose);
+    assert.equal(prose.skill, 'minimax');
+
+    assert.equal(detectPrimaryKeyword('explain the minimax algorithm for chess'), null);
+    assert.equal(detectPrimaryKeyword('compare alpha-beta pruning with minimax search'), null);
+    assert.equal(detectPrimaryKeyword('run the minimax algorithm on this tree'), null);
+    assert.equal(detectPrimaryKeyword('explain the minimax workflow design tradeoffs'), null);
+  });
+
   it('maps explicit $best-practice-research invocation to the best-practice research wrapper', () => {
     const match = detectPrimaryKeyword('$best-practice-research find current official guidance for this API');
     assert.ok(match);
@@ -523,6 +540,8 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('wiki lint'));
     assert.ok(registryKeywords.has('$autoresearch'));
     assert.ok(registryKeywords.has('$ultragoal'));
+    assert.ok(registryKeywords.has('$minimax'));
+    assert.ok(registryKeywords.has('minimax workflow'));
     assert.ok(registryKeywords.has('$prometheus-strict'));
     assert.ok(registryKeywords.has('ultragoal'));
     assert.ok(registryKeywords.has('autopilot'));
@@ -1526,6 +1545,212 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+  it('seeds durable minimax state for prompt-submit activation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-minimax-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$minimax harden this public API change in src/sdk/client.ts',
+        sessionId: 'sess-minimax',
+        nowIso: '2026-04-18T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'minimax');
+      assert.equal(result.phase, 'planning');
+      assert.equal(result.initialized_mode, 'minimax');
+      assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-minimax/minimax-state.json');
+
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-minimax', 'minimax-state.json'), 'utf-8'),
+      ) as {
+        mode: string;
+        active: boolean;
+        current_phase: string;
+        step: number;
+        packet_dir: string;
+        min_verdict: string;
+        arbiter_decision: string;
+        verification_evidence_step?: number | null;
+        verification_evidence_path?: string | null;
+        council_evidence_step?: number | null;
+        escalated?: boolean;
+        lookahead_policy?: {
+          schema_version?: string;
+          depth?: number;
+          max_branches?: number;
+          branch_factor_by_risk?: { low?: number; medium?: number; high?: number };
+          progressive_widening?: Record<string, boolean>;
+        };
+        completion_gate?: { verification_evidence_required?: boolean };
+        state?: { role_loop?: string[]; council?: { preferred_surface?: string } };
+      };
+      assert.equal(modeState.mode, 'minimax');
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, 'planning');
+      assert.equal(modeState.step, 1);
+      assert.equal(modeState.packet_dir, '.omx/minimax');
+      assert.equal(modeState.min_verdict, 'pending');
+      assert.equal(modeState.arbiter_decision, 'pending');
+      assert.equal(modeState.verification_evidence_step, null);
+      assert.equal(modeState.verification_evidence_path, null);
+      assert.equal(modeState.council_evidence_step, null);
+      assert.equal(modeState.escalated, false);
+      assert.equal(modeState.lookahead_policy?.schema_version, 'minimax-lookahead-policy-v1');
+      assert.equal(modeState.lookahead_policy?.depth, 2);
+      assert.equal(modeState.lookahead_policy?.max_branches, 3);
+      assert.equal(modeState.lookahead_policy?.branch_factor_by_risk?.low, 1);
+      assert.equal(modeState.lookahead_policy?.branch_factor_by_risk?.medium, 2);
+      assert.equal(modeState.lookahead_policy?.branch_factor_by_risk?.high, 3);
+      assert.equal(modeState.lookahead_policy?.progressive_widening?.add_branch_when_min_rejects, true);
+      assert.equal(modeState.completion_gate?.verification_evidence_required, true);
+      assert.deepEqual(modeState.state?.role_loop, ['MAX', 'LOOKAHEAD', 'MIN', 'ARBITER']);
+      assert.equal(modeState.state?.council?.preferred_surface, 'file-council');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('routes bare continuation to active minimax and preserves existing step state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-minimax-continuation-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-minimax-continuation';
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'minimax',
+        keyword: '$minimax',
+        phase: 'executing',
+        activated_at: '2026-04-18T00:00:00.000Z',
+        updated_at: '2026-04-18T00:00:00.000Z',
+        source: 'keyword-detector',
+        session_id: sessionId,
+        active_skills: [{ skill: 'minimax', active: true, phase: 'executing', session_id: sessionId }],
+      }, null, 2));
+      await writeFile(join(stateDir, 'sessions', sessionId, 'minimax-state.json'), JSON.stringify({
+        active: true,
+        mode: 'minimax',
+        current_phase: 'reviewing',
+        started_at: '2026-04-18T00:00:00.000Z',
+        updated_at: '2026-04-18T00:00:00.000Z',
+        session_id: sessionId,
+        step: 3,
+        packet_dir: '.omx/minimax',
+        min_verdict: 'revise',
+        arbiter_decision: 'revise',
+        escalated: true,
+        lookahead_policy: {
+          schema_version: 'minimax-lookahead-policy-v1',
+          depth: 2,
+          branch_factor_by_risk: { low: 1, medium: 1, high: 2 },
+          max_branches: 3,
+        },
+        verification_evidence: ['node --test dist/hooks/__tests__/minimax-skill-contract.test.js'],
+      }, null, 2));
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'continue',
+        sessionId,
+        nowIso: '2026-04-18T00:05:00.000Z',
+      });
+
+      assert.equal(result?.skill, 'minimax');
+      assert.equal(result?.keyword, '$minimax');
+      assert.equal(result?.initialized_mode, 'minimax');
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, 'minimax-state.json'), 'utf-8'),
+      ) as {
+        current_phase?: string;
+        step?: number;
+        started_at?: string;
+        min_verdict?: string;
+        arbiter_decision?: string;
+        escalated?: boolean;
+        lookahead_policy?: { branch_factor_by_risk?: { medium?: number } };
+      };
+      assert.equal(modeState.current_phase, 'reviewing');
+      assert.equal(modeState.step, 3);
+      assert.equal(modeState.started_at, '2026-04-18T00:00:00.000Z');
+      assert.equal(modeState.min_verdict, 'revise');
+      assert.equal(modeState.arbiter_decision, 'revise');
+      assert.equal(modeState.escalated, true);
+      assert.equal(modeState.lookahead_policy?.branch_factor_by_risk?.medium, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resets minimax progress on a fresh explicit minimax activation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-minimax-reactivation-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-minimax-reactivation';
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'minimax',
+        keyword: '$minimax',
+        phase: 'executing',
+        activated_at: '2026-04-18T00:00:00.000Z',
+        updated_at: '2026-04-18T00:00:00.000Z',
+        source: 'keyword-detector',
+        session_id: sessionId,
+        active_skills: [{ skill: 'minimax', active: true, phase: 'executing', session_id: sessionId }],
+      }, null, 2));
+      await writeFile(join(stateDir, 'sessions', sessionId, 'minimax-state.json'), JSON.stringify({
+        active: true,
+        mode: 'minimax',
+        current_phase: 'reviewing',
+        started_at: '2026-04-18T00:00:00.000Z',
+        updated_at: '2026-04-18T00:00:00.000Z',
+        session_id: sessionId,
+        step: 7,
+        min_verdict: 'escalate',
+        arbiter_decision: 'complete',
+        escalated: true,
+        verification_evidence: ['old evidence'],
+        verification_evidence_step: 7,
+      }, null, 2));
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$minimax review this different workflow contract change in src/minimax/lookahead.ts',
+        sessionId,
+        nowIso: '2026-04-18T00:10:00.000Z',
+      });
+
+      assert.equal(result?.skill, 'minimax');
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, 'minimax-state.json'), 'utf-8'),
+      ) as {
+        current_phase?: string;
+        step?: number;
+        started_at?: string;
+        min_verdict?: string;
+        arbiter_decision?: string;
+        escalated?: boolean;
+        verification_evidence?: string[];
+        verification_evidence_step?: number | null;
+      };
+      assert.equal(modeState.current_phase, 'planning');
+      assert.equal(modeState.step, 1);
+      assert.equal(modeState.started_at, '2026-04-18T00:10:00.000Z');
+      assert.equal(modeState.min_verdict, 'pending');
+      assert.equal(modeState.arbiter_decision, 'pending');
+      assert.equal(modeState.escalated, false);
+      assert.deepEqual(modeState.verification_evidence, []);
+      assert.equal(modeState.verification_evidence_step, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the planning skill when ralplan and autoresearch are invoked together', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autoresearch-planning-precedence-'));
     const stateDir = join(cwd, '.omx', 'state');
@@ -1545,6 +1770,30 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.deepEqual(result?.deferred_skills, ['autoresearch']);
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autoresearch-precedence', 'ralplan-state.json')), true);
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autoresearch-precedence', 'autoresearch-state.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the planning skill when ralplan and minimax are invoked together', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-minimax-planning-precedence-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ralplan $minimax design a guarded public API migration',
+        sessionId: 'sess-minimax-precedence',
+        nowIso: '2026-04-18T00:10:00.000Z',
+      });
+
+      assert.equal(result?.transition_error, undefined);
+      assert.equal(result?.skill, 'ralplan');
+      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralplan']);
+      assert.deepEqual(result?.deferred_skills, ['minimax']);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-minimax-precedence', 'ralplan-state.json')), true);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-minimax-precedence', 'minimax-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -4074,6 +4323,13 @@ describe('applyRalplanGate', () => {
     const result = applyRalplanGate(['autopilot'], 'autopilot build the app');
     assert.equal(result.gateApplied, true);
     assert.ok(result.keywords.includes('ralplan'));
+  });
+
+  it('redirects minimax to ralplan when underspecified', () => {
+    const result = applyRalplanGate(['minimax'], 'minimax harden this');
+    assert.equal(result.gateApplied, true);
+    assert.ok(result.keywords.includes('ralplan'));
+    assert.ok(!result.keywords.includes('minimax'));
   });
 
   it('does not gate well-specified prompts', () => {

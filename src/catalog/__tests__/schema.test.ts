@@ -104,4 +104,13 @@ describe('catalog schema', () => {
     assert.equal(ultragoal?.status, 'active');
     assert.equal(ultragoal?.core, true);
   });
+
+  it('includes minimax as an active guarded execution workflow skill', () => {
+    const parsed = validateCatalogManifest(readSourceManifest());
+    const minimax = parsed.skills.find((skill) => skill.name === 'minimax');
+
+    assert.equal(minimax?.category, 'execution');
+    assert.equal(minimax?.status, 'active');
+    assert.equal(minimax?.core, false);
+  });
 });

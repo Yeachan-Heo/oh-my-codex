@@ -466,6 +466,157 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('writes and reads minimax state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-minimax-'));
+    try {
+      const writeResponse = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'minimax',
+        active: true,
+        current_phase: 'reviewing',
+        step: 2,
+      });
+
+      assert.equal(writeResponse.isError, undefined);
+      assert.deepEqual(writeResponse.payload, {
+        success: true,
+        mode: 'minimax',
+        path: join(wd, '.omx', 'state', 'minimax-state.json'),
+      });
+
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'minimax',
+      });
+
+      assert.equal(readResponse.isError, undefined);
+      const readBody = readResponse.payload as Record<string, unknown>;
+      assert.equal(readBody.active, true);
+      assert.equal(readBody.current_phase, 'reviewing');
+      assert.equal(readBody.step, 2);
+      assert.deepEqual((readBody.lookahead_policy as { branch_factor_by_risk?: unknown }).branch_factor_by_risk, {
+        low: 1,
+        medium: 2,
+        high: 3,
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects minimax completion writes without fresh verification evidence', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-minimax-complete-reject-'));
+    try {
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'minimax',
+        active: true,
+        current_phase: 'reviewing',
+        step: 2,
+        arbiter_decision: 'complete',
+        verification_evidence: ['claimed but no artifact'],
+        verification_evidence_step: 2,
+      });
+
+      assert.equal(response.isError, true);
+      assert.match((response.payload as { error?: string }).error || '', /minimax complete state requires fresh verification evidence/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects minimax inactive terminal writes unless they are explicit cancellation states', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-minimax-inactive-reject-'));
+    try {
+      const terminalResponse = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'minimax',
+        active: false,
+      });
+      assert.equal(terminalResponse.isError, true);
+      assert.match((terminalResponse.payload as { error?: string }).error || '', /minimax complete state requires fresh verification evidence/);
+
+      const cancelResponse = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'minimax',
+        active: false,
+        current_phase: 'cancelled',
+      });
+      assert.equal(cancelResponse.isError, undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows minimax completion writes with a passing verification artifact', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-minimax-complete-pass-'));
+    try {
+      await mkdir(join(wd, '.omx', 'minimax'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'minimax', 'verification-step-2.json'), JSON.stringify({
+        schema_version: 'minimax-verification-v1',
+        step: 2,
+        status: 'passed',
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'minimax',
+        active: true,
+        current_phase: 'reviewing',
+        step: 2,
+        arbiter_decision: 'complete',
+        verification_evidence: ['node --test dist/minimax/__tests__/lookahead.test.js'],
+        verification_evidence_step: 2,
+        verification_evidence_path: '.omx/minimax/verification-step-2.json',
+      });
+
+      assert.equal(response.isError, undefined);
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'minimax',
+      });
+      const readBody = readResponse.payload as Record<string, unknown>;
+      assert.equal(readBody.arbiter_decision, 'complete');
+      assert.equal(readBody.verification_evidence_path, '.omx/minimax/verification-step-2.json');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps minimax escalation sticky across later state writes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-minimax-escalation-'));
+    try {
+      await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'minimax',
+        active: true,
+        current_phase: 'reviewing',
+        escalated: true,
+        arbiter_history: ['escalate'],
+      });
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'minimax',
+        active: true,
+        current_phase: 'reviewing',
+        escalated: false,
+        arbiter_history: ['continue'],
+      });
+
+      assert.equal(response.isError, undefined);
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'minimax',
+      });
+      const readBody = readResponse.payload as { escalated?: boolean; arbiter_history?: string[] };
+      assert.equal(readBody.escalated, true);
+      assert.deepEqual(readBody.arbiter_history, ['escalate', 'continue']);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('lists active modes from the explicit session scope without leaking a sibling Ralph session', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-foreign-ralph-scope-'));
     try {

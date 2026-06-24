@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-06-17T05:57:55.659Z",
+  "generatedAt": "2026-06-24T13:46:05.682Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 50,
+    "skillCount": 51,
     "promptCount": 34,
-    "activeSkillCount": 28,
+    "activeSkillCount": 29,
     "activeAgentCount": 20
   },
   "coreSkills": [
@@ -81,6 +81,13 @@
     },
     {
       "name": "pipeline",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "minimax",
       "category": "execution",
       "status": "active",
       "core": false,
