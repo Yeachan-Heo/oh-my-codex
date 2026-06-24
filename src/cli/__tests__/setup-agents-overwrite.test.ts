@@ -228,6 +228,56 @@ describe('omx setup AGENTS refresh behavior', () => {
     }
   });
 
+  it('keeps --merge-agents idempotent for already generated AGENTS.md and refreshes stale model rows', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const template = readFileSync(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      const existing = upsertAgentsModelTable(
+        addGeneratedAgentsMarker(template),
+        {
+          frontierModel: 'stale-frontier',
+          sparkModel: 'stale-spark',
+          subagentDefaultModel: 'stale-frontier',
+        },
+      );
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+
+      const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+      const expectedContext = resolveAgentsModelTableContext(
+        await readFile(join(wd, '.codex', 'config.toml'), 'utf-8'),
+        { codexHomeOverride: join(wd, '.codex') },
+      );
+
+      assert.match(output, /Merged OMX-managed AGENTS\.md sections into project root\./);
+      assert.equal(countOccurrences(agentsContent, '<!-- omx:generated:agents-md -->'), 1);
+      assert.equal(countOccurrences(agentsContent, OMX_MANAGED_AGENTS_START_MARKER), 0);
+      assert.equal(countOccurrences(agentsContent, OMX_MANAGED_AGENTS_END_MARKER), 0);
+      assert.match(
+        agentsContent,
+        new RegExp(`\\| Frontier \\(leader\\) \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
+      );
+      assert.match(
+        agentsContent,
+        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| low \\|`),
+      );
+      assert.doesNotMatch(agentsContent, /stale-frontier/);
+      assert.doesNotMatch(agentsContent, /stale-spark/);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('refreshes only the explicit OMX-owned model block inside a user-authored AGENTS.md', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
     const restoreTty = setMockTty(false);

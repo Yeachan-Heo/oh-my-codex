@@ -1,0 +1,91 @@
+{
+  "name": "oh-my-codex-vscode",
+  "displayName": "Oh My Codex",
+  "description": "VSCode UI for launching, monitoring, and reviewing OMX work without tmux panes.",
+  "version": "0.5.7",
+  "publisher": "omx",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "omx.openChat",
+        "title": "Open Chat",
+        "category": "OMX"
+      },
+      {
+        "command": "omx.start",
+        "title": "Start Direct Session",
+        "category": "OMX"
+      },
+      {
+        "command": "omx.resume",
+        "title": "Resume Direct Session",
+        "category": "OMX"
+      },
+      {
+        "command": "omx.stop",
+        "title": "Stop Active Session",
+        "category": "OMX"
+      },
+      {
+        "command": "omx.doctor",
+        "title": "Run Doctor",
+        "category": "OMX"
+      }
+    ],
+    "configuration": {
+      "title": "Oh My Codex",
+      "properties": {
+        "omx.command": {
+          "type": "string",
+          "default": "",
+          "description": "Optional OMX executable used for direct launches and doctor checks. When empty, the extension uses the workspace dist/cli/omx.js before falling back to omx on PATH."
+        },
+        "omx.defaultArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Default Codex/OMX launch arguments appended to direct sessions."
+        },
+        "omx.extraPath": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra PATH directories prepended when launching OMX and Codex from VSCode."
+        },
+        "omx.coreModulePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the compiled OMX VSCode core module. Defaults to the repository root dist/vscode/index.js."
+        },
+        "omx.confirmDangerousLaunches": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require confirmation before launching sessions with madmax/yolo/bypass approval flags."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p .",
+    "test": "npm run compile && node --test dist/__tests__/*.test.js",
+    "watch": "tsc -watch -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  }
+}

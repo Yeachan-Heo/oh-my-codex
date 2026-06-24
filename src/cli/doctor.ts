@@ -37,6 +37,7 @@ import {
 	MANAGED_HOOK_EVENTS,
 	buildManagedCodexNativeHookCommand,
 	discoverCodexHookConfigPaths,
+	resolveWindowsPowerShellPath,
 	getManagedCodexHookCommandsForEvent,
 	getMissingManagedCodexHookEvents,
 	hasCodexHooksJsonTopLevelState,
@@ -312,7 +313,12 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	checks.push(checkNodeVersion());
 
 	// Check 2.5: Explore harness readiness
-	checks.push(checkExploreHarness());
+	const exploreRoutingState = await resolveExploreRoutingState(paths.configPath);
+	checks.push(
+		checkExploreHarness(process.platform, process.env, {
+			exploreRoutingEnabled: exploreRoutingState.enabled,
+		}),
+	);
 
 	// Check 3: Codex home directory
 	checks.push(checkDirectory("Codex home", paths.codexHomeDir));
@@ -346,10 +352,14 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (runtimeMirrorCheck) checks.push(runtimeMirrorCheck);
 
 	// Check 4.5: Explore routing default
-	checks.push(await checkExploreRouting(paths.configPath));
+	checks.push(checkExploreRoutingFromState(exploreRoutingState));
 
 	// Check 4.6: Lore commit guard default
 	checks.push(await checkLoreCommitGuard(paths.configPath));
+
+	// Check 4.7: External process guards
+	const externalProcessGuardCheck = await checkExternalCodexProcessGuards();
+	if (externalProcessGuardCheck) checks.push(externalProcessGuardCheck);
 
 	// Check 5: Prompts installed
 	checks.push(
@@ -827,7 +837,19 @@ function checkNodeVersion(): Check {
 export function checkExploreHarness(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = process.env,
+	options: { exploreRoutingEnabled?: boolean } = {},
 ): Check {
+	const override = env[EXPLORE_BIN_ENV]?.trim();
+	const exploreRoutingEnabled = options.exploreRoutingEnabled ?? isExploreCommandRoutingEnabled(env);
+	if (!override && !exploreRoutingEnabled) {
+		return {
+			name: "Explore Harness",
+			status: "pass",
+			message:
+				"skipped: omx explore is hard-deprecated and explore routing is disabled by default; use omx sparkshell for shell-native read-only evidence",
+		};
+	}
+
 	const packageRoot = getPackageRoot();
 	const manifestPath = join(packageRoot, "crates", "omx-explore", "Cargo.toml");
 	if (!existsSync(manifestPath)) {
@@ -839,7 +861,6 @@ export function checkExploreHarness(
 		};
 	}
 
-	const override = env[EXPLORE_BIN_ENV]?.trim();
 	if (override) {
 		const resolved = join(packageRoot, override);
 		if (existsSync(override) || existsSync(resolved)) {
@@ -1220,10 +1241,53 @@ async function checkModelContextRecommendation(
 	}
 }
 
-async function checkExploreRouting(configPath: string): Promise<Check> {
-	const envValue = process.env[OMX_EXPLORE_CMD_ENV];
+type ExploreRoutingState =
+	| { source: "env"; enabled: boolean }
+	| { source: "config"; enabled: boolean }
+	| { source: "default"; enabled: false; reason: "missing-config" | "unset" }
+	| { source: "unreadable"; enabled: false };
+
+async function resolveExploreRoutingState(
+	configPath: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<ExploreRoutingState> {
+	const envValue = env[OMX_EXPLORE_CMD_ENV];
 	if (typeof envValue === "string") {
-		if (isExploreCommandRoutingEnabled(process.env)) {
+		return { source: "env", enabled: isExploreCommandRoutingEnabled(env) };
+	}
+
+	if (!existsSync(configPath)) {
+		return { source: "default", enabled: false, reason: "missing-config" };
+	}
+
+	try {
+		const content = await readFile(configPath, "utf-8");
+		const parsed = parseToml(content) as {
+			env?: Record<string, unknown>;
+			shell_environment_policy?: { set?: Record<string, unknown> };
+		};
+		const configuredValue =
+			parsed?.shell_environment_policy?.set?.USE_OMX_EXPLORE_CMD ??
+			parsed?.env?.USE_OMX_EXPLORE_CMD;
+
+		if (typeof configuredValue === "string") {
+			return {
+				source: "config",
+				enabled: isExploreCommandRoutingEnabled({
+					USE_OMX_EXPLORE_CMD: configuredValue,
+				}),
+			};
+		}
+
+		return { source: "default", enabled: false, reason: "unset" };
+	} catch {
+		return { source: "unreadable", enabled: false };
+	}
+}
+
+function checkExploreRoutingFromState(state: ExploreRoutingState): Check {
+	if (state.source === "env") {
+		if (state.enabled) {
 			return {
 				name: "Explore routing",
 				status: "warn",
@@ -1239,54 +1303,39 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
 		};
 	}
 
-	if (!existsSync(configPath)) {
+	if (state.source === "config") {
+		if (state.enabled) {
+			return {
+				name: "Explore routing",
+				status: "warn",
+				message:
+					'deprecated compatibility routing enabled in config.toml; set USE_OMX_EXPLORE_CMD = "0" under [shell_environment_policy.set] and use normal Codex repo inspection or omx sparkshell instead',
+			};
+		}
 		return {
 			name: "Explore routing",
 			status: "pass",
-			message: "deprecated by default (config.toml not found yet)",
+			message:
+				"deprecated compatibility routing disabled in config.toml (recommended)",
 		};
 	}
 
-	try {
-		const content = await readFile(configPath, "utf-8");
-		const parsed = parseToml(content) as {
-			env?: Record<string, unknown>;
-			shell_environment_policy?: { set?: Record<string, unknown> };
-		};
-		const configuredValue =
-			parsed?.shell_environment_policy?.set?.USE_OMX_EXPLORE_CMD ??
-			parsed?.env?.USE_OMX_EXPLORE_CMD;
-
-		if (typeof configuredValue === "string") {
-			if (isExploreCommandRoutingEnabled({
-				USE_OMX_EXPLORE_CMD: configuredValue,
-			})) {
-				return {
-					name: "Explore routing",
-					status: "warn",
-					message:
-						'deprecated compatibility routing enabled in config.toml; set USE_OMX_EXPLORE_CMD = "0" under [shell_environment_policy.set] and use normal Codex repo inspection or omx sparkshell instead',
-				};
-			}
-			return {
-				name: "Explore routing",
-				status: "pass",
-				message: "deprecated compatibility routing disabled in config.toml (recommended)",
-			};
-		}
-
-		return {
-			name: "Explore routing",
-			status: "pass",
-			message: "deprecated by default",
-		};
-	} catch {
+	if (state.source === "unreadable") {
 		return {
 			name: "Explore routing",
 			status: "fail",
 			message: "cannot read config.toml for explore routing check",
 		};
 	}
+
+	return {
+		name: "Explore routing",
+		status: "pass",
+		message:
+			state.reason === "missing-config"
+				? "deprecated by default (config.toml not found yet)"
+				: "deprecated by default",
+	};
 }
 
 const LORE_COMMIT_GUARD_EXPLICIT_OPT_OUT_VALUES = new Set([
@@ -1383,6 +1432,140 @@ function isExplicitLoreCommitGuardOptOut(value: string): boolean {
 	return LORE_COMMIT_GUARD_EXPLICIT_OPT_OUT_VALUES.has(
 		value.trim().toLowerCase(),
 	);
+}
+
+interface ExternalCodexProcessGuardOptions {
+	platform?: NodeJS.Platform;
+	homeDir?: string;
+}
+
+function decodeBasicXmlEntities(value: string): string {
+	return value
+		.replaceAll("&amp;", "&")
+		.replaceAll("&lt;", "<")
+		.replaceAll("&gt;", ">")
+		.replaceAll("&quot;", '"')
+		.replaceAll("&apos;", "'");
+}
+
+function extractPlistStrings(content: string): string[] {
+	return [...content.matchAll(/<string>([^<]+)<\/string>/g)].map((match) =>
+		decodeBasicXmlEntities(match[1]?.trim() ?? ""),
+	);
+}
+
+function extractPlistLabel(content: string, fallback: string): string {
+	const labelMatch = content.match(
+		/<key>Label<\/key>\s*<string>([^<]+)<\/string>/,
+	);
+	return decodeBasicXmlEntities(labelMatch?.[1]?.trim() || fallback);
+}
+
+async function readExistingTextFile(path: string): Promise<string> {
+	try {
+		return await readFile(path, "utf-8");
+	} catch {
+		return "";
+	}
+}
+
+function expandLaunchAgentPath(value: string, homeDir: string): string {
+	if (value === "~") return homeDir;
+	if (value.startsWith("~/")) return join(homeDir, value.slice(2));
+	if (value === "$HOME") return homeDir;
+	if (value.startsWith("$HOME/")) return join(homeDir, value.slice(6));
+	if (value === "${HOME}") return homeDir;
+	if (value.startsWith("${HOME}/")) return join(homeDir, value.slice(8));
+	return value;
+}
+
+function classifyExternalCodexProcessGuard(
+	plistContent: string,
+	combinedContent: string,
+): string | null {
+	const lowerPlist = plistContent.toLowerCase();
+	const lower = combinedContent.toLowerCase();
+	if (
+		lower.includes("codex-mcp-child-guard") ||
+		lower.includes("codex_mcp_child_guard") ||
+		combinedContent.includes("CODEX_MCP_GUARD_DEDUPE_APP_CHILDREN") ||
+		(lower.includes("codex app-server") &&
+			lower.includes("pgrep -p") &&
+			lower.includes("kill"))
+	) {
+		return "Codex app-server MCP child dedupe";
+	}
+	if (
+		(lowerPlist.includes("codex-xcode-mcp-guard") ||
+			lowerPlist.includes("codex_xcode_mcp_guard")) &&
+		lower.includes("xcodebuildmcp") &&
+		lower.includes("kill")
+	) {
+		return "XcodeBuildMCP cleanup";
+	}
+	return null;
+}
+
+export async function checkExternalCodexProcessGuards(
+	options: ExternalCodexProcessGuardOptions = {},
+): Promise<Check | null> {
+	const platform = options.platform ?? process.platform;
+	if (platform !== "darwin") return null;
+
+	const homeDir = options.homeDir ?? process.env.HOME;
+	if (!homeDir) return null;
+
+	const launchAgentsDir = join(homeDir, "Library", "LaunchAgents");
+	if (!existsSync(launchAgentsDir)) return null;
+
+	let entries: string[];
+	try {
+		entries = await readdir(launchAgentsDir);
+	} catch {
+		return null;
+	}
+
+	const findings: string[] = [];
+	for (const entry of entries) {
+		if (!entry.endsWith(".plist")) continue;
+		const plistPath = join(launchAgentsDir, entry);
+		const plistContent = await readExistingTextFile(plistPath);
+		if (plistContent.trim() === "") continue;
+
+		const loweredPlist = plistContent.toLowerCase();
+		if (
+			!loweredPlist.includes("codex") &&
+			!loweredPlist.includes("mcp") &&
+			!loweredPlist.includes("omx")
+		) {
+			continue;
+		}
+
+		let combinedContent = plistContent;
+		for (const value of extractPlistStrings(plistContent)) {
+			const expandedValue = expandLaunchAgentPath(value, homeDir);
+			if (!expandedValue.startsWith("/")) continue;
+			if (!existsSync(expandedValue)) continue;
+			combinedContent += `\n${await readExistingTextFile(expandedValue)}`;
+		}
+
+		const reason = classifyExternalCodexProcessGuard(
+			plistContent,
+			combinedContent,
+		);
+		if (!reason) continue;
+
+		const label = extractPlistLabel(plistContent, entry);
+		findings.push(`${label} (${reason})`);
+	}
+
+	if (findings.length === 0) return null;
+
+	return {
+		name: "External process guards",
+		status: "warn",
+		message: `external LaunchAgent(s) may terminate Codex/MCP helper processes outside OMX setup ownership: ${findings.join(", ")}; unload/remove them before attributing SIGTERM or transport resets to standard OMX MCP configuration`,
+	};
 }
 
 interface NativeHookCheckContext {
@@ -1774,6 +1957,42 @@ export function classifyPostCompactHookStdout(stdout: string): Check | null {
 	}
 }
 
+
+interface PostCompactSmokeSpawnInvocation {
+	command: string;
+	args: string[];
+	shell: boolean;
+}
+
+export function buildPostCompactSmokeSpawnInvocation(
+	expectedCommand: string,
+	options: {
+		platform?: NodeJS.Platform;
+		env?: NodeJS.ProcessEnv;
+	} = {},
+): PostCompactSmokeSpawnInvocation {
+	const platform = options.platform ?? process.platform;
+	if (platform === "win32") {
+		return {
+			command: resolveWindowsPowerShellPath(options.env),
+			args: [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				expectedCommand,
+			],
+			shell: false,
+		};
+	}
+
+	return {
+		command: expectedCommand,
+		args: [],
+		shell: true,
+	};
+}
+
 async function checkNativePostCompactHookRuntime(
 	hooksPath: string,
 	cwd: string,
@@ -1816,7 +2035,8 @@ async function checkNativePostCompactHookRuntime(
 			cwd: smokeCwd,
 			session_id: "omx-doctor-postcompact-smoke",
 		});
-		const result = spawnSync(expectedCommand, {
+		const smokeInvocation = buildPostCompactSmokeSpawnInvocation(expectedCommand);
+		const result = spawnSync(smokeInvocation.command, smokeInvocation.args, {
 			cwd,
 			encoding: "utf-8",
 			env: {
@@ -1824,7 +2044,7 @@ async function checkNativePostCompactHookRuntime(
 				OMX_NATIVE_HOOK_DOCTOR_SMOKE: "1",
 			},
 			input: payload,
-			shell: true,
+			shell: smokeInvocation.shell,
 			timeout: 5_000,
 		});
 

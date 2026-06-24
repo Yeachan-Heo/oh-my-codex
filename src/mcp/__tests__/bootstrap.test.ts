@@ -14,6 +14,8 @@ import {
   resolveCurrentMcpEntrypointMarker,
   resolveDuplicateSiblingWatchdogInitialDelayMs,
   shouldAutoStartMcpServer,
+  shouldStopDuplicateSiblingWatchdogAfterTraffic,
+  shouldRunDuplicateSiblingStartupScanBeforeStopping,
   shouldSelfExitForDuplicateSibling,
   shouldSelfExitForPreTrafficSiblingHardCap,
   shouldSelfExitForPostTrafficSiblingHardCap,
@@ -226,6 +228,18 @@ describe('mcp duplicate sibling detection', () => {
     );
   });
 
+  it('stops duplicate sibling watchdog after stdio traffic only on Windows', () => {
+    assert.equal(shouldStopDuplicateSiblingWatchdogAfterTraffic('win32'), true);
+    assert.equal(shouldStopDuplicateSiblingWatchdogAfterTraffic('linux'), false);
+    assert.equal(shouldStopDuplicateSiblingWatchdogAfterTraffic('darwin'), false);
+  });
+
+  it('runs one pending startup scan before stopping Windows duplicate watchdog', () => {
+    assert.equal(shouldRunDuplicateSiblingStartupScanBeforeStopping(true, 'win32'), true);
+    assert.equal(shouldRunDuplicateSiblingStartupScanBeforeStopping(false, 'win32'), false);
+    assert.equal(shouldRunDuplicateSiblingStartupScanBeforeStopping(true, 'linux'), false);
+  });
+
   it('falls back to argv[1] when no explicit MCP entrypoint marker is set', () => {
     assert.equal(
       resolveCurrentMcpEntrypointMarker({}, '/repo/dist/mcp/state-server.js'),
@@ -319,6 +333,22 @@ describe('mcp duplicate sibling detection', () => {
       throw new Error('powershell unavailable');
     }) as typeof import('node:child_process').execFileSync;
     assert.equal(listProcessTable(failingRead, 'win32'), null);
+  });
+
+  it('keeps Windows path semantics when matching duplicate sibling commands', () => {
+    const processes = [
+      { pid: 101, ppid: 55, command: 'node C:\\Users\\me\\AppData\\Local\\oh-my-codex\\dist\\mcp\\state-server.cjs' },
+      { pid: 140, ppid: 55, command: 'node C:/Users/me/AppData/Local/oh-my-codex/dist/mcp/state-server.cjs' },
+      { pid: 150, ppid: 55, command: 'node C:\\Users\\me\\AppData\\Local\\oh-my-codex\\dist\\mcp\\memory-server.cjs' },
+    ];
+
+    const older = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.cjs');
+    const newest = analyzeDuplicateSiblingState(processes, 140, 55, 'state-server.cjs');
+
+    assert.equal(older.status, 'older_duplicate');
+    assert.deepEqual(older.matchingPids, [101, 140]);
+    assert.deepEqual(older.newerSiblingPids, [140]);
+    assert.equal(newest.status, 'newest');
   });
 
   it('detects duplicate Windows siblings through the process-table watchdog path', () => {

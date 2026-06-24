@@ -25,7 +25,7 @@ jobs:
       shared_config_changed: ${{ steps.classify.outputs.shared_config_changed }}
       reason: ${{ steps.classify.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Classify changed paths
@@ -220,7 +220,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.docs_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check documentation whitespace
         run: git diff --check HEAD~1..HEAD || git diff --check
 
@@ -231,7 +231,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -247,7 +247,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust build prerequisites
         run: .github/scripts/install-prereqs.sh build-essential -- cc
       - name: Setup Rust
@@ -267,7 +267,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust build prerequisites
         run: .github/scripts/install-prereqs.sh build-essential -- cc
       - name: Setup Rust
@@ -310,7 +310,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -325,7 +325,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -341,7 +341,7 @@ jobs:
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -408,7 +408,7 @@ jobs:
             lane: smoke
             catalog-check: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install test prerequisites
         run: .github/scripts/install-prereqs.sh build-essential tmux -- cc tmux
       - name: Setup Rust for harness-backed Node tests
@@ -461,7 +461,7 @@ jobs:
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install test prerequisites
         run: .github/scripts/install-prereqs.sh tmux -- tmux
       - uses: actions/setup-node@v6
@@ -507,7 +507,7 @@ jobs:
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -528,7 +528,7 @@ jobs:
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust build prerequisites
         run: .github/scripts/install-prereqs.sh build-essential -- cc
       - uses: actions/setup-node@v6

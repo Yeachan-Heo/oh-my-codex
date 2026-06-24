@@ -108,6 +108,10 @@ export function upsertManagedAgentsBlock(
     return next.endsWith('\n') ? next : `${next}\n`
   }
 
+  if (isOmxGeneratedAgentsMd(normalizedExisting)) {
+    return preserveUserOmxPolicyBlocks(normalizedExisting, normalizedManaged)
+  }
+
   return `${normalizedExisting.trimEnd()}\n\n${block}\n`
 }
 

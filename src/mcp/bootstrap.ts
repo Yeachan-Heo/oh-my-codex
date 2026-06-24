@@ -470,6 +470,19 @@ export function isParentProcessAlive(
   }
 }
 
+export function shouldStopDuplicateSiblingWatchdogAfterTraffic(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === 'win32';
+}
+
+export function shouldRunDuplicateSiblingStartupScanBeforeStopping(
+  hasPendingInitialDelay: boolean,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === 'win32' && hasPendingInitialDelay;
+}
+
 export function shouldAutoStartMcpServer(
   server: McpServerName,
   env: Record<string, string | undefined> = process.env,
@@ -549,6 +562,26 @@ export function autoStartStdioMcpServer(
   parentWatchdog?.unref();
   let duplicateSiblingWatchdog: ReturnType<typeof setInterval> | null = null;
   let duplicateSiblingInitialDelayTimer: ReturnType<typeof setTimeout> | null = null;
+  const stopDuplicateSiblingWatchdog = (reason: string, options: { runPendingInitialScan?: boolean } = {}) => {
+    let stopped = false;
+    if (duplicateSiblingInitialDelayTimer) {
+      clearTimeout(duplicateSiblingInitialDelayTimer);
+      duplicateSiblingInitialDelayTimer = null;
+      if (options.runPendingInitialScan) {
+        runDuplicateSiblingWatchdog();
+      }
+      stopped = true;
+    }
+    if (duplicateSiblingWatchdog) {
+      clearInterval(duplicateSiblingWatchdog);
+      duplicateSiblingWatchdog = null;
+      stopped = true;
+    }
+    if (stopped) {
+      emitLifecycle('duplicate_sibling_watchdog_stopped', { reason });
+    }
+  };
+
 
   const runDuplicateSiblingWatchdog = () => {
     try {
@@ -659,12 +692,7 @@ export function autoStartStdioMcpServer(
     if (parentWatchdog) {
       clearInterval(parentWatchdog);
     }
-    if (duplicateSiblingInitialDelayTimer) {
-      clearTimeout(duplicateSiblingInitialDelayTimer);
-    }
-    if (duplicateSiblingWatchdog) {
-      clearInterval(duplicateSiblingWatchdog);
-    }
+    stopDuplicateSiblingWatchdog('shutdown');
     process.stdin.off('data', handleStdinData);
     process.stdin.off('end', handleStdinEnd);
     process.stdin.off('close', handleStdinClose);
@@ -689,6 +717,12 @@ export function autoStartStdioMcpServer(
   };
   const handleStdinData = () => {
     lastTrafficAtMs = Date.now();
+    const hasPendingInitialDelay = duplicateSiblingInitialDelayTimer !== null;
+    if (shouldStopDuplicateSiblingWatchdogAfterTraffic()) {
+      stopDuplicateSiblingWatchdog('windows_stdio_traffic', {
+        runPendingInitialScan: shouldRunDuplicateSiblingStartupScanBeforeStopping(hasPendingInitialDelay),
+      });
+    }
   };
   const handleSigterm = () => {
     void shutdown('sigterm');

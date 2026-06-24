@@ -20,6 +20,8 @@ import {
 } from "./packaged-explore-harness-lock.js";
 import {
 	checkExploreHarness,
+	checkExternalCodexProcessGuards,
+	buildPostCompactSmokeSpawnInvocation,
 	checkNativeHookDistSmoke,
 	classifyPostCompactHookStdout,
 } from "../doctor.js";
@@ -155,13 +157,146 @@ function buildHooksJsonWithPostCompactCommand(
 }
 
 describe("omx doctor onboarding warning copy", () => {
-	it("warns that the built-in explore harness is not ready on Windows", () => {
+	it("warns about external LaunchAgents that kill Codex app-server MCP children", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-external-guard-"));
+		try {
+			const home = join(wd, "home");
+			const launchAgentsDir = join(home, "Library", "LaunchAgents");
+			const scriptsDir = join(home, ".omx", "scripts");
+			const scriptPath = join(scriptsDir, "codex_mcp_child_guard.sh");
+			await mkdir(launchAgentsDir, { recursive: true });
+			await mkdir(scriptsDir, { recursive: true });
+			await writeFile(
+				scriptPath,
+				[
+					"#!/usr/bin/env bash",
+					"CODEX_MCP_GUARD_DEDUPE_APP_CHILDREN=1",
+					"app_pid=123",
+					"pgrep -P \"$app_pid\"",
+					"kill 456",
+					"",
+				].join("\n"),
+			);
+			await writeFile(
+				join(launchAgentsDir, "com.example.codex-mcp-child-guard.plist"),
+				[
+					'<?xml version="1.0" encoding="UTF-8"?>',
+					'<plist version="1.0">',
+					"<dict>",
+					"<key>Label</key>",
+					"<string>com.example.codex-mcp-child-guard</string>",
+					"<key>ProgramArguments</key>",
+					"<array>",
+					`<string>${scriptPath}</string>`,
+					"<string>cleanup</string>",
+					"</array>",
+					"</dict>",
+					"</plist>",
+					"",
+				].join("\n"),
+			);
+
+			const check = await checkExternalCodexProcessGuards({
+				platform: "darwin",
+				homeDir: home,
+			});
+
+			assert.ok(check);
+			assert.equal(check.name, "External process guards");
+			assert.equal(check.status, "warn");
+			assert.match(check.message, /com\.example\.codex-mcp-child-guard/);
+			assert.match(check.message, /Codex app-server MCP child dedupe/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("follows XML-decoded HOME-relative LaunchAgent script paths", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-external-home-guard-"));
+		try {
+			const home = join(wd, "home");
+			const launchAgentsDir = join(home, "Library", "LaunchAgents");
+			const scriptsDir = join(home, ".omx", "scripts");
+			const scriptPath = join(scriptsDir, "codex&mcp_guard.sh");
+			await mkdir(launchAgentsDir, { recursive: true });
+			await mkdir(scriptsDir, { recursive: true });
+			await writeFile(
+				scriptPath,
+				[
+					"#!/usr/bin/env bash",
+					"CODEX_MCP_GUARD_DEDUPE_APP_CHILDREN=1",
+					"kill 456",
+					"",
+				].join("\n"),
+			);
+			await writeFile(
+				join(launchAgentsDir, "com.example.codex-encoded-guard.plist"),
+				[
+					'<?xml version="1.0" encoding="UTF-8"?>',
+					'<plist version="1.0">',
+					"<dict>",
+					"<key>Label</key>",
+					"<string>com.example.codex&amp;encoded-guard</string>",
+					"<key>ProgramArguments</key>",
+					"<array>",
+					"<string>$HOME/.omx/scripts/codex&amp;mcp_guard.sh</string>",
+					"</array>",
+					"</dict>",
+					"</plist>",
+					"",
+				].join("\n"),
+			);
+
+			const check = await checkExternalCodexProcessGuards({
+				platform: "darwin",
+				homeDir: home,
+			});
+
+			assert.ok(check);
+			assert.equal(check.status, "warn");
+			assert.match(check.message, /com\.example\.codex&encoded-guard/);
+			assert.match(check.message, /Codex app-server MCP child dedupe/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("skips external process guard checks outside macOS", async () => {
+		const check = await checkExternalCodexProcessGuards({
+			platform: "linux",
+			homeDir: "/tmp/unused",
+		});
+
+		assert.equal(check, null);
+	});
+
+	it("does not warn about the Windows explore harness when deprecated explore routing is disabled by default", () => {
 		const check = checkExploreHarness("win32", {} as NodeJS.ProcessEnv);
+
+		assert.equal(check.name, "Explore Harness");
+		assert.equal(check.status, "pass");
+		assert.match(check.message, /omx explore is hard-deprecated/i);
+		assert.match(check.message, /explore routing is disabled by default/i);
+		assert.match(check.message, /omx sparkshell/i);
+		assert.doesNotMatch(check.message, /not ready on Windows/i);
+	});
+
+	it("still warns about the Windows built-in explore harness when deprecated routing is explicitly enabled", () => {
+		const check = checkExploreHarness("win32", { USE_OMX_EXPLORE_CMD: "1" } as NodeJS.ProcessEnv);
 
 		assert.equal(check.name, "Explore Harness");
 		assert.equal(check.status, "warn");
 		assert.match(check.message, /not ready on Windows/i);
 		assert.match(check.message, /OMX_EXPLORE_BIN/);
+		assert.match(check.message, /omx sparkshell/i);
+	});
+
+	it("preserves warnings for explicit custom explore harness overrides", () => {
+		const check = checkExploreHarness("win32", { OMX_EXPLORE_BIN: "missing-custom-harness.exe" } as NodeJS.ProcessEnv);
+
+		assert.equal(check.name, "Explore Harness");
+		assert.equal(check.status, "warn");
+		assert.match(check.message, /OMX_EXPLORE_BIN is set but path was not found/);
 	});
 
 	it("treats user-managed MCP servers as preserved under CLI-first defaults", async () => {
@@ -679,6 +814,7 @@ enabled = true
 					CODEX_HOME: join(home, ".codex"),
 					PATH: fakeBin,
 					OMX_EXPLORE_BIN: "",
+					USE_OMX_EXPLORE_CMD: "1",
 				});
 				if (shouldSkipForSpawnPermissions(res.error)) return;
 				assert.equal(res.status, 0, res.stderr || res.stdout);
@@ -750,6 +886,7 @@ enabled = true
 						CODEX_HOME: join(home, ".codex"),
 						PATH: fakeBin,
 						OMX_EXPLORE_BIN: "",
+						USE_OMX_EXPLORE_CMD: "1",
 					});
 					if (shouldSkipForSpawnPermissions(res.error)) return;
 					assert.equal(res.status, 0, res.stderr || res.stdout);
@@ -1697,6 +1834,28 @@ command = "node"
 		);
 		assert.equal(unsupportedJson?.status, "fail");
 		assert.match(unsupportedJson?.message ?? "", /must emit no stdout/);
+	});
+
+	it("routes Windows PostCompact smoke validation through PowerShell -Command", () => {
+		const expectedCommand =
+			"& 'C:\\Program Files\\PowerShell\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File 'C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1'";
+		const invocation = buildPostCompactSmokeSpawnInvocation(expectedCommand, {
+			platform: "win32",
+			env: { SystemRoot: "C:\\Windows" },
+		});
+
+		assert.equal(
+			invocation.command,
+			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+		);
+		assert.deepEqual(invocation.args, [
+			"-NoProfile",
+			"-ExecutionPolicy",
+			"Bypass",
+			"-Command",
+			expectedCommand,
+		]);
+		assert.equal(invocation.shell, false);
 	});
 
 	it("verbose doctor smoke-validates the current PostCompact command with no stdout", async () => {

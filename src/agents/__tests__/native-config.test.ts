@@ -417,6 +417,43 @@ describe("agents/native-config", () => {
     }
   });
 
+  it("omits inherited custom provider for default Spark-lane native agents", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-config-spark-provider-"));
+    const codexHome = join(root, ".codex");
+    const promptsDir = join(root, "prompts");
+    const outDir = join(codexHome, "agents");
+    const previousCodexHome = process.env.CODEX_HOME;
+
+    try {
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(promptsDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        env: {
+          OMX_DEFAULT_SPARK_MODEL: "gpt-5.4-mini",
+        },
+      }));
+      await writeFile(join(codexHome, "config.toml"), [
+        'model = "gpt-5.5"',
+        'model_provider = "OpenAI"',
+        '',
+      ].join('\n'));
+      await writeFile(join(promptsDir, "explore.md"), "explore prompt");
+
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["explore"]),
+      });
+      const exploreToml = await readFile(join(outDir, "explore.toml"), "utf8");
+      assert.match(exploreToml, /model = "gpt-5\.4-mini"/);
+      assert.doesNotMatch(exploreToml, /model_provider = /);
+    } finally {
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("inherits a custom root model for standard agents when no standard override exists", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-root-model-"));
     const codexHome = join(root, ".codex");

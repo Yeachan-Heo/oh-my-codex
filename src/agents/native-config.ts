@@ -198,6 +198,16 @@ function resolveAgentModel(
   }
 }
 
+function shouldInheritRootModelProvider(
+  agent: AgentDefinition,
+  resolvedModel: string,
+  options: AgentModelResolutionOptions = {},
+): boolean {
+  if (agent.modelClass !== "fast") return true;
+  if (getAgentModelOverride(agent.name, options.codexHomeOverride)) return true;
+  return resolvedModel !== getSparkDefaultModel(options.codexHomeOverride);
+}
+
 function isExactMiniModel(resolvedModel?: string | null): boolean {
   return resolvedModel?.trim() === EXACT_GPT_5_4_MINI_MODEL;
 }
@@ -339,7 +349,9 @@ export function generateAgentToml(
   options: AgentModelResolutionOptions = {},
 ): string {
   const resolvedModel = resolveAgentModel(agent, options);
-  const resolvedModelProvider = getCodexConfigRootModelProvider(options.codexHomeOverride);
+  const resolvedModelProvider = shouldInheritRootModelProvider(agent, resolvedModel, options)
+    ? getCodexConfigRootModelProvider(options.codexHomeOverride)
+    : undefined;
   return generateStandaloneAgentToml({
     name: agent.name,
     description: agent.description,
