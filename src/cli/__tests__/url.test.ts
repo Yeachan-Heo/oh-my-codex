@@ -65,6 +65,7 @@ describe("omx url", () => {
 		};
 		try {
 			await urlCommand(["read", "https://example.test/", "--json"], {
+				resolveHostname: async () => ["93.184.216.34"],
 				fetch: async () => ({
 					status: 200,
 					statusText: "OK",

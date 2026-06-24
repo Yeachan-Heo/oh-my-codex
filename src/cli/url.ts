@@ -14,8 +14,10 @@ Examples:
   omx url read https://example.com --json
 
 This command passively reads a user-supplied URL and classifies the reachable
-response. It does not bypass challenges, use a browser, inject cookies, or take
-over any global binary/PATH ownership.
+response. It only supports http(s), resolves hosts before fetch, blocks local or
+internal network targets, and re-validates redirects before following them. It
+does not bypass challenges, use a browser, inject cookies, or take over any
+global binary/PATH ownership.
 `;
 
 const HELP_TOKENS = new Set(["--help", "-h", "help"]);

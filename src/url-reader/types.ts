@@ -38,8 +38,12 @@ export type FetchLike = (
 	init?: RequestInit,
 ) => Promise<FetchLikeResponse>;
 
+export type ResolveHostname = (hostname: string) => Promise<string[]>;
+
 export interface UrlReaderOptions {
 	fetch?: FetchLike;
+	resolveHostname?: ResolveHostname;
 	timeoutMs?: number;
 	maxBytes?: number;
+	maxRedirects?: number;
 }
