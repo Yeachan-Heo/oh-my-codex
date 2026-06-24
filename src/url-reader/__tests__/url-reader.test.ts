@@ -33,11 +33,11 @@ describe("readUrl", () => {
 	const publicResolver = async () => ["93.184.216.34"];
 
 	it("returns ok with title and snippet for reachable HTML", async () => {
-		const result = await readUrl("https://example.test/page", {
+		const result = await readUrl("http://example.test/page", {
 			resolveHostname: publicResolver,
 			fetch: async () =>
 				response({
-					url: "https://example.test/page",
+					url: "http://example.test/page",
 					bodyText:
 						"<html><head><title>Example &amp; Demo</title><script>ignore()</script></head><body><h1>Hello world</h1></body></html>",
 				}),
@@ -51,7 +51,7 @@ describe("readUrl", () => {
 	});
 
 	it("classifies challenge-like responses as blocked", async () => {
-		const result = await readUrl("https://example.test/protected", {
+		const result = await readUrl("http://example.test/protected", {
 			resolveHostname: publicResolver,
 			fetch: async () =>
 				response({
@@ -74,7 +74,7 @@ describe("readUrl", () => {
 			new Error("connection refused token=redacted"),
 			{ code: "ECONNREFUSED" },
 		);
-		const result = await readUrl("https://example.test/fail", {
+		const result = await readUrl("http://example.test/fail", {
 			resolveHostname: publicResolver,
 			fetch: async () => {
 				throw error;
@@ -89,11 +89,11 @@ describe("readUrl", () => {
 	});
 
 	it("reports redirects with final URL and readable metadata", async () => {
-		const result = await readUrl("https://example.test/start", {
+		const result = await readUrl("http://example.test/start", {
 			resolveHostname: publicResolver,
 			fetch: async () =>
 				response({
-					url: "https://example.test/final",
+					url: "http://example.test/final",
 					redirected: true,
 					bodyText: "<title>Final</title><body>Final content</body>",
 				}),
@@ -101,7 +101,7 @@ describe("readUrl", () => {
 
 		assert.equal(result.verdict, "redirect");
 		assert.equal(result.redirected, true);
-		assert.equal(result.final_url, "https://example.test/final");
+		assert.equal(result.final_url, "http://example.test/final");
 		assert.equal(result.title, "Final");
 	});
 
@@ -116,12 +116,12 @@ describe("readUrl", () => {
 			},
 		});
 
-		const result = await readUrl("https://example.test/large", {
+		const result = await readUrl("http://example.test/large", {
 			resolveHostname: publicResolver,
 			maxBytes: 128,
 			fetch: async () =>
 				response({
-					url: "https://example.test/large",
+					url: "http://example.test/large",
 					body,
 					bodyText: undefined,
 				}),
@@ -230,7 +230,7 @@ describe("readUrl", () => {
 
 	it("blocks hostnames that resolve to private addresses", async () => {
 		let fetched = false;
-		const result = await readUrl("https://internal.example.test/", {
+		const result = await readUrl("http://internal.example.test/", {
 			resolveHostname: async () => ["192.168.1.10"],
 			fetch: async () => {
 				fetched = true;
@@ -248,7 +248,7 @@ describe("readUrl", () => {
 
 		for (const address of unsafeAddresses) {
 			let fetched = false;
-			const result = await readUrl("https://internal-v6.example.test/", {
+			const result = await readUrl("http://internal-v6.example.test/", {
 				resolveHostname: async () => [address],
 				fetch: async () => {
 					fetched = true;
@@ -262,9 +262,111 @@ describe("readUrl", () => {
 		}
 	});
 
+
+	it("pins HTTP hostname fetches to the resolved public address and preserves Host", async () => {
+		const fetched: Array<{ url: string; host: string | undefined }> = [];
+		const result = await readUrl("http://example.test:8080/page", {
+			resolveHostname: async () => ["93.184.216.34"],
+			fetch: async (url, init) => {
+				fetched.push({
+					url,
+					host: (init?.headers as Record<string, string> | undefined)?.host,
+				});
+				return response({
+					url: "http://example.test:8080/page",
+					bodyText: "<title>Pinned</title>",
+				});
+			},
+		});
+
+		assert.equal(result.verdict, "ok");
+		assert.deepEqual(fetched, [
+			{ url: "http://93.184.216.34:8080/page", host: "example.test:8080" },
+		]);
+	});
+
+	it("prevents DNS rebinding by never fetching the original HTTP hostname", async () => {
+		let resolveCount = 0;
+		const fetched: string[] = [];
+		const result = await readUrl("http://rebind.example.test/path", {
+			resolveHostname: async () => {
+				resolveCount += 1;
+				return resolveCount === 1 ? ["93.184.216.34"] : ["127.0.0.1"];
+			},
+			fetch: async (url) => {
+				fetched.push(url);
+				assert.notEqual(new URL(url).hostname, "rebind.example.test");
+				return response({ url: "http://rebind.example.test/path", bodyText: "safe" });
+			},
+		});
+
+		assert.equal(result.verdict, "ok");
+		assert.equal(resolveCount, 1);
+		assert.deepEqual(fetched, ["http://93.184.216.34/path"]);
+	});
+
+	it("pins redirect HTTP hostname fetches to the resolved public address", async () => {
+		const fetched: string[] = [];
+		const result = await readUrl("http://example.test/start", {
+			resolveHostname: async (hostname) =>
+				hostname === "redirect.example.test" ? ["93.184.216.35"] : ["93.184.216.34"],
+			fetch: async (url) => {
+				fetched.push(url);
+				if (fetched.length === 1) {
+					return response({
+						status: 302,
+						statusText: "Found",
+						url,
+						headers: {
+							get: (name: string) =>
+								name.toLowerCase() === "location"
+									? "http://redirect.example.test/final"
+									: null,
+						},
+					});
+				}
+				return response({ url: "http://redirect.example.test/final", bodyText: "final" });
+			},
+		});
+
+		assert.equal(result.verdict, "redirect");
+		assert.deepEqual(fetched, [
+			"http://93.184.216.34/start",
+			"http://93.184.216.35/final",
+		]);
+	});
+
+	it("blocks HTTPS hostname targets because this runtime cannot safely pin TLS/SNI", async () => {
+		let fetched = false;
+		const result = await readUrl("https://example.test/", {
+			resolveHostname: async () => ["93.184.216.34"],
+			fetch: async () => {
+				fetched = true;
+				return response({});
+			},
+		});
+
+		assert.equal(result.verdict, "blocked");
+		assert.ok(result.signals.includes("https-hostname-not-pinned"));
+		assert.equal(fetched, false);
+	});
+
+	it("still allows direct public IP HTTPS targets", async () => {
+		const fetched: string[] = [];
+		const result = await readUrl("https://93.184.216.34/", {
+			fetch: async (url) => {
+				fetched.push(url);
+				return response({ url, bodyText: "ip" });
+			},
+		});
+
+		assert.equal(result.verdict, "ok");
+		assert.deepEqual(fetched, ["https://93.184.216.34/"]);
+	});
+
 	it("blocks redirects to localhost before following", async () => {
 		const fetched: string[] = [];
-		const result = await readUrl("https://example.test/start", {
+		const result = await readUrl("http://example.test/start", {
 			resolveHostname: publicResolver,
 			fetch: async (url) => {
 				fetched.push(url);
@@ -282,12 +384,12 @@ describe("readUrl", () => {
 
 		assert.equal(result.verdict, "blocked");
 		assert.ok(result.signals.includes("localhost-name"));
-		assert.deepEqual(fetched, ["https://example.test/start"]);
+		assert.deepEqual(fetched, ["http://93.184.216.34/start"]);
 	});
 
 	it("blocks redirects to private targets before following", async () => {
 		const fetched: string[] = [];
-		const result = await readUrl("https://example.test/start", {
+		const result = await readUrl("http://example.test/start", {
 			resolveHostname: async (hostname) =>
 				hostname === "private.example.test" ? ["10.0.0.2"] : ["93.184.216.34"],
 			fetch: async (url) => {
@@ -308,7 +410,7 @@ describe("readUrl", () => {
 
 		assert.equal(result.verdict, "blocked");
 		assert.ok(result.signals.includes("unsafe-address"));
-		assert.deepEqual(fetched, ["https://example.test/start"]);
+		assert.deepEqual(fetched, ["http://93.184.216.34/start"]);
 	});
 
 	it("blocks redirects to unsafe IPv6 literal targets before following", async () => {
@@ -320,7 +422,7 @@ describe("readUrl", () => {
 
 		for (const target of redirectTargets) {
 			const fetched: string[] = [];
-			const result = await readUrl("https://example.test/start", {
+			const result = await readUrl("http://example.test/start", {
 				resolveHostname: publicResolver,
 				fetch: async (url) => {
 					fetched.push(url);
@@ -338,7 +440,7 @@ describe("readUrl", () => {
 
 			assert.equal(result.verdict, "blocked", target);
 			assert.ok(result.signals.includes("unsafe-address"), target);
-			assert.deepEqual(fetched, ["https://example.test/start"], target);
+			assert.deepEqual(fetched, ["http://93.184.216.34/start"], target);
 		}
 	});
 
@@ -347,7 +449,7 @@ describe("readUrl", () => {
 
 		for (const address of unsafeAddresses) {
 			const fetched: string[] = [];
-			const result = await readUrl("https://example.test/start", {
+			const result = await readUrl("http://example.test/start", {
 				resolveHostname: async (hostname) =>
 					hostname === "unsafe-v6.example.test" ? [address] : ["93.184.216.34"],
 				fetch: async (url) => {
@@ -368,7 +470,7 @@ describe("readUrl", () => {
 
 			assert.equal(result.verdict, "blocked", address);
 			assert.ok(result.signals.includes("unsafe-address"), address);
-			assert.deepEqual(fetched, ["https://example.test/start"], address);
+			assert.deepEqual(fetched, ["http://93.184.216.34/start"], address);
 		}
 	});
 });

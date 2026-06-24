@@ -13,6 +13,8 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BYTES = 256 * 1024;
 const DEFAULT_MAX_REDIRECTS = 10;
 const USER_AGENT = "oh-my-codex-url-reader/0";
+const DEFAULT_HTTP_PORT = "80";
+const DEFAULT_HTTPS_PORT = "443";
 
 const BLOCKED_STATUS_CODES = new Set([401, 403, 407, 423, 429, 451, 503]);
 const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
@@ -74,9 +76,6 @@ export async function readUrl(
 		return errorResult(normalizedInput, normalizeError(error));
 	}
 
-	const unsafeInput = await validateSafeUrl(parsed, options);
-	if (unsafeInput) return unsafeInput;
-
 	if (!fetchImpl) {
 		return errorResult(normalizedInput, {
 			name: "FetchUnavailableError",
@@ -118,23 +117,19 @@ async function fetchWithSafeRedirects(
 	let redirected = false;
 
 	for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
-		const unsafe = await validateSafeUrl(
+		const safeTarget = await prepareSafeFetchTarget(
 			currentUrl,
 			options,
 			redirected,
 			initialUrl.toString(),
 		);
-		if (unsafe) return { blocked: unsafe };
+		if ("blocked" in safeTarget) return { blocked: safeTarget.blocked };
 
-		const response = await fetchImpl(currentUrl.toString(), {
+		const response = await fetchImpl(safeTarget.fetchUrl.toString(), {
 			method: "GET",
 			redirect: "manual",
 			signal: AbortSignal.timeout(timeoutMs),
-			headers: {
-				"user-agent": USER_AGENT,
-				accept:
-					"text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,text/plain;q=0.7,*/*;q=0.1",
-			},
+			headers: safeTarget.headers,
 		});
 
 		if (!REDIRECT_STATUS_CODES.has(response.status)) {
@@ -156,13 +151,13 @@ async function fetchWithSafeRedirects(
 			};
 		}
 
-		const unsafeRedirect = await validateSafeUrl(
+		const unsafeRedirect = await prepareSafeFetchTarget(
 			nextUrl,
 			options,
 			true,
 			initialUrl.toString(),
 		);
-		if (unsafeRedirect) return { blocked: unsafeRedirect };
+		if ("blocked" in unsafeRedirect) return { blocked: unsafeRedirect.blocked };
 		currentUrl = nextUrl;
 		redirected = true;
 	}
@@ -175,56 +170,124 @@ async function fetchWithSafeRedirects(
 	};
 }
 
-async function validateSafeUrl(
+interface SafeFetchTarget {
+	fetchUrl: URL;
+	headers: Record<string, string>;
+}
+
+async function prepareSafeFetchTarget(
 	url: URL,
 	options: UrlReaderOptions,
 	redirect = false,
 	inputUrl = url.toString(),
-): Promise<UrlReadResult | null> {
+): Promise<SafeFetchTarget | { blocked: UrlReadResult }> {
+	const validation = await validateAndResolveSafeUrl(url, options, redirect, inputUrl);
+	if ("blocked" in validation) return validation;
+
+	const hostname = normalizeHostname(url.hostname);
+	const ipVersion = isIP(hostname);
+	const headers = defaultFetchHeaders();
+
+	if (ipVersion !== 0) {
+		return { fetchUrl: url, headers };
+	}
+
+	if (url.protocol === "https:") {
+		return {
+			blocked: blockedResult(inputUrl, "https-hostname-not-pinned", {
+				name: "UnsafeUrlError",
+				message: redirect
+					? "Blocked URL redirect because HTTPS hostname targets cannot be connection-pinned safely in this runtime."
+					: "Blocked URL read because HTTPS hostname targets cannot be connection-pinned safely in this runtime.",
+			}),
+		};
+	}
+
+	const fetchUrl = new URL(url.toString());
+	fetchUrl.hostname = formatHostnameForUrl(validation.address);
+	headers.host = originalHttpHostHeader(url);
+	return { fetchUrl, headers };
+}
+
+async function validateAndResolveSafeUrl(
+	url: URL,
+	options: UrlReaderOptions,
+	redirect = false,
+	inputUrl = url.toString(),
+): Promise<{ address: string } | { blocked: UrlReadResult }> {
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
-		return blockedResult(inputUrl, "unsupported-protocol", {
-			name: "UnsupportedProtocolError",
-			message: `Blocked URL read because protocol ${url.protocol} is not supported.`,
-		});
+		return {
+			blocked: blockedResult(inputUrl, "unsupported-protocol", {
+				name: "UnsupportedProtocolError",
+				message: `Blocked URL read because protocol ${url.protocol} is not supported.`,
+			}),
+		};
 	}
 
 	const hostname = normalizeHostname(url.hostname);
 	if (isLocalhostName(hostname)) {
-		return blockedResult(inputUrl, "localhost-name", {
-			name: "UnsafeUrlError",
-			message: redirect
-				? "Blocked URL redirect to a local hostname."
-				: "Blocked URL read for a local hostname.",
-		});
+		return {
+			blocked: blockedResult(inputUrl, "localhost-name", {
+				name: "UnsafeUrlError",
+				message: redirect
+					? "Blocked URL redirect to a local hostname."
+					: "Blocked URL read for a local hostname.",
+			}),
+		};
 	}
 
 	let addresses: string[];
 	try {
 		addresses = await resolveHostname(hostname, options);
 	} catch {
-		return blockedResult(inputUrl, "dns-resolution-failed", {
-			name: "DnsResolutionError",
-			message: "Blocked URL read because the hostname could not be resolved safely.",
-		});
+		return {
+			blocked: blockedResult(inputUrl, "dns-resolution-failed", {
+				name: "DnsResolutionError",
+				message: "Blocked URL read because the hostname could not be resolved safely.",
+			}),
+		};
 	}
 
 	if (addresses.length === 0) {
-		return blockedResult(inputUrl, "dns-resolution-empty", {
-			name: "DnsResolutionError",
-			message: "Blocked URL read because the hostname did not resolve to an address.",
-		});
+		return {
+			blocked: blockedResult(inputUrl, "dns-resolution-empty", {
+				name: "DnsResolutionError",
+				message: "Blocked URL read because the hostname did not resolve to an address.",
+			}),
+		};
 	}
 
 	if (addresses.some((address) => !isSafeIpAddress(address))) {
-		return blockedResult(inputUrl, "unsafe-address", {
-			name: "UnsafeUrlError",
-			message: redirect
-				? "Blocked URL redirect because the target resolves to an unsafe network address."
-				: "Blocked URL read because the target resolves to an unsafe network address.",
-		});
+		return {
+			blocked: blockedResult(inputUrl, "unsafe-address", {
+				name: "UnsafeUrlError",
+				message: redirect
+					? "Blocked URL redirect because the target resolves to an unsafe network address."
+					: "Blocked URL read because the target resolves to an unsafe network address.",
+			}),
+		};
 	}
 
-	return null;
+	return { address: addresses[0] };
+}
+
+function defaultFetchHeaders(): Record<string, string> {
+	return {
+		"user-agent": USER_AGENT,
+		accept:
+			"text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,text/plain;q=0.7,*/*;q=0.1",
+	};
+}
+
+function originalHttpHostHeader(url: URL): string {
+	const hostname = normalizeHostname(url.hostname);
+	const defaultPort = url.protocol === "https:" ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
+	const bracketedHostname = isIP(hostname) === 6 ? `[${hostname}]` : hostname;
+	return url.port && url.port !== defaultPort ? `${bracketedHostname}:${url.port}` : bracketedHostname;
+}
+
+function formatHostnameForUrl(address: string): string {
+	return isIP(address) === 6 ? `[${address}]` : address;
 }
 
 function normalizeHostname(hostname: string): string {

@@ -15,9 +15,13 @@ Examples:
 
 This command passively reads a user-supplied URL and classifies the reachable
 response. It only supports http(s), resolves hosts before fetch, blocks local or
-internal network targets, and re-validates redirects before following them. It
-does not bypass challenges, use a browser, inject cookies, or take over any
-global binary/PATH ownership.
+internal network targets, and re-validates redirects before following them. To
+avoid DNS rebinding/TOCTOU in the Node v0 runtime, HTTP hostname requests are
+sent to a validated pinned IP with the original Host header; HTTPS hostnames are
+blocked because this fetch path cannot safely pin the TCP connection while also
+preserving TLS SNI/certificate validation. Direct public IP HTTPS URLs remain
+allowed. It does not bypass challenges, use a browser, inject cookies, or take
+over any global binary/PATH ownership.
 `;
 
 const HELP_TOKENS = new Set(["--help", "-h", "help"]);

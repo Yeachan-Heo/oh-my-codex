@@ -48,11 +48,11 @@ describe("omx url", () => {
 
 	it("requires explicit JSON output for passive reads", () => {
 		assert.throws(
-			() => parseUrlReadArgs(["https://example.test/"]),
+			() => parseUrlReadArgs(["http://example.test/"]),
 			/Missing required --json flag/,
 		);
-		assert.deepEqual(parseUrlReadArgs(["https://example.test/", "--json"]), {
-			url: "https://example.test/",
+		assert.deepEqual(parseUrlReadArgs(["http://example.test/", "--json"]), {
+			url: "http://example.test/",
 			json: true,
 		});
 	});
@@ -64,12 +64,12 @@ describe("omx url", () => {
 			logs.push(String(message));
 		};
 		try {
-			await urlCommand(["read", "https://example.test/", "--json"], {
+			await urlCommand(["read", "http://example.test/", "--json"], {
 				resolveHostname: async () => ["93.184.216.34"],
 				fetch: async () => ({
 					status: 200,
 					statusText: "OK",
-					url: "https://example.test/",
+					url: "http://example.test/",
 					redirected: false,
 					body: new ReadableStream({
 						start(controller) {
