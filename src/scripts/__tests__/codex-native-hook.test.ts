@@ -3284,6 +3284,94 @@ standardMaxRounds = 15
     }
   });
 
+  it("does not block ordinary Stop after completed Ultragoal cleanup remains", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-ultragoal-ordinary-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        aggregateCompletion: { status: "complete", completedAt: "2026-05-20T00:00:00.000Z" },
+        goals: [{ id: "G001-done", status: "complete", objective: "Done" }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-completed-ultragoal-ordinary-stop",
+        thread_id: "thread-completed-ultragoal-ordinary-stop",
+        last_assistant_message: "Implemented the requested fix and verified the focused tests.",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.notEqual(result.outputJson?.decision, "block");
+      assert.notEqual(result.outputJson?.stopReason, "completed_codex_goal_cleanup_required");
+      assert.doesNotMatch(output, /run \/goal clear/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat explanatory create_goal warnings as completed-goal cleanup attempts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-explainer-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        aggregateCompletion: { status: "complete", completedAt: "2026-05-20T00:00:00.000Z" },
+        goals: [{ id: "G001-done", status: "complete", objective: "Done" }],
+      });
+
+      for (const [index, last_assistant_message] of [
+        "Do not call create_goal until the user has explicitly cleared the old goal state.",
+        "No create_goal attempt was made; this is only the final summary.",
+        "I am not calling create_goal; the completed work is summarized above.",
+        "I am not starting another goal; cleanup is already documented.",
+        "Do not start another goal until cleanup is explicit.",
+        "Do not create a new ultragoal; this is only a final summary.",
+      ].entries()) {
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "Stop",
+          cwd,
+          session_id: `sess-completed-goal-explainer-stop-${index}`,
+          thread_id: `thread-completed-goal-explainer-stop-${index}`,
+          last_assistant_message,
+        }, { cwd });
+
+        const output = JSON.stringify(result.outputJson);
+        assert.notEqual(result.outputJson?.decision, "block");
+        assert.notEqual(result.outputJson?.stopReason, "completed_codex_goal_cleanup_required");
+        assert.doesNotMatch(output, /run \/goal clear/);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks explicit create_goal attempts even when adjacent text explains not to call it", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-mixed-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        aggregateCompletion: { status: "complete", completedAt: "2026-05-20T00:00:00.000Z" },
+        goals: [{ id: "G001-done", status: "complete", objective: "Done" }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-completed-goal-mixed-stop",
+        thread_id: "thread-completed-goal-mixed-stop",
+        last_user_message: "Do not call create_goal until cleanup is explicit.",
+        last_assistant_message: "I am starting another run now; create_goal payload follows.",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "completed_codex_goal_cleanup_required");
+      assert.match(output, /run \/goal clear/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks Stop when a final answer starts another goal over completed state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-stop-"));
     try {

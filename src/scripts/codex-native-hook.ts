@@ -2412,6 +2412,55 @@ function looksLikeNewGoalPrompt(text: string): boolean {
   return /(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(text);
 }
 
+function sentenceWindowAround(text: string, start: number, end: number): string {
+  const rawBefore = text.slice(Math.max(0, start - 80), start);
+  const rawAfter = text.slice(end, Math.min(text.length, end + 80));
+  const before = rawBefore.slice(Math.max(rawBefore.lastIndexOf("\n"), rawBefore.lastIndexOf("."), rawBefore.lastIndexOf("!"), rawBefore.lastIndexOf("?")) + 1);
+  const sentenceEndOffsets = [rawAfter.indexOf("\n"), rawAfter.indexOf("."), rawAfter.indexOf("!"), rawAfter.indexOf("?")].filter((index) => index >= 0);
+  const after = sentenceEndOffsets.length > 0 ? rawAfter.slice(0, Math.min(...sentenceEndOffsets)) : rawAfter;
+  return `${before}${text.slice(start, end)}${after}`;
+}
+
+function isNegatedGoalAttemptWindow(window: string): boolean {
+  return /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not|no)\b.{0,50}\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(window)
+    || /\b(?:without|instead\s+of)\b.{0,30}\b(?:start|create|begin|new|another)?\b.{0,30}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(window)
+    || /\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,30}\b(?:is|was|already)\b.{0,30}\b(?:documented|complete|completed|done|unavailable|not\s+needed)\b/i.test(window);
+}
+
+function looksLikeGoalCreationAttempt(text: string): boolean {
+  const candidatePattern = /\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/gi;
+  for (const match of text.matchAll(candidatePattern)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const window = sentenceWindowAround(text, start, end);
+    if (isNegatedGoalAttemptWindow(window)) continue;
+    if (/(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(window)) return true;
+  }
+  return false;
+}
+
+function looksLikeCreateGoalAttempt(text: string): boolean {
+  const candidatePattern = /\bcreate_goal\s*(?:\(|\b)/gi;
+  for (const match of text.matchAll(candidatePattern)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const window = sentenceWindowAround(text, start, end);
+    if (/(?:\bno\s+create_goal\s+attempt\b|\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not)\b.{0,40}\bcreate_goal\b|\bwithout\s+create_goal\b|\bfailed\s+to\s+call\s+create_goal\b|\bcreate_goal\s+(?:is|was)\s+(?:unavailable|not\s+available|not\s+called)\b)/i.test(window)) {
+      continue;
+    }
+    if (/\b(?:call|calling|called|invoke|invoking|start|starting|create|creating|begin|beginning|attempt|attempting|try|trying|continue\s+to|proceed\s+to)\b.{0,80}\bcreate_goal\b/i.test(window)
+      || /\bcreate_goal\b.{0,80}\b(?:payload|call|tool|now|next|follows|follow|start|starting|create|creating|begin|beginning|attempt|attempting)\b/i.test(window)
+      || /\bcreate_goal\s*\(/i.test(match[0])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function looksLikeCompletedGoalCleanupAttempt(text: string): boolean {
+  return looksLikeGoalCreationAttempt(text) || looksLikeCreateGoalAttempt(text);
+}
+
 async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<string | null> {
   const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
   const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
@@ -2442,7 +2491,7 @@ async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<stri
 }
 
 async function buildCompletedGoalCleanupPromptWarning(cwd: string, prompt: string): Promise<string | null> {
-  if (!looksLikeNewGoalPrompt(prompt)) return null;
+  if (!looksLikeCompletedGoalCleanupAttempt(prompt)) return null;
   const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
   if (!notice) return null;
   return `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
@@ -2453,7 +2502,7 @@ async function buildCompletedGoalCleanupStopOutput(payload: CodexHookPayload, cw
     safeString(payload.last_user_message ?? payload.lastUserMessage),
     safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
   ].join("\n");
-  if (!looksLikeNewGoalPrompt(text)) return null;
+  if (!looksLikeCompletedGoalCleanupAttempt(text)) return null;
   const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
   if (!notice) return null;
   const systemMessage = `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
