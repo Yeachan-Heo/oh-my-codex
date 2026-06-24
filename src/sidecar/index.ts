@@ -26,6 +26,11 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function getFlagValue(args: string[], index: number): string | undefined {
+  const value = args[index + 1];
+  return value && !value.startsWith('-') ? value : undefined;
+}
+
 export function parseSidecarArgs(args: string[]): ParsedSidecarArgs {
   const flags: SidecarFlags = { json: false, watch: false, tmux: false };
   const rest: string[] = [];
@@ -35,13 +40,15 @@ export function parseSidecarArgs(args: string[]): ParsedSidecarArgs {
     else if (arg === '--watch' || arg === '-w') flags.watch = true;
     else if (arg === '--tmux') flags.tmux = true;
     else if (arg === '--width') {
-      flags.width = parsePositiveInt(args[index + 1], 48);
-      index += 1;
+      const value = getFlagValue(args, index);
+      flags.width = parsePositiveInt(value, 48);
+      if (value) index += 1;
     } else if (arg.startsWith('--width=')) {
       flags.width = parsePositiveInt(arg.slice('--width='.length), 48);
     } else if (arg === '--interval-ms') {
-      flags.intervalMs = parsePositiveInt(args[index + 1], 1000);
-      index += 1;
+      const value = getFlagValue(args, index);
+      flags.intervalMs = parsePositiveInt(value, 1000);
+      if (value) index += 1;
     } else if (arg.startsWith('--interval-ms=')) {
       flags.intervalMs = parsePositiveInt(arg.slice('--interval-ms='.length), 1000);
     } else {
