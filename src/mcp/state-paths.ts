@@ -288,7 +288,10 @@ function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): str
 
 function resolveCanonicalSessionId(candidate: string | undefined, metadata: ResolvedSessionMetadata | undefined): string | undefined {
   if (!candidate) return undefined;
-  return metadata?.nativeSessionAliases.includes(candidate) ? metadata.sessionId : candidate;
+  if (!metadata) return candidate;
+  return metadata.nativeSessionAliases.includes(candidate) || metadata.ownerOmxSessionId === candidate
+    ? metadata.sessionId
+    : candidate;
 }
 
 async function readUsableSessionStateFromBaseStateDir(
@@ -404,11 +407,13 @@ export async function resolveRuntimeStateScope(
   let source: SessionScopeSource = 'root';
 
   if (validatedExplicit) {
-    sessionId = metadata?.nativeSessionAliases.includes(validatedExplicit) ? metadata.sessionId : validatedExplicit;
-    source = metadata?.nativeSessionAliases.includes(validatedExplicit) ? 'native-alias' : 'explicit';
+    const canonicalSessionId = resolveCanonicalSessionId(validatedExplicit, metadata);
+    sessionId = canonicalSessionId ?? validatedExplicit;
+    source = metadata && canonicalSessionId === metadata.sessionId && validatedExplicit !== metadata.sessionId ? 'native-alias' : 'explicit';
   } else if (envSessionId) {
-    sessionId = metadata?.nativeSessionAliases.includes(envSessionId) ? metadata.sessionId : envSessionId;
-    source = metadata?.nativeSessionAliases.includes(envSessionId) ? 'native-alias' : 'env';
+    const canonicalSessionId = resolveCanonicalSessionId(envSessionId, metadata);
+    sessionId = canonicalSessionId ?? envSessionId;
+    source = metadata && canonicalSessionId === metadata.sessionId && envSessionId !== metadata.sessionId ? 'native-alias' : 'env';
   } else if (metadata?.sessionId) {
     sessionId = metadata.sessionId;
     source = 'session-json';

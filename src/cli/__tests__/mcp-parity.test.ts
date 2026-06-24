@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,6 +96,49 @@ describe("mcpParityCommand", () => {
     } finally {
       if (typeof previousDisable === "string") process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = previousDisable;
       else delete process.env.OMX_STATE_SERVER_DISABLE_AUTO_START;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("writes owner OMX session env state to the canonical native session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-mcp-parity-owner-session-"));
+    const logs = captureLogs();
+    const previousSessionId = process.env.OMX_SESSION_ID;
+
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "native-id"), { recursive: true });
+      await writeFile(join(stateDir, "session.json"), JSON.stringify({
+        session_id: "native-id",
+        native_session_id: "native-id",
+        owner_omx_session_id: "omx-owner-id",
+        cwd,
+      }));
+      process.env.OMX_SESSION_ID = "omx-owner-id";
+
+      await mcpParityCommand("state", [
+        "write",
+        "--input",
+        JSON.stringify({
+          mode: "ralplan",
+          active: false,
+          current_phase: "complete",
+          status: "complete",
+          terminal_state: "complete",
+          workingDirectory: cwd,
+        }),
+        "--json",
+      ]);
+
+      const writeResult = JSON.parse(logs.pop() || "{}") as { path?: string };
+      assert.equal(
+        writeResult.path,
+        join(stateDir, "sessions", "native-id", "ralplan-state.json"),
+      );
+      assert.equal(existsSync(join(stateDir, "sessions", "omx-owner-id", "ralplan-state.json")), false);
+    } finally {
+      if (typeof previousSessionId === "string") process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
       await rm(cwd, { recursive: true, force: true });
     }
   });

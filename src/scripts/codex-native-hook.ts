@@ -2919,9 +2919,11 @@ async function resolveInternalSessionIdForPayload(
   if (!canonicalSessionId) return payloadSessionId;
 
   const nativeSessionId = safeString(currentSession?.native_session_id).trim();
+  const ownerOmxSessionId = safeString(currentSession?.owner_omx_session_id).trim();
   if (!payloadSessionId) return canonicalSessionId;
   if (payloadSessionId === canonicalSessionId) return canonicalSessionId;
   if (nativeSessionId && payloadSessionId === nativeSessionId) return canonicalSessionId;
+  if (ownerOmxSessionId && payloadSessionId === ownerOmxSessionId) return canonicalSessionId;
   return payloadSessionId;
 }
 

@@ -12233,6 +12233,64 @@ exit 0
     }
   });
 
+  it("does not block Stop after owner-session ralplan CLI completion writes to native canonical state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralplan-owner-alias-complete-"));
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const nativeSessionId = "native-id";
+      const ownerSessionId = "omx-owner-id";
+      await mkdir(join(stateDir, "sessions", nativeSessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: nativeSessionId,
+        native_session_id: nativeSessionId,
+        owner_omx_session_id: ownerSessionId,
+        cwd,
+      });
+      await writeJson(join(stateDir, "sessions", nativeSessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: nativeSessionId,
+        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: nativeSessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", nativeSessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: nativeSessionId,
+      });
+      process.env.OMX_SESSION_ID = ownerSessionId;
+
+      const writeResult = await executeStateOperation("state_write", {
+        mode: "ralplan",
+        active: false,
+        current_phase: "complete",
+        status: "complete",
+        terminal_state: "complete",
+        workingDirectory: cwd,
+      });
+
+      assert.notEqual(writeResult.isError, true);
+      assert.equal(existsSync(join(stateDir, "sessions", ownerSessionId, "ralplan-state.json")), false);
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: nativeSessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      if (typeof previousSessionId === "string") process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block on stale ralplan skill-active state when the matching mode state is absent", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-skill-"));
     try {

@@ -414,6 +414,60 @@ describe('state paths', () => {
   });
 
 
+  it('maps owner OMX session ids through current session and state scope resolution', async () => {
+    const wd = await mkRealTemp('omx-state-paths-owner-alias-');
+    const previousOmxSessionId = process.env.OMX_SESSION_ID;
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(join(stateDir, 'sessions', 'native-id'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'native-id',
+        native_session_id: 'native-id',
+        owner_omx_session_id: 'omx-owner-id',
+        cwd: wd,
+      }));
+      process.env.OMX_SESSION_ID = 'omx-owner-id';
+
+      assert.equal(await readCurrentSessionId(wd), 'native-id');
+      const scope = await resolveStateScope(wd);
+      assert.equal(scope.sessionId, 'native-id');
+      assert.equal(scope.stateDir, join(stateDir, 'sessions', 'native-id'));
+      assert.notEqual(scope.stateDir, join(stateDir, 'sessions', 'omx-owner-id'));
+
+      const runtimeScope = await resolveRuntimeStateScope(wd);
+      assert.equal(runtimeScope.sessionId, 'native-id');
+      assert.equal(runtimeScope.stateDir, join(stateDir, 'sessions', 'native-id'));
+      assert.equal(runtimeScope.source, 'native-alias');
+    } finally {
+      if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('maps explicit owner OMX session ids through resolveStateScope', async () => {
+    const wd = await mkRealTemp('omx-state-paths-explicit-owner-alias-');
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(join(stateDir, 'sessions', 'native-id'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'native-id',
+        native_session_id: 'native-id',
+        owner_omx_session_id: 'omx-owner-id',
+        cwd: wd,
+      }));
+
+      const scope = await resolveStateScope(wd, 'omx-owner-id');
+      assert.equal(scope.sessionId, 'native-id');
+      assert.equal(scope.stateDir, join(stateDir, 'sessions', 'native-id'));
+      assert.notEqual(scope.stateDir, join(stateDir, 'sessions', 'omx-owner-id'));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('maps explicit native Codex session aliases through resolveStateScope', async () => {
     const wd = await mkRealTemp('omx-state-paths-explicit-native-alias-');
     try {
