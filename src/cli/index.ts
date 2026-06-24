@@ -45,6 +45,7 @@ import { apiCommand } from "./api.js";
 import { agentsInitCommand } from "./agents-init.js";
 import { agentsCommand } from "./agents.js";
 import { sessionCommand } from "./session-search.js";
+import { urlCommand } from "./url.js";
 import { autoresearchCommand } from "./autoresearch.js";
 import { autoresearchGoalCommand } from "./autoresearch-goal.js";
 import { mcpParityCommand } from "./mcp-parity.js";
@@ -228,6 +229,7 @@ Usage:
   omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search prior local session transcripts (--codex-home <path> escape hatch)
+  omx url       Passive URL reader (read <url> --json)
   omx agents-init [path]
                 Bootstrap lightweight AGENTS.md files for a repo/subtree
   omx agents    Manage Codex native agent TOML files
@@ -388,6 +390,7 @@ type CliCommand =
   | "sparkshell"
   | "team"
   | "session"
+  | "url"
   | "resume"
   | "version"
   | "tmux-hook"
@@ -438,6 +441,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "performance-goal",
   "resume",
   "session",
+  "url",
   "api",
   "sparkshell",
   "team",
@@ -2501,6 +2505,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "session":
         await sessionCommand(args.slice(1));
+        break;
+      case "url":
+        await urlCommand(args.slice(1));
         break;
       case "ralph":
         await ralphCommand(args.slice(1));
