@@ -1,6 +1,15 @@
 # oh-my-codex (OMX)
 
 <p align="center">
+  <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=oh-my-codex">
+    <img src="assets/atlas-cloud-logo.png" alt="Atlas Cloud" width="140" />
+  </a>
+  <br />
+  <sub><strong>Atlas Cloud</strong> Atlas Cloud provides OpenAI-compatible LLM APIs and async image/video generation APIs for Codex workflows, agent tools, and multimodal automation.</sub>
+</p>
+
+
+<p align="center">
   <img src="https://yeachan-heo.github.io/oh-my-codex-website/omx-character-nobg.png" alt="oh-my-codex character" width="280">
   <br>
   <em>Start Codex stronger, then let OMX add better prompts, workflows, and runtime help when the work grows.</em>
