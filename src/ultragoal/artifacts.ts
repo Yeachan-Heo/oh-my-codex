@@ -493,6 +493,29 @@ async function snapshotObjectiveMapsToUltragoalPlan(cwd: string, snapshotObjecti
   }
 }
 
+function unresolvedReviewBlockedGoals(plan: UltragoalPlan): UltragoalItem[] {
+  return plan.goals.filter((candidate) => candidate.status === 'review_blocked' && !isReviewBlockedResolved(candidate, plan));
+}
+
+function isDesignatedReviewBlockerResolver(goal: UltragoalItem, parent: UltragoalItem | undefined): boolean {
+  return parent?.status === 'review_blocked'
+    && goal.resolvesReviewBlockedGoalId === parent.id
+    && parent.reviewBlockerResolution?.resolverGoalId === goal.id;
+}
+
+function canUseCleanFinalResolverPathForReviewBlockedParent(
+  plan: UltragoalPlan,
+  goal: UltragoalItem,
+  finalRunCheckpoint: boolean,
+  allowActiveFinalCodexGoal: boolean | undefined,
+): boolean {
+  const unresolvedReviewBlocked = unresolvedReviewBlockedGoals(plan);
+  if (unresolvedReviewBlocked.length !== 1) return false;
+  return finalRunCheckpoint
+    && !allowActiveFinalCodexGoal
+    && isDesignatedReviewBlockerResolver(goal, unresolvedReviewBlocked[0]);
+}
+
 async function canReconcileCompletedTaskScopedAggregateSnapshot(
   cwd: string,
   plan: UltragoalPlan,
@@ -1544,14 +1567,26 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
         && snapshot.status === 'complete'
         && Boolean(snapshot.objective)
         && normalizeObjective(snapshot.objective ?? '') !== normalizeObjective(expectedObjective)
-        && await canReconcileCompletedTaskScopedAggregateSnapshot(cwd, plan, goal, snapshot.objective ?? '', options.evidence);
+        && await canReconcileCompletedTaskScopedAggregateSnapshot(
+          cwd,
+          plan,
+          goal,
+          snapshot.objective ?? '',
+          options.evidence,
+        );
       if (completedTaskScopedAggregateSnapshot) {
-        aggregateCompletion = {
-          status: 'complete',
-          completedAt: now,
-          evidence: assertNonEmpty(options.evidence, '--evidence'),
-          codexGoal: options.codexGoal,
-        };
+        if (unresolvedReviewBlockedGoals(plan).length > 0) {
+          if (!canUseCleanFinalResolverPathForReviewBlockedParent(plan, goal, finalRunCheckpoint, options.allowActiveFinalCodexGoal)) {
+            throw new UltragoalError('Completed task-scoped aggregate reconciliation is not allowed while unresolved review_blocked parent goals exist; only the parent\'s designated resolver may continue through the clean final quality gate path.');
+          }
+        } else {
+          aggregateCompletion = {
+            status: 'complete',
+            completedAt: now,
+            evidence: assertNonEmpty(options.evidence, '--evidence'),
+            codexGoal: options.codexGoal,
+          };
+        }
       } else {
         const taskScopedRequirement = aggregateMode && snapshot?.status === 'complete' && Boolean(snapshot.objective)
           ? ' Completed task-scoped aggregate reconciliation requires the checkpoint goal to be the active in-progress OMX goal, evidence that names that active OMX goal id, names .omx/ultragoal/goals.json or ledger.jsonl, includes completed implementation plus validation/review evidence, and a get_goal objective that maps to the ultragoal brief/artifact.'
@@ -1568,11 +1603,10 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       }
     }
     const designatedReviewBlockerResolver = goal.resolvesReviewBlockedGoalId
-      ? plan.goals.some((candidate) => (
-        candidate.id === goal.resolvesReviewBlockedGoalId
-        && candidate.status === 'review_blocked'
-        && candidate.reviewBlockerResolution?.resolverGoalId === goal.id
-      ))
+      ? isDesignatedReviewBlockerResolver(
+        goal,
+        plan.goals.find((candidate) => candidate.id === goal.resolvesReviewBlockedGoalId),
+      )
       : false;
     if (aggregateMode && finalRunCheckpoint && !options.allowActiveFinalCodexGoal && designatedReviewBlockerResolver) {
       normalFinalAggregateCompletion = {

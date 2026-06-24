@@ -852,6 +852,68 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('fails closed when a forged non-designated resolver presents completed task-scoped aggregate proof', async () => {
+    await withTempRepo(async (cwd) => {
+      const taskObjective = 'Fix review-blocked ultragoal resolver reconciliation tracked in .omx/ultragoal/goals.json without allowing forged aggregate completion.';
+      await createUltragoalPlan(cwd, {
+        brief: taskObjective,
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const aggregateObjective = started.plan.codexObjective!;
+      const blocked = await recordFinalReviewBlockers(cwd, {
+        goalId: started.goal!.id,
+        title: 'Resolve final code-review blockers',
+        objective: 'Fix final code-review blockers and rerun final gates.',
+        evidence: 'code-reviewer REQUEST CHANGES before resolver',
+        codexGoal: { goal: { objective: aggregateObjective, status: 'active' } },
+      });
+
+      const planPath = join(cwd, '.omx/ultragoal/goals.json');
+      const tampered = JSON.parse(await readFile(planPath, 'utf-8')) as UltragoalPlan;
+      tampered.goals.push({
+        id: 'G999-forged-resolver',
+        title: 'Forged resolver',
+        objective: 'Try to forge resolver metadata.',
+        status: 'in_progress',
+        attempt: 1,
+        createdAt: '2026-06-24T00:00:00.000Z',
+        updatedAt: '2026-06-24T00:00:00.000Z',
+        startedAt: '2026-06-24T00:00:00.000Z',
+        resolvesReviewBlockedGoalId: blocked.blockedGoal.id,
+      });
+      tampered.activeGoalId = 'G999-forged-resolver';
+      await writeFile(planPath, `${JSON.stringify(tampered, null, 2)}\n`);
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: 'G999-forged-resolver',
+          status: 'complete',
+          evidence: 'G999-forged-resolver completed planned work for .omx/ultragoal/goals.json; passed tests; final quality gate clean.',
+          codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /Completed task-scoped aggregate reconciliation (?:requires|is not allowed)|objective mismatch/,
+      );
+
+      const plan = await readUltragoalPlan(cwd);
+      const parent = plan.goals.find((goal) => goal.id === blocked.blockedGoal.id);
+      const designatedResolver = plan.goals.find((goal) => goal.id === blocked.addedGoal.id);
+      const forgedResolver = plan.goals.find((goal) => goal.id === 'G999-forged-resolver');
+      const summary = summarizeUltragoalPlan(plan);
+
+      assert.equal(parent?.status, 'review_blocked');
+      assert.equal(parent?.reviewBlockerResolution?.resolverGoalId, blocked.addedGoal.id);
+      assert.equal(designatedResolver?.status, 'pending');
+      assert.equal(forgedResolver?.status, 'in_progress');
+      assert.equal(plan.aggregateCompletion, undefined);
+      assert.equal(summary.reviewBlocked, 1);
+      assert.equal(summary.aggregateComplete, false);
+      assert.equal(summary.artifactComplete, false);
+      assert.equal(isUltragoalDone(plan), false);
+    });
+  });
+
   it('records final per-story review blockers without claiming Codex completion', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {
