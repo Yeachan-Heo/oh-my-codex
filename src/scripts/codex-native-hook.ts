@@ -2408,9 +2408,6 @@ function reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(goal: Record<str
     && /\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/i.test(evidence);
 }
 
-function looksLikeNewGoalPrompt(text: string): boolean {
-  return /(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(text);
-}
 
 function sentenceWindowAround(text: string, start: number, end: number): string {
   const rawBefore = text.slice(Math.max(0, start - 80), start);
