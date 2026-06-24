@@ -271,20 +271,30 @@ function isSafeIpv4(address: string): boolean {
 }
 
 function isSafeIpv6(address: string): boolean {
-	const ipv4Mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
-	if (ipv4Mapped) return isSafeIpv4(ipv4Mapped[1]);
 	const value = ipv6ToBigInt(address);
 	if (value === null) return false;
-	if (inIpv6Range(value, 0xffffn << 32n, 96)) {
-		return isSafeIpv4(bigIntToIpv4(value & 0xffffffffn));
-	}
+
+	const ipv4Mapped = ipv4FromIpv6Mapped(value);
+	if (ipv4Mapped) return isSafeIpv4(ipv4Mapped);
+
 	if (value === 0n || value === 1n) return false;
-	if (inIpv6Range(value, 0xfc00n << 120n, 7)) return false; // unique local
-	if (inIpv6Range(value, 0xfe80n << 120n, 10)) return false; // link local
-	if (inIpv6Range(value, 0xff00n << 120n, 8)) return false; // multicast
-	if (inIpv6Range(value, 0x20010db8n << 96n, 32)) return false; // documentation/reserved
-	if (inIpv6Range(value, 0x20010000n << 96n, 23)) return false; // IETF protocol assignments
+	if (inIpv6Range(value, ipv6Prefix("fc00::"), 7)) return false; // unique local
+	if (inIpv6Range(value, ipv6Prefix("fe80::"), 10)) return false; // link local
+	if (inIpv6Range(value, ipv6Prefix("ff00::"), 8)) return false; // multicast
+	if (inIpv6Range(value, ipv6Prefix("2001:db8::"), 32)) return false; // documentation/reserved
+	if (inIpv6Range(value, ipv6Prefix("2001::"), 23)) return false; // IETF protocol assignments
 	return true;
+}
+
+function ipv4FromIpv6Mapped(value: bigint): string | null {
+	if (!inIpv6Range(value, 0xffffn << 32n, 96)) return null;
+	return bigIntToIpv4(value & 0xffffffffn);
+}
+
+function ipv6Prefix(address: string): bigint {
+	const value = ipv6ToBigInt(address);
+	if (value === null) throw new Error(`Invalid IPv6 prefix: ${address}`);
+	return value;
 }
 
 function inIpv6Range(value: bigint, prefixValue: bigint, prefixBits: number): boolean {

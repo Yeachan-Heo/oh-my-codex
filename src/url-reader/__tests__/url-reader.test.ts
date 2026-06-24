@@ -175,6 +175,41 @@ describe("readUrl", () => {
 		assert.ok(result.signals.includes("unsafe-address"));
 	});
 
+	it("blocks unsafe IPv6 literals before fetch", async () => {
+		const unsafeUrls = [
+			"http://[::]/secret",
+			"http://[fc00::1]/secret",
+			"http://[fd12:3456:789a::1]/secret",
+			"http://[fe80::1]/secret",
+			"http://[ff02::1]/secret",
+			"http://[::ffff:10.0.0.5]/secret",
+			"http://[::ffff:127.0.0.1]/secret",
+			"http://[::ffff:169.254.169.254]/secret",
+		];
+
+		for (const url of unsafeUrls) {
+			let fetched = false;
+			const result = await readUrl(url, {
+				fetch: async () => {
+					fetched = true;
+					return response({});
+				},
+			});
+
+			assert.equal(result.verdict, "blocked", url);
+			assert.ok(result.signals.includes("unsafe-address"), url);
+			assert.equal(fetched, false, url);
+		}
+	});
+
+	it("allows public IPv6 literals", async () => {
+		const result = await readUrl("http://[2606:4700:4700::1111]/", {
+			fetch: async () => response({ url: "http://[2606:4700:4700::1111]/" }),
+		});
+
+		assert.equal(result.verdict, "ok");
+	});
+
 	it("blocks private IPv4 before fetch", async () => {
 		const result = await readUrl("http://10.0.0.5/metadata", {
 			fetch: async () => response({}),
@@ -206,6 +241,25 @@ describe("readUrl", () => {
 		assert.equal(result.verdict, "blocked");
 		assert.ok(result.signals.includes("unsafe-address"));
 		assert.equal(fetched, false);
+	});
+
+	it("blocks hostnames that resolve to unsafe IPv6 addresses", async () => {
+		const unsafeAddresses = ["fc00::1", "fd12:3456:789a::1", "fe80::1", "ff02::1"];
+
+		for (const address of unsafeAddresses) {
+			let fetched = false;
+			const result = await readUrl("https://internal-v6.example.test/", {
+				resolveHostname: async () => [address],
+				fetch: async () => {
+					fetched = true;
+					return response({});
+				},
+			});
+
+			assert.equal(result.verdict, "blocked", address);
+			assert.ok(result.signals.includes("unsafe-address"), address);
+			assert.equal(fetched, false, address);
+		}
 	});
 
 	it("blocks redirects to localhost before following", async () => {
@@ -255,5 +309,66 @@ describe("readUrl", () => {
 		assert.equal(result.verdict, "blocked");
 		assert.ok(result.signals.includes("unsafe-address"));
 		assert.deepEqual(fetched, ["https://example.test/start"]);
+	});
+
+	it("blocks redirects to unsafe IPv6 literal targets before following", async () => {
+		const redirectTargets = [
+			"http://[fc00::1]/secret",
+			"http://[fe80::1]/secret",
+			"http://[ff02::1]/secret",
+		];
+
+		for (const target of redirectTargets) {
+			const fetched: string[] = [];
+			const result = await readUrl("https://example.test/start", {
+				resolveHostname: publicResolver,
+				fetch: async (url) => {
+					fetched.push(url);
+					return response({
+						status: 302,
+						statusText: "Found",
+						url,
+						headers: {
+							get: (name: string) =>
+								name.toLowerCase() === "location" ? target : null,
+						},
+					});
+				},
+			});
+
+			assert.equal(result.verdict, "blocked", target);
+			assert.ok(result.signals.includes("unsafe-address"), target);
+			assert.deepEqual(fetched, ["https://example.test/start"], target);
+		}
+	});
+
+	it("blocks redirects to hostnames resolving to unsafe IPv6 before following", async () => {
+		const unsafeAddresses = ["fc00::1", "fe80::1", "ff02::1"];
+
+		for (const address of unsafeAddresses) {
+			const fetched: string[] = [];
+			const result = await readUrl("https://example.test/start", {
+				resolveHostname: async (hostname) =>
+					hostname === "unsafe-v6.example.test" ? [address] : ["93.184.216.34"],
+				fetch: async (url) => {
+					fetched.push(url);
+					return response({
+						status: 302,
+						statusText: "Found",
+						url,
+						headers: {
+							get: (name: string) =>
+								name.toLowerCase() === "location"
+									? "http://unsafe-v6.example.test/secret"
+									: null,
+						},
+					});
+				},
+			});
+
+			assert.equal(result.verdict, "blocked", address);
+			assert.ok(result.signals.includes("unsafe-address"), address);
+			assert.deepEqual(fetched, ["https://example.test/start"], address);
+		}
 	});
 });

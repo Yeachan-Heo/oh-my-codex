@@ -10,7 +10,8 @@ The v0 reader is intentionally conservative:
 - no global binary or `PATH` ownership changes
 - only `http:` and `https:` URLs are supported
 - local, loopback, private, link-local, unique-local, multicast, reserved, and internal network addresses are blocked before fetching
-- hostnames are resolved before fetching; any unsafe resolved address blocks the read
+- IPv6 unique-local (`fc00::/7`), link-local (`fe80::/10`), multicast (`ff00::/8`), loopback, unspecified, documentation/protocol-assignment ranges, and IPv4-mapped unsafe IPv4 addresses are blocked; public IPv6 is allowed
+- hostnames are resolved before fetching; any unsafe resolved address blocks the read using the same address classifier as literal URLs
 - redirects are followed manually and every redirect target is re-validated before the next fetch
 - bounded response reads before text decoding
 - structured `verdict` values: `ok`, `redirect`, `blocked`, or `error`
