@@ -42,6 +42,41 @@ describe("repo artifact ownership doctor check", () => {
 		}
 	});
 
+	it("does not warn about root-owned repo artifacts when doctor runs as root", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-artifacts-"));
+		try {
+			const artifact = join(wd, ".omx", "plans", "root-owned.md");
+			await mkdir(join(wd, ".omx", "plans"), { recursive: true });
+			await writeFile(artifact, "# plan\n");
+
+			const check = await checkRepoArtifactOwnership(wd, {
+				currentUid: 0,
+				currentGid: 0,
+				statPath: async (path) => {
+					const info = await lstat(path);
+					if (path === artifact) {
+						return new Proxy(info, {
+							get(target, property, receiver) {
+								if (property === "uid") return 0;
+								if (property === "gid") return 0;
+								return Reflect.get(target, property, receiver);
+							},
+						});
+					}
+					return info;
+				},
+			});
+
+			assert.equal(check.status, "pass");
+			assert.equal(
+				check.message,
+				"repo-local .omx/.beads artifacts are writable by the current user",
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("reports non-writable files under repo-local artifact directories", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-artifacts-"));
 		try {

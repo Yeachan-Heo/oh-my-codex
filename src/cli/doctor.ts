@@ -1005,8 +1005,9 @@ async function collectRepoArtifactOwnershipIssues(
 		const uid = typeof info.uid === "number" ? info.uid : undefined;
 		const gid = typeof info.gid === "number" ? info.gid : undefined;
 		let reason: RepoArtifactIssue["reason"] | null = null;
-		if (uid === 0) reason = "root-owned";
-		else if (shouldReportOwnerMismatch(uid, currentUid)) reason = "owner-mismatch";
+		if (uid === 0) {
+			if (currentUid !== 0) reason = "root-owned";
+		} else if (shouldReportOwnerMismatch(uid, currentUid)) reason = "owner-mismatch";
 		else {
 			try {
 				await accessPath(path, constants.W_OK);
