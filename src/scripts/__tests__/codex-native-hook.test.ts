@@ -3345,7 +3345,7 @@ standardMaxRounds = 15
     }
   });
 
-  it("blocks explicit create_goal attempts even when adjacent text explains not to call it", async () => {
+  it("blocks explicit create_goal attempts when fresh native-goal cleanup evidence remains", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-mixed-stop-"));
     try {
       await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
@@ -3359,7 +3359,7 @@ standardMaxRounds = 15
         cwd,
         session_id: "sess-completed-goal-mixed-stop",
         thread_id: "thread-completed-goal-mixed-stop",
-        last_user_message: "Do not call create_goal until cleanup is explicit.",
+        last_user_message: "get_goal reports a completed Codex goal still attached to this thread; do not call create_goal until cleanup is explicit.",
         last_assistant_message: "I am starting another run now; create_goal payload follows.",
       }, { cwd });
 
@@ -3372,7 +3372,7 @@ standardMaxRounds = 15
     }
   });
 
-  it("blocks Stop when a final answer starts another goal over completed state", async () => {
+  it("does not block Stop when completed durable history alone precedes another goal", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-completed-goal-stop-"));
     try {
       await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
@@ -3386,15 +3386,13 @@ standardMaxRounds = 15
         cwd,
         session_id: "sess-completed-goal-stop",
         thread_id: "thread-completed-goal-stop",
-        last_assistant_message: "Starting another ultragoal now; create_goal payload follows.",
+        last_assistant_message: "Starting another ultragoal now; create_goal payload follows after /goal clear already cleared native state.",
       }, { cwd });
 
       const output = JSON.stringify(result.outputJson);
-      assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "completed_codex_goal_cleanup_required");
-      assert.match(output, /run \/goal clear/);
-      assert.match(output, /before calling create_goal/);
-      assert.match(output, /hooks only nudge and must not mutate Codex goal state/);
+      assert.notEqual(result.outputJson?.decision, "block");
+      assert.notEqual(result.outputJson?.stopReason, "completed_codex_goal_cleanup_required");
+      assert.doesNotMatch(output, /run \/goal clear/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -2457,6 +2457,12 @@ function looksLikeCreateGoalAttempt(text: string): boolean {
 function looksLikeCompletedGoalCleanupAttempt(text: string): boolean {
   return looksLikeGoalCreationAttempt(text) || looksLikeCreateGoalAttempt(text);
 }
+function hasFreshNativeGoalCleanupEvidence(text: string): boolean {
+  return /\b(?:get_goal|Codex goal|native goal|active goal|thread goal)\b.{0,120}\b(?:reports?|returns?|shows?|status|state|still|attached|pending|cleanup|required|requires?)\b.{0,120}\b(?:complete|completed|attached|pending|cleanup|required|clear)\b/i.test(text)
+    || /\b(?:complete|completed|attached|pending|cleanup|required|clear)\b.{0,120}\b(?:get_goal|Codex goal|native goal|active goal|thread goal)\b/i.test(text)
+    || /\b(?:pending[-_ ]cleanup|native[-_ ]goal[-_ ]cleanup|completed[-_ ]codex[-_ ]goal[-_ ]cleanup)\b/i.test(text);
+}
+
 
 async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<string | null> {
   const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
@@ -2500,6 +2506,7 @@ async function buildCompletedGoalCleanupStopOutput(payload: CodexHookPayload, cw
     safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
   ].join("\n");
   if (!looksLikeCompletedGoalCleanupAttempt(text)) return null;
+  if (!hasFreshNativeGoalCleanupEvidence(text)) return null;
   const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
   if (!notice) return null;
   const systemMessage = `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
