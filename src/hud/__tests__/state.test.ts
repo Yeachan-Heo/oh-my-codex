@@ -906,6 +906,53 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('does not surface live code-reviewer subagent evidence over active Autopilot planning', async () => {
+    await withTempRepo('omx-hud-active-autopilot-live-review-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-active-autopilot-review';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'planning',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'planning', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'planning',
+        session_id: sessionId,
+      }));
+
+      let tracking = createSubagentTrackingState();
+      tracking = recordSubagentTurn(tracking, {
+        sessionId,
+        threadId: 'thread-leader',
+        kind: 'leader',
+        timestamp: '2026-06-25T00:00:00.000Z',
+      });
+      tracking = recordSubagentTurn(tracking, {
+        sessionId,
+        threadId: 'thread-code-reviewer',
+        kind: 'subagent',
+        leaderThreadId: 'thread-leader',
+        mode: 'code-reviewer',
+        timestamp: new Date().toISOString(),
+      });
+      await writeSubagentTrackingState(cwd, tracking);
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.autopilot, { active: true, mode: 'autopilot', current_phase: 'planning', session_id: sessionId });
+      assert.equal(state.codeReview, null);
+      const rendered = stripSgr(renderHud(state, 'focused'));
+      assert.equal(rendered.includes('autopilot:planning'), true);
+      assert.equal(rendered.includes('code-review:reviewing'), false);
+    });
+  });
+
   it('does not surface completed code-reviewer subagent history over inactive canonical state', async () => {
     await withTempRepo('omx-hud-inactive-autopilot-completed-review-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

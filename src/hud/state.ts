@@ -561,7 +561,9 @@ function codeReviewFromSubagentEvidence(
   canonicalSkills: Map<string, { phase?: string }>,
   tracking: SubagentTrackingState,
   sessionId: string | undefined,
+  autopilot: AutopilotStateForHud | null,
 ): CodeReviewStateForHud | null {
+  if (autopilot?.active === true) return null;
   if (!hasLiveCodeReviewSubagentEvidence(tracking, sessionId)) return null;
   const phase = normalizeCanonicalHudPhase(canonicalPhaseForSkill(canonicalSkills, 'autopilot'));
   return {
@@ -646,7 +648,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
       'canonical-skill',
     )
     : supervisedAutopilotStage<CodeReviewStateForHud>(autopilot, 'code-review')
-      ?? codeReviewFromSubagentEvidence(canonicalSkills, subagentTracking, currentSessionId);
+      ?? codeReviewFromSubagentEvidence(canonicalSkills, subagentTracking, currentSessionId, autopilot);
   const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail)
     ? (() => {
       const detail = ultraqaDetail?.active === true ? ultraqaDetail : null;
