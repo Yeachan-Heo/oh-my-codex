@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { renderHud } from '../render.js';
 import { recordSkillActivation } from '../../hooks/keyword-detector.js';
+import { createSubagentTrackingState, recordSubagentTurn, writeSubagentTrackingState } from '../../subagents/tracker.js';
 import {
   buildGitBranchLabel,
   readGitBranch,
@@ -858,6 +859,88 @@ describe('readAllState canonical skill precedence', () => {
       assert.equal(state.codeReview, null);
       assert.equal(state.ultraqa, null);
       assert.deepEqual(state.autopilot, { active: true, mode: 'autopilot', current_phase: 'ralplan' });
+    });
+  });
+
+  it('surfaces live code-reviewer subagent evidence when canonical autopilot state is inactive', async () => {
+    await withTempRepo('omx-hud-inactive-autopilot-live-review-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-inactive-autopilot-review';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: false,
+        skill: 'autopilot',
+        phase: 'reviewing',
+        session_id: sessionId,
+      }));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: false,
+        mode: 'autopilot',
+        current_phase: 'reviewing',
+        session_id: sessionId,
+      }));
+
+      let tracking = createSubagentTrackingState();
+      tracking = recordSubagentTurn(tracking, {
+        sessionId,
+        threadId: 'thread-leader',
+        kind: 'leader',
+        timestamp: '2026-06-25T00:00:00.000Z',
+      });
+      tracking = recordSubagentTurn(tracking, {
+        sessionId,
+        threadId: 'thread-code-reviewer',
+        kind: 'subagent',
+        leaderThreadId: 'thread-leader',
+        mode: 'code-reviewer',
+        timestamp: new Date().toISOString(),
+      });
+      await writeSubagentTrackingState(cwd, tracking);
+
+      const state = await readAllState(cwd);
+      assert.equal(state.autopilot, null);
+      assert.deepEqual(state.codeReview, { active: true, current_phase: 'reviewing', source: 'subagent-tracking' });
+      assert.equal(stripSgr(renderHud(state, 'focused')).includes('code-review:reviewing'), true);
+    });
+  });
+
+  it('does not surface completed code-reviewer subagent history over inactive canonical state', async () => {
+    await withTempRepo('omx-hud-inactive-autopilot-completed-review-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-inactive-autopilot-completed-review';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: false,
+        skill: 'autopilot',
+        phase: 'reviewing',
+        session_id: sessionId,
+      }));
+
+      let tracking = createSubagentTrackingState();
+      tracking = recordSubagentTurn(tracking, {
+        sessionId,
+        threadId: 'thread-leader',
+        kind: 'leader',
+        timestamp: '2026-06-25T00:00:00.000Z',
+      });
+      tracking = recordSubagentTurn(tracking, {
+        sessionId,
+        threadId: 'thread-code-reviewer',
+        kind: 'subagent',
+        leaderThreadId: 'thread-leader',
+        mode: 'code-reviewer',
+        completed: true,
+        timestamp: new Date().toISOString(),
+      });
+      await writeSubagentTrackingState(cwd, tracking);
+
+      const state = await readAllState(cwd);
+      assert.equal(state.autopilot, null);
+      assert.equal(state.codeReview, null);
     });
   });
 

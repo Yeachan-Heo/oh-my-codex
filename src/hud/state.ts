@@ -15,6 +15,11 @@ import { getBaseStateDir, getStateFilePath, readCurrentSessionId, resolveRuntime
 import { teamReadPhase as readTeamPhase } from '../team/team-ops.js';
 
 import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../state/skill-active.js';
+import {
+  readSubagentTrackingState,
+  summarizeSubagentSession,
+  type SubagentTrackingState,
+} from '../subagents/tracker.js';
 import type {
   RalphStateForHud,
   UltragoalStateForHud,
@@ -537,15 +542,47 @@ function supervisedAutopilotStage<T extends { active?: boolean; current_phase?: 
     : null;
 }
 
+function hasLiveCodeReviewSubagentEvidence(
+  tracking: SubagentTrackingState,
+  sessionId: string | undefined,
+): boolean {
+  if (!sessionId) return false;
+  const summary = summarizeSubagentSession(tracking, sessionId);
+  if (!summary || summary.activeSubagentThreadIds.length === 0) return false;
+  const session = tracking.sessions[sessionId];
+  if (!session) return false;
+  return summary.activeSubagentThreadIds.some((threadId) => {
+    const mode = sanitizeOptionalString(session.threads[threadId]?.mode)?.toLowerCase();
+    return mode === 'code-reviewer' || mode === 'code-review';
+  });
+}
+
+function codeReviewFromSubagentEvidence(
+  canonicalSkills: Map<string, { phase?: string }>,
+  tracking: SubagentTrackingState,
+  sessionId: string | undefined,
+): CodeReviewStateForHud | null {
+  if (!hasLiveCodeReviewSubagentEvidence(tracking, sessionId)) return null;
+  const phase = normalizeCanonicalHudPhase(canonicalPhaseForSkill(canonicalSkills, 'autopilot'));
+  return {
+    active: true,
+    current_phase: phase === 'reviewing' || phase === 'review' || phase === 'code-review'
+      ? phase
+      : 'reviewing',
+    source: 'subagent-tracking',
+  };
+}
+
 /** Read all state files and build the full render context */
 export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFAULT_HUD_CONFIG): Promise<HudRenderContext> {
   const version = readVersion();
   const gitBranch = buildGitBranchLabel(cwd, config);
-  const [metrics, hudNotify, session, currentSessionId] = await Promise.all([
+  const [metrics, hudNotify, session, currentSessionId, subagentTracking] = await Promise.all([
     readMetrics(cwd),
     readHudNotifyState(cwd),
     readSessionState(cwd),
     readCurrentSessionId(cwd),
+    readSubagentTrackingState(cwd),
   ]);
   const stateDir = getBaseStateDir(cwd);
   const canonicalSkillState = await readVisibleSkillActiveStateForStateDir(stateDir, currentSessionId);
@@ -608,7 +645,8 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
       mergePhase<CodeReviewStateForHud>(null, canonicalPhaseForSkill(canonicalSkills, 'code-review')),
       'canonical-skill',
     )
-    : supervisedAutopilotStage<CodeReviewStateForHud>(autopilot, 'code-review');
+    : supervisedAutopilotStage<CodeReviewStateForHud>(autopilot, 'code-review')
+      ?? codeReviewFromSubagentEvidence(canonicalSkills, subagentTracking, currentSessionId);
   const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail)
     ? (() => {
       const detail = ultraqaDetail?.active === true ? ultraqaDetail : null;

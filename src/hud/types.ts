@@ -72,7 +72,7 @@ export interface AutoresearchStateForHud {
   current_phase?: string;
 }
 
-export type LateGateHudSource = 'canonical-skill' | 'autopilot';
+export type LateGateHudSource = 'canonical-skill' | 'autopilot' | 'subagent-tracking';
 
 /** Code-review state for HUD display */
 export interface CodeReviewStateForHud {
