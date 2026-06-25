@@ -341,11 +341,17 @@ function isSafeIpv6(address: string): boolean {
 	if (ipv4Mapped) return isSafeIpv4(ipv4Mapped);
 
 	if (value === 0n || value === 1n) return false;
+	if (inIpv6Range(value, ipv6Prefix("64:ff9b:1::"), 48)) return false; // local-use IPv4/IPv6 translation
+	if (inIpv6Range(value, ipv6Prefix("100::"), 64)) return false; // discard-only
+	if (inIpv6Range(value, ipv6Prefix("100:0:0:1::"), 64)) return false; // dummy prefix
+	if (inIpv6Range(value, ipv6Prefix("2001::"), 23)) return false; // IETF protocol assignments
+	if (inIpv6Range(value, ipv6Prefix("2001:db8::"), 32)) return false; // documentation/reserved
+	if (inIpv6Range(value, ipv6Prefix("2002::"), 16)) return false; // 6to4 transition addresses
+	if (inIpv6Range(value, ipv6Prefix("3fff::"), 20)) return false; // documentation/reserved
+	if (inIpv6Range(value, ipv6Prefix("5f00::"), 16)) return false; // segment routing SIDs
 	if (inIpv6Range(value, ipv6Prefix("fc00::"), 7)) return false; // unique local
 	if (inIpv6Range(value, ipv6Prefix("fe80::"), 10)) return false; // link local
 	if (inIpv6Range(value, ipv6Prefix("ff00::"), 8)) return false; // multicast
-	if (inIpv6Range(value, ipv6Prefix("2001:db8::"), 32)) return false; // documentation/reserved
-	if (inIpv6Range(value, ipv6Prefix("2001::"), 23)) return false; // IETF protocol assignments
 	return true;
 }
 

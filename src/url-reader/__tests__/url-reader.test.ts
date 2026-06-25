@@ -178,6 +178,12 @@ describe("readUrl", () => {
 	it("blocks unsafe IPv6 literals before fetch", async () => {
 		const unsafeUrls = [
 			"http://[::]/secret",
+			"http://[64:ff9b:1::10.0.0.1]/secret",
+			"http://[100::1]/secret",
+			"http://[100:0:0:1::1]/secret",
+			"http://[2002:0a00:0001::1]/secret",
+			"http://[3fff::1]/secret",
+			"http://[5f00::1]/secret",
 			"http://[fc00::1]/secret",
 			"http://[fd12:3456:789a::1]/secret",
 			"http://[fe80::1]/secret",
@@ -244,7 +250,18 @@ describe("readUrl", () => {
 	});
 
 	it("blocks hostnames that resolve to unsafe IPv6 addresses", async () => {
-		const unsafeAddresses = ["fc00::1", "fd12:3456:789a::1", "fe80::1", "ff02::1"];
+		const unsafeAddresses = [
+			"64:ff9b:1::10.0.0.1",
+			"100::1",
+			"100:0:0:1::1",
+			"2002:0a00:0001::1",
+			"3fff::1",
+			"5f00::1",
+			"fc00::1",
+			"fd12:3456:789a::1",
+			"fe80::1",
+			"ff02::1",
+		];
 
 		for (const address of unsafeAddresses) {
 			let fetched = false;
@@ -415,6 +432,12 @@ describe("readUrl", () => {
 
 	it("blocks redirects to unsafe IPv6 literal targets before following", async () => {
 		const redirectTargets = [
+			"http://[64:ff9b:1::10.0.0.1]/secret",
+			"http://[100::1]/secret",
+			"http://[100:0:0:1::1]/secret",
+			"http://[2002:0a00:0001::1]/secret",
+			"http://[3fff::1]/secret",
+			"http://[5f00::1]/secret",
 			"http://[fc00::1]/secret",
 			"http://[fe80::1]/secret",
 			"http://[ff02::1]/secret",
@@ -445,7 +468,17 @@ describe("readUrl", () => {
 	});
 
 	it("blocks redirects to hostnames resolving to unsafe IPv6 before following", async () => {
-		const unsafeAddresses = ["fc00::1", "fe80::1", "ff02::1"];
+		const unsafeAddresses = [
+			"64:ff9b:1::10.0.0.1",
+			"100::1",
+			"100:0:0:1::1",
+			"2002:0a00:0001::1",
+			"3fff::1",
+			"5f00::1",
+			"fc00::1",
+			"fe80::1",
+			"ff02::1",
+		];
 
 		for (const address of unsafeAddresses) {
 			const fetched: string[] = [];
