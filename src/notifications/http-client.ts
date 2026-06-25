@@ -48,7 +48,7 @@ class BufferedHttpResponse implements JsonHttpResponse {
 
 function firstEnv(env: ProxyEnv, names: string[]): string | undefined {
   for (const name of names) {
-    const value = env[name];
+    const value = env[name]?.trim();
     if (value) return value;
   }
   return undefined;
