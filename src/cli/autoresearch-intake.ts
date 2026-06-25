@@ -52,6 +52,8 @@ const BLOCKED_EVALUATOR_PATTERNS = [
   /<[^>]+>/i,
   /\bTODO\b/i,
   /\bTBD\b/i,
+  /^placeholder(?:\s+(?:evaluator|command|evaluator\s+command))?$/i,
+  /\breplace\s+(?:me|with)\b/i,
   /REPLACE_ME/i,
   /CHANGEME/i,
   /your-command-here/i,

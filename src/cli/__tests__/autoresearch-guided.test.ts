@@ -222,6 +222,9 @@ describe("autoresearch intake draft artifacts", () => {
 
 	it("rejects placeholder evaluator commands and accepts concrete commands", () => {
 		assert.equal(isLaunchReadyEvaluatorCommand("TODO replace me"), false);
+		assert.equal(isLaunchReadyEvaluatorCommand("placeholder evaluator"), false);
+		assert.equal(isLaunchReadyEvaluatorCommand("replace with evaluator command"), false);
+		assert.equal(isLaunchReadyEvaluatorCommand("node scripts/eval-placeholder-behavior.js"), true);
 		assert.equal(isLaunchReadyEvaluatorCommand("node scripts/eval.js"), true);
 		assert.equal(isLaunchReadyEvaluatorCommand("bash scripts/eval.sh"), true);
 	});
