@@ -2408,8 +2408,54 @@ function reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(goal: Record<str
     && /\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/i.test(evidence);
 }
 
-function looksLikeNewGoalPrompt(text: string): boolean {
-  return /(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(text);
+
+function sentenceWindowAround(text: string, start: number, end: number): string {
+  const rawBefore = text.slice(Math.max(0, start - 80), start);
+  const rawAfter = text.slice(end, Math.min(text.length, end + 80));
+  const before = rawBefore.slice(Math.max(rawBefore.lastIndexOf("\n"), rawBefore.lastIndexOf("."), rawBefore.lastIndexOf("!"), rawBefore.lastIndexOf("?")) + 1);
+  const sentenceEndOffsets = [rawAfter.indexOf("\n"), rawAfter.indexOf("."), rawAfter.indexOf("!"), rawAfter.indexOf("?")].filter((index) => index >= 0);
+  const after = sentenceEndOffsets.length > 0 ? rawAfter.slice(0, Math.min(...sentenceEndOffsets)) : rawAfter;
+  return `${before}${text.slice(start, end)}${after}`;
+}
+
+function isNegatedGoalAttemptWindow(window: string): boolean {
+  return /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not|no)\b.{0,50}\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(window)
+    || /\b(?:without|instead\s+of)\b.{0,30}\b(?:start|create|begin|new|another)?\b.{0,30}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(window)
+    || /\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,30}\b(?:is|was|already)\b.{0,30}\b(?:documented|complete|completed|done|unavailable|not\s+needed)\b/i.test(window);
+}
+
+function looksLikeGoalCreationAttempt(text: string): boolean {
+  const candidatePattern = /\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/gi;
+  for (const match of text.matchAll(candidatePattern)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const window = sentenceWindowAround(text, start, end);
+    if (isNegatedGoalAttemptWindow(window)) continue;
+    if (/(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(window)) return true;
+  }
+  return false;
+}
+
+function looksLikeCreateGoalAttempt(text: string): boolean {
+  const candidatePattern = /\bcreate_goal\s*(?:\(|\b)/gi;
+  for (const match of text.matchAll(candidatePattern)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const window = sentenceWindowAround(text, start, end);
+    if (/(?:\bno\s+create_goal\s+attempt\b|\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not)\b.{0,40}\bcreate_goal\b|\bwithout\s+create_goal\b|\bfailed\s+to\s+call\s+create_goal\b|\bcreate_goal\s+(?:is|was)\s+(?:unavailable|not\s+available|not\s+called)\b)/i.test(window)) {
+      continue;
+    }
+    if (/\b(?:call|calling|called|invoke|invoking|start|starting|create|creating|begin|beginning|attempt|attempting|try|trying|continue\s+to|proceed\s+to)\b.{0,80}\bcreate_goal\b/i.test(window)
+      || /\bcreate_goal\b.{0,80}\b(?:payload|call|tool|now|next|follows|follow|start|starting|create|creating|begin|beginning|attempt|attempting)\b/i.test(window)
+      || /\bcreate_goal\s*\(/i.test(match[0])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function looksLikeCompletedGoalCleanupAttempt(text: string): boolean {
+  return looksLikeGoalCreationAttempt(text) || looksLikeCreateGoalAttempt(text);
 }
 
 async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<string | null> {
@@ -2442,7 +2488,7 @@ async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<stri
 }
 
 async function buildCompletedGoalCleanupPromptWarning(cwd: string, prompt: string): Promise<string | null> {
-  if (!looksLikeNewGoalPrompt(prompt)) return null;
+  if (!looksLikeCompletedGoalCleanupAttempt(prompt)) return null;
   const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
   if (!notice) return null;
   return `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
@@ -2453,7 +2499,7 @@ async function buildCompletedGoalCleanupStopOutput(payload: CodexHookPayload, cw
     safeString(payload.last_user_message ?? payload.lastUserMessage),
     safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
   ].join("\n");
-  if (!looksLikeNewGoalPrompt(text)) return null;
+  if (!looksLikeCompletedGoalCleanupAttempt(text)) return null;
   const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
   if (!notice) return null;
   const systemMessage = `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
@@ -3558,6 +3604,22 @@ function modeStateMatchesSkillStopContext(
   return true;
 }
 
+function modeStateHasExplicitMatchingCwd(state: Record<string, unknown>, cwd: string): boolean {
+  const stateCwd = safeString(
+    state.cwd
+      ?? state.workingDirectory
+      ?? state.working_directory
+      ?? state.project_path,
+  ).trim();
+  if (!stateCwd) return false;
+
+  try {
+    return resolve(stateCwd) === resolve(cwd);
+  } catch {
+    return false;
+  }
+}
+
 async function readBlockingSkillForStop(
   cwd: string,
   stateDir: string,
@@ -3676,6 +3738,54 @@ function rootModeStateIsCanonicalForStopContext(
   return true;
 }
 
+function hasExplicitSessionScope(state: Record<string, unknown>): boolean {
+  return safeString(
+    state.owner_omx_session_id
+      ?? state.session_id
+      ?? state.codex_session_id
+      ?? state.owner_codex_session_id,
+  ).trim() !== "";
+}
+
+async function readStateTimestampMs(state: Record<string, unknown>, path: string): Promise<number | null> {
+  return parseTimestampMs(state.updated_at)
+    ?? parseTimestampMs(state.completed_at)
+    ?? parseTimestampMs(state.created_at)
+    ?? await stat(path).then((info) => info.mtimeMs, () => null);
+}
+
+async function unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
+  rootState: Record<string, unknown>,
+  rootPath: string,
+  sessionPath: string,
+  cwd: string,
+  threadId: string,
+): Promise<boolean> {
+  if (hasExplicitSessionScope(rootState)) return false;
+
+  const stateThreadId = safeString(rootState.owner_codex_thread_id ?? rootState.thread_id).trim();
+  if (threadId && stateThreadId && stateThreadId !== threadId) return false;
+
+  if (!modeStateHasExplicitMatchingCwd(rootState, cwd)) return false;
+
+  const phase = safeString(rootState.current_phase ?? rootState.currentPhase).trim().toLowerCase();
+  if (phase !== "complete" && phase !== "completed") return false;
+
+  const planningComplete = rootState.planning_complete === true || rootState.planningComplete === true;
+  const latestPlanPath = safeString(rootState.latest_plan_path ?? rootState.latestPlanPath).trim();
+  if (!planningComplete || !latestPlanPath) return false;
+
+  const sessionState = await readJsonIfExists(sessionPath);
+  if (!sessionState) return false;
+  const sessionPhase = safeString(sessionState.current_phase ?? sessionState.currentPhase).trim().toLowerCase();
+  if (sessionPhase && TERMINAL_MODE_PHASES.has(sessionPhase)) return false;
+
+  const rootTimestamp = await readStateTimestampMs(rootState, rootPath);
+  const sessionTimestamp = await readStateTimestampMs(sessionState, sessionPath);
+  if (rootTimestamp === null || sessionTimestamp === null) return false;
+  return rootTimestamp > sessionTimestamp;
+}
+
 async function shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
   cwd: string,
   stateDir: string,
@@ -3683,10 +3793,23 @@ async function shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
   sessionId: string,
   threadId: string,
 ): Promise<boolean> {
-  const rootModeState = await readJsonIfExists(join(stateDir, `${skill}-state.json`));
+  const rootModeStatePath = join(stateDir, `${skill}-state.json`);
+  const rootModeState = await readJsonIfExists(rootModeStatePath);
   if (!rootModeState) return false;
-  if (!rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId)) return false;
   if (!isTerminalOrInactiveModeState(rootModeState)) return false;
+
+  const canonicalRoot = rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId)
+    && (skill !== "ralplan" || modeStateHasExplicitMatchingCwd(rootModeState, cwd));
+  const freshUnscopedRoot = canonicalRoot || skill !== "ralplan"
+    ? false
+    : await unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
+      rootModeState,
+      rootModeStatePath,
+      join(stateDir, "sessions", sessionId, `${skill}-state.json`),
+      cwd,
+      threadId,
+    );
+  if (!canonicalRoot && !freshUnscopedRoot) return false;
 
   const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
   const rootSkillState = await readSkillActiveState(rootPath);

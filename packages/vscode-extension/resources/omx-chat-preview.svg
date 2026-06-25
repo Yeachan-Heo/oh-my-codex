@@ -1,0 +1,56 @@
+<svg width="920" height="560" viewBox="0 0 920 560" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">OMX VS Code extension UI preview</title>
+  <desc id="desc">A VS Code window preview showing the OMX Activity Bar entry, Chat surface, running session status, assistant output, and recent logs.</desc>
+  <rect width="920" height="560" rx="18" fill="#1F1F24"/>
+  <rect x="16" y="16" width="888" height="528" rx="12" fill="#25262D" stroke="#41424D"/>
+  <rect x="16" y="16" width="888" height="38" rx="12" fill="#30313A"/>
+  <circle cx="40" cy="35" r="5" fill="#EC6A5E"/>
+  <circle cx="58" cy="35" r="5" fill="#F5BF4F"/>
+  <circle cx="76" cy="35" r="5" fill="#61C554"/>
+  <text x="460" y="39" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" text-anchor="middle">Oh My Codex - VS Code</text>
+
+  <rect x="16" y="54" width="54" height="490" fill="#2B2C34"/>
+  <rect x="27" y="84" width="32" height="32" rx="8" fill="#3B82F6"/>
+  <path d="M34 96C34 93.8 35.8 92 38 92H48C50.2 92 52 93.8 52 96V106C52 108.2 50.2 110 48 110H38C35.8 110 34 108.2 34 106V96Z" stroke="#FFFFFF" stroke-width="1.8"/>
+  <path d="M38 105V97L43 101L48 97V105" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="43" cy="147" r="15" stroke="#8B949E" stroke-width="2"/>
+  <path d="M36 180H50M36 188H50M36 196H45" stroke="#8B949E" stroke-width="2" stroke-linecap="round"/>
+  <path d="M35 232H51M43 224V240" stroke="#8B949E" stroke-width="2" stroke-linecap="round"/>
+
+  <rect x="70" y="54" width="250" height="490" fill="#202127"/>
+  <rect x="86" y="76" width="218" height="32" rx="6" fill="#2F313A" stroke="#464854"/>
+  <text x="102" y="97" fill="#E6EDF3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13">OMX Chat</text>
+  <rect x="86" y="124" width="144" height="28" rx="5" fill="#3B82F6"/>
+  <text x="104" y="143" fill="#FFFFFF" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Current workspace</text>
+  <rect x="86" y="166" width="218" height="70" rx="8" fill="#292B33" stroke="#444753"/>
+  <text x="102" y="190" fill="#E6EDF3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13">Running</text>
+  <text x="102" y="212" fill="#9DA7B3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">vscode-2026-06-24</text>
+  <rect x="86" y="252" width="218" height="34" rx="6" fill="#2F313A" stroke="#464854"/>
+  <text x="102" y="274" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Stop</text>
+  <text x="166" y="274" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Doctor</text>
+  <text x="236" y="274" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Open log</text>
+  <text x="86" y="326" fill="#9DA7B3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Recent logs</text>
+  <rect x="86" y="342" width="218" height="32" rx="5" fill="#292B33"/>
+  <text x="102" y="363" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">vscode-2026-06-24.log</text>
+  <rect x="86" y="382" width="218" height="32" rx="5" fill="#292B33"/>
+  <text x="102" y="403" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">session-output.log</text>
+
+  <rect x="320" y="54" width="584" height="490" fill="#1E1F25"/>
+  <rect x="344" y="80" width="536" height="74" rx="10" fill="#29303A" stroke="#3E4653"/>
+  <text x="364" y="105" fill="#9DA7B3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">user</text>
+  <text x="364" y="130" fill="#E6EDF3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15">Summarize the failing test run and suggest the next command.</text>
+
+  <rect x="344" y="176" width="536" height="180" rx="10" fill="#262933" stroke="#3E4653"/>
+  <text x="364" y="202" fill="#9DA7B3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">assistant · streaming session output</text>
+  <text x="364" y="232" fill="#E6EDF3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14">Status: Running</text>
+  <text x="364" y="257" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14">Session: vscode-2026-06-24</text>
+  <text x="364" y="282" fill="#C9D1D9" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14">Log: .omx/logs/vscode/session-output.log</text>
+  <rect x="364" y="305" width="418" height="18" rx="4" fill="#3B82F6" opacity="0.32"/>
+  <rect x="364" y="330" width="286" height="12" rx="4" fill="#8B949E" opacity="0.55"/>
+
+  <rect x="344" y="388" width="536" height="78" rx="10" fill="#20242C" stroke="#3E4653"/>
+  <text x="364" y="414" fill="#9DA7B3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">composer</text>
+  <rect x="364" y="430" width="416" height="20" rx="5" fill="#303642"/>
+  <rect x="794" y="426" width="66" height="30" rx="6" fill="#3B82F6"/>
+  <text x="827" y="446" fill="#FFFFFF" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" text-anchor="middle">Send</text>
+</svg>
