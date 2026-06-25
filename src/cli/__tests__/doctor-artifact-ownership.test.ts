@@ -77,6 +77,37 @@ describe("repo artifact ownership doctor check", () => {
 		}
 	});
 
+	it("reports owner-mismatched files for non-root doctor runs", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-artifacts-"));
+		try {
+			const artifact = join(wd, ".beads", "state.json");
+			await mkdir(join(wd, ".beads"), { recursive: true });
+			await writeFile(artifact, "{}\n");
+
+			const check = await checkRepoArtifactOwnership(wd, {
+				currentUid: 1000,
+				statPath: async (path) => {
+					const info = await lstat(path);
+					if (path === artifact) {
+						return new Proxy(info, {
+							get(target, property, receiver) {
+								if (property === "uid") return 1001;
+								if (property === "gid") return 1001;
+								return Reflect.get(target, property, receiver);
+							},
+						});
+					}
+					return info;
+				},
+			});
+
+			assert.equal(check.status, "warn");
+			assert.match(check.message, /\.beads[\\/]state\.json \(owner-mismatch uid=1001 gid=1001\)/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("reports non-writable files under repo-local artifact directories", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-artifacts-"));
 		try {

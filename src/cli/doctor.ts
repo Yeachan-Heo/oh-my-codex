@@ -970,6 +970,7 @@ function shouldReportOwnerMismatch(
 	uid: number | undefined,
 	currentUid: number | undefined,
 ): boolean {
+	if (currentUid === 0) return false;
 	if (typeof uid !== "number") return false;
 	if (uid === 0) return true;
 	return typeof currentUid === "number" && uid !== currentUid;
