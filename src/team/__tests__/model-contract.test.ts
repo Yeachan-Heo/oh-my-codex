@@ -163,7 +163,7 @@ describe('team model contract', () => {
   it('maps worker roles to default reasoning effort tiers', () => {
     assert.equal(resolveAgentReasoningEffort('explore'), 'low');
     assert.equal(resolveAgentReasoningEffort('executor'), 'medium');
-    assert.equal(resolveAgentReasoningEffort('architect'), 'high');
+    assert.equal(resolveAgentReasoningEffort('architect'), 'xhigh');
     assert.equal(resolveAgentReasoningEffort('does-not-exist'), undefined);
   });
 
@@ -190,6 +190,16 @@ describe('team model contract', () => {
       assert.equal(resolveAgentDefaultModel('executor'), 'gpt-5.5');
       assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.5');
       assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
+    });
+  });
+  it('honors exact model pins before frontier fallback routing', () => {
+    withIsolatedDefaultModelEnv(() => {
+      process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.2-frontier';
+
+      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-5.5');
+      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.5');
+      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-5.4-mini');
+      assert.equal(resolveAgentDefaultModel('critic'), 'gpt-5.2-frontier');
     });
   });
 
@@ -230,13 +240,13 @@ describe('team model contract', () => {
         {
           requestedAgentType: 'architect',
           requestedDefaultModel: 'gpt-5.5',
-          requestedDefaultReasoning: 'high',
+          requestedDefaultReasoning: 'xhigh',
           actualModel: 'gpt-5.5',
-          actualReasoning: 'high',
+          actualReasoning: 'xhigh',
           modelSource: 'fallback',
           reasoningSource: 'role-default',
           inheritedParentModel: false,
-          actualLaunchArgs: ['-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.5'],
+          actualLaunchArgs: ['-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5.5'],
         },
       );
     });

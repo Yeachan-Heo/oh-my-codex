@@ -736,7 +736,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.deepEqual(modeState.state.planning_routing, {
         owner: 'main',
         mainModel: 'gpt-5.5',
-        plannerModel: 'gpt-5.4-mini',
+        plannerModel: 'gpt-5.5',
         reason: 'main_not_cheap_or_mini',
         explicitPlannerOverride: false,
       });

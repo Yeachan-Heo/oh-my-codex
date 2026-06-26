@@ -295,9 +295,12 @@ export function resolveAgentDefaultModel(
   const modelOverride = getAgentModelOverride(normalized, codexHomeOverride);
   if (modelOverride) return modelOverride;
   if (normalized.endsWith('-low')) return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
+
+  const agent = getAgent(normalized);
+  if (agent?.exactModel) return agent.exactModel;
   if (normalized === 'executor') return getMainDefaultModel(codexHomeOverride);
 
-  switch (getAgent(normalized)?.modelClass) {
+  switch (agent?.modelClass) {
     case 'fast':
       return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
     case 'frontier':

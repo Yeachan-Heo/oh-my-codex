@@ -48,7 +48,7 @@ describe('autopilot planner routing', () => {
     assert.deepEqual(resolveAutopilotPlannerRouting(tempDir), {
       owner: 'main',
       mainModel: 'gpt-5.5',
-      plannerModel: 'gpt-5.4-mini',
+      plannerModel: 'gpt-5.5',
       reason: 'main_not_cheap_or_mini',
       explicitPlannerOverride: false,
     });
@@ -60,7 +60,7 @@ describe('autopilot planner routing', () => {
     assert.deepEqual(resolveAutopilotPlannerRouting(tempDir), {
       owner: 'planner',
       mainModel: 'o4-mini',
-      plannerModel: 'gpt-5.4-mini',
+      plannerModel: 'gpt-5.5',
       reason: 'main_is_cheap_or_mini',
       explicitPlannerOverride: false,
     });

@@ -161,24 +161,27 @@ describe("agents/native-config", () => {
   });
 
 
-  it("pins ralplan thesis/antithesis and researcher to exact gpt-5.4-mini without downgrading judgment roles", () => {
+  it("pins ralplan thesis/antithesis to exact gpt-5.5 while keeping researcher on exact mini", () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.5";
     process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.5";
 
-    for (const role of ["planner", "architect", "researcher"] as const) {
+    for (const role of ["planner", "architect"] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
-      assert.match(toml, /model = "gpt-5\.4-mini"/, `${role} should use exact mini`);
-      assert.match(toml, /exact gpt-5\.4-mini model/, `${role} should receive exact-mini guidance`);
-      assert.match(toml, /resolved_model: gpt-5\.4-mini/, `${role} should record exact mini metadata`);
+      assert.match(toml, /model = "gpt-5\.5"/, `${role} should use exact gpt-5.5`);
+      assert.doesNotMatch(toml, /exact gpt-5\.4-mini model/, `${role} should not receive exact-mini guidance`);
+      assert.match(toml, /resolved_model: gpt-5\.5/, `${role} should record exact gpt-5.5 metadata`);
     }
 
     const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt");
-    assert.match(plannerToml, /model_reasoning_effort = "high"/);
+    assert.match(plannerToml, /model_reasoning_effort = "medium"/);
 
     const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt");
-    assert.match(architectToml, /model_reasoning_effort = "high"/);
+    assert.match(architectToml, /model_reasoning_effort = "xhigh"/);
 
     const researcherToml = generateAgentToml(AGENT_DEFINITIONS.researcher, "researcher prompt");
+    assert.match(researcherToml, /model = "gpt-5\.4-mini"/, "researcher should keep exact mini");
+    assert.match(researcherToml, /exact gpt-5\.4-mini model/, "researcher should receive exact-mini guidance");
+    assert.match(researcherToml, /resolved_model: gpt-5\.4-mini/, "researcher should record exact mini metadata");
     assert.match(researcherToml, /model_reasoning_effort = "high"/);
 
     for (const role of [
@@ -248,23 +251,23 @@ describe("agents/native-config", () => {
     assert.ok(guardIndex > modelDelegationIndex, "leaf guard should override model delegation text");
     assert.ok(metadataIndex > guardIndex, "metadata should remain final non-policy bookkeeping");
 
-    const architectToml = generateAgentToml(
-      AGENT_DEFINITIONS.architect,
-      "architect prompt",
+    const researcherToml = generateAgentToml(
+      AGENT_DEFINITIONS.researcher,
+      "researcher prompt",
     );
-    const exactMiniIndex = architectToml.indexOf(
+    const exactMiniIndex = researcherToml.indexOf(
       "strict execution order: inspect -> plan -> act -> verify",
     );
-    const architectGuardIndex = architectToml.indexOf("<native_subagent_leaf_guard>");
-    const architectMetadataIndex = architectToml.indexOf("## OMX Agent Metadata");
+    const researcherGuardIndex = researcherToml.indexOf("<native_subagent_leaf_guard>");
+    const researcherMetadataIndex = researcherToml.indexOf("## OMX Agent Metadata");
 
-    assert.ok(exactMiniIndex >= 0, "architect should exercise the exact-model overlay path");
+    assert.ok(exactMiniIndex >= 0, "researcher should exercise the exact-mini overlay path");
     assert.ok(
-      architectGuardIndex > exactMiniIndex,
-      "leaf guard should override exact-model overlay guidance",
+      researcherGuardIndex > exactMiniIndex,
+      "leaf guard should override exact-mini overlay guidance",
     );
     assert.ok(
-      architectMetadataIndex > architectGuardIndex,
+      researcherMetadataIndex > researcherGuardIndex,
       "metadata should remain final non-policy bookkeeping for exact-model roles",
     );
 

@@ -101,13 +101,13 @@ describe('agents/definitions', () => {
     }
   });
 
-  it('pins ralplan thesis and antithesis to exact mini while keeping the critic frontier-gated', () => {
-    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-5.4-mini');
-    assert.equal(AGENT_DEFINITIONS.planner.reasoningEffort, 'high');
+  it('pins ralplan thesis and antithesis to exact gpt-5.5 with role-specific reasoning', () => {
+    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-5.5');
+    assert.equal(AGENT_DEFINITIONS.planner.reasoningEffort, 'medium');
     assert.equal(AGENT_DEFINITIONS.planner.modelClass, 'frontier');
 
-    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-5.4-mini');
-    assert.equal(AGENT_DEFINITIONS.architect.reasoningEffort, 'high');
+    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-5.5');
+    assert.equal(AGENT_DEFINITIONS.architect.reasoningEffort, 'xhigh');
     assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
 
     assert.equal(AGENT_DEFINITIONS.critic.exactModel, undefined);
