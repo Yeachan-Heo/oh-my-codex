@@ -178,6 +178,36 @@ const SHORT_FOLLOWUP_PRIORITY_PATTERNS = [
   /(?:按照|按|基于)(?:这个|上述|当前)?(?:plan|计划|方案)/u,
   /\b(?:follow up|latest request|this turn|current turn|newest request)\b/i,
 ] as const;
+const RALPH_CONTINUATION_INTENT_PATTERNS = [
+  /\b(?:continue|resume|keep going|carry on|proceed|finish|complete)\b/i,
+  /\b(?:same|current|active|that|this)\s+(?:ralph|task|work|job|workflow)\b/i,
+  /\b(?:ralph)\b.{0,40}\b(?:continue|resume|finish|complete)\b/i,
+  /\b(?:continue|resume|finish|complete)\b.{0,40}\b(?:ralph)\b/i,
+] as const;
+const RALPH_LIVE_RISK_PATTERNS = [
+  /\b(?:prod|production|live|customer|user\s+data|billing|payment|credential|secret|token|key)\b/i,
+  /\b(?:deploy|release|publish|merge|push|delete|remove|drop|destroy|migrate|migration)\b/i,
+  /\b(?:database|db|terraform|kubectl|kubernetes|aws|gcp|azure|external|destructive)\b/i,
+] as const;
+const RALPH_TASK_TEXT_FIELDS = [
+  "task_description",
+  "taskDescription",
+  "objective",
+  "task",
+  "prompt",
+  "initial_prompt",
+  "initialPrompt",
+  "user_prompt",
+  "userPrompt",
+  "last_user_message",
+  "lastUserMessage",
+  "task_slug",
+] as const;
+const RALPH_INTENT_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it",
+  "of", "on", "or", "that", "the", "this", "to", "with", "you", "your", "task", "work",
+  "ralph", "continue", "resume", "finish", "complete", "fix", "issue",
+]);
 const MAX_SESSION_META_LINE_BYTES = 256 * 1024;
 
 function safeString(value: unknown): string {
@@ -795,6 +825,7 @@ interface RalphStopOwnershipContext {
   threadId: string;
   currentNativeSessionId: string;
   tmuxPaneId: string;
+  payload?: CodexHookPayload;
 }
 
 function isRalphStartingPhase(state: Record<string, unknown>): boolean {
@@ -849,6 +880,135 @@ async function isStaleOrphanedRalphStartingState(
 
 function hasValue(values: string[], value: string): boolean {
   return value !== "" && values.some((candidate) => candidate === value);
+}
+
+function hasPositiveRalphStopOwnerMatch(
+  state: Record<string, unknown>,
+  context: RalphStopOwnershipContext,
+): boolean {
+  const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
+  if (ownerOmxSessionId && ownerOmxSessionId === context.sessionId) return true;
+
+  const stateSessionId = safeString(state.session_id).trim();
+  if (!ownerOmxSessionId && stateSessionId && stateSessionId === context.sessionId) return true;
+
+  const codexOwnerSessionId = safeString(state.owner_codex_session_id).trim();
+  if (codexOwnerSessionId) {
+    const stopCodexSessionIds = [
+      context.payloadSessionId,
+      context.currentNativeSessionId,
+      context.sessionId,
+    ].filter(Boolean);
+    if (hasValue(stopCodexSessionIds, codexOwnerSessionId)) return true;
+  }
+
+  const stateThreadId = safeString(state.owner_codex_thread_id ?? state.thread_id).trim();
+  if (stateThreadId && context.threadId && stateThreadId === context.threadId) return true;
+
+  const statePaneId = safeString(state.tmux_pane_id).trim();
+  return statePaneId !== "" && context.tmuxPaneId !== "" && statePaneId === context.tmuxPaneId;
+}
+
+function textMatchesAny(text: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function extractRalphTaskText(state: Record<string, unknown>): string {
+  const values: string[] = [];
+  for (const field of RALPH_TASK_TEXT_FIELDS) {
+    const value = safeString(state[field]).trim();
+    if (value) values.push(value);
+  }
+
+  const taskMetadata = state.task_metadata ?? state.taskMetadata;
+  if (taskMetadata && typeof taskMetadata === "object") {
+    const metadata = taskMetadata as Record<string, unknown>;
+    for (const field of RALPH_TASK_TEXT_FIELDS) {
+      const value = safeString(metadata[field]).trim();
+      if (value) values.push(value);
+    }
+  }
+
+  return values.join("\n");
+}
+
+function extractRalphStopUserText(payload?: CodexHookPayload): string {
+  if (!payload) return "";
+  return [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+    payload.input,
+    payload.last_user_message,
+    payload.lastUserMessage,
+  ].map(safeString).filter(Boolean).join("\n");
+}
+
+function tokenizeRalphIntentText(text: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const match of text.toLowerCase().matchAll(/[a-z0-9][a-z0-9_-]{2,}/g)) {
+    const token = match[0].replace(/^issue-/, "");
+    if (!token || RALPH_INTENT_STOPWORDS.has(token)) continue;
+    tokens.add(token);
+  }
+  return tokens;
+}
+
+function countTokenOverlap(left: Set<string>, right: Set<string>): number {
+  let overlap = 0;
+  for (const token of left) {
+    if (right.has(token)) overlap += 1;
+  }
+  return overlap;
+}
+
+function hasCurrentRalphTaskOverlap(state: Record<string, unknown>, userText: string): boolean {
+  const taskText = extractRalphTaskText(state);
+  const taskTokens = tokenizeRalphIntentText(taskText);
+  const userTokens = tokenizeRalphIntentText(userText);
+  if (taskTokens.size === 0) return false;
+  if (userTokens.size === 0) return false;
+
+  const overlap = countTokenOverlap(taskTokens, userTokens);
+  const smallerSide = Math.min(taskTokens.size, userTokens.size);
+  return overlap >= 2 || (smallerSide <= 2 && overlap >= 1);
+}
+
+function hasMeaningfulRalphTaskText(state: Record<string, unknown>): boolean {
+  return tokenizeRalphIntentText(extractRalphTaskText(state)).size > 0;
+}
+
+function isRalphLiveRiskContinuation(state: Record<string, unknown>, userText: string): boolean {
+  return textMatchesAny(`${extractRalphTaskText(state)}\n${userText}`, RALPH_LIVE_RISK_PATTERNS);
+}
+
+function shouldAllowGlobalRalphStopContinuation(
+  state: Record<string, unknown>,
+  context: RalphStopOwnershipContext,
+): boolean {
+  const userText = extractRalphStopUserText(context.payload);
+  const hasContinuationIntent = textMatchesAny(userText, RALPH_CONTINUATION_INTENT_PATTERNS);
+  const hasTaskOverlap = hasCurrentRalphTaskOverlap(state, userText);
+  const hasTaskText = hasMeaningfulRalphTaskText(state);
+  const hasUserTaskText = tokenizeRalphIntentText(userText).size > 0;
+  const hasPositiveOwnerMatch = hasPositiveRalphStopOwnerMatch(state, context);
+
+  if (!activeRalphStateMatchesStopOwner(state, context)) return false;
+  if (!userText.trim()) {
+    if (isRalphLiveRiskContinuation(state, userText)) return false;
+    return hasPositiveOwnerMatch || !hasRalphOwnerHint(state);
+  }
+  if (isRalphLiveRiskContinuation(state, userText)) {
+    return hasContinuationIntent && (hasPositiveOwnerMatch || hasTaskOverlap);
+  }
+  if (hasPositiveOwnerMatch && hasContinuationIntent) {
+    return true;
+  }
+  if (hasTaskText && hasUserTaskText) {
+    return hasTaskOverlap;
+  }
+
+  return hasContinuationIntent || hasTaskOverlap;
 }
 
 function activeRalphStateMatchesStopOwner(
@@ -1097,6 +1257,7 @@ async function readActiveRalphState(
     payloadSessionId?: string;
     threadId?: string;
     tmuxPaneId?: string;
+    payload?: CodexHookPayload;
   },
 ): Promise<ActiveRalphStopState | null> {
   const [rawSessionInfo, usableSessionInfo] = await Promise.all([
@@ -1183,7 +1344,18 @@ async function readActiveRalphState(
 
   const directPath = join(stateDir, "ralph-state.json");
   const direct = await readJsonIfExists(directPath);
-  if (direct?.active === true && shouldContinueRun(direct)) {
+  if (
+    direct?.active === true
+    && shouldContinueRun(direct)
+    && shouldAllowGlobalRalphStopContinuation(direct, {
+      sessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      threadId: safeString(ownerContext?.threadId).trim(),
+      currentNativeSessionId,
+      tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+      payload: ownerContext?.payload,
+    })
+  ) {
     return { state: direct, path: directPath };
   }
 
@@ -4547,6 +4719,7 @@ async function buildStopHookOutput(
     payloadSessionId: sessionId,
     threadId,
     tmuxPaneId: safeString(process.env.TMUX_PANE).trim(),
+    payload,
   };
   const ralphCompletionAuditBlock = options.skipRalphStopBlock === true
     ? null

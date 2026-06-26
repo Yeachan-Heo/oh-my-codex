@@ -2544,6 +2544,205 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("allows same-session/current-thread Ralph Stop continuation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-current-session-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await writeNativeMappedSessionState(cwd, stateDir, "omx-current-ralph", "codex-current-ralph");
+      await writeJson(join(stateDir, "sessions", "omx-current-ralph", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        owner_omx_session_id: "omx-current-ralph",
+        owner_codex_session_id: "codex-current-ralph",
+        owner_codex_thread_id: "thread-current-ralph",
+        task_description: "Finish issue 2974 stale Ralph Stop-hook guard",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "codex-current-ralph",
+          thread_id: "thread-current-ralph",
+          last_user_message: "continue the current ralph issue 2974 task",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "ralph_executing");
+      assert.match(String(result.outputJson?.systemMessage), /Ralph is still active/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not resume stale different-session global Ralph Stop state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-stale-global-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        owner_codex_session_id: "codex-old-ralph",
+        owner_codex_thread_id: "thread-old-ralph",
+        task_description: "Finish issue 2974 stale Ralph Stop-hook guard",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          thread_id: "thread-new-ralph",
+          last_user_message: "continue the current ralph issue 2974 task",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.stopReason, undefined);
+      assert.notEqual(result.outputJson?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not resume global Ralph Stop state for low-overlap unrelated tasks", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-low-overlap-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        task_description: "Refactor documentation navigation and README examples",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          last_user_message: "continue auditing billing webhooks and payment retries",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.stopReason, undefined);
+      assert.notEqual(result.outputJson?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows explicit current user continuation for live-risk Ralph tasks when owner context is current", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-live-current-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        owner_codex_thread_id: "thread-live-ralph",
+        task_description: "Deploy billing migration rollback guard for production payments",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          thread_id: "thread-live-ralph",
+          last_user_message: "continue the current ralph deploy billing migration rollback guard",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "ralph_executing");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows current-owner global Ralph Stop continuation with generic current-task wording", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-current-owner-generic-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        owner_codex_thread_id: "thread-current-owner-generic",
+        task_description: "Refactor documentation navigation and README examples",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          thread_id: "thread-current-owner-generic",
+          last_user_message: "continue the current ralph task",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "ralph_executing");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows same-thread global Ralph Stop continuation without payload text for non-live tasks", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-same-thread-no-text-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        owner_codex_thread_id: "thread-same-thread-no-text",
+        task_description: "Refactor documentation navigation and README examples",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          thread_id: "thread-same-thread-no-text",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "ralph_executing");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks no-text global Ralph Stop continuation for live-risk tasks", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-live-no-text-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        owner_codex_thread_id: "thread-live-no-text",
+        task_description: "Deploy billing migration rollback guard for production payments",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          thread_id: "thread-live-no-text",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.stopReason, undefined);
+      assert.notEqual(result.outputJson?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("resolves the Codex owner from ancestry without mistaking codex-native-hook wrappers for Codex", () => {
     const commands = new Map<number, string>([
       [2100, 'sh -c node "/repo/dist/scripts/codex-native-hook.js"'],
