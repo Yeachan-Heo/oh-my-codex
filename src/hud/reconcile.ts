@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { readAllState, readHudConfig } from './state.js';
 import { getHudRenderMaxLines } from './render.js';
 import { HUD_TMUX_HEIGHT_LINES, isTmuxWindowTooCrampedForHudSplit } from './constants.js';
@@ -114,6 +117,7 @@ export interface ReconcileHudForPromptSubmitResult {
     | 'skipped_not_tmux'
     | 'skipped_no_entry'
     | 'skipped_not_omx_owned_tmux'
+    | 'skipped_concurrent'
     | 'skipped_no_session_id'
     | 'skipped_window_too_cramped'
     | 'unchanged'
@@ -149,6 +153,9 @@ export interface ReconcileHudForPromptSubmitDeps {
   ) => boolean;
   unregisterHudResizeHook?: (leaderPaneId: string | undefined) => boolean;
   readCurrentWindowSize?: (currentPaneId?: string) => { width: number | null; height: number | null };
+  now?: () => number;
+  lockDir?: string;
+  processAlive?: (pid: number) => boolean;
 }
 
 function ensureHudResizeHook(
@@ -222,6 +229,78 @@ function planOwnedHudPaneDedupe(
   };
 }
 
+// A reconcile lock older than this is treated as abandoned and stolen, so a
+// process killed mid-reconcile (e.g. between split-window and the next list)
+// cannot wedge the lock permanently.
+const RECONCILE_LOCK_STALE_MS = 10_000;
+
+function defaultProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    // EPERM means the process exists but we may not signal it; treat as alive.
+    return e?.code === 'EPERM';
+  }
+}
+
+/**
+ * Non-blocking, self-healing cross-process mutex for the standalone-tmux HUD
+ * reconcile. The tmux layout-change/resize hooks fire the reconcile, which
+ * mutates the layout (split/kill panes) and re-fires the hooks. The shell
+ * wrapper no longer serializes with a blocking `tmux wait-for`; concurrency is
+ * gated here instead. Acquisition never blocks: a competing reconcile simply
+ * skips. A lock left behind by a crashed/killed holder is stolen once it is
+ * stale (older than RECONCILE_LOCK_STALE_MS) or its pid is no longer alive, and
+ * a corrupt/unreadable lock file is treated as stealable rather than throwing.
+ */
+function acquireReconcileLock(
+  lockPath: string,
+  now: () => number,
+  processAlive: (pid: number) => boolean,
+): boolean {
+  const writeLock = (flag: 'wx' | 'w'): boolean => {
+    try {
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: now() }), { flag });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (writeLock('wx')) return true;
+
+  // Lock file already exists: decide whether the holder is gone/stale.
+  let stealable = false;
+  try {
+    const raw = fs.readFileSync(lockPath, 'utf8');
+    const parsed = JSON.parse(raw) as { pid?: unknown; ts?: unknown };
+    const ts = typeof parsed.ts === 'number' ? parsed.ts : 0;
+    const pid = typeof parsed.pid === 'number' ? parsed.pid : 0;
+    stealable = now() - ts > RECONCILE_LOCK_STALE_MS || !processAlive(pid);
+  } catch {
+    // Corrupt/unreadable lock file — treat as abandoned and stealable.
+    stealable = true;
+  }
+
+  if (!stealable) return false;
+
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    // Best-effort: another reconcile may have already cleaned it up.
+  }
+  return writeLock('w');
+}
+
+function releaseReconcileLock(lockPath: string): void {
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    // Best-effort cleanup; a stale lock is self-healed on next acquisition.
+  }
+}
+
 export async function reconcileHudForPromptSubmit(
   cwd: string,
   deps: ReconcileHudForPromptSubmitDeps = {},
@@ -270,6 +349,28 @@ export async function reconcileHudForPromptSubmit(
   ]
     .map((sessionId) => sessionId?.trim() ?? '')
     .filter((sessionId, index, sessionIds) => sessionId !== '' && sessionIds.indexOf(sessionId) === index);
+
+  // Non-blocking cross-process mutex: the tmux layout/resize hooks fire this
+  // reconcile, which mutates the layout and re-fires the hooks. Acquire a
+  // self-healing file lock so a concurrent reconcile skips instead of piling up
+  // (the shell wrapper no longer blocks on `tmux wait-for`). If we cannot
+  // acquire it, another reconcile is already in flight — bail without touching
+  // the layout.
+  const now = deps.now ?? Date.now;
+  const processAlive = deps.processAlive ?? defaultProcessAlive;
+  const lockDir = deps.lockDir ?? os.tmpdir();
+  const lockKey = (resolvedSessionId || currentPaneId || 'global').replace(/[^A-Za-z0-9._-]/g, '_');
+  const lockPath = path.join(lockDir, `omx-hud-reconcile-${lockKey}.lock`);
+  if (!acquireReconcileLock(lockPath, now, processAlive)) {
+    return {
+      status: 'skipped_concurrent',
+      paneId: null,
+      desiredHeight: null,
+      duplicateCount: 0,
+    };
+  }
+
+  try {
   let panes = listPanes(currentPaneId);
 
   // Reclaim orphaned HUD panes left behind by a destroyed leader before deciding
@@ -448,4 +549,7 @@ export async function reconcileHudForPromptSubmit(
     desiredHeight,
     duplicateCount: postCreate.duplicatePaneIds.length,
   };
+  } finally {
+    releaseReconcileLock(lockPath);
+  }
 }

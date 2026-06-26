@@ -1907,4 +1907,105 @@ fi
     assert.equal(resized[0]?.paneId, '%2');
     assert.equal(resized[0]?.lines, HUD_TMUX_HEIGHT_LINES);
   });
+
+  it('skips a concurrent reconcile while another holds the cross-process lock', async () => {
+    // The tmux layout/resize hooks re-fire the reconcile while it is mutating the
+    // layout. A second reconcile sharing the same lock dir must back off instead
+    // of racing the first one's split/kill.
+    const lockDir = await mkdtemp(join(tmpdir(), 'omx-hud-reconcile-lock-'));
+    try {
+      const created: string[] = [];
+      const killed: string[] = [];
+
+      const sharedDeps = {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-lock', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        lockDir,
+        listCurrentWindowPanes: () => [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }],
+        createHudWatchPane: () => {
+          created.push('create');
+          return '%9';
+        },
+        killTmuxPane: (paneId: string) => {
+          killed.push(paneId);
+          return true;
+        },
+        resizeTmuxPane: () => true,
+        unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+        registerHudResizeHook: noOpRegisterHudResizeHook,
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      };
+
+      // Pre-seed the lock as if a first reconcile (same key) were still running.
+      const lockKey = 'sess-lock';
+      const lockPath = join(lockDir, `omx-hud-reconcile-${lockKey}.lock`);
+      await writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), { flag: 'wx' });
+
+      const result = await reconcileHudForPromptSubmit('/repo', sharedDeps);
+
+      assert.equal(result.status, 'skipped_concurrent');
+      assert.equal(result.paneId, null);
+      assert.deepEqual(created, []);
+      assert.deepEqual(killed, []);
+      // The pre-existing live lock is left intact for its holder.
+      assert.equal((await readFile(lockPath, 'utf8')).length > 0, true);
+    } finally {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  });
+
+  it('steals a stale reconcile lock and proceeds', async () => {
+    const lockDir = await mkdtemp(join(tmpdir(), 'omx-hud-reconcile-lock-'));
+    try {
+      const created: string[] = [];
+
+      const lockPath = join(lockDir, 'omx-hud-reconcile-sess-stale.lock');
+      // A lock written long ago by a holder that is no longer alive.
+      await writeFile(lockPath, JSON.stringify({ pid: 999999, ts: 1 }), { flag: 'wx' });
+
+      const result = await reconcileHudForPromptSubmit('/repo', {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-stale', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        lockDir,
+        now: () => 1_000_000, // well beyond the stale threshold relative to ts=1
+        processAlive: () => false,
+        listCurrentWindowPanes: () => [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }],
+        createHudWatchPane: () => {
+          created.push('create');
+          return '%9';
+        },
+        resizeTmuxPane: () => true,
+        unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+        registerHudResizeHook: noOpRegisterHudResizeHook,
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+
+      assert.equal(result.status, 'recreated');
+      assert.equal(result.paneId, '%9');
+      assert.equal(created.length, 1);
+    } finally {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the reconcile lock after a normal reconcile completes', async () => {
+    const lockDir = await mkdtemp(join(tmpdir(), 'omx-hud-reconcile-lock-'));
+    try {
+      const result = await reconcileHudForPromptSubmit('/repo', {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-clean', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        lockDir,
+        listCurrentWindowPanes: () => [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }],
+        createHudWatchPane: () => '%9',
+        resizeTmuxPane: () => true,
+        unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+        registerHudResizeHook: noOpRegisterHudResizeHook,
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+
+      assert.equal(result.status, 'recreated');
+
+      const lockPath = join(lockDir, 'omx-hud-reconcile-sess-clean.lock');
+      await assert.rejects(readFile(lockPath, 'utf8'), /ENOENT/);
+    } finally {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  });
 });

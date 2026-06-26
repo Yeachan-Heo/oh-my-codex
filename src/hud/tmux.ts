@@ -448,9 +448,6 @@ function buildHudLayoutReconcileHookCommand(
   const cwd = options.cwd?.trim() || process.cwd();
   const leaderAlive = buildNestedTmuxCommand(tmuxBin, ['display-message', '-p', '-t', leaderPaneId, '#{pane_id}'], env.TMUX);
   const unregister = buildHudHookUnregisterCommand(tmuxBin, context, env.TMUX);
-  const lockName = `${context.hookName}_layout`;
-  const lock = buildNestedTmuxCommand(tmuxBin, ['wait-for', '-L', lockName], env.TMUX);
-  const unlock = buildNestedTmuxCommand(tmuxBin, ['wait-for', '-U', lockName], env.TMUX);
   const reconcileEnv = buildEnvPrefix({
     TMUX: env.TMUX,
     TMUX_PANE: leaderPaneId,
@@ -469,7 +466,13 @@ function buildHudLayoutReconcileHookCommand(
     'hud',
     '--reconcile-tmux',
   ].join(' ');
-  return `${leaderAlive} >/dev/null 2>&1 && (${lock} >/dev/null 2>&1; ${unregister}; ${reconcile} >/dev/null 2>&1; status=$?; ${unlock} >/dev/null 2>&1; exit $status) || (${unregister})`;
+  // No blocking tmux `wait-for` serialization here: a blocking lock around the
+  // reconcile caused unbounded `sh`-wrapper pile-up under layout churn (every
+  // `window-layout-changed`/`client-resized` fire queued on the lock) and could
+  // deadlock permanently if a reconcile was killed between `-L` and `-U`.
+  // Concurrency is now handled non-blockingly inside the reconcile via a
+  // self-healing file lock, so the shell wrapper stays cheap and never blocks.
+  return `${leaderAlive} >/dev/null 2>&1 && (${unregister}; ${reconcile} >/dev/null 2>&1) || (${unregister})`;
 }
 
 function unregisterLegacyHudResizeHook(
