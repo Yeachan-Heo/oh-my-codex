@@ -2743,6 +2743,31 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("blocks no-text global Ralph Stop continuation for issue 2974 operational live-risk tasks", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-stop-issue-2974-live-no-text-"));
+    try {
+      await writeJson(join(cwd, ".omx", "state", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        task_description: "Implement Telegram assistant GPT switch plan on VPS service with cron restart send notify workflow",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.stopReason, undefined);
+      assert.notEqual(result.outputJson?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("resolves the Codex owner from ancestry without mistaking codex-native-hook wrappers for Codex", () => {
     const commands = new Map<number, string>([
       [2100, 'sh -c node "/repo/dist/scripts/codex-native-hook.js"'],

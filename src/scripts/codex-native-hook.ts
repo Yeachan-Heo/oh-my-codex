@@ -188,6 +188,7 @@ const RALPH_LIVE_RISK_PATTERNS = [
   /\b(?:prod|production|live|customer|user\s+data|billing|payment|credential|secret|token|key)\b/i,
   /\b(?:deploy|release|publish|merge|push|delete|remove|drop|destroy|migrate|migration)\b/i,
   /\b(?:database|db|terraform|kubectl|kubernetes|aws|gcp|azure|external|destructive)\b/i,
+  /\b(?:telegram|vps|service|restart|send|notify|notification|notifications|cron)\b/i,
 ] as const;
 const RALPH_TASK_TEXT_FIELDS = [
   "task_description",
