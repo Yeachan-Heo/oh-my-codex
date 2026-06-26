@@ -229,6 +229,45 @@ describe('team model contract', () => {
     });
   });
 
+  it('lets exact role model defaults override inherited mini leader model when requested', () => {
+    withIsolatedDefaultModelEnv(() => {
+      assert.deepEqual(
+        resolveTeamWorkerLaunchArgs({
+          inheritedArgs: ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.4-mini'],
+          fallbackModel: resolveAgentDefaultModel('planner'),
+          preferredReasoning: 'high',
+          honorExactRoleModel: true,
+        }),
+        [
+          '--dangerously-bypass-approvals-and-sandbox',
+          '-c',
+          'model_reasoning_effort="high"',
+          '--model',
+          'gpt-5.5',
+        ],
+      );
+    });
+  });
+
+  it('preserves inherited mini leader model for roles without exact-model enforcement', () => {
+    withIsolatedDefaultModelEnv(() => {
+      assert.deepEqual(
+        resolveTeamWorkerLaunchArgs({
+          inheritedArgs: ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.4-mini'],
+          fallbackModel: resolveAgentDefaultModel('executor'),
+          preferredReasoning: resolveAgentReasoningEffort('executor'),
+        }),
+        [
+          '--dangerously-bypass-approvals-and-sandbox',
+          '-c',
+          'model_reasoning_effort="medium"',
+          '--model',
+          'gpt-5.4-mini',
+        ],
+      );
+    });
+  });
+
   it('reports requested versus actual worker launch resolution for role defaults', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.deepEqual(

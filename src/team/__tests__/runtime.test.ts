@@ -608,6 +608,25 @@ describe('runtime', () => {
     });
   });
 
+  it('resolveWorkerLaunchArgsFromEnv keeps planner on exact gpt-5.5 high when leader is mini', () => {
+    withIsolatedDefaultModelEnv(() => {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini' },
+        'planner',
+        undefined,
+        'high',
+        'codex',
+      );
+      assert.deepEqual(args, [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-c',
+        'model_reasoning_effort="high"',
+        '--model',
+        'gpt-5.5',
+      ]);
+    });
+  });
+
   it('resolveWorkerLaunchArgsFromEnv treats *-low aliases as low complexity', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
