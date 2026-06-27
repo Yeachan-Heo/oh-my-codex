@@ -161,14 +161,15 @@ describe("agents/native-config", () => {
   });
 
 
-  it("pins ralplan thesis/antithesis to exact gpt-5.5 while keeping researcher on exact mini", () => {
+  it("pins planner and architect to exact gpt-5.5 while keeping researcher on exact mini", () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.5";
     process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.5";
 
     for (const role of ["planner", "architect"] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
       assert.match(toml, /model = "gpt-5\.5"/, `${role} should use exact gpt-5.5`);
-      assert.doesNotMatch(toml, /exact gpt-5\.4-mini model/, `${role} should not receive exact-mini guidance`);
+      assert.match(toml, /exact gpt-5\.5 model/, `${role} should receive exact-gpt-5.5 guidance`);
+      assert.match(toml, /strict execution order: inspect -> plan -> act -> verify/, `${role} should receive the exact-model guardrail`);
       assert.match(toml, /resolved_model: gpt-5\.5/, `${role} should record exact gpt-5.5 metadata`);
     }
 

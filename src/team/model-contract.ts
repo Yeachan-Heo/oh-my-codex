@@ -14,6 +14,7 @@ const MODEL_FLAG = '--model';
 const CONFIG_FLAG = '-c';
 const REASONING_KEY = 'model_reasoning_effort';
 const MODEL_PROVIDER_KEY = 'model_provider';
+export const TEAM_WORKER_INHERITED_MODEL_ENV = 'OMX_TEAM_WORKER_INHERITED_MODEL';
 
 const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'explore',
@@ -111,7 +112,6 @@ function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
   preferredReasoning?: TeamReasoningEffort;
   actualLaunchArgs: string[];
   requestedAgentType?: string;
-  honorExactRoleModel?: boolean;
 }): ResolvedTeamWorkerLaunchDiagnostics {
   const envModel = normalizeOptionalModel(params.envParsed.modelOverride);
   const inheritedModel = normalizeOptionalModel(params.inheritedParsed.modelOverride);
@@ -121,17 +121,24 @@ function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
   const explicitReasoning = extractReasoningEffort(
     params.envParsed.reasoningOverride ?? params.inheritedParsed.reasoningOverride,
   );
-  const honorsExactRoleModel = params.honorExactRoleModel === true && Boolean(fallbackModel) && !envModel;
+  const selectedModel = normalizeOptionalModel(actualParsed.modelOverride);
 
   return {
     requestedAgentType: params.requestedAgentType,
     requestedDefaultModel: fallbackModel,
     requestedDefaultReasoning,
-    actualModel: normalizeOptionalModel(actualParsed.modelOverride),
+    actualModel: selectedModel,
     actualReasoning: extractReasoningEffort(actualParsed.reasoningOverride),
-    modelSource: envModel ? 'env' : honorsExactRoleModel ? 'fallback' : inheritedModel ? 'inherited' : fallbackModel ? 'fallback' : 'none',
+    modelSource:
+      selectedModel && envModel && selectedModel === envModel && (!inheritedModel || envModel !== inheritedModel)
+        ? 'env'
+        : selectedModel && inheritedModel && selectedModel === inheritedModel
+          ? 'inherited'
+          : selectedModel
+            ? 'fallback'
+            : 'none',
     reasoningSource: explicitReasoning ? 'explicit' : requestedDefaultReasoning ? 'role-default' : 'none',
-    inheritedParentModel: !honorsExactRoleModel && !envModel && Boolean(inheritedModel),
+    inheritedParentModel: Boolean(inheritedModel) && Boolean(selectedModel) && selectedModel === inheritedModel,
     actualLaunchArgs: [...params.actualLaunchArgs],
   };
 }
@@ -255,9 +262,12 @@ function selectTeamWorkerModel(params: {
   fallbackModel?: string;
   honorExactRoleModel?: boolean;
 }): string | undefined {
-  if (params.envModel) return params.envModel;
-  if (params.honorExactRoleModel) return params.fallbackModel;
-  return params.envModel ?? params.inheritedModel ?? params.fallbackModel;
+  const envModel = normalizeOptionalModel(params.envModel);
+  const inheritedModel = normalizeOptionalModel(params.inheritedModel);
+  const fallbackModel = normalizeOptionalModel(params.fallbackModel);
+  if (envModel && envModel !== inheritedModel) return envModel;
+  if (params.honorExactRoleModel && fallbackModel) return fallbackModel;
+  return envModel ?? inheritedModel ?? fallbackModel;
 }
 
 export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgsOptions): string[] {
@@ -296,7 +306,6 @@ export function resolveTeamWorkerLaunchDiagnostics(
     preferredReasoning: options.preferredReasoning,
     actualLaunchArgs,
     requestedAgentType: options.requestedAgentType,
-    honorExactRoleModel: shouldHonorExactRoleModel(options),
   });
 }
 
