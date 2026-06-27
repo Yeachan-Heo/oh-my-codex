@@ -6,7 +6,7 @@
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join, posix, resolve, win32 } from "path";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
-import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "fs/promises";
+import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash } from "crypto";
 import {
@@ -949,13 +949,21 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
     const source = join(sourceCodexHome, entryName);
     if (!existsSync(source)) continue;
     const destination = join(runtimeCodexHome, entryName);
-    const sourceStat = await lstat(source);
+    const sourceStat = await stat(source);
     if (sourceStat.isDirectory()) {
       await mkdir(destination, { recursive: true });
       await cp(source, destination, { recursive: true, force: true, dereference: true });
       continue;
     }
+    if (entryName === "sessions") continue;
+    if (!sourceStat.isFile()) continue;
     if (existsSync(destination)) {
+      const destinationStat = await stat(destination);
+      if (!destinationStat.isFile()) {
+        await rm(destination, { recursive: true, force: true });
+        await copyFile(source, destination);
+        continue;
+      }
       const existing = await readFile(destination, "utf-8").catch(() => "");
       const addition = await readFile(source, "utf-8");
       const separator = existing === "" || existing.endsWith("\n") || addition === "" ? "" : "\n";
