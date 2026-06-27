@@ -16645,7 +16645,7 @@ exit 0
 
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
-      assert.match(JSON.stringify(result.outputJson), /Ralplan is active \(phase: ralplan\)/);
+      assert.match(JSON.stringify(result.outputJson), /(?:Ralplan|Autopilot planning) is active \(phase: ralplan\)/);
       assert.match(JSON.stringify(result.outputJson), /implementation\/write tools are blocked/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -17046,7 +17046,7 @@ exit 0
 
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
-      assert.match(JSON.stringify(result.outputJson), /Ralplan is active \(phase: planning\)/);
+      assert.match(JSON.stringify(result.outputJson), /(?:Ralplan|Autopilot planning) is active \(phase: ralplan\)/);
       assert.match(JSON.stringify(result.outputJson), /implementation\/write tools are blocked/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
