@@ -183,7 +183,8 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-runtime-session.jsonl" ]; then 
     try {
       const home = join(wd, 'home');
       const projectCodexHome = join(wd, '.codex');
-      const previousRuntimeCodexHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime');
+      const previousRuntimeCodexHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime-a');
+      const duplicateRuntimeCodexHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime-b');
       const fakeBin = join(wd, 'bin');
       const fakeCodexPath = join(fakeBin, 'codex');
       const fakePsPath = join(fakeBin, 'ps');
@@ -194,6 +195,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-runtime-session.jsonl" ]; then 
       await mkdir(join(wd, '.omx'), { recursive: true });
       await mkdir(dirname(projectRolloutPath), { recursive: true });
       await mkdir(previousRuntimeCodexHome, { recursive: true });
+      await mkdir(duplicateRuntimeCodexHome, { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
       await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
       await writeFile(projectRolloutPath, '{"type":"session_meta","payload":{"id":"project-session"}}\n');
@@ -202,10 +204,15 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-runtime-session.jsonl" ]; then 
       await symlink(join(projectCodexHome, 'sessions'), join(previousRuntimeCodexHome, 'sessions'), 'dir');
       await symlink(join(projectCodexHome, 'history.jsonl'), join(previousRuntimeCodexHome, 'history.jsonl'));
       await symlink(join(projectCodexHome, 'session_index.jsonl'), join(previousRuntimeCodexHome, 'session_index.jsonl'));
+      await symlink(join(projectCodexHome, 'sessions'), join(duplicateRuntimeCodexHome, 'sessions'), 'dir');
+      await symlink(join(projectCodexHome, 'history.jsonl'), join(duplicateRuntimeCodexHome, 'history.jsonl'));
+      await symlink(join(projectCodexHome, 'session_index.jsonl'), join(duplicateRuntimeCodexHome, 'session_index.jsonl'));
 
       await writeFile(fakeCodexPath, `#!/bin/sh
 printf 'fake-codex:%s\n' "$*"
 printf 'codex-home:%s\n' "$CODEX_HOME"
+printf 'history-lines:%s\n' "$(wc -l < "$CODEX_HOME/history.jsonl")"
+printf 'index-lines:%s\n' "$(wc -l < "$CODEX_HOME/session_index.jsonl")"
 if [ -f "$CODEX_HOME/sessions/2026/06/18/rollout-project-session.jsonl" ]; then echo project-rollout-present=yes; else echo project-rollout-present=no; fi
 `);
       await chmod(fakeCodexPath, 0o755);
@@ -224,6 +231,10 @@ if [ -f "$CODEX_HOME/sessions/2026/06/18/rollout-project-session.jsonl" ]; then 
       assert.doesNotMatch(result.stderr, /EISDIR/);
       assert.match(result.stdout, /fake-codex:resume\b/);
       assert.match(result.stdout, /project-rollout-present=yes/);
+      assert.match(result.stdout, /history-lines:1\b/);
+      assert.match(result.stdout, /index-lines:1\b/);
+      assert.equal(await readFile(join(projectCodexHome, 'history.jsonl'), 'utf-8'), '{"session_id":"project-session"}\n');
+      assert.equal(await readFile(join(projectCodexHome, 'session_index.jsonl'), 'utf-8'), '{"id":"project-session"}\n');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -944,15 +944,19 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
 async function mergeProjectLaunchRuntimeHistoryEntries(
   runtimeCodexHome: string,
   sourceCodexHome: string,
+  mergedHistorySourceRealpaths: Set<string>,
 ): Promise<void> {
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(sourceCodexHome, entryName);
     if (!existsSync(source)) continue;
+    const sourceRealpath = realpathSync(source);
+    if (mergedHistorySourceRealpaths.has(sourceRealpath)) continue;
     const destination = join(runtimeCodexHome, entryName);
     const sourceStat = await stat(source);
     if (sourceStat.isDirectory()) {
       await mkdir(destination, { recursive: true });
       await cp(source, destination, { recursive: true, force: true, dereference: true });
+      mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
     if (entryName === "sessions") continue;
@@ -962,15 +966,18 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
       if (!destinationStat.isFile()) {
         await rm(destination, { recursive: true, force: true });
         await copyFile(source, destination);
+        mergedHistorySourceRealpaths.add(sourceRealpath);
         continue;
       }
       const existing = await readFile(destination, "utf-8").catch(() => "");
       const addition = await readFile(source, "utf-8");
       const separator = existing === "" || existing.endsWith("\n") || addition === "" ? "" : "\n";
       await writeFile(destination, `${existing}${separator}${addition}`, "utf-8");
+      mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
     await copyFile(source, destination);
+    mergedHistorySourceRealpaths.add(sourceRealpath);
   }
 }
 
@@ -1036,9 +1043,14 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
   }
   await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
   if (options.includeHistoryArtifacts === true && (options.extraHistoryCodexHomes?.length ?? 0) > 0) {
+    const mergedHistorySourceRealpaths = new Set<string>();
+    for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+      const source = join(projectCodexHome, entryName);
+      if (existsSync(source)) mergedHistorySourceRealpaths.add(realpathSync(source));
+    }
     await materializeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, projectCodexHome);
     for (const extraCodexHome of options.extraHistoryCodexHomes ?? []) {
-      await mergeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, extraCodexHome);
+      await mergeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, extraCodexHome, mergedHistorySourceRealpaths);
     }
   }
 
