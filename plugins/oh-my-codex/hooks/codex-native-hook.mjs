@@ -162,6 +162,23 @@ function writeStopFallback(stopReason, detail) {
   process.exitCode = 0;
 }
 
+function writeOversizedStopFallback(stopReason, detail) {
+  const reason =
+    'OMX plugin Stop rejected oversized stdin before launcher delegation; continue once with a smaller valid Stop JSON response.';
+  process.stdout.write(`${JSON.stringify({
+    decision: 'block',
+    reason,
+    stopReason,
+    systemMessage: detail ? `${reason} Failure: ${detail}` : reason,
+  })}\n`);
+  process.exitCode = 0;
+}
+
+function writeOversizedStopNoop() {
+  process.stdout.write('{}\n');
+  process.exitCode = 0;
+}
+
 function writeCompactFallback() {
   process.exitCode = 0;
 }
@@ -321,11 +338,6 @@ function parseSingleJsonObjectOutput(raw) {
   }
 }
 
-function writeJsonNoop() {
-  process.stdout.write(`${JSON.stringify({})}\n`);
-  process.exitCode = 0;
-}
-
 async function main() {
   const { input, oversized, totalBytes } = await readBoundedStdin();
   const isStop = detectStopHookInput(input);
@@ -336,10 +348,10 @@ async function main() {
     if (isStop) {
       if (hasActiveAutopilotStateForOversizedStop(input)) {
         console.error(`[oh-my-codex] ${message}`);
-        writeStopFallback('plugin_stop_hook_stdin_oversized_active_workflow', message);
+        writeOversizedStopFallback('plugin_stop_hook_stdin_oversized_active_workflow', message);
         return;
       }
-      writeJsonNoop();
+      writeOversizedStopNoop();
       return;
     }
     console.error(`[oh-my-codex] ${message}`);

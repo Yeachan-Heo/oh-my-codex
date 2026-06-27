@@ -873,7 +873,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("returns empty JSON for oversized Stop stdin without parsing or creating inactive state", async () => {
+  it("emits no-op JSON for oversized Stop stdin without parsing or creating inactive state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-"));
     try {
       const oversizedStop = JSON.stringify({
@@ -916,7 +916,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("does not block oversized Stop stdin for unrelated root autopilot state", async () => {
+  it("emits no-op JSON for oversized Stop stdin for unrelated root autopilot state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-stale-root-"));
     try {
       await writeJson(join(cwd, ".omx", "state", "session.json"), {
@@ -940,7 +940,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("does not block oversized Stop stdin when terminal run-state shadows stale autopilot state", async () => {
+  it("emits no-op JSON for oversized Stop stdin when terminal run-state shadows stale autopilot state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-terminal-run-"));
     try {
       const sessionId = "sess-cli-stop-oversized-terminal-run";

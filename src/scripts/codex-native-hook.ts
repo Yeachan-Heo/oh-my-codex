@@ -5500,6 +5500,10 @@ async function buildOversizedStopActiveWorkflowOutput(cwd: string): Promise<Reco
   };
 }
 
+function buildOversizedStopInactiveWorkflowOutput(): Record<string, unknown> {
+  return {};
+}
+
 async function buildOversizedStdinHookOutput(
   rawHookEventName: CodexHookEventName | null,
   cwd: string,
@@ -5510,7 +5514,7 @@ async function buildOversizedStdinHookOutput(
     return { systemMessage };
   }
   if (rawHookEventName === "Stop") {
-    return await buildOversizedStopActiveWorkflowOutput(cwd) ?? {};
+    return await buildOversizedStopActiveWorkflowOutput(cwd) ?? buildOversizedStopInactiveWorkflowOutput();
   }
   return {
     continue: false,

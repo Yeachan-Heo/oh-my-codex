@@ -710,7 +710,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('allows oversized plugin Stop stdin when no active workflow state is present', async () => {
+  it('emits no-op JSON for oversized plugin Stop stdin when no active workflow state is present', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       const oversizedStop = `{"hook_event_name":"Stop","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
       const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
@@ -761,7 +761,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('allows oversized plugin Stop stdin when terminal Autopilot run-state shadows stale active state', async () => {
+  it('emits no-op JSON for oversized plugin Stop stdin when terminal Autopilot run-state shadows stale active state', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       const sessionId = 'sess-plugin-oversized-terminal-autopilot';
       await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
@@ -801,7 +801,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('lets terminal OMX_ROOT Autopilot state override stale cwd active state for oversized Stop', async () => {
+  it('emits no-op JSON for oversized plugin Stop stdin when terminal OMX_ROOT Autopilot state overrides stale cwd active state', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const sessionId = 'sess-plugin-oversized-omx-root-terminal';
       const omxRoot = join(cacheRoot, 'boxed-root-terminal');
@@ -823,7 +823,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('allows oversized plugin Stop when Autopilot state is active but terminal by phase', async () => {
+  it('emits no-op JSON for oversized plugin Stop stdin when Autopilot state is active but terminal by phase', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       const sessionId = 'sess-plugin-oversized-terminal-phase';
       await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
@@ -839,7 +839,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('ignores stale plugin session state whose cwd does not match oversized Stop cwd', async () => {
+  it('emits no-op JSON when stale plugin session state cwd does not match oversized Stop cwd', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const sessionId = 'sess-plugin-oversized-stale-cwd';
       await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), {
