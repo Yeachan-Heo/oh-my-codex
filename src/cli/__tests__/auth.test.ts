@@ -77,6 +77,40 @@ describe("omx auth CLI", () => {
     }
   });
 
+  it("adds slots through isolated login CODEX_HOME and forwards device auth", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-auth-isolated-add-"));
+    try {
+      const home = join(wd, "home");
+      const codexHome = join(home, ".codex");
+      const bin = join(wd, "bin");
+      const loginEnvFile = join(wd, "login-codex-home.txt");
+      const loginArgsFile = join(wd, "login-args.txt");
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, "auth.json"), '{"access_token":"live-primary"}\n');
+      await writeFakeCodex(bin, `#!/bin/sh
+if [ "$1" = "login" ]; then
+  printf '%s\n' "$CODEX_HOME" > ${JSON.stringify(loginEnvFile)}
+  printf '%s\n' "$*" > ${JSON.stringify(loginArgsFile)}
+  mkdir -p "$CODEX_HOME"
+  printf '{"access_token":"new-secondary"}\n' > "$CODEX_HOME/auth.json"
+  exit 0
+fi
+echo unexpected "$@" >&2
+exit 2
+`);
+      const env = { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` };
+      const add = runOmx(wd, ["auth", "add", "secondary", "--device-auth"], env);
+      assert.equal(add.status, 0, add.stderr);
+      assert.equal(await readFile(join(codexHome, "auth.json"), "utf-8"), '{"access_token":"live-primary"}\n');
+      assert.equal(await readFile(join(home, ".omx", "auth", "secondary.json"), "utf-8"), '{"access_token":"new-secondary"}\n');
+      assert.equal(await readFile(loginArgsFile, "utf-8"), "login --device-auth\n");
+      assert.notEqual((await readFile(loginEnvFile, "utf-8")).trim(), codexHome);
+      assert.doesNotMatch(add.stdout + add.stderr, /live-primary|new-secondary/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("sets subscription Codex defaults when auth add sees empty config", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-auth-defaults-"));
     try {
@@ -119,9 +153,10 @@ describe("omx auth CLI", () => {
       const bin = join(wd, "bin");
       await mkdir(join(wd, ".omx"), { recursive: true });
       await writeFile(join(wd, ".omx", "setup-scope.json"), '{"scope":"project"}\n');
-      const expectedCodexHome = join(await realpath(wd), ".codex");
+      const expectedLiveCodexHome = join(await realpath(wd), ".codex");
+      const loginEnvFile = join(wd, "login-codex-home.txt");
       await writeFakeCodex(bin, `#!/bin/sh
-if [ "$1" = "login" ]; then case "$CODEX_HOME" in ${JSON.stringify(expectedCodexHome)}) mkdir -p "$CODEX_HOME"; printf '{"access_token":"project-secret"}\n' > "$CODEX_HOME/auth.json"; exit 0;; *) echo "wrong CODEX_HOME=$CODEX_HOME" >&2; exit 4;; esac; fi
+if [ "$1" = "login" ]; then printf '%s\n' "$CODEX_HOME" > ${JSON.stringify(loginEnvFile)}; mkdir -p "$CODEX_HOME"; printf '{"access_token":"project-secret"}\n' > "$CODEX_HOME/auth.json"; exit 0; fi
 echo unexpected "$@" >&2
 exit 2
 `);
@@ -130,6 +165,8 @@ exit 2
       assert.equal(add.status, 0, add.stderr);
       assert.doesNotMatch(add.stdout + add.stderr, /project-secret/);
       assert.equal(await readFile(join(home, ".omx", "auth", "project.json"), "utf-8"), '{"access_token":"project-secret"}\n');
+      assert.equal(await readFile(join(expectedLiveCodexHome, "auth.json"), "utf-8"), '{"access_token":"project-secret"}\n');
+      assert.notEqual((await readFile(loginEnvFile, "utf-8")).trim(), expectedLiveCodexHome);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -178,6 +215,44 @@ exit 2
     }
   });
 
+  it("skips invalidated hotswap slots without requiring a rollout session", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-auth-invalidated-hotswap-"));
+    try {
+      const home = join(wd, "home");
+      const codexHome = join(home, ".codex");
+      const authDir = join(home, ".omx", "auth");
+      const bin = join(wd, "bin");
+      const argvFile = join(wd, "argv.log");
+      await mkdir(authDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(authDir, "first.json"), '{"access_token":"first-secret"}\n');
+      await writeFile(join(authDir, "second.json"), '{"access_token":"second-secret"}\n');
+      await writeFile(join(authDir, "slots.json"), JSON.stringify({ version: 1, currentSlot: "first", slots: [
+        { slot: "first", createdAt: "now", updatedAt: "now" },
+        { slot: "second", createdAt: "now", updatedAt: "now" }
+      ] }, null, 2));
+      await writeFakeCodex(bin, `#!/bin/sh
+printf '%s\n' "$*" >> ${JSON.stringify(argvFile)}
+if grep -q first-secret "$CODEX_HOME/auth.json"; then
+  echo 'HTTP 401 token_invalidated refresh_token_invalidated' >&2
+  exit 1
+fi
+grep -q second-secret "$CODEX_HOME/auth.json" || exit 4
+exit 0
+`);
+      const result = runOmx(wd, ["--hotswap", "--direct", "--model", "gpt-review"], { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` });
+      assert.equal(result.status, 0, result.stderr + result.stdout);
+      assert.match(result.stderr, /token invalidated for slot first; rotating to slot second/);
+      const argvLog = await readFile(argvFile, "utf-8");
+      assert.doesNotMatch(argvLog, /resume/);
+      assert.match(argvLog, /--model gpt-review/);
+      assert.equal(await readFile(join(codexHome, "auth.json"), "utf-8"), '{"access_token":"second-secret"}\n');
+      assert.doesNotMatch(result.stderr + result.stdout, /first-secret|second-secret/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("emits one clean error when all hotswap slots are exhausted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-auth-exhausted-"));
     try {
@@ -196,7 +271,7 @@ exit 2
       await writeFakeCodex(bin, `#!/bin/sh\nmkdir -p "$CODEX_HOME/sessions/2026/05/24"\nprintf '{}\\n' > "$CODEX_HOME/sessions/2026/05/24/rollout-session-429.jsonl"\necho 'HTTP 429 quota exceeded' >&2\nexit 1\n`);
       const result = runOmx(wd, ["--hotswap", "--direct"], { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` });
       assert.equal(result.status, 1);
-      const matches = result.stderr.match(/all slots exhausted: first, second/g) ?? [];
+      const matches = result.stderr.match(/all slots exhausted or invalid: first, second/g) ?? [];
       assert.equal(matches.length, 1, result.stderr);
       assert.doesNotMatch(result.stderr + result.stdout, /first-secret|second-secret/);
     } finally {

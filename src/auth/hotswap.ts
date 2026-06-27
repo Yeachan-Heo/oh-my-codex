@@ -62,6 +62,10 @@ export function stripHotswapArg(args: string[]): string[] {
   return args.filter((arg) => arg !== "--hotswap");
 }
 
+function isAuthInvalidationError(stderr: string | undefined): boolean {
+  return /token_invalidated|refresh_token_invalidated|authentication token has been invalidated/i.test(stderr || "");
+}
+
 async function runCodexDirect(
   cwd: string,
   args: string[],
@@ -180,23 +184,34 @@ export async function runAuthHotswap(options: HotswapOptions): Promise<number> {
       process.stderr.write(`[omx auth] using slot ${currentSlot}\n`);
       const result = await runCodexDirect(cwd, attemptArgs, baseEnv);
       if (result.status === 0) return 0;
-      if (!isQuotaError({ status: result.status, signal: result.signal, stderr: result.stderr }, config)) {
+      const authInvalid = isAuthInvalidationError(result.stderr);
+      const quota = isQuotaError({ status: result.status, signal: result.signal, stderr: result.stderr }, config);
+      if (!quota && !authInvalid) {
         return result.status || 1;
       }
 
-      await markSlotQuota(currentSlot, home);
+      if (quota) await markSlotQuota(currentSlot, home);
       exhausted.add(currentSlot);
       if (plan.mode === "manual") {
+        const reason = authInvalid ? "token invalidated" : "quota detected";
         process.stderr.write(
-          `[omx auth] quota detected for slot ${currentSlot}; rotation=manual, run \`omx auth use <slot>\` to switch accounts.\n`,
+          `[omx auth] ${reason} for slot ${currentSlot}; rotation=manual, run \`omx auth use <slot>\` or \`omx auth add ${currentSlot} --device-auth\`.\n`,
         );
         return 1;
       }
 
       const next = nextSlotAfter(plan.order, currentSlot, exhausted);
       if (!next) {
-        process.stderr.write(`[omx auth] all slots exhausted: ${[...exhausted].join(", ")}\n`);
+        process.stderr.write(`[omx auth] all slots exhausted or invalid: ${[...exhausted].join(", ")}\n`);
         return 1;
+      }
+      if (authInvalid) {
+        process.stderr.write(
+          `[omx auth] token invalidated for slot ${currentSlot}; rotating to slot ${next}. Refresh it later with \`omx auth add ${currentSlot} --device-auth\`.\n`,
+        );
+        currentSlot = next;
+        await useSlot(currentSlot, liveAuthPath, home);
+        continue;
       }
       const latest = await findLatestRolloutSession(codexHomeFromAuthPath(liveAuthPath), home);
       if (!latest) {
