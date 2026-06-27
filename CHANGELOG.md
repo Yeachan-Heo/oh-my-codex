@@ -10,7 +10,7 @@ Patch release for the post-`0.18.15` diagnostics and stale-state hardening train
 
 ### Changed
 
-- **Local session friction reporting is available** — `omx session search` can surface local run/session friction signals so resume and debugging workflows have more actionable history.
+- **Local session friction reporting is available** — `omx session friction` can surface local run/session friction signals so resume and debugging workflows have more actionable history.
 
 ### Fixed
 
@@ -24,6 +24,19 @@ Patch release for the post-`0.18.15` diagnostics and stale-state hardening train
 ### Verification
 
 - Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.16.md`.
+
+## [0.18.15] - 2026-06-25
+
+Patch release for the post-`0.18.14` goal/runtime reliability train: completed-goal cleanup, state-path handling, guided autoresearch intake, MCP parity coverage, and native-hook resilience were tightened before the `0.18.16` follow-up train.
+
+### Fixed
+
+- **Goal and hook cleanup is sturdier** — completed-goal cleanup and native-hook handling are hardened for follow-up workflow runs.
+- **State path and autoresearch coverage is broader** — MCP state-path tests and guided autoresearch intake checks protect the release train.
+
+### Verification
+
+- `v0.18.15` was published from commit `e9e3bcc7` and superseded by the `0.18.16` release train.
 
 ## [0.18.14] - 2026-06-20
 

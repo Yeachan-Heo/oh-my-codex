@@ -60,23 +60,24 @@ Commands are run from `/Users/bellman/Documents/Workspace/oh-my-codex` on branch
 - [x] `npm run sync:plugin` — PASS (plugin mirror synced).
 - [x] `npm run verify:plugin-bundle` — PASS.
 - [x] `node dist/scripts/generate-catalog-docs.js --check` — PASS (`catalog check ok`).
-- [ ] `node dist/scripts/generate-release-body.js --template RELEASE_BODY.md --out /tmp/RELEASE_BODY.0.18.16.generated.md --current-tag v0.18.16 --previous-tag v0.18.15 --repo Yeachan-Heo/oh-my-codex` — pending until the release tag/ref exists; the pre-tag attempt correctly failed with `unable to verify current tag ref for release compare: v0.18.16`.
+- [x] `node dist/scripts/generate-release-body.js --template RELEASE_BODY.md --out /tmp/RELEASE_BODY.0.18.16.generated.md --current-tag v0.18.16 --previous-tag v0.18.15 --repo Yeachan-Heo/oh-my-codex` — PASS after annotated tag `v0.18.16` existed; compare range validated.
 - [x] `npm pack --dry-run` — PASS (`oh-my-codex-0.18.16.tgz`, package size `4.1 MB`, unpacked size `26.1 MB`, `3133` files).
 - [x] `git diff --check` — PASS.
 
 ## Publication-stage validation
 
-- [ ] `dev` CI is green for the release-prep commit.
-- [ ] `main` CI is green after promotion.
-- [ ] Annotated tag `v0.18.16` points to the intended shipped commit.
-- [ ] Tag-triggered release workflow succeeds.
-- [ ] GitHub release `v0.18.16` exists and is non-draft/non-prerelease.
-- [ ] Native assets and manifest are attached.
-- [ ] `npm view oh-my-codex version` returns `0.18.16` and `latest` points to `0.18.16`.
+- [x] `dev` CI is green for the release-prep commit — PASS, run `28283649706` for `af0bfaabd23218ea74d8d3bf340f8e87ed7c12e3`.
+- [x] `main` CI is green after promotion — PASS, run `28283788554` for `851e7fc786ed81f295784dda50fb12468953a9ba`.
+- [x] Annotated tag `v0.18.16` points to the intended shipped commit — PASS, tag object `642bcbf759045a4f818283f523203e8999f9c7ba`, peeled commit `851e7fc786ed81f295784dda50fb12468953a9ba`.
+- [x] Tag-triggered release workflow succeeds — PASS, Release workflow run `28283919334` completed successfully for `v0.18.16` / `851e7fc786ed81f295784dda50fb12468953a9ba`.
+- [x] GitHub release `v0.18.16` exists and is non-draft/non-prerelease — PASS, public release page reports `v0.18.16` as latest.
+- [x] Native assets and manifest are attached — PASS, release workflow `28283919334` completed `Publish Native Assets` and `Smoke Verify Native Assets` successfully; public release page shows assets.
+- [x] `npm view oh-my-codex version` returns `0.18.16` and `latest` points to `0.18.16` — PASS (`{"version":"0.18.16","dist-tags":{"latest":"0.18.16"}}`).
+- [x] Final `dev` fast-forward after publication is green — PASS, the shipped artifact commit is `851e7fc786ed81f295784dda50fb12468953a9ba`; after the docs-only post-publication correction, `origin/dev` and `origin/main` align at correction commit `273581583f01d0b2048f188191c5d3b5e0f675b4`; public CI badge for branch `dev` reports `CI - passing`.
 
-## Known gaps before publication
+## Post-publication correction
 
-Publication-stage gates remain pending until the candidate is committed, promoted, tagged, and published.
+An independent final review found release-collateral audit drift after publication: readiness checkboxes still described pre-publication state, the friction command was named too broadly, and `CHANGELOG.md` skipped a `0.18.15` continuity entry. This correction updates only release collateral and the existing GitHub release body; it does not move the published npm/tag artifact.
 
 ## Release collateral
 

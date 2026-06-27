@@ -1,12 +1,12 @@
 # oh-my-codex 0.18.16
 
-> Draft status: release-prep PR body source before tagging. Keep publication proof updates in `docs/qa/release-readiness-0.18.16.md` after PR CI, tag workflow, GitHub release creation, and npm publication.
+> Release status: published. Publication proof is recorded in `docs/qa/release-readiness-0.18.16.md`, including dev/main CI, tag workflow, GitHub release, native asset, and npm `latest` evidence.
 
 `0.18.16` is a patch release after `0.18.15` focused on local-session diagnostics, stale HUD/Ralph guard cleanup, and safer doctor artifact ownership warnings. It preserves the existing CLI/package contract while tightening developer-facing failure reporting and stale-state behavior from the current `origin/dev` delta.
 
 ## Highlights
 
-- **Local session friction reporting is available** — `omx session search` can surface local run/session friction signals so resume and debugging workflows have more actionable history.
+- **Local session friction reporting is available** — `omx session friction` can surface local run/session friction signals so resume and debugging workflows have more actionable history.
 - **Stale HUD and Ralph continuation state is guarded** — HUD review status and Ralph Stop continuation handling avoid carrying stale review/stop signals across later workflow phases.
 - **Doctor artifact ownership diagnostics are safer** — `omx doctor` detects root-owned repository artifacts more clearly without over-warning on normal local files.
 
@@ -28,7 +28,7 @@
 
 Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.16.md`.
 
-Release-prep gates include version sync for `v0.18.16`, build, native-agent verification, plugin mirror/bundle checks, catalog docs check, targeted regression tests for doctor/session-search/HUD/native-hook/session friction, `npm pack --dry-run`, and `git diff --check`. Branch CI, dev/main promotion, tag-triggered release workflow, GitHub release proof, and npm publication proof remain publication-stage gates.
+Release-prep gates include version sync for `v0.18.16`, build, native-agent verification, plugin mirror/bundle checks, catalog docs check, targeted regression tests for doctor/session-search/HUD/native-hook/session friction, `npm pack --dry-run`, and `git diff --check`. Branch CI, dev/main promotion, tag-triggered release workflow, GitHub release proof, and npm publication proof are recorded in the readiness evidence.
 
 ## Contributors
 
