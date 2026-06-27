@@ -112,7 +112,6 @@ function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
   preferredReasoning?: TeamReasoningEffort;
   actualLaunchArgs: string[];
   requestedAgentType?: string;
-  honorExactRoleModel?: boolean;
 }): ResolvedTeamWorkerLaunchDiagnostics {
   const envModel = normalizeOptionalModel(params.envParsed.modelOverride);
   const inheritedModel = normalizeOptionalModel(params.inheritedParsed.modelOverride);
@@ -122,17 +121,24 @@ function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
   const explicitReasoning = extractReasoningEffort(
     params.envParsed.reasoningOverride ?? params.inheritedParsed.reasoningOverride,
   );
-  const honorsExactRoleModel = params.honorExactRoleModel === true && Boolean(fallbackModel) && !envModel;
+  const selectedModel = normalizeOptionalModel(actualParsed.modelOverride);
 
   return {
     requestedAgentType: params.requestedAgentType,
     requestedDefaultModel: fallbackModel,
     requestedDefaultReasoning,
-    actualModel: normalizeOptionalModel(actualParsed.modelOverride),
+    actualModel: selectedModel,
     actualReasoning: extractReasoningEffort(actualParsed.reasoningOverride),
-    modelSource: envModel ? 'env' : honorsExactRoleModel ? 'fallback' : inheritedModel ? 'inherited' : fallbackModel ? 'fallback' : 'none',
+    modelSource:
+      selectedModel && envModel && selectedModel === envModel && (!inheritedModel || envModel !== inheritedModel)
+        ? 'env'
+        : selectedModel && inheritedModel && selectedModel === inheritedModel
+          ? 'inherited'
+          : selectedModel
+            ? 'fallback'
+            : 'none',
     reasoningSource: explicitReasoning ? 'explicit' : requestedDefaultReasoning ? 'role-default' : 'none',
-    inheritedParentModel: !honorsExactRoleModel && !envModel && Boolean(inheritedModel),
+    inheritedParentModel: Boolean(inheritedModel) && Boolean(selectedModel) && selectedModel === inheritedModel,
     actualLaunchArgs: [...params.actualLaunchArgs],
   };
 }
@@ -260,7 +266,7 @@ function selectTeamWorkerModel(params: {
   const inheritedModel = normalizeOptionalModel(params.inheritedModel);
   const fallbackModel = normalizeOptionalModel(params.fallbackModel);
   if (envModel && envModel !== inheritedModel) return envModel;
-  if (params.honorExactRoleModel) return params.fallbackModel;
+  if (params.honorExactRoleModel && fallbackModel) return fallbackModel;
   return envModel ?? inheritedModel ?? fallbackModel;
 }
 
@@ -300,7 +306,6 @@ export function resolveTeamWorkerLaunchDiagnostics(
     preferredReasoning: options.preferredReasoning,
     actualLaunchArgs,
     requestedAgentType: options.requestedAgentType,
-    honorExactRoleModel: shouldHonorExactRoleModel(options),
   });
 }
 

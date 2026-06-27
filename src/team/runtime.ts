@@ -13,7 +13,6 @@ import {
   scrubTeamWorkerHudOwnershipEnv,
   resolveTeamWorkerCli,
   type TeamWorkerCli,
-  resolveTeamWorkerCliPlan,
   resolveTeamWorkerLaunchMode,
   type TeamSession,
   waitForWorkerReady,
@@ -1630,6 +1629,7 @@ const PROMPT_WORKER_EXIT_POLL_MS = 100;
 const STARTUP_DISPATCH_RETRIES = 3;
 const STARTUP_DISPATCH_RETRY_DELAY_S = 3;
 const PROMPT_MODE_CODEX_UNSUPPORTED_REASON = 'prompt_mode_codex_requires_tty';
+const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
 // Test-only escape hatch for fake prompt workers that intentionally do not require a real TTY.
 const PROMPT_MODE_CODEX_TEST_ALLOW_ENV = 'OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT';
 
@@ -2333,11 +2333,12 @@ export function resolveWorkerLaunchArgsFromEnv(
   const inheritedFromEnv = typeof env[TEAM_WORKER_INHERITED_MODEL_ENV] === 'string'
     ? env[TEAM_WORKER_INHERITED_MODEL_ENV]?.trim()
     : undefined;
-  const inheritedArgs = (typeof inheritedLeaderModel === 'string' && inheritedLeaderModel.trim() !== '')
-    ? ['--model', inheritedLeaderModel.trim()]
-    : inheritedFromEnv
-      ? ['--model', inheritedFromEnv]
-      : [];
+  const effectiveInheritedModel = typeof inheritedLeaderModel === 'string' && inheritedLeaderModel.trim() !== ''
+    ? inheritedLeaderModel.trim()
+    : inheritedFromEnv;
+  const inheritedArgs = effectiveInheritedModel
+    ? ['--model', effectiveInheritedModel]
+    : [];
   const fallbackModel = resolveAgentDefaultModel(agentType, env.CODEX_HOME);
   const diagnostics = resolveTeamWorkerLaunchDiagnostics({
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,
@@ -2398,6 +2399,63 @@ function resolveEffectiveWorkerCliForStartupLog(
   }
 
   return resolveTeamWorkerCli(resolvedLaunchArgs, env);
+}
+
+export function resolveTeamWorkerCliForResolvedLaunchArgs(
+  workerIndex: number,
+  workerCount: number,
+  resolvedLaunchArgs: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): TeamWorkerCli {
+  if (!Number.isInteger(workerCount) || workerCount < 1) {
+    throw new Error(`workerCount must be >= 1 (got ${workerCount})`);
+  }
+  if (!Number.isInteger(workerIndex) || workerIndex < 1 || workerIndex > workerCount) {
+    throw new Error(`workerIndex must be within 1..${workerCount} (got ${workerIndex})`);
+  }
+
+  const rawMap = String(env.OMX_TEAM_WORKER_CLI_MAP ?? '').trim();
+  const autoCli = resolveTeamWorkerCli(resolvedLaunchArgs, {
+    ...env,
+    OMX_TEAM_WORKER_CLI: 'auto',
+  });
+  const normalizeEntry = (entry: string): TeamWorkerCli | 'auto' | null => {
+    const normalized = entry.trim().toLowerCase();
+    if (normalized === 'auto' || normalized === 'codex' || normalized === 'claude' || normalized === 'gemini') {
+      return normalized;
+    }
+    return null;
+  };
+  const invalidMapError = () => new Error(
+    `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
+      + `Expected comma-separated values: auto|codex|claude|gemini.`,
+  );
+
+  if (rawMap === '') {
+    return resolveTeamWorkerCli(resolvedLaunchArgs, env);
+  }
+
+  const entries = rawMap.split(',').map((part) => part.trim());
+  if (entries.length === 0 || entries.every((part) => part.length === 0)) {
+    throw invalidMapError();
+  }
+  if (entries.some((part) => part.length === 0)) {
+    throw new Error(
+      `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
+        + `Empty entries are not allowed.`,
+    );
+  }
+  if (entries.length !== 1 && entries.length !== workerCount) {
+    throw new Error(
+      `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} length ${entries.length}; `
+        + `expected 1 or ${workerCount} comma-separated values.`,
+    );
+  }
+
+  const entry = entries.length === 1 ? entries[0] as string : entries[workerIndex - 1];
+  const mode = normalizeEntry(entry);
+  if (!mode) throw invalidMapError();
+  return mode === 'auto' ? autoCli : mode;
 }
 
 
@@ -2594,10 +2652,6 @@ export async function startTeam(
     existingRaw: launchEnv.OMX_TEAM_WORKER_LAUNCH_ARGS,
     fallbackModel: resolveAgentDefaultModel(agentType, codexHomeOverride),
   });
-  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, sharedWorkerLaunchArgs, launchEnv);
-  if (workerLaunchMode === 'prompt') {
-    assertPromptModeWorkerCliSupported(workerCliPlan);
-  }
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(launchEnv);
   const workerStartupEvidenceTimeoutMs = resolveWorkerStartupEvidenceTimeoutMs(
     launchEnv,
@@ -2738,6 +2792,7 @@ export async function startTeam(
       workerLaunchArgs: string[];
       workerCli: TeamWorkerCli;
     }>;
+    const workerCliPlan: TeamWorkerCli[] = [];
 
     for (let i = 1; i <= workerCount; i++) {
       const workerName = `worker-${i}`;
@@ -2758,8 +2813,8 @@ export async function startTeam(
         runtimeRole,
         undefined,
         preferredReasoning,
-        workerCliPlan[i - 1],
       );
+      const workerCli = resolveTeamWorkerCliForResolvedLaunchArgs(i, workerCount, workerLaunchArgs, launchEnv);
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
         ? composeRoleInstructionsForRole(runtimeRole, rawRolePromptContent, resolvedWorkerModel)
@@ -2798,10 +2853,11 @@ export async function startTeam(
         resolveInstructionStateRoot(workerWorkspace.worktreePath),
       );
       const trigger = triggerDirective.text;
-      const initialPrompt = workerCliPlan[i - 1] === 'gemini' ? trigger : undefined;
+      const initialPrompt = workerCli === 'gemini' ? trigger : undefined;
       if (initialPrompt) {
         await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
       }
+      workerCliPlan.push(workerCli);
       workerBootstrapPlans.push({
         workerName,
         workerWorkspace,
@@ -2814,8 +2870,11 @@ export async function startTeam(
         triggerIntent: triggerDirective.intent,
         initialPrompt,
         workerLaunchArgs,
-        workerCli: workerCliPlan[i - 1],
+        workerCli,
       });
+    }
+    if (workerLaunchMode === 'prompt') {
+      assertPromptModeWorkerCliSupported(workerCliPlan);
     }
 
     const workerStartups = workerBootstrapPlans.map((plan) => {

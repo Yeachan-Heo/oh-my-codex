@@ -92,17 +92,19 @@ const MODEL_CLASS_OVERLAYS: Record<AgentDefinition["modelClass"], string> = {
   ].join("\n"),
 };
 
-const EXACT_MINI_MODEL_OVERLAY = [
-  "<exact_model_guidance>",
-  "",
-  `This role is executing under the exact ${EXACT_GPT_5_4_MINI_MODEL} model.`,
-  "- Use a strict execution order: inspect -> plan -> act -> verify.",
-  "- Treat completion criteria as explicit: only report done after the requested work is implemented and fresh verification passes.",
-  "- If requirements are ambiguous or a blocker appears, state the blocker plainly and stop guessing until the missing decision is resolved.",
-  "- Do not bluff, pad, or invent results; report missing evidence and incomplete work honestly.",
-  "",
-  "</exact_model_guidance>",
-].join("\n");
+function buildExactModelOverlay(exactModel: string): string {
+  return [
+    "<exact_model_guidance>",
+    "",
+    `This role is executing under the exact ${exactModel} model.`,
+    "- Use a strict execution order: inspect -> plan -> act -> verify.",
+    "- Treat completion criteria as explicit: only report done after the requested work is implemented and fresh verification passes.",
+    "- If requirements are ambiguous or a blocker appears, state the blocker plainly and stop guessing until the missing decision is resolved.",
+    "- Do not bluff, pad, or invent results; report missing evidence and incomplete work honestly.",
+    "",
+    "</exact_model_guidance>",
+  ].join("\n");
+}
 
 const NATIVE_SUBAGENT_LEAF_GUARD = [
   "<native_subagent_leaf_guard>",
@@ -134,6 +136,7 @@ interface RoleInstructionMetadata {
   modelClass: AgentDefinition["modelClass"];
   routingRole: AgentDefinition["routingRole"];
   nativeSubagentDelegation?: AgentDefinition["nativeSubagentDelegation"];
+  exactModel?: AgentDefinition["exactModel"];
 }
 
 interface ComposeRoleInstructionsOptions {
@@ -208,10 +211,6 @@ function shouldInheritRootModelProvider(
   return resolvedModel !== getSparkDefaultModel(options.codexHomeOverride);
 }
 
-function isExactMiniModel(resolvedModel?: string | null): boolean {
-  return resolvedModel?.trim() === EXACT_GPT_5_4_MINI_MODEL;
-}
-
 export function composeRoleInstructions(
   promptContent: string,
   metadata: RoleInstructionMetadata | null,
@@ -230,8 +229,10 @@ export function composeRoleInstructions(
     );
   }
 
-  if (isExactMiniModel(resolvedModel)) {
-    parts.push("", EXACT_MINI_MODEL_OVERLAY);
+  const exactModel = metadata?.exactModel
+    ?? (resolvedModel?.trim() === EXACT_GPT_5_4_MINI_MODEL ? EXACT_GPT_5_4_MINI_MODEL : undefined);
+  if (exactModel && resolvedModel?.trim() === exactModel) {
+    parts.push("", buildExactModelOverlay(exactModel));
   }
 
   if (options.nativeAgent === true && metadata?.nativeSubagentDelegation !== "allowed") {
@@ -276,10 +277,11 @@ export function composeRoleInstructionsForRole(
       ? {
           name: agent.name,
           posture: agent.posture,
-          modelClass: agent.modelClass,
-          routingRole: agent.routingRole,
-          nativeSubagentDelegation: agent.nativeSubagentDelegation,
-        }
+      modelClass: agent.modelClass,
+      routingRole: agent.routingRole,
+      nativeSubagentDelegation: agent.nativeSubagentDelegation,
+      exactModel: agent.exactModel,
+    }
       : null,
     resolvedModel,
   );

@@ -3989,7 +3989,7 @@ export function buildDetachedSessionBootstrapSteps(
   env: NodeJS.ProcessEnv = process.env,
   sqliteHomeOverride?: string,
   parentEnvFilePath?: string,
-  inheritedWorkerModel?: string,
+  inheritedWorkerModel?: string | null,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
@@ -4032,12 +4032,7 @@ export function buildDetachedSessionBootstrapSteps(
     sessionName,
     "-c",
     cwd,
-    ...(workerLaunchArgs
-      ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
-      : []),
-    ...(inheritedWorkerModel
-      ? ["-e", `${TEAM_WORKER_INHERITED_MODEL_ENV}=${inheritedWorkerModel}`]
-      : []),
+    ...(workerLaunchArgs ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
     ...Object.entries(hudRuntimeEnv).map(([key, value]) => ["-e", `${key}=${value}`]).flat(),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(sqliteHomeOverride ? ["-e", `${CODEX_SQLITE_HOME_ENV}=${sqliteHomeOverride}`] : []),
@@ -4046,6 +4041,7 @@ export function buildDetachedSessionBootstrapSteps(
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
       : []),
+    ...(inheritedWorkerModel ? ["-e", `${TEAM_WORKER_INHERITED_MODEL_ENV}=${inheritedWorkerModel}`] : []),
     detachedLeaderCmd,
   ];
   const splitCaptureArgs: string[] = [
@@ -4840,10 +4836,10 @@ function runCodex(
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
     : buildTmuxPaneCommand("env", [...hudEnvArgs, "node", omxBin, "hud", "--watch"]);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== "0";
-  const inheritedWorkerArgs = inheritLeaderFlags
+  const inheritedWorkerLaunchArgs = inheritLeaderFlags
     ? collectInheritableTeamWorkerArgsShared(launchArgs)
     : [];
-  const inheritedWorkerModel = parseTeamWorkerLaunchArgs(inheritedWorkerArgs).modelOverride ?? undefined;
+  const inheritedWorkerModel = parseTeamWorkerLaunchArgs(inheritedWorkerLaunchArgs).modelOverride ?? undefined;
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
     launchArgs,
