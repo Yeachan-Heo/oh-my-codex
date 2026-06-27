@@ -3543,9 +3543,6 @@ async function readActiveDeepInterviewStateForPreToolUse(
   const autopilotMode = safeString(autopilotState.mode).trim();
   if (autopilotMode && autopilotMode !== "autopilot") return null;
   if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId)) return null;
-  const terminalAutopilotRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, "autopilot");
-  if (terminalAutopilotRunState) return null;
-
   const autopilotStatePhase = safeString(autopilotState.current_phase ?? autopilotState.currentPhase).trim().toLowerCase();
   const autopilotIsDeepInterview = normalizeAutopilotPhase(autopilotStatePhase) === "deep-interview";
   const hasDeepInterviewScopedAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
@@ -3591,8 +3588,6 @@ async function readActiveRalplanStateForPreToolUse(
   const autopilotMode = safeString(autopilotState.mode).trim();
   if (autopilotMode && autopilotMode !== "autopilot") return null;
   if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId)) return null;
-  const terminalAutopilotRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, "autopilot");
-  if (terminalAutopilotRunState) return null;
   if (!canonicalState) return null;
   const hasActiveAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
     entry.skill === "autopilot"

@@ -776,6 +776,58 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("blocks deep-interview PreToolUse implementation writes when terminal Autopilot run-state shadows stale active state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-terminal-pretool-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-deep-interview-terminal-pretool";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "run-state.json"), {
+        version: 1,
+        active: false,
+        mode: "autopilot",
+        outcome: "finish",
+        lifecycle_outcome: "finished",
+        current_phase: "complete",
+        completed_at: "2026-05-30T00:00:00.000Z",
+        updated_at: "2026-05-30T00:00:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-deep-interview-terminal-pretool",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Deep-interview is active \(phase: intent-first\)/);
+      assert.match(JSON.stringify(result.outputJson), /implementation\/write tools are blocked/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("emits parseable no-op JSON stdout for inactive Stop CLI runs", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-noop-json-"));
     try {
@@ -16548,7 +16600,7 @@ exit 0
     }
   });
 
-  it("allows implementation writes when terminal Autopilot run-state shadows stale supervised ralplan state", async () => {
+  it("blocks implementation writes when terminal Autopilot run-state shadows stale supervised ralplan state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-terminal-pretool-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -16592,7 +16644,9 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "pre-tool-use");
-      assert.equal(result.outputJson, null);
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Ralplan is active \(phase: ralplan\)/);
+      assert.match(JSON.stringify(result.outputJson), /implementation\/write tools are blocked/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -16953,7 +17007,7 @@ exit 0
     }
   });
 
-  it("allows mapped implementation writes when terminal Autopilot run-state shadows stale supervised ralplan state", async () => {
+  it("blocks mapped implementation writes when terminal Autopilot run-state shadows stale supervised ralplan state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-native-map-terminal-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -16991,7 +17045,9 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "pre-tool-use");
-      assert.equal(result.outputJson, null);
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Ralplan is active \(phase: planning\)/);
+      assert.match(JSON.stringify(result.outputJson), /implementation\/write tools are blocked/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
