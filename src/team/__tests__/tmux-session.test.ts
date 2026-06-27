@@ -62,6 +62,11 @@ import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '
 import * as tmuxSessionModule from '../tmux-session.js';
 import { OMX_ENTRY_PATH_ENV, OMX_STARTUP_CWD_ENV } from '../../utils/paths.js';
 
+const fsMutable = fs as typeof fs & {
+  existsSync: typeof fs.existsSync;
+  statSync: typeof fs.statSync;
+};
+
 function withEmptyPath<T>(fn: () => T): T {
   const prev = process.env.PATH;
   process.env.PATH = '';
@@ -74,25 +79,25 @@ function withEmptyPath<T>(fn: () => T): T {
 }
 
 function withMockedExistsSync<T>(mock: typeof fs.existsSync, fn: () => T): T {
-  const original = fs.existsSync;
-  fs.existsSync = mock;
+  const original = fsMutable.existsSync;
+  fsMutable.existsSync = mock;
   syncBuiltinESMExports();
   try {
     return fn();
   } finally {
-    fs.existsSync = original;
+    fsMutable.existsSync = original;
     syncBuiltinESMExports();
   }
 }
 
 function withMockedStatSync<T>(mock: typeof fs.statSync, fn: () => T): T {
-  const original = fs.statSync;
-  fs.statSync = mock;
+  const original = fsMutable.statSync;
+  fsMutable.statSync = mock;
   syncBuiltinESMExports();
   try {
     return fn();
   } finally {
-    fs.statSync = original;
+    fsMutable.statSync = original;
     syncBuiltinESMExports();
   }
 }
