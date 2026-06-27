@@ -710,13 +710,15 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('allows oversized plugin Stop stdin when no active workflow state is present', async () => {
+  it('blocks oversized plugin Stop stdin with fallback JSON when no active workflow state is present', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       const oversizedStop = `{"hook_event_name":"Stop","padding":"${'x'.repeat(1024 * 1024 + 1)}`;
       const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_inactive_workflow');
     });
   });
 
@@ -761,7 +763,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('allows oversized plugin Stop stdin when terminal Autopilot run-state shadows stale active state', async () => {
+  it('blocks oversized plugin Stop stdin with fallback JSON when terminal Autopilot run-state shadows stale active state', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       const sessionId = 'sess-plugin-oversized-terminal-autopilot';
       await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
@@ -778,7 +780,9 @@ head -c 1100000 /dev/zero | tr '\0' x
       const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_inactive_workflow');
     });
   });
 
@@ -801,7 +805,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
-  it('lets terminal OMX_ROOT Autopilot state override stale cwd active state for oversized Stop', async () => {
+  it('blocks oversized plugin Stop stdin with fallback JSON when terminal OMX_ROOT Autopilot state overrides stale cwd active state', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const sessionId = 'sess-plugin-oversized-omx-root-terminal';
       const omxRoot = join(cacheRoot, 'boxed-root-terminal');
@@ -819,11 +823,13 @@ head -c 1100000 /dev/zero | tr '\0' x
       const result = runPluginNativeHook(cachePluginRoot, oversizedStop, { OMX_ROOT: omxRoot });
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_inactive_workflow');
     });
   });
 
-  it('allows oversized plugin Stop when Autopilot state is active but terminal by phase', async () => {
+  it('blocks oversized plugin Stop stdin with fallback JSON when Autopilot state is active but terminal by phase', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       const sessionId = 'sess-plugin-oversized-terminal-phase';
       await writeJson(join(cachePluginRoot, '.omx', 'state', 'session.json'), { session_id: sessionId });
@@ -835,7 +841,9 @@ head -c 1100000 /dev/zero | tr '\0' x
       const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_inactive_workflow');
     });
   });
 
@@ -854,7 +862,9 @@ head -c 1100000 /dev/zero | tr '\0' x
       const result = runPluginNativeHook(cachePluginRoot, oversizedStop);
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_stdin_oversized_inactive_workflow');
     });
   });
 

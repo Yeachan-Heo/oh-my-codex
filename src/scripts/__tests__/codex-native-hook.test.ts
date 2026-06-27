@@ -821,7 +821,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("returns empty JSON for oversized Stop stdin without parsing or creating inactive state", async () => {
+  it("blocks oversized Stop stdin without parsing or creating inactive state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-"));
     try {
       const oversizedStop = JSON.stringify({
@@ -832,7 +832,14 @@ describe("codex native hook dispatch", () => {
       });
 
       const stdout = runNativeHookCli(oversizedStop, { cwd });
-      assert.deepEqual(parseSingleJsonStdout(stdout), {});
+      const output = parseSingleJsonStdout(stdout) as {
+        decision?: string;
+        stopReason?: string;
+        systemMessage?: string;
+      };
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "native_stop_stdin_oversized_inactive_workflow");
+      assert.match(String(output.systemMessage ?? ""), /could not confirm an active workflow/);
       assert.equal(existsSync(join(cwd, ".omx", "state")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -864,7 +871,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("does not block oversized Stop stdin for unrelated root autopilot state", async () => {
+  it("blocks oversized Stop stdin for unrelated root autopilot state with inactive-workflow fallback", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-stale-root-"));
     try {
       await writeJson(join(cwd, ".omx", "state", "session.json"), {
@@ -881,14 +888,19 @@ describe("codex native hook dispatch", () => {
         transcript: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1),
       });
 
-      assert.deepEqual(parseSingleJsonStdout(runNativeHookCli(oversizedStop, { cwd })), {});
+      const output = parseSingleJsonStdout(runNativeHookCli(oversizedStop, { cwd })) as {
+        decision?: string;
+        stopReason?: string;
+      };
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "native_stop_stdin_oversized_inactive_workflow");
       assert.equal(existsSync(join(cwd, ".omx", "logs")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("does not block oversized Stop stdin when terminal run-state shadows stale autopilot state", async () => {
+  it("blocks oversized Stop stdin when terminal run-state shadows stale autopilot state with inactive-workflow fallback", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-oversized-terminal-run-"));
     try {
       const sessionId = "sess-cli-stop-oversized-terminal-run";
@@ -909,7 +921,12 @@ describe("codex native hook dispatch", () => {
         transcript: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1),
       });
 
-      assert.deepEqual(parseSingleJsonStdout(runNativeHookCli(oversizedStop, { cwd })), {});
+      const output = parseSingleJsonStdout(runNativeHookCli(oversizedStop, { cwd })) as {
+        decision?: string;
+        stopReason?: string;
+      };
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "native_stop_stdin_oversized_inactive_workflow");
       assert.equal(existsSync(join(cwd, ".omx", "logs")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });

@@ -5505,6 +5505,17 @@ async function buildOversizedStopActiveWorkflowOutput(cwd: string): Promise<Reco
   };
 }
 
+function buildOversizedStopInactiveWorkflowOutput(): Record<string, unknown> {
+  const reason =
+    "OMX native Stop rejected oversized stdin before parsing and could not confirm an active workflow; continue once with a smaller valid Stop JSON response.";
+  return {
+    decision: "block",
+    reason,
+    stopReason: "native_stop_stdin_oversized_inactive_workflow",
+    systemMessage: reason,
+  };
+}
+
 async function buildOversizedStdinHookOutput(
   rawHookEventName: CodexHookEventName | null,
   cwd: string,
@@ -5515,7 +5526,7 @@ async function buildOversizedStdinHookOutput(
     return { systemMessage };
   }
   if (rawHookEventName === "Stop") {
-    return await buildOversizedStopActiveWorkflowOutput(cwd) ?? {};
+    return await buildOversizedStopActiveWorkflowOutput(cwd) ?? buildOversizedStopInactiveWorkflowOutput();
   }
   return {
     continue: false,
