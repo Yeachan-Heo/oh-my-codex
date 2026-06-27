@@ -611,9 +611,9 @@ describe('runtime', () => {
   it('resolveWorkerLaunchArgsFromEnv keeps planner on exact gpt-5.5 high when leader is mini', () => {
     withIsolatedDefaultModelEnv(() => {
       const args = resolveWorkerLaunchArgsFromEnv(
-        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini' },
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox' },
         'planner',
-        undefined,
+        'gpt-5.4-mini',
         'high',
         'codex',
       );
@@ -643,6 +643,19 @@ describe('runtime', () => {
     assert.deepEqual(
       resolveWorkerLaunchArgsFromEnv({ OMX_TEAM_WORKER_LAUNCH_ARGS: '--model=gpt-5.3' }, 'explore'),
       ['--model', 'gpt-5.3'],
+    );
+  });
+
+  it('resolveWorkerLaunchArgsFromEnv preserves explicit env model before planner exact model', () => {
+    assert.deepEqual(
+      resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--model explicit-worker-model' },
+        'planner',
+        'gpt-5.4-mini',
+        'high',
+        'codex',
+      ),
+      ['-c', 'model_reasoning_effort="high"', '--model', 'explicit-worker-model'],
     );
   });
 

@@ -248,6 +248,39 @@ describe('team model contract', () => {
       );
     });
   });
+  it('preserves explicit worker model overrides before exact role defaults', () => {
+    withIsolatedDefaultModelEnv(() => {
+      assert.deepEqual(
+        resolveTeamWorkerLaunchArgs({
+          existingRaw: '--model explicit-worker-model',
+          inheritedArgs: ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.4-mini'],
+          fallbackModel: resolveAgentDefaultModel('planner'),
+          preferredReasoning: 'high',
+          honorExactRoleModel: true,
+        }),
+        [
+          '--dangerously-bypass-approvals-and-sandbox',
+          '-c',
+          'model_reasoning_effort="high"',
+          '--model',
+          'explicit-worker-model',
+        ],
+      );
+
+      const diagnostics = resolveTeamWorkerLaunchDiagnostics({
+        requestedAgentType: 'planner',
+        existingRaw: '--model explicit-worker-model',
+        inheritedArgs: ['--model', 'gpt-5.4-mini'],
+        fallbackModel: resolveAgentDefaultModel('planner'),
+        preferredReasoning: 'high',
+        honorExactRoleModel: true,
+      });
+
+      assert.equal(diagnostics.actualModel, 'explicit-worker-model');
+      assert.equal(diagnostics.modelSource, 'env');
+      assert.equal(diagnostics.inheritedParentModel, false);
+    });
+  });
 
   it('preserves inherited mini leader model for roles without exact-model enforcement', () => {
     withIsolatedDefaultModelEnv(() => {
