@@ -174,6 +174,11 @@ function writeOversizedStopFallback(stopReason, detail) {
   process.exitCode = 0;
 }
 
+function writeOversizedStopNoop() {
+  process.stdout.write('{}\n');
+  process.exitCode = 0;
+}
+
 function writeCompactFallback() {
   process.exitCode = 0;
 }
@@ -346,7 +351,7 @@ async function main() {
         writeOversizedStopFallback('plugin_stop_hook_stdin_oversized_active_workflow', message);
         return;
       }
-      writeOversizedStopFallback('plugin_stop_hook_stdin_oversized_inactive_workflow', message);
+      writeOversizedStopNoop();
       return;
     }
     console.error(`[oh-my-codex] ${message}`);
