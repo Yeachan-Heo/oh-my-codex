@@ -106,7 +106,7 @@ describe('HUD resize hook helpers', () => {
     assert.match(calls[3]?.[4] ?? '', /TMUX/);
     assert.match(calls[3]?.[4] ?? '', /TMUX_PANE/);
     assert.match(calls[3]?.[4] ?? '', /OMX_TMUX_HUD_OWNER/);
-    assert.match(calls[3]?.[4] ?? '', /wait-for/);
+    assert.doesNotMatch(calls[3]?.[4] ?? '', /wait-for/);
   });
 
   it('reports partial failure but keeps the resize hook when layout-change hook install fails', () => {

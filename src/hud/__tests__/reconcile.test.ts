@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { dirname } from 'node:path';
 import { join } from 'node:path';
 import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcile.js';
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from '../constants.js';
@@ -9,6 +11,18 @@ import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
 
 const noOpRegisterHudResizeHook = () => true;
 const noOpUnregisterHudResizeHook = () => true;
+
+async function writeHudReconcileLock(cwd: string, owner: Record<string, unknown>): Promise<string> {
+  const lockPath = join(cwd, '.omx', 'state', 'hud-reconcile.lock');
+  await mkdir(dirname(lockPath), { recursive: true });
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(join(lockPath, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+  return lockPath;
+}
+
+async function readLockOwner(lockPath: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(join(lockPath, 'owner.json'), 'utf-8')) as Record<string, unknown>;
+}
 
 describe('reconcileHudForPromptSubmit', () => {
   it('skips reconciliation outside tmux', async () => {
@@ -70,6 +84,121 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.paneId, null);
     assert.equal(created.length, 0);
     assert.equal(resized.length, 0);
+  });
+
+  it('skips concurrent reconciliation for a stale lock whose holder pid is still live without mutating panes or lock metadata', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-reconcile-live-lock-'));
+    try {
+      const lockPath = await writeHudReconcileLock(cwd, {
+        token: 'live-holder',
+        pid: 4242,
+        acquired_at: new Date(1_000).toISOString(),
+      });
+      const originalOwner = await readLockOwner(lockPath);
+      let listed = false;
+      let killed = false;
+      let created = false;
+      let resized = false;
+
+      const result = await reconcileHudForPromptSubmit(cwd, {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        nowMs: () => 20_000,
+        isProcessLive: (pid) => {
+          assert.equal(pid, 4242);
+          return true;
+        },
+        listCurrentWindowPanes: () => {
+          listed = true;
+          return [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }];
+        },
+        killTmuxPane: () => {
+          killed = true;
+          return true;
+        },
+        createHudWatchPane: () => {
+          created = true;
+          return '%hud';
+        },
+        resizeTmuxPane: () => {
+          resized = true;
+          return true;
+        },
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+
+      assert.equal(result.status, 'skipped_concurrent');
+      assert.equal(result.paneId, null);
+      assert.equal(listed, false);
+      assert.equal(killed, false);
+      assert.equal(created, false);
+      assert.equal(resized, false);
+      assert.deepEqual(await readLockOwner(lockPath), originalOwner);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('treats EPERM-equivalent stale lock liveness as concurrent and preserves the lock', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-reconcile-eperm-lock-'));
+    try {
+      const lockPath = await writeHudReconcileLock(cwd, {
+        token: 'eperm-holder',
+        pid: 4343,
+        acquired_at: new Date(1_000).toISOString(),
+      });
+      const originalOwner = await readLockOwner(lockPath);
+
+      const result = await reconcileHudForPromptSubmit(cwd, {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        nowMs: () => 20_000,
+        isProcessLive: () => null,
+        listCurrentWindowPanes: () => {
+          assert.fail('unknown liveness must not enter reconciliation');
+        },
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+
+      assert.equal(result.status, 'skipped_concurrent');
+      assert.deepEqual(await readLockOwner(lockPath), originalOwner);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers a stale reconcile lock after the recorded holder is dead', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-reconcile-dead-lock-'));
+    try {
+      const lockPath = await writeHudReconcileLock(cwd, {
+        token: 'dead-holder',
+        pid: 4444,
+        acquired_at: new Date(1_000).toISOString(),
+      });
+      const created: string[] = [];
+
+      const result = await reconcileHudForPromptSubmit(cwd, {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        nowMs: () => 20_000,
+        isProcessLive: (pid) => {
+          assert.equal(pid, 4444);
+          return false;
+        },
+        listCurrentWindowPanes: () => [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }],
+        createHudWatchPane: () => {
+          created.push('create');
+          return '%hud';
+        },
+        resizeTmuxPane: () => true,
+        unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+        registerHudResizeHook: noOpRegisterHudResizeHook,
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+
+      assert.equal(result.status, 'recreated');
+      assert.deepEqual(created, ['create']);
+      assert.equal(existsSync(lockPath), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('recreates a missing HUD in explicit OMX-owned tmux with a session id', async () => {
