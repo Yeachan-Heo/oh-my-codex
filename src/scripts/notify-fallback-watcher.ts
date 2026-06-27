@@ -264,6 +264,23 @@ interface FallbackAutoNudgeState {
   last_nudged_at: string;
 }
 
+interface PendingPermissionRequestState {
+  enabled: boolean;
+  wait_ms: number;
+  active: boolean;
+  pending_count: number;
+  last_tick_at: string | null;
+  last_detected_at: string;
+  last_notified_at: string;
+  last_reason: string;
+  last_error: string | null;
+  thread_id: string;
+  turn_id: string;
+  call_id: string;
+  tool_name: string;
+  command_preview: string;
+}
+
 interface AdaptivePollState {
   enabled: boolean;
   base_ms: number;
@@ -278,6 +295,17 @@ interface AdaptivePollState {
 interface CycleActivitySummary {
   active: boolean;
   reason: string;
+}
+
+interface PendingPermissionRequestEntry {
+  callId: string;
+  threadId: string;
+  turnId: string;
+  toolName: string;
+  commandPreview: string;
+  requestedAtIso: string;
+  requestedAtMs: number;
+  notifiedAt: string;
 }
 
 const fileState = new Map<string, WatcherFileMeta>();
@@ -338,6 +366,10 @@ const AUTO_NUDGE_STALL_MS = Math.max(
   pollMs,
   asNumber(process.env.OMX_NOTIFY_FALLBACK_AUTO_NUDGE_STALL_MS || '5000', 5000),
 );
+const PENDING_PERMISSION_WAIT_MS = Math.max(
+  pollMs,
+  asNumber(process.env.OMX_NOTIFY_FALLBACK_PERMISSION_WAIT_MS || '5000', 5000),
+);
 let lastFallbackAutoNudge: FallbackAutoNudgeState = {
   enabled: true,
   stall_ms: AUTO_NUDGE_STALL_MS,
@@ -350,6 +382,23 @@ let lastFallbackAutoNudge: FallbackAutoNudgeState = {
   last_nudged_signature: '',
   last_nudged_at: '',
 };
+let lastPendingPermissionRequest: PendingPermissionRequestState = {
+  enabled: true,
+  wait_ms: PENDING_PERMISSION_WAIT_MS,
+  active: false,
+  pending_count: 0,
+  last_tick_at: null,
+  last_detected_at: '',
+  last_notified_at: '',
+  last_reason: 'init',
+  last_error: null,
+  thread_id: '',
+  turn_id: '',
+  call_id: '',
+  tool_name: '',
+  command_preview: '',
+};
+const pendingPermissionRequests = new Map<string, PendingPermissionRequestEntry>();
 let adaptivePollState: AdaptivePollState = {
   enabled: true,
   base_ms: pollMs,
@@ -528,6 +577,27 @@ async function loadPersistedWatcherState(): Promise<void> {
       last_error: safeString(persistedAutoNudge.last_error) || null,
       last_nudged_signature: safeString(persistedAutoNudge.last_nudged_signature),
       last_nudged_at: safeString(persistedAutoNudge.last_nudged_at),
+    };
+  }
+  const persistedPendingPermission = persisted?.pending_permission_request as Record<string, unknown> | null | undefined;
+  if (persistedPendingPermission && typeof persistedPendingPermission === 'object') {
+    lastPendingPermissionRequest = {
+      enabled: persistedPendingPermission.enabled !== false,
+      wait_ms: Number.isFinite(persistedPendingPermission.wait_ms) && (persistedPendingPermission.wait_ms as number) > 0
+        ? persistedPendingPermission.wait_ms as number
+        : PENDING_PERMISSION_WAIT_MS,
+      active: persistedPendingPermission.active === true,
+      pending_count: Math.max(0, Math.trunc(asNumber(persistedPendingPermission.pending_count as string | number | undefined, 0))),
+      last_tick_at: safeString(persistedPendingPermission.last_tick_at) || null,
+      last_detected_at: safeString(persistedPendingPermission.last_detected_at),
+      last_notified_at: safeString(persistedPendingPermission.last_notified_at),
+      last_reason: safeString(persistedPendingPermission.last_reason) || 'init',
+      last_error: safeString(persistedPendingPermission.last_error) || null,
+      thread_id: safeString(persistedPendingPermission.thread_id),
+      turn_id: safeString(persistedPendingPermission.turn_id),
+      call_id: safeString(persistedPendingPermission.call_id),
+      tool_name: safeString(persistedPendingPermission.tool_name),
+      command_preview: safeString(persistedPendingPermission.command_preview),
     };
   }
   const persistedAdaptivePoll = persisted?.adaptive_poll as Record<string, unknown> | null | undefined;
@@ -1341,6 +1411,12 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
       enabled: true,
       stall_ms: AUTO_NUDGE_STALL_MS,
     },
+    pending_permission_request: {
+      ...lastPendingPermissionRequest,
+      enabled: true,
+      wait_ms: PENDING_PERMISSION_WAIT_MS,
+      pending_count: pendingPermissionRequests.size,
+    },
     authority_backoff: lastAuthorityBackoff,
     adaptive_poll: {
       ...adaptivePollState,
@@ -1645,7 +1721,87 @@ function buildNotifyPayload(threadId: string, turnId: string, lastMessage: strin
   };
 }
 
-async function invokeNotifyHook(payload: Record<string, unknown>, filePath: string): Promise<void> {
+function normalizeCommandPreview(command: string, limit = 160): string {
+  const singleLine = safeString(command).replace(/\s+/g, ' ').trim();
+  if (!singleLine) return '';
+  if (singleLine.length <= limit) return singleLine;
+  return `${singleLine.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+function parseFunctionArguments(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function getResponseItemTurnId(payload: Record<string, unknown>): string {
+  const meta = payload.internal_chat_message_metadata_passthrough as Record<string, unknown> | undefined;
+  return safeString(meta?.turn_id || payload.turn_id);
+}
+
+function maybeTrackPendingPermissionRequest(meta: WatcherFileMeta, parsed: Record<string, unknown>): void {
+  if (!parsed || parsed.type !== 'response_item' || !parsed.payload) return;
+  const payload = parsed.payload as Record<string, unknown>;
+
+  if (payload.type === 'function_call') {
+    const callId = safeString(payload.call_id);
+    if (!callId) return;
+    const args = parseFunctionArguments(payload.arguments);
+    if (!args || safeString(args.sandbox_permissions) !== 'require_escalated') return;
+    const timestamp = safeString(parsed.timestamp) || new Date().toISOString();
+    const requestedAtMs = parseIsoMillis(timestamp) ?? Date.now();
+    pendingPermissionRequests.set(callId, {
+      callId,
+      threadId: meta.threadId,
+      turnId: getResponseItemTurnId(payload),
+      toolName: safeString(payload.name),
+      commandPreview: normalizeCommandPreview(safeString(args.cmd || args.command)),
+      requestedAtIso: timestamp,
+      requestedAtMs,
+      notifiedAt: '',
+    });
+    return;
+  }
+
+  if (payload.type === 'function_call_output') {
+    const callId = safeString(payload.call_id);
+    if (!callId) return;
+    pendingPermissionRequests.delete(callId);
+  }
+}
+
+function clearPendingPermissionRequestsForTurn(threadId: string, turnId: string): void {
+  if (!threadId || !turnId) return;
+  for (const [callId, entry] of pendingPermissionRequests.entries()) {
+    if (entry.threadId === threadId && entry.turnId === turnId) {
+      pendingPermissionRequests.delete(callId);
+    }
+  }
+}
+
+function buildPendingPermissionNotifyPayload(entry: PendingPermissionRequestEntry, ageMs: number): Record<string, unknown> {
+  const seconds = Math.max(1, Math.round(ageMs / 1000));
+  const commandText = entry.commandPreview ? ` Command: ${entry.commandPreview}` : '';
+  return {
+    type: 'agent-turn-complete',
+    cwd,
+    'thread-id': entry.threadId,
+    'turn-id': entry.turnId || `pending-permission-${entry.callId}`,
+    'input-messages': ['[notify-fallback] synthesized from pending PermissionRequest wait'],
+    'last-assistant-message': `Approval pending: an escalated ${entry.toolName || 'tool'} request has been waiting about ${seconds}s for review.${commandText} If no approval prompt is visible, the PermissionRequest hook/notification path may be stuck.`,
+    source: 'notify-fallback-watcher-pending-permission',
+  };
+}
+
+async function invokeNotifyHook(
+  payload: Record<string, unknown>,
+  filePath: string,
+  successReason = 'sent',
+): Promise<boolean> {
   const result = spawnSync(process.execPath, [notifyScript, JSON.stringify(payload)], {
     cwd,
     encoding: 'utf-8',
@@ -1662,9 +1818,72 @@ async function invokeNotifyHook(payload: Record<string, unknown>, filePath: stri
     thread_id: (payload as Record<string, string>)['thread-id'],
     turn_id: (payload as Record<string, string>)['turn-id'],
     file: filePath,
-    reason: ok ? 'sent' : 'notify_hook_failed',
+    reason: ok ? successReason : 'notify_hook_failed',
     error: ok ? undefined : (result.stderr || result.stdout || '').trim().slice(0, 240),
   });
+  return ok;
+}
+
+async function runPendingPermissionRequestTick(): Promise<void> {
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const entries = [...pendingPermissionRequests.values()].sort((a, b) => a.requestedAtMs - b.requestedAtMs);
+
+  lastPendingPermissionRequest = {
+    ...lastPendingPermissionRequest,
+    enabled: true,
+    wait_ms: PENDING_PERMISSION_WAIT_MS,
+    active: entries.length > 0,
+    pending_count: entries.length,
+    last_tick_at: nowIso,
+    last_error: null,
+  };
+
+  const oldest = entries[0];
+  if (!oldest) {
+    lastPendingPermissionRequest.last_reason = 'idle';
+    lastPendingPermissionRequest.thread_id = '';
+    lastPendingPermissionRequest.turn_id = '';
+    lastPendingPermissionRequest.call_id = '';
+    lastPendingPermissionRequest.tool_name = '';
+    lastPendingPermissionRequest.command_preview = '';
+    return;
+  }
+
+  lastPendingPermissionRequest.last_detected_at = oldest.requestedAtIso;
+  lastPendingPermissionRequest.thread_id = oldest.threadId;
+  lastPendingPermissionRequest.turn_id = oldest.turnId;
+  lastPendingPermissionRequest.call_id = oldest.callId;
+  lastPendingPermissionRequest.tool_name = oldest.toolName;
+  lastPendingPermissionRequest.command_preview = oldest.commandPreview;
+
+  if (oldest.notifiedAt) {
+    lastPendingPermissionRequest.last_notified_at = oldest.notifiedAt;
+    lastPendingPermissionRequest.last_reason = 'already_notified';
+    return;
+  }
+
+  const ageMs = Math.max(0, now - oldest.requestedAtMs);
+  if (ageMs < PENDING_PERMISSION_WAIT_MS) {
+    lastPendingPermissionRequest.last_reason = 'recent_request';
+    return;
+  }
+
+  const ok = await invokeNotifyHook(
+    buildPendingPermissionNotifyPayload(oldest, ageMs),
+    `${oldest.threadId || 'no-thread'}:${oldest.callId || 'no-call'}`,
+    'pending_permission_request_wait',
+  );
+  if (!ok) {
+    lastPendingPermissionRequest.last_reason = 'notify_hook_failed';
+    lastPendingPermissionRequest.last_error = 'notify_hook_failed';
+    return;
+  }
+
+  oldest.notifiedAt = nowIso;
+  pendingPermissionRequests.set(oldest.callId, oldest);
+  lastPendingPermissionRequest.last_notified_at = nowIso;
+  lastPendingPermissionRequest.last_reason = 'sent';
 }
 
 async function processLine(meta: WatcherFileMeta, line: string, filePath: string): Promise<void> {
@@ -1675,10 +1894,18 @@ async function processLine(meta: WatcherFileMeta, line: string, filePath: string
     return;
   }
 
-  if (!parsed || parsed.type !== 'event_msg' || !parsed.payload) return;
-  if ((parsed.payload as Record<string, unknown>).type !== 'task_complete') return;
+  maybeTrackPendingPermissionRequest(meta, parsed);
 
-  const turnId = safeString((parsed.payload as Record<string, unknown>).turn_id);
+  if (!parsed || parsed.type !== 'event_msg' || !parsed.payload) return;
+  const payload = parsed.payload as Record<string, unknown>;
+  const payloadType = safeString(payload.type);
+
+  if (payloadType === 'turn_aborted' || payloadType === 'task_complete') {
+    clearPendingPermissionRequestsForTurn(meta.threadId, safeString(payload.turn_id));
+  }
+  if (payloadType !== 'task_complete') return;
+
+  const turnId = safeString(payload.turn_id);
   if (!turnId) return;
 
   const evtTs = Date.parse(safeString(parsed.timestamp));
@@ -1688,12 +1915,12 @@ async function processLine(meta: WatcherFileMeta, line: string, filePath: string
   if (seenTurnKeys.has(key)) return;
   seenTurnKeys.add(key);
 
-  const payload = buildNotifyPayload(
+  const notifyPayload = buildNotifyPayload(
     meta.threadId,
     turnId,
     safeString((parsed.payload as Record<string, unknown>).last_agent_message)
   );
-  await invokeNotifyHook(payload, filePath);
+  await invokeNotifyHook(notifyPayload, filePath);
 }
 
 async function ensureTrackedFiles(): Promise<void> {
@@ -1906,12 +2133,20 @@ async function pumpTeamControlPlaneTick(): Promise<CycleActivitySummary> {
     return { active: dispatchActive, reason: dispatchActive ? 'dispatch_drain' : 'deep_interview_locked' };
   }
   const leaderActive = await runLeaderNudgeTick();
+  await runPendingPermissionRequestTick();
   await runFallbackAutoNudgeTick();
   const autoNudgeActive = lastFallbackAutoNudge.last_reason === 'sent';
+  const pendingPermissionActive = lastPendingPermissionRequest.last_reason === 'sent';
   if (dispatchActive) return { active: true, reason: 'dispatch_drain' };
   if (leaderActive) return { active: true, reason: 'leader_nudge' };
+  if (pendingPermissionActive) return { active: true, reason: 'pending_permission_request' };
   if (autoNudgeActive) return { active: true, reason: 'fallback_auto_nudge' };
-  return { active: false, reason: lastFallbackAutoNudge.last_reason || 'control_plane_idle' };
+  return {
+    active: false,
+    reason: lastPendingPermissionRequest.last_reason !== 'idle'
+      ? lastPendingPermissionRequest.last_reason
+      : (lastFallbackAutoNudge.last_reason || 'control_plane_idle'),
+  };
 }
 
 

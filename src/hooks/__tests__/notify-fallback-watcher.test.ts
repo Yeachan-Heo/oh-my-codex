@@ -4632,6 +4632,204 @@ exit 0
     }
   });
 
+  it('notifies after a pending PermissionRequest wait exceeds the configured threshold', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-pending-permission-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-pending-permission-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const rolloutPath = join(sessionDir, `rollout-test-fallback-pending-permission-${sid}.jsonl`);
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+    const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(rolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-${sid}`, cwd: wd },
+      })}\n`);
+
+      child = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '5000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: buildCleanNotifyEnv({
+            HOME: tempHome,
+            OMX_NOTIFY_FALLBACK_PERMISSION_WAIT_MS: '100',
+          }),
+        }
+      );
+
+      await waitFor(async () => {
+        const logEntries = await readJsonLines(logPath);
+        return logEntries.some((entry) => entry.type === 'watcher_start');
+      }, 4000, 50);
+
+      const turnId = `turn-permission-${sid}`;
+      await appendLine(rolloutPath, {
+        timestamp: new Date().toISOString(),
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          call_id: `call-${sid}`,
+          name: 'exec_command',
+          arguments: JSON.stringify({
+            cmd: 'git push origin feature/fix-pending-permission',
+            sandbox_permissions: 'require_escalated',
+          }),
+          internal_chat_message_metadata_passthrough: {
+            turn_id: turnId,
+          },
+        },
+      });
+
+      await waitFor(async () => {
+        const logEntries = await readJsonLines(logPath);
+        const fallbackEntry = logEntries.find((entry) => (
+          entry.type === 'fallback_notify' && entry.reason === 'pending_permission_request_wait'
+        ));
+        if (!fallbackEntry) return false;
+        const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+        return ['sent', 'already_notified'].includes(watcherState.pending_permission_request?.last_reason)
+          && watcherState.pending_permission_request?.thread_id === `thread-${sid}`
+          && watcherState.pending_permission_request?.turn_id === turnId
+          && watcherState.pending_permission_request?.command_preview === 'git push origin feature/fix-pending-permission';
+      }, 4000, 50);
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+      await rm(rolloutPath, { force: true });
+    }
+  });
+
+  it('does not notify for a pending PermissionRequest once the call already completed', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-cleared-permission-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-cleared-permission-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const rolloutPath = join(sessionDir, `rollout-test-fallback-cleared-permission-${sid}.jsonl`);
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+    const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(rolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-${sid}`, cwd: wd },
+      })}\n`);
+
+      child = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '5000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: buildCleanNotifyEnv({
+            HOME: tempHome,
+            OMX_NOTIFY_FALLBACK_PERMISSION_WAIT_MS: '250',
+          }),
+        }
+      );
+
+      await waitFor(async () => {
+        const logEntries = await readJsonLines(logPath);
+        return logEntries.some((entry) => entry.type === 'watcher_start');
+      }, 4000, 50);
+
+      const turnId = `turn-permission-cleared-${sid}`;
+      const callId = `call-${sid}`;
+      await appendLine(rolloutPath, {
+        timestamp: new Date().toISOString(),
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          call_id: callId,
+          name: 'exec_command',
+          arguments: JSON.stringify({
+            cmd: 'git push origin feature/already-approved',
+            sandbox_permissions: 'require_escalated',
+          }),
+          internal_chat_message_metadata_passthrough: {
+            turn_id: turnId,
+          },
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      await appendLine(rolloutPath, {
+        timestamp: new Date().toISOString(),
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          call_id: callId,
+          output: 'approved and completed',
+        },
+      });
+
+      await waitFor(async () => {
+        const logEntries = await readJsonLines(logPath);
+        if (logEntries.some((entry) => (
+          entry.type === 'fallback_notify' && entry.reason === 'pending_permission_request_wait'
+        ))) return false;
+        const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8').catch(() => 'null'));
+        if (!watcherState) return false;
+        return watcherState.pending_permission_request?.pending_count === 0
+          && watcherState.pending_permission_request?.active === false
+          && watcherState.pending_permission_request?.last_reason === 'idle';
+      }, 4000, 50);
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+      await rm(rolloutPath, { force: true });
+    }
+  });
+
   it('exits after the configured max lifetime', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-max-life-'));
     const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-max-home-'));
