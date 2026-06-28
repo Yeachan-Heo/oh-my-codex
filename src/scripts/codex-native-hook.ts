@@ -3819,34 +3819,36 @@ function blocksDeepInterviewImplementationWrite(payload: CodexHookPayload, cwd: 
     || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
 }
 
-function buildDeepInterviewRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
+// Shared builder for the "live root session pointer owned by another session"
+// fail-closed block. Deep-interview and ralplan/autopilot only differ in the
+// human-readable mode label and phase-description fragment; the decision,
+// structure, and guidance are identical.
+function buildRootPointerConflictBlock(
+  activeState: Record<string, unknown>,
+  planningModeLabel: string,
+  planningPhaseDescription: string,
+): Record<string, unknown> {
   const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
-  return {
-    decision: "block",
-    reason: `Deep-interview is active in the live root session pointer (phase: ${phase}), but the current native session could not be authoritatively resolved to that owner; failing closed for planning-write protection.`,
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      additionalContext:
-        "OMX detected a live root session pointer owned by another session while a deep-interview planning phase is active. "
-        + "This indicates collapsed session-root isolation. Do not perform implementation writes from this unresolved session; use the owning OMX session or restart with an isolated OMX_ROOT.",
-    },
-  };
-}
-
-function buildRalplanRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
-  const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
-  const activeMode = safeString(activeState.mode).trim().toLowerCase();
-  const planningModeLabel = activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
   return {
     decision: "block",
     reason: `${planningModeLabel} is active in the live root session pointer (phase: ${phase}), but the current native session could not be authoritatively resolved to that owner; failing closed for planning-write protection.`,
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
-        "OMX detected a live root session pointer owned by another session while a ralplan/autopilot planning phase is active. "
+        `OMX detected a live root session pointer owned by another session while a ${planningPhaseDescription} is active. `
         + "This indicates collapsed session-root isolation. Do not perform implementation writes from this unresolved session; use the owning OMX session or restart with an isolated OMX_ROOT.",
     },
   };
+}
+
+function buildDeepInterviewRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
+  return buildRootPointerConflictBlock(activeState, "Deep-interview", "deep-interview planning phase");
+}
+
+function buildRalplanRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
+  const activeMode = safeString(activeState.mode).trim().toLowerCase();
+  const planningModeLabel = activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
+  return buildRootPointerConflictBlock(activeState, planningModeLabel, "ralplan/autopilot planning phase");
 }
 
 async function buildPlanningRootPointerConflictPreToolUseOutput(

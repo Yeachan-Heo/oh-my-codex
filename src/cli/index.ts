@@ -2005,7 +2005,8 @@ function launchArgRequestsDisposableWorktree(arg: string): boolean {
   return arg === "--worktree" ||
     arg === "-w" ||
     arg.startsWith("--worktree=") ||
-    arg.startsWith("-w=") ||
+    // Covers both `-w=<name>` and `-w<name>`; an explicit `-w=` check would be a
+    // strict subset of this clause, so it is omitted as redundant.
     (arg.startsWith("-w") && arg.length > 2);
 }
 
