@@ -16,6 +16,7 @@ export const CANONICAL_WORKFLOW_SKILLS = [
   'autopilot',
   'autoresearch',
   'team',
+  'ultragoal',
   'ralph',
   'ultrawork',
   'ultraqa',

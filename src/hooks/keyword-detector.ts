@@ -1081,14 +1081,40 @@ const AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS: TrackedWorkflowMode[] = [
   'ultraqa',
 ];
 
+async function persistAutopilotSupervisedChildPhaseState(
+  stateDir: string,
+  sessionId: string | undefined,
+  childSkill: string,
+  nowIso: string,
+  options: { threadId?: string; turnId?: string } = {},
+): Promise<void> {
+  const { absolutePath } = resolveSeedStateFilePath(stateDir, 'autopilot', sessionId);
+  const existing = await readJsonStateIfExists(absolutePath);
+  if (!existing || existing.active !== true || safeString(existing.mode).trim() !== 'autopilot') return;
+
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, JSON.stringify({
+    ...existing,
+    current_phase: childSkill,
+    updated_at: nowIso,
+    session_id: (sessionId ?? safeString(existing.session_id).trim()) || undefined,
+    thread_id: (options.threadId ?? safeString(existing.thread_id).trim()) || undefined,
+    turn_id: (options.turnId ?? safeString(existing.turn_id).trim()) || undefined,
+  }, null, 2));
+}
+
 async function reconcileAutopilotSupervisedChildModeStates(
   cwd: string,
   stateDir: string,
   sessionId: string | undefined,
   childSkill: string,
   nowIso: string,
+  options: { threadId?: string; turnId?: string } = {},
 ): Promise<string[]> {
-  if (!isTrackedWorkflowMode(childSkill)) return [];
+  if (!isTrackedWorkflowMode(childSkill)) {
+    await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
+    return [];
+  }
 
   const activeChildModes: TrackedWorkflowMode[] = [];
   for (const mode of AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS) {
@@ -1111,6 +1137,7 @@ async function reconcileAutopilotSupervisedChildModeStates(
     sessionId,
     source: 'autopilot-supervised-child',
   });
+  await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
   return transition.completedPaths;
 }
 
@@ -1315,10 +1342,12 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       session_id: input.sessionId ?? previous.session_id,
       thread_id: input.threadId ?? previous.thread_id,
       turn_id: input.turnId ?? previous.turn_id,
+      phase: match.skill,
       active_skills: listActiveSkills(previous).map((entry) => (
         entry.skill === 'autopilot'
           ? {
               ...entry,
+              phase: match.skill,
               active: true,
               updated_at: nowIso,
               session_id: input.sessionId ?? entry.session_id,
@@ -1331,7 +1360,14 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       supervised_child_skill: match.skill,
     };
     try {
-      await reconcileAutopilotSupervisedChildModeStates(sourceCwd, input.stateDir, input.sessionId ?? previous.session_id, match.skill, nowIso);
+      await reconcileAutopilotSupervisedChildModeStates(
+        sourceCwd,
+        input.stateDir,
+        input.sessionId ?? previous.session_id,
+        match.skill,
+        nowIso,
+        { threadId: input.threadId, turnId: input.turnId },
+      );
       await writeSkillActiveStateCopiesForStateDir(
         input.stateDir,
         nextState,

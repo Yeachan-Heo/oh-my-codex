@@ -776,6 +776,35 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('surfaces real keyword-activated ultragoal phase in state and HUD before goals exist', async () => {
+    await withTempRepo('omx-hud-keyword-ultragoal-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-ultragoal-keyword';
+      await mkdir(join(rootStateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+
+      await recordSkillActivation({
+        stateDir: rootStateDir,
+        sourceCwd: cwd,
+        text: '$ultragoal create goals for HUD',
+        sessionId,
+        nowIso: '2026-06-01T00:00:00.000Z',
+      });
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.ultragoal, {
+        active: true,
+        mode: 'ultragoal',
+        current_phase: 'planning',
+        started_at: '2026-06-01T00:00:00.000Z',
+        updated_at: '2026-06-01T00:00:00.000Z',
+        session_id: sessionId,
+      });
+      const rendered = stripSgr(renderHud(state, 'focused'));
+      assert.ok(rendered.includes('ultragoal:planning'));
+    });
+  });
+
   it('surfaces real keyword-activated code-review phase in state and HUD', async () => {
     await withTempRepo('omx-hud-keyword-code-review-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

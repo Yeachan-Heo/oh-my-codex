@@ -2778,7 +2778,7 @@ deepMaxRounds = 21
     }
   });
 
-  it('keeps Autopilot visible when a supervised code-review child keyword appears', async () => {
+  it('keeps Autopilot visible and advances HUD phase when a supervised code-review child keyword appears', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autopilot-child-code-review-'));
     const stateDir = join(cwd, '.omx', 'state');
     const sessionId = 'sess-autopilot-child-code-review';
@@ -2791,12 +2791,21 @@ deepMaxRounds = 21
           active: true,
           skill: 'autopilot',
           keyword: '$autopilot',
-          phase: 'ralplan',
+          phase: 'ultragoal',
           activated_at: '2026-05-30T00:00:00.000Z',
           updated_at: '2026-05-30T00:01:00.000Z',
           source: 'keyword-detector',
           session_id: sessionId,
-          active_skills: [{ skill: 'autopilot', phase: 'ralplan', active: true, session_id: sessionId }],
+          active_skills: [{ skill: 'autopilot', phase: 'ultragoal', active: true, session_id: sessionId }],
+        }, null, 2),
+      );
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'autopilot-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'ultragoal',
+          session_id: sessionId,
         }, null, 2),
       );
 
@@ -2811,15 +2820,21 @@ deepMaxRounds = 21
 
       assert.ok(result);
       assert.equal(result.skill, 'autopilot');
-      assert.equal(result.phase, 'ralplan');
+      assert.equal(result.phase, 'code-review');
       assert.equal(result.supervised_child_skill, 'code-review');
       const persisted = JSON.parse(
         await readFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), 'utf-8'),
-      ) as { skill?: string; phase?: string; active_skills?: Array<{ skill?: string }> };
+      ) as { skill?: string; phase?: string; active_skills?: Array<{ skill?: string; phase?: string }> };
       assert.equal(persisted.skill, 'autopilot');
-      assert.equal(persisted.phase, 'ralplan');
-      assert.deepEqual(persisted.active_skills?.map((entry) => entry.skill), ['autopilot']);
+      assert.equal(persisted.phase, 'code-review');
+      assert.deepEqual(persisted.active_skills?.map((entry) => [entry.skill, entry.phase]), [['autopilot', 'code-review']]);
       assert.equal(existsSync(join(stateDir, 'sessions', sessionId, 'code-review-state.json')), false);
+      const autopilot = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), 'utf-8'),
+      ) as { current_phase?: string; thread_id?: string; turn_id?: string };
+      assert.equal(autopilot.current_phase, 'code-review');
+      assert.equal(autopilot.thread_id, 'thread-autopilot-child-code-review');
+      assert.equal(autopilot.turn_id, 'turn-autopilot-child-code-review');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2911,6 +2926,15 @@ deepMaxRounds = 21
           session_id: sessionId,
         }, null, 2),
       );
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'autopilot-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'ultragoal',
+          session_id: sessionId,
+        }, null, 2),
+      );
 
       const result = await recordSkillActivation({
         stateDir,
@@ -2928,6 +2952,10 @@ deepMaxRounds = 21
       ) as { active?: boolean; current_phase?: string };
       assert.equal(ultragoal.active, true);
       assert.equal(ultragoal.current_phase, 'executing');
+      const autopilot = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, 'autopilot-state.json'), 'utf-8'),
+      ) as { current_phase?: string };
+      assert.equal(autopilot.current_phase, 'ultragoal');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
