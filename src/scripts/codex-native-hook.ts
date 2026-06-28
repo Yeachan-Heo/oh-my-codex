@@ -3143,6 +3143,13 @@ const RALPLAN_ALLOWED_WRITE_PREFIXES = [
   ".beads",
 ] as const;
 
+const PROTECTED_PLANNING_STATE_FILE_NAMES = new Set([
+  "autopilot-state.json",
+  "deep-interview-state.json",
+  "ralplan-state.json",
+  "skill-active-state.json",
+]);
+
 const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
   "Write",
   "Edit",
@@ -3206,21 +3213,33 @@ function hasExplicitExecutionHandoffSkill(
   ));
 }
 
+function normalizePlanningArtifactRelativePath(cwd: string, rawPath: string): string | null {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return null;
+  try {
+    const absolute = resolve(cwd, trimmed);
+    const relativePath = relative(cwd, absolute).replace(/\\/g, "/");
+    if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith("/")) return null;
+    return relativePath;
+  } catch {
+    return null;
+  }
+}
+
+function isProtectedPlanningStatePath(relativePath: string): boolean {
+  if (relativePath !== ".omx/state" && !relativePath.startsWith(".omx/state/")) return false;
+  const fileName = relativePath.split("/").pop() ?? "";
+  return PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
+}
+
 function isAllowedPlanningArtifactPath(
   cwd: string,
   rawPath: string,
   allowedPrefixes: readonly string[],
 ): boolean {
-  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
-  if (!trimmed || trimmed.includes("\0")) return false;
-  let relativePath: string;
-  try {
-    const absolute = resolve(cwd, trimmed);
-    relativePath = relative(cwd, absolute).replace(/\\/g, "/");
-  } catch {
-    return false;
-  }
-  if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith("/")) return false;
+  const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
+  if (!relativePath) return false;
+  if (isProtectedPlanningStatePath(relativePath)) return false;
   return allowedPrefixes.some((prefix) => (
     relativePath === prefix || relativePath.startsWith(`${prefix}/`)
   ));
@@ -3466,6 +3485,7 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
+    || /\bomx\s+state\s+(?:write|clear)\b/.test(command)
     || /\b(?:git\s+(?:checkout|switch|restore|reset|apply|am|merge|rebase)|npm\s+(?:install|i|ci)|pnpm\s+(?:install|i)|yarn\s+(?:install|add))\b/.test(command);
 }
 
@@ -3509,7 +3529,8 @@ function describeImplementationToolBlock(
 
 function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
-  if (/\bomx\s+(?:state\s+(?:write|read|clear)|question)\b/.test(command)) return true;
+  if (/\bomx\s+(?:state\s+read|question)\b/.test(command)) return true;
+  if (/\bomx\s+state\s+(?:write|clear)\b/.test(command)) return false;
   const targets = extractDeepInterviewCommandWriteTargets(command);
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
 }
@@ -3616,7 +3637,8 @@ function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
     return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
   }
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
-  if (/\bomx\s+(?:state\s+(?:write|read|clear)|question)\b/.test(command)) return true;
+  if (/\bomx\s+(?:state\s+read|question)\b/.test(command)) return true;
+  if (/\bomx\s+state\s+(?:write|clear)\b/.test(command)) return false;
   return hasAllowedTargets;
 }
 
@@ -3636,6 +3658,9 @@ function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
   }
   if (beadsCommand.present) {
     return "Beads tracker command also performs an implementation write outside allowed planning metadata";
+  }
+  if (/\bomx\s+state\s+(?:write|clear)\b/.test(command)) {
+    return "omx state mutation is not model-writable during gated planning; write planning artifacts instead";
   }
   return "Bash write intent did not identify an allowed planning artifact path or metadata path";
 }
