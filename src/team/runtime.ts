@@ -123,6 +123,7 @@ import {
   resolveTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchDiagnostics,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
+  TEAM_WORKER_INHERITED_MODEL_ENV,
   parseTeamWorkerLaunchArgs,
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
@@ -2329,9 +2330,14 @@ export function resolveWorkerLaunchArgsFromEnv(
   preferredReasoning?: TeamReasoningEffort,
   workerCliOverride?: TeamWorkerCli,
 ): string[] {
+  const inheritedFromEnv = typeof env[TEAM_WORKER_INHERITED_MODEL_ENV] === 'string'
+    ? env[TEAM_WORKER_INHERITED_MODEL_ENV]?.trim()
+    : undefined;
   const inheritedArgs = (typeof inheritedLeaderModel === 'string' && inheritedLeaderModel.trim() !== '')
     ? ['--model', inheritedLeaderModel.trim()]
-    : [];
+    : inheritedFromEnv
+      ? ['--model', inheritedFromEnv]
+      : [];
   const fallbackModel = resolveAgentDefaultModel(agentType, env.CODEX_HOME);
   const diagnostics = resolveTeamWorkerLaunchDiagnostics({
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,

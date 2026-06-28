@@ -44,7 +44,11 @@ import {
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   type TeamRuntime,
 } from '../runtime.js';
-import { resolveAgentReasoningEffort, resolveTeamLowComplexityDefaultModel } from '../model-contract.js';
+import {
+  resolveAgentReasoningEffort,
+  resolveTeamLowComplexityDefaultModel,
+  TEAM_WORKER_INHERITED_MODEL_ENV,
+} from '../model-contract.js';
 import { readTeamEvents } from '../state/events.js';
 import { sanitizeTeamName } from '../tmux-session.js';
 import { buildInternalTeamName, resolveTeamIdentityScope } from '../team-identity.js';
@@ -621,6 +625,28 @@ describe('runtime', () => {
         '--dangerously-bypass-approvals-and-sandbox',
         '-c',
         'model_reasoning_effort="high"',
+        '--model',
+        'gpt-5.5',
+      ]);
+    });
+  });
+
+  it('resolveWorkerLaunchArgsFromEnv honors inherited leader model from the dedicated env path', () => {
+    withIsolatedDefaultModelEnv(() => {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        {
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini',
+          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'gpt-5.4-mini',
+        },
+        'planner',
+        undefined,
+        resolveAgentReasoningEffort('planner'),
+        'codex',
+      );
+      assert.deepEqual(args, [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-c',
+        'model_reasoning_effort="medium"',
         '--model',
         'gpt-5.5',
       ]);

@@ -164,8 +164,10 @@ import { buildHookEvent } from "../hooks/extensibility/events.js";
 import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import {
   collectInheritableTeamWorkerArgs as collectInheritableTeamWorkerArgsShared,
+  parseTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchArgs,
   resolveTeamLowComplexityDefaultModel,
+  TEAM_WORKER_INHERITED_MODEL_ENV,
 } from "../team/model-contract.js";
 import {
   parseWorktreeMode,
@@ -3967,6 +3969,7 @@ export function buildDetachedSessionBootstrapSteps(
   env: NodeJS.ProcessEnv = process.env,
   sqliteHomeOverride?: string,
   parentEnvFilePath?: string,
+  inheritedWorkerModel?: string,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
@@ -4011,6 +4014,9 @@ export function buildDetachedSessionBootstrapSteps(
     cwd,
     ...(workerLaunchArgs
       ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
+      : []),
+    ...(inheritedWorkerModel
+      ? ["-e", `${TEAM_WORKER_INHERITED_MODEL_ENV}=${inheritedWorkerModel}`]
       : []),
     ...Object.entries(hudRuntimeEnv).map(([key, value]) => ["-e", `${key}=${value}`]).flat(),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
@@ -4814,6 +4820,10 @@ function runCodex(
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
     : buildTmuxPaneCommand("env", [...hudEnvArgs, "node", omxBin, "hud", "--watch"]);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== "0";
+  const inheritedWorkerArgs = inheritLeaderFlags
+    ? collectInheritableTeamWorkerArgsShared(launchArgs)
+    : [];
+  const inheritedWorkerModel = parseTeamWorkerLaunchArgs(inheritedWorkerArgs).modelOverride ?? undefined;
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
     launchArgs,
@@ -4835,7 +4845,11 @@ function runCodex(
     ...buildHudRuntimeEnv({ sessionId }).env,
   };
   const codexEnv = workerLaunchArgs
-    ? { ...codexEnvWithSession, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
+    ? {
+        ...codexEnvWithSession,
+        [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs,
+        ...(inheritedWorkerModel ? { [TEAM_WORKER_INHERITED_MODEL_ENV]: inheritedWorkerModel } : {}),
+      }
     : codexEnvWithSession;
   const codexEnvWithNotify = notifyTempContractRaw
     ? { ...codexEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
@@ -5079,6 +5093,7 @@ function runCodex(
           process.env,
           sqliteHomeOverride,
           detachedParentEnvFilePath,
+          inheritedWorkerModel,
         );
         for (const step of bootstrapSteps) {
           const output = execTmuxFileSync(step.args, {
