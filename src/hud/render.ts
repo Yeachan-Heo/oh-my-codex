@@ -198,7 +198,10 @@ function renderUltragoal(ctx: HudRenderContext): string | null {
   if (!ctx.ultragoal?.active) return null;
   const total = ctx.ultragoal.progressTotal;
   const complete = ctx.ultragoal.complete;
-  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(complete)) return null;
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(complete)) {
+    const phase = sanitizeDynamicText(ctx.ultragoal.current_phase || ctx.ultragoal.status || 'active') || 'active';
+    return cyan(`ultragoal:${phase}`);
+  }
 
   const teamSummary = formatTeamSummary(ctx);
   const progress = cyan(`ultragoal ${complete}/${total}${teamSummary ? ` + ${teamSummary}` : ''}`);

@@ -17,6 +17,29 @@ Use when the user asks for `ultragoal`, `create-goals`, `complete-goals`, durabl
 
 Existing aggregate plans with the legacy enumerated objective are migrated to the stable pointer objective on read, persisted to `goals.json`, retained in `codexObjectiveAliases` for already-active hidden Codex goal reconciliation, and audited with an `aggregate_objective_migrated` ledger entry.
 
+
+## State/HUD Phase Contract
+
+Ultragoal is both a tracked workflow skill and the Autopilot durable-implementation child phase. Keep the phase/HUD contract explicit at workflow boundaries:
+
+- **Standalone `$ultragoal` activation**: ensure `.omx/state[/sessions/<session>]/ultragoal-state.json` exists with `mode:"ultragoal"`, `active:true`, and a non-empty `current_phase` such as `planning` before or while goals are created. This state is a lightweight HUD/runtime declaration; `.omx/ultragoal/goals.json` and `ledger.jsonl` remain the durable goal source of truth.
+- **During execution**: update `current_phase` to the smallest accurate phase (`planning`, `executing`, `verifying`, `reviewing`, `checkpointing`, or `blocked`) when the visible workflow phase changes.
+- **Inside active Autopilot**: keep `mode:"autopilot"` active and set the supervised phase to `current_phase:"ultragoal"`; do not start a peer Autopilot replacement. Ultragoal's own mode state may still exist as child-phase detail, but Autopilot owns the parent phase.
+- **On handoff to code-review**: persist implementation/test/ledger evidence under Autopilot `handoff_artifacts.ultragoal`, then set Autopilot `current_phase:"code-review"`.
+- **On completion/blocker**: set standalone Ultragoal `active:false,current_phase:"complete"` only when all durable goals are complete; otherwise keep it active with a blocker/review-blocked phase and ledger evidence.
+
+Minimal standalone phase declaration:
+
+```sh
+omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"planning"}' --json
+```
+
+Minimal Autopilot child-phase declaration:
+
+```sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ultragoal"}' --json
+```
+
 ## Create goals
 
 1. Run one of:

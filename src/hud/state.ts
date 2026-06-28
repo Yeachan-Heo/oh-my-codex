@@ -595,7 +595,8 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
 
   const [
     ralphDetail,
-    ultragoal,
+    ultragoalArtifact,
+    ultragoalDetail,
     ultraworkDetail,
     autopilotDetail,
     ralplanDetail,
@@ -607,6 +608,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
   ] = await Promise.all([
     readAuthoritativeModeState<RalphStateForHud>(cwd, 'ralph'),
     readUltragoalState(cwd),
+    readAuthoritativeModeState<UltragoalStateForHud>(cwd, 'ultragoal'),
     readAuthoritativeModeState<UltraworkStateForHud>(cwd, 'ultrawork'),
     readAuthoritativeModeState<AutopilotStateForHud>(cwd, 'autopilot'),
     readAuthoritativeModeState<RalplanStateForHud>(cwd, 'ralplan'),
@@ -620,6 +622,10 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
   const ralph = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralph', ralphDetail)
     ? mergePhase(ralphDetail?.active === true ? ralphDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ralph'))
     : null;
+  const ultragoal = ultragoalArtifact
+    ?? (shouldSurfaceCanonicalSkill(canonicalSkills, 'ultragoal', ultragoalDetail)
+      ? mergePhase(ultragoalDetail?.active === true ? ultragoalDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultragoal'))
+      : null);
   const ultrawork = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultrawork', ultraworkDetail)
     ? mergePhase(ultraworkDetail?.active === true ? ultraworkDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultrawork'))
     : null;
