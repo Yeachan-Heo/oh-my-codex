@@ -1089,18 +1089,33 @@ async function persistAutopilotSupervisedChildPhaseState(
   options: { threadId?: string; turnId?: string } = {},
 ): Promise<void> {
   const { absolutePath } = resolveSeedStateFilePath(stateDir, 'autopilot', sessionId);
-  const existing = await readJsonStateIfExists(absolutePath);
-  if (!existing || existing.active !== true || safeString(existing.mode).trim() !== 'autopilot') return;
+  const existingResult = await readJsonStateWithStatus(absolutePath);
+  const existing = existingResult.state;
+  const existingMode = safeString(existing?.mode).trim();
+
+  if (existingResult.status === 'malformed') {
+    throw new Error('Cannot advance supervised Autopilot child phase: autopilot detail state is malformed');
+  }
+  if (existing && existingMode !== 'autopilot') {
+    throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
+  }
 
   await mkdir(dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, JSON.stringify({
-    ...existing,
-    current_phase: childSkill,
-    updated_at: nowIso,
-    session_id: (sessionId ?? safeString(existing.session_id).trim()) || undefined,
-    thread_id: (options.threadId ?? safeString(existing.thread_id).trim()) || undefined,
-    turn_id: (options.turnId ?? safeString(existing.turn_id).trim()) || undefined,
-  }, null, 2));
+  await writeFile(absolutePath, JSON.stringify(withModeRuntimeContext(
+    existing ?? {},
+    {
+      ...(existing ?? {}),
+      active: true,
+      mode: 'autopilot',
+      current_phase: childSkill,
+      started_at: safeString(existing?.started_at).trim() || nowIso,
+      updated_at: nowIso,
+      session_id: (sessionId ?? safeString(existing?.session_id).trim()) || undefined,
+      thread_id: (options.threadId ?? safeString(existing?.thread_id).trim()) || undefined,
+      turn_id: (options.turnId ?? safeString(existing?.turn_id).trim()) || undefined,
+    },
+    { nowIso },
+  ), null, 2));
 }
 
 async function reconcileAutopilotSupervisedChildModeStates(
