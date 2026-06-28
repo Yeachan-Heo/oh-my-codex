@@ -83,6 +83,22 @@ async function writeNativeMappedSessionState(
   });
 }
 
+async function writeLiveNativeMappedSessionState(
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  nativeSessionId: string,
+): Promise<void> {
+  await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+  await writeJson(join(stateDir, "session.json"), {
+    session_id: sessionId,
+    native_session_id: nativeSessionId,
+    cwd,
+    pid: process.pid,
+    platform: "darwin",
+  });
+}
+
 async function writeSessionSkillActiveState(
   stateDir: string,
   sessionId: string,
@@ -17048,6 +17064,80 @@ exit 0
       assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(JSON.stringify(result.outputJson), /(?:Ralplan|Autopilot planning) is active \(phase: ralplan\)/);
       assert.match(JSON.stringify(result.outputJson), /implementation\/write tools are blocked/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for implementation writes when a different live root session owns active ralplan state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-live-root-conflict-"));
+    const ownerCwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-live-root-owner-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const ownerSessionId = "sess-ralplan-live-root-owner";
+      const ownerNativeSessionId = "019e-ralplan-live-root-owner";
+      await writeLiveNativeMappedSessionState(ownerCwd, stateDir, ownerSessionId, ownerNativeSessionId);
+      await writeSessionSkillActiveState(stateDir, ownerSessionId, "ralplan", "planning");
+      await writeJson(join(stateDir, "sessions", ownerSessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: ownerSessionId,
+        cwd: ownerCwd,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "019e-ralplan-live-root-unresolved-current",
+          thread_id: "thread-ralplan-live-root-conflict",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /live root session pointer/i);
+      assert.match(String(result.outputJson?.reason ?? ""), /failing closed/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(ownerCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves authoritative owner planning artifact writes with a live root session pointer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-live-root-owner-pass-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-ralplan-live-root-owner-pass";
+      const nativeSessionId = "019e-ralplan-live-root-owner-pass";
+      await writeLiveNativeMappedSessionState(cwd, stateDir, sessionId, nativeSessionId);
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralplan", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+        cwd,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: nativeSessionId,
+          thread_id: "thread-ralplan-live-root-owner-pass",
+          tool_name: "Bash",
+          tool_input: { command: "cat <<'EOF' > .omx/plans/live-root-owner.md\nplanning\nEOF" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

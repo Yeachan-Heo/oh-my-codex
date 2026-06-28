@@ -24,6 +24,7 @@ import {
 import { resolveCanonicalTeamStateRoot, resolveWorkerNotifyTeamStateRootPath } from "../team/state-root.js";
 import {
   appendToLog,
+  isSessionStale,
   isSessionStateUsable,
   readSessionState,
   readUsableSessionState,
@@ -3100,6 +3101,48 @@ async function resolveInternalSessionIdForPayload(
   return payloadSessionId;
 }
 
+async function readRootSessionStateFromStateDir(stateDir: string): Promise<SessionState | null> {
+  const sessionPath = join(stateDir, "session.json");
+  if (!existsSync(sessionPath)) return null;
+
+  try {
+    const content = await readFile(sessionPath, "utf-8");
+    return JSON.parse(content) as SessionState;
+  } catch {
+    return null;
+  }
+}
+
+function payloadMatchesSessionPointer(payloadSessionId: string, state: SessionState): boolean {
+  const canonicalSessionId = safeString(state.session_id).trim();
+  const nativeSessionId = safeString(state.native_session_id).trim();
+  const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
+  if (!payloadSessionId) return true;
+  return payloadSessionId === canonicalSessionId
+    || (nativeSessionId !== "" && payloadSessionId === nativeSessionId)
+    || (ownerOmxSessionId !== "" && payloadSessionId === ownerOmxSessionId);
+}
+
+function isRootSessionPointerLive(state: SessionState): boolean {
+  const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
+  if (!hasPidMetadata) return false;
+  return !isSessionStale(state, {
+    ...(state.platform ? { platform: state.platform } : {}),
+  });
+}
+
+async function readLiveRootSessionPointerConflict(
+  stateDir: string,
+  payloadSessionId: string,
+): Promise<SessionState | null> {
+  if (!payloadSessionId) return null;
+  const rootState = await readRootSessionStateFromStateDir(stateDir);
+  if (!rootState) return null;
+  if (payloadMatchesSessionPointer(payloadSessionId, rootState)) return null;
+  if (!isRootSessionPointerLive(rootState)) return null;
+  return rootState;
+}
+
 async function readUsableSessionStateFromStateDir(
   cwd: string,
   stateDir: string,
@@ -3734,6 +3777,96 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
         `Deep-interview is requirements/spec mode. Treat detailed user answers as interview/spec material, not implicit implementation authorization. You may write only deep-interview artifacts under \`.omx/context/\`, \`.omx/interviews/\`, \`.omx/specs/\`, or required \`.omx/state/\` files. To implement, first ask for or process an explicit transition such as \`$ralplan\`, \`$autopilot\`, ${formatExecutionHandoffList(cwd)}.`,
     },
   };
+}
+
+function blocksDeepInterviewImplementationWrite(payload: CodexHookPayload, cwd: string): boolean {
+  const toolName = safeString(payload.tool_name).trim();
+  if (toolName === "Bash") {
+    return !isAllowedDeepInterviewBashWrite(cwd, readPreToolUseCommand(payload));
+  }
+  if (!DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) return false;
+  const candidates = collectImplementationToolPathCandidates(
+    payload,
+    toolName,
+    readPreToolUsePathCandidates(payload),
+  );
+  return candidates.length === 0
+    || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
+}
+
+function buildDeepInterviewRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
+  const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
+  return {
+    decision: "block",
+    reason: `Deep-interview is active in the live root session pointer (phase: ${phase}), but the current native session could not be authoritatively resolved to that owner; failing closed for planning-write protection.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        "OMX detected a live root session pointer owned by another session while a deep-interview planning phase is active. "
+        + "This indicates collapsed session-root isolation. Do not perform implementation writes from this unresolved session; use the owning OMX session or restart with an isolated OMX_ROOT.",
+    },
+  };
+}
+
+function buildRalplanRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
+  const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
+  const activeMode = safeString(activeState.mode).trim().toLowerCase();
+  const planningModeLabel = activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
+  return {
+    decision: "block",
+    reason: `${planningModeLabel} is active in the live root session pointer (phase: ${phase}), but the current native session could not be authoritatively resolved to that owner; failing closed for planning-write protection.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        "OMX detected a live root session pointer owned by another session while a ralplan/autopilot planning phase is active. "
+        + "This indicates collapsed session-root isolation. Do not perform implementation writes from this unresolved session; use the owning OMX session or restart with an isolated OMX_ROOT.",
+    },
+  };
+}
+
+async function buildPlanningRootPointerConflictPreToolUseOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  rootState: SessionState | null,
+): Promise<Record<string, unknown> | null> {
+  const rootSessionId = safeString(rootState?.session_id).trim();
+  if (!rootSessionId) return null;
+  const ownerCwd = safeString(rootState?.cwd).trim() || cwd;
+
+  const deepInterviewState = await readActiveDeepInterviewStateForPreToolUse(
+    ownerCwd,
+    stateDir,
+    rootSessionId,
+    "",
+  );
+  if (deepInterviewState && blocksDeepInterviewImplementationWrite(payload, cwd)) {
+    return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
+  }
+
+  const ralplanState = await readActiveRalplanStateForPreToolUse(
+    ownerCwd,
+    stateDir,
+    rootSessionId,
+    "",
+  );
+  if (!ralplanState) return null;
+
+  const toolName = safeString(payload.tool_name).trim();
+  let blocked = false;
+  if (toolName === "Bash") {
+    blocked = !isAllowedRalplanBashWrite(cwd, readPreToolUseCommand(payload));
+  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+    const toolPathCandidates = collectImplementationToolPathCandidates(
+      payload,
+      toolName,
+      readPreToolUsePathCandidates(payload),
+    );
+    blocked = toolPathCandidates.length === 0
+      || toolPathCandidates.some((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+  }
+
+  return blocked ? buildRalplanRootPointerConflictBlock(ralplanState) : null;
 }
 
 function matchesSkillStopContext(
@@ -5329,11 +5462,13 @@ export async function dispatchCodexNativeHook(
     }
   } else if (hookEventName === "PreToolUse") {
     const payloadSessionId = readPayloadSessionId(payload);
+    const rootPointerConflict = await readLiveRootSessionPointerConflict(stateDir, payloadSessionId);
     const preToolUseSessionId = payloadSessionId
       ? await resolveInternalSessionIdForPayload(cwd, payloadSessionId, stateDir)
       : "";
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildPlanningRootPointerConflictPreToolUseOutput(payload, cwd, stateDir, rootPointerConflict)
       ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
