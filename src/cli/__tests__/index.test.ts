@@ -126,21 +126,75 @@ afterEach(() => {
 });
 
 describe("madmax state isolation", () => {
-  it("auto-isolates only madmax launch and exec invocations", () => {
+  it("auto-isolates madmax and worktree launch and exec invocations", () => {
     assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], {}), true);
     assert.equal(shouldAutoIsolateMadmaxLaunch("exec", ["--madmax-spark"], {}), true);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--worktree"], {}), true);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["-wfeature"], {}), true);
     assert.equal(shouldAutoIsolateMadmaxLaunch("team", ["--madmax"], {}), false);
     assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--yolo"], {}), false);
+  });
+
+  it("does not let stale inherited madmax env suppress top-level isolation", () => {
     assert.equal(
-      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_ROOT: "/already/boxed" }),
-      false,
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_ROOT: "/already/boxed" }, "/repo"),
+      true,
     );
     assert.equal(
-      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMXBOX_ACTIVE: "1" }),
-      false,
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMXBOX_ACTIVE: "1" }, "/repo"),
+      true,
     );
     assert.equal(
-      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_NO_BOX: "1" }),
+      shouldAutoIsolateMadmaxLaunch(
+        "launch",
+        ["--madmax"],
+        { OMX_STATE_ROOT: "/already/boxed-state" },
+        "/repo",
+      ),
+      true,
+    );
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch(
+        "launch",
+        ["--worktree"],
+        {
+          OMXBOX_ACTIVE: "1",
+          OMX_ROOT: "/old/root",
+          OMX_MADMAX_DETACHED_CONTEXT: "old-context",
+        },
+        "/repo",
+      ),
+      true,
+    );
+  });
+
+  it("preserves matching detached madmax child context reuse", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-madmax-source-"));
+    const runs = await mkdtemp(join(tmpdir(), "omx-madmax-runs-"));
+    try {
+      const env: NodeJS.ProcessEnv = { OMX_RUNS_DIR: runs };
+      const runDir = createMadmaxIsolatedRoot(wd, ["--madmax", "--high"], env);
+      env.OMX_ROOT = runDir;
+      env.OMXBOX_ACTIVE = "1";
+
+      assert.equal(
+        shouldAutoIsolateMadmaxLaunch("launch", ["--madmax", "--high"], env, wd),
+        false,
+      );
+      assert.equal(
+        shouldAutoIsolateMadmaxLaunch("launch", ["--madmax", "--xhigh"], env, wd),
+        true,
+        "changed launch semantics must not reuse an inherited boxed root",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runs, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves explicit no-box behavior", () => {
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_NO_BOX: "1" }, "/repo"),
       false,
     );
   });

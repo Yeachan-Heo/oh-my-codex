@@ -2001,15 +2001,34 @@ function applyDisposableWorktreeOmxRootForLaunch(
   env.OMX_ROOT = omxRootOverride;
 }
 
+function launchArgRequestsDisposableWorktree(arg: string): boolean {
+  return arg === "--worktree" ||
+    arg === "-w" ||
+    arg.startsWith("--worktree=") ||
+    arg.startsWith("-w=") ||
+    (arg.startsWith("-w") && arg.length > 2);
+}
+
+function launchArgsRequestMadmaxIsolation(launchArgs: readonly string[]): boolean {
+  return launchArgs.some(
+    (arg) =>
+      arg === MADMAX_FLAG ||
+      arg === MADMAX_SPARK_FLAG ||
+      launchArgRequestsDisposableWorktree(arg),
+  );
+}
+
 export function shouldAutoIsolateMadmaxLaunch(
   command: string,
   launchArgs: string[],
   env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
 ): boolean {
   if (command !== "launch" && command !== "exec") return false;
-  if (env.OMX_NO_BOX === "1" || env.OMXBOX_ACTIVE === "1") return false;
-  if (env.OMX_ROOT || env.OMX_STATE_ROOT) return false;
-  return launchArgs.some((arg) => arg === MADMAX_FLAG || arg === MADMAX_SPARK_FLAG);
+  if (env.OMX_NO_BOX === "1") return false;
+  if (!launchArgsRequestMadmaxIsolation(launchArgs)) return false;
+  if (madmaxInheritedContextMatchesLaunch(cwd, launchArgs, env)) return false;
+  return true;
 }
 
 function sanitizeRunIdSegment(value: string): string {
@@ -2301,6 +2320,48 @@ export function withMadmaxDetachedContextLock<T>(
   );
 }
 
+function readMadmaxRunMetadata(
+  runRoot: string,
+): { cwd?: string; detached_launch_context?: string } | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(runRoot, ".omxbox-run.json"), "utf-8")) as {
+      cwd?: unknown;
+      detached_launch_context?: unknown;
+    };
+    return {
+      ...(typeof parsed.cwd === "string" ? { cwd: parsed.cwd } : {}),
+      ...(typeof parsed.detached_launch_context === "string"
+        ? { detached_launch_context: parsed.detached_launch_context }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveInheritedMadmaxRoot(env: NodeJS.ProcessEnv): string | undefined {
+  const root = env.OMX_ROOT?.trim() || env.OMX_STATE_ROOT?.trim();
+  return root || undefined;
+}
+
+function madmaxInheritedContextMatchesLaunch(
+  cwd: string,
+  launchArgs: readonly string[],
+  env: NodeJS.ProcessEnv,
+): boolean {
+  if (env.OMXBOX_ACTIVE !== "1") return false;
+  const context = env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
+  if (!context) return false;
+  const inheritedRoot = resolveInheritedMadmaxRoot(env);
+  if (!inheritedRoot) return false;
+  const metadata = readMadmaxRunMetadata(inheritedRoot);
+  if (!metadata) return false;
+  if (metadata.cwd && metadata.cwd !== inheritedRoot) return false;
+  if (metadata.detached_launch_context !== context) return false;
+  const expectedContext = buildMadmaxDetachedLaunchContextKey(cwd, [...launchArgs], inheritedRoot);
+  return expectedContext === context;
+}
+
 function isMadmaxDetachedGuardEnabled(env: NodeJS.ProcessEnv): boolean {
   return env.OMXBOX_ACTIVE === "1" && typeof env[OMX_MADMAX_DETACHED_CONTEXT_ENV] === "string";
 }
@@ -2362,7 +2423,7 @@ function activateMadmaxIsolationIfNeeded(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (!shouldAutoIsolateMadmaxLaunch(command, launchArgs, env)) return;
+  if (!shouldAutoIsolateMadmaxLaunch(command, launchArgs, env, cwd)) return;
   const runDir = createMadmaxIsolatedRoot(cwd, launchArgs, env);
   env.OMX_ROOT = runDir;
   env.OMXBOX_ACTIVE = "1";
