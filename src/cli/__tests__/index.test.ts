@@ -3182,6 +3182,34 @@ describe("detached tmux new-session sequencing", () => {
     ]);
   });
 
+  it("buildDetachedSessionBootstrapSteps forwards inherited leader model separately from worker launch args", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'env' 'OMX_SESSION_ID=sess-detached-managed' 'codex' '--model' 'gpt-5.4-mini'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      "--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini",
+      "/tmp/project/.codex",
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      undefined,
+      process.env,
+      undefined,
+      undefined,
+      "gpt-5.4-mini",
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(
+      newSession!.args.includes("-e") &&
+        newSession!.args.some((arg) => arg === "OMX_TEAM_WORKER_INHERITED_MODEL=gpt-5.4-mini"),
+      true,
+    );
+  });
+
   it("buildDetachedSessionBootstrapSteps forwards CODEX_HOME override to detached tmux session", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",

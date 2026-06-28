@@ -14,6 +14,7 @@ const MODEL_FLAG = '--model';
 const CONFIG_FLAG = '-c';
 const REASONING_KEY = 'model_reasoning_effort';
 const MODEL_PROVIDER_KEY = 'model_provider';
+export const TEAM_WORKER_INHERITED_MODEL_ENV = 'OMX_TEAM_WORKER_INHERITED_MODEL';
 
 const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'explore',
@@ -255,9 +256,12 @@ function selectTeamWorkerModel(params: {
   fallbackModel?: string;
   honorExactRoleModel?: boolean;
 }): string | undefined {
-  if (params.envModel) return params.envModel;
+  const envModel = normalizeOptionalModel(params.envModel);
+  const inheritedModel = normalizeOptionalModel(params.inheritedModel);
+  const fallbackModel = normalizeOptionalModel(params.fallbackModel);
+  if (envModel && envModel !== inheritedModel) return envModel;
   if (params.honorExactRoleModel) return params.fallbackModel;
-  return params.envModel ?? params.inheritedModel ?? params.fallbackModel;
+  return envModel ?? inheritedModel ?? fallbackModel;
 }
 
 export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgsOptions): string[] {
