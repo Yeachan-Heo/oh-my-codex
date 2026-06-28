@@ -126,11 +126,11 @@ afterEach(() => {
 });
 
 describe("madmax state isolation", () => {
-  it("auto-isolates madmax and worktree launch and exec invocations", () => {
+  it("auto-isolates madmax launch and exec invocations without boxing worktree-only launches", () => {
     assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], {}), true);
     assert.equal(shouldAutoIsolateMadmaxLaunch("exec", ["--madmax-spark"], {}), true);
-    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--worktree"], {}), true);
-    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["-wfeature"], {}), true);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--worktree"], {}), false);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["-wfeature"], {}), false);
     assert.equal(shouldAutoIsolateMadmaxLaunch("team", ["--madmax"], {}), false);
     assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--yolo"], {}), false);
   });
@@ -164,7 +164,22 @@ describe("madmax state isolation", () => {
         },
         "/repo",
       ),
-      true,
+      false,
+    );
+  });
+
+  it("preserves active boxed detached context reuse when only the context is inherited", () => {
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch(
+        "launch",
+        ["--madmax", "--tmux"],
+        {
+          OMXBOX_ACTIVE: "1",
+          OMX_MADMAX_DETACHED_CONTEXT: "boxed-context-under-test",
+        },
+        "/repo",
+      ),
+      false,
     );
   });
 

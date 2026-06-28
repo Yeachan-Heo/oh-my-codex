@@ -2011,11 +2011,25 @@ function launchArgRequestsDisposableWorktree(arg: string): boolean {
 
 function launchArgsRequestMadmaxIsolation(launchArgs: readonly string[]): boolean {
   return launchArgs.some(
-    (arg) =>
-      arg === MADMAX_FLAG ||
-      arg === MADMAX_SPARK_FLAG ||
-      launchArgRequestsDisposableWorktree(arg),
+    (arg) => arg === MADMAX_FLAG || arg === MADMAX_SPARK_FLAG,
   );
+}
+
+function launchArgsRequestDisposableWorktree(launchArgs: readonly string[]): boolean {
+  return launchArgs.some((arg) => launchArgRequestsDisposableWorktree(arg));
+}
+
+function clearInheritedMadmaxRootForDisposableWorktreeLaunch(
+  launchArgs: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!launchArgsRequestDisposableWorktree(launchArgs)) return;
+  if (env.OMXBOX_ACTIVE !== "1") return;
+  delete env.OMX_ROOT;
+  delete env.OMX_STATE_ROOT;
+  delete env.OMXBOX_ACTIVE;
+  delete env.OMX_SOURCE_CWD;
+  delete env[OMX_MADMAX_DETACHED_CONTEXT_ENV];
 }
 
 export function shouldAutoIsolateMadmaxLaunch(
@@ -2027,6 +2041,10 @@ export function shouldAutoIsolateMadmaxLaunch(
   if (command !== "launch" && command !== "exec") return false;
   if (env.OMX_NO_BOX === "1") return false;
   if (!launchArgsRequestMadmaxIsolation(launchArgs)) return false;
+  const inheritedContext = env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
+  if (env.OMXBOX_ACTIVE === "1" && inheritedContext && !resolveInheritedMadmaxRoot(env)) {
+    return false;
+  }
   if (madmaxInheritedContextMatchesLaunch(cwd, launchArgs, env)) return false;
   return true;
 }
@@ -2852,6 +2870,7 @@ export async function launchWithAuthHotswap(args: string[]): Promise<void> {
       }
     }
   }
+  clearInheritedMadmaxRootForDisposableWorktreeLaunch(parsedWorktree.remainingArgs);
   applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
 
   try {
@@ -2973,6 +2992,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       }
     }
   }
+  clearInheritedMadmaxRootForDisposableWorktreeLaunch(parsedWorktree.remainingArgs);
   applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
 
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3099,6 +3119,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     }
   }
 
+  clearInheritedMadmaxRootForDisposableWorktreeLaunch(parsedWorktree.remainingArgs);
   applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
 
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
