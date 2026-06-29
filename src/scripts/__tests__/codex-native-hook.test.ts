@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
@@ -3871,40 +3871,6 @@ standardMaxRounds = 15
     }
   });
 
-  it("blocks ultragoal Stop with no-active-goal recovery before completion checkpointing", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-null-goal-stop-"));
-    try {
-      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
-        version: 1,
-        activeGoalId: "G002-resolve-final-independent-review-gat",
-        codexGoalMode: "aggregate",
-        codexObjective: "Complete the durable ultragoal plan in .omx/ultragoal/goals.json.",
-        goals: [
-          { id: "G001-final-review", status: "review_blocked", objective: "Resolve review." },
-          { id: "G002-resolve-final-independent-review-gat", status: "in_progress", objective: "Resolve final independent review gate." },
-        ],
-      });
-
-      const result = await dispatchCodexNativeHook({
-        hook_event_name: "Stop",
-        cwd,
-        session_id: "sess-ultragoal-null-goal-stop",
-        thread_id: "thread-ultragoal-null-goal-stop",
-        last_assistant_message: "Goal complete. get_goal returned null, so I will checkpoint G002 complete from OMX state.",
-      }, { cwd });
-
-      const output = JSON.stringify(result.outputJson);
-      assert.equal(result.outputJson?.decision, "block");
-      assert.match(output, /no active goal\/null/);
-      assert.match(output, /do not checkpoint complete or record a blocker from the empty snapshot/);
-      assert.match(output, /call create_goal/);
-      assert.match(output, /Complete the durable ultragoal plan/);
-      assert.match(output, /Hooks must not mutate Codex goal state/);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
   it("does not block ultragoal Stop for ordinary prose about a goal to complete work", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-ordinary-stop-"));
     try {
@@ -6890,37 +6856,22 @@ exit 0
       const sessionDir = join(stateDir, "sessions", "sess-di-artifact");
       await mkdir(sessionDir, { recursive: true });
       await writeJson(join(stateDir, "session.json"), { session_id: "sess-di-artifact", cwd });
-      const threadId = "thread-di-artifact";
       await writeJson(join(sessionDir, "skill-active-state.json"), {
         version: 1,
         active: true,
         skill: "deep-interview",
         phase: "planning",
         session_id: "sess-di-artifact",
-        thread_id: threadId,
-        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-artifact", thread_id: threadId }],
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-artifact" }],
       });
       await writeJson(join(sessionDir, "deep-interview-state.json"), {
         active: true,
         mode: "deep-interview",
         current_phase: "intent-first",
         session_id: "sess-di-artifact",
-        thread_id: threadId,
-        rounds: [{ answer: "Use CLI wrapper normalization for protected planning state commands." }],
       });
 
-      const preToolUse = (
-        payload: Parameters<typeof dispatchCodexNativeHook>[0],
-        _options?: { cwd?: string },
-      ) => dispatchCodexNativeHook({
-        ...payload,
-        hook_event_name: "PreToolUse",
-        cwd,
-        session_id: "sess-di-artifact",
-        thread_id: threadId,
-      }, { cwd });
-
-      const allowedWrite = await preToolUse(
+      const allowedWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -6933,7 +6884,7 @@ exit 0
       );
       assert.equal(allowedWrite.outputJson, null);
 
-      const allowedBash = await preToolUse(
+      const allowedBash = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -6946,7 +6897,7 @@ exit 0
       );
       assert.equal(allowedBash.outputJson, null);
 
-      const allowedAppendBash = await preToolUse(
+      const allowedAppendBash = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -6959,7 +6910,7 @@ exit 0
       );
       assert.equal(allowedAppendBash.outputJson, null);
 
-      const allowedPlanningStateWrite = await preToolUse(
+      const allowedPlanningStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -6979,7 +6930,7 @@ exit 0
         ".omx/state/deep-interview-state.json",
       ];
       for (const [index, filePath] of protectedStateFiles.entries()) {
-        const protectedWrite = await preToolUse(
+        const protectedWrite = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -6997,35 +6948,23 @@ exit 0
         );
       }
 
-      // Cross-mode non-terminal `omx state write` payloads are activations,
-      // because state_write normalizes them to active=true after the hook.
-      const blockedStateCliMutation = await preToolUse(
+      // A non-deactivating `omx state write` routes through the validated
+      // state_write backend (which enforces the Autopilot phase gate for every
+      // transport), so the hook defers rather than blocking the CLI transport.
+      const allowedStateCliMutation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-write",
-          tool_input: { command: "omx state write --input '{\"mode\":\"ralph\",\"current_phase\":\"executing\"}' --json" },
+          tool_input: { command: "omx state write --input '{\"mode\":\"autopilot\",\"current_phase\":\"ralplan\"}' --json" },
         },
         { cwd },
       );
-      assert.equal((blockedStateCliMutation.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal(allowedStateCliMutation.outputJson, null);
 
-      const blockedMcpStateMutation = await preToolUse(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: "sess-di-artifact",
-          tool_name: "mcp__omx_state__state_write",
-          tool_use_id: "tool-di-mcp-state-write-execute",
-          tool_input: { mode: "ralph", current_phase: "executing" },
-        },
-        { cwd },
-      );
-      assert.equal((blockedMcpStateMutation.outputJson as { decision?: string } | null)?.decision, "block");
-
-      const allowedQuotedModeMentionInPayload = await preToolUse(
+      const allowedQuotedModeMentionInPayload = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7040,7 +6979,7 @@ exit 0
 
       const allowedStateInputFile = join(cwd, "allowed-state-input.json");
       await writeJson(allowedStateInputFile, { mode: "deep-interview", current_phase: "intent-first", active: true });
-      const allowedStateInputFileMutation = await preToolUse(
+      const allowedStateInputFileMutation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7056,7 +6995,7 @@ exit 0
       // A deactivating `omx state write` (or `omx state clear`) ends the planning
       // phase, which the backend does not gate for standalone modes; the hook
       // rejects these deactivation vectors at the transport boundary.
-      const blockedStateDeactivation = await preToolUse(
+      const blockedStateDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7071,7 +7010,7 @@ exit 0
 
       const blockedStateInputFile = join(cwd, "blocked-state-input.json");
       await writeJson(blockedStateInputFile, { mode: "deep-interview", active: false });
-      const blockedStateDeactivationFile = await preToolUse(
+      const blockedStateDeactivationFile = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7084,7 +7023,7 @@ exit 0
       );
       assert.equal((blockedStateDeactivationFile.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedModeFlagDeactivation = await preToolUse(
+      const blockedModeFlagDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7099,7 +7038,7 @@ exit 0
 
       const conflictingModeFlagPayload = join(cwd, "conflicting-mode-flag-state.json");
       await writeJson(conflictingModeFlagPayload, { mode: "ralph", active: false });
-      const blockedModeFlagFileDeactivation = await preToolUse(
+      const blockedModeFlagFileDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7112,7 +7051,7 @@ exit 0
       );
       assert.equal((blockedModeFlagFileDeactivation.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedRepeatedModeFlagDeactivation = await preToolUse(
+      const blockedRepeatedModeFlagDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7125,7 +7064,7 @@ exit 0
       );
       assert.equal((blockedRepeatedModeFlagDeactivation.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedRepeatedInputDeactivation = await preToolUse(
+      const blockedRepeatedInputDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7146,7 +7085,7 @@ exit 0
       const repeatedInputFileBlocked = join(cwd, "repeated-input-file-blocked.json");
       await writeJson(repeatedInputFileSafe, { mode: "deep-interview", current_phase: "intent-first", active: true });
       await writeJson(repeatedInputFileBlocked, { mode: "deep-interview", active: false });
-      const blockedRepeatedInputFileDeactivation = await preToolUse(
+      const blockedRepeatedInputFileDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7159,9 +7098,9 @@ exit 0
       );
       assert.equal((blockedRepeatedInputFileDeactivation.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const terminalCurrentPhaseAliases = ["finish", "finished", "complete", "completed", "done", "blocked", "blocked-on-user", "blocked_on_user", "failed", "fail", "error", "cancelled", "canceled", "cancel", "aborted", "abort", "userinterlude", "user-interlude", "interrupted", "interrupt", "askuserquestion", "ask-user-question", "askuser", "question"] as const;
+      const terminalCurrentPhaseAliases = ["done", "blocked", "cancelled", "canceled", "aborted"] as const;
       for (const alias of terminalCurrentPhaseAliases) {
-        const blockedStateWriteCurrentPhaseAlias = await preToolUse(
+        const blockedStateWriteCurrentPhaseAlias = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7183,7 +7122,7 @@ exit 0
 
       const blockedCurrentPhaseAliasInputFile = join(cwd, "blocked-current-phase-alias-input-file.json");
       await writeJson(blockedCurrentPhaseAliasInputFile, { mode: "deep-interview", current_phase: "done" });
-      const blockedStateWriteCurrentPhaseAliasFile = await preToolUse(
+      const blockedStateWriteCurrentPhaseAliasFile = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7202,7 +7141,7 @@ exit 0
         { terminalOutcome: "aborted" },
       ] as const;
       for (const [index, aliasPayload] of terminalOutcomeAliasPayloads.entries()) {
-        const blockedCamelCaseOutcomeAlias = await preToolUse(
+        const blockedCamelCaseOutcomeAlias = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7224,7 +7163,7 @@ exit 0
 
       const blockedCamelCaseOutcomeInputFile = join(cwd, "blocked-camel-case-outcome-input-file.json");
       await writeJson(blockedCamelCaseOutcomeInputFile, { mode: "deep-interview", lifecycleOutcome: "finished" });
-      const blockedStateWriteCamelCaseOutcomeFile = await preToolUse(
+      const blockedStateWriteCamelCaseOutcomeFile = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7237,7 +7176,7 @@ exit 0
       );
       assert.equal((blockedStateWriteCamelCaseOutcomeFile.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedCrossModeActivation = await preToolUse(
+      const blockedCrossModeActivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7255,7 +7194,7 @@ exit 0
       await mkdir(cwdRelativeInputFileSubdir, { recursive: true });
       await writeJson(cwdRelativeInputFileRootSafe, { mode: "deep-interview", active: true });
       await writeJson(join(cwdRelativeInputFileSubdir, "payload.json"), { mode: "deep-interview", active: false });
-      const blockedCwdRelativeInputFileAfterCd = await preToolUse(
+      const blockedCwdRelativeInputFileAfterCd = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7270,7 +7209,7 @@ exit 0
 
       const blockedRewrittenInputFile = join(cwd, "rewritten-input-file.json");
       await writeJson(blockedRewrittenInputFile, { mode: "deep-interview", active: true });
-      const blockedRewrittenInputFileMutation = await preToolUse(
+      const blockedRewrittenInputFileMutation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7287,7 +7226,7 @@ exit 0
       );
       assert.equal((blockedRewrittenInputFileMutation.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedNestedStateDeactivation = await preToolUse(
+      const blockedNestedStateDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7300,7 +7239,7 @@ exit 0
       );
       assert.equal((blockedNestedStateDeactivation.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedMultipleStateWrites = await preToolUse(
+      const blockedMultipleStateWrites = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7317,7 +7256,7 @@ exit 0
       );
       assert.equal((blockedMultipleStateWrites.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const allowedDecoyBeforeStateWrite = await preToolUse(
+      const allowedDecoyBeforeStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7336,7 +7275,7 @@ exit 0
 
       const blockedFileWriteWithLaterSafeDecoy = join(cwd, "blocked-file-before-later-decoy.json");
       await writeJson(blockedFileWriteWithLaterSafeDecoy, { mode: "deep-interview", active: false });
-      const blockedSegmentedStateWrite = await preToolUse(
+      const blockedSegmentedStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7353,7 +7292,7 @@ exit 0
       );
       assert.equal((blockedSegmentedStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const allowedMcpStateWrite = await preToolUse(
+      const allowedMcpStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7366,7 +7305,7 @@ exit 0
       );
       assert.equal(allowedMcpStateWrite.outputJson, null);
 
-      const blockedMcpStateWrite = await preToolUse(
+      const blockedMcpStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7379,7 +7318,7 @@ exit 0
       );
       assert.equal((blockedMcpStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedNestedMcpStateWrite = await preToolUse(
+      const blockedNestedMcpStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7393,7 +7332,7 @@ exit 0
       assert.equal((blockedNestedMcpStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
       for (const alias of terminalCurrentPhaseAliases) {
-        const blockedMcpCurrentPhaseAlias = await preToolUse(
+        const blockedMcpCurrentPhaseAlias = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7412,7 +7351,7 @@ exit 0
       }
 
       for (const [index, aliasPayload] of terminalOutcomeAliasPayloads.entries()) {
-        const blockedMcpCamelCaseOutcomeAlias = await preToolUse(
+        const blockedMcpCamelCaseOutcomeAlias = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7430,7 +7369,7 @@ exit 0
         );
       }
 
-      const blockedMcpStateClear = await preToolUse(
+      const blockedMcpStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7443,7 +7382,7 @@ exit 0
       );
       assert.equal((blockedMcpStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedStateClear = await preToolUse(
+      const blockedStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7457,7 +7396,6 @@ exit 0
       assert.equal((blockedStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
       const stateDeactivationInput = "'{\"mode\":\"deep-interview\",\"active\":false}'";
-      const absolutePathQualifiedNpm = resolve(cwd, "bin", "npm");
       const cliWrapperPlanningDeactivationCommands = [
         ["node-wrapper-clear", "node dist/cli/omx.js state clear --json"],
         ["node-wrapper-write", `node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
@@ -7471,55 +7409,8 @@ exit 0
         ["quoted-direct-wrapper-clear", '"./dist/cli/omx.js" state clear --json'],
         ["quoted-node-wrapper-write", `node "dist/cli/omx.js" state write --input ${stateDeactivationInput} --json`],
         ["env-wrapper-clear", "env FOO=bar node dist/cli/omx.js state clear --json"],
-        ["env-argv0-short-wrapper-clear", "env -a fake node dist/cli/omx.js state clear --json"],
-        ["env-argv0-long-wrapper-clear", "env --argv0 fake node dist/cli/omx.js state clear --json"],
-        ["node-title-wrapper-clear", "node --title foo dist/cli/omx.js state clear --json"],
-        ["time-wrapper-clear", "time omx state clear --json"],
-        ["time-format-wrapper-clear", "/usr/bin/time -f x omx state clear --json"],
-        ["time-output-wrapper-clear", "time -o out omx state clear --json"],
-        ["time-cluster-output-wrapper-clear", "/usr/bin/time -ao out omx state clear --json"],
-        ["time-cluster-format-wrapper-clear", "/usr/bin/time -af fmt omx state clear --json"],
-        ["nice-wrapper-clear", "nice -n 5 omx state clear --json"],
-        ["nice-wrapper-write", `nice -n 5 omx state write --input ${stateDeactivationInput} --json`],
-        ["stdbuf-wrapper-clear", "stdbuf -o0 omx state clear --json"],
-        ["stdbuf-wrapper-write", `stdbuf -o0 omx state write --input ${stateDeactivationInput} --json`],
-        ["timeout-wrapper-clear", "timeout 5 omx state clear --json"],
-        ["timeout-wrapper-write", `timeout 5 omx state write --input ${stateDeactivationInput} --json`],
-        ["setsid-wrapper-clear", "setsid omx state clear --json"],
-        ["setsid-wrapper-write", `setsid omx state write --input ${stateDeactivationInput} --json`],
-        ["setsid-wait-wrapper-clear", "setsid -w omx state clear --json"],
-        ["setsid-wait-wrapper-write", `setsid -w omx state write --input ${stateDeactivationInput} --json`],
-        ["time-brace-group-clear", "time { omx state clear --json; }"],
-        ["time-if-condition-clear", "time if omx state clear --json; then :; fi"],
-        ["time-subshell-clear", "time ( omx state clear --json )"],
-        ["time-command-env-node-wrapper-clear", "time command env node dist/cli/omx.js state clear --json"],
-        ["command-time-subshell-clear", "command time ( omx state clear --json )"],
-        ["coproc-wrapper-clear", "coproc omx state clear --json"],
-        ["coproc-wrapper-write", `coproc omx state write --input ${stateDeactivationInput} --json`],
-        ["coproc-name-brace-wrapper-clear", "coproc worker { omx state clear --json; }"],
-        ["coproc-name-brace-wrapper-write", `coproc worker { omx state write --input ${stateDeactivationInput} --json; }`],
-        ["xargs-wrapper-clear", "xargs omx state clear --json </dev/null"],
-        ["xargs-wrapper-write", `xargs omx state write --input ${stateDeactivationInput} --json </dev/null`],
-        ["case-arm-clear", "case x in x) omx state clear --json;; esac"],
-        ["case-arm-write", `case x in x) omx state write --input ${stateDeactivationInput} --json;; esac`],
-        ["subshell-function-body-clear", "f() ( omx state clear --json ); f"],
-        ["subshell-function-body-write", `f() ( omx state write --input ${stateDeactivationInput} --json ); f`],
         ["path-qualified-env-wrapper-clear", "/usr/bin/env node dist/cli/omx.js state clear --json"],
         ["path-qualified-env-split-wrapper-clear", "/usr/bin/env -S 'omx state clear --json'"],
-        ["npm-exec-wrapper-clear", "npm exec -- omx state clear --json"],
-        ["npm-exec-wrapper-write", `npm exec -- omx state write --input ${stateDeactivationInput} --json`],
-        ["npm-prefix-exec-wrapper-clear", "npm --prefix . exec -- omx state clear --json"],
-        ["npm-prefix-exec-wrapper-write", `npm --prefix . exec -- omx state write --input ${stateDeactivationInput} --json`],
-        ["npm-exec-call-wrapper-clear", "npm exec -c 'omx state clear --json'"],
-        ["pnpm-exec-wrapper-clear", "pnpm exec omx state clear --json"],
-        ["pnpm-exec-wrapper-write", `pnpm exec omx state write --input ${stateDeactivationInput} --json`],
-        ["pnpm-dir-exec-wrapper-clear", "pnpm -C . exec omx state clear --json"],
-        ["pnpm-dir-exec-wrapper-write", `pnpm -C . exec omx state write --input ${stateDeactivationInput} --json`],
-        ["path-qualified-npm-exec-wrapper-clear", `${absolutePathQualifiedNpm} exec -- omx state clear --json`],
-        ["path-qualified-npm-exec-wrapper-write", `${absolutePathQualifiedNpm} exec -- omx state write --input ${stateDeactivationInput} --json`],
-        ["npx-wrapper-clear", "npx omx state clear --json"],
-        ["nohup-trailing-clear", "true && nohup omx state clear --json"],
-        ["nohup-trailing-write", `true && nohup omx state write --input ${stateDeactivationInput} --json`],
         ["env-unset-wrapper-clear", "env -u FOO node dist/cli/omx.js state clear --json"],
         ["env-chdir-wrapper-clear", `env -C ${cwd} node dist/cli/omx.js state clear --json`],
         ["command-wrapper-write", `command node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
@@ -7537,38 +7428,6 @@ exit 0
         ["subshell-write", `(omx state write --input ${stateDeactivationInput} --json)`],
         ["subshell-node-wrapper-clear", "(node dist/cli/omx.js state clear --json)"],
         ["subshell-node-wrapper-write", `(node dist/cli/omx.js state write --input ${stateDeactivationInput} --json)`],
-        ["bash-wrapper-trailing-clear", "bash -c 'true'; omx state clear --json"],
-        ["sh-wrapper-trailing-write", `sh -c 'true' && omx state write --input ${stateDeactivationInput} --json`],
-        ["function-body-clear", "f(){ omx state clear --json; }; f"],
-        ["function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; f`],
-        ["timed-function-body-clear", "f(){ omx state clear --json; }; time f"],
-        ["timed-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time f`],
-        ["negated-function-body-clear", "f(){ omx state clear --json; }; ! f"],
-        ["negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; ! f`],
-        ["conditional-function-body-clear", "f(){ omx state clear --json; }; if f; then :; fi"],
-        ["conditional-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; if f; then :; fi`],
-        ["while-function-body-clear", "f(){ omx state clear --json; }; while f; do break; done"],
-        ["while-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; while f; do break; done`],
-        ["until-function-body-clear", "f(){ omx state clear --json; }; until f; do break; done"],
-        ["until-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; until f; do break; done`],
-        ["time-negated-function-body-clear", "f(){ omx state clear --json; }; time ! f"],
-        ["time-negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time ! f`],
-        ["time-brace-function-body-clear", "f(){ omx state clear --json; }; time { f; }"],
-        ["time-brace-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time { f; }`],
-        ["time-subshell-function-body-clear", "f(){ omx state clear --json; }; time ( f )"],
-        ["time-subshell-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time ( f )`],
-        ["time-if-function-body-clear", "f(){ omx state clear --json; }; time if f; then :; fi"],
-        ["time-if-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time if f; then :; fi`],
-        ["command-time-negated-function-body-clear", "f(){ omx state clear --json; }; command time ! f"],
-        ["command-time-negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; command time ! f`],
-        ["coproc-function-body-clear", "f(){ omx state clear --json; }; coproc f"],
-        ["coproc-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; coproc f`],
-        ["setsid-function-body-clear", "f(){ omx state clear --json; }; setsid f"],
-        ["setsid-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; setsid f`],
-        ["leading-redirection-clear", ">/dev/null omx state clear --json"],
-        ["leading-redirection-write", `>/dev/null omx state write --input ${stateDeactivationInput} --json`],
-        ["env-split-trailing-clear", "env -S FOO=bar omx state clear --json"],
-        ["env-split-string-trailing-write", `env --split-string 'FOO=bar' omx state write --input ${stateDeactivationInput} --json`],
         ["brace-group-clear", "{ omx state clear --json; }"],
         ["brace-group-write", `{ omx state write --input ${stateDeactivationInput} --json; }`],
         ["pipeline-to-subshell-clear", "printf 'x' | (omx state clear --json)"],
@@ -7583,7 +7442,7 @@ exit 0
       ] as const;
 
       for (const [name, command] of cliWrapperPlanningDeactivationCommands) {
-        const blockedCliWrapperPlanningDeactivation = await preToolUse(
+        const blockedCliWrapperPlanningDeactivation = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7611,7 +7470,7 @@ exit 0
       ] as const;
 
       for (const [name, command] of safeCliWrapperStateWriteCommands) {
-        const allowedCliWrapperStateWrite = await preToolUse(
+        const allowedCliWrapperStateWrite = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7636,7 +7495,7 @@ exit 0
       ] as const;
 
       for (const [name, command] of safeCliWrapperInputFileStateWriteCommands) {
-        const allowedCliWrapperInputFileStateWrite = await preToolUse(
+        const allowedCliWrapperInputFileStateWrite = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7650,82 +7509,6 @@ exit 0
         assert.equal(allowedCliWrapperInputFileStateWrite.outputJson, null, `${command} should defer to backend validation`);
       }
 
-      const envChdirRelativeInputFileRoot = join(cwd, "payload.json");
-      const envChdirRelativeInputFileSubdir = join(cwd, "env-chdir-input-file-subdir");
-      await mkdir(envChdirRelativeInputFileSubdir, { recursive: true });
-      await writeJson(envChdirRelativeInputFileRoot, { mode: "deep-interview", active: true, current_phase: "intent-first" });
-      await writeJson(join(envChdirRelativeInputFileSubdir, "payload.json"), {
-        mode: "deep-interview",
-        active: false,
-        current_phase: "intent-first",
-      });
-
-      const blockedEnvChdirRelativeInputFileWrite = await preToolUse(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: "sess-di-artifact",
-          tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-env-chdir-relative-input-file-write",
-          tool_input: {
-            command: `env -C ${envChdirRelativeInputFileSubdir} node ${resolve(cwd, "dist/cli/omx.js")} state write --input-file payload.json --json`,
-          },
-        },
-        { cwd },
-      );
-      assert.equal(
-        (blockedEnvChdirRelativeInputFileWrite.outputJson as { decision?: string } | null)?.decision,
-        "block",
-        "env -C should resolve --input-file relative to the wrapper cwd, not the hook cwd",
-      );
-
-      const blockedEnvChdirLongFlagRelativeInputFileWrite = await preToolUse(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: "sess-di-artifact",
-          tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-env-chdir-long-relative-input-file-write",
-          tool_input: {
-            command: `env --chdir ${envChdirRelativeInputFileSubdir} node ${resolve(cwd, "dist/cli/omx.js")} state write --input-file payload.json --json`,
-          },
-        },
-        { cwd },
-      );
-      assert.equal(
-        (blockedEnvChdirLongFlagRelativeInputFileWrite.outputJson as { decision?: string } | null)?.decision,
-        "block",
-        "env --chdir should resolve --input-file relative to the wrapper cwd, not the hook cwd",
-      );
-
-      const pnpmChdirRelativeInputFileSubdir = join(cwd, "pnpm-chdir-input-file-subdir");
-      await mkdir(pnpmChdirRelativeInputFileSubdir, { recursive: true });
-      await writeJson(join(cwd, "payload.json"), { mode: "deep-interview", active: true, current_phase: "intent-first" });
-      await writeJson(join(pnpmChdirRelativeInputFileSubdir, "payload.json"), {
-        mode: "deep-interview",
-        active: false,
-        current_phase: "intent-first",
-      });
-
-      const blockedPnpmChdirRelativeInputFileWrite = await preToolUse(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: "sess-di-artifact",
-          tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-pnpm-chdir-relative-input-file-write",
-          tool_input: {
-            command: `pnpm -C ${pnpmChdirRelativeInputFileSubdir} exec omx state write --input-file payload.json --json`,
-          },
-        },
-        { cwd },
-      );
-      assert.equal(
-        (blockedPnpmChdirRelativeInputFileWrite.outputJson as { decision?: string } | null)?.decision,
-        "block",
-        "pnpm -C should resolve --input-file relative to the wrapper cwd, not the hook cwd",
-      );
-
       const rewrittenArtifactInputFile = join(cwd, ".omx", "context", "rewritten-state-input-file.json");
       await mkdir(dirname(rewrittenArtifactInputFile), { recursive: true });
       await writeJson(rewrittenArtifactInputFile, { mode: "deep-interview", active: true });
@@ -7737,7 +7520,7 @@ exit 0
       ] as const;
 
       for (const [name, command] of blockedNestedArtifactInputFileRewriteBeforeStateWriteCommands) {
-        const blockedNestedArtifactInputFileRewriteBeforeStateWrite = await preToolUse(
+        const blockedNestedArtifactInputFileRewriteBeforeStateWrite = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -7755,7 +7538,7 @@ exit 0
         );
       }
 
-      const blockedArtifactInputFileRewriteBeforeStateWrite = await preToolUse(
+      const blockedArtifactInputFileRewriteBeforeStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7777,7 +7560,7 @@ exit 0
 
       const repeatedArtifactInputFile = join(cwd, ".omx", "context", "repeated-state-input-file.json");
       await writeJson(repeatedArtifactInputFile, { mode: "deep-interview", active: true });
-      const blockedRepeatedArtifactInputFileRewriteBeforeSecondStateWrite = await preToolUse(
+      const blockedRepeatedArtifactInputFileRewriteBeforeSecondStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7800,7 +7583,7 @@ exit 0
 
       // An implementation write smuggled alongside an allowed `omx state` command
       // must not be short-circuited through the allowance.
-      const blockedChainedWrite = await preToolUse(
+      const blockedChainedWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7813,34 +7596,7 @@ exit 0
       );
       assert.equal((blockedChainedWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedSourceGeneratedScriptCommands = [
-        ["source-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && source .omx/context/x.sh"],
-        ["bash-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && bash .omx/context/x.sh"],
-        ["source-tee", "printf 'omx state clear --json\n' | tee .omx/context/x.sh >/dev/null && source .omx/context/x.sh"],
-        ["source-variable", "tmp=.omx/context/x.sh; printf 'omx state clear --json\n' > \"$tmp\"; source \"$tmp\""],
-        ["source-tee-second-target", "printf 'omx state clear --json\n' | tee .omx/context/x.sh .omx/context/y.sh >/dev/null && source .omx/context/y.sh"],
-        ["bash-tee-append-second-target", "printf 'omx state clear --json\n' | tee -a .omx/context/x.sh .omx/context/y.sh >/dev/null && bash .omx/context/y.sh"],
-      ] as const;
-      for (const [name, command] of blockedSourceGeneratedScriptCommands) {
-        const blockedSourceGeneratedScript = await preToolUse(
-          {
-            hook_event_name: "PreToolUse",
-            cwd,
-            session_id: "sess-di-artifact",
-            tool_name: "Bash",
-            tool_use_id: `tool-di-state-cli-generated-script-${name}`,
-            tool_input: { command },
-          },
-          { cwd },
-        );
-        assert.equal(
-          (blockedSourceGeneratedScript.outputJson as { decision?: string } | null)?.decision,
-          "block",
-          `${command} should fail closed because it executes a same-command generated script`,
-        );
-      }
-
-      const allowedStateRead = await preToolUse(
+      const allowedStateRead = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7853,7 +7609,7 @@ exit 0
       );
       assert.equal(allowedStateRead.outputJson, null);
 
-      const allowedQuotedStateWriteMention = await preToolUse(
+      const allowedQuotedStateWriteMention = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7866,7 +7622,7 @@ exit 0
       );
       assert.equal(allowedQuotedStateWriteMention.outputJson, null);
 
-      const allowedHeredocStateWriteMention = await preToolUse(
+      const allowedHeredocStateWriteMention = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7879,7 +7635,7 @@ exit 0
       );
       assert.equal(allowedHeredocStateWriteMention.outputJson, null);
 
-      const blockedUnquotedHeredocSubstitution = await preToolUse(
+      const blockedUnquotedHeredocSubstitution = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7892,7 +7648,7 @@ exit 0
       );
       assert.equal((blockedUnquotedHeredocSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedUnquotedHeredocHyphenDelimiter = await preToolUse(
+      const blockedUnquotedHeredocHyphenDelimiter = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7905,7 +7661,7 @@ exit 0
       );
       assert.equal((blockedUnquotedHeredocHyphenDelimiter.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEscapedNewlineStateClear = await preToolUse(
+      const blockedEscapedNewlineStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7918,7 +7674,7 @@ exit 0
       );
       assert.equal((blockedEscapedNewlineStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEscapedNewlineStateWriteInput = await preToolUse(
+      const blockedEscapedNewlineStateWriteInput = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7933,7 +7689,7 @@ exit 0
 
       const escapedNewlineInputFile = join(cwd, "deep-interview-escaped-newline-state.json");
       await writeJson(escapedNewlineInputFile, { mode: "ralplan", active: false });
-      const blockedEscapedNewlineStateWriteInputFile = await preToolUse(
+      const blockedEscapedNewlineStateWriteInputFile = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7946,7 +7702,7 @@ exit 0
       );
       assert.equal((blockedEscapedNewlineStateWriteInputFile.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedShellStdinHeredoc = await preToolUse(
+      const blockedShellStdinHeredoc = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7959,20 +7715,7 @@ exit 0
       );
       assert.equal((blockedShellStdinHeredoc.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedShellStdinHereString = await preToolUse(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: "sess-di-artifact",
-          tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-shell-stdin-herestring",
-          tool_input: { command: "bash<<<'omx state clear --json'" },
-        },
-        { cwd },
-      );
-      assert.equal((blockedShellStdinHereString.outputJson as { decision?: string } | null)?.decision, "block");
-
-      const blockedShellStdinPipe = await preToolUse(
+      const blockedShellStdinPipe = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -7990,7 +7733,7 @@ exit 0
         "printf 'omx state clear --json' |bash",
         "printf 'omx state clear --json'| bash",
       ].entries()) {
-        const blockedCompactShellStdinPipe = await preToolUse(
+        const blockedCompactShellStdinPipe = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -8008,7 +7751,7 @@ exit 0
         );
       }
 
-      const blockedEnvDispatcherShell = await preToolUse(
+      const blockedEnvDispatcherShell = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8021,7 +7764,7 @@ exit 0
       );
       assert.equal((blockedEnvDispatcherShell.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEnvSplitStringStateClear = await preToolUse(
+      const blockedEnvSplitStringStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8034,7 +7777,7 @@ exit 0
       );
       assert.equal((blockedEnvSplitStringStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEnvSplitStringShellStateClear = await preToolUse(
+      const blockedEnvSplitStringShellStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8047,7 +7790,7 @@ exit 0
       );
       assert.equal((blockedEnvSplitStringShellStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEnvSplitStringStateWrite = await preToolUse(
+      const blockedEnvSplitStringStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8062,7 +7805,7 @@ exit 0
       );
       assert.equal((blockedEnvSplitStringStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEnvSplitStringEqualsStateClear = await preToolUse(
+      const blockedEnvSplitStringEqualsStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8075,7 +7818,7 @@ exit 0
       );
       assert.equal((blockedEnvSplitStringEqualsStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEnvSplitStringAttachedStateClear = await preToolUse(
+      const blockedEnvSplitStringAttachedStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8088,7 +7831,7 @@ exit 0
       );
       assert.equal((blockedEnvSplitStringAttachedStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedShellStdinStderrPipe = await preToolUse(
+      const blockedShellStdinStderrPipe = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8106,7 +7849,7 @@ exit 0
         "printf 'omx state clear --json' |&bash",
         "printf 'omx state clear --json'|& bash",
       ].entries()) {
-        const blockedCompactShellStdinStderrPipe = await preToolUse(
+        const blockedCompactShellStdinStderrPipe = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
             cwd,
@@ -8124,7 +7867,7 @@ exit 0
         );
       }
 
-      const blockedDotProcessSubstitution = await preToolUse(
+      const blockedDotProcessSubstitution = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8137,7 +7880,7 @@ exit 0
       );
       assert.equal((blockedDotProcessSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedBashProcessSubstitution = await preToolUse(
+      const blockedBashProcessSubstitution = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8150,33 +7893,7 @@ exit 0
       );
       assert.equal((blockedBashProcessSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedCatProcessSubstitution = await preToolUse(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: "sess-di-artifact",
-          tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-cat-process-substitution",
-          tool_input: { command: "cat <(omx state clear --json)" },
-        },
-        { cwd },
-      );
-      assert.equal((blockedCatProcessSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
-
-      const blockedDiffProcessSubstitution = await preToolUse(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: "sess-di-artifact",
-          tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-diff-process-substitution",
-          tool_input: { command: `diff <(omx state write --input ${stateDeactivationInput} --json) /dev/null` },
-        },
-        { cwd },
-      );
-      assert.equal((blockedDiffProcessSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
-
-      const blockedQuotedCommandSubstitutionClear = await preToolUse(
+      const blockedQuotedCommandSubstitutionClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8189,7 +7906,7 @@ exit 0
       );
       assert.equal((blockedQuotedCommandSubstitutionClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedQuotedCommandSubstitutionWrite = await preToolUse(
+      const blockedQuotedCommandSubstitutionWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8202,7 +7919,7 @@ exit 0
       );
       assert.equal((blockedQuotedCommandSubstitutionWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedQuotedBacktickSubstitutionClear = await preToolUse(
+      const blockedQuotedBacktickSubstitutionClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8215,7 +7932,7 @@ exit 0
       );
       assert.equal((blockedQuotedBacktickSubstitutionClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedRawNestedCommandSubstitutionClear = await preToolUse(
+      const blockedRawNestedCommandSubstitutionClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8228,7 +7945,7 @@ exit 0
       );
       assert.equal((blockedRawNestedCommandSubstitutionClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedRawNestedEvalSubstitutionClear = await preToolUse(
+      const blockedRawNestedEvalSubstitutionClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8241,7 +7958,7 @@ exit 0
       );
       assert.equal((blockedRawNestedEvalSubstitutionClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedRawNestedBacktickClear = await preToolUse(
+      const blockedRawNestedBacktickClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8254,7 +7971,7 @@ exit 0
       );
       assert.equal((blockedRawNestedBacktickClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedBacktickSubstitutionWrite = await preToolUse(
+      const blockedBacktickSubstitutionWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8267,7 +7984,7 @@ exit 0
       );
       assert.equal((blockedBacktickSubstitutionWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedNestedBashClear = await preToolUse(
+      const blockedNestedBashClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8280,7 +7997,7 @@ exit 0
       );
       assert.equal((blockedNestedBashClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedNestedShWrite = await preToolUse(
+      const blockedNestedShWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8293,7 +8010,7 @@ exit 0
       );
       assert.equal((blockedNestedShWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedPathQualifiedBashClear = await preToolUse(
+      const blockedPathQualifiedBashClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8306,7 +8023,7 @@ exit 0
       );
       assert.equal((blockedPathQualifiedBashClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedLoginBashClear = await preToolUse(
+      const blockedLoginBashClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8319,7 +8036,7 @@ exit 0
       );
       assert.equal((blockedLoginBashClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedDashShellClear = await preToolUse(
+      const blockedDashShellClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8332,7 +8049,7 @@ exit 0
       );
       assert.equal((blockedDashShellClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedRcfileBashClear = await preToolUse(
+      const blockedRcfileBashClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8345,7 +8062,7 @@ exit 0
       );
       assert.equal((blockedRcfileBashClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedShellOptionValueBeforeCommandString = await preToolUse(
+      const blockedShellOptionValueBeforeCommandString = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8358,7 +8075,7 @@ exit 0
       );
       assert.equal((blockedShellOptionValueBeforeCommandString.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedEvalStateClear = await preToolUse(
+      const blockedEvalStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8371,7 +8088,7 @@ exit 0
       );
       assert.equal((blockedEvalStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedDynamicEvalStateClear = await preToolUse(
+      const blockedDynamicEvalStateClear = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8384,7 +8101,7 @@ exit 0
       );
       assert.equal((blockedDynamicEvalStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedDynamicShellStateWrite = await preToolUse(
+      const blockedDynamicShellStateWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8397,7 +8114,7 @@ exit 0
       );
       assert.equal((blockedDynamicShellStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedDynamicTopLevelPayloadCommand = await preToolUse(
+      const blockedDynamicTopLevelPayloadCommand = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8410,7 +8127,7 @@ exit 0
       );
       assert.equal((blockedDynamicTopLevelPayloadCommand.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedExecPayloadCommand = await preToolUse(
+      const blockedExecPayloadCommand = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8423,7 +8140,7 @@ exit 0
       );
       assert.equal((blockedExecPayloadCommand.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedCommandPayloadCommand = await preToolUse(
+      const blockedCommandPayloadCommand = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8436,7 +8153,7 @@ exit 0
       );
       assert.equal((blockedCommandPayloadCommand.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedExecDashDashPayloadCommand = await preToolUse(
+      const blockedExecDashDashPayloadCommand = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8449,7 +8166,7 @@ exit 0
       );
       assert.equal((blockedExecDashDashPayloadCommand.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedExecOptionPayloadCommand = await preToolUse(
+      const blockedExecOptionPayloadCommand = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8462,7 +8179,7 @@ exit 0
       );
       assert.equal((blockedExecOptionPayloadCommand.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedCommandDashDashPayloadCommand = await preToolUse(
+      const blockedCommandDashDashPayloadCommand = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8475,7 +8192,7 @@ exit 0
       );
       assert.equal((blockedCommandDashDashPayloadCommand.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedCommandOptionPayloadCommand = await preToolUse(
+      const blockedCommandOptionPayloadCommand = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8488,7 +8205,7 @@ exit 0
       );
       assert.equal((blockedCommandOptionPayloadCommand.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedDynamicShellSubstitutionPayload = await preToolUse(
+      const blockedDynamicShellSubstitutionPayload = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8501,7 +8218,7 @@ exit 0
       );
       assert.equal((blockedDynamicShellSubstitutionPayload.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const blockedDynamicEvalBacktickPayload = await preToolUse(
+      const blockedDynamicEvalBacktickPayload = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8514,7 +8231,7 @@ exit 0
       );
       assert.equal((blockedDynamicEvalBacktickPayload.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const allowedNestedShellSafeLiteral = await preToolUse(
+      const allowedNestedShellSafeLiteral = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8527,7 +8244,7 @@ exit 0
       );
       assert.equal(allowedNestedShellSafeLiteral.outputJson, null);
 
-      const allowedQuotedProcessSubstitutionLiteral = await preToolUse(
+      const allowedQuotedProcessSubstitutionLiteral = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8540,7 +8257,7 @@ exit 0
       );
       assert.equal(allowedQuotedProcessSubstitutionLiteral.outputJson, null);
 
-      const allowedQuotedNestedShellMention = await preToolUse(
+      const allowedQuotedNestedShellMention = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8553,7 +8270,7 @@ exit 0
       );
       assert.equal(allowedQuotedNestedShellMention.outputJson, null);
 
-      const allowedQuotedLiteralAfterSubstitution = await preToolUse(
+      const allowedQuotedLiteralAfterSubstitution = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8566,7 +8283,7 @@ exit 0
       );
       assert.equal(allowedQuotedLiteralAfterSubstitution.outputJson, null);
 
-      const blockedBash = await preToolUse(
+      const blockedBash = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -8635,7 +8352,7 @@ exit 0
       );
       assert.equal((blocked.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const terminalCurrentPhaseAliases = ["finish", "finished", "complete", "completed", "done", "blocked", "blocked-on-user", "blocked_on_user", "failed", "fail", "error", "cancelled", "canceled", "cancel", "aborted", "abort", "userinterlude", "user-interlude", "interrupted", "interrupt", "askuserquestion", "ask-user-question", "askuser", "question"] as const;
+      const terminalCurrentPhaseAliases = ["done", "blocked", "cancelled", "canceled", "aborted"] as const;
       for (const alias of terminalCurrentPhaseAliases) {
         const blockedAliasPayload = join(cwd, `ralplan-blocked-state-${alias}.json`);
         await writeJson(blockedAliasPayload, { mode: "ralplan", current_phase: alias });
@@ -9087,95 +8804,6 @@ exit 0
           "block",
           `expected deep-interview to block real apply_patch form: ${form.command}`,
         );
-      }
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("blocks operator-adjacent transport bypass forms while still allowing a safe direct-wrapper state write", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-transport-bypass-"));
-    try {
-      const stateDir = join(cwd, ".omx", "state");
-      const sessionId = "sess-di-transport-bypass";
-      const sessionDir = join(stateDir, "sessions", sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
-      await writeJson(join(sessionDir, "skill-active-state.json"), {
-        version: 1,
-        active: true,
-        skill: "deep-interview",
-        phase: "planning",
-        session_id: sessionId,
-        thread_id: "thread-di-transport-bypass",
-        active_skills: [{
-          skill: "deep-interview",
-          phase: "planning",
-          active: true,
-          session_id: sessionId,
-          thread_id: "thread-di-transport-bypass",
-        }],
-      });
-      await writeJson(join(sessionDir, "deep-interview-state.json"), {
-        active: true,
-        mode: "deep-interview",
-        current_phase: "intent-first",
-        session_id: sessionId,
-        thread_id: "thread-di-transport-bypass",
-        rounds: [{ answer: "Use CLI wrapper normalization for protected planning state commands." }],
-      });
-
-      const preToolUse = (tool_use_id: string, command: string) => dispatchCodexNativeHook(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: sessionId,
-          thread_id: "thread-di-transport-bypass",
-          tool_name: "Bash",
-          tool_use_id,
-          tool_input: { command },
-        },
-        { cwd },
-      );
-
-      const absoluteCliEntry = resolve(cwd, "dist/cli/omx.js");
-      const blockedCommands = [
-        `printf 'omx state clear --json'|bash`,
-        `printf 'omx state clear --json'|&bash`,
-        `bash<<<'omx state clear --json'`,
-        `bash<<'EOF'\nomx state clear --json\nEOF`,
-        `bash< <(printf 'omx state clear --json')`,
-        `env -S "bash -c 'omx state clear --json'"`,
-        `env --split-string "bash -c 'omx state clear --json'"`,
-        `env -S "node dist/cli/omx.js state clear --json"`,
-        `env --split-string "node dist/cli/omx.js state clear --json"`,
-        `env -S "dist/cli/omx.js state clear --json"`,
-        `env --split-string "dist/cli/omx.js state clear --json"`,
-        `node dist/cli/omx.js state clear --json`,
-        `node ./dist/cli/omx.js state clear --json`,
-        `node ${absoluteCliEntry} state clear --json`,
-        `bun dist/cli/omx.js state clear --json`,
-        `tsx src/cli/omx.ts state clear --json`,
-        `dist/cli/omx.js state clear --json`,
-        `./dist/cli/omx.js state clear --json`,
-        `exec node dist/cli/omx.js state clear --json`,
-        `command node dist/cli/omx.js state clear --json`,
-        `command env VAR=x node dist/cli/omx.js state clear --json`,
-        `env VAR=x node dist/cli/omx.js state clear --json`,
-        `exec env -S "node dist/cli/omx.js state clear --json"`,
-      ];
-      for (const [index, command] of blockedCommands.entries()) {
-        const blocked = await preToolUse(`tool-di-transport-bypass-block-${index}`, command);
-        assert.equal((blocked.outputJson as { decision?: string } | null)?.decision, "block", `expected transport guard to block: ${command}`);
-      }
-
-      const allowedCommands = [
-        `echo '|& <<< <<'`,
-        `node dist/cli/omx.js state write --input '{"mode":"deep-interview","active":true}' --json`,
-      ];
-      for (const [index, command] of allowedCommands.entries()) {
-        const allowed = await preToolUse(`tool-di-transport-bypass-allow-${index}`, command);
-        assert.equal(allowed.outputJson, null, `expected safe transport form to remain allowed: ${command}`);
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });

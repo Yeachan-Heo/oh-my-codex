@@ -2742,12 +2742,10 @@ async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Pro
   }
   if (activeUltragoal) {
     const goalId = safeString(activeUltragoal.id) || "<goal-id>";
-    const codexObjective = safeString(ultragoal?.codexObjective) || safeString(activeUltragoal.objective) || "<intended ultragoal objective>";
     return {
       workflow: "ultragoal",
       command: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
       remediation: [
-        `If get_goal returns no active goal/null while ${goalId} remains in_progress in .omx/ultragoal/goals.json, do not checkpoint complete or record a blocker from the empty snapshot; call create_goal with objective ${JSON.stringify(codexObjective)} and continue the active OMX story until real completion evidence exists.`,
         `If get_goal returns a completed task-scoped objective for the same aggregate ultragoal plan, checkpoint ${goalId} with evidence naming ${goalId} plus .omx/ultragoal/goals.json or ledger.jsonl and pass final quality-gate JSON; OMX will reconcile the completed planned scope without mutating Codex goal state.`,
         `If get_goal instead returns a different completed legacy objective and complete checkpointing fails, do not repeat --status complete in this thread.`,
         `Record the non-terminal blocker with: omx ultragoal checkpoint --goal-id ${goalId} --status blocked --codex-goal-json '<different completed get_goal JSON or path>' --evidence '<completed legacy Codex goal blocks create_goal in this thread>'.`,
@@ -3574,27 +3572,9 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   const assignments = extractCommandLiteralAssignments(command);
   const targets = extractDeepInterviewCommandRedirectTargets(command)
     .map((target) => resolveCommandRedirectTarget(target, assignments));
-  for (const segment of splitShellCommandSegments(command)) {
-    const words = tokenizeShellWords(segment);
-    for (let index = 0; index < words.length; index += 1) {
-      if (shellWordBaseName(words[index] ?? "") !== "tee") continue;
-      let afterDoubleDash = false;
-      for (let targetIndex = index + 1; targetIndex < words.length; targetIndex += 1) {
-        const word = words[targetIndex] ?? "";
-        if (!word || word === "|" || word === "|&" || word === "&&" || word === "||" || word === ";") break;
-        if (!afterDoubleDash && word === "--") {
-          afterDoubleDash = true;
-          continue;
-        }
-        if (!afterDoubleDash && word.startsWith("-")) continue;
-        if (word === ">" || word === ">>" || word === ">&" || word === "<" || word === "<<" || word === "<<<") {
-          targetIndex += 1;
-          continue;
-        }
-        if (/^(?:>{1,2}|<)\S+/.test(word)) continue;
-        if (!isNullDeviceRedirectTarget(word)) targets.push(resolveCommandRedirectTarget(word, assignments));
-      }
-    }
+  for (const match of command.matchAll(/\btee\s+(?:-a\s+)?(["']?)([^\s&|;<>]+)\1/g)) {
+    const candidate = safeString(match[2]).trim();
+    if (candidate) targets.push(resolveCommandRedirectTarget(candidate, assignments));
   }
   return targets;
 }
@@ -3610,260 +3590,6 @@ function formatPlanningWriteBlockDetail(
 function isUnresolvedVariableTarget(target: string): boolean {
   const normalized = target.trim().replace(/^['"]|['"]$/g, "");
   return /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
-}
-
-function normalizeSameCommandScriptTarget(
-  cwd: string,
-  rawPath: string,
-  assignments: Map<string, string>,
-): string | null {
-  const trimmed = resolveCommandRedirectTarget(
-    rawPath.trim().replace(/^['"]|['"]$/g, ""),
-    assignments,
-  );
-  if (!trimmed || trimmed.includes("\0") || isUnresolvedVariableTarget(trimmed)) return null;
-  try {
-    return resolve(cwd, trimmed);
-  } catch {
-    return null;
-  }
-}
-
-function normalizeCommandDirectoryTarget(rawPath: string): string | null {
-  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
-  if (
-    !trimmed
-    || trimmed.includes("\0")
-    || trimmed.startsWith("~")
-    || trimmed.startsWith("-")
-    || isUnresolvedVariableTarget(trimmed)
-    || /[`$]/.test(trimmed)
-  ) {
-    return null;
-  }
-  return trimmed;
-}
-
-function isEnvCwdChangingOption(word: string): boolean {
-  return word === "-C"
-    || word === "--chdir"
-    || word.startsWith("--chdir=")
-    || /^-C.+/.test(word);
-}
-
-function resolveStateWriteInputFileCwd(cwd: string, commandPrefix: string): string | null {
-  const words = tokenizeShellWords(stripHeredocBodiesForCommandScan(commandPrefix));
-  let effectiveCwd = cwd;
-  let activeWrapper: "env" | "npm" | "pnpm" | "yarn" | null = null;
-
-  for (let index = 0; index < words.length; index += 1) {
-    const word = words[index] ?? "";
-    if (!word || isShellAssignmentWord(word)) continue;
-
-    const wordBase = shellWordBaseName(word);
-    if (wordBase === "env" || wordBase === "npm" || wordBase === "pnpm" || wordBase === "yarn") {
-      activeWrapper = wordBase;
-      continue;
-    }
-
-    if (!activeWrapper) continue;
-
-    const isEnvChdirOption = activeWrapper === "env" && isEnvCwdChangingOption(word);
-    const isPackageManagerCwdOption =
-      activeWrapper !== "env"
-        && (word === "-C"
-          || word === "--prefix"
-          || word === "--dir"
-          || word === "--cwd"
-          || word.startsWith("--prefix=")
-          || word.startsWith("--dir=")
-          || word.startsWith("--cwd=")
-          || /^-C.+/.test(word));
-
-    if (isEnvChdirOption || isPackageManagerCwdOption) {
-      let target = "";
-      if (word === "-C" || word === "--chdir" || word === "--prefix" || word === "--dir" || word === "--cwd") {
-        target = words[index + 1] ?? "";
-      } else if (word.startsWith("--chdir=")) {
-        target = word.slice("--chdir=".length);
-      } else if (word.startsWith("--prefix=")) {
-        target = word.slice("--prefix=".length);
-      } else if (word.startsWith("--dir=")) {
-        target = word.slice("--dir=".length);
-      } else if (word.startsWith("--cwd=")) {
-        target = word.slice("--cwd=".length);
-      } else if (word.startsWith("-C") && word.length > 2) {
-        target = word.slice(2);
-      }
-      const normalizedTarget = normalizeCommandDirectoryTarget(target);
-      if (normalizedTarget === null) return null;
-      effectiveCwd = resolve(effectiveCwd, normalizedTarget);
-      if (word === "-C" || word === "--chdir" || word === "--prefix" || word === "--dir" || word === "--cwd") {
-        index += 1;
-      }
-    }
-  }
-
-  return effectiveCwd;
-}
-
-function findShellFunctionDefinitionAt(command: string, index: number): { name: string; openBraceIndex: number; bodyOpenChar: "{" | "(" } | null {
-  if (index > 0) {
-    let previous = index - 1;
-    while (previous >= 0 && /\s/.test(command[previous] ?? "")) previous -= 1;
-    if (previous >= 0 && !/[;&|(){}]/.test(command[previous] ?? "")) return null;
-  }
-
-  let cursor = index;
-  while (/\s/.test(command[cursor] ?? "")) cursor += 1;
-  const candidate = command.slice(cursor);
-  const functionKeywordMatch = candidate.match(/^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*([\{(])/);
-  if (functionKeywordMatch) {
-    return {
-      name: functionKeywordMatch[1],
-      openBraceIndex: cursor + functionKeywordMatch[0].length - 1,
-      bodyOpenChar: functionKeywordMatch[2] === "(" ? "(" : "{",
-    };
-  }
-  const bareFunctionMatch = candidate.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*([\{(])/);
-  if (bareFunctionMatch) {
-    return {
-      name: bareFunctionMatch[1],
-      openBraceIndex: cursor + bareFunctionMatch[0].length - 1,
-      bodyOpenChar: bareFunctionMatch[2] === "(" ? "(" : "{",
-    };
-  }
-  return null;
-}
-
-function findShellFunctionBodyEnd(command: string, openBraceIndex: number, bodyOpenChar: "{" | "("): number {
-  let depth = 1;
-  let quote: "'" | "\"" | null = null;
-  for (let index = openBraceIndex + 1; index < command.length; index += 1) {
-    const char = command[index] ?? "";
-    if (char === "\\" && quote !== "'") {
-      index += 1;
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      if (quote === char) {
-        quote = null;
-      } else if (!quote) {
-        quote = char;
-      }
-      continue;
-    }
-    if (quote) continue;
-    if (bodyOpenChar === "{" && char === "{") {
-      depth += 1;
-      continue;
-    }
-    if (bodyOpenChar === "{" && char === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-    if (bodyOpenChar === "(" && char === "(") {
-      depth += 1;
-      continue;
-    }
-    if (bodyOpenChar === "(" && char === ")") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-}
-
-function isShellFunctionInvokedLater(command: string, functionName: string): boolean {
-  for (const segment of splitShellCommandSegments(command)) {
-    const words = tokenizeShellWords(segment);
-    if (isShellFunctionInvokedFromWords(words, 0, functionName)) return true;
-  }
-  return false;
-}
-
-function isShellFunctionInvokedFromWords(words: string[], startIndex: number, functionName: string): boolean {
-  const index = skipShellCommandPositionPrefixWords(words, startIndex);
-  const head = words[index] ?? "";
-  if (head === functionName) return true;
-
-  if (shellWordBaseName(head) === "time") {
-    const timeOperandIndex = findTimeDispatchOperandIndex(words, index + 1);
-    if (timeOperandIndex !== null) {
-      const timeCommandIndex = skipShellCommandPositionPrefixWords(words, timeOperandIndex);
-      if ((words[timeCommandIndex] ?? "") === functionName) return true;
-    }
-  }
-
-  if (shellWordBaseName(head) === "coproc") {
-    const coprocOperandIndex = findCoprocDispatchOperandIndex(words, index + 1);
-    if (coprocOperandIndex !== null) {
-      return isShellFunctionInvokedFromWords(words, coprocOperandIndex, functionName);
-    }
-  }
-
-  if (shellWordBaseName(head) === "setsid") {
-    const setsidOperandIndex = findCommandDispatchOperandIndex(words, index + 1);
-    if (setsidOperandIndex !== null) {
-      return isShellFunctionInvokedFromWords(words, setsidOperandIndex, functionName);
-    }
-  }
-
-  if (shellWordBaseName(head) === "command") {
-    const commandOperandIndex = findCommandDispatchOperandIndex(words, index + 1);
-    if (commandOperandIndex !== null && shellWordBaseName(words[commandOperandIndex] ?? "") === "time") {
-      return isShellFunctionInvokedFromWords(words, commandOperandIndex, functionName);
-    }
-  }
-
-  return false;
-}
-
-function firstNonOptionSourceOperand(words: string[], sourceWordIndex: number): string {
-  for (let index = sourceWordIndex + 1; index < words.length; index += 1) {
-    const word = words[index] ?? "";
-    if (!word || word === "--") continue;
-    if (word.startsWith("-")) continue;
-    return word;
-  }
-  return "";
-}
-
-function firstShellScriptOperand(words: string[], shellWordIndex: number): string {
-  for (let index = shellWordIndex + 1; index < words.length; index += 1) {
-    const word = words[index] ?? "";
-    if (!word || word === "--") continue;
-    if (isShellCommandStringOption(word)) return "";
-    if (isShellOptionWithSeparateValue(word)) {
-      index += 1;
-      continue;
-    }
-    if (word.startsWith("-")) continue;
-    return word;
-  }
-  return "";
-}
-
-function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): boolean {
-  const assignments = extractCommandLiteralAssignments(command);
-  const writtenTargets = new Set<string>();
-  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
-    const words = tokenizeShellWords(segment);
-    for (let index = 0; index < words.length; index += 1) {
-      const word = words[index] ?? "";
-      const operand = word === "source" || word === "."
-        ? normalizeSameCommandScriptTarget(cwd, firstNonOptionSourceOperand(words, index), assignments)
-        : isNestedShellCommandWord(word)
-          ? normalizeSameCommandScriptTarget(cwd, firstShellScriptOperand(words, index), assignments)
-          : null;
-      if (operand && writtenTargets.has(operand)) return true;
-    }
-    for (const target of extractDeepInterviewCommandWriteTargets(segment)) {
-      const normalizedTarget = normalizeSameCommandScriptTarget(cwd, target, assignments);
-      if (normalizedTarget) writtenTargets.add(normalizedTarget);
-    }
-  }
-  return false;
 }
 
 
@@ -3883,16 +3609,12 @@ function describeImplementationToolBlock(
 // `omx state` mutations normally route through the gate-enforcing `state_write`
 // backend, so the hook defers to that gate rather than blocking the transport.
 // The backend does NOT gate standalone deep-interview/ralplan *deactivation*,
-// and it normalizes non-terminal tracked-workflow writes to `active=true`, so
-// commands that would implicitly activate a tracked workflow while planning is
-// still protected are blocked here. Broader backend authority belongs to a
-// separate follow-up; this PR keeps the model/tool-originated guard at the
-// native-hook transport boundary.
-function readStateWriteInputPayload(
-  cwd: string,
-  command: string,
-  sourceCommand: string = command,
-): Record<string, unknown> | null {
+// however, so a command that ends the active planning phase from a tool call
+// (`omx state clear`, or an `omx state write` that flips `active` off or writes
+// a terminal planning phase) is still blocked here. Broader backend authority
+// belongs to a separate follow-up; this PR keeps the model/tool-originated guard
+// at the native-hook transport boundary.
+function readStateWriteInputPayload(cwd: string, command: string): Record<string, unknown> | null {
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   if (stateWriteOperations.length === 0) return null;
   if (stateWriteOperations.length > 1) return null;
@@ -3925,18 +3647,8 @@ function readStateWriteInputPayload(
   if (stateWriteOperation.nested) return null;
   if (hasPriorExecutableCommand(stateWriteOperation.prefix)) return null;
 
-  const canonicalCommandPrefix = stateWriteOperation.commandPrefix || stateWriteOperation.prefix || "";
-  const rawCommandPrefix = sourceCommand !== command
-    ? (() => {
-      const sourceCommandIndex = sourceCommand.lastIndexOf(command);
-      return sourceCommandIndex >= 0 ? sourceCommand.slice(0, sourceCommandIndex) : "";
-    })()
-    : "";
-  const resolvedInputFileCwd = resolveStateWriteInputFileCwd(cwd, canonicalCommandPrefix || rawCommandPrefix);
-  if (resolvedInputFileCwd === null) return null;
-
   try {
-    const raw = readFileSync(resolve(resolvedInputFileCwd, inputFile.trim()), "utf-8");
+    const raw = readFileSync(resolve(cwd, inputFile.trim()), "utf-8");
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? mergeModeFlag(parsed as Record<string, unknown>)
@@ -3944,27 +3656,6 @@ function readStateWriteInputPayload(
   } catch {
     return null;
   }
-}
-
-function envCommandHasCwdChangingOption(words: string[], startIndex: number): boolean {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token || token === "--") continue;
-    if (isShellAssignmentWord(token)) continue;
-    if (isEnvCwdChangingOption(token)) return true;
-    if (token === "-S" || token === "--split-string" || token.startsWith("-S") || token.startsWith("--split-string=")) {
-      return false;
-    }
-    if (token === "-u" || token === "--unset" || token === "-a" || token === "--argv0") {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith("--unset=") || token.startsWith("--argv0=")) continue;
-    if (/^-u.+/.test(token) || /^-a.+/.test(token)) continue;
-    if (token.startsWith("-")) continue;
-    return false;
-  }
-  return false;
 }
 
 function hasPriorExecutableCommand(commandPrefix: string): boolean {
@@ -4035,318 +3726,10 @@ function tokenizeShellWords(segment: string): string[] {
       }
       continue;
     }
-    if (!quote && (char === "<" || char === ">")) {
-      if (current) {
-        words.push(current);
-        current = "";
-      }
-      const next = segment[index + 1] ?? "";
-      if (next === char) {
-        const third = segment[index + 2] ?? "";
-        if (char === "<" && third === "<") {
-          words.push("<<<");
-          index += 2;
-        } else {
-          words.push(`${char}${next}`);
-          index += 1;
-        }
-      } else if (char === ">" && next === "&") {
-        words.push(">&");
-        index += 1;
-      } else {
-        words.push(char);
-      }
-      continue;
-    }
     current += char;
   }
   if (current) words.push(current);
   return words;
-}
-
-function isOmxCliEntryPath(token: string, runtimeWrapper: string | null): boolean {
-  const trimmed = token.trim().replace(/^['"]|['"]$/g, "");
-  if (!trimmed || trimmed.includes("\0")) return false;
-
-  const normalized = trimmed.replace(/\\/g, "/");
-  const entryBasename = normalized.split("/").filter(Boolean).pop() ?? "";
-  if (entryBasename === "omx" || entryBasename === "omx.js") return true;
-  if (normalized.endsWith("/node_modules/.bin/omx") || normalized === "node_modules/.bin/omx") return true;
-  if (normalized.endsWith("/dist/cli/omx.js") || normalized === "dist/cli/omx.js") return true;
-  if (runtimeWrapper === "tsx" && (normalized.endsWith("/src/cli/omx.ts") || normalized === "src/cli/omx.ts")) return true;
-  if (runtimeWrapper === "tsx" && (normalized.endsWith("/dist/cli/omx.js") || normalized === "dist/cli/omx.js")) return true;
-  return false;
-}
-
-function extractEnvSplitStringCommand(words: string[], startIndex: number): string {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token) continue;
-    if (token === "-S" || token === "--split-string") {
-      const operand = words[index + 1] ?? "";
-      if (!operand) return "";
-      const tail = words.slice(index + 2).join(" ");
-      return tail ? `${operand} ${tail}` : operand;
-    }
-    if (token.startsWith("--split-string=") || (token.startsWith("-S") && token.length > 2)) {
-      const operand = token.startsWith("--split-string=")
-        ? token.slice("--split-string=".length)
-        : token.slice(2);
-      if (!operand) return "";
-      const tail = words.slice(index + 1).join(" ");
-      return tail ? `${operand} ${tail}` : operand;
-    }
-    if (isShellAssignmentWord(token)) continue;
-    if (token === "-u" || token === "--unset" || token === "-C" || token === "--chdir" || token === "-a" || token === "--argv0") {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith("--unset=") || token.startsWith("--chdir=") || token.startsWith("--argv0=")) continue;
-    if (/^-u.+/.test(token) || /^-C.+/.test(token) || /^-a.+/.test(token)) continue;
-    if (token.startsWith("-")) continue;
-    break;
-  }
-  return "";
-}
-
-function extractPackageManagerExecCommand(command: string, words: string[], startIndex: number, headBase: string): string {
-  let index = startIndex;
-  if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn") {
-    const subcommandIndex = findPackageManagerExecSubcommandIndex(words, startIndex, headBase);
-    if (subcommandIndex === null) return "";
-    index = subcommandIndex + 1;
-  } else if (headBase !== "npx" && headBase !== "pnpx") {
-    return "";
-  }
-
-  for (; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token) continue;
-    if (token === "--") {
-      const tail = sliceShellWordsTailPreservingQuoting(command, index + 1);
-      return tail || "";
-    }
-    if (isShellAssignmentWord(token)) continue;
-    if (token === "-c" || token === "--call") {
-      return words[index + 1] ?? "";
-    }
-    if (token.startsWith("-c") && token.length > 2) return token.slice(2);
-    if (token.startsWith("--call=")) return token.slice("--call=".length);
-    if (token === "--package" || token === "-w" || token === "--workspace" || token === "--allow-scripts") {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith("--package=") || token.startsWith("--workspace=") || token.startsWith("--allow-scripts=")) continue;
-    if (token.startsWith("-w") && token.length > 2) continue;
-    if (token.startsWith("-")) continue;
-    const tail = sliceShellWordsTailPreservingQuoting(command, index);
-    return tail || "";
-  }
-  return "";
-}
-
-function findPackageManagerExecSubcommandIndex(words: string[], startIndex: number, headBase: string): number | null {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token) continue;
-    if (isShellAssignmentWord(token)) continue;
-    if (token === "-C" || token === "--prefix" || token === "--dir" || token === "-w" || token === "--workspace" || token === "--package" || token === "--allow-scripts") {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith("--prefix=") || token.startsWith("--dir=") || token.startsWith("--workspace=") || token.startsWith("--package=") || token.startsWith("--allow-scripts=")) continue;
-    if (/^-C.+/.test(token) || /^-w.+/.test(token)) continue;
-    if (token.startsWith("-")) continue;
-    if (token === "exec" || (headBase === "npm" && token === "x") || ((headBase === "pnpm" || headBase === "yarn") && token === "dlx")) {
-      return index;
-    }
-    return null;
-  }
-  return null;
-}
-
-function unwrapOmxStateTransportCommandOnce(command: string): string | null {
-  const words = tokenizeShellWords(normalizeShellLineContinuations(command).trim());
-  if (words.length === 0) return null;
-
-  let index = 0;
-  while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
-  if (index >= words.length) return null;
-
-  const head = words[index] ?? "";
-  if (!head) return null;
-  const headBase = shellWordBaseName(head);
-
-  if (headBase === "command" || headBase === "builtin" || headBase === "exec" || headBase === "nohup" || headBase === "setsid") {
-    let remainderIndex = index + 1;
-    while (remainderIndex < words.length) {
-      const token = words[remainderIndex] ?? "";
-      if (!token) {
-        remainderIndex += 1;
-        continue;
-      }
-      if (token === "--") {
-        remainderIndex += 1;
-        continue;
-      }
-      if (head === "exec" && token === "-a") {
-        remainderIndex += 2;
-        continue;
-      }
-      if (token.startsWith("-")) {
-        remainderIndex += 1;
-        continue;
-      }
-      break;
-    }
-    const remainder = sliceShellWordsTailPreservingQuoting(command, remainderIndex);
-    return remainder || null;
-  }
-
-  if (headBase === "env") {
-    if (envCommandHasCwdChangingOption(words, index + 1)) {
-      return null;
-    }
-    const splitOperand = extractEnvSplitStringCommand(words, index + 1);
-    if (splitOperand) {
-      return splitOperand;
-    }
-    const envCommandIndex = findEnvDispatchOperandIndex(words, index + 1);
-    if (envCommandIndex !== null) {
-      const remainder = sliceShellWordsTailPreservingQuoting(command, envCommandIndex);
-      return remainder || null;
-    }
-    const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
-    return remainder || null;
-  }
-
-  if (headBase === "time") {
-    const operandIndex = findTimeDispatchOperandIndex(words, index + 1);
-    if (operandIndex !== null) {
-      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
-      return remainder || null;
-    }
-    return null;
-  }
-
-  if (headBase === "nice") {
-    const operandIndex = findNiceDispatchOperandIndex(words, index + 1);
-    if (operandIndex !== null) {
-      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
-      return remainder || null;
-    }
-    return null;
-  }
-
-  if (headBase === "stdbuf") {
-    const operandIndex = findStdbufDispatchOperandIndex(words, index + 1);
-    if (operandIndex !== null) {
-      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
-      return remainder || null;
-    }
-    return null;
-  }
-
-  if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn" || headBase === "npx" || headBase === "pnpx") {
-    const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, headBase);
-    if (packageManagerCommand) {
-      return packageManagerCommand;
-    }
-  }
-
-  if (isNestedShellCommandWord(headBase)) {
-    const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
-    if (commandStringIndex !== null) {
-      const nestedCommand = words[commandStringIndex] ?? "";
-      if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) {
-        const remainder = sliceShellWordsTailPreservingQuoting(command, commandStringIndex + 1);
-        return remainder ? `${nestedCommand} ${remainder}` : nestedCommand;
-      }
-    }
-  }
-
-  if (headBase === "eval") {
-    const nestedCommand = words.slice(index + 1).join(" ");
-    if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) return nestedCommand;
-  }
-
-  if (headBase === "node" || headBase === "bun" || headBase === "tsx") {
-    const entryIndex = (() => {
-      for (let candidateIndex = index + 1; candidateIndex < words.length; candidateIndex += 1) {
-        const candidate = words[candidateIndex] ?? "";
-        if (!candidate) continue;
-        if (candidate.startsWith("-")) continue;
-        return candidateIndex;
-      }
-      return -1;
-    })();
-    if (entryIndex >= 0) {
-      const entryPath = words[entryIndex] ?? "";
-      if (entryPath && isOmxCliEntryPath(entryPath, headBase)) {
-        const remainder = sliceShellWordsTailPreservingQuoting(command, entryIndex + 1);
-        return remainder ? `omx ${remainder}` : "omx";
-      }
-    }
-    return null;
-  }
-
-  if (isOmxCliEntryPath(head, null)) {
-    const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
-    return remainder ? `omx ${remainder}` : "omx";
-  }
-
-  return null;
-}
-
-function canonicalizeOmxStateTransportCommand(command: string): string {
-  let current = normalizeShellLineContinuations(command).trim();
-  for (let passes = 0; passes < 8; passes += 1) {
-    const next = unwrapOmxStateTransportCommandOnce(current);
-    if (!next || next === current) return current;
-    current = next.trim();
-  }
-  return current;
-}
-
-function sliceShellWordsTailPreservingQuoting(command: string, startWordIndex: number): string | null {
-  const normalized = normalizeShellLineContinuations(command);
-  let quote: "'" | "\"" | null = null;
-  let wordIndex = 0;
-  let currentWordStart: number | null = null;
-
-  for (let index = 0; index < normalized.length; index += 1) {
-    const char = normalized[index] ?? "";
-    if (char === "\\" && quote !== "'") {
-      if (currentWordStart === null) currentWordStart = index;
-      index += 1;
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      if (quote === char) {
-        quote = null;
-      } else if (!quote) {
-        quote = char;
-        if (currentWordStart === null) currentWordStart = index;
-      } else if (currentWordStart === null) {
-        currentWordStart = index;
-      }
-      continue;
-    }
-    if (!quote && /\s/.test(char)) {
-      if (currentWordStart !== null) {
-        if (wordIndex === startWordIndex) return normalized.slice(currentWordStart);
-        wordIndex += 1;
-        currentWordStart = null;
-      }
-      continue;
-    }
-    if (currentWordStart === null) currentWordStart = index;
-  }
-
-  if (currentWordStart !== null && wordIndex === startWordIndex) {
-    return normalized.slice(currentWordStart);
-  }
-  return null;
 }
 
 function normalizeShellLineContinuations(command: string): string {
@@ -4396,7 +3779,6 @@ function readStateWriteFlagValue(args: string[], flagName: "--input" | "--input-
 interface OmxStateCommandOperation {
   args: string[];
   prefix: string;
-  commandPrefix: string;
   nested: boolean;
 }
 
@@ -4427,7 +3809,6 @@ function runtimeOptionConsumesNextWord(option: string): boolean {
     || option === "--experimental-loader"
     || option === "--env-file"
     || option === "--conditions"
-    || option === "--title"
     || option === "-C";
 }
 
@@ -4470,9 +3851,6 @@ function readOmxStateCommandArgsFromWords(words: string[], operation: "write" | 
   return null;
 }
 
-// Shell compound-command introducers can occupy command position after wrappers
-// such as `time`/`command`; skip them before matching the protected `omx state`
-// operation so wrapper-unwrapping keeps scanning the actual command body.
 function isShellCommandPositionPrefixWord(word: string): boolean {
   return word === "("
     || word === "{"
@@ -4494,16 +3872,31 @@ function findEnvDispatchOperandIndex(words: string[], startIndex: number): numbe
     if (option === "-S" || option === "--split-string" || option.startsWith("-S") || option.startsWith("--split-string=")) {
       return null;
     }
-    if (option === "-u" || option === "--unset" || option === "-C" || option === "--chdir" || option === "-a" || option === "--argv0") {
+    if (option === "-u" || option === "--unset" || option === "-C" || option === "--chdir") {
       index += 1;
       continue;
     }
-    if (option.startsWith("--unset=") || option.startsWith("--chdir=") || option.startsWith("--argv0=")) continue;
-    if (/^-u.+/.test(option) || /^-C.+/.test(option) || /^-a.+/.test(option)) continue;
+    if (option.startsWith("--unset=") || option.startsWith("--chdir=")) continue;
+    if (/^-u.+/.test(option) || /^-C.+/.test(option)) continue;
     if (option.startsWith("-")) continue;
     return index;
   }
   return null;
+}
+
+function extractEnvSplitStringOperand(words: string[], startIndex: number): string {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option) continue;
+    if (option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (option === "-S" || option === "--split-string") return words[index + 1] ?? "";
+    if (option.startsWith("--split-string=")) return option.slice("--split-string=".length);
+    if (option.startsWith("-S") && option.length > 2) return option.slice(2);
+    if (option.startsWith("-")) continue;
+    return "";
+  }
+  return "";
 }
 
 function findCommandDispatchOperandIndex(words: string[], startIndex: number): number | null {
@@ -4532,273 +3925,19 @@ function findExecDispatchOperandIndex(words: string[], startIndex: number): numb
   return null;
 }
 
-function findTimeDispatchOperandIndex(words: string[], startIndex: number): number | null {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const option = words[index] ?? "";
-    if (!option || option === "--") continue;
-    if (isShellAssignmentWord(option)) continue;
-    if (option === "-f" || option === "--format" || option === "-o" || option === "--output") {
-      index += 1;
-      continue;
-    }
-    if (option.startsWith("--format=") || option.startsWith("--output=")) continue;
-    if (/^-[^-]/.test(option)) {
-      const shortOptions = option.slice(1);
-      const lastValueOptionIndex = Math.max(shortOptions.lastIndexOf("f"), shortOptions.lastIndexOf("o"));
-      if (lastValueOptionIndex >= 0 && lastValueOptionIndex === shortOptions.length - 1) {
-        index += 1;
-      }
-      continue;
-    }
-    if (option.startsWith("-")) continue;
-    return index;
-  }
-  return null;
-}
-
-function findTimeoutDispatchOperandIndex(words: string[], startIndex: number): number | null {
-  let durationSeen = false;
-  for (let index = startIndex; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token || token === "--") continue;
-    if (isShellAssignmentWord(token)) continue;
-    if (!durationSeen) {
-      if (
-        token === "-k"
-        || token === "--kill-after"
-        || token === "-s"
-        || token === "--signal"
-        || token.startsWith("--kill-after=")
-        || token.startsWith("--signal=")
-        || token.startsWith("-k")
-        || token.startsWith("-s")
-      ) {
-        if (
-          token === "-k"
-          || token === "--kill-after"
-          || token === "-s"
-          || token === "--signal"
-        ) {
-          index += 1;
-        }
-        continue;
-      }
-      if (
-        token === "-f"
-        || token === "--foreground"
-        || token === "-p"
-        || token === "--preserve-status"
-        || token === "-v"
-        || token === "--verbose"
-      ) {
-        continue;
-      }
-      if (token.startsWith("-")) continue;
-      durationSeen = true;
-      continue;
-    }
-    return index;
-  }
-  return null;
-}
-
-function findNiceDispatchOperandIndex(words: string[], startIndex: number): number | null {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token || token === "--") continue;
-    if (isShellAssignmentWord(token)) continue;
-    if (token === "-n" || token === "--adjustment") {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith("--adjustment=") || /^-n.+/.test(token)) continue;
-    if (token.startsWith("-")) continue;
-    return index;
-  }
-  return null;
-}
-
-function findStdbufDispatchOperandIndex(words: string[], startIndex: number): number | null {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token || token === "--") continue;
-    if (isShellAssignmentWord(token)) continue;
-    if (token === "-i" || token === "-o" || token === "-e" || token === "--input" || token === "--output" || token === "--error") {
-      index += 1;
-      continue;
-    }
-    if (
-      token.startsWith("--input=")
-      || token.startsWith("--output=")
-      || token.startsWith("--error=")
-      || /^-[ioe].+/.test(token)
-    ) {
-      continue;
-    }
-    if (token.startsWith("-")) continue;
-    return index;
-  }
-  return null;
-}
-
-function isXargsOptionWithNextValue(option: string): boolean {
-  return option === "-a"
-    || option === "--arg-file"
-    || option === "-d"
-    || option === "--delimiter"
-    || option === "-E"
-    || option === "--eof"
-    || option === "-I"
-    || option === "--replace"
-    || option === "-J"
-    || option === "-L"
-    || option === "--max-lines"
-    || option === "-n"
-    || option === "--max-args"
-    || option === "-P"
-    || option === "--max-procs"
-    || option === "-s"
-    || option === "--max-chars";
-}
-
-function isXargsStandaloneOption(option: string): boolean {
-  return option === "-0"
-    || option === "--null"
-    || option === "-r"
-    || option === "--no-run-if-empty"
-    || option === "-t"
-    || option === "--verbose"
-    || option === "-p"
-    || option === "--interactive"
-    || option === "-x"
-    || option === "--exit"
-    || option === "-o"
-    || option === "--open-tty"
-    || option === "--show-limits";
-}
-
-function findXargsDispatchOperandIndex(words: string[], startIndex: number): number | null {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const option = words[index] ?? "";
-    if (!option || option === "--") continue;
-    if (isShellAssignmentWord(option)) continue;
-    if (isXargsOptionWithNextValue(option)) {
-      index += 1;
-      continue;
-    }
-    if (
-      option.startsWith("--arg-file=")
-      || option.startsWith("--delimiter=")
-      || option.startsWith("--eof=")
-      || option.startsWith("--replace=")
-      || option.startsWith("--max-lines=")
-      || option.startsWith("--max-args=")
-      || option.startsWith("--max-procs=")
-      || option.startsWith("--max-chars=")
-      || /^-[aAdDEIJLnPs][^-\s]*$/.test(option)
-    ) {
-      continue;
-    }
-    if (isXargsStandaloneOption(option)) continue;
-    if (option.startsWith("-")) continue;
-    return index;
-  }
-  return null;
-}
-
-function findCoprocDispatchOperandIndex(words: string[], startIndex: number): number | null {
-  const firstIndex = findDispatchWordIndex(words, startIndex);
-  if (firstIndex === null) return null;
-  const firstWord = words[firstIndex] ?? "";
-  if (isShellCommandPositionPrefixWord(firstWord)) return firstIndex;
-
-  const secondIndex = findDispatchWordIndex(words, firstIndex + 1);
-  if (secondIndex !== null && isShellCommandPositionPrefixWord(words[secondIndex] ?? "")) {
-    return secondIndex;
-  }
-  return firstIndex;
-}
-
-function findCaseArmCommandIndex(words: string[], startIndex: number): number | null {
-  let index = startIndex;
-  while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
-  const head = words[index] ?? "";
-  if (!head) return null;
-
-  if (head === "case") {
-    let inIndex = -1;
-    for (let scanIndex = index + 1; scanIndex < words.length; scanIndex += 1) {
-      const token = words[scanIndex] ?? "";
-      if (!token) continue;
-      if (token === "in") {
-        inIndex = scanIndex;
-        break;
-      }
-      if (token === "esac") return null;
-    }
-    if (inIndex < 0) return null;
-    for (let scanIndex = inIndex + 1; scanIndex < words.length; scanIndex += 1) {
-      const token = words[scanIndex] ?? "";
-      if (!token) continue;
-      if (token === "esac") return null;
-      if (token === ")" || token.endsWith(")")) return scanIndex + 1;
-    }
-    return null;
-  }
-
-  if (head === ")" || head.endsWith(")")) {
-    return index + 1;
-  }
-
-  return null;
-}
-
-function isShellRedirectionWord(word: string): boolean {
-  return word === ">"
-    || word === ">>"
-    || word === "<"
-    || word === "<<"
-    || word === "<<<"
-    || word === ">&"
-    || word === "<&";
-}
-
-function skipShellCommandPositionPrefixWords(words: string[], startIndex: number): number {
-  let commandWordIndex = startIndex;
+function readOmxStateCommandFromSegmentWords(
+  words: string[],
+  operation: "write" | "clear",
+): { args: string[]; commandWords: string[]; prefixWords: string[] } | null {
+  let commandWordIndex = 0;
   while (
     isShellAssignmentWord(words[commandWordIndex] ?? "")
     || isShellCommandPositionPrefixWord(words[commandWordIndex] ?? "")
   ) {
     commandWordIndex += 1;
   }
-  while (commandWordIndex < words.length) {
-    const word = words[commandWordIndex] ?? "";
-    const nextWord = words[commandWordIndex + 1] ?? "";
-    if (isShellRedirectionWord(word)) {
-      commandWordIndex += 2;
-      continue;
-    }
-    if (/^\d+$/.test(word) && isShellRedirectionWord(nextWord)) {
-      commandWordIndex += 3;
-      continue;
-    }
-    break;
-  }
-  return commandWordIndex;
-}
-
-function readOmxStateCommandFromSegmentWords(
-  words: string[],
-  operation: "write" | "clear",
-): { args: string[]; commandWords: string[]; prefixWords: string[] } | null {
-  let commandWordIndex = skipShellCommandPositionPrefixWords(words, 0);
 
   for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
-    commandWordIndex = skipShellCommandPositionPrefixWords(words, commandWordIndex);
-    const caseArmCommandIndex = findCaseArmCommandIndex(words, commandWordIndex);
-    if (caseArmCommandIndex !== null) {
-      commandWordIndex = skipShellCommandPositionPrefixWords(words, caseArmCommandIndex);
-    }
     const directArgs = readOmxStateCommandArgsFromWords(words.slice(commandWordIndex), operation);
     if (directArgs) {
       return {
@@ -4816,17 +3955,7 @@ function readOmxStateCommandFromSegmentWords(
           ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
           : shellWordBaseName(commandWord) === "exec"
             ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
-            : shellWordBaseName(commandWord) === "nohup"
-              ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
-            : shellWordBaseName(commandWord) === "timeout"
-              ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
-            : shellWordBaseName(commandWord) === "coproc"
-              ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
-            : shellWordBaseName(commandWord) === "xargs"
-              ? findXargsDispatchOperandIndex(words, commandWordIndex + 1)
-            : shellWordBaseName(commandWord) === "time"
-              ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
-              : null;
+            : null;
     if (operandIndex === null) return null;
     commandWordIndex = operandIndex;
   }
@@ -4946,26 +4075,6 @@ function collectOmxStateCommandOperations(
         index = substitutionEnd >= 0 ? substitutionEnd : command.length;
         continue;
       }
-      if (quote !== "'" && char === "<" && command[index + 1] === "(") {
-        const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
-        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
-        const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
-        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
-          addOperation(nestedOperation);
-        }
-        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-        continue;
-      }
-      if (quote !== "'" && char === ">" && command[index + 1] === "(") {
-        const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
-        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
-        const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
-        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
-          addOperation(nestedOperation);
-        }
-        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-        continue;
-      }
       if (quote !== "'" && char === "`") {
         const substitutionEnd = findBacktickCommandSubstitutionEnd(command, index + 1);
         const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
@@ -4988,12 +4097,6 @@ function collectOmxStateCommandOperations(
 
   scanNestedSubstitutions();
 
-  for (const functionBody of extractInvokedShellFunctionBodiesForStateScan(command)) {
-    for (const nestedOperation of collectOmxStateCommandOperations(functionBody, operation, true)) {
-      addOperation(nestedOperation);
-    }
-  }
-
   for (const scanSegment of splitStateScanSegments(command)) {
     const words = tokenizeShellWords(scanSegment.segment);
     const stateCommand = readOmxStateCommandFromSegmentWords(words, operation);
@@ -5001,7 +4104,6 @@ function collectOmxStateCommandOperations(
       addOperation({
         args: stateCommand.args,
         prefix: scanSegment.prefix,
-        commandPrefix: stateCommand.prefixWords.join(" "),
         nested,
       });
     }
@@ -5014,37 +4116,6 @@ function collectOmxStateCommandOperations(
   }
 
   return operations;
-}
-
-function extractInvokedShellFunctionBodiesForStateScan(command: string): string[] {
-  const bodies: string[] = [];
-  command = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command));
-  let quote: "'" | "\"" | null = null;
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index] ?? "";
-    if (char === "\\" && quote !== "'") {
-      index += 1;
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      if (quote === char) {
-        quote = null;
-      } else if (!quote) {
-        quote = char;
-      }
-      continue;
-    }
-    if (quote) continue;
-    const functionDefinition = findShellFunctionDefinitionAt(command, index);
-    if (!functionDefinition) continue;
-    const functionBodyEnd = findShellFunctionBodyEnd(command, functionDefinition.openBraceIndex, functionDefinition.bodyOpenChar);
-    if (functionBodyEnd < 0) continue;
-    if (isShellFunctionInvokedLater(command.slice(functionBodyEnd + 1), functionDefinition.name)) {
-      bodies.push(command.slice(functionDefinition.openBraceIndex + 1, functionBodyEnd));
-    }
-    index = functionBodyEnd;
-  }
-  return bodies;
 }
 
 function findUnquotedOmxStateCommandIndexes(command: string, operation: "write" | "clear"): number[] {
@@ -5068,23 +4139,11 @@ function extractNestedShellCommandStringsForStateScan(command: string): string[]
       if (nestedCommand) nested.push(nestedCommand);
     }
     if (shellWordBaseName(word) === "env") {
-      const splitStringCommand = extractEnvSplitStringCommand(words, index + 1);
-      if (splitStringCommand) {
-        nested.push(splitStringCommand);
-      }
-    } else if (isPackageManagerCommandWord(word)) {
-      const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, shellWordBaseName(word));
-      if (packageManagerCommand) {
-        nested.push(packageManagerCommand);
-      }
+      const splitStringCommand = extractEnvSplitStringOperand(words, index + 1);
+      if (splitStringCommand) nested.push(splitStringCommand);
     }
   }
   return nested;
-}
-
-function isPackageManagerCommandWord(word: string): boolean {
-  const base = shellWordBaseName(word);
-  return base === "npm" || base === "pnpm" || base === "yarn" || base === "npx" || base === "pnpx";
 }
 
 function hasDynamicNestedShellExecution(command: string): boolean {
@@ -5122,7 +4181,7 @@ function hasDynamicNestedShellExecution(command: string): boolean {
 }
 
 function isCommandDispatchBuiltin(word: string): boolean {
-  return word === "exec" || word === "command" || word === "." || word === "source" || word === "env" || word === "nohup";
+  return word === "exec" || word === "command" || word === "." || word === "source" || word === "env";
 }
 
 function extractDispatchBuiltinOperand(words: string[], startIndex: number, builtin: string): string {
@@ -5232,16 +4291,6 @@ function splitShellCommandSegments(command: string): string[] {
   return segments.length > 0 ? segments : [command];
 }
 
-function findDispatchWordIndex(words: string[], startIndex: number): number | null {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const token = words[index] ?? "";
-    if (!token || token === "--") continue;
-    if (isShellAssignmentWord(token)) continue;
-    return index;
-  }
-  return null;
-}
-
 function isShellAssignmentWord(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
@@ -5302,36 +4351,6 @@ function findBacktickCommandSubstitutionEnd(command: string, bodyStartIndex: num
   return -1;
 }
 
-function findProcessSubstitutionEnd(command: string, bodyStartIndex: number): number {
-  let depth = 1;
-  let quote: "'" | "\"" | null = null;
-  for (let index = bodyStartIndex; index < command.length; index += 1) {
-    const char = command[index];
-    if (char === "\\" && quote !== "'") {
-      index += 1;
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      if (quote === char) {
-        quote = null;
-      } else if (!quote) {
-        quote = char;
-      }
-      continue;
-    }
-    if (quote) continue;
-    if (char === "(") {
-      depth += 1;
-      continue;
-    }
-    if (char === ")") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-}
-
 function containsUnquotedProcessSubstitution(command: string): boolean {
   command = normalizeShellLineContinuations(command);
   let quote: "'" | "\"" | null = null;
@@ -5350,7 +4369,7 @@ function containsUnquotedProcessSubstitution(command: string): boolean {
       continue;
     }
     if (quote) continue;
-    if ((char === "<" || char === ">") && command[index + 1] === "(") return true;
+    if (char === "<" && command[index + 1] === "(") return true;
   }
   return false;
 }
@@ -5429,13 +4448,7 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
   const mode = safeString(payload.mode).trim().toLowerCase();
   if (!mode) return false;
   if (mode !== "deep-interview" && mode !== "ralplan") {
-    if (!isTrackedWorkflowMode(mode)) return false;
-    if (payload.active === true) return true;
-    const currentPhase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
-    if (mode === "autopilot" && (currentPhase === "deep-interview" || currentPhase === "ralplan" || currentPhase === "ultragoal")) {
-      return false;
-    }
-    return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) === undefined;
+    return payload.active === true && isTrackedWorkflowMode(mode);
   }
 
   if (payload.active === false) return true;
@@ -5443,15 +4456,14 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
 }
 
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
-  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
-  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return true;
-  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return true;
-  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return true;
-  if (hasDynamicNestedShellExecution(canonicalCommand)) return true;
-  const stateWriteCount = findUnquotedOmxStateCommandIndexes(canonicalCommand, "write").length;
+  command = normalizeShellLineContinuations(command);
+  if (hasUnsafeUnquotedHeredocExpansion(command)) return true;
+  if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
+  if (hasDynamicNestedShellExecution(command)) return true;
+  const stateWriteCount = findUnquotedOmxStateCommandIndexes(command, "write").length;
   if (stateWriteCount > 1) return true;
   if (stateWriteCount === 0) return false;
-  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  const payload = readStateWriteInputPayload(cwd, command);
   return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
 }
 
