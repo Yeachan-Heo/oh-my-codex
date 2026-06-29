@@ -680,6 +680,33 @@ head -c 1100000 /dev/zero | tr '\0' x
     });
   });
 
+  it('propagates non-Stop plugin hook child exit failures even when stdout is valid JSON', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'pretool-child-exit-one.cmd' : 'pretool-child-exit-one.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {"systemMessage":"blocked"}\r\nexit /b 1\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, '#!/bin/sh\nprintf \'{"systemMessage":"blocked"}\\n\'\nexit 1\n', 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        session_id: 'sess-plugin-pretool-child-exit-one',
+        tool_name: 'Edit',
+        tool_input: { file_path: 'src/runtime.ts', old_string: 'a', new_string: 'b' },
+      }), {
+        OMX_NATIVE_HOOK_COMMAND: commandPath,
+      });
+
+      assert.equal(result.status, 1, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {
+        systemMessage: 'blocked',
+      });
+      assert.equal(result.stderr.trim(), '');
+    });
+  });
+
   it('does not classify valid non-Stop plugin JSON with nested Stop text as Stop', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
       await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');

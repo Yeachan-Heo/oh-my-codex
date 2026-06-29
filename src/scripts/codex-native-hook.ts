@@ -6327,6 +6327,10 @@ export async function runCodexNativeHookCli(): Promise<void> {
     const result = await dispatchCodexNativeHook(payload);
     if (result.outputJson) {
       writeNativeHookJsonStdout(sanitizeCodexHookOutput(result.hookEventName, result.outputJson) ?? {});
+      if (result.hookEventName === "PreToolUse" && result.outputJson.decision === "block") {
+        process.exitCode = 1;
+        return;
+      }
     } else if (result.hookEventName !== "PreCompact" && result.hookEventName !== "PostCompact") {
       writeNativeHookJsonStdout({});
     }
