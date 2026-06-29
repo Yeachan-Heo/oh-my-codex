@@ -829,7 +829,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("fails closed for malformed explicit PreToolUse blocks instead of downgrading systemMessage to advisory", async () => {
+  it("synthesizes a deny for malformed explicit PreToolUse blocks instead of downgrading systemMessage to advisory", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-malformed-pretool-block-"));
     try {
       for (const malformedBlockShape of ["legacy", "deny"] as const) {
@@ -849,9 +849,16 @@ describe("codex native hook dispatch", () => {
           },
         });
 
-        assert.equal(result.status, 1, result.stderr || result.stdout);
-        assert.equal(result.stdout, "");
-        assert.equal(result.stderr, "");
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const output = parseSingleJsonStdout(result.stdout);
+        const hookSpecificOutput = output.hookSpecificOutput as Record<string, unknown>;
+        assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput", "systemMessage"]);
+        assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+        assert.equal(hookSpecificOutput.permissionDecision, "deny");
+        assert.equal(
+          hookSpecificOutput.permissionDecisionReason,
+          String(output.systemMessage ?? "").trim(),
+        );
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });

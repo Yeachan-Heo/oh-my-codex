@@ -615,15 +615,15 @@ function toPreToolUseDenyOutput(output: Record<string, unknown>): Record<string,
 
   const permissionDecisionReason = safeString(sourceHookSpecificOutput.permissionDecisionReason).trim();
   const legacyReason = safeString(output.reason).trim();
-  const reason = permissionDecisionReason || legacyReason;
+  const additionalContext = safeString(sourceHookSpecificOutput.additionalContext).trim();
+  const systemMessage = safeString(output.systemMessage).trim();
+  const reason = permissionDecisionReason || legacyReason || systemMessage;
   if (!reason) {
     throw new Error(
-      "Malformed PreToolUse block output: explicit deny/block requires non-empty permissionDecisionReason or reason.",
+      "Malformed PreToolUse block output: explicit deny/block requires non-empty permissionDecisionReason, reason, or systemMessage.",
     );
   }
 
-  const additionalContext = safeString(sourceHookSpecificOutput.additionalContext).trim();
-  const systemMessage = safeString(output.systemMessage).trim();
   const hookSpecificOutput: Record<string, unknown> = {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",
