@@ -592,6 +592,9 @@ function sanitizeCodexHookOutput(
   output: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
   if (!output || hookEventName !== "PreToolUse") return output;
+  const preToolUseDenyOutput = toPreToolUseDenyOutput(output);
+  if (preToolUseDenyOutput) return preToolUseDenyOutput;
+
   const systemMessage = safeString(output.systemMessage).trim();
   if (systemMessage) return { systemMessage };
 
@@ -602,6 +605,38 @@ function sanitizeCodexHookOutput(
     : "";
   const derivedSystemMessage = [reason, additionalContext].filter(Boolean).join("\n\n");
   return derivedSystemMessage ? { systemMessage: derivedSystemMessage } : {};
+}
+
+function toPreToolUseDenyOutput(output: Record<string, unknown>): Record<string, unknown> | null {
+  const sourceHookSpecificOutput = safeObject(output.hookSpecificOutput);
+  const legacyBlock = output.decision === "block";
+  const hookSpecificDeny = sourceHookSpecificOutput.permissionDecision === "deny";
+  if (!legacyBlock && !hookSpecificDeny) return null;
+
+  const permissionDecisionReason = safeString(sourceHookSpecificOutput.permissionDecisionReason).trim();
+  const legacyReason = safeString(output.reason).trim();
+  const reason = permissionDecisionReason || legacyReason;
+  if (!reason) {
+    throw new Error(
+      "Malformed PreToolUse block output: explicit deny/block requires non-empty permissionDecisionReason or reason.",
+    );
+  }
+
+  const additionalContext = safeString(sourceHookSpecificOutput.additionalContext).trim();
+  const systemMessage = safeString(output.systemMessage).trim();
+  const hookSpecificOutput: Record<string, unknown> = {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason: reason,
+  };
+  if (additionalContext) {
+    hookSpecificOutput.additionalContext = additionalContext;
+  }
+
+  return {
+    ...(systemMessage ? { systemMessage } : {}),
+    hookSpecificOutput,
+  };
 }
 
 export function mapCodexHookEventToOmxEvent(
@@ -6032,6 +6067,7 @@ export async function dispatchCodexNativeHook(
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildPlanningRootPointerConflictPreToolUseOutput(payload, cwd, stateDir, rootPointerConflict)
       ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
+      ?? buildMalformedPreToolUseBlockTestOutput(payload)
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
     await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
@@ -6286,6 +6322,28 @@ function isDispatchFailureTestTrigger(): boolean {
     && process.env.OMX_NATIVE_HOOK_TEST_THROW_DISPATCH === "1";
 }
 
+function buildMalformedPreToolUseBlockTestOutput(payload: CodexHookPayload): Record<string, unknown> | null {
+  if (process.env.NODE_ENV !== "test" || readHookEventName(payload) !== "PreToolUse") return null;
+  switch (process.env.OMX_NATIVE_HOOK_TEST_MALFORMED_PRETOOL_BLOCK) {
+    case "legacy":
+      return {
+        decision: "block",
+        systemMessage: "This advisory text must not validate a malformed legacy PreToolUse block.",
+      };
+    case "deny":
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "   ",
+        },
+        systemMessage: "This advisory text must not validate a malformed deny PreToolUse block.",
+      };
+    default:
+      return null;
+  }
+}
+
 function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown> {
   const detail = error instanceof Error ? error.message : String(error);
   const reason =
@@ -6327,10 +6385,6 @@ export async function runCodexNativeHookCli(): Promise<void> {
     const result = await dispatchCodexNativeHook(payload);
     if (result.outputJson) {
       writeNativeHookJsonStdout(sanitizeCodexHookOutput(result.hookEventName, result.outputJson) ?? {});
-      if (result.hookEventName === "PreToolUse" && result.outputJson.decision === "block") {
-        process.exitCode = 1;
-        return;
-      }
     } else if (result.hookEventName !== "PreCompact" && result.hookEventName !== "PostCompact") {
       writeNativeHookJsonStdout({});
     }

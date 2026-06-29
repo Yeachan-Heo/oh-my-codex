@@ -704,7 +704,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("emits PreToolUse CLI block JSON with only systemMessage", async () => {
+  it("emits PreToolUse CLI block JSON as hook-specific deny with preserved systemMessage guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-pretool-block-schema-safe-"));
     try {
       const result = runNativeHookCliResult({
@@ -717,20 +717,27 @@ describe("codex native hook dispatch", () => {
         tool_input: { command: 'OMX_LORE_COMMIT_GUARD=1 git commit -m "fix tests"' },
       }, { cwd });
 
-      assert.equal(result.status, 1, result.stderr || result.stdout);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
+      const hookSpecificOutput = output.hookSpecificOutput as Record<string, unknown>;
 
-      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
+      assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput", "systemMessage"]);
       assert.match(String(output.systemMessage ?? ""), /Lore protocol/);
       assert.equal(output.decision, undefined);
+      assert.equal(output.reason, undefined);
       assert.equal(output.stopReason, undefined);
-      assert.equal(output.hookSpecificOutput, undefined);
+      assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(hookSpecificOutput.permissionDecision, "deny");
+      assert.equal(
+        hookSpecificOutput.permissionDecisionReason,
+        "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("preserves ralplan PreToolUse planning guard as schema-safe CLI systemMessage", async () => {
+  it("preserves ralplan PreToolUse planning guard as hook-specific deny JSON", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-ralplan-pretool-boundary-"));
     const sessionId = "sess-cli-ralplan-pretool-boundary";
     const stateDir = join(cwd, ".omx", "state");
@@ -759,22 +766,24 @@ describe("codex native hook dispatch", () => {
         tool_input: { file_path: "src/runtime.ts", old_string: "a", new_string: "b" },
       }, { cwd });
 
-      assert.equal(result.status, 1, result.stderr || result.stdout);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
-
-      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
-      assert.match(String(output.systemMessage ?? ""), /Ralplan is active \(phase: critic-review\)/);
-      assert.match(String(output.systemMessage ?? ""), /implementation\/write tools are blocked/);
-      assert.match(String(output.systemMessage ?? ""), /Write only planning artifacts/);
+      const hookSpecificOutput = output.hookSpecificOutput as Record<string, unknown>;
+      assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput"]);
+      assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(hookSpecificOutput.permissionDecision, "deny");
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /Ralplan is active \(phase: critic-review\)/);
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /implementation\/write tools are blocked/);
+      assert.match(String(hookSpecificOutput.additionalContext ?? ""), /Write only planning artifacts/);
       assert.equal(output.decision, undefined);
       assert.equal(output.reason, undefined);
-      assert.equal(output.hookSpecificOutput, undefined);
+      assert.equal(output.systemMessage, undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("preserves deep-interview PreToolUse planning guard as schema-safe CLI systemMessage", async () => {
+  it("preserves deep-interview PreToolUse planning guard as hook-specific deny JSON", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-deep-interview-pretool-boundary-"));
     const sessionId = "sess-cli-deep-interview-pretool-boundary";
     const stateDir = join(cwd, ".omx", "state");
@@ -803,16 +812,47 @@ describe("codex native hook dispatch", () => {
         tool_input: { file_path: "src/runtime.ts", content: "export const changed = true;\n" },
       }, { cwd });
 
-      assert.equal(result.status, 1, result.stderr || result.stdout);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
-
-      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
-      assert.match(String(output.systemMessage ?? ""), /Deep-interview is active \(phase: intent-first\)/);
-      assert.match(String(output.systemMessage ?? ""), /implementation\/write tools are blocked/);
-      assert.match(String(output.systemMessage ?? ""), /requirements\/spec mode/);
+      const hookSpecificOutput = output.hookSpecificOutput as Record<string, unknown>;
+      assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput"]);
+      assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(hookSpecificOutput.permissionDecision, "deny");
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /Deep-interview is active \(phase: intent-first\)/);
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /implementation\/write tools are blocked/);
+      assert.match(String(hookSpecificOutput.additionalContext ?? ""), /requirements\/spec mode/);
       assert.equal(output.decision, undefined);
       assert.equal(output.reason, undefined);
-      assert.equal(output.hookSpecificOutput, undefined);
+      assert.equal(output.systemMessage, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for malformed explicit PreToolUse blocks instead of downgrading systemMessage to advisory", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-malformed-pretool-block-"));
+    try {
+      for (const malformedBlockShape of ["legacy", "deny"] as const) {
+        const result = runNativeHookCliResult({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: `sess-cli-malformed-pretool-${malformedBlockShape}`,
+          thread_id: `thread-cli-malformed-pretool-${malformedBlockShape}`,
+          tool_name: "Bash",
+          tool_input: { command: "pwd" },
+        }, {
+          cwd,
+          env: {
+            ...process.env,
+            NODE_ENV: "test",
+            OMX_NATIVE_HOOK_TEST_MALFORMED_PRETOOL_BLOCK: malformedBlockShape,
+          },
+        });
+
+        assert.equal(result.status, 1, result.stderr || result.stdout);
+        assert.equal(result.stdout, "");
+        assert.equal(result.stderr, "");
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -7901,7 +7941,7 @@ exit 0
     }
   });
 
-  it("emits only schema-safe ralplan PreToolUse systemMessage for wrapped implementation writes on the live CLI path", async () => {
+  it("emits hook-specific deny ralplan PreToolUse JSON for wrapped implementation writes on the live CLI path", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-ralplan-wrapper-live-"));
     const sessionId = "sess-cli-ralplan-wrapper-live";
     const stateDir = join(cwd, ".omx", "state");
@@ -7935,13 +7975,18 @@ exit 0
         },
       }, { cwd });
 
-      assert.equal(result.status, 1, result.stderr || result.stdout);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
-      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
-      assert.match(String(output.systemMessage ?? ""), /Ralplan is active \(phase: critic-review\)/);
-      assert.match(String(output.systemMessage ?? ""), /implementation\/write tools are blocked/);
+      const hookSpecificOutput = output.hookSpecificOutput as Record<string, unknown>;
+      assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput"]);
+      assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(hookSpecificOutput.permissionDecision, "deny");
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /Ralplan is active \(phase: critic-review\)/);
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /implementation\/write tools are blocked/);
+      assert.match(String(hookSpecificOutput.additionalContext ?? ""), /Write only planning artifacts/);
       assert.equal(output.decision, undefined);
       assert.equal(output.reason, undefined);
+      assert.equal(output.systemMessage, undefined);
       assert.equal(await readFile(targetPath, "utf-8"), "seed\n");
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -9097,7 +9142,7 @@ exit 0
     }
   });
 
-  it("emits schema-safe PreToolUse CLI stdout for close_agent capacity blocks", async () => {
+  it("emits hook-specific deny PreToolUse CLI stdout for close_agent capacity blocks", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-subagent-capacity-close-block-"));
     try {
       parseSingleJsonStdout(runNativeHookCli({
@@ -9119,14 +9164,19 @@ exit 0
         tool_input: { target: "019ecc36-stale" },
       }, { cwd });
 
-      assert.equal(result.status, 1, result.stderr || result.stdout);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
 
-      assert.deepEqual(Object.keys(output).sort(), ["systemMessage"]);
-      assert.match(String(output.systemMessage ?? ""), /agent thread limit reached/);
-      assert.match(String(output.systemMessage ?? ""), /Do not call multi_agent_v1\.close_agent/);
+      const hookSpecificOutput = output.hookSpecificOutput as Record<string, unknown>;
+      assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput"]);
+      assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(hookSpecificOutput.permissionDecision, "deny");
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /Native subagent capacity was exhausted recently/);
+      assert.match(String(hookSpecificOutput.additionalContext ?? ""), /agent thread limit reached/);
+      assert.match(String(hookSpecificOutput.additionalContext ?? ""), /Do not call multi_agent_v1\.close_agent/);
       assert.equal(output.decision, undefined);
-      assert.equal(output.hookSpecificOutput, undefined);
+      assert.equal(output.reason, undefined);
+      assert.equal(output.systemMessage, undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
