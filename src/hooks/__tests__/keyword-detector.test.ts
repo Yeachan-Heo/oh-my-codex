@@ -866,6 +866,15 @@ describe('keyword detector skill-active-state lifecycle', () => {
         autopilotStatePath,
         JSON.stringify({ active: true, mode: 'autopilot', current_phase: 'ralplan', session_id: sessionId }, null, 2),
       );
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'ralplan-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'ralplan',
+          current_phase: 'planning',
+          session_id: sessionId,
+        }, null, 2),
+      );
 
       const denied = await recordSkillActivation({
         stateDir,
@@ -880,6 +889,11 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(afterAdvance.current_phase, 'ralplan', 'keyword handoff must not skip the ralplan -> ultragoal gate');
       assert.equal(denied?.phase, 'ralplan');
       assert.deepEqual(denied?.active_skills?.map((entry) => [entry.skill, entry.phase]), [['autopilot', 'ralplan']]);
+      const ralplanState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, 'ralplan-state.json'), 'utf-8'),
+      ) as { active?: boolean; current_phase?: string };
+      assert.equal(ralplanState.active, true, 'blocked gate must not auto-complete ralplan state');
+      assert.equal(ralplanState.current_phase, 'planning', 'blocked gate must not advance ralplan state');
       const canonical = JSON.parse(
         await readFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), 'utf-8'),
       ) as { phase?: string; active_skills?: Array<{ skill?: string; phase?: string }> };

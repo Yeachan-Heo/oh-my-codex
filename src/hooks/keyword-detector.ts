@@ -1157,6 +1157,35 @@ function isForwardChildPhaseSkip(currentChildPhase: string, requestedChildSkill:
 // Returns the phase actually written to autopilot-state.json (the gate-held
 // phase when an advance was blocked), so callers can keep skill-active-state in
 // sync with it.
+async function resolveAutopilotSupervisedChildPhaseState(
+  cwd: string,
+  stateDir: string,
+  sessionId: string | undefined,
+  childSkill: string,
+  nowIso: string,
+  options: { threadId?: string; turnId?: string } = {},
+): Promise<string> {
+  const { absolutePath } = resolveSeedStateFilePath(stateDir, 'autopilot', sessionId);
+  const existingResult = await readJsonStateWithStatus(absolutePath);
+  const existing = existingResult.state;
+  const existingMode = safeString(existing?.mode).trim();
+
+  if (existingResult.status === 'malformed') {
+    throw new Error('Cannot advance supervised Autopilot child phase: autopilot detail state is malformed');
+  }
+  if (existing && existingMode !== 'autopilot') {
+    throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
+  }
+
+  return resolveGatedSupervisedChildPhase(
+    cwd,
+    stateDir,
+    sessionId,
+    existing,
+    childSkill,
+  );
+}
+
 async function persistAutopilotSupervisedChildPhaseState(
   cwd: string,
   stateDir: string,
@@ -1218,6 +1247,11 @@ async function reconcileAutopilotSupervisedChildModeStates(
     return { completedPaths: [], effectivePhase };
   }
 
+  const effectivePhase = await resolveAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
+  if (effectivePhase !== childSkill) {
+    return { completedPaths: [], effectivePhase };
+  }
+
   const activeChildModes: TrackedWorkflowMode[] = [];
   for (const mode of AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS) {
     const candidatePaths = [
@@ -1239,7 +1273,7 @@ async function reconcileAutopilotSupervisedChildModeStates(
     sessionId,
     source: 'autopilot-supervised-child',
   });
-  const effectivePhase = await persistAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
+  await persistAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
   return { completedPaths: transition.completedPaths, effectivePhase };
 }
 
