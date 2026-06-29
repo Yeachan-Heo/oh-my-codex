@@ -1162,8 +1162,6 @@ async function resolveAutopilotSupervisedChildPhaseState(
   stateDir: string,
   sessionId: string | undefined,
   childSkill: string,
-  nowIso: string,
-  options: { threadId?: string; turnId?: string } = {},
 ): Promise<string> {
   const { absolutePath } = resolveSeedStateFilePath(stateDir, 'autopilot', sessionId);
   const existingResult = await readJsonStateWithStatus(absolutePath);
@@ -1247,7 +1245,7 @@ async function reconcileAutopilotSupervisedChildModeStates(
     return { completedPaths: [], effectivePhase };
   }
 
-  const effectivePhase = await resolveAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
+  const effectivePhase = await resolveAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill);
   if (effectivePhase !== childSkill) {
     return { completedPaths: [], effectivePhase };
   }

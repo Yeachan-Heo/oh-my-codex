@@ -7152,6 +7152,47 @@ exit 0
       );
       assert.equal((blockedUnquotedHeredocHyphenDelimiter.outputJson as { decision?: string } | null)?.decision, "block");
 
+      const blockedEscapedNewlineStateClear = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-escaped-newline-clear",
+          tool_input: { command: "omx \\\nstate \\\nclear --json" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedEscapedNewlineStateClear.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedEscapedNewlineStateWriteInput = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-escaped-newline-write-input",
+          tool_input: { command: "omx state write \\\n--mode deep-interview \\\n--input '{\\\"active\\\":false}' --json" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedEscapedNewlineStateWriteInput.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const escapedNewlineInputFile = join(cwd, "deep-interview-escaped-newline-state.json");
+      await writeJson(escapedNewlineInputFile, { mode: "ralplan", active: false });
+      const blockedEscapedNewlineStateWriteInputFile = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-escaped-newline-write-input-file",
+          tool_input: { command: `omx state write \\\n--mode ralplan \\\n--input-file ${escapedNewlineInputFile} --json` },
+        },
+        { cwd },
+      );
+      assert.equal((blockedEscapedNewlineStateWriteInputFile.outputJson as { decision?: string } | null)?.decision, "block");
+
       const blockedShellStdinHeredoc = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",

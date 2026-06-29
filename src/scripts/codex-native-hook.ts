@@ -3621,6 +3621,7 @@ function readStateWriteInputPayload(cwd: string, command: string): Record<string
 }
 
 function tokenizeShellWords(segment: string): string[] {
+  segment = normalizeShellLineContinuations(segment);
   const words: string[] = [];
   let current = "";
   let quote: "'" | "\"" | null = null;
@@ -3654,6 +3655,36 @@ function tokenizeShellWords(segment: string): string[] {
   return words;
 }
 
+function normalizeShellLineContinuations(command: string): string {
+  let normalized = "";
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      normalized += char;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      const next = command[index + 1] ?? "";
+      if (next === "\r" && command[index + 2] === "\n") {
+        index += 2;
+        continue;
+      }
+      if (next === "\n") {
+        index += 1;
+        continue;
+      }
+    }
+    normalized += char;
+  }
+  return normalized;
+}
+
 function readStateWriteFlagValue(args: string[], flagName: "--input" | "--input-file" | "--mode"): string | undefined {
   let value: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
@@ -3669,7 +3700,7 @@ function readStateWriteFlagValue(args: string[], flagName: "--input" | "--input-
 }
 
 function findUnquotedOmxStateCommandIndexes(command: string, operation: "write" | "clear"): number[] {
-  command = stripHeredocBodiesForCommandScan(command);
+  command = normalizeShellLineContinuations(stripHeredocBodiesForCommandScan(command));
   const indexes: number[] = [];
   let quote: "'" | "\"" | null = null;
   const pattern = new RegExp(`\\bomx\\s+state\\s+${operation}\\b`, "y");
@@ -3871,6 +3902,7 @@ function findBacktickCommandSubstitutionEnd(command: string, bodyStartIndex: num
 }
 
 function containsUnquotedProcessSubstitution(command: string): boolean {
+  command = normalizeShellLineContinuations(command);
   let quote: "'" | "\"" | null = null;
   for (let index = 0; index < command.length - 1; index += 1) {
     const char = command[index];
@@ -3912,7 +3944,7 @@ function stripHeredocBodiesForCommandScan(command: string): string {
 }
 
 function hasUnsafeUnquotedHeredocExpansion(command: string): boolean {
-  const lines = command.split("\n");
+  const lines = normalizeShellLineContinuations(command).split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     const heredocMatch = line.match(/<<-?\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>|;&]+))/);
@@ -3932,6 +3964,7 @@ function hasUnsafeUnquotedHeredocExpansion(command: string): boolean {
 }
 
 function sliceSingleShellCommandSegment(command: string, startIndex: number): string {
+  command = normalizeShellLineContinuations(command);
   let quote: "'" | "\"" | null = null;
   for (let index = startIndex; index < command.length; index += 1) {
     const char = command[index];
@@ -4009,6 +4042,7 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
 }
 
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
+  command = normalizeShellLineContinuations(command);
   if (hasUnsafeUnquotedHeredocExpansion(command)) return true;
   if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
   if (hasDynamicNestedShellExecution(command)) return true;
