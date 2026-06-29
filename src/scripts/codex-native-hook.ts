@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
-import { extname, join, relative, resolve } from "path";
+import { extname, isAbsolute, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
 import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import { redactAuthSecrets } from "../auth/redact.js";
@@ -3608,6 +3608,7 @@ function readStateWriteInputPayload(cwd: string, command: string): Record<string
   }
 
   if (inputFile === undefined) return null;
+  if (!isAbsolute(inputFile.trim()) && hasPriorCwdChangingCommand(command.slice(0, stateWriteIndex))) return null;
 
   try {
     const raw = readFileSync(resolve(cwd, inputFile.trim()), "utf-8");
@@ -3618,6 +3619,23 @@ function readStateWriteInputPayload(cwd: string, command: string): Record<string
   } catch {
     return null;
   }
+}
+
+function hasPriorCwdChangingCommand(commandPrefix: string): boolean {
+  const words = tokenizeShellWords(stripHeredocBodiesForCommandScan(commandPrefix));
+  let commandStart = true;
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word) continue;
+    if (word === "&&" || word === "||" || word === ";" || word === "&" || word === "|" || word === "|&") {
+      commandStart = true;
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
+    if (commandStart && (word === "cd" || word === "pushd" || word === "popd")) return true;
+    commandStart = false;
+  }
+  return false;
 }
 
 function tokenizeShellWords(segment: string): string[] {

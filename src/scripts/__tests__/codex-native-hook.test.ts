@@ -6941,6 +6941,24 @@ exit 0
       );
       assert.equal((blockedRepeatedInputFileDeactivation.outputJson as { decision?: string } | null)?.decision, "block");
 
+      const cwdRelativeInputFileRootSafe = join(cwd, "cwd-relative-input-file-safe.json");
+      const cwdRelativeInputFileSubdir = join(cwd, "cwd-relative-input-file-subdir");
+      await mkdir(cwdRelativeInputFileSubdir, { recursive: true });
+      await writeJson(cwdRelativeInputFileRootSafe, { mode: "deep-interview", active: true });
+      await writeJson(join(cwdRelativeInputFileSubdir, "payload.json"), { mode: "deep-interview", active: false });
+      const blockedCwdRelativeInputFileAfterCd = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-cwd-relative-input-file-after-cd",
+          tool_input: { command: "cd cwd-relative-input-file-subdir && omx state write --input-file payload.json --json" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedCwdRelativeInputFileAfterCd.outputJson as { decision?: string } | null)?.decision, "block");
+
       const blockedNestedStateDeactivation = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
