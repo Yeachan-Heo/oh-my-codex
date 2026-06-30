@@ -1296,7 +1296,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('preserves terminal root canonical tombstones when a session ralplan terminalizes', async () => {
+  it('preserves run_outcome-only root canonical tombstones when a session ralplan terminalizes', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-preserve-root-tombstone-'));
     try {
       const sessionId = 'sess-ralplan-root-tombstone';
@@ -1321,10 +1321,9 @@ describe('state operations directory initialization', () => {
       }, null, 2));
       await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
         version: 1,
-        active: false,
+        active: true,
         skill: 'team',
-        phase: 'complete',
-        completed_at: '2026-06-30T00:00:00.000Z',
+        run_outcome: 'finish',
         active_skills: [{
           skill: 'team',
           active: true,
@@ -1350,12 +1349,10 @@ describe('state operations directory initialization', () => {
       assert.equal(response.isError, undefined);
       const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
         active: boolean;
-        phase?: string;
-        completed_at?: string;
+        run_outcome?: string;
       };
-      assert.equal(rootSkill.active, false);
-      assert.equal(rootSkill.phase, 'complete');
-      assert.equal(rootSkill.completed_at, '2026-06-30T00:00:00.000Z');
+      assert.equal(rootSkill.active, true);
+      assert.equal(rootSkill.run_outcome, 'finish');
 
       const rootListed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
