@@ -3778,6 +3778,10 @@ function isShellFunctionInvokedLater(command: string, functionName: string): boo
     let index = 0;
     while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
     if ((words[index] ?? "") === functionName) return true;
+    if (shellWordBaseName(words[index] ?? "") === "time") {
+      const timeOperandIndex = findTimeDispatchOperandIndex(words, index + 1);
+      if (timeOperandIndex !== null && (words[timeOperandIndex] ?? "") === functionName) return true;
+    }
   }
   return false;
 }
@@ -4181,6 +4185,15 @@ function unwrapOmxStateTransportCommandOnce(command: string): string | null {
     return null;
   }
 
+  if (headBase === "nice") {
+    const operandIndex = findNiceDispatchOperandIndex(words, index + 1);
+    if (operandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
+      return remainder || null;
+    }
+    return null;
+  }
+
   if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn" || headBase === "npx" || headBase === "pnpx") {
     const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, headBase);
     if (packageManagerCommand) {
@@ -4531,6 +4544,22 @@ function findTimeoutDispatchOperandIndex(words: string[], startIndex: number): n
       durationSeen = true;
       continue;
     }
+    return index;
+  }
+  return null;
+}
+
+function findNiceDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-n" || token === "--adjustment") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--adjustment=") || /^-n.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
     return index;
   }
   return null;
