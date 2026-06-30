@@ -48,6 +48,24 @@ If you were recently in a team worker session, clear team env vars first so test
 unset OMX_TEAM_WORKER OMX_TEAM_STATE_ROOT OMX_TEAM_LEADER_CWD OMX_TEAM_WORKER_CLI OMX_TEAM_WORKER_CLI_MAP OMX_TEAM_WORKER_LAUNCH_ARGS
 ```
 
+### Local pre-deploy verification
+
+For a clean local pre-deploy pass, run the checks in this order from the repository root:
+
+```bash
+npm ci
+npm run lint
+npm run check:no-unused
+npx tsc --noEmit
+```
+
+- `npm ci` gives you a clean dependency tree first.
+- `npm run lint` fails fast on formatting and syntax issues.
+- `npm run check:no-unused` checks source files for unused locals/parameters.
+- `npx tsc --noEmit` runs the broader TypeScript typecheck, including tests.
+
+If `node_modules` is already fresh and you are iterating locally, you can skip `npm ci`; for an actual pre-deploy run, keep it first.
+
 ## Project structure
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
