@@ -107,13 +107,12 @@ async function writeLiveNativeMappedSessionState(
   nativeSessionId: string,
 ): Promise<void> {
   await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-  await writeJson(join(stateDir, "session.json"), {
-    session_id: sessionId,
-    native_session_id: nativeSessionId,
-    cwd,
-    pid: process.pid,
-    platform: "darwin",
-  });
+  const liveState = await writeSessionStart(cwd, sessionId, { nativeSessionId });
+  const liveStatePath = join(cwd, ".omx", "state", "session.json");
+  const targetStatePath = join(stateDir, "session.json");
+  if (liveStatePath !== targetStatePath) {
+    await writeFile(targetStatePath, JSON.stringify(liveState, null, 2));
+  }
 }
 
 async function writeSessionSkillActiveState(
