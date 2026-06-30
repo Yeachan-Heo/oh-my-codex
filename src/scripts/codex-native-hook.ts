@@ -3775,8 +3775,7 @@ function findShellFunctionBodyEnd(command: string, openBraceIndex: number, bodyO
 function isShellFunctionInvokedLater(command: string, functionName: string): boolean {
   for (const segment of splitShellCommandSegments(command)) {
     const words = tokenizeShellWords(segment);
-    let index = 0;
-    while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
+    const index = skipShellCommandPositionPrefixWords(words, 0);
     if ((words[index] ?? "") === functionName) return true;
     if (shellWordBaseName(words[index] ?? "") === "time") {
       const timeOperandIndex = findTimeDispatchOperandIndex(words, index + 1);
@@ -4677,6 +4676,16 @@ function findCaseArmCommandIndex(words: string[], startIndex: number): number | 
   return null;
 }
 
+function isShellRedirectionWord(word: string): boolean {
+  return word === ">"
+    || word === ">>"
+    || word === "<"
+    || word === "<<"
+    || word === "<<<"
+    || word === ">&"
+    || word === "<&";
+}
+
 function skipShellCommandPositionPrefixWords(words: string[], startIndex: number): number {
   let commandWordIndex = startIndex;
   while (
@@ -4684,6 +4693,19 @@ function skipShellCommandPositionPrefixWords(words: string[], startIndex: number
     || isShellCommandPositionPrefixWord(words[commandWordIndex] ?? "")
   ) {
     commandWordIndex += 1;
+  }
+  while (commandWordIndex < words.length) {
+    const word = words[commandWordIndex] ?? "";
+    const nextWord = words[commandWordIndex + 1] ?? "";
+    if (isShellRedirectionWord(word)) {
+      commandWordIndex += 2;
+      continue;
+    }
+    if (/^\d+$/.test(word) && isShellRedirectionWord(nextWord)) {
+      commandWordIndex += 3;
+      continue;
+    }
+    break;
   }
   return commandWordIndex;
 }
