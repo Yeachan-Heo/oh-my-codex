@@ -4193,6 +4193,15 @@ function unwrapOmxStateTransportCommandOnce(command: string): string | null {
     return null;
   }
 
+  if (headBase === "stdbuf") {
+    const operandIndex = findStdbufDispatchOperandIndex(words, index + 1);
+    if (operandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
+      return remainder || null;
+    }
+    return null;
+  }
+
   if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn" || headBase === "npx" || headBase === "pnpx") {
     const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, headBase);
     if (packageManagerCommand) {
@@ -4558,6 +4567,29 @@ function findNiceDispatchOperandIndex(words: string[], startIndex: number): numb
       continue;
     }
     if (token.startsWith("--adjustment=") || /^-n.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return index;
+  }
+  return null;
+}
+
+function findStdbufDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-i" || token === "-o" || token === "-e" || token === "--input" || token === "--output" || token === "--error") {
+      index += 1;
+      continue;
+    }
+    if (
+      token.startsWith("--input=")
+      || token.startsWith("--output=")
+      || token.startsWith("--error=")
+      || /^-[ioe].+/.test(token)
+    ) {
+      continue;
+    }
     if (token.startsWith("-")) continue;
     return index;
   }

@@ -7435,6 +7435,8 @@ exit 0
         ["time-cluster-format-wrapper-clear", "/usr/bin/time -af fmt omx state clear --json"],
         ["nice-wrapper-clear", "nice -n 5 omx state clear --json"],
         ["nice-wrapper-write", `nice -n 5 omx state write --input ${stateDeactivationInput} --json`],
+        ["stdbuf-wrapper-clear", "stdbuf -o0 omx state clear --json"],
+        ["stdbuf-wrapper-write", `stdbuf -o0 omx state write --input ${stateDeactivationInput} --json`],
         ["timeout-wrapper-clear", "timeout 5 omx state clear --json"],
         ["timeout-wrapper-write", `timeout 5 omx state write --input ${stateDeactivationInput} --json`],
         ["time-brace-group-clear", "time { omx state clear --json; }"],
