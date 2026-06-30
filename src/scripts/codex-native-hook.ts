@@ -3837,6 +3837,185 @@ function tokenizeShellWords(segment: string): string[] {
   return words;
 }
 
+function isOmxCliEntryPath(cwd: string, token: string, runtimeWrapper: string | null): boolean {
+  const trimmed = token.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
+
+  const normalized = trimmed.replace(/\\/g, "/");
+  const entryBasename = normalized.split("/").filter(Boolean).pop() ?? "";
+  if (entryBasename === "omx" || entryBasename === "omx.js") return true;
+  if (normalized.endsWith("/node_modules/.bin/omx") || normalized === "node_modules/.bin/omx") return true;
+  if (normalized.endsWith("/dist/cli/omx.js") || normalized === "dist/cli/omx.js") return true;
+  if (runtimeWrapper === "tsx" && (normalized.endsWith("/src/cli/omx.ts") || normalized === "src/cli/omx.ts")) return true;
+  if (runtimeWrapper === "tsx" && (normalized.endsWith("/dist/cli/omx.js") || normalized === "dist/cli/omx.js")) return true;
+  return false;
+}
+
+function findEnvSplitStringOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token) continue;
+    if (token === "-S" || token === "--split-string") {
+      return index + 1 < words.length ? index + 1 : null;
+    }
+    if (isShellAssignmentWord(token)) continue;
+    if (token.startsWith("-")) continue;
+    break;
+  }
+  return null;
+}
+
+function unwrapOmxStateTransportCommandOnce(cwd: string, command: string): string | null {
+  const words = tokenizeShellWords(normalizeShellLineContinuations(command).trim());
+  if (words.length === 0) return null;
+
+  let index = 0;
+  while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
+  if (index >= words.length) return null;
+
+  const head = words[index] ?? "";
+  if (!head) return null;
+  const headBase = shellWordBaseName(head);
+
+  if (headBase === "command" || headBase === "builtin" || headBase === "exec" || headBase === "nohup") {
+    let remainderIndex = index + 1;
+    while (remainderIndex < words.length) {
+      const token = words[remainderIndex] ?? "";
+      if (!token) {
+        remainderIndex += 1;
+        continue;
+      }
+      if (token === "--") {
+        remainderIndex += 1;
+        continue;
+      }
+      if (head === "exec" && token === "-a") {
+        remainderIndex += 2;
+        continue;
+      }
+      if (token.startsWith("-")) {
+        remainderIndex += 1;
+        continue;
+      }
+      break;
+    }
+    const remainder = sliceShellWordsTailPreservingQuoting(command, remainderIndex);
+    return remainder || null;
+  }
+
+  if (headBase === "env") {
+    const splitOperand = extractEnvSplitStringOperand(words, index + 1);
+    if (splitOperand) return splitOperand;
+    const envCommandIndex = findEnvDispatchOperandIndex(words, index + 1);
+    if (envCommandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, envCommandIndex);
+      return remainder || null;
+    }
+    const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
+    return remainder || null;
+  }
+
+  if (headBase === "time") {
+    const operandIndex = findTimeDispatchOperandIndex(words, index + 1);
+    if (operandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
+      return remainder || null;
+    }
+    return null;
+  }
+
+  if (isNestedShellCommandWord(headBase)) {
+    const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
+    if (commandStringIndex !== null) {
+      const nestedCommand = words[commandStringIndex] ?? "";
+      if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) return nestedCommand;
+    }
+  }
+
+  if (headBase === "eval") {
+    const nestedCommand = words.slice(index + 1).join(" ");
+    if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) return nestedCommand;
+  }
+
+  if (headBase === "node" || headBase === "bun" || headBase === "tsx") {
+    const entryIndex = (() => {
+      for (let candidateIndex = index + 1; candidateIndex < words.length; candidateIndex += 1) {
+        const candidate = words[candidateIndex] ?? "";
+        if (!candidate) continue;
+        if (candidate.startsWith("-")) continue;
+        return candidateIndex;
+      }
+      return -1;
+    })();
+    if (entryIndex >= 0) {
+      const entryPath = words[entryIndex] ?? "";
+      if (entryPath && isOmxCliEntryPath(cwd, entryPath, headBase)) {
+        const remainder = sliceShellWordsTailPreservingQuoting(command, entryIndex + 1);
+        return remainder ? `omx ${remainder}` : "omx";
+      }
+    }
+    return null;
+  }
+
+  if (isOmxCliEntryPath(cwd, head, null)) {
+    const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
+    return remainder ? `omx ${remainder}` : "omx";
+  }
+
+  return null;
+}
+
+function canonicalizeOmxStateTransportCommand(cwd: string, command: string): string {
+  let current = normalizeShellLineContinuations(command).trim();
+  for (let passes = 0; passes < 8; passes += 1) {
+    const next = unwrapOmxStateTransportCommandOnce(cwd, current);
+    if (!next || next === current) return current;
+    current = next.trim();
+  }
+  return current;
+}
+
+function sliceShellWordsTailPreservingQuoting(command: string, startWordIndex: number): string | null {
+  const normalized = normalizeShellLineContinuations(command);
+  let quote: "'" | "\"" | null = null;
+  let wordIndex = 0;
+  let currentWordStart: number | null = null;
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      if (currentWordStart === null) currentWordStart = index;
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+        if (currentWordStart === null) currentWordStart = index;
+      } else if (currentWordStart === null) {
+        currentWordStart = index;
+      }
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (currentWordStart !== null) {
+        if (wordIndex === startWordIndex) return normalized.slice(currentWordStart);
+        wordIndex += 1;
+        currentWordStart = null;
+      }
+      continue;
+    }
+    if (currentWordStart === null) currentWordStart = index;
+  }
+
+  if (currentWordStart !== null && wordIndex === startWordIndex) {
+    return normalized.slice(currentWordStart);
+  }
+  return null;
+}
+
 function normalizeShellLineContinuations(command: string): string {
   let normalized = "";
   let quote: "'" | "\"" | null = null;
@@ -4597,15 +4776,15 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
 }
 
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
-  command = normalizeShellLineContinuations(command);
-  if (hasUnsafeUnquotedHeredocExpansion(command)) return true;
-  if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return true;
-  if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
-  if (hasDynamicNestedShellExecution(command)) return true;
-  const stateWriteCount = findUnquotedOmxStateCommandIndexes(command, "write").length;
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(cwd, command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return true;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return true;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return true;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return true;
+  const stateWriteCount = findUnquotedOmxStateCommandIndexes(canonicalCommand, "write").length;
   if (stateWriteCount > 1) return true;
   if (stateWriteCount === 0) return false;
-  const payload = readStateWriteInputPayload(cwd, command);
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand);
   return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
 }
 
