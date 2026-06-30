@@ -3837,7 +3837,7 @@ function tokenizeShellWords(segment: string): string[] {
   return words;
 }
 
-function isOmxCliEntryPath(cwd: string, token: string, runtimeWrapper: string | null): boolean {
+function isOmxCliEntryPath(token: string, runtimeWrapper: string | null): boolean {
   const trimmed = token.trim().replace(/^['"]|['"]$/g, "");
   if (!trimmed || trimmed.includes("\0")) return false;
 
@@ -3851,21 +3851,38 @@ function isOmxCliEntryPath(cwd: string, token: string, runtimeWrapper: string | 
   return false;
 }
 
-function findEnvSplitStringOperandIndex(words: string[], startIndex: number): number | null {
+function extractEnvSplitStringCommand(words: string[], startIndex: number): string {
   for (let index = startIndex; index < words.length; index += 1) {
     const token = words[index] ?? "";
     if (!token) continue;
     if (token === "-S" || token === "--split-string") {
-      return index + 1 < words.length ? index + 1 : null;
+      const operand = words[index + 1] ?? "";
+      if (!operand) return "";
+      const tail = words.slice(index + 2).join(" ");
+      return tail ? `${operand} ${tail}` : operand;
+    }
+    if (token.startsWith("--split-string=") || (token.startsWith("-S") && token.length > 2)) {
+      const operand = token.startsWith("--split-string=")
+        ? token.slice("--split-string=".length)
+        : token.slice(2);
+      if (!operand) return "";
+      const tail = words.slice(index + 1).join(" ");
+      return tail ? `${operand} ${tail}` : operand;
     }
     if (isShellAssignmentWord(token)) continue;
+    if (token === "-u" || token === "--unset" || token === "-C" || token === "--chdir" || token === "-a" || token === "--argv0") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--unset=") || token.startsWith("--chdir=") || token.startsWith("--argv0=")) continue;
+    if (/^-u.+/.test(token) || /^-C.+/.test(token) || /^-a.+/.test(token)) continue;
     if (token.startsWith("-")) continue;
     break;
   }
-  return null;
+  return "";
 }
 
-function unwrapOmxStateTransportCommandOnce(cwd: string, command: string): string | null {
+function unwrapOmxStateTransportCommandOnce(command: string): string | null {
   const words = tokenizeShellWords(normalizeShellLineContinuations(command).trim());
   if (words.length === 0) return null;
 
@@ -3904,8 +3921,10 @@ function unwrapOmxStateTransportCommandOnce(cwd: string, command: string): strin
   }
 
   if (headBase === "env") {
-    const splitOperand = extractEnvSplitStringOperand(words, index + 1);
-    if (splitOperand) return splitOperand;
+    const splitOperand = extractEnvSplitStringCommand(words, index + 1);
+    if (splitOperand) {
+      return splitOperand;
+    }
     const envCommandIndex = findEnvDispatchOperandIndex(words, index + 1);
     if (envCommandIndex !== null) {
       const remainder = sliceShellWordsTailPreservingQuoting(command, envCommandIndex);
@@ -3928,7 +3947,10 @@ function unwrapOmxStateTransportCommandOnce(cwd: string, command: string): strin
     const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
     if (commandStringIndex !== null) {
       const nestedCommand = words[commandStringIndex] ?? "";
-      if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) return nestedCommand;
+      if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) {
+        const remainder = sliceShellWordsTailPreservingQuoting(command, commandStringIndex + 1);
+        return remainder ? `${nestedCommand} ${remainder}` : nestedCommand;
+      }
     }
   }
 
@@ -3949,7 +3971,7 @@ function unwrapOmxStateTransportCommandOnce(cwd: string, command: string): strin
     })();
     if (entryIndex >= 0) {
       const entryPath = words[entryIndex] ?? "";
-      if (entryPath && isOmxCliEntryPath(cwd, entryPath, headBase)) {
+      if (entryPath && isOmxCliEntryPath(entryPath, headBase)) {
         const remainder = sliceShellWordsTailPreservingQuoting(command, entryIndex + 1);
         return remainder ? `omx ${remainder}` : "omx";
       }
@@ -3957,7 +3979,7 @@ function unwrapOmxStateTransportCommandOnce(cwd: string, command: string): strin
     return null;
   }
 
-  if (isOmxCliEntryPath(cwd, head, null)) {
+  if (isOmxCliEntryPath(head, null)) {
     const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
     return remainder ? `omx ${remainder}` : "omx";
   }
@@ -3965,10 +3987,10 @@ function unwrapOmxStateTransportCommandOnce(cwd: string, command: string): strin
   return null;
 }
 
-function canonicalizeOmxStateTransportCommand(cwd: string, command: string): string {
+function canonicalizeOmxStateTransportCommand(command: string): string {
   let current = normalizeShellLineContinuations(command).trim();
   for (let passes = 0; passes < 8; passes += 1) {
-    const next = unwrapOmxStateTransportCommandOnce(cwd, current);
+    const next = unwrapOmxStateTransportCommandOnce(current);
     if (!next || next === current) return current;
     current = next.trim();
   }
@@ -4170,21 +4192,6 @@ function findEnvDispatchOperandIndex(words: string[], startIndex: number): numbe
     return index;
   }
   return null;
-}
-
-function extractEnvSplitStringOperand(words: string[], startIndex: number): string {
-  for (let index = startIndex; index < words.length; index += 1) {
-    const option = words[index] ?? "";
-    if (!option) continue;
-    if (option === "--") continue;
-    if (isShellAssignmentWord(option)) continue;
-    if (option === "-S" || option === "--split-string") return words[index + 1] ?? "";
-    if (option.startsWith("--split-string=")) return option.slice("--split-string=".length);
-    if (option.startsWith("-S") && option.length > 2) return option.slice(2);
-    if (option.startsWith("-")) continue;
-    return "";
-  }
-  return "";
 }
 
 function findCommandDispatchOperandIndex(words: string[], startIndex: number): number | null {
@@ -4459,8 +4466,10 @@ function extractNestedShellCommandStringsForStateScan(command: string): string[]
       if (nestedCommand) nested.push(nestedCommand);
     }
     if (shellWordBaseName(word) === "env") {
-      const splitStringCommand = extractEnvSplitStringOperand(words, index + 1);
-      if (splitStringCommand) nested.push(splitStringCommand);
+      const splitStringCommand = extractEnvSplitStringCommand(words, index + 1);
+      if (splitStringCommand) {
+        nested.push(splitStringCommand);
+      }
     }
   }
   return nested;
@@ -4776,7 +4785,7 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
 }
 
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
-  const canonicalCommand = canonicalizeOmxStateTransportCommand(cwd, command);
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return true;
   if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return true;
