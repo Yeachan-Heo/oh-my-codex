@@ -1546,7 +1546,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('clears stale terminal markers when preserving same-session root mirror skills', async () => {
+  it('clears stale terminal phase aliases when preserving same-session root mirror skills', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-terminal-session-skill-'));
     try {
       const sessionId = 'sess-ralplan-terminal-session-skill';
@@ -1589,7 +1589,7 @@ describe('state operations directory initialization', () => {
         version: 1,
         active: false,
         skill: 'ralplan',
-        phase: 'complete',
+        phase: 'blocked',
         session_id: sessionId,
         completed_at: '2026-06-30T00:00:00.000Z',
         terminal_reason: 'stale terminal marker',

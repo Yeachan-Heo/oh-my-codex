@@ -29,7 +29,9 @@ import {
 import { readUltragoalState } from '../hud/state.js';
 import {
   SKILL_ACTIVE_STATE_MODE,
+  clearTerminalSkillActiveMarkers,
   getSkillActiveStatePathsForStateDir,
+  isTerminalSkillActivePhase,
   listActiveSkills,
   readSkillActiveState,
   readVisibleSkillActiveStateForStateDir,
@@ -242,12 +244,6 @@ function optionalSessionId(value: unknown): string | undefined {
   }
 }
 
-const TERMINAL_SKILL_PHASES = new Set(['complete', 'completed', 'cancelled', 'canceled', 'failed', 'cleared']);
-
-function isTerminalSkillPhase(value: unknown): boolean {
-  return TERMINAL_SKILL_PHASES.has(stringValue(value).trim().toLowerCase());
-}
-
 function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown>): void {
   if (!isAutopilotSuccessfulTerminalState(state) || !hasCleanAutopilotReviewAndQaEvidence(state)) return;
 
@@ -324,18 +320,6 @@ function buildRalplanTerminalSkillState(
   };
 }
 
-function clearRalplanSkillTerminalMarkers(state: SkillActiveStateLike): SkillActiveStateLike {
-  const next = { ...state };
-  if (isTerminalSkillPhase(next.phase)) delete next.phase;
-  delete next.completed_at;
-  delete next.cancel_reason;
-  delete next.run_outcome;
-  delete next.lifecycle_outcome;
-  delete next.terminal_outcome;
-  delete next.terminal_reason;
-  return next;
-}
-
 function buildRalplanSkillStateFromEntries(
   base: SkillActiveStateLike | null,
   terminalState: Record<string, unknown>,
@@ -348,7 +332,7 @@ function buildRalplanSkillStateFromEntries(
   }
 
   const primary = entries[0] as SkillActiveEntry;
-  const activeBase = clearRalplanSkillTerminalMarkers(base ?? {});
+  const activeBase = clearTerminalSkillActiveMarkers(base ?? {});
   return {
     ...activeBase,
     version: 1,
@@ -369,7 +353,7 @@ function buildRalplanSkillStateFromEntries(
 function isTerminalSkillActiveTombstone(state: SkillActiveStateLike | null): boolean {
   if (!state) return false;
   if (state.active === false) return true;
-  if (isTerminalSkillPhase(state.phase)) return true;
+  if (isTerminalSkillActivePhase(state.phase)) return true;
   if (stringValue(state.completed_at).trim()) return true;
   if (stringValue(state.terminal_reason).trim()) return true;
   if (stringValue(state.lifecycle_outcome).trim() || stringValue(state.terminal_outcome).trim()) return true;

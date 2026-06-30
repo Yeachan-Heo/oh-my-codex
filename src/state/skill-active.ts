@@ -167,7 +167,7 @@ function sanitizeWriterBaseForSession(
   return inherited;
 }
 
-function isTerminalSkillActivePhase(phase: unknown): boolean {
+export function isTerminalSkillActivePhase(phase: unknown): boolean {
   const normalized = safeString(phase).trim().toLowerCase();
   if (!normalized) return false;
   if (normalized === 'cleared') return true;
@@ -186,7 +186,7 @@ function isTerminalSkillActiveState(state: SkillActiveStateLike): boolean {
   return Boolean(lifecycleOutcome);
 }
 
-function clearTerminalSkillActiveMarkers<T extends SkillActiveStateLike>(state: T): T {
+export function clearTerminalSkillActiveMarkers<T extends SkillActiveStateLike>(state: T): T {
   const next = { ...state };
   if (isTerminalSkillActivePhase(next.phase)) delete next.phase;
   delete next.completed_at;
@@ -194,6 +194,7 @@ function clearTerminalSkillActiveMarkers<T extends SkillActiveStateLike>(state: 
   delete next.run_outcome;
   delete next.lifecycle_outcome;
   delete next.terminal_outcome;
+  delete next.terminal_reason;
   return next;
 }
 
