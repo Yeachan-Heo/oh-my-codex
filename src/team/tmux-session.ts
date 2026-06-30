@@ -1354,7 +1354,7 @@ export function buildWorkerProcessLaunchSpec(
     : undefined;
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
-  const platformSpec = process.platform === 'win32'
+  const platformSpec = process.platform === 'win32' && !isMsysOrGitBash(effectiveEnv, process.platform)
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
     : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;

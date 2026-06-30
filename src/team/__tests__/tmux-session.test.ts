@@ -1313,6 +1313,58 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('does not emit cmd.exe flag wrappers for MSYS startup scripts with cmd shims', async () => {
+    const fakeRoot = await mkdtemp(join(tmpdir(), 'omx-worker-startup-msys-cmd-shim-'));
+    const fakeBin = join(fakeRoot, 'bin dir');
+    const stateRoot = join(fakeRoot, 'state root');
+    const startupScriptPath = join(stateRoot, 'team', 'alpha', 'runtime', 'worker-1-startup.sh');
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const prevPath = process.env.PATH;
+    const prevPathext = process.env.PATHEXT;
+    const prevMsystem = process.env.MSYSTEM;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    try {
+      await mkdir(fakeBin, { recursive: true });
+      const geminiCmdPath = join(fakeBin, 'gemini.cmd');
+      await writeFile(geminiCmdPath, '@echo off\r\n');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      process.env.PATH = fakeBin;
+      process.env.PATHEXT = '.CMD';
+      process.env.MSYSTEM = 'MINGW64';
+      process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+
+      const cmd = writeWorkerStartupScriptCommand(
+        'alpha',
+        1,
+        ['--model', 'gemini-2.5-pro'],
+        'C:\\repo with space',
+        { OMX_TEAM_STATE_ROOT: stateRoot },
+        'gemini',
+      );
+
+      assert.equal(cmd, `exec /bin/sh '${startupScriptPath}'`);
+      const script = await readFile(startupScriptPath, 'utf-8');
+      assert.doesNotMatch(script, /cmd\.exe/i);
+      assert.doesNotMatch(script, /'\/d'|'\/s'|'\/c'|\s\/d\s|\s\/s\s|\s\/c\s/i);
+      assert.match(script, /^cd '\/c\/repo with space'$/m);
+      assert.match(script, /^exec '\/bin\/sh' -c /m);
+      assert.match(script, new RegExp(escapeRegExp(geminiCmdPath)));
+      assert.match(script, /--approval-mode/);
+      assert.match(script, /yolo/);
+    } finally {
+      await rm(fakeRoot, { recursive: true, force: true });
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevPathext === 'string') process.env.PATHEXT = prevPathext;
+      else delete process.env.PATHEXT;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('writes a short worker startup script under team runtime state when available', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-worker-startup-script-'));
     const stateRoot = join(wd, '.omx', 'state');
