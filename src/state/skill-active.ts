@@ -176,7 +176,7 @@ export function isTerminalSkillActivePhase(phase: unknown): boolean {
   return Boolean(normalizeTerminalLifecycleOutcome(normalized).outcome);
 }
 
-function isTerminalSkillActiveState(state: SkillActiveStateLike): boolean {
+export function isTerminalSkillActiveState(state: SkillActiveStateLike): boolean {
   if (state.active === false) return true;
   if (isTerminalSkillActivePhase(state.phase)) return true;
   if (safeString(state.completed_at).trim().length > 0) return true;

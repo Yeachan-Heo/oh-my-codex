@@ -31,7 +31,7 @@ import {
   SKILL_ACTIVE_STATE_MODE,
   clearTerminalSkillActiveMarkers,
   getSkillActiveStatePathsForStateDir,
-  isTerminalSkillActivePhase,
+  isTerminalSkillActiveState,
   listActiveSkills,
   readSkillActiveState,
   readVisibleSkillActiveStateForStateDir,
@@ -351,13 +351,7 @@ function buildRalplanSkillStateFromEntries(
 }
 
 function isTerminalSkillActiveTombstone(state: SkillActiveStateLike | null): boolean {
-  if (!state) return false;
-  if (state.active === false) return true;
-  if (isTerminalSkillActivePhase(state.phase)) return true;
-  if (stringValue(state.completed_at).trim()) return true;
-  if (isTerminalSkillActivePhase(state.run_outcome)) return true;
-  if (stringValue(state.lifecycle_outcome).trim() || stringValue(state.terminal_outcome).trim()) return true;
-  return false;
+  return state !== null && isTerminalSkillActiveState(state);
 }
 
 function filterCompletedRalplanRootEntries(
