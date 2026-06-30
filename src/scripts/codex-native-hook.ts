@@ -4480,6 +4480,65 @@ function findTimeDispatchOperandIndex(words: string[], startIndex: number): numb
   return null;
 }
 
+function findTimeoutDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  let durationSeen = false;
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (!durationSeen) {
+      if (
+        token === "-k"
+        || token === "--kill-after"
+        || token === "-s"
+        || token === "--signal"
+        || token.startsWith("--kill-after=")
+        || token.startsWith("--signal=")
+        || token.startsWith("-k")
+        || token.startsWith("-s")
+      ) {
+        if (
+          token === "-k"
+          || token === "--kill-after"
+          || token === "-s"
+          || token === "--signal"
+        ) {
+          index += 1;
+        }
+        continue;
+      }
+      if (
+        token === "-f"
+        || token === "--foreground"
+        || token === "-p"
+        || token === "--preserve-status"
+        || token === "-v"
+        || token === "--verbose"
+      ) {
+        continue;
+      }
+      if (token.startsWith("-")) continue;
+      durationSeen = true;
+      continue;
+    }
+    return index;
+  }
+  return null;
+}
+
+function findCoprocDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  const firstIndex = findDispatchWordIndex(words, startIndex);
+  if (firstIndex === null) return null;
+  const firstWord = words[firstIndex] ?? "";
+  if (isShellCommandPositionPrefixWord(firstWord)) return firstIndex;
+
+  const secondIndex = findDispatchWordIndex(words, firstIndex + 1);
+  if (secondIndex !== null && isShellCommandPositionPrefixWord(words[secondIndex] ?? "")) {
+    return secondIndex;
+  }
+  return firstIndex;
+}
+
 function skipShellCommandPositionPrefixWords(words: string[], startIndex: number): number {
   let commandWordIndex = startIndex;
   while (
@@ -4518,6 +4577,10 @@ function readOmxStateCommandFromSegmentWords(
             ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
             : shellWordBaseName(commandWord) === "nohup"
               ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "timeout"
+              ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "coproc"
+              ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
             : shellWordBaseName(commandWord) === "time"
               ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
               : null;
@@ -4924,6 +4987,16 @@ function splitShellCommandSegments(command: string): string[] {
   }
   if (current.trim()) segments.push(current);
   return segments.length > 0 ? segments : [command];
+}
+
+function findDispatchWordIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    return index;
+  }
+  return null;
 }
 
 function isShellAssignmentWord(word: string): boolean {
