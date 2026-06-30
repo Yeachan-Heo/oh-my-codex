@@ -6991,6 +6991,25 @@ exit 0
       );
       assert.equal((blockedMcpStateMutation.outputJson as { decision?: string } | null)?.decision, "block");
 
+      for (const phase of ["planning", "replan", "autopilot:ralplan"] as const) {
+        const allowedAutopilotPlanningAlias = await preToolUse(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-artifact",
+            tool_name: "mcp__omx_state__state_write",
+            tool_use_id: `tool-di-mcp-state-write-autopilot-alias-${phase}`,
+            tool_input: { mode: "autopilot", current_phase: phase },
+          },
+          { cwd },
+        );
+        assert.equal(
+          allowedAutopilotPlanningAlias.outputJson,
+          null,
+          `${phase} autopilot planning handoff should not be classified as deactivation`,
+        );
+      }
+
       const allowedQuotedModeMentionInPayload = await preToolUse(
         {
           hook_event_name: "PreToolUse",
@@ -7468,6 +7487,8 @@ exit 0
         ["xargs-wrapper-write", `xargs omx state write --input ${stateDeactivationInput} --json </dev/null`],
         ["case-arm-clear", "case x in x) omx state clear --json;; esac"],
         ["case-arm-write", `case x in x) omx state write --input ${stateDeactivationInput} --json;; esac`],
+        ["case-late-arm-clear", "case y in x) :;; y) omx state clear --json;; esac"],
+        ["case-late-arm-write", `case y in x) :;; y) omx state write --input ${stateDeactivationInput} --json;; esac`],
         ["subshell-function-body-clear", "f() ( omx state clear --json ); f"],
         ["subshell-function-body-write", `f() ( omx state write --input ${stateDeactivationInput} --json ); f`],
         ["path-qualified-env-wrapper-clear", "/usr/bin/env node dist/cli/omx.js state clear --json"],
@@ -8053,6 +8074,32 @@ exit 0
         { cwd },
       );
       assert.equal((blockedEnvSplitStringAttachedStateClear.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedEnvSplitStringPrefixedOptionsClear = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-env-split-string-prefixed-options-clear",
+          tool_input: { command: "env -S '-i omx state clear --json'" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedEnvSplitStringPrefixedOptionsClear.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedEnvSplitStringPrefixedOptionsSplitClear = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-env-split-string-prefixed-options-split-clear",
+          tool_input: { command: "env --split-string '-i omx state clear --json'" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedEnvSplitStringPrefixedOptionsSplitClear.outputJson as { decision?: string } | null)?.decision, "block");
 
       const blockedShellStdinStderrPipe = await preToolUse(
         {

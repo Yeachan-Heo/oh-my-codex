@@ -4084,7 +4084,7 @@ function extractEnvSplitStringCommand(words: string[], startIndex: number): stri
       const operand = words[index + 1] ?? "";
       if (!operand) return "";
       const tail = words.slice(index + 2).join(" ");
-      return tail ? `${operand} ${tail}` : operand;
+      return tail ? `env ${operand} ${tail}` : `env ${operand}`;
     }
     if (token.startsWith("--split-string=") || (token.startsWith("-S") && token.length > 2)) {
       const operand = token.startsWith("--split-string=")
@@ -4092,7 +4092,7 @@ function extractEnvSplitStringCommand(words: string[], startIndex: number): stri
         : token.slice(2);
       if (!operand) return "";
       const tail = words.slice(index + 1).join(" ");
-      return tail ? `${operand} ${tail}` : operand;
+      return tail ? `env ${operand} ${tail}` : `env ${operand}`;
     }
     if (isShellAssignmentWord(token)) continue;
     if (token === "-u" || token === "--unset" || token === "-C" || token === "--chdir" || token === "-a" || token === "--argv0") {
@@ -4746,6 +4746,10 @@ function findCaseArmCommandIndex(words: string[], startIndex: number): number | 
 
   if (head === ")" || head.endsWith(")")) {
     return index + 1;
+  }
+
+  if (words[index + 1] === ")") {
+    return index + 2;
   }
 
   return null;
@@ -5430,7 +5434,8 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
     if (!isTrackedWorkflowMode(mode)) return false;
     if (payload.active === true) return true;
     const currentPhase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
-    if (mode === "autopilot" && (currentPhase === "deep-interview" || currentPhase === "ralplan" || currentPhase === "ultragoal")) {
+    const normalizedAutopilotPhase = normalizeAutopilotPhase(currentPhase);
+    if (mode === "autopilot" && (normalizedAutopilotPhase === "deep-interview" || normalizedAutopilotPhase === "ralplan" || normalizedAutopilotPhase === "ultragoal")) {
       return false;
     }
     return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) === undefined;
