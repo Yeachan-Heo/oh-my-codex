@@ -57,15 +57,26 @@ describe('resolveQuestionRendererStrategy', () => {
     );
   });
 
-  it('uses a detached Windows console for native psmux return bridges', () => {
+  it('uses an interactive shell pane for native Windows psmux sessions', () => {
     assert.equal(
       resolveQuestionRendererStrategy(
         { TMUX: 'psmux-session', TMUX_PANE: '%44' } as NodeJS.ProcessEnv,
         'C:/Program Files/psmux/psmux.exe',
         { platform: 'win32' },
       ),
-      'windows-console',
+      'windows-psmux-shell-pane',
     );
+    assert.equal(
+      resolveQuestionRendererStrategy(
+        { TMUX: 'socket,1,0', TMUX_PANE: '%45' } as NodeJS.ProcessEnv,
+        'C:/Program Files/psmux/psmux.exe',
+        { platform: 'win32' },
+      ),
+      'windows-psmux-shell-pane',
+    );
+  });
+
+  it('keeps the detached Windows console path for explicit non-psmux return bridges', () => {
     assert.equal(
       resolveQuestionRendererStrategy(
         { OMX_QUESTION_RETURN_PANE: '%45' } as NodeJS.ProcessEnv,
@@ -776,7 +787,61 @@ describe('launchQuestionRenderer', () => {
     assert.ok(calls.some((call) => call.join(' ') === 'list-panes -t %78 -F #{pane_dead}\t#{pane_id}'));
   });
 
-  it('opens a detached Windows console instead of a psmux split pane when a return bridge is present', () => {
+  it('opens a visible Windows psmux shell pane and injects the question UI command literally', () => {
+    const tmuxCalls: string[][] = [];
+    const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    const result = launchQuestionRenderer(
+      {
+        cwd: '/repo',
+        recordPath: '/repo/.omx/state/sessions/s1/questions/question-bridge.json',
+        sessionId: 's1',
+        nowIso: '2026-04-24T00:00:00.000Z',
+        env: { TMUX: 'psmux-session', TMUX_PANE: '%44' } as NodeJS.ProcessEnv,
+        platform: 'win32',
+      },
+      {
+        execTmux: (args) => {
+          tmuxCalls.push(args);
+          if (args[0] === 'new-window') return '%55\n';
+          if (args[0] === 'list-panes' && args[2] === '%55') return '0\t%55\n';
+          return '';
+        },
+        spawnDetachedRenderer: (command, args, options) => {
+          spawnCalls.push({ command, args, options: options as Record<string, unknown> });
+          return { pid: 1234, unref: () => {} };
+        },
+        sleepSync: () => {},
+      },
+    );
+
+    assert.equal(result.renderer, 'tmux-pane');
+    assert.equal(result.target, '%55');
+    assert.equal(result.return_target, '%44');
+    assert.equal(result.return_transport, 'tmux-send-keys');
+    assert.deepEqual(spawnCalls, []);
+    assert.equal(tmuxCalls.some((call) => call[0] === 'split-window'), false);
+    assert.deepEqual(tmuxCalls[0], [
+      'new-window',
+      '-n',
+      'OMX Question',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      '-c',
+      '/repo',
+    ]);
+    assert.deepEqual(tmuxCalls[1], ['list-panes', '-t', '%55', '-F', '#{pane_dead}\t#{pane_id}']);
+    const literalSend = tmuxCalls.find((call) => call[0] === 'send-keys' && call.includes('-l'));
+    assert.ok(literalSend);
+    assert.deepEqual(literalSend.slice(0, 6), ['send-keys', '-t', '%55', '-l', '--', literalSend[5] ?? '']);
+    assert.match(literalSend[5] ?? '', /^set "OMX_SESSION_ID=s1" && set "OMX_QUESTION_RETURN_TARGET=%%44" && set "OMX_QUESTION_RETURN_TRANSPORT=tmux-send-keys" && /);
+    assert.match(literalSend[5] ?? '', /"question" "--ui" "--state-path" "\/repo\/\.omx\/state\/sessions\/s1\/questions\/question-bridge\.json"$/);
+    assert.deepEqual(tmuxCalls.filter((call) => call[0] === 'send-keys' && call.includes('C-m')), [
+      ['send-keys', '-t', '%55', 'C-m'],
+    ]);
+  });
+
+  it('keeps the detached Windows console path for explicit non-psmux return bridges', () => {
     const tmuxCalls: string[][] = [];
     const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
     const result = launchQuestionRenderer(
@@ -785,7 +850,7 @@ describe('launchQuestionRenderer', () => {
         recordPath: 'C:/repo/.omx/state/sessions/s1/questions/question-bridge.json',
         sessionId: 's1',
         nowIso: '2026-04-24T00:00:00.000Z',
-        env: { TMUX: 'psmux-session', TMUX_PANE: '%44' } as NodeJS.ProcessEnv,
+        env: { OMX_QUESTION_RETURN_PANE: '%44' } as NodeJS.ProcessEnv,
         platform: 'win32',
       },
       {
