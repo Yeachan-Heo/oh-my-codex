@@ -1174,7 +1174,7 @@ export function buildWorkerStartupCommand(
   initialPrompt?: string,
   workerRole?: string,
 ): string {
-  const processSpec = buildWorkerProcessLaunchSpec(
+  const processSpec = buildWorkerStartupProcessLaunchSpec(
     teamName,
     workerIndex,
     launchArgs,
@@ -1298,7 +1298,7 @@ export function writeWorkerStartupScriptCommand(
   const stateRoot = extraEnv[OMX_TEAM_STATE_ROOT_ENV]?.trim();
   if (!stateRoot) return null;
 
-  const processSpec = buildWorkerProcessLaunchSpec(
+  const processSpec = buildWorkerStartupProcessLaunchSpec(
     teamName,
     workerIndex,
     launchArgs,
@@ -1324,7 +1324,56 @@ export function writeWorkerStartupScriptCommand(
   return `exec /bin/sh ${shellQuoteSingle(translatePathForMsys(scriptPath))}`;
 }
 
+type WorkerProcessLaunchMode = 'direct-spawn' | 'posix-startup-script';
+
 export function buildWorkerProcessLaunchSpec(
+  teamName: string,
+  workerIndex: number,
+  launchArgs: string[] = [],
+  cwd: string = process.cwd(),
+  extraEnv: Record<string, string> = {},
+  workerCliOverride?: TeamWorkerCli,
+  initialPrompt?: string,
+  workerRole?: string,
+): WorkerProcessLaunchSpec {
+  return buildWorkerProcessLaunchSpecForMode(
+    'direct-spawn',
+    teamName,
+    workerIndex,
+    launchArgs,
+    cwd,
+    extraEnv,
+    workerCliOverride,
+    initialPrompt,
+    workerRole,
+  );
+}
+
+function buildWorkerStartupProcessLaunchSpec(
+  teamName: string,
+  workerIndex: number,
+  launchArgs: string[] = [],
+  cwd: string = process.cwd(),
+  extraEnv: Record<string, string> = {},
+  workerCliOverride?: TeamWorkerCli,
+  initialPrompt?: string,
+  workerRole?: string,
+): WorkerProcessLaunchSpec {
+  return buildWorkerProcessLaunchSpecForMode(
+    'posix-startup-script',
+    teamName,
+    workerIndex,
+    launchArgs,
+    cwd,
+    extraEnv,
+    workerCliOverride,
+    initialPrompt,
+    workerRole,
+  );
+}
+
+function buildWorkerProcessLaunchSpecForMode(
+  mode: WorkerProcessLaunchMode,
   teamName: string,
   workerIndex: number,
   launchArgs: string[] = [],
@@ -1354,9 +1403,11 @@ export function buildWorkerProcessLaunchSpec(
     : undefined;
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
-  const platformSpec = process.platform === 'win32' && !isMsysOrGitBash(effectiveEnv, process.platform)
+  const shouldUseNativeWindowsLaunchSpec = process.platform === 'win32'
+    && (mode === 'direct-spawn' || !isMsysOrGitBash(effectiveEnv, process.platform));
+  const platformSpec = shouldUseNativeWindowsLaunchSpec
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
-    : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
+    : { command: resolvedCliPath, args: effectiveCliLaunchArgs, resolvedPath: resolvedCliPath };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;
   const modelProviderOverride = workerCli === 'codex'
     ? extractModelProviderOverrideValue(effectiveCliLaunchArgs)
