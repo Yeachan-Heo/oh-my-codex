@@ -7098,7 +7098,7 @@ exit 0
       );
       assert.equal((blockedRepeatedInputFileDeactivation.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const terminalCurrentPhaseAliases = ["done", "blocked", "cancelled", "canceled", "aborted"] as const;
+      const terminalCurrentPhaseAliases = ["finish", "finished", "complete", "completed", "done", "blocked", "blocked-on-user", "blocked_on_user", "failed", "fail", "error", "cancelled", "canceled", "cancel", "aborted", "abort", "userinterlude", "user-interlude", "interrupted", "interrupt", "askuserquestion", "ask-user-question", "askuser", "question"] as const;
       for (const alias of terminalCurrentPhaseAliases) {
         const blockedStateWriteCurrentPhaseAlias = await dispatchCodexNativeHook(
           {
@@ -7409,6 +7409,19 @@ exit 0
         ["quoted-direct-wrapper-clear", '"./dist/cli/omx.js" state clear --json'],
         ["quoted-node-wrapper-write", `node "dist/cli/omx.js" state write --input ${stateDeactivationInput} --json`],
         ["env-wrapper-clear", "env FOO=bar node dist/cli/omx.js state clear --json"],
+        ["env-argv0-short-wrapper-clear", "env -a fake node dist/cli/omx.js state clear --json"],
+        ["env-argv0-long-wrapper-clear", "env --argv0 fake node dist/cli/omx.js state clear --json"],
+        ["node-title-wrapper-clear", "node --title foo dist/cli/omx.js state clear --json"],
+        ["time-wrapper-clear", "time omx state clear --json"],
+        ["time-format-wrapper-clear", "/usr/bin/time -f x omx state clear --json"],
+        ["time-output-wrapper-clear", "time -o out omx state clear --json"],
+        ["time-cluster-output-wrapper-clear", "/usr/bin/time -ao out omx state clear --json"],
+        ["time-cluster-format-wrapper-clear", "/usr/bin/time -af fmt omx state clear --json"],
+        ["time-brace-group-clear", "time { omx state clear --json; }"],
+        ["time-if-condition-clear", "time if omx state clear --json; then :; fi"],
+        ["time-subshell-clear", "time ( omx state clear --json )"],
+        ["time-command-env-node-wrapper-clear", "time command env node dist/cli/omx.js state clear --json"],
+        ["command-time-subshell-clear", "command time ( omx state clear --json )"],
         ["path-qualified-env-wrapper-clear", "/usr/bin/env node dist/cli/omx.js state clear --json"],
         ["path-qualified-env-split-wrapper-clear", "/usr/bin/env -S 'omx state clear --json'"],
         ["env-unset-wrapper-clear", "env -u FOO node dist/cli/omx.js state clear --json"],
@@ -7596,6 +7609,33 @@ exit 0
       );
       assert.equal((blockedChainedWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
+      const blockedSourceGeneratedScriptCommands = [
+        ["source-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && source .omx/context/x.sh"],
+        ["bash-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && bash .omx/context/x.sh"],
+        ["source-tee", "printf 'omx state clear --json\n' | tee .omx/context/x.sh >/dev/null && source .omx/context/x.sh"],
+        ["source-variable", "tmp=.omx/context/x.sh; printf 'omx state clear --json\n' > \"$tmp\"; source \"$tmp\""],
+        ["source-tee-second-target", "printf 'omx state clear --json\n' | tee .omx/context/x.sh .omx/context/y.sh >/dev/null && source .omx/context/y.sh"],
+        ["bash-tee-append-second-target", "printf 'omx state clear --json\n' | tee -a .omx/context/x.sh .omx/context/y.sh >/dev/null && bash .omx/context/y.sh"],
+      ] as const;
+      for (const [name, command] of blockedSourceGeneratedScriptCommands) {
+        const blockedSourceGeneratedScript = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-artifact",
+            tool_name: "Bash",
+            tool_use_id: `tool-di-state-cli-generated-script-${name}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(
+          (blockedSourceGeneratedScript.outputJson as { decision?: string } | null)?.decision,
+          "block",
+          `${command} should fail closed because it executes a same-command generated script`,
+        );
+      }
+
       const allowedStateRead = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -7714,6 +7754,19 @@ exit 0
         { cwd },
       );
       assert.equal((blockedShellStdinHeredoc.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedShellStdinHereString = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-shell-stdin-herestring",
+          tool_input: { command: "bash<<<'omx state clear --json'" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedShellStdinHereString.outputJson as { decision?: string } | null)?.decision, "block");
 
       const blockedShellStdinPipe = await dispatchCodexNativeHook(
         {
@@ -8352,7 +8405,7 @@ exit 0
       );
       assert.equal((blocked.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const terminalCurrentPhaseAliases = ["done", "blocked", "cancelled", "canceled", "aborted"] as const;
+      const terminalCurrentPhaseAliases = ["finish", "finished", "complete", "completed", "done", "blocked", "blocked-on-user", "blocked_on_user", "failed", "fail", "error", "cancelled", "canceled", "cancel", "aborted", "abort", "userinterlude", "user-interlude", "interrupted", "interrupt", "askuserquestion", "ask-user-question", "askuser", "question"] as const;
       for (const alias of terminalCurrentPhaseAliases) {
         const blockedAliasPayload = join(cwd, `ralplan-blocked-state-${alias}.json`);
         await writeJson(blockedAliasPayload, { mode: "ralplan", current_phase: alias });
