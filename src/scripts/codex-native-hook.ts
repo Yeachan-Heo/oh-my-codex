@@ -3849,11 +3849,11 @@ function describeImplementationToolBlock(
 // `omx state` mutations normally route through the gate-enforcing `state_write`
 // backend, so the hook defers to that gate rather than blocking the transport.
 // The backend does NOT gate standalone deep-interview/ralplan *deactivation*,
-// however, so a command that ends the active planning phase from a tool call
-// (`omx state clear`, or an `omx state write` that flips `active` off or writes
-// a terminal planning phase) is still blocked here. Broader backend authority
-// belongs to a separate follow-up; this PR keeps the model/tool-originated guard
-// at the native-hook transport boundary.
+// and it normalizes non-terminal tracked-workflow writes to `active=true`, so
+// commands that would implicitly activate a tracked workflow while planning is
+// still protected are blocked here. Broader backend authority belongs to a
+// separate follow-up; this PR keeps the model/tool-originated guard at the
+// native-hook transport boundary.
 function readStateWriteInputPayload(cwd: string, command: string): Record<string, unknown> | null {
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   if (stateWriteOperations.length === 0) return null;
@@ -5384,7 +5384,13 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
   const mode = safeString(payload.mode).trim().toLowerCase();
   if (!mode) return false;
   if (mode !== "deep-interview" && mode !== "ralplan") {
-    return payload.active === true && isTrackedWorkflowMode(mode);
+    if (!isTrackedWorkflowMode(mode)) return false;
+    if (payload.active === true) return true;
+    const currentPhase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
+    if (mode === "autopilot" && (currentPhase === "deep-interview" || currentPhase === "ralplan" || currentPhase === "ultragoal")) {
+      return false;
+    }
+    return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) === undefined;
   }
 
   if (payload.active === false) return true;

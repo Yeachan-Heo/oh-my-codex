@@ -6963,21 +6963,33 @@ exit 0
         );
       }
 
-      // A non-deactivating `omx state write` routes through the validated
-      // state_write backend (which enforces the Autopilot phase gate for every
-      // transport), so the hook defers rather than blocking the CLI transport.
-      const allowedStateCliMutation = await preToolUse(
+      // Cross-mode non-terminal `omx state write` payloads are activations,
+      // because state_write normalizes them to active=true after the hook.
+      const blockedStateCliMutation = await preToolUse(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-write",
-          tool_input: { command: "omx state write --input '{\"mode\":\"autopilot\",\"current_phase\":\"ralplan\"}' --json" },
+          tool_input: { command: "omx state write --input '{\"mode\":\"ralph\",\"current_phase\":\"executing\"}' --json" },
         },
         { cwd },
       );
-      assert.equal(allowedStateCliMutation.outputJson, null);
+      assert.equal((blockedStateCliMutation.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedMcpStateMutation = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "mcp__omx_state__state_write",
+          tool_use_id: "tool-di-mcp-state-write-execute",
+          tool_input: { mode: "ralph", current_phase: "executing" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedMcpStateMutation.outputJson as { decision?: string } | null)?.decision, "block");
 
       const allowedQuotedModeMentionInPayload = await preToolUse(
         {
