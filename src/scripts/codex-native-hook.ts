@@ -3884,20 +3884,10 @@ function extractEnvSplitStringCommand(words: string[], startIndex: number): stri
 
 function extractPackageManagerExecCommand(command: string, words: string[], startIndex: number, headBase: string): string {
   let index = startIndex;
-  if (headBase === "npm") {
-    const subcommand = words[index] ?? "";
-    if (subcommand === "exec" || subcommand === "x") {
-      index += 1;
-    } else {
-      return "";
-    }
-  } else if (headBase === "pnpm" || headBase === "yarn") {
-    const subcommand = words[index] ?? "";
-    if (subcommand === "exec" || subcommand === "dlx") {
-      index += 1;
-    } else {
-      return "";
-    }
+  if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn") {
+    const subcommandIndex = findPackageManagerExecSubcommandIndex(words, startIndex, headBase);
+    if (subcommandIndex === null) return "";
+    index = subcommandIndex + 1;
   } else if (headBase !== "npx" && headBase !== "pnpx") {
     return "";
   }
@@ -3926,6 +3916,26 @@ function extractPackageManagerExecCommand(command: string, words: string[], star
     return tail || "";
   }
   return "";
+}
+
+function findPackageManagerExecSubcommandIndex(words: string[], startIndex: number, headBase: string): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token) continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-C" || token === "--prefix" || token === "--dir" || token === "-w" || token === "--workspace" || token === "--package" || token === "--allow-scripts") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--prefix=") || token.startsWith("--dir=") || token.startsWith("--workspace=") || token.startsWith("--package=") || token.startsWith("--allow-scripts=")) continue;
+    if (/^-C.+/.test(token) || /^-w.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    if (token === "exec" || (headBase === "npm" && token === "x") || ((headBase === "pnpm" || headBase === "yarn") && token === "dlx")) {
+      return index;
+    }
+    return null;
+  }
+  return null;
 }
 
 function unwrapOmxStateTransportCommandOnce(command: string): string | null {
