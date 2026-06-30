@@ -3882,6 +3882,52 @@ function extractEnvSplitStringCommand(words: string[], startIndex: number): stri
   return "";
 }
 
+function extractPackageManagerExecCommand(command: string, words: string[], startIndex: number, headBase: string): string {
+  let index = startIndex;
+  if (headBase === "npm") {
+    const subcommand = words[index] ?? "";
+    if (subcommand === "exec" || subcommand === "x") {
+      index += 1;
+    } else {
+      return "";
+    }
+  } else if (headBase === "pnpm" || headBase === "yarn") {
+    const subcommand = words[index] ?? "";
+    if (subcommand === "exec" || subcommand === "dlx") {
+      index += 1;
+    } else {
+      return "";
+    }
+  } else if (headBase !== "npx" && headBase !== "pnpx") {
+    return "";
+  }
+
+  for (; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token) continue;
+    if (token === "--") {
+      const tail = sliceShellWordsTailPreservingQuoting(command, index + 1);
+      return tail || "";
+    }
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-c" || token === "--call") {
+      return words[index + 1] ?? "";
+    }
+    if (token.startsWith("-c") && token.length > 2) return token.slice(2);
+    if (token.startsWith("--call=")) return token.slice("--call=".length);
+    if (token === "--package" || token === "-w" || token === "--workspace" || token === "--allow-scripts") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--package=") || token.startsWith("--workspace=") || token.startsWith("--allow-scripts=")) continue;
+    if (token.startsWith("-w") && token.length > 2) continue;
+    if (token.startsWith("-")) continue;
+    const tail = sliceShellWordsTailPreservingQuoting(command, index);
+    return tail || "";
+  }
+  return "";
+}
+
 function unwrapOmxStateTransportCommandOnce(command: string): string | null {
   const words = tokenizeShellWords(normalizeShellLineContinuations(command).trim());
   if (words.length === 0) return null;
@@ -3941,6 +3987,13 @@ function unwrapOmxStateTransportCommandOnce(command: string): string | null {
       return remainder || null;
     }
     return null;
+  }
+
+  if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn" || headBase === "npx" || headBase === "pnpx") {
+    const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, headBase);
+    if (packageManagerCommand) {
+      return packageManagerCommand;
+    }
   }
 
   if (isNestedShellCommandWord(headBase)) {
@@ -4469,6 +4522,11 @@ function extractNestedShellCommandStringsForStateScan(command: string): string[]
       const splitStringCommand = extractEnvSplitStringCommand(words, index + 1);
       if (splitStringCommand) {
         nested.push(splitStringCommand);
+      }
+    } else if (word === "npm" || word === "pnpm" || word === "yarn" || word === "npx" || word === "pnpx") {
+      const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, word);
+      if (packageManagerCommand) {
+        nested.push(packageManagerCommand);
       }
     }
   }
