@@ -355,7 +355,6 @@ function isTerminalSkillActiveTombstone(state: SkillActiveStateLike | null): boo
   if (state.active === false) return true;
   if (isTerminalSkillActivePhase(state.phase)) return true;
   if (stringValue(state.completed_at).trim()) return true;
-  if (stringValue(state.terminal_reason).trim()) return true;
   if (isTerminalSkillActivePhase(state.run_outcome)) return true;
   if (stringValue(state.lifecycle_outcome).trim() || stringValue(state.terminal_outcome).trim()) return true;
   return false;
