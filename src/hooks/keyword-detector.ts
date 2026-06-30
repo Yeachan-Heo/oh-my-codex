@@ -858,7 +858,7 @@ const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
     /^(?:please\s+)?stop(?:\s+now)?\s*[.!]?\s*$/i,
     /\bcancelomx\b/i,
     /(?:^|[^\w])\$(?:stop|cancel|abort)\b/i,
-    /\/(?:cancel|stop|abort)\b/i,
+    /(?:^|\s)\/(?:cancel|stop|abort)(?=[\s.!?;:]|$)/i,
     /\bstop\s+(?:the\s+)?(?:agent|ralph|autopilot|team|ultrawork|execution|current\s+(?:mode|task|run))\b/i,
     /\b(?:cancel|stop)\s+(?:the\s+)?(?:active|running|current)\s+(?:mode|task|run|execution)\b/i,
   ],
@@ -866,7 +866,7 @@ const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
     /^(?:please\s+)?abort(?:\s+now)?\s*[.!]?\s*$/i,
     /\bcancelomx\b/i,
     /(?:^|[^\w])\$(?:stop|cancel|abort)\b/i,
-    /\/(?:cancel|stop|abort)\b/i,
+    /(?:^|\s)\/(?:cancel|stop|abort)(?=[\s.!?;:]|$)/i,
     /\babort\s+(?:the\s+)?(?:agent|ralph|autopilot|team|ultrawork|execution|current\s+(?:mode|task|run))\b/i,
   ],
   parallel: [
