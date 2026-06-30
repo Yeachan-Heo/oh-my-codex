@@ -7411,6 +7411,7 @@ exit 0
       assert.equal((blockedStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
       const stateDeactivationInput = "'{\"mode\":\"deep-interview\",\"active\":false}'";
+      const absolutePathQualifiedNpm = resolve(cwd, "bin", "npm");
       const cliWrapperPlanningDeactivationCommands = [
         ["node-wrapper-clear", "node dist/cli/omx.js state clear --json"],
         ["node-wrapper-write", `node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
@@ -7448,6 +7449,8 @@ exit 0
         ["pnpm-exec-wrapper-write", `pnpm exec omx state write --input ${stateDeactivationInput} --json`],
         ["pnpm-dir-exec-wrapper-clear", "pnpm -C . exec omx state clear --json"],
         ["pnpm-dir-exec-wrapper-write", `pnpm -C . exec omx state write --input ${stateDeactivationInput} --json`],
+        ["path-qualified-npm-exec-wrapper-clear", `${absolutePathQualifiedNpm} exec -- omx state clear --json`],
+        ["path-qualified-npm-exec-wrapper-write", `${absolutePathQualifiedNpm} exec -- omx state write --input ${stateDeactivationInput} --json`],
         ["npx-wrapper-clear", "npx omx state clear --json"],
         ["nohup-trailing-clear", "true && nohup omx state clear --json"],
         ["nohup-trailing-write", `true && nohup omx state write --input ${stateDeactivationInput} --json`],
@@ -7470,6 +7473,8 @@ exit 0
         ["subshell-node-wrapper-write", `(node dist/cli/omx.js state write --input ${stateDeactivationInput} --json)`],
         ["bash-wrapper-trailing-clear", "bash -c 'true'; omx state clear --json"],
         ["sh-wrapper-trailing-write", `sh -c 'true' && omx state write --input ${stateDeactivationInput} --json`],
+        ["function-body-clear", "f(){ omx state clear --json; }; f"],
+        ["function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; f`],
         ["env-split-trailing-clear", "env -S FOO=bar omx state clear --json"],
         ["env-split-string-trailing-write", `env --split-string 'FOO=bar' omx state write --input ${stateDeactivationInput} --json`],
         ["brace-group-clear", "{ omx state clear --json; }"],
@@ -7552,6 +7557,54 @@ exit 0
         );
         assert.equal(allowedCliWrapperInputFileStateWrite.outputJson, null, `${command} should defer to backend validation`);
       }
+
+      const envChdirRelativeInputFileRoot = join(cwd, "payload.json");
+      const envChdirRelativeInputFileSubdir = join(cwd, "env-chdir-input-file-subdir");
+      await mkdir(envChdirRelativeInputFileSubdir, { recursive: true });
+      await writeJson(envChdirRelativeInputFileRoot, { mode: "deep-interview", active: true, current_phase: "intent-first" });
+      await writeJson(join(envChdirRelativeInputFileSubdir, "payload.json"), {
+        mode: "deep-interview",
+        active: false,
+        current_phase: "intent-first",
+      });
+
+      const blockedEnvChdirRelativeInputFileWrite = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-env-chdir-relative-input-file-write",
+          tool_input: {
+            command: `env -C ${envChdirRelativeInputFileSubdir} node ${resolve(cwd, "dist/cli/omx.js")} state write --input-file payload.json --json`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal(
+        (blockedEnvChdirRelativeInputFileWrite.outputJson as { decision?: string } | null)?.decision,
+        "block",
+        "env -C should resolve --input-file relative to the wrapper cwd, not the hook cwd",
+      );
+
+      const blockedEnvChdirLongFlagRelativeInputFileWrite = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-env-chdir-long-relative-input-file-write",
+          tool_input: {
+            command: `env --chdir ${envChdirRelativeInputFileSubdir} node ${resolve(cwd, "dist/cli/omx.js")} state write --input-file payload.json --json`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal(
+        (blockedEnvChdirLongFlagRelativeInputFileWrite.outputJson as { decision?: string } | null)?.decision,
+        "block",
+        "env --chdir should resolve --input-file relative to the wrapper cwd, not the hook cwd",
+      );
 
       const rewrittenArtifactInputFile = join(cwd, ".omx", "context", "rewritten-state-input-file.json");
       await mkdir(dirname(rewrittenArtifactInputFile), { recursive: true });

@@ -3627,6 +3627,151 @@ function normalizeSameCommandScriptTarget(
   }
 }
 
+function normalizeCommandDirectoryTarget(rawPath: string): string | null {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (
+    !trimmed
+    || trimmed.includes("\0")
+    || trimmed.startsWith("~")
+    || trimmed.startsWith("-")
+    || isUnresolvedVariableTarget(trimmed)
+    || /[`$]/.test(trimmed)
+  ) {
+    return null;
+  }
+  return trimmed;
+}
+
+function isEnvCwdChangingOption(word: string): boolean {
+  return word === "-C"
+    || word === "--chdir"
+    || word.startsWith("--chdir=")
+    || /^-C.+/.test(word);
+}
+
+function resolveStateWriteInputFileCwd(cwd: string, commandPrefix: string): string | null {
+  const words = tokenizeShellWords(stripHeredocBodiesForCommandScan(commandPrefix));
+  let effectiveCwd = cwd;
+  let activeWrapper: "env" | "npm" | "pnpm" | "yarn" | null = null;
+
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellAssignmentWord(word)) continue;
+
+    const wordBase = shellWordBaseName(word);
+    if (wordBase === "env" || wordBase === "npm" || wordBase === "pnpm" || wordBase === "yarn") {
+      activeWrapper = wordBase;
+      continue;
+    }
+
+    if (!activeWrapper) continue;
+
+    const isEnvChdirOption = activeWrapper === "env" && isEnvCwdChangingOption(word);
+    const isPackageManagerCwdOption =
+      activeWrapper !== "env"
+        && (word === "-C"
+          || word === "--prefix"
+          || word === "--dir"
+          || word === "--cwd"
+          || word.startsWith("--prefix=")
+          || word.startsWith("--dir=")
+          || word.startsWith("--cwd=")
+          || /^-C.+/.test(word));
+
+    if (isEnvChdirOption || isPackageManagerCwdOption) {
+      let target = "";
+      if (word === "-C" || word === "--chdir" || word === "--prefix" || word === "--dir" || word === "--cwd") {
+        target = words[index + 1] ?? "";
+      } else if (word.startsWith("--chdir=")) {
+        target = word.slice("--chdir=".length);
+      } else if (word.startsWith("--prefix=")) {
+        target = word.slice("--prefix=".length);
+      } else if (word.startsWith("--dir=")) {
+        target = word.slice("--dir=".length);
+      } else if (word.startsWith("--cwd=")) {
+        target = word.slice("--cwd=".length);
+      } else if (word.startsWith("-C") && word.length > 2) {
+        target = word.slice(2);
+      }
+      const normalizedTarget = normalizeCommandDirectoryTarget(target);
+      if (normalizedTarget === null) return null;
+      effectiveCwd = resolve(effectiveCwd, normalizedTarget);
+      if (word === "-C" || word === "--chdir" || word === "--prefix" || word === "--dir" || word === "--cwd") {
+        index += 1;
+      }
+    }
+  }
+
+  return effectiveCwd;
+}
+
+function findShellFunctionDefinitionAt(command: string, index: number): { name: string; openBraceIndex: number } | null {
+  if (index > 0) {
+    let previous = index - 1;
+    while (previous >= 0 && /\s/.test(command[previous] ?? "")) previous -= 1;
+    if (previous >= 0 && !/[;&|(){}]/.test(command[previous] ?? "")) return null;
+  }
+
+  let cursor = index;
+  while (/\s/.test(command[cursor] ?? "")) cursor += 1;
+  const candidate = command.slice(cursor);
+  const functionKeywordMatch = candidate.match(/^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*\{/);
+  if (functionKeywordMatch) {
+    return {
+      name: functionKeywordMatch[1],
+      openBraceIndex: cursor + functionKeywordMatch[0].lastIndexOf("{"),
+    };
+  }
+  const bareFunctionMatch = candidate.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{/);
+  if (bareFunctionMatch) {
+    return {
+      name: bareFunctionMatch[1],
+      openBraceIndex: cursor + bareFunctionMatch[0].lastIndexOf("{"),
+    };
+  }
+  return null;
+}
+
+function findShellFunctionBodyEnd(command: string, openBraceIndex: number): number {
+  let depth = 1;
+  let quote: "'" | "\"" | null = null;
+  for (let index = openBraceIndex + 1; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function isShellFunctionInvokedLater(command: string, functionName: string): boolean {
+  for (const segment of splitShellCommandSegments(command)) {
+    const words = tokenizeShellWords(segment);
+    let index = 0;
+    while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
+    if ((words[index] ?? "") === functionName) return true;
+  }
+  return false;
+}
+
 function firstNonOptionSourceOperand(words: string[], sourceWordIndex: number): string {
   for (let index = sourceWordIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
@@ -3729,8 +3874,11 @@ function readStateWriteInputPayload(cwd: string, command: string): Record<string
   if (stateWriteOperation.nested) return null;
   if (hasPriorExecutableCommand(stateWriteOperation.prefix)) return null;
 
+  const resolvedInputFileCwd = resolveStateWriteInputFileCwd(cwd, stateWriteOperation.commandPrefix || stateWriteOperation.prefix);
+  if (resolvedInputFileCwd === null) return null;
+
   try {
-    const raw = readFileSync(resolve(cwd, inputFile.trim()), "utf-8");
+    const raw = readFileSync(resolve(resolvedInputFileCwd, inputFile.trim()), "utf-8");
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? mergeModeFlag(parsed as Record<string, unknown>)
@@ -3738,6 +3886,27 @@ function readStateWriteInputPayload(cwd: string, command: string): Record<string
   } catch {
     return null;
   }
+}
+
+function envCommandHasCwdChangingOption(words: string[], startIndex: number): boolean {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (isEnvCwdChangingOption(token)) return true;
+    if (token === "-S" || token === "--split-string" || token.startsWith("-S") || token.startsWith("--split-string=")) {
+      return false;
+    }
+    if (token === "-u" || token === "--unset" || token === "-a" || token === "--argv0") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--unset=") || token.startsWith("--argv0=")) continue;
+    if (/^-u.+/.test(token) || /^-a.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return false;
+  }
+  return false;
 }
 
 function hasPriorExecutableCommand(commandPrefix: string): boolean {
@@ -3977,6 +4146,9 @@ function unwrapOmxStateTransportCommandOnce(command: string): string | null {
   }
 
   if (headBase === "env") {
+    if (envCommandHasCwdChangingOption(words, index + 1)) {
+      return null;
+    }
     const splitOperand = extractEnvSplitStringCommand(words, index + 1);
     if (splitOperand) {
       return splitOperand;
@@ -4148,6 +4320,7 @@ function readStateWriteFlagValue(args: string[], flagName: "--input" | "--input-
 interface OmxStateCommandOperation {
   args: string[];
   prefix: string;
+  commandPrefix: string;
   nested: boolean;
 }
 
@@ -4489,6 +4662,12 @@ function collectOmxStateCommandOperations(
 
   scanNestedSubstitutions();
 
+  for (const functionBody of extractInvokedShellFunctionBodiesForStateScan(command)) {
+    for (const nestedOperation of collectOmxStateCommandOperations(functionBody, operation, true)) {
+      addOperation(nestedOperation);
+    }
+  }
+
   for (const scanSegment of splitStateScanSegments(command)) {
     const words = tokenizeShellWords(scanSegment.segment);
     const stateCommand = readOmxStateCommandFromSegmentWords(words, operation);
@@ -4496,6 +4675,7 @@ function collectOmxStateCommandOperations(
       addOperation({
         args: stateCommand.args,
         prefix: scanSegment.prefix,
+        commandPrefix: stateCommand.prefixWords.join(" "),
         nested,
       });
     }
@@ -4508,6 +4688,37 @@ function collectOmxStateCommandOperations(
   }
 
   return operations;
+}
+
+function extractInvokedShellFunctionBodiesForStateScan(command: string): string[] {
+  const bodies: string[] = [];
+  command = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command));
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    const functionDefinition = findShellFunctionDefinitionAt(command, index);
+    if (!functionDefinition) continue;
+    const functionBodyEnd = findShellFunctionBodyEnd(command, functionDefinition.openBraceIndex);
+    if (functionBodyEnd < 0) continue;
+    if (isShellFunctionInvokedLater(command.slice(functionBodyEnd + 1), functionDefinition.name)) {
+      bodies.push(command.slice(functionDefinition.openBraceIndex + 1, functionBodyEnd));
+    }
+    index = functionBodyEnd;
+  }
+  return bodies;
 }
 
 function findUnquotedOmxStateCommandIndexes(command: string, operation: "write" | "clear"): number[] {
@@ -4535,14 +4746,19 @@ function extractNestedShellCommandStringsForStateScan(command: string): string[]
       if (splitStringCommand) {
         nested.push(splitStringCommand);
       }
-    } else if (word === "npm" || word === "pnpm" || word === "yarn" || word === "npx" || word === "pnpx") {
-      const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, word);
+    } else if (isPackageManagerCommandWord(word)) {
+      const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, shellWordBaseName(word));
       if (packageManagerCommand) {
         nested.push(packageManagerCommand);
       }
     }
   }
   return nested;
+}
+
+function isPackageManagerCommandWord(word: string): boolean {
+  const base = shellWordBaseName(word);
+  return base === "npm" || base === "pnpm" || base === "yarn" || base === "npx" || base === "pnpx";
 }
 
 function hasDynamicNestedShellExecution(command: string): boolean {
