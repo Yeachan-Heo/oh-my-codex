@@ -7972,6 +7972,19 @@ exit 0
       );
       assert.equal((blockedShellStdinPipe.outputJson as { decision?: string } | null)?.decision, "block");
 
+      const blockedHeredocPipeToShell = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-heredoc-pipe-to-shell",
+          tool_input: { command: "cat <<'EOF' | bash\nomx state clear --json\nEOF" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedHeredocPipeToShell.outputJson as { decision?: string } | null)?.decision, "block");
+
       for (const [index, command] of [
         "printf 'omx state clear --json'|bash",
         "printf 'omx state clear --json' |bash",
