@@ -4333,6 +4333,8 @@ function readOmxStateCommandFromSegmentWords(
           ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
           : shellWordBaseName(commandWord) === "exec"
             ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "nohup"
+              ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
             : shellWordBaseName(commandWord) === "time"
               ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
               : null;
@@ -4568,7 +4570,7 @@ function hasDynamicNestedShellExecution(command: string): boolean {
 }
 
 function isCommandDispatchBuiltin(word: string): boolean {
-  return word === "exec" || word === "command" || word === "." || word === "source" || word === "env";
+  return word === "exec" || word === "command" || word === "." || word === "source" || word === "env" || word === "nohup";
 }
 
 function extractDispatchBuiltinOperand(words: string[], startIndex: number, builtin: string): string {

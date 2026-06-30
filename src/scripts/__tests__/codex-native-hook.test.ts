@@ -7445,6 +7445,8 @@ exit 0
         ["pnpm-exec-wrapper-clear", "pnpm exec omx state clear --json"],
         ["pnpm-exec-wrapper-write", `pnpm exec omx state write --input ${stateDeactivationInput} --json`],
         ["npx-wrapper-clear", "npx omx state clear --json"],
+        ["nohup-trailing-clear", "true && nohup omx state clear --json"],
+        ["nohup-trailing-write", `true && nohup omx state write --input ${stateDeactivationInput} --json`],
         ["env-unset-wrapper-clear", "env -u FOO node dist/cli/omx.js state clear --json"],
         ["env-chdir-wrapper-clear", `env -C ${cwd} node dist/cli/omx.js state clear --json`],
         ["command-wrapper-write", `command node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
