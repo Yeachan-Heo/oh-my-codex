@@ -3775,13 +3775,38 @@ function findShellFunctionBodyEnd(command: string, openBraceIndex: number, bodyO
 function isShellFunctionInvokedLater(command: string, functionName: string): boolean {
   for (const segment of splitShellCommandSegments(command)) {
     const words = tokenizeShellWords(segment);
-    const index = skipShellCommandPositionPrefixWords(words, 0);
-    if ((words[index] ?? "") === functionName) return true;
-    if (shellWordBaseName(words[index] ?? "") === "time") {
-      const timeOperandIndex = findTimeDispatchOperandIndex(words, index + 1);
-      if (timeOperandIndex !== null && (words[timeOperandIndex] ?? "") === functionName) return true;
+    if (isShellFunctionInvokedFromWords(words, 0, functionName)) return true;
+  }
+  return false;
+}
+
+function isShellFunctionInvokedFromWords(words: string[], startIndex: number, functionName: string): boolean {
+  const index = skipShellCommandPositionPrefixWords(words, startIndex);
+  const head = words[index] ?? "";
+  if (head === functionName) return true;
+
+  if (shellWordBaseName(head) === "time") {
+    const timeOperandIndex = findTimeDispatchOperandIndex(words, index + 1);
+    if (timeOperandIndex !== null) {
+      const timeCommandIndex = skipShellCommandPositionPrefixWords(words, timeOperandIndex);
+      if ((words[timeCommandIndex] ?? "") === functionName) return true;
     }
   }
+
+  if (shellWordBaseName(head) === "coproc") {
+    const coprocOperandIndex = findCoprocDispatchOperandIndex(words, index + 1);
+    if (coprocOperandIndex !== null) {
+      return isShellFunctionInvokedFromWords(words, coprocOperandIndex, functionName);
+    }
+  }
+
+  if (shellWordBaseName(head) === "command") {
+    const commandOperandIndex = findCommandDispatchOperandIndex(words, index + 1);
+    if (commandOperandIndex !== null && shellWordBaseName(words[commandOperandIndex] ?? "") === "time") {
+      return isShellFunctionInvokedFromWords(words, commandOperandIndex, functionName);
+    }
+  }
+
   return false;
 }
 
@@ -3854,7 +3879,11 @@ function describeImplementationToolBlock(
 // still protected are blocked here. Broader backend authority belongs to a
 // separate follow-up; this PR keeps the model/tool-originated guard at the
 // native-hook transport boundary.
-function readStateWriteInputPayload(cwd: string, command: string): Record<string, unknown> | null {
+function readStateWriteInputPayload(
+  cwd: string,
+  command: string,
+  sourceCommand: string = command,
+): Record<string, unknown> | null {
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   if (stateWriteOperations.length === 0) return null;
   if (stateWriteOperations.length > 1) return null;
@@ -3887,7 +3916,14 @@ function readStateWriteInputPayload(cwd: string, command: string): Record<string
   if (stateWriteOperation.nested) return null;
   if (hasPriorExecutableCommand(stateWriteOperation.prefix)) return null;
 
-  const resolvedInputFileCwd = resolveStateWriteInputFileCwd(cwd, stateWriteOperation.commandPrefix || stateWriteOperation.prefix);
+  const canonicalCommandPrefix = stateWriteOperation.commandPrefix || stateWriteOperation.prefix || "";
+  const rawCommandPrefix = sourceCommand !== command
+    ? (() => {
+      const sourceCommandIndex = sourceCommand.lastIndexOf(command);
+      return sourceCommandIndex >= 0 ? sourceCommand.slice(0, sourceCommandIndex) : "";
+    })()
+    : "";
+  const resolvedInputFileCwd = resolveStateWriteInputFileCwd(cwd, canonicalCommandPrefix || rawCommandPrefix);
   if (resolvedInputFileCwd === null) return null;
 
   try {
@@ -5406,7 +5442,7 @@ function commandEndsPlanningPhase(cwd: string, command: string): boolean {
   const stateWriteCount = findUnquotedOmxStateCommandIndexes(canonicalCommand, "write").length;
   if (stateWriteCount > 1) return true;
   if (stateWriteCount === 0) return false;
-  const payload = readStateWriteInputPayload(cwd, canonicalCommand);
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
   return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
 }
 

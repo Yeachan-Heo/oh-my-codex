@@ -7513,6 +7513,18 @@ exit 0
         ["while-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; while f; do break; done`],
         ["until-function-body-clear", "f(){ omx state clear --json; }; until f; do break; done"],
         ["until-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; until f; do break; done`],
+        ["time-negated-function-body-clear", "f(){ omx state clear --json; }; time ! f"],
+        ["time-negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time ! f`],
+        ["time-brace-function-body-clear", "f(){ omx state clear --json; }; time { f; }"],
+        ["time-brace-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time { f; }`],
+        ["time-subshell-function-body-clear", "f(){ omx state clear --json; }; time ( f )"],
+        ["time-subshell-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time ( f )`],
+        ["time-if-function-body-clear", "f(){ omx state clear --json; }; time if f; then :; fi"],
+        ["time-if-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time if f; then :; fi`],
+        ["command-time-negated-function-body-clear", "f(){ omx state clear --json; }; command time ! f"],
+        ["command-time-negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; command time ! f`],
+        ["coproc-function-body-clear", "f(){ omx state clear --json; }; coproc f"],
+        ["coproc-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; coproc f`],
         ["leading-redirection-clear", ">/dev/null omx state clear --json"],
         ["leading-redirection-write", `>/dev/null omx state write --input ${stateDeactivationInput} --json`],
         ["env-split-trailing-clear", "env -S FOO=bar omx state clear --json"],
@@ -7644,6 +7656,34 @@ exit 0
         (blockedEnvChdirLongFlagRelativeInputFileWrite.outputJson as { decision?: string } | null)?.decision,
         "block",
         "env --chdir should resolve --input-file relative to the wrapper cwd, not the hook cwd",
+      );
+
+      const pnpmChdirRelativeInputFileSubdir = join(cwd, "pnpm-chdir-input-file-subdir");
+      await mkdir(pnpmChdirRelativeInputFileSubdir, { recursive: true });
+      await writeJson(join(cwd, "payload.json"), { mode: "deep-interview", active: true, current_phase: "intent-first" });
+      await writeJson(join(pnpmChdirRelativeInputFileSubdir, "payload.json"), {
+        mode: "deep-interview",
+        active: false,
+        current_phase: "intent-first",
+      });
+
+      const blockedPnpmChdirRelativeInputFileWrite = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-pnpm-chdir-relative-input-file-write",
+          tool_input: {
+            command: `pnpm -C ${pnpmChdirRelativeInputFileSubdir} exec omx state write --input-file payload.json --json`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal(
+        (blockedPnpmChdirRelativeInputFileWrite.outputJson as { decision?: string } | null)?.decision,
+        "block",
+        "pnpm -C should resolve --input-file relative to the wrapper cwd, not the hook cwd",
       );
 
       const rewrittenArtifactInputFile = join(cwd, ".omx", "context", "rewritten-state-input-file.json");
