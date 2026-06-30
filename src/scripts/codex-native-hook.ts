@@ -3800,6 +3800,13 @@ function isShellFunctionInvokedFromWords(words: string[], startIndex: number, fu
     }
   }
 
+  if (shellWordBaseName(head) === "setsid") {
+    const setsidOperandIndex = findCommandDispatchOperandIndex(words, index + 1);
+    if (setsidOperandIndex !== null) {
+      return isShellFunctionInvokedFromWords(words, setsidOperandIndex, functionName);
+    }
+  }
+
   if (shellWordBaseName(head) === "command") {
     const commandOperandIndex = findCommandDispatchOperandIndex(words, index + 1);
     if (commandOperandIndex !== null && shellWordBaseName(words[commandOperandIndex] ?? "") === "time") {
@@ -4168,7 +4175,7 @@ function unwrapOmxStateTransportCommandOnce(command: string): string | null {
   if (!head) return null;
   const headBase = shellWordBaseName(head);
 
-  if (headBase === "command" || headBase === "builtin" || headBase === "exec" || headBase === "nohup") {
+  if (headBase === "command" || headBase === "builtin" || headBase === "exec" || headBase === "nohup" || headBase === "setsid") {
     let remainderIndex = index + 1;
     while (remainderIndex < words.length) {
       const token = words[remainderIndex] ?? "";
