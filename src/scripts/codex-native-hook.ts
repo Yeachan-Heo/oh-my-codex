@@ -3705,7 +3705,7 @@ function resolveStateWriteInputFileCwd(cwd: string, commandPrefix: string): stri
   return effectiveCwd;
 }
 
-function findShellFunctionDefinitionAt(command: string, index: number): { name: string; openBraceIndex: number } | null {
+function findShellFunctionDefinitionAt(command: string, index: number): { name: string; openBraceIndex: number; bodyOpenChar: "{" | "(" } | null {
   if (index > 0) {
     let previous = index - 1;
     while (previous >= 0 && /\s/.test(command[previous] ?? "")) previous -= 1;
@@ -3715,24 +3715,26 @@ function findShellFunctionDefinitionAt(command: string, index: number): { name: 
   let cursor = index;
   while (/\s/.test(command[cursor] ?? "")) cursor += 1;
   const candidate = command.slice(cursor);
-  const functionKeywordMatch = candidate.match(/^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*\{/);
+  const functionKeywordMatch = candidate.match(/^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*([\{(])/);
   if (functionKeywordMatch) {
     return {
       name: functionKeywordMatch[1],
-      openBraceIndex: cursor + functionKeywordMatch[0].lastIndexOf("{"),
+      openBraceIndex: cursor + functionKeywordMatch[0].length - 1,
+      bodyOpenChar: functionKeywordMatch[2] === "(" ? "(" : "{",
     };
   }
-  const bareFunctionMatch = candidate.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{/);
+  const bareFunctionMatch = candidate.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*([\{(])/);
   if (bareFunctionMatch) {
     return {
       name: bareFunctionMatch[1],
-      openBraceIndex: cursor + bareFunctionMatch[0].lastIndexOf("{"),
+      openBraceIndex: cursor + bareFunctionMatch[0].length - 1,
+      bodyOpenChar: bareFunctionMatch[2] === "(" ? "(" : "{",
     };
   }
   return null;
 }
 
-function findShellFunctionBodyEnd(command: string, openBraceIndex: number): number {
+function findShellFunctionBodyEnd(command: string, openBraceIndex: number, bodyOpenChar: "{" | "("): number {
   let depth = 1;
   let quote: "'" | "\"" | null = null;
   for (let index = openBraceIndex + 1; index < command.length; index += 1) {
@@ -3750,11 +3752,19 @@ function findShellFunctionBodyEnd(command: string, openBraceIndex: number): numb
       continue;
     }
     if (quote) continue;
-    if (char === "{") {
+    if (bodyOpenChar === "{" && char === "{") {
       depth += 1;
       continue;
     }
-    if (char === "}") {
+    if (bodyOpenChar === "{" && char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+    if (bodyOpenChar === "(" && char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (bodyOpenChar === "(" && char === ")") {
       depth -= 1;
       if (depth === 0) return index;
     }
@@ -4526,6 +4536,71 @@ function findTimeoutDispatchOperandIndex(words: string[], startIndex: number): n
   return null;
 }
 
+function isXargsOptionWithNextValue(option: string): boolean {
+  return option === "-a"
+    || option === "--arg-file"
+    || option === "-d"
+    || option === "--delimiter"
+    || option === "-E"
+    || option === "--eof"
+    || option === "-I"
+    || option === "--replace"
+    || option === "-J"
+    || option === "-L"
+    || option === "--max-lines"
+    || option === "-n"
+    || option === "--max-args"
+    || option === "-P"
+    || option === "--max-procs"
+    || option === "-s"
+    || option === "--max-chars";
+}
+
+function isXargsStandaloneOption(option: string): boolean {
+  return option === "-0"
+    || option === "--null"
+    || option === "-r"
+    || option === "--no-run-if-empty"
+    || option === "-t"
+    || option === "--verbose"
+    || option === "-p"
+    || option === "--interactive"
+    || option === "-x"
+    || option === "--exit"
+    || option === "-o"
+    || option === "--open-tty"
+    || option === "--show-limits";
+}
+
+function findXargsDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option || option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (isXargsOptionWithNextValue(option)) {
+      index += 1;
+      continue;
+    }
+    if (
+      option.startsWith("--arg-file=")
+      || option.startsWith("--delimiter=")
+      || option.startsWith("--eof=")
+      || option.startsWith("--replace=")
+      || option.startsWith("--max-lines=")
+      || option.startsWith("--max-args=")
+      || option.startsWith("--max-procs=")
+      || option.startsWith("--max-chars=")
+      || /^-[aAdDEIJLnPs][^-\s]*$/.test(option)
+    ) {
+      continue;
+    }
+    if (isXargsStandaloneOption(option)) continue;
+    if (option.startsWith("-")) continue;
+    return index;
+  }
+  return null;
+}
+
 function findCoprocDispatchOperandIndex(words: string[], startIndex: number): number | null {
   const firstIndex = findDispatchWordIndex(words, startIndex);
   if (firstIndex === null) return null;
@@ -4537,6 +4612,40 @@ function findCoprocDispatchOperandIndex(words: string[], startIndex: number): nu
     return secondIndex;
   }
   return firstIndex;
+}
+
+function findCaseArmCommandIndex(words: string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
+  const head = words[index] ?? "";
+  if (!head) return null;
+
+  if (head === "case") {
+    let inIndex = -1;
+    for (let scanIndex = index + 1; scanIndex < words.length; scanIndex += 1) {
+      const token = words[scanIndex] ?? "";
+      if (!token) continue;
+      if (token === "in") {
+        inIndex = scanIndex;
+        break;
+      }
+      if (token === "esac") return null;
+    }
+    if (inIndex < 0) return null;
+    for (let scanIndex = inIndex + 1; scanIndex < words.length; scanIndex += 1) {
+      const token = words[scanIndex] ?? "";
+      if (!token) continue;
+      if (token === "esac") return null;
+      if (token === ")" || token.endsWith(")")) return scanIndex + 1;
+    }
+    return null;
+  }
+
+  if (head === ")" || head.endsWith(")")) {
+    return index + 1;
+  }
+
+  return null;
 }
 
 function skipShellCommandPositionPrefixWords(words: string[], startIndex: number): number {
@@ -4558,6 +4667,10 @@ function readOmxStateCommandFromSegmentWords(
 
   for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
     commandWordIndex = skipShellCommandPositionPrefixWords(words, commandWordIndex);
+    const caseArmCommandIndex = findCaseArmCommandIndex(words, commandWordIndex);
+    if (caseArmCommandIndex !== null) {
+      commandWordIndex = skipShellCommandPositionPrefixWords(words, caseArmCommandIndex);
+    }
     const directArgs = readOmxStateCommandArgsFromWords(words.slice(commandWordIndex), operation);
     if (directArgs) {
       return {
@@ -4581,6 +4694,8 @@ function readOmxStateCommandFromSegmentWords(
               ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
             : shellWordBaseName(commandWord) === "coproc"
               ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "xargs"
+              ? findXargsDispatchOperandIndex(words, commandWordIndex + 1)
             : shellWordBaseName(commandWord) === "time"
               ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
               : null;
@@ -4794,7 +4909,7 @@ function extractInvokedShellFunctionBodiesForStateScan(command: string): string[
     if (quote) continue;
     const functionDefinition = findShellFunctionDefinitionAt(command, index);
     if (!functionDefinition) continue;
-    const functionBodyEnd = findShellFunctionBodyEnd(command, functionDefinition.openBraceIndex);
+    const functionBodyEnd = findShellFunctionBodyEnd(command, functionDefinition.openBraceIndex, functionDefinition.bodyOpenChar);
     if (functionBodyEnd < 0) continue;
     if (isShellFunctionInvokedLater(command.slice(functionBodyEnd + 1), functionDefinition.name)) {
       bodies.push(command.slice(functionDefinition.openBraceIndex + 1, functionBodyEnd));
