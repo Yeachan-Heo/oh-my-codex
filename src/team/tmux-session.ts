@@ -1194,7 +1194,7 @@ export function buildWorkerStartupCommand(
   }
   const resolvedLeaderNodePath = processSpec.env[OMX_LEADER_NODE_PATH_ENV]?.trim() || resolveLeaderNodePath();
   const leaderNodeDir = /[\\/]/.test(resolvedLeaderNodePath)
-    ? resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, '')
+    ? translatePathForMsys(resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, ''))
     : '';
   if (isNativeWindows()) {
     const powershellPath = resolveNativeWindowsPowerShellPath();
@@ -1222,8 +1222,8 @@ export function buildWorkerStartupCommand(
 
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
   const pathPrefix = leaderNodeDir ? `export PATH=${shellQuoteSingle(leaderNodeDir)}:$PATH; ` : '';
-  const quotedArgs = startupArgs.map(shellQuoteSingle).join(' ');
-  const quotedCommand = shellQuoteSingle(processSpec.command);
+  const quotedArgs = startupArgs.map((arg) => shellQuoteSingle(translatePathForMsys(arg))).join(' ');
+  const quotedCommand = shellQuoteSingle(translatePathForMsys(processSpec.command));
   const cliInvocation = quotedArgs.length > 0 ? `exec ${quotedCommand} ${quotedArgs}` : `exec ${quotedCommand}`;
   // Keep worker tmux panes non-interactive and rc-free by default. PR #2283
   // blocked rc sourcing for detached leader/HUD panes, but team workers still
@@ -1256,12 +1256,12 @@ function buildWorkerStartupScriptContent(
 ): string {
   const resolvedLeaderNodePath = processSpec.env[OMX_LEADER_NODE_PATH_ENV]?.trim() || resolveLeaderNodePath();
   const leaderNodeDir = /[\\/]/.test(resolvedLeaderNodePath)
-    ? resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, '')
+    ? translatePathForMsys(resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, ''))
     : '';
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
   const pathPrefix = leaderNodeDir ? `export PATH=${shellQuoteSingle(leaderNodeDir)}:$PATH\n` : '';
-  const quotedArgs = startupArgs.map(shellQuoteSingle).join(' ');
-  const quotedCommand = shellQuoteSingle(processSpec.command);
+  const quotedArgs = startupArgs.map((arg) => shellQuoteSingle(translatePathForMsys(arg))).join(' ');
+  const quotedCommand = shellQuoteSingle(translatePathForMsys(processSpec.command));
   const cliInvocation = quotedArgs.length > 0 ? `exec ${quotedCommand} ${quotedArgs}` : `exec ${quotedCommand}`;
   const rcPrefix = shouldSourceTeamWorkerShellRc({ ...process.env, ...extraEnv }) && launchSpec.rcFile
     ? `if [ -f ${launchSpec.rcFile} ]; then . ${launchSpec.rcFile}; fi\n`
@@ -1277,7 +1277,7 @@ function buildWorkerStartupScriptContent(
     '#!/bin/sh',
     'set -eu',
     `unset ${OMX_TMUX_HUD_OWNER_ENV} ${OMX_TMUX_HUD_LEADER_PANE_ENV}`,
-    `cd ${shellQuoteSingle(cwd)}`,
+    `cd ${shellQuoteSingle(translatePathForMsys(cwd))}`,
     envExports,
     `exec ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(`${rcPrefix}${pathPrefix}${cliInvocation}`)}`,
     '',
@@ -1294,7 +1294,7 @@ export function writeWorkerStartupScriptCommand(
   initialPrompt?: string,
   workerRole?: string,
 ): string | null {
-  if (process.platform === 'win32') return null;
+  if (process.platform === 'win32' && !isMsysOrGitBash()) return null;
   const stateRoot = extraEnv[OMX_TEAM_STATE_ROOT_ENV]?.trim();
   if (!stateRoot) return null;
 
@@ -1321,7 +1321,7 @@ export function writeWorkerStartupScriptCommand(
   mkdirSync(dirname(scriptPath), { recursive: true });
   writeFileSync(scriptPath, buildWorkerStartupScriptContent(processSpec, startupEnv, startupArgs, cwd, extraEnv), 'utf-8');
   chmodSync(scriptPath, 0o700);
-  return `exec /bin/sh ${shellQuoteSingle(scriptPath)}`;
+  return `exec /bin/sh ${shellQuoteSingle(translatePathForMsys(scriptPath))}`;
 }
 
 export function buildWorkerProcessLaunchSpec(
@@ -1354,7 +1354,7 @@ export function buildWorkerProcessLaunchSpec(
     : undefined;
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
-  const platformSpec = isNativeWindows()
+  const platformSpec = process.platform === 'win32'
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
     : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;

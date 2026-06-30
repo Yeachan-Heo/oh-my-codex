@@ -1282,26 +1282,34 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
-  it('does not use startup scripts on win32/MSYS so existing tmux path translation remains in force', () => {
+  it('uses a generated startup script with MSYS paths on win32/MSYS', async () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     const prevMsystem = process.env.MSYSTEM;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const stateRoot = 'C:\\omx-state';
     try {
       Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
       process.env.MSYSTEM = 'MINGW64';
-      assert.equal(
-        writeWorkerStartupScriptCommand(
-          'alpha',
-          1,
-          ['--model', 'gpt-5'],
-          'C:\\repo',
-          { OMX_TEAM_STATE_ROOT: 'C:\\repo\\.omx\\state' },
-        ),
-        null,
+      process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+      const cmd = writeWorkerStartupScriptCommand(
+        'alpha',
+        1,
+        ['--model', 'gpt-5'],
+        'C:\\repo',
+        { OMX_TEAM_STATE_ROOT: stateRoot },
+        'gemini',
       );
+      assert.equal(cmd, `exec /bin/sh '/c/omx-state/team/alpha/runtime/worker-1-startup.sh'`);
+      const script = await readFile(join(stateRoot, 'team', 'alpha', 'runtime', 'worker-1-startup.sh'), 'utf-8');
+      assert.match(script, /^cd '\/c\/repo'$/m);
+      assert.match(script, /^exec '\/bin\/sh' -c /m);
     } finally {
+      await rm(stateRoot, { recursive: true, force: true });
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
       else delete process.env.MSYSTEM;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
   });
 
