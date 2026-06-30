@@ -8030,6 +8030,32 @@ exit 0
       );
       assert.equal((blockedBashProcessSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
 
+      const blockedCatProcessSubstitution = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-cat-process-substitution",
+          tool_input: { command: "cat <(omx state clear --json)" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedCatProcessSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedDiffProcessSubstitution = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-state-cli-diff-process-substitution",
+          tool_input: { command: `diff <(omx state write --input ${stateDeactivationInput} --json) /dev/null` },
+        },
+        { cwd },
+      );
+      assert.equal((blockedDiffProcessSubstitution.outputJson as { decision?: string } | null)?.decision, "block");
+
       const blockedQuotedCommandSubstitutionClear = await preToolUse(
         {
           hook_event_name: "PreToolUse",

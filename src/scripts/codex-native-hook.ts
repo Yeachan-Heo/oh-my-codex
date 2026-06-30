@@ -4640,6 +4640,26 @@ function collectOmxStateCommandOperations(
         index = substitutionEnd >= 0 ? substitutionEnd : command.length;
         continue;
       }
+      if (quote !== "'" && char === "<" && command[index + 1] === "(") {
+        const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
+        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
+          addOperation(nestedOperation);
+        }
+        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        continue;
+      }
+      if (quote !== "'" && char === ">" && command[index + 1] === "(") {
+        const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
+        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
+          addOperation(nestedOperation);
+        }
+        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        continue;
+      }
       if (quote !== "'" && char === "`") {
         const substitutionEnd = findBacktickCommandSubstitutionEnd(command, index + 1);
         const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
@@ -4966,6 +4986,36 @@ function findBacktickCommandSubstitutionEnd(command: string, bodyStartIndex: num
   return -1;
 }
 
+function findProcessSubstitutionEnd(command: string, bodyStartIndex: number): number {
+  let depth = 1;
+  let quote: "'" | "\"" | null = null;
+  for (let index = bodyStartIndex; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
 function containsUnquotedProcessSubstitution(command: string): boolean {
   command = normalizeShellLineContinuations(command);
   let quote: "'" | "\"" | null = null;
@@ -4984,7 +5034,7 @@ function containsUnquotedProcessSubstitution(command: string): boolean {
       continue;
     }
     if (quote) continue;
-    if (char === "<" && command[index + 1] === "(") return true;
+    if ((char === "<" || char === ">") && command[index + 1] === "(") return true;
   }
   return false;
 }
