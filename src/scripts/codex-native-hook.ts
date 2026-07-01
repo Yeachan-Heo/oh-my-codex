@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
-import { extname, join, relative, resolve } from "path";
+import { extname, isAbsolute, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
 import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import { redactAuthSecrets } from "../auth/redact.js";
@@ -88,7 +88,7 @@ import {
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
-import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
+import { isAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
@@ -220,6 +220,11 @@ function safeString(value: unknown): string {
 
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function hasTeamWorkerEnvironment(): boolean {
+  return safeString(process.env.OMX_TEAM_INTERNAL_WORKER).trim() !== ""
+    || safeString(process.env.OMX_TEAM_WORKER).trim() !== "";
 }
 
 function resolveHudReconcileSessionId(
@@ -6678,7 +6683,7 @@ async function buildConductorPreToolUseWriteGuardOutput(
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
-        `${LEADER_CONDUCTOR_GOLDEN_RULE} `
+        "When the Main agent is acting in Conductor mode, NEVER make plan or code changes directly. ALWAYS delegate implementation to specialized agents. "
         + "Use specialized agents for source edits and plan/spec authorship. "
         + `Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata under ${CONDUCTOR_ALLOWED_METADATA_PREFIXES.join(", ")}. `
         + "Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
