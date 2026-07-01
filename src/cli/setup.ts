@@ -1327,6 +1327,8 @@ async function refreshOmxPluginDiscoveryCache(
 			!skillListChanged
 		) continue;
 
+
+
 		staleDirs.push(cacheDir);
 		if (!options.dryRun) {
 			await rm(cacheDir, { recursive: true, force: true });
@@ -2553,9 +2555,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			scopeDirs.codexHomeDir,
 		);
 		if (pluginCacheRefresh.status === "refreshed") {
-			console.log(
-				`  ${dryRun ? "Would invalidate" : "Invalidated"} ${pluginCacheRefresh.staleDirs.length} stale Codex plugin discovery cache entr${pluginCacheRefresh.staleDirs.length === 1 ? "y" : "ies"} so plugin skills refresh from the packaged manifest.`,
-			);
+			if (pluginCacheRefresh.staleDirs.length > 0) {
+				console.log(
+					`  ${dryRun ? "Would invalidate" : "Invalidated"} ${pluginCacheRefresh.staleDirs.length} stale Codex plugin discovery cache entr${pluginCacheRefresh.staleDirs.length === 1 ? "y" : "ies"} so plugin skills refresh from the packaged manifest.`,
+				);
+			}
 		} else if (pluginCacheRefresh.status === "unchanged") {
 			console.log("  Codex plugin discovery cache already matches packaged plugin metadata.");
 		}

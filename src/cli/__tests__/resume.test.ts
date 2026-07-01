@@ -443,6 +443,80 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-unrelated-session.jsonl" ]; the
     }
   });
 
+  it('preflights madmax resume to current plugin cache after old cache deletion', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-madmax-plugin-preflight-'));
+    try {
+      const home = join(wd, 'home');
+      const runsRoot = join(wd, 'runs');
+      const projectCodexHome = join(wd, '.codex');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const testDir = dirname(fileURLToPath(import.meta.url));
+      const repoRoot = join(testDir, '..', '..', '..');
+      const manifest = JSON.parse(await readFile(join(repoRoot, 'plugins', 'oh-my-codex', '.codex-plugin', 'plugin.json'), 'utf-8')) as { version: string };
+      const currentVersion = manifest.version;
+      const oldVersion = '0.0.0-resume-stale';
+      const oldCacheDir = join(projectCodexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex', oldVersion);
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(runsRoot, { recursive: true });
+      await mkdir(join(projectCodexHome, 'sessions', '2026', '06', '17'), { recursive: true });
+      await mkdir(join(oldCacheDir, '.codex-plugin'), { recursive: true });
+      await mkdir(join(oldCacheDir, 'hooks'), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(projectCodexHome, 'sessions', '2026', '06', '17', 'rollout-stale-session.jsonl'), '{"type":"session_meta","payload":{"id":"stale-session"}}\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), [
+        '[plugins."oh-my-codex@oh-my-codex-local"]',
+        'enabled = true',
+        '',
+        '[marketplaces.oh-my-codex-local]',
+        'source_type = "local"',
+        'source = "/deleted/old/omx"',
+        '',
+      ].join('\n'));
+      await writeFile(join(oldCacheDir, '.codex-plugin', 'plugin.json'), JSON.stringify({
+        name: 'oh-my-codex',
+        version: oldVersion,
+        skills: './skills/',
+        hooks: './hooks/hooks.json',
+      }, null, 2));
+      await writeFile(join(oldCacheDir, 'hooks', 'hooks.json'), '{}\n');
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: wd, run_dir: join(runsRoot, 'run-associated') })}\n`);
+      await rm(oldCacheDir, { recursive: true, force: true });
+
+      await writeFile(fakeCodexPath, `#!/bin/sh
+printf 'fake-codex:%s\n' "$*"
+printf 'codex-home:%s\n' "$CODEX_HOME"
+if [ -f "$CODEX_HOME/plugins/cache/oh-my-codex-local/oh-my-codex/${currentVersion}/hooks/codex-native-hook.mjs" ]; then echo current-hook-present=yes; else echo current-hook-present=no; fi
+if [ -e "$CODEX_HOME/plugins/cache/oh-my-codex-local/oh-my-codex/${oldVersion}" ]; then echo old-cache-present=yes; else echo old-cache-present=no; fi
+case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo marketplace-current=yes;; *) echo marketplace-current=no;; esac
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['--madmax', 'resume', 'stale-session'], {
+        HOME: home,
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:.*resume stale-session\b/);
+      assert.match(result.stdout, /current-hook-present=yes/);
+      assert.match(result.stdout, /old-cache-present=no/);
+      assert.match(result.stdout, /marketplace-current=yes/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps madmax runtime history deduped across repeated resume cleanup', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-madmax-dedupe-'));
     try {
