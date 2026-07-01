@@ -3559,13 +3559,18 @@ function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   return targets;
 }
 
+function commandHasDestructiveGitSubcommand(command: string): boolean {
+  return /\bgit\s+(?:checkout|switch|restore|reset|apply|am|merge|rebase)(?=$|[\s;&|()<>])/.test(command);
+}
+
 function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return commandInvokesApplyPatch(command)
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
-    || /\b(?:git\s+(?:checkout|switch|restore|reset|apply|am|merge|rebase)|npm\s+(?:install|i|ci)|pnpm\s+(?:install|i)|yarn\s+(?:install|add))\b/.test(command);
+    || commandHasDestructiveGitSubcommand(command)
+    || /\b(?:npm\s+(?:install|i|ci)|pnpm\s+(?:install|i)|yarn\s+(?:install|add))\b/.test(command);
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {

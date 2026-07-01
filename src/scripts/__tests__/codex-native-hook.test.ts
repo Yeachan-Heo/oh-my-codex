@@ -9614,6 +9614,44 @@ exit 0
         thread_id: "thread-autopilot-ralplan-artifact",
       });
 
+      const preToolUse = async (tool_name: string, tool_use_id: string, tool_input: Record<string, unknown>) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-autopilot-ralplan-artifact",
+          thread_id: "thread-autopilot-ralplan-artifact",
+          tool_name,
+          tool_use_id,
+          tool_input,
+        },
+        { cwd },
+      );
+
+      const issueReadOnlyEvidenceCommand = [
+        "printf 'collecting planning evidence\\n'",
+        "ROOT=$(git rev-parse --show-toplevel)",
+        "BASE=$(git merge-base HEAD origin/dev)",
+        "git log --oneline ${BASE}..HEAD",
+        "git diff --name-status ${BASE}..HEAD",
+        "sed -n '1,120p' src/scripts/codex-native-hook.ts",
+        "grep -RIn 'commandHasDeepInterviewWriteIntent' src/scripts/codex-native-hook.ts",
+        "printf '%s\\n' \"$ROOT\"",
+      ].join("; ");
+      const allowedIssueReadOnlyBash = await preToolUse("Bash", "tool-autopilot-ralplan-read-only-bash", {
+        command: issueReadOnlyEvidenceCommand,
+      });
+      assert.equal(allowedIssueReadOnlyBash.outputJson, null);
+
+      for (const command of ["git merge origin/dev", "git reset --hard HEAD"]) {
+        const blockedDestructiveGit = await preToolUse("Bash", `tool-autopilot-ralplan-${command.replace(/[^a-z0-9]+/gi, "-")}`, {
+          command,
+        });
+        assert.equal(
+          (blockedDestructiveGit.outputJson as { decision?: string } | null)?.decision,
+          "block",
+          `${command} should stay blocked during Autopilot ralplan`,
+        );
+      }
       const allowedPlanWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
