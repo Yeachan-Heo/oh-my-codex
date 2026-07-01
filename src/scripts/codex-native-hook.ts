@@ -3985,12 +3985,13 @@ function describeImplementationToolBlock(
 
 // `omx state` mutations normally route through the gate-enforcing `state_write`
 // backend, so the hook defers to that gate rather than blocking the transport.
-// The backend does NOT gate standalone deep-interview/ralplan *deactivation*,
-// and it normalizes non-terminal tracked-workflow writes to `active=true`, so
-// commands that would implicitly activate a tracked workflow while planning is
-// still protected are blocked here. Broader backend authority belongs to a
-// separate follow-up; this PR keeps the model/tool-originated guard at the
-// native-hook transport boundary.
+// The backend does NOT gate generic standalone deep-interview/ralplan
+// *deactivation*, and it normalizes non-terminal tracked-workflow writes to
+// `active=true`, so commands that would implicitly activate a tracked workflow
+// while planning is still protected are blocked here. Ralplan terminal closeout
+// is the narrow exception: the backend has a dedicated completeRalplanSession
+// path that coherently terminalizes root and session state when the payload is a
+// complete consensus-approved terminal state.
 function readStateWriteInputPayload(
   cwd: string,
   command: string,
@@ -5691,12 +5692,37 @@ function hasUnsafeUnquotedHeredocExpansion(command: string): boolean {
   return false;
 }
 
+function hasUnquotedShellSubstitution(command: string): boolean {
+  command = normalizeShellLineContinuations(command);
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote === "'") continue;
+    if (char === "$" && command[index + 1] === "(") return true;
+    if (char === "`") return true;
+    if ((char === "<" || char === ">") && command[index + 1] === "(") return true;
+  }
+  return false;
+}
+
 function normalizeStateWriteClassificationPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const targetMode = safeString(payload.mode).trim();
+  const targetSessionId = safeString(payload.session_id).trim();
   const {
     mode: _mode,
     workingDirectory: _workingDirectory,
-    session_id: _sessionId,
     state,
     ...fields
   } = payload;
@@ -5704,6 +5730,7 @@ function normalizeStateWriteClassificationPayload(payload: Record<string, unknow
     ...fields,
     ...safeObject(state),
     ...(targetMode ? { mode: targetMode } : {}),
+    ...(targetSessionId ? { session_id: targetSessionId } : {}),
   };
   if (normalized.current_phase === undefined && normalized.currentPhase !== undefined) {
     normalized.current_phase = normalized.currentPhase;
@@ -5738,6 +5765,53 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
 
   if (payload.active === false) return true;
   return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) !== undefined;
+}
+
+function isCompleteRalplanTerminalWritePayload(
+  payload: Record<string, unknown>,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  if (!sessionId) return false;
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  if (mode !== "ralplan") return false;
+  const phase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
+  if (payload.active !== false || phase !== "complete") return false;
+
+  const payloadSessionId = safeString(payload.session_id).trim();
+  const activeSessionId = safeString(
+    activeState.session_id
+      ?? activeState.owner_omx_session_id
+      ?? activeState.codex_session_id
+      ?? activeState.owner_codex_session_id,
+  ).trim();
+  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) return false;
+  if (payloadSessionId && activeSessionId && payloadSessionId !== activeSessionId) return false;
+  return true;
+}
+
+function isAllowedRalplanTerminalStateWriteCommand(
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
+  if (splitStateScanSegments(canonicalCommand).length !== 1) return false;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
+  if (commandHasDeepInterviewWriteIntent(canonicalCommand)) return false;
+
+  const operations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (operations.length !== 1) return false;
+  const operation = operations[0];
+  if (!operation || operation.nested || hasPriorExecutableCommand(operation.prefix)) return false;
+
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isCompleteRalplanTerminalWritePayload(payload, activeState, sessionId) : false;
 }
 
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
@@ -5855,7 +5929,12 @@ async function readActiveRalplanStateForPreToolUse(
   return hasActiveAutopilotSkill ? autopilotState : null;
 }
 
-function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
+function isAllowedRalplanBashWrite(
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
@@ -5864,7 +5943,9 @@ function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
   if (beadsCommand.present) {
     return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
   }
-  if (commandEndsPlanningPhase(cwd, command)) return false;
+  if (commandEndsPlanningPhase(cwd, command)) {
+    return isAllowedRalplanTerminalStateWriteCommand(cwd, command, activeState, sessionId);
+  }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (targets.some((target) => !isAllowedRalplanArtifactPath(cwd, target))) return false;
@@ -5915,7 +5996,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
   if (toolName === "Bash") {
-    blocked = !isAllowedRalplanBashWrite(cwd, command);
+    blocked = !isAllowedRalplanBashWrite(cwd, command, activeState, sessionId);
     if (blocked) {
       blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
     }
@@ -6100,7 +6181,9 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
   const toolName = safeString(payload.tool_name).trim();
   let blocked = false;
   if (toolName === "Bash") {
-    blocked = !isAllowedRalplanBashWrite(cwd, readPreToolUseCommand(payload));
+    const command = readPreToolUseCommand(payload);
+    blocked = commandEndsPlanningPhase(cwd, command)
+      || !isAllowedRalplanBashWrite(cwd, command, ralplanState, rootSessionId);
   } else if (
     toolName === "mcp__omx_state__state_clear"
     || (

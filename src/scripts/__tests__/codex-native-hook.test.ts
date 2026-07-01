@@ -8620,7 +8620,7 @@ exit 0
     }
   });
 
-  it("blocks deactivating ralplan state writes from --input-file while allowing non-deactivating ones", async () => {
+  it("allows complete ralplan terminal state writes while blocking partial deactivation writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-ralplan-state-input-file-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -8672,6 +8672,47 @@ exit 0
       );
       assert.equal((blocked.outputJson as { decision?: string } | null)?.decision, "block");
 
+      const terminalPayload = join(cwd, "ralplan-terminal-state.json");
+      await writeJson(terminalPayload, {
+        mode: "ralplan",
+        active: false,
+        current_phase: "complete",
+        session_id: "sess-ralplan-input-file",
+        terminal_reason: "consensus approved bounded no-op",
+      });
+      const allowedTerminalFile = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ralplan-input-file",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-state-input-file-terminal-allowed",
+          tool_input: { command: `omx state write --input-file ${terminalPayload} --json` },
+        },
+        { cwd },
+      );
+      assert.equal(allowedTerminalFile.outputJson, null);
+
+      const mismatchedTerminalPayload = join(cwd, "ralplan-terminal-state-mismatched.json");
+      await writeJson(mismatchedTerminalPayload, {
+        mode: "ralplan",
+        active: false,
+        current_phase: "complete",
+        session_id: "other-session",
+      });
+      const blockedMismatchedTerminalFile = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ralplan-input-file",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-state-input-file-terminal-mismatched",
+          tool_input: { command: `omx state write --input-file ${mismatchedTerminalPayload} --json` },
+        },
+        { cwd },
+      );
+      assert.equal((blockedMismatchedTerminalFile.outputJson as { decision?: string } | null)?.decision, "block");
+
       const terminalCurrentPhaseAliases = ["finish", "finished", "complete", "completed", "done", "blocked", "blocked-on-user", "blocked_on_user", "failed", "fail", "error", "cancelled", "canceled", "cancel", "aborted", "abort", "userinterlude", "user-interlude", "interrupted", "interrupt", "askuserquestion", "ask-user-question", "askuser", "question"] as const;
       for (const alias of terminalCurrentPhaseAliases) {
         const blockedAliasPayload = join(cwd, `ralplan-blocked-state-${alias}.json`);
@@ -8706,6 +8747,67 @@ exit 0
         { cwd },
       );
       assert.equal((blockedModeFlagTerminal.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const allowedModeFlagTerminal = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ralplan-input-file",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-state-mode-flag-terminal-allowed",
+          tool_input: {
+            command: "omx state write --mode ralplan --input '{\"active\":false,\"current_phase\":\"complete\"}' --json",
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedModeFlagTerminal.outputJson, null);
+
+      const blockedTerminalThenImplementationWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ralplan-input-file",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-state-terminal-then-implementation-write",
+          tool_input: {
+            command: "omx state write --mode ralplan --input '{\"active\":false,\"current_phase\":\"complete\"}' --json && printf bad > src/leak.ts",
+          },
+        },
+        { cwd },
+      );
+      assert.equal(
+        (blockedTerminalThenImplementationWrite.outputJson as { decision?: string } | null)?.decision,
+        "block",
+      );
+
+      for (const [toolUseId, suffix] of [
+        ["tool-ralplan-state-terminal-then-touch", "&& touch src/leak.ts"],
+        ["tool-ralplan-state-terminal-then-rm", "; rm src/leak.ts"],
+        ["tool-ralplan-state-terminal-then-readonly", "&& pwd"],
+        ["tool-ralplan-state-terminal-command-substitution", "$(touch src/leak.ts)"],
+        ["tool-ralplan-state-terminal-backtick-substitution", "`touch src/leak.ts`"],
+        ["tool-ralplan-state-terminal-process-substitution", "<(touch src/leak.ts)"],
+      ] as const) {
+        const blockedTerminalThenSuffix = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-ralplan-input-file",
+            tool_name: "Bash",
+            tool_use_id: toolUseId,
+            tool_input: {
+              command: `omx state write --mode ralplan --input '{"active":false,"current_phase":"complete"}' --json ${suffix}`,
+            },
+          },
+          { cwd },
+        );
+        assert.equal(
+          (blockedTerminalThenSuffix.outputJson as { decision?: string } | null)?.decision,
+          "block",
+          `${suffix} suffix should keep ralplan terminal state writes standalone`,
+        );
+      }
 
       for (const alias of terminalCurrentPhaseAliases) {
         const blockedModeFlagAlias = await dispatchCodexNativeHook(
@@ -9497,8 +9599,9 @@ exit 0
       });
       assert.equal(allowedStateCliMutation.outputJson, null);
 
-      // Deactivation vectors (`omx state clear`, `active:false`) are still
-      // rejected at the transport boundary.
+      // Broad deactivation vectors such as `omx state clear` are still rejected
+      // at the transport boundary; complete consensus terminal writes are
+      // covered by the state-write closeout tests.
       const blockedStateClear = await preToolUse("Bash", "tool-ralplan-state-cli-clear", {
         command: "omx state clear --json",
       });
@@ -15005,6 +15108,47 @@ exit 0
         current_phase: "planning",
         session_id: nativeSessionId,
       });
+      const now = "2026-06-30T00:00:00.000Z";
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [nativeSessionId]: {
+            session_id: nativeSessionId,
+            leader_thread_id: "thread-leader",
+            updated_at: now,
+            threads: {
+              "thread-leader": { thread_id: "thread-leader", kind: "leader", first_seen_at: now, last_seen_at: now, turn_count: 1 },
+              "thread-architect": { thread_id: "thread-architect", kind: "subagent", first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+              "thread-critic": { thread_id: "thread-critic", kind: "subagent", first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+            },
+          },
+        },
+      });
+      const consensusGate = {
+        required: true,
+        complete: true,
+        sequence: ["architect-review", "critic-review"],
+        planning_artifacts_are_not_consensus: true,
+        required_review_roles: ["architect", "critic"],
+        ralplan_architect_review: {
+          agent_role: "architect",
+          verdict: "approve",
+          provenance_kind: "native_subagent",
+          session_id: nativeSessionId,
+          thread_id: "thread-architect",
+          artifact_path: ".omx/artifacts/architect.md",
+          tracker_path: ".omx/state/subagent-tracking.json",
+        },
+        ralplan_critic_review: {
+          agent_role: "critic",
+          verdict: "approve",
+          provenance_kind: "native_subagent",
+          session_id: nativeSessionId,
+          thread_id: "thread-critic",
+          artifact_path: ".omx/artifacts/critic.md",
+          tracker_path: ".omx/state/subagent-tracking.json",
+        },
+      };
       process.env.OMX_SESSION_ID = ownerSessionId;
 
       const writeResult = await executeStateOperation("state_write", {
@@ -15013,6 +15157,7 @@ exit 0
         current_phase: "complete",
         status: "complete",
         terminal_state: "complete",
+        ralplan_consensus_gate: consensusGate,
         workingDirectory: cwd,
       });
 
@@ -19637,6 +19782,21 @@ exit 0
         { cwd },
       );
       assert.equal((blockedMcpStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
+
+      const blockedOmittedSessionTerminalWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "019e-ralplan-live-root-unresolved-current",
+          thread_id: "thread-ralplan-live-root-conflict",
+          tool_name: "Bash",
+          tool_input: {
+            command: "omx state write --mode ralplan --input '{\"active\":false,\"current_phase\":\"complete\"}' --json",
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedOmittedSessionTerminalWrite.outputJson as { decision?: string } | null)?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
       await rm(ownerCwd, { recursive: true, force: true });
