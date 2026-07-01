@@ -9652,6 +9652,38 @@ exit 0
           `${command} should stay blocked during Autopilot ralplan`,
         );
       }
+      const allowedHeredocPlanWithMarkdownArrow = await preToolUse("Bash", "tool-autopilot-ralplan-heredoc-arrow-allow", {
+        command: [
+          "cat > .omx/plans/rebase-pr3010-ultragoal-fix-plan.md <<'EOF'",
+          "# RALPLAN",
+          "- Scope is GitHub PR #3010: `fix/omx-ultragoal-fix` -> `dev`.",
+          "EOF",
+        ].join("\n"),
+      });
+      assert.equal(allowedHeredocPlanWithMarkdownArrow.outputJson, null);
+
+      const blockedHeredocImplementationRedirect = await preToolUse("Bash", "tool-autopilot-ralplan-heredoc-src-block", {
+        command: [
+          "cat > src/implementation.ts <<'EOF'",
+          "# RALPLAN",
+          "- Scope is GitHub PR #3010: `fix/omx-ultragoal-fix` -> `dev`.",
+          "EOF",
+        ].join("\n"),
+      });
+      assert.equal((blockedHeredocImplementationRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedHeredocImplementationRedirect.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/implementation\.ts/);
+
+      const blockedPostHeredocImplementationRedirect = await preToolUse("Bash", "tool-autopilot-ralplan-post-heredoc-src-block", {
+        command: [
+          "cat > .omx/plans/rebase-pr3010-ultragoal-fix-plan.md <<'EOF'",
+          "# RALPLAN",
+          "- Scope is GitHub PR #3010: `fix/omx-ultragoal-fix` -> `dev`.",
+          "EOF",
+          "printf 'bad' > src/implementation.ts",
+        ].join("\n"),
+      });
+      assert.equal((blockedPostHeredocImplementationRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedPostHeredocImplementationRedirect.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/implementation\.ts/);
       const allowedPlanWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",

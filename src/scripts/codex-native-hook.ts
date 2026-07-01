@@ -3552,7 +3552,8 @@ function resolveCommandRedirectTarget(target: string, assignments: Map<string, s
 
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
-  for (const match of command.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
+  const commandOutsideHeredocBodies = stripHeredocBodiesForCommandScan(command);
+  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
     if (candidate && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
   }
@@ -3616,7 +3617,7 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   const assignments = extractCommandLiteralAssignments(command);
   const targets = extractDeepInterviewCommandRedirectTargets(command)
     .map((target) => resolveCommandRedirectTarget(target, assignments));
-  for (const segment of splitShellCommandSegments(command)) {
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
     const words = tokenizeShellWords(segment);
     for (let index = 0; index < words.length; index += 1) {
       if (shellWordBaseName(words[index] ?? "") !== "tee") continue;
