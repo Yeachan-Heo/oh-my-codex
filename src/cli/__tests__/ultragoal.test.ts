@@ -582,6 +582,31 @@ describe('cli/ultragoal', () => {
     });
   });
 
+  it('rejects null get_goal snapshots for completion without mutating OMX progress', async () => {
+    await withCwd(async (cwd) => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+
+      const rejected = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-first-milestone',
+        '--status', 'complete',
+        '--evidence', 'tests passed',
+        '--codex-goal-json', '{"goal":null}',
+        '--json',
+      ]));
+
+      assert.equal(rejected.exitCode, 1);
+      assert.match(rejected.stderr.join('\n'), /no active goal\/null/);
+      assert.match(rejected.stderr.join('\n'), /call create_goal/);
+      assert.match(rejected.stderr.join('\n'), /do not mark complete from OMX state alone/);
+
+      const plan = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { activeGoalId?: string; goals: Array<{ status: string }> };
+      assert.equal(plan.activeGoalId, 'G001-first-milestone');
+      assert.equal(plan.goals[0].status, 'in_progress');
+    });
+  });
+
   it('fails closed for malformed final quality-gate json', async () => {
     await withCwd(async (cwd) => {
       await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));

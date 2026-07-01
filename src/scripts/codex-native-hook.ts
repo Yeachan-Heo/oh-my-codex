@@ -2742,10 +2742,12 @@ async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Pro
   }
   if (activeUltragoal) {
     const goalId = safeString(activeUltragoal.id) || "<goal-id>";
+    const codexObjective = safeString(ultragoal?.codexObjective) || safeString(activeUltragoal.objective) || "<intended ultragoal objective>";
     return {
       workflow: "ultragoal",
       command: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
       remediation: [
+        `If get_goal returns no active goal/null while ${goalId} remains in_progress in .omx/ultragoal/goals.json, do not checkpoint complete or record a blocker from the empty snapshot; call create_goal with objective ${JSON.stringify(codexObjective)} and continue the active OMX story until real completion evidence exists.`,
         `If get_goal returns a completed task-scoped objective for the same aggregate ultragoal plan, checkpoint ${goalId} with evidence naming ${goalId} plus .omx/ultragoal/goals.json or ledger.jsonl and pass final quality-gate JSON; OMX will reconcile the completed planned scope without mutating Codex goal state.`,
         `If get_goal instead returns a different completed legacy objective and complete checkpointing fails, do not repeat --status complete in this thread.`,
         `Record the non-terminal blocker with: omx ultragoal checkpoint --goal-id ${goalId} --status blocked --codex-goal-json '<different completed get_goal JSON or path>' --evidence '<completed legacy Codex goal blocks create_goal in this thread>'.`,

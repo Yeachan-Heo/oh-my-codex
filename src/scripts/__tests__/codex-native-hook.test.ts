@@ -3871,6 +3871,40 @@ standardMaxRounds = 15
     }
   });
 
+  it("blocks ultragoal Stop with no-active-goal recovery before completion checkpointing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-null-goal-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        activeGoalId: "G002-resolve-final-independent-review-gat",
+        codexGoalMode: "aggregate",
+        codexObjective: "Complete the durable ultragoal plan in .omx/ultragoal/goals.json.",
+        goals: [
+          { id: "G001-final-review", status: "review_blocked", objective: "Resolve review." },
+          { id: "G002-resolve-final-independent-review-gat", status: "in_progress", objective: "Resolve final independent review gate." },
+        ],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-ultragoal-null-goal-stop",
+        thread_id: "thread-ultragoal-null-goal-stop",
+        last_assistant_message: "Goal complete. get_goal returned null, so I will checkpoint G002 complete from OMX state.",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(output, /no active goal\/null/);
+      assert.match(output, /do not checkpoint complete or record a blocker from the empty snapshot/);
+      assert.match(output, /call create_goal/);
+      assert.match(output, /Complete the durable ultragoal plan/);
+      assert.match(output, /Hooks must not mutate Codex goal state/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block ultragoal Stop for ordinary prose about a goal to complete work", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-ordinary-stop-"));
     try {
