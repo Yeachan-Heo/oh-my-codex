@@ -153,6 +153,7 @@ const TERMINAL_MODE_PHASES = new Set(["complete", "completed", "failed", "cancel
 const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blocked"]);
 const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
+const LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor golden rule: delegate implementation work; do not self-execute source or plan edits.";
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
@@ -2271,6 +2272,10 @@ function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: s
     workerName: match[2] || "",
   };
 }
+function hasTeamWorkerEnvironment(): boolean {
+  return parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER)) !== null
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER)) !== null;
+}
 
 async function resolveTeamStateDirForWorkerContext(
   cwd: string,
@@ -3646,6 +3651,7 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
+    || /\bperl\s+(?:[^\n;&|]*\s)?-[^-\s]*i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || commandHasDestructiveGitSubcommand(command)
     || commandHasPackageInstallIntent(command);
@@ -6157,6 +6163,8 @@ async function readActiveMainRootConductorStateForPreToolUse(
   resolvedSessionId?: string,
 ): Promise<ActiveConductorState | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
+  const payloadSessionId = readPayloadSessionId(payload);
+  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) return null;
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
   if (await isTypedSubagentOrWorkerForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
@@ -6168,21 +6176,18 @@ async function readActiveMainRootConductorStateForPreToolUse(
   ));
   const hasActiveSkill = (skill: string): boolean => activeEntries.some((entry) => entry.skill === skill);
 
-  for (const mode of ["ralph", "ultragoal", "ralplan"] as const) {
-    if (!hasActiveSkill(mode)) continue;
-    const state = await readStopSessionPinnedState(`${mode}-state.json`, cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, mode, sessionId)) {
-      return { mode, phase: safeString(state?.current_phase ?? state?.currentPhase) || "active" };
+  if (hasActiveSkill("ralph")) {
+    const state = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(state, "ralph", sessionId)) {
+      const phase = safeString(state?.current_phase ?? state?.currentPhase) || "active";
+      if (phase !== "starting") return { mode: "ralph", phase };
     }
   }
 
-  if (hasActiveSkill("autopilot")) {
-    const state = await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, "autopilot", sessionId)) {
-      const phase = normalizeAutopilotPhase(state?.current_phase ?? state?.currentPhase);
-      if (phase !== null && isAutopilotChildPhase(phase) && phase !== "rework") {
-        return { mode: "autopilot", phase: safeString(state?.current_phase ?? state?.currentPhase) || phase };
-      }
+  if (hasActiveSkill("ultragoal") && hasActiveSkill("ralplan")) {
+    const state = await readStopSessionPinnedState("ultragoal-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(state, "ultragoal", sessionId)) {
+      return { mode: "ultragoal", phase: safeString(state?.current_phase ?? state?.currentPhase) || "active" };
     }
   }
 
@@ -6200,6 +6205,9 @@ async function readActiveMainRootConductorStateForPreToolUse(
 
 const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".omx/state",
+  ".omx/context",
+  ".omx/plans",
+  ".omx/specs",
   ".omx/ultragoal",
   ".omx/ralph",
   ".omx/team",
@@ -8169,6 +8177,7 @@ export async function dispatchCodexNativeHook(
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildPlanningRootPointerConflictPreToolUseOutput(payload, cwd, stateDir, rootPointerConflict)
+      ?? await buildConductorPreToolUseWriteGuardOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
       ?? buildMalformedPreToolUseBlockTestOutput(payload)
       ?? buildNativePreToolUseOutput(payload);
