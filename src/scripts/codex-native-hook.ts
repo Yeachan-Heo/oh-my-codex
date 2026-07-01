@@ -3864,8 +3864,10 @@ function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): b
         if (operand && writtenTargets.has(operand)) return true;
       }
 
-      const commandWordIndex = skipShellCommandPositionPrefixWords(words, 0);
-      const directExecutionTarget = normalizeSameCommandScriptTarget(cwd, words[commandWordIndex] ?? "", assignments);
+      const commandWordIndex = findWrappedCommandPositionIndex(words, 0);
+      const directExecutionTarget = commandWordIndex === null
+        ? null
+        : normalizeSameCommandScriptTarget(cwd, words[commandWordIndex] ?? "", assignments);
       if (directExecutionTarget && writtenTargets.has(directExecutionTarget)) return true;
 
       for (const nestedCommand of extractNestedShellCommandStringsForStateScan(segment)) {
@@ -4809,6 +4811,33 @@ function skipShellCommandPositionPrefixWords(words: string[], startIndex: number
   return commandWordIndex;
 }
 
+function findWrappedCommandPositionIndex(words: string[], startIndex: number): number | null {
+  let commandWordIndex = skipShellCommandPositionPrefixWords(words, startIndex);
+  for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+    const commandWord = words[commandWordIndex] ?? "";
+    if (!commandWord) return null;
+
+    const commandWordBase = shellWordBaseName(commandWord);
+    const operandIndex =
+      commandWordBase === "env"
+        ? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
+        : commandWordBase === "command"
+          ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+          : commandWordBase === "exec"
+            ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
+            : commandWordBase === "time"
+              ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
+              : null;
+    if (operandIndex === null) return commandWordIndex;
+
+    const nextCommandWordIndex = skipShellCommandPositionPrefixWords(words, operandIndex);
+    if (nextCommandWordIndex === commandWordIndex) return commandWordIndex;
+    commandWordIndex = nextCommandWordIndex;
+  }
+
+  return null;
+}
+
 function readOmxStateCommandFromSegmentWords(
   words: string[],
   operation: "write" | "clear",
@@ -5082,7 +5111,12 @@ function extractNestedShellCommandStringsForStateScan(command: string): string[]
       const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
       if (commandStringIndex !== null) {
         const nestedCommand = words[commandStringIndex];
-        if (nestedCommand) nested.push(nestedCommand);
+        if (nestedCommand) {
+          nested.push(nestedCommand);
+          const positionalArgs = words.slice(commandStringIndex + 1);
+          const expandedNestedCommand = expandShellPositionalParameters(nestedCommand, positionalArgs);
+          if (expandedNestedCommand !== nestedCommand) nested.push(expandedNestedCommand);
+        }
       }
     }
     if (word === "eval") {
@@ -5204,6 +5238,81 @@ function isShellOptionWithSeparateValue(option: string): boolean {
 function isDynamicNestedCommandString(command: string): boolean {
   return /(?:^|[^\\])\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|\()/.test(command)
     || /(?:^|[^\\])`/.test(command);
+}
+
+function shellQuoteForStateScan(value: string): string {
+  if (value === "") return "''";
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
+function expandShellPositionalParameters(command: string, positionalArgs: string[]): string {
+  if (!command.includes("$") || positionalArgs.length === 0) return command;
+
+  let expanded = "";
+  let replaced = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && index + 1 < command.length) {
+      expanded += char;
+      index += 1;
+      expanded += command[index] ?? "";
+      continue;
+    }
+    if (char !== "$") {
+      expanded += char;
+      continue;
+    }
+
+    const next = command[index + 1] ?? "";
+    if (next === "{") {
+      let endIndex = index + 2;
+      let digits = "";
+      while (endIndex < command.length) {
+        const bodyChar = command[endIndex] ?? "";
+        if (bodyChar === "}") break;
+        digits += bodyChar;
+        endIndex += 1;
+      }
+      if (command[endIndex] === "}" && /^\d+$/.test(digits)) {
+        const positionalIndex = Number.parseInt(digits, 10);
+        const replacement = positionalArgs[positionalIndex];
+        if (replacement !== undefined) {
+          expanded += shellQuoteForStateScan(replacement);
+          replaced = true;
+          index = endIndex;
+          continue;
+        }
+      }
+    } else if (next === "@" || next === "*") {
+      const replacement = positionalArgs.map((arg) => shellQuoteForStateScan(arg)).join(" ");
+      if (replacement) {
+        expanded += replacement;
+        replaced = true;
+        index += 1;
+        continue;
+      }
+    } else if (/[0-9]/.test(next)) {
+      let endIndex = index + 1;
+      let digits = "";
+      while (endIndex < command.length && /[0-9]/.test(command[endIndex] ?? "")) {
+        digits += command[endIndex] ?? "";
+        endIndex += 1;
+      }
+      const positionalIndex = Number.parseInt(digits, 10);
+      const replacement = positionalArgs[positionalIndex];
+      if (replacement !== undefined) {
+        expanded += shellQuoteForStateScan(replacement);
+        replaced = true;
+        index = endIndex - 1;
+        continue;
+      }
+    }
+
+    expanded += char;
+  }
+
+  return replaced ? expanded : command;
 }
 
 function splitShellCommandSegments(command: string): string[] {
