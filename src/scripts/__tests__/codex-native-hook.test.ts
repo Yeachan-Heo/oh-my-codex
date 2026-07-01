@@ -7803,6 +7803,7 @@ exit 0
       const blockedSourceGeneratedScriptCommands = [
         ["source-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && source .omx/context/x.sh"],
         ["bash-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && bash .omx/context/x.sh"],
+        ["sh-c-generated-script", "printf 'omx state clear --json\n' > .omx/context/x.sh && sh -c '. .omx/context/x.sh'"],
         ["source-tee", "printf 'omx state clear --json\n' | tee .omx/context/x.sh >/dev/null && source .omx/context/x.sh"],
         ["source-variable", "tmp=.omx/context/x.sh; printf 'omx state clear --json\n' > \"$tmp\"; source \"$tmp\""],
         ["source-tee-second-target", "printf 'omx state clear --json\n' | tee .omx/context/x.sh .omx/context/y.sh >/dev/null && source .omx/context/y.sh"],
@@ -18791,6 +18792,62 @@ exit 0
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /(?:Ralplan|Autopilot planning) is active .*implementation\/write tools are blocked/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Autopilot planning handoffs with active:true state writes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-planning-state-write-allow-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-autopilot-planning-state-write-allow";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "autopilot",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "autopilot", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "planning",
+        session_id: sessionId,
+        state: {
+          handoff_artifacts: {
+            ralplan_consensus_gate: { required: true, complete: false },
+          },
+        },
+      });
+
+      const allowedPlanningHandoff = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-planning-state-write-allow",
+          tool_name: "mcp__omx_state__state_write",
+          tool_input: { mode: "autopilot", active: true, current_phase: "planning" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedPlanningHandoff.outputJson, null);
+
+      const blockedPlanningDeactivation = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-planning-state-write-allow",
+          tool_name: "mcp__omx_state__state_write",
+          tool_input: { mode: "autopilot", active: false, current_phase: "planning" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedPlanningDeactivation.outputJson as { decision?: string } | null)?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

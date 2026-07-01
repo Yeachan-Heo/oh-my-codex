@@ -3843,25 +3843,41 @@ function firstShellScriptOperand(words: string[], shellWordIndex: number): strin
 }
 
 function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): boolean {
-  const assignments = extractCommandLiteralAssignments(command);
-  const writtenTargets = new Set<string>();
-  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
-    const words = tokenizeShellWords(segment);
-    for (let index = 0; index < words.length; index += 1) {
-      const word = words[index] ?? "";
-      const operand = word === "source" || word === "."
-        ? normalizeSameCommandScriptTarget(cwd, firstNonOptionSourceOperand(words, index), assignments)
-        : isNestedShellCommandWord(word)
-          ? normalizeSameCommandScriptTarget(cwd, firstShellScriptOperand(words, index), assignments)
-          : null;
-      if (operand && writtenTargets.has(operand)) return true;
+  const scanCommand = (currentCommand: string, activeCommands: Set<string>, writtenTargets: Set<string>): boolean => {
+    const normalizedCommand = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(currentCommand));
+    const commandKey = normalizedCommand.trim();
+    if (!commandKey || activeCommands.has(commandKey)) return false;
+
+    const assignments = extractCommandLiteralAssignments(normalizedCommand);
+    const nextActiveCommands = new Set(activeCommands);
+    nextActiveCommands.add(commandKey);
+
+    for (const segment of splitShellCommandSegments(normalizedCommand)) {
+      const words = tokenizeShellWords(segment);
+      for (let index = 0; index < words.length; index += 1) {
+        const word = words[index] ?? "";
+        const operand = word === "source" || word === "."
+          ? normalizeSameCommandScriptTarget(cwd, firstNonOptionSourceOperand(words, index), assignments)
+          : isNestedShellCommandWord(word)
+            ? normalizeSameCommandScriptTarget(cwd, firstShellScriptOperand(words, index), assignments)
+            : null;
+        if (operand && writtenTargets.has(operand)) return true;
+      }
+
+      for (const nestedCommand of extractNestedShellCommandStringsForStateScan(segment)) {
+        if (scanCommand(nestedCommand, nextActiveCommands, writtenTargets)) return true;
+      }
+
+      for (const target of extractDeepInterviewCommandWriteTargets(segment)) {
+        const normalizedTarget = normalizeSameCommandScriptTarget(cwd, target, assignments);
+        if (normalizedTarget) writtenTargets.add(normalizedTarget);
+      }
     }
-    for (const target of extractDeepInterviewCommandWriteTargets(segment)) {
-      const normalizedTarget = normalizeSameCommandScriptTarget(cwd, target, assignments);
-      if (normalizedTarget) writtenTargets.add(normalizedTarget);
-    }
-  }
-  return false;
+
+    return false;
+  };
+
+  return scanCommand(command, new Set(), new Set());
 }
 
 
@@ -5432,12 +5448,12 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
   if (!mode) return false;
   if (mode !== "deep-interview" && mode !== "ralplan") {
     if (!isTrackedWorkflowMode(mode)) return false;
-    if (payload.active === true) return true;
     const currentPhase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
     const normalizedAutopilotPhase = normalizeAutopilotPhase(currentPhase);
     if (mode === "autopilot" && (normalizedAutopilotPhase === "deep-interview" || normalizedAutopilotPhase === "ralplan" || normalizedAutopilotPhase === "ultragoal")) {
-      return false;
+      return payload.active === false;
     }
+    if (payload.active === true) return true;
     return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) === undefined;
   }
 
