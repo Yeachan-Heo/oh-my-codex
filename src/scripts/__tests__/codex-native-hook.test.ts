@@ -9661,6 +9661,25 @@ exit 0
         ].join("\n"),
       });
       assert.equal(allowedHeredocPlanWithMarkdownArrow.outputJson, null);
+      for (const form of [
+        { id: "npm-install", tail: "npm install left-pad", reasonPattern: /package installation commands/ },
+        { id: "git-reset-hard", tail: "git reset --hard HEAD", reasonPattern: /destructive git commands/ },
+      ]) {
+        const blockedPostHeredocForbiddenIntent = await preToolUse("Bash", `tool-autopilot-ralplan-heredoc-${form.id}-block`, {
+          command: [
+            "cat > .omx/plans/x.md <<'EOF'",
+            "# plan",
+            "EOF",
+            form.tail,
+          ].join("\n"),
+        });
+        assert.equal(
+          (blockedPostHeredocForbiddenIntent.outputJson as { decision?: string } | null)?.decision,
+          "block",
+          `${form.tail} after an allowed planning heredoc must stay blocked`,
+        );
+        assert.match(String((blockedPostHeredocForbiddenIntent.outputJson as { reason?: string } | null)?.reason ?? ""), form.reasonPattern);
+      }
 
       const blockedQuotedFakeHeredocImplementationRedirect = await preToolUse("Bash", "tool-autopilot-ralplan-quoted-fake-heredoc-src-block", {
         command: [

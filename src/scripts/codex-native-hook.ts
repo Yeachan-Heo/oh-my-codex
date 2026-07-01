@@ -3586,6 +3586,44 @@ function commandHasDestructiveGitSubcommand(command: string): boolean {
   }
   return false;
 }
+function commandHasPackageInstallIntent(command: string): boolean {
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    for (let index = 0; index < words.length; index += 1) {
+      const headBase = shellWordBaseName(words[index] ?? "");
+      if (headBase !== "npm" && headBase !== "pnpm" && headBase !== "yarn") continue;
+      const subcommandIndex = findPackageInstallSubcommandIndex(words, index + 1);
+      if (subcommandIndex === null) continue;
+      const subcommand = words[subcommandIndex] ?? "";
+      if (headBase === "npm" && (subcommand === "install" || subcommand === "i" || subcommand === "ci")) return true;
+      if (headBase === "pnpm" && (subcommand === "install" || subcommand === "i" || subcommand === "add")) return true;
+      if (headBase === "yarn" && (subcommand === "install" || subcommand === "add")) return true;
+    }
+  }
+  return false;
+}
+
+function findPackageInstallSubcommandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (isShellAssignmentWord(word)) continue;
+    if (word === "-C" || word === "--prefix" || word === "--dir" || word === "--cwd" || word === "-w" || word === "--workspace") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--prefix=") || word.startsWith("--dir=") || word.startsWith("--cwd=") || word.startsWith("--workspace=")) continue;
+    if (/^-C.+/.test(word) || /^-w.+/.test(word)) continue;
+    if (word.startsWith("-")) continue;
+    return index;
+  }
+  return null;
+}
+
+function commandHasUntargetedPlanningForbiddenIntent(command: string): boolean {
+  return commandHasDestructiveGitSubcommand(command) || commandHasPackageInstallIntent(command);
+}
+
 
 function findGitSubcommandIndex(words: string[], startIndex: number): number | null {
   for (let index = startIndex; index < words.length; index += 1) {
@@ -3610,7 +3648,7 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || commandHasDestructiveGitSubcommand(command)
-    || /\b(?:npm\s+(?:install|i|ci)|pnpm\s+(?:install|i)|yarn\s+(?:install|add))\b/.test(command);
+    || commandHasPackageInstallIntent(command);
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
@@ -5717,10 +5755,12 @@ function commandEndsPlanningPhase(cwd: string, command: string): boolean {
 
 function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
   if (commandEndsPlanningPhase(cwd, command)) return false;
+  if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   const targets = extractDeepInterviewCommandWriteTargets(command);
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
+
 }
 
 async function readActiveDeepInterviewStateForPreToolUse(
@@ -5825,6 +5865,7 @@ function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
     return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
   }
   if (commandEndsPlanningPhase(cwd, command)) return false;
+  if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (targets.some((target) => !isAllowedRalplanArtifactPath(cwd, target))) return false;
   return hasAllowedTargets;
@@ -5839,6 +5880,12 @@ function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
   if (blockedTarget) {
     const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash redirect write";
     return `${operationClass} target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  if (commandHasPackageInstallIntent(command)) {
+    return "package installation commands are implementation actions and cannot be combined with allowed planning artifact writes";
+  }
+  if (commandHasDestructiveGitSubcommand(command)) {
+    return "destructive git commands are implementation actions and cannot be combined with allowed planning artifact writes";
   }
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   if (beadsCommand.present && !beadsCommand.allowed) {
