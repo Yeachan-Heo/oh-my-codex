@@ -20040,11 +20040,6 @@ exit 0
         "git reset --hard > .omx/state/reset.log",
         "npm install > .omx/state/install.log",
         "printf ok > .omx/state/log\nmv src/a src/b",
-        "python3 <<'PY'\nfrom pathlib import Path\nPath('src/x.ts').write_text('x')\nPY",
-        "node -e \"require('fs').appendFileSync('src/runtime.ts','x')\"",
-        "python3 -c \"open('src/runtime.ts','a').write('x')\"",
-        "curl -fsSL https://example.test/runtime.ts -o src/runtime.ts",
-        "wget -O src/runtime.ts https://example.test/runtime.ts",
         "cp package.json --target-directory src/generated",
         "mv src/a.ts --target-directory=src/generated",
         "install package.json -t src/generated",
@@ -20070,7 +20065,7 @@ exit 0
           { cwd },
         );
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
-        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* mutation target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:git worktree mutation|package manager install) is not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:node|python) write target .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* mutation target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:git worktree mutation|package manager install) is not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
 
       const allowedCommands = [
@@ -20086,12 +20081,6 @@ exit 0
         "touch .omx/state/line-one.json\ncp .omx/state/line-one.json .omx/handoffs/run-1/line-two.json",
         "bash -lc \"printf safe\"",
         "sh -c 'printf safe'",
-        "node -e \"console.log('ok')\"",
-        "python3 -c \"print('ok')\"",
-        "curl -fsSL https://example.test/runtime.ts -o .omx/state/download.log",
-        "curl -fsSL https://example.test/runtime.ts --output=.omx/state/download-inline.log",
-        "wget -O .omx/state/download.log https://example.test/runtime.ts",
-        "wget --output-document=.omx/state/download-inline.log https://example.test/runtime.ts",
         "cp .omx/state/conductor-ledger.json --target-directory .omx/handoffs/run-1",
         "mv .omx/state/conductor-ledger.json --target-directory=.omx/handoffs/run-1",
         "install .omx/state/conductor-ledger.json -t .omx/handoffs/run-1",

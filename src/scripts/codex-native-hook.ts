@@ -3641,6 +3641,7 @@ function findGitSubcommandIndex(words: string[], startIndex: number): number | n
   return null;
 }
 
+
 function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return commandInvokesApplyPatch(command)
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
