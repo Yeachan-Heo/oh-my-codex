@@ -3864,6 +3864,10 @@ function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): b
         if (operand && writtenTargets.has(operand)) return true;
       }
 
+      const commandWordIndex = skipShellCommandPositionPrefixWords(words, 0);
+      const directExecutionTarget = normalizeSameCommandScriptTarget(cwd, words[commandWordIndex] ?? "", assignments);
+      if (directExecutionTarget && writtenTargets.has(directExecutionTarget)) return true;
+
       for (const nestedCommand of extractNestedShellCommandStringsForStateScan(segment)) {
         if (scanCommand(nestedCommand, nextActiveCommands, writtenTargets)) return true;
       }
