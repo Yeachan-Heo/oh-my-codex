@@ -81,7 +81,8 @@ Before merging to `main` or tagging:
    - GitHub release exists and is non-draft/non-prerelease.
    - Native assets and manifest are attached.
    - `npm view oh-my-codex version` returns the release version.
-6. Fast-forward `dev` to the shipped `main` commit and wait for final `dev` CI green.
+6. Fast-forward `dev` to the shipped `main` commit and wait for final shipped-commit `dev` CI green.
+7. Immediately bump `dev` package/plugin/Cargo metadata to the next development base version (for example, after publishing `v0.18.17`, commit `0.18.18` on `dev`) so dev installs display as `v<next>-dev-<revision>` instead of sharing the just-published stable base.
 
 ## 6. Post-publish corrections
 
@@ -97,7 +98,7 @@ If release notes are found incomplete after npm publish:
 
 A release is complete only when all are true:
 
-- `main`, `dev`, and the release tag point to the intended shipped commit, or any deliberate post-publish docs-only divergence is documented.
+- `main` and the release tag point to the intended shipped commit, and `dev` either still points to that shipped commit or contains only documented post-publish corrections plus the next development base-version bump.
 - GitHub release workflow is green.
 - npm shows the expected version.
 - GitHub release body accurately summarizes the full compare range.
