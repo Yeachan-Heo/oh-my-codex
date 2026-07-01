@@ -36,6 +36,7 @@ import {
   cleanupCommand,
   cleanupOmxMcpProcesses,
   findLaunchSafeCleanupCandidates,
+  listOmxProcesses,
   type CleanupDependencies,
   type CleanupResult,
 } from "./cleanup.js";
@@ -1161,33 +1162,52 @@ export interface ResumePluginPreflightResult {
   configUpdated: boolean;
 }
 
+function commandMentionsPath(command: string, path: string): boolean {
+  const normalizedCommand = command.replace(/\\+/g, "/");
+  const normalizedPath = path.replace(/\\+/g, "/");
+  return normalizedCommand.includes(normalizedPath);
+}
+
+function listLiveOmxProcessesForResumePreflight(): ReturnType<typeof listOmxProcesses> {
+  try {
+    return listOmxProcesses();
+  } catch {
+    return [];
+  }
+}
+
+function isPluginCacheDirReferencedByLiveProcess(cacheDir: string, processes: ReturnType<typeof listOmxProcesses>): boolean {
+  return processes.some((processEntry) => commandMentionsPath(processEntry.command, cacheDir));
+}
+
 export async function preflightResumeOmxPluginState(
   codexHomeDir: string | undefined,
   pkgRoot = getPackageRoot(),
 ): Promise<ResumePluginPreflightResult> {
-  if (!codexHomeDir) {
-    return { status: "unavailable", prunedStaleDirs: [], configUpdated: false };
-  }
-
+  const selectedCodexHomeDir = codexHomeDir && codexHomeDir.trim() !== ""
+    ? codexHomeDir
+    : join(homedir(), ".codex");
   const packagedMarketplace = await resolvePackagedOmxMarketplace(pkgRoot);
   if (!packagedMarketplace) {
     return { status: "unavailable", prunedStaleDirs: [], configUpdated: false };
   }
 
-  const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+  const materialized = await materializePackagedOmxPluginCache(selectedCodexHomeDir, packagedMarketplace);
   const version = materialized.version ?? (await packagedOmxPluginVersion(packagedMarketplace)) ?? undefined;
-  const currentCacheDir = materialized.cacheDir ?? (version ? join(codexHomeDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex", version) : undefined);
+  const currentCacheDir = materialized.cacheDir ?? (version ? join(selectedCodexHomeDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex", version) : undefined);
   const prunedStaleDirs: string[] = [];
+  const liveProcesses = listLiveOmxProcessesForResumePreflight();
 
   if (currentCacheDir) {
-    for (const cacheDir of await discoverOmxPluginCacheDirs(codexHomeDir)) {
+    for (const cacheDir of await discoverOmxPluginCacheDirs(selectedCodexHomeDir)) {
       if (cacheDir === currentCacheDir) continue;
+      if (isPluginCacheDirReferencedByLiveProcess(cacheDir, liveProcesses)) continue;
       await rm(cacheDir, { recursive: true, force: true });
       prunedStaleDirs.push(cacheDir);
     }
   }
 
-  const configPath = join(codexHomeDir, "config.toml");
+  const configPath = join(selectedCodexHomeDir, "config.toml");
   const existingConfig = existsSync(configPath) ? await readFile(configPath, "utf-8") : "";
   const nextConfig = upsertLocalOmxMarketplaceRegistration(
     upsertLocalOmxPluginEnablement(existingConfig),

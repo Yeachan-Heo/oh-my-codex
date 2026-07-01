@@ -632,4 +632,111 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('preflights default user plugin cache before madmax resume without restoring stale cache metadata', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-madmax-resume-default-cache-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      const staleVersion = '0.0.0-stale';
+      const staleCacheDir = join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex', staleVersion);
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const testDir = dirname(fileURLToPath(import.meta.url));
+      const repoRoot = join(testDir, '..', '..', '..');
+      const packageJson = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf-8')) as { version: string };
+      const expectedCacheDir = join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex', packageJson.version);
+
+      await mkdir(join(staleCacheDir, '.codex-plugin'), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(staleCacheDir, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'oh-my-codex', version: staleVersion }));
+      await writeFile(join(codexHome, 'config.toml'), '[plugins]\n"oh-my-codex@oh-my-codex-local" = true\n');
+      await writeFile(fakeCodexPath, `#!/bin/sh
+set -eu
+selected_codex_home="\${CODEX_HOME:-$HOME/.codex}"
+printf 'fake-codex:%s\n' "$*"
+printf 'codex-home:%s\n' "$selected_codex_home"
+if [ -f "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${packageJson.version}/.codex-plugin/plugin.json" ]; then echo current-cache=yes; else echo current-cache=no; fi
+if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${staleVersion}" ]; then echo stale-cache=yes; else echo stale-cache=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['--madmax', 'resume', 'session-after-update'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_LAUNCH_POLICY: 'direct',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume session-after-update\b/);
+      assert.match(result.stdout, /current-cache=yes/);
+      assert.match(result.stdout, /stale-cache=no/);
+      assert.deepEqual(await readdir(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex')), [packageJson.version]);
+      assert.equal(
+        JSON.parse(await readFile(join(expectedCacheDir, '.codex-plugin', 'plugin.json'), 'utf-8')).version,
+        packageJson.version,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps stale plugin cache directories referenced by live resume processes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-madmax-resume-live-cache-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      const staleVersion = '0.0.0-live-stale';
+      const staleCacheDir = join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex', staleVersion);
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const testDir = dirname(fileURLToPath(import.meta.url));
+      const repoRoot = join(testDir, '..', '..', '..');
+      const packageJson = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf-8')) as { version: string };
+
+      await mkdir(join(staleCacheDir, '.codex-plugin'), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(staleCacheDir, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'oh-my-codex', version: staleVersion }));
+      await writeFile(join(codexHome, 'config.toml'), '[plugins]\n"oh-my-codex@oh-my-codex-local" = true\n');
+      await writeFile(fakePsPath, `#!/bin/sh
+printf '123 1 node ${staleCacheDir}/hooks/codex-native-hook.mjs\\n'
+`);
+      await chmod(fakePsPath, 0o755);
+      await writeFile(fakeCodexPath, `#!/bin/sh
+set -eu
+selected_codex_home="\${CODEX_HOME:-$HOME/.codex}"
+printf 'fake-codex:%s\n' "$*"
+if [ -f "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${packageJson.version}/.codex-plugin/plugin.json" ]; then echo current-cache=yes; else echo current-cache=no; fi
+if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${staleVersion}" ]; then echo live-stale-cache=yes; else echo live-stale-cache=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+
+      const result = runOmx(wd, ['--madmax', 'resume', 'live-session-after-update'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_LAUNCH_POLICY: 'direct',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume live-session-after-update\b/);
+      assert.match(result.stdout, /current-cache=yes/);
+      assert.match(result.stdout, /live-stale-cache=yes/);
+      assert.deepEqual(
+        new Set(await readdir(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex'))),
+        new Set([packageJson.version, staleVersion]),
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
