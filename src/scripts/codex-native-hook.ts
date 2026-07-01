@@ -6260,9 +6260,7 @@ const CONDUCTOR_BASH_MUTATION_COMMANDS = new Set([
 ]);
 
 const CONDUCTOR_BASH_TRANSPARENT_WRAPPERS = new Set([
-  "command",
   "builtin",
-  "sudo",
   "noglob",
 ]);
 
@@ -6302,6 +6300,67 @@ function isShellCommandSeparator(word: string): boolean {
 
 function isEnvironmentAssignmentWord(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+}
+
+function findSudoDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (
+      token === "-u"
+      || token === "--user"
+      || token === "-g"
+      || token === "--group"
+      || token === "-h"
+      || token === "--host"
+      || token === "-p"
+      || token === "--prompt"
+      || token === "-C"
+      || token === "--close-from"
+    ) {
+      index += 1;
+      continue;
+    }
+    if (
+      token.startsWith("--user=")
+      || token.startsWith("--group=")
+      || token.startsWith("--host=")
+      || token.startsWith("--prompt=")
+      || token.startsWith("--close-from=")
+      || /^-[ughpC].+/.test(token)
+    ) {
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    return index;
+  }
+  return null;
+}
+
+function findConductorWrapperOperandIndex(commandName: string, words: string[], startIndex: number): number | null | undefined {
+  switch (commandName) {
+    case "env":
+      return findEnvDispatchOperandIndex(words, startIndex);
+    case "command":
+      return findCommandDispatchOperandIndex(words, startIndex);
+    case "exec":
+      return findExecDispatchOperandIndex(words, startIndex);
+    case "sudo":
+      return findSudoDispatchOperandIndex(words, startIndex);
+    case "nohup":
+      return findCommandDispatchOperandIndex(words, startIndex);
+    case "time":
+      return findTimeDispatchOperandIndex(words, startIndex);
+    case "timeout":
+      return findTimeoutDispatchOperandIndex(words, startIndex);
+    case "nice":
+      return findNiceDispatchOperandIndex(words, startIndex);
+    case "stdbuf":
+      return findStdbufDispatchOperandIndex(words, startIndex);
+    default:
+      return undefined;
+  }
 }
 
 function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] {
@@ -6362,6 +6421,16 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
     if (CONDUCTOR_BASH_TRANSPARENT_WRAPPERS.has(commandName)) {
       continue;
     }
+    const wrapperOperandIndex = findConductorWrapperOperandIndex(commandName, words, index + 1);
+    if (wrapperOperandIndex !== undefined) {
+      if (wrapperOperandIndex === null) {
+        mutations.push({ command: commandName, targets: [] });
+        commandStart = false;
+      } else {
+        index = wrapperOperandIndex - 1;
+      }
+      continue;
+    }
     if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
       mutations.push({
         command: commandName,
@@ -6380,7 +6449,8 @@ function evaluateConductorBashWrite(
   command: string,
   depth = 0,
 ): { allowed: boolean; blockedDetail?: string } {
-  const normalizedCommand = normalizeShellLineContinuations(stripHeredocBodiesForCommandScan(command));
+  const commandWithHeredocBodies = normalizeShellLineContinuations(command);
+  const normalizedCommand = stripHeredocBodiesForCommandScan(commandWithHeredocBodies);
   if (depth > CONDUCTOR_BASH_MAX_NESTING_DEPTH) {
     return {
       allowed: false,
@@ -6418,8 +6488,8 @@ function evaluateConductorBashWrite(
     if (!nestedDecision.allowed) return nestedDecision;
   }
 
-  if (!commandHasDeepInterviewWriteIntent(normalizedCommand)) return { allowed: true };
-  const targets = extractDeepInterviewCommandWriteTargets(normalizedCommand);
+  if (!commandHasDeepInterviewWriteIntent(commandWithHeredocBodies)) return { allowed: true };
+  const targets = extractDeepInterviewCommandWriteTargets(commandWithHeredocBodies);
   if (commandInvokesApplyPatch(normalizedCommand) && targets.length === 0) {
     return {
       allowed: false,
@@ -6434,7 +6504,7 @@ function evaluateConductorBashWrite(
   }
   const blockedTarget = targets.find((target) => !isAllowedConductorMetadataPath(cwd, target));
   if (blockedTarget) {
-    const operationClass = /\btee\s+(?:-a\s+)?/.test(normalizedCommand) ? "Bash tee write" : "Bash write";
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(commandWithHeredocBodies) ? "Bash tee write" : "Bash write";
     return {
       allowed: false,
       blockedDetail: `${operationClass} target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
