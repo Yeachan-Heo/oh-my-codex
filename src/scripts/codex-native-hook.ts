@@ -6264,6 +6264,11 @@ const CONDUCTOR_BASH_TRANSPARENT_WRAPPERS = new Set([
   "noglob",
 ]);
 
+const CONDUCTOR_BASH_DOWNLOADER_COMMANDS = new Set([
+  "curl",
+  "wget",
+]);
+
 const CONDUCTOR_BASH_OPTIONS_WITH_VALUES = new Set([
   "-S",
   "--suffix",
@@ -6398,6 +6403,42 @@ function findConductorWrapperOperandIndex(commandName: string, words: string[], 
   }
 }
 
+function collectConductorDownloaderOutputTargets(
+  commandName: string,
+  words: string[],
+  commandIndex: number,
+): { sawOutputFlag: boolean; targets: string[] } {
+  const targets: string[] = [];
+  let sawOutputFlag = false;
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
+
+    const inlineCurlOutput = commandName === "curl" ? word.match(/^--output=(.+)$/) : null;
+    const inlineWgetOutput = commandName === "wget" ? word.match(/^--output-document=(.+)$/) : null;
+    const inlineTarget = inlineCurlOutput?.[1] ?? inlineWgetOutput?.[1];
+    if (inlineTarget !== undefined) {
+      sawOutputFlag = true;
+      const target = safeString(inlineTarget).trim();
+      if (target) targets.push(target);
+      continue;
+    }
+
+    const separateOutputFlag = (commandName === "curl" && (word === "-o" || word === "--output"))
+      || (commandName === "wget" && (word === "-O" || word === "--output-document"));
+    if (!separateOutputFlag) continue;
+
+    sawOutputFlag = true;
+    const nextWord = words[index + 1] ?? "";
+    if (nextWord && !isShellCommandSeparator(nextWord)) {
+      targets.push(nextWord);
+      index += 1;
+    }
+  }
+  return { sawOutputFlag, targets };
+}
+
 function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] {
   const targets: string[] = [];
   let positionalCount = 0;
@@ -6467,7 +6508,15 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
         }
         continue;
       }
-      if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
+      if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)) {
+        const downloaderTargets = collectConductorDownloaderOutputTargets(commandName, words, index);
+        if (downloaderTargets.sawOutputFlag) {
+          mutations.push({
+            command: commandName,
+            targets: downloaderTargets.targets,
+          });
+        }
+      } else if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
         mutations.push({
           command: commandName,
           targets: collectConductorMutationCommandTargets(commandName, words, index),

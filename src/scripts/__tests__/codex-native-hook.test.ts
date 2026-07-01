@@ -19983,6 +19983,8 @@ exit 0
         "python3 <<'PY'\nfrom pathlib import Path\nPath('src/x.ts').write_text('x')\nPY",
         "node -e \"require('fs').appendFileSync('src/runtime.ts','x')\"",
         "python3 -c \"open('src/runtime.ts','a').write('x')\"",
+        "curl -fsSL https://example.test/runtime.ts -o src/runtime.ts",
+        "wget -O src/runtime.ts https://example.test/runtime.ts",
         "bash -lc \"mv src/old.ts src/new.ts\"",
         "sh -c 'cp package.json src/package-copy.json'",
         "bash -lc \"sed -i 's/old/new/' src/runtime.ts\"",
@@ -20019,6 +20021,10 @@ exit 0
         "sh -c 'printf safe'",
         "node -e \"console.log('ok')\"",
         "python3 -c \"print('ok')\"",
+        "curl -fsSL https://example.test/runtime.ts -o .omx/state/download.log",
+        "curl -fsSL https://example.test/runtime.ts --output=.omx/state/download-inline.log",
+        "wget -O .omx/state/download.log https://example.test/runtime.ts",
+        "wget --output-document=.omx/state/download-inline.log https://example.test/runtime.ts",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(
