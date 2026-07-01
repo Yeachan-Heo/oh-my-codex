@@ -6643,7 +6643,7 @@ function buildConductorBashBlockedDetail(cwd: string, command: string): string {
     ?? "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata";
 }
 
-async function buildConductorPreToolUseWriteGuardOutput(
+export async function buildConductorPreToolUseWriteGuardOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
