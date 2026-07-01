@@ -5551,41 +5551,104 @@ function containsUnquotedProcessSubstitution(command: string): boolean {
   return false;
 }
 
+interface ShellHeredocOpener {
+  delimiter: string;
+  quoted: boolean;
+}
+
+function parseShellHeredocDelimiter(line: string, startIndex: number): ShellHeredocOpener | null {
+  let index = startIndex;
+  while (/\s/.test(line[index] ?? "")) index += 1;
+
+  let delimiter = "";
+  let quoted = false;
+  let quote: "'" | "\"" | null = null;
+  for (; index < line.length; index += 1) {
+    const char = line[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      quoted = true;
+      index += 1;
+      delimiter += line[index] ?? "";
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+        quoted = true;
+      } else {
+        delimiter += char;
+      }
+      continue;
+    }
+    if (!quote && (/\s/.test(char) || char === "|" || char === ";" || char === "&" || char === "<" || char === ">")) break;
+    delimiter += char;
+  }
+
+  return delimiter ? { delimiter, quoted } : null;
+}
+
+function extractShellHeredocOpeners(line: string): ShellHeredocOpener[] {
+  const openers: ShellHeredocOpener[] = [];
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < line.length - 1; index += 1) {
+    const char = line[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if (char !== "<" || line[index + 1] !== "<" || line[index + 2] === "<") continue;
+    const delimiterStart = line[index + 2] === "-" ? index + 3 : index + 2;
+    const opener = parseShellHeredocDelimiter(line, delimiterStart);
+    if (opener) openers.push(opener);
+    index = delimiterStart;
+  }
+  return openers;
+}
+
 function stripHeredocBodiesForCommandScan(command: string): string {
   const lines = command.split("\n");
   const kept: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     kept.push(line);
-    const heredocMatch = line.match(/<<-?\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>|;&]+))/);
-    const delimiter = safeString(heredocMatch?.[1] ?? heredocMatch?.[2] ?? heredocMatch?.[3]).trim();
-    if (!delimiter) continue;
-    index += 1;
-    while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
-      kept.push("");
+    const openers = extractShellHeredocOpeners(line);
+    for (const { delimiter } of openers) {
       index += 1;
+      while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
+        kept.push("");
+        index += 1;
+      }
+      if (index < lines.length) kept.push(lines[index] ?? "");
     }
-    if (index < lines.length) kept.push(lines[index] ?? "");
   }
   return kept.join("\n");
 }
+
 
 function hasUnsafeUnquotedHeredocExpansion(command: string): boolean {
   const lines = normalizeShellLineContinuations(command).split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
-    const heredocMatch = line.match(/<<-?\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>|;&]+))/);
-    if (!heredocMatch) continue;
-    const quoted = Boolean(heredocMatch[1] || heredocMatch[2]);
-    const delimiter = safeString(heredocMatch[1] ?? heredocMatch[2] ?? heredocMatch[3]).trim();
-    if (!delimiter || quoted) continue;
-    index += 1;
-    const bodyLines: string[] = [];
-    while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
-      bodyLines.push(lines[index] ?? "");
+    for (const { delimiter, quoted } of extractShellHeredocOpeners(line)) {
       index += 1;
+      const bodyLines: string[] = [];
+      while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
+        bodyLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      if (!quoted && isDynamicNestedCommandString(bodyLines.join("\n"))) return true;
     }
-    if (isDynamicNestedCommandString(bodyLines.join("\n"))) return true;
   }
   return false;
 }

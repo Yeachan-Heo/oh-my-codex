@@ -9662,6 +9662,16 @@ exit 0
       });
       assert.equal(allowedHeredocPlanWithMarkdownArrow.outputJson, null);
 
+      const blockedQuotedFakeHeredocImplementationRedirect = await preToolUse("Bash", "tool-autopilot-ralplan-quoted-fake-heredoc-src-block", {
+        command: [
+          "echo '<<EOF'",
+          "printf bad > src/impl.ts",
+          "EOF",
+        ].join("\n"),
+      });
+      assert.equal((blockedQuotedFakeHeredocImplementationRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedQuotedFakeHeredocImplementationRedirect.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/impl\.ts/);
+
       const blockedHeredocImplementationRedirect = await preToolUse("Bash", "tool-autopilot-ralplan-heredoc-src-block", {
         command: [
           "cat > src/implementation.ts <<'EOF'",
