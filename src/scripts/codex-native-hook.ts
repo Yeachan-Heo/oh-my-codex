@@ -4827,7 +4827,19 @@ function findWrappedCommandPositionIndex(words: string[], startIndex: number): n
             ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
             : commandWordBase === "time"
               ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
-              : null;
+              : commandWordBase === "timeout"
+                ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
+                : commandWordBase === "nohup"
+                  ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+                  : commandWordBase === "coproc"
+                    ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
+                    : commandWordBase === "xargs"
+                      ? findXargsDispatchOperandIndex(words, commandWordIndex + 1)
+                      : commandWordBase === "nice"
+                        ? findNiceDispatchOperandIndex(words, commandWordIndex + 1)
+                        : commandWordBase === "stdbuf"
+                          ? findStdbufDispatchOperandIndex(words, commandWordIndex + 1)
+                          : null;
     if (operandIndex === null) return commandWordIndex;
 
     const nextCommandWordIndex = skipShellCommandPositionPrefixWords(words, operandIndex);
@@ -5284,8 +5296,16 @@ function expandShellPositionalParameters(command: string, positionalArgs: string
           continue;
         }
       }
+      if (command[endIndex] === "}" && (digits === "@" || digits === "*")) {
+        const expansionArgs = positionalArgs.slice(1);
+        const replacement = expansionArgs.map((arg) => shellQuoteForStateScan(arg)).join(" ");
+        expanded += replacement;
+        replaced = true;
+        index = endIndex;
+        continue;
+      }
     } else if (next === "@" || next === "*") {
-      const replacement = positionalArgs.map((arg) => shellQuoteForStateScan(arg)).join(" ");
+      const replacement = positionalArgs.slice(1).map((arg) => shellQuoteForStateScan(arg)).join(" ");
       if (replacement) {
         expanded += replacement;
         replaced = true;
