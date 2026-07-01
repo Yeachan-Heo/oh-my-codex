@@ -232,8 +232,8 @@ if [ -f "$CODEX_HOME/sessions/2026/06/18/rollout-project-session.jsonl" ]; then 
       assert.doesNotMatch(result.stderr, /EISDIR/);
       assert.match(result.stdout, /fake-codex:resume\b/);
       assert.match(result.stdout, /project-rollout-present=yes/);
-      assert.match(result.stdout, /history-lines:1\b/);
-      assert.match(result.stdout, /index-lines:1\b/);
+      assert.match(result.stdout, /history-lines:\s*1\b/);
+      assert.match(result.stdout, /index-lines:\s*1\b/);
       assert.equal(await readFile(join(projectCodexHome, 'history.jsonl'), 'utf-8'), '{"session_id":"project-session"}\n');
       assert.equal(await readFile(join(projectCodexHome, 'session_index.jsonl'), 'utf-8'), '{"id":"project-session"}\n');
     } finally {
