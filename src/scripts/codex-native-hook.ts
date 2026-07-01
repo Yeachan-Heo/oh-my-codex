@@ -6563,15 +6563,7 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
         }
         continue;
       }
-      if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)) {
-        const downloaderTargets = collectConductorDownloaderOutputTargets(commandName, words, index);
-        if (downloaderTargets.sawOutputFlag) {
-          mutations.push({
-            command: commandName,
-            targets: downloaderTargets.targets,
-          });
-        }
-      } else if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
+      if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
         mutations.push({
           command: commandName,
           targets: collectConductorMutationCommandTargets(commandName, words, index),
