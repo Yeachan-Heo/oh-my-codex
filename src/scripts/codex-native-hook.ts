@@ -3560,7 +3560,46 @@ function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
 }
 
 function commandHasDestructiveGitSubcommand(command: string): boolean {
-  return /\bgit\s+(?:checkout|switch|restore|reset|apply|am|merge|rebase)(?=$|[\s;&|()<>])/.test(command);
+  const destructiveSubcommands = new Set([
+    "am",
+    "apply",
+    "checkout",
+    "merge",
+    "rebase",
+    "reset",
+    "restore",
+    "switch",
+  ]);
+
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    for (let index = 0; index < words.length; index += 1) {
+      if (shellWordBaseName(words[index] ?? "") !== "git") continue;
+      const subcommandIndex = findGitSubcommandIndex(words, index + 1);
+      if (subcommandIndex === null) continue;
+      const subcommand = words[subcommandIndex] ?? "";
+      if (destructiveSubcommands.has(subcommand)) return true;
+      if (subcommand.startsWith("checkout-")) return true;
+      if (subcommand.startsWith("merge-") && subcommand !== "merge-base") return true;
+    }
+  }
+  return false;
+}
+
+function findGitSubcommandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (isShellAssignmentWord(word)) continue;
+    if (word === "-C" || word === "-c" || word === "--git-dir" || word === "--work-tree" || word === "--namespace") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--git-dir=") || word.startsWith("--work-tree=") || word.startsWith("--namespace=")) continue;
+    if (word.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
 function commandHasDeepInterviewWriteIntent(command: string): boolean {

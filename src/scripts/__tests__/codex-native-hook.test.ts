@@ -9642,7 +9642,7 @@ exit 0
       });
       assert.equal(allowedIssueReadOnlyBash.outputJson, null);
 
-      for (const command of ["git merge origin/dev", "git reset --hard HEAD"]) {
+      for (const command of ["git merge origin/dev", "git reset --hard HEAD", "git checkout-index -f -a", "git merge-file ours base theirs"]) {
         const blockedDestructiveGit = await preToolUse("Bash", `tool-autopilot-ralplan-${command.replace(/[^a-z0-9]+/gi, "-")}`, {
           command,
         });
