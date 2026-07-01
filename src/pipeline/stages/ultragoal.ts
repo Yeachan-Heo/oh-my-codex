@@ -7,6 +7,7 @@
  */
 
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
+import { LEADER_CONDUCTOR_BLOCK } from '../../leader/contract.js';
 
 export interface UltragoalDescriptor {
   task: string;
@@ -48,5 +49,9 @@ export function createUltragoalStage(): PipelineStage {
 }
 
 export function buildUltragoalInstruction(task: string): string {
-  return `$ultragoal ${JSON.stringify(task)}`;
+  return [
+    `$ultragoal ${JSON.stringify(task)}`,
+    '',
+    LEADER_CONDUCTOR_BLOCK,
+  ].join('\n');
 }

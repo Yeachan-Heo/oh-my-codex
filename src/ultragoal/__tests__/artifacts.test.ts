@@ -20,6 +20,7 @@ import {
   type UltragoalPlan,
   type UltragoalSteeringProposal,
 } from '../artifacts.js';
+import { LEADER_CONDUCTOR_BLOCK } from '../../leader/contract.js';
 import { steeringFixtures, type SteeringFixtureProposal } from './steering-fixtures.js';
 
 async function withTempRepo<T>(run: (cwd: string) => Promise<T>): Promise<T> {
@@ -52,6 +53,10 @@ function cleanQualityGate(): object {
     },
 
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function writeFixturePlan(cwd: string, plan: UltragoalPlan): Promise<void> {
@@ -280,6 +285,7 @@ describe('ultragoal artifacts', () => {
       assert.match(instruction, /Complete the durable ultragoal plan/);
       assert.match(instruction, /including later accepted\/appended stories/);
       assert.match(instruction, /\.omx\/ultragoal\/ledger\.jsonl/);
+      assert.match(instruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
       assert.match(instruction, /Complete first milestone/);
       assert.match(instruction, /does not call \/goal clear/);
       assert.match(instruction, /manually run \/goal clear/);
@@ -301,6 +307,7 @@ describe('ultragoal artifacts', () => {
       assert.match(aggregateInstruction, /independentReview evidence from both code-reviewer and architect subagents/);
       assert.match(aggregateInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
       assert.match(aggregateInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
+      assert.match(aggregateInstruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
 
       await createUltragoalPlan(cwd, {
         brief: 'brief',
@@ -314,6 +321,7 @@ describe('ultragoal artifacts', () => {
       assert.match(perStoryInstruction, /independentReview evidence from both code-reviewer and architect subagents/);
       assert.match(perStoryInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
       assert.match(perStoryInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
+      assert.match(perStoryInstruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
     });
   });
 

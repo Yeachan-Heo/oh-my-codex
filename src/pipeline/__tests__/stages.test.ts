@@ -16,6 +16,7 @@ import { createUltraqaStage, buildUltraqaInstruction } from '../stages/ultraqa.j
 import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
 import { packageRoot } from '../../utils/paths.js';
 import { subagentTrackingPath } from '../../subagents/tracker.js';
+import { LEADER_CONDUCTOR_BLOCK } from '../../leader/contract.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1936,6 +1937,7 @@ describe('Default Autopilot Ultragoal Stage Adapters', () => {
     assert.deepEqual(descriptor.ralplanArtifacts, { plan: 'approved' });
     assert.match(artifacts.team_condition as string, /Launch \$team only inside an active Ultragoal story/);
     assert.match(buildUltragoalInstruction('execute me'), /^\$ultragoal /);
+    assert.match(buildUltragoalInstruction('execute me'), new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
   });
 
   it('creates an ultraqa gate that fails closed without evidence and can record clean skips', async () => {

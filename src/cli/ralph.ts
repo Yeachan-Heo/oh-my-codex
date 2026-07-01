@@ -9,6 +9,7 @@ import {
   buildFollowupStaffingPlan,
   resolveAvailableAgentTypes,
 } from '../team/followup-planner.js';
+import { LEADER_CONDUCTOR_BLOCK } from '../leader/contract.js';
 
 export const RALPH_HELP = `omx ralph - Launch Codex with ralph persistence mode active
 
@@ -241,6 +242,8 @@ export function buildRalphAppendInstructions(
   return [
     '<ralph_native_subagents>',
     'You are in OMX Ralph persistence mode.',
+    'Conductor philosophy:',
+    LEADER_CONDUCTOR_BLOCK,
     `Primary task: ${task}`,
     'Parallelism guidance:',
     '- Prefer Codex native subagents for independent parallel subtasks.',

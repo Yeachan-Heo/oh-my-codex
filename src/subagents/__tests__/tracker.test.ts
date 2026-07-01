@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  buildSubagentResumeLedger,
   createSubagentTrackingState,
   recordSubagentTurn,
+  selectReusableSubagentEntry,
   summarizeSubagentSession,
 } from '../tracker.js';
 
@@ -41,6 +43,10 @@ describe('subagents/tracker', () => {
       allThreadIds: ['leader-thread', 'sub-thread-1', 'sub-thread-2'],
       allSubagentThreadIds: ['sub-thread-1', 'sub-thread-2'],
       activeSubagentThreadIds: ['sub-thread-1', 'sub-thread-2'],
+      savedSubagents: [
+        { agentId: 'sub-thread-1', threadId: 'sub-thread-1', role: 'ralph', laneId: 'ralph', status: 'available' },
+        { agentId: 'sub-thread-2', threadId: 'sub-thread-2', role: 'ralph', laneId: 'ralph', status: 'available' },
+      ],
       updatedAt: '2026-03-17T00:01:00.000Z',
     });
 
@@ -281,6 +287,107 @@ describe('subagents/tracker', () => {
     assert.equal(thread?.last_completed_turn_id, undefined);
     assert.equal(thread?.completion_source, undefined);
     assert.equal(thread?.last_turn_id, 'turn-3');
+  });
+
+  it('records role and lane metadata for restart resume/reuse summaries', () => {
+    let state = createSubagentTrackingState();
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-leader',
+      timestamp: '2026-06-29T00:00:00.000Z',
+      mode: 'ralph',
+      kind: 'leader',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-executor',
+      timestamp: '2026-06-29T00:00:30.000Z',
+      mode: 'executor',
+      role: 'executor',
+      laneId: 'implementation-fix',
+      scope: 'runtime hook guard',
+      agentNickname: 'worker-1',
+      kind: 'subagent',
+      leaderThreadId: 'thread-leader',
+    });
+
+    const summary = summarizeSubagentSession(state, 'sess-conductor', {
+      now: '2026-06-29T00:01:00.000Z',
+      activeWindowMs: 120_000,
+    });
+
+    assert.deepEqual(summary?.savedSubagents, [
+      {
+        agentId: 'thread-executor',
+        threadId: 'thread-executor',
+        role: 'executor',
+        laneId: 'implementation-fix',
+        scope: 'runtime hook guard',
+        agentNickname: 'worker-1',
+        status: 'available',
+      },
+    ]);
+    assert.equal(state.sessions['sess-conductor']?.threads['thread-executor']?.role, 'executor');
+    assert.equal(state.sessions['sess-conductor']?.threads['thread-executor']?.lane_id, 'implementation-fix');
+  });
+
+  it('builds a reusable ledger that preserves unavailable status and handoff summaries', () => {
+    let state = createSubagentTrackingState();
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-leader',
+      timestamp: '2026-06-29T00:00:00.000Z',
+      mode: 'ralph',
+      kind: 'leader',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-architect',
+      timestamp: '2026-06-29T00:00:30.000Z',
+      mode: 'architect',
+      role: 'architect',
+      laneId: 'plan-review',
+      scope: 'runtime hook guard',
+      agentNickname: 'reviewer-1',
+      kind: 'subagent',
+      leaderThreadId: 'thread-leader',
+      lastHandoffSummary: 'architect reviewed v1 and requested reuse of the same lane',
+      status: 'available',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-critic',
+      timestamp: '2026-06-29T00:01:00.000Z',
+      mode: 'critic',
+      role: 'critic',
+      laneId: 'risk-review',
+      scope: 'runtime hook guard',
+      kind: 'subagent',
+      leaderThreadId: 'thread-leader',
+      lastHandoffSummary: 'critic paused pending planner response',
+      status: 'unavailable',
+    });
+
+    const ledger = buildSubagentResumeLedger(state, 'sess-conductor', {
+      now: '2026-06-29T00:01:30.000Z',
+      activeWindowMs: 120_000,
+    });
+
+    assert.ok(ledger);
+    assert.deepEqual(ledger?.resumeTargets.map((entry) => entry.agentId), ['thread-architect', 'thread-critic']);
+    assert.equal(ledger?.savedSubagents.find((entry) => entry.agentId === 'thread-architect')?.status, 'available');
+    assert.equal(ledger?.savedSubagents.find((entry) => entry.agentId === 'thread-architect')?.lastHandoffSummary, 'architect reviewed v1 and requested reuse of the same lane');
+    assert.equal(ledger?.savedSubagents.find((entry) => entry.agentId === 'thread-critic')?.status, 'unavailable');
+    assert.equal(ledger?.savedSubagents.find((entry) => entry.agentId === 'thread-critic')?.lastHandoffSummary, 'critic paused pending planner response');
+    assert.deepEqual(
+      selectReusableSubagentEntry(ledger?.resumeTargets ?? [], {
+        role: 'architect',
+        laneId: 'plan-review',
+        scope: 'runtime hook guard',
+      })?.agentId,
+      'thread-architect',
+    );
+    assert.deepEqual(ledger?.unavailableSubagents.map((entry) => entry.agentId), ['thread-critic']);
   });
 
 });
