@@ -387,6 +387,50 @@ describe('subagents/tracker', () => {
       })?.agentId,
       'thread-architect',
     );
+    assert.equal(
+      selectReusableSubagentEntry([
+        {
+          agentId: 'thread-executor',
+          threadId: 'thread-executor',
+          role: 'executor',
+          laneId: 'plan-review',
+          scope: 'runtime hook guard',
+          status: 'available',
+          lastSeenAt: '2026-06-29T00:01:25.000Z',
+        },
+        {
+          agentId: 'thread-architect',
+          threadId: 'thread-architect',
+          role: 'architect',
+          laneId: 'plan-review',
+          scope: 'runtime hook guard',
+          status: 'closed',
+          lastSeenAt: '2026-06-29T00:01:20.000Z',
+        },
+      ], {
+        role: 'architect',
+        laneId: 'plan-review',
+        scope: 'runtime hook guard',
+      })?.agentId,
+      'thread-architect',
+    );
+    assert.equal(
+      selectReusableSubagentEntry([
+        {
+          agentId: 'thread-executor',
+          threadId: 'thread-executor',
+          role: 'executor',
+          laneId: 'plan-review',
+          scope: 'runtime hook guard',
+          status: 'available',
+        },
+      ], {
+        role: 'architect',
+        laneId: 'plan-review',
+        scope: 'runtime hook guard',
+      }),
+      null,
+    );
     assert.deepEqual(ledger?.unavailableSubagents.map((entry) => entry.agentId), ['thread-critic']);
   });
 

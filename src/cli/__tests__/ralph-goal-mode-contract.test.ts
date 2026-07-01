@@ -7,6 +7,7 @@ import { buildRalphAppendInstructions } from '../ralph.js';
 import {
   LEADER_CONDUCTOR_BLOCK,
   LEADER_CONDUCTOR_GOLDEN_RULE,
+  LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
 } from '../../leader/contract.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,6 +54,7 @@ describe('ralph goal mode integration contract', () => {
     assert.match(instructions, /Conductor philosophy:/i);
     assert.match(instructions, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
     assert.match(instructions, new RegExp(escapeRegExp(LEADER_CONDUCTOR_GOLDEN_RULE)));
+    assert.match(instructions, new RegExp(escapeRegExp(LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE)));
     assert.match(instructions, /get_goal/i);
     assert.match(instructions, /create_goal/i);
     assert.match(instructions, /update_goal\(\{status: "complete"\}\)/i);

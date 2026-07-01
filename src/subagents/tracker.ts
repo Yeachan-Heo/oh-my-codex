@@ -526,7 +526,15 @@ export function selectReusableSubagentEntry(
   const normalizedScope = readOptionalTrimmedString(criteria.scope);
   const normalizedAgentNickname = readOptionalTrimmedString(criteria.agentNickname);
 
-  const scoredEntries = entries
+  const matchingEntries = entries.filter((entry) => {
+    if (normalizedRole && entry.role !== normalizedRole) return false;
+    if (normalizedLaneId && entry.laneId !== normalizedLaneId) return false;
+    if (normalizedScope && entry.scope !== normalizedScope) return false;
+    if (normalizedAgentNickname && entry.agentNickname !== normalizedAgentNickname) return false;
+    return true;
+  });
+
+  const scoredEntries = matchingEntries
     .map((entry, index) => {
       const statusRank = rankSubagentStatus(entry.status);
       let score = 0;
