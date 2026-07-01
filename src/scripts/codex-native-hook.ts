@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
-import { extname, join, relative, resolve } from "path";
+import { extname, isAbsolute, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
 import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import { redactAuthSecrets } from "../auth/redact.js";
@@ -161,6 +161,11 @@ const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH = 240;
 const OMX_OWNER_SESSION_ID_PATTERN = /^omx-[A-Za-z0-9_-]{1,60}$/;
+const LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor must delegate source edits and plan/spec authorship; direct writes are limited to workflow metadata.";
+
+function hasTeamWorkerEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
+  return safeString(env.OMX_TEAM_WORKER).trim() !== "" || safeString(env.OMX_TEAM_INTERNAL_WORKER).trim() !== "";
+}
 const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
   /^\s*(?:launch|release|ship)-?ready\s*:\s*(?:yes|no)\b[^\n\r]*/im,
   /^\s*ready to release\s*:\s*(?:yes|no)\b[^\n\r]*/im,
@@ -6158,6 +6163,8 @@ async function readActiveMainRootConductorStateForPreToolUse(
   resolvedSessionId?: string,
 ): Promise<ActiveConductorState | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
+  const payloadSessionId = readPayloadSessionId(payload);
+  if (resolvedSessionId && payloadSessionId && payloadSessionId !== resolvedSessionId) return null;
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
   if (await isTypedSubagentOrWorkerForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
@@ -6169,30 +6176,17 @@ async function readActiveMainRootConductorStateForPreToolUse(
   ));
   const hasActiveSkill = (skill: string): boolean => activeEntries.some((entry) => entry.skill === skill);
 
-  for (const mode of ["ralph", "ultragoal", "ralplan"] as const) {
-    if (!hasActiveSkill(mode)) continue;
-    const state = await readStopSessionPinnedState(`${mode}-state.json`, cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, mode, sessionId)) {
-      return { mode, phase: safeString(state?.current_phase ?? state?.currentPhase) || "active" };
+  if (hasActiveSkill("ralph")) {
+    const ralphState = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
+    if (ralphState && isActiveConductorModeState(ralphState, "ralph", sessionId) && !isRalphStartingPhase(ralphState)) {
+      return { mode: "ralph", phase: safeString(ralphState?.current_phase ?? ralphState?.currentPhase) || "active" };
     }
   }
 
-  if (hasActiveSkill("autopilot")) {
-    const state = await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, "autopilot", sessionId)) {
-      const phase = normalizeAutopilotPhase(state?.current_phase ?? state?.currentPhase);
-      if (phase !== null && isAutopilotChildPhase(phase) && phase !== "rework") {
-        return { mode: "autopilot", phase: safeString(state?.current_phase ?? state?.currentPhase) || phase };
-      }
-    }
-  }
-
-  if (hasActiveSkill("team") && !hasTeamWorkerEnvironment()) {
-    const state = await readStopSessionPinnedState("team-state.json", cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, "team", sessionId)) {
-      const teamName = safeString(state?.team_name).trim();
-      const phase = teamName ? (await readTeamPhase(teamName, cwd).catch(() => null))?.current_phase ?? state?.current_phase : state?.current_phase;
-      if (isNonTerminalPhase(phase)) return { mode: "team", phase: safeString(phase) || "active" };
+  if (hasActiveSkill("ultragoal") && hasActiveSkill("ralplan")) {
+    const ultragoalState = await readStopSessionPinnedState("ultragoal-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(ultragoalState, "ultragoal", sessionId)) {
+      return { mode: "ultragoal", phase: safeString(ultragoalState?.current_phase ?? ultragoalState?.currentPhase) || "active" };
     }
   }
 
@@ -6209,6 +6203,8 @@ const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".omx/handoffs",
   ".omx/goals",
   ".omx/notepad",
+  ".omx/context",
+  ".omx/plans",
   ".omx/wiki",
   ".beads",
 ] as const;
@@ -6256,6 +6252,8 @@ const CONDUCTOR_BASH_MUTATION_COMMANDS = new Set([
   "chown",
   "chgrp",
   "truncate",
+  "sed",
+  "perl",
   "dd",
   "rsync",
 ]);
@@ -6563,6 +6561,12 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
           index = wrapperOperandIndex - 1;
         }
         continue;
+      }
+      if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)) {
+        const outputTargets = collectConductorDownloaderOutputTargets(commandName, words, index);
+        if (outputTargets.sawOutputFlag) {
+          mutations.push({ command: commandName, targets: outputTargets.targets });
+        }
       }
       if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
         mutations.push({
@@ -8333,6 +8337,7 @@ export async function dispatchCodexNativeHook(
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildPlanningRootPointerConflictPreToolUseOutput(payload, cwd, stateDir, rootPointerConflict)
+      ?? await buildConductorPreToolUseWriteGuardOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
       ?? buildMalformedPreToolUseBlockTestOutput(payload)
       ?? buildNativePreToolUseOutput(payload);
