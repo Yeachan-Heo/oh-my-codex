@@ -6382,6 +6382,18 @@ function isShellCommandSeparator(word: string): boolean {
   return word === "&&" || word === "||" || word === ";" || word === "&" || word === "|" || word === "|&";
 }
 
+function isShellGroupingSyntaxWord(word: string): boolean {
+  return word === "(" || word === ")" || word === "{" || word === "}";
+}
+
+function isShellCommandTerminatorOrGroupClose(word: string): boolean {
+  return isShellCommandSeparator(word) || word === ")" || word === "}";
+}
+
+function commandUsesTargetDirectoryOption(commandName: string): boolean {
+  return commandName === "cp" || commandName === "mv" || commandName === "install";
+}
+
 function isEnvironmentAssignmentWord(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
@@ -6452,7 +6464,7 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
   let positionalCount = 0;
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
-    if (!word || isShellCommandSeparator(word)) break;
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (isEnvironmentAssignmentWord(word)) continue;
 
     if (commandName === "curl" || commandName === "wget") {
@@ -6468,10 +6480,30 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
     if (word === "--") continue;
     if (word.startsWith("--")) {
       const [option, inlineValue] = word.split("=", 2);
+      if (option === "--target-directory" && commandUsesTargetDirectoryOption(commandName)) {
+        if (inlineValue !== undefined) {
+          targets.push(inlineValue);
+        } else {
+          const target = words[index + 1] ?? "";
+          if (target) targets.push(target);
+          index += 1;
+        }
+        continue;
+      }
       if (CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(option) && inlineValue === undefined) index += 1;
-      if ((option === "--target-directory" || option === "--backup" || option === "--suffix" || option === "--reference") && inlineValue) {
+      if ((option === "--backup" || option === "--suffix" || option === "--reference") && inlineValue) {
         targets.push(inlineValue);
       }
+      continue;
+    }
+    if (word === "-t" && commandUsesTargetDirectoryOption(commandName)) {
+      const target = words[index + 1] ?? "";
+      if (target) targets.push(target);
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-t") && word.length > 2 && commandUsesTargetDirectoryOption(commandName)) {
+      targets.push(word.slice(2));
       continue;
     }
     if (word.startsWith("-") && word.length > 1) {
@@ -6499,6 +6531,9 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
     if (!word) continue;
     if (isShellCommandSeparator(word)) {
       commandStart = true;
+      continue;
+    }
+    if (isShellGroupingSyntaxWord(word)) {
       continue;
     }
     if (commandStart && isEnvironmentAssignmentWord(word)) continue;
