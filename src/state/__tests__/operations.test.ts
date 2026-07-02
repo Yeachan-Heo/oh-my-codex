@@ -141,6 +141,15 @@ function ralplanConsensusGate(
   };
 }
 
+async function writeNativeRalplanConsensusGate(
+  cwd: string,
+  sessionId: string,
+  threadOverrides: { architect?: string; critic?: string } = {},
+): Promise<Record<string, unknown>> {
+  await writeNativeSubagentTracking(cwd, sessionId);
+  return ralplanConsensusGate(sessionId, 'native_subagent', threadOverrides);
+}
+
 async function createFakeTmuxBin(wd: string): Promise<string> {
   const fakeBin = join(wd, 'bin');
   await mkdir(fakeBin, { recursive: true });
@@ -785,6 +794,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-complete-'));
     try {
       const sessionId = 'sess-ralplan-complete';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -835,11 +845,7 @@ describe('state operations directory initialization', () => {
           verdict: 'APPROVE',
           artifact_path: '.omx/plans/critic.md',
         },
-        ralplan_consensus_gate: {
-          complete: true,
-          architect_verdict: 'APPROVE',
-          critic_verdict: 'APPROVE',
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -873,10 +879,129 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('rejects forged ralplan complete gates before mutating active session state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-forged-complete-'));
+    try {
+      const sessionId = 'sess-ralplan-forged-complete';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        cwd: wd,
+      }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'complete',
+        ralplan_consensus_gate: {
+          complete: true,
+        },
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /tracker-backed native architect and critic consensus evidence/);
+      const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(sessionRalplan.active, true);
+      assert.equal(sessionRalplan.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes currentPhase before gating ralplan terminal writes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-current-phase-alias-'));
+    try {
+      const sessionId = 'sess-ralplan-current-phase-alias';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        cwd: wd,
+      }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'ralplan',
+        active: false,
+        currentPhase: 'complete',
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /tracker-backed native architect and critic consensus evidence/);
+      const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(sessionRalplan.active, true);
+      assert.equal(sessionRalplan.current_phase, 'planning');
+      assert.equal(sessionRalplan.currentPhase, undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses existing tracker-backed ralplan consensus when terminal writes omit gate payload', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-existing-consensus-'));
+    try {
+      const sessionId = 'sess-ralplan-existing-consensus';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        cwd: wd,
+      }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+        ralplan_consensus_gate: consensusGate,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'complete',
+        terminal_reason: 'existing tracker-backed consensus complete',
+      });
+
+      assert.equal(response.isError, undefined);
+      const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(sessionRalplan.active, false);
+      assert.equal(sessionRalplan.current_phase, 'complete');
+      const finalGate = sessionRalplan.ralplan_consensus_gate as Record<string, unknown>;
+      assert.equal(finalGate.complete, true);
+      assert.deepEqual(finalGate.required_review_roles, ['architect', 'critic']);
+      assert.equal((finalGate.ralplan_architect_review as Record<string, unknown>).provenance_kind, 'native_subagent');
+      assert.equal((finalGate.ralplan_critic_review as Record<string, unknown>).provenance_kind, 'native_subagent');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('finalizes completed ralplan updateModeState writes across root and current session state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-complete-update-mode-'));
     try {
       const sessionId = 'sess-ralplan-complete-update-mode';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -916,9 +1041,7 @@ describe('state operations directory initialization', () => {
         active: false,
         current_phase: 'complete',
         terminal_reason: 'runtime consensus complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       }, wd);
 
       const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
@@ -956,10 +1079,49 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('rejects forged ralplan complete gates from updateModeState before mutating active state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-update-mode-forged-complete-'));
+    try {
+      const sessionId = 'sess-ralplan-update-mode-forged-complete';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        cwd: wd,
+      }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      await assert.rejects(
+        updateModeState('ralplan', {
+          active: false,
+          current_phase: 'complete',
+          ralplan_consensus_gate: {
+            complete: true,
+          },
+        }, wd),
+        /architect and critic consensus evidence/,
+      );
+
+      const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(sessionRalplan.active, true);
+      assert.equal(sessionRalplan.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not promote stale session metadata when ralplan terminalizes from root scope', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-stale-session-'));
     try {
       const staleSessionId = 'sess-ralplan-stale';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, staleSessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', staleSessionId);
       await mkdir(stateDir, { recursive: true });
@@ -1001,8 +1163,9 @@ describe('state operations directory initialization', () => {
         current_phase: 'complete',
         status: 'complete',
         terminal_reason: 'consensus approved bounded no-op',
-        ralplan_consensus_gate: {
-          complete: true,
+        state: {
+          session_id: staleSessionId,
+          ralplan_consensus_gate: consensusGate,
         },
       });
 
@@ -1031,6 +1194,8 @@ describe('state operations directory initialization', () => {
   it('does not hide unrelated root detail state when ralplan terminalizes without canonical state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-root-detail-only-'));
     try {
+      const sessionId = 'sess-ralplan-root-detail-only';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       await mkdir(stateDir, { recursive: true });
       await writeFile(join(stateDir, 'team-state.json'), JSON.stringify({
@@ -1044,8 +1209,9 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
+        state: {
+          session_id: sessionId,
+          ralplan_consensus_gate: consensusGate,
         },
       });
 
@@ -1065,6 +1231,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-preserve-root-'));
     try {
       const sessionId = 'sess-ralplan-preserve-root';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1120,9 +1287,7 @@ describe('state operations directory initialization', () => {
         current_phase: 'complete',
         status: 'complete',
         terminal_reason: 'consensus approved bounded no-op',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1165,6 +1330,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-legacy-root-detail-'));
     try {
       const sessionId = 'sess-ralplan-legacy-root-detail';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1199,9 +1365,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1226,6 +1390,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-empty-root-mirror-'));
     try {
       const sessionId = 'sess-ralplan-empty-root-mirror';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1273,9 +1438,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1300,6 +1463,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-preserve-root-tombstone-'));
     try {
       const sessionId = 'sess-ralplan-root-tombstone';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1341,9 +1505,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1367,6 +1529,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-terminal-reason-only-'));
     try {
       const sessionId = 'sess-ralplan-terminal-reason-only';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1405,9 +1568,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1432,6 +1593,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-lifecycle-nonterminal-'));
     try {
       const sessionId = 'sess-ralplan-lifecycle-nonterminal';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1470,9 +1632,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1497,6 +1657,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-preserve-'));
     try {
       const sessionId = 'sess-ralplan-preserve';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1548,9 +1709,7 @@ describe('state operations directory initialization', () => {
         current_phase: 'complete',
         status: 'complete',
         terminal_reason: 'consensus approved bounded no-op',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1587,6 +1746,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-partial-session-skill-'));
     try {
       const sessionId = 'sess-ralplan-partial-session-skill';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1643,9 +1803,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1677,6 +1835,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-terminal-session-skill-'));
     try {
       const sessionId = 'sess-ralplan-terminal-session-skill';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1729,9 +1888,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1764,6 +1921,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-session-detail-only-'));
     try {
       const sessionId = 'sess-ralplan-session-detail-only';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
       await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
@@ -1785,9 +1943,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);
@@ -1807,6 +1963,7 @@ describe('state operations directory initialization', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-root-only-skill-'));
     try {
       const sessionId = 'sess-ralplan-root-only-skill';
+      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
@@ -1845,9 +2002,7 @@ describe('state operations directory initialization', () => {
         mode: 'ralplan',
         active: false,
         current_phase: 'complete',
-        ralplan_consensus_gate: {
-          complete: true,
-        },
+        ralplan_consensus_gate: consensusGate,
       });
 
       assert.equal(response.isError, undefined);

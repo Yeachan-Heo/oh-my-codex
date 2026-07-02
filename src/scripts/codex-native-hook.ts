@@ -153,6 +153,7 @@ const TERMINAL_MODE_PHASES = new Set(["complete", "completed", "failed", "cancel
 const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blocked"]);
 const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
+const LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor golden rule: delegate implementation work; do not self-execute source or plan edits.";
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
@@ -221,6 +222,7 @@ function safeString(value: unknown): string {
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
+
 
 function resolveHudReconcileSessionId(
   currentSessionState: SessionState | null,
@@ -3571,10 +3573,12 @@ function commandHasDestructiveGitSubcommand(command: string): boolean {
     "am",
     "apply",
     "checkout",
+    "clean",
     "merge",
     "rebase",
     "reset",
     "restore",
+    "rm",
     "switch",
   ]);
 
@@ -3586,6 +3590,12 @@ function commandHasDestructiveGitSubcommand(command: string): boolean {
       if (subcommandIndex === null) continue;
       const subcommand = words[subcommandIndex] ?? "";
       if (destructiveSubcommands.has(subcommand)) return true;
+      if (subcommand === "worktree") {
+        const worktreeSubcommandIndex = findGitSubcommandIndex(words, subcommandIndex + 1);
+        if (worktreeSubcommandIndex === null) continue;
+        const worktreeSubcommand = words[worktreeSubcommandIndex] ?? "";
+        if (worktreeSubcommand === "add" || worktreeSubcommand === "move" || worktreeSubcommand === "mv" || worktreeSubcommand === "remove" || worktreeSubcommand === "rm" || worktreeSubcommand === "prune" || worktreeSubcommand === "repair" || worktreeSubcommand === "clean") return true;
+      }
       if (subcommand.startsWith("checkout-")) return true;
       if (subcommand.startsWith("merge-") && subcommand !== "merge-base") return true;
     }
@@ -3653,7 +3663,7 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
-    || /\bperl\s+(?:[^\n;&|]*\s)?-(?:p)?i(?:\b|['"])/.test(command)
+    || /\bperl\s+(?:[^\n;&|]*\s)?-[^-\s]*i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || commandHasDestructiveGitSubcommand(command)
     || commandHasPackageInstallIntent(command);
@@ -4000,12 +4010,13 @@ function describeImplementationToolBlock(
 
 // `omx state` mutations normally route through the gate-enforcing `state_write`
 // backend, so the hook defers to that gate rather than blocking the transport.
-// The backend does NOT gate standalone deep-interview/ralplan *deactivation*,
-// and it normalizes non-terminal tracked-workflow writes to `active=true`, so
-// commands that would implicitly activate a tracked workflow while planning is
-// still protected are blocked here. Broader backend authority belongs to a
-// separate follow-up; this PR keeps the model/tool-originated guard at the
-// native-hook transport boundary.
+// The backend does NOT gate generic standalone deep-interview/ralplan
+// *deactivation*, and it normalizes non-terminal tracked-workflow writes to
+// `active=true`, so commands that would implicitly activate a tracked workflow
+// while planning is still protected are blocked here. Ralplan terminal closeout
+// is the narrow exception: the backend has a dedicated completeRalplanSession
+// path that coherently terminalizes root and session state when the payload is a
+// complete consensus-approved terminal state.
 function readStateWriteInputPayload(
   cwd: string,
   command: string,
@@ -4121,6 +4132,20 @@ function tokenizeShellWords(segment: string): string[] {
         quote = char;
       } else {
         current += char;
+      }
+      continue;
+    }
+    if (!quote && (char === ";" || char === "&")) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      const next = segment[index + 1] ?? "";
+      if (char === "&" && next === "&") {
+        words.push("&&");
+        index += 1;
+      } else {
+        words.push(char);
       }
       continue;
     }
@@ -5527,10 +5552,10 @@ function splitShellCommandSegments(command: string): string[] {
       current = "";
       continue;
     }
-    if (char === "&" && command[index + 1] === "&") {
+    if (char === "&" && command[index - 1] !== "|") {
       if (current.trim()) segments.push(current);
       current = "";
-      index += 1;
+      if (command[index + 1] === "&") index += 1;
       continue;
     }
     if (char === "|" && command[index + 1] === "|") {
@@ -5770,12 +5795,37 @@ function hasUnsafeUnquotedHeredocExpansion(command: string): boolean {
   return false;
 }
 
+function hasUnquotedShellSubstitution(command: string): boolean {
+  command = normalizeShellLineContinuations(command);
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote === "'") continue;
+    if (char === "$" && command[index + 1] === "(") return true;
+    if (char === "`") return true;
+    if ((char === "<" || char === ">") && command[index + 1] === "(") return true;
+  }
+  return false;
+}
+
 function normalizeStateWriteClassificationPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const targetMode = safeString(payload.mode).trim();
+  const targetSessionId = safeString(payload.session_id).trim();
   const {
     mode: _mode,
     workingDirectory: _workingDirectory,
-    session_id: _sessionId,
     state,
     ...fields
   } = payload;
@@ -5783,6 +5833,7 @@ function normalizeStateWriteClassificationPayload(payload: Record<string, unknow
     ...fields,
     ...safeObject(state),
     ...(targetMode ? { mode: targetMode } : {}),
+    ...(targetSessionId ? { session_id: targetSessionId } : {}),
   };
   if (normalized.current_phase === undefined && normalized.currentPhase !== undefined) {
     normalized.current_phase = normalized.currentPhase;
@@ -5819,7 +5870,55 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
   return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) !== undefined;
 }
 
+function isCompleteRalplanTerminalWritePayload(
+  payload: Record<string, unknown>,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  if (!sessionId) return false;
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  if (mode !== "ralplan") return false;
+  const phase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
+  if (payload.active !== false || phase !== "complete") return false;
+
+  const payloadSessionId = safeString(payload.session_id).trim();
+  const activeSessionId = safeString(
+    activeState.session_id
+      ?? activeState.owner_omx_session_id
+      ?? activeState.codex_session_id
+      ?? activeState.owner_codex_session_id,
+  ).trim();
+  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) return false;
+  if (payloadSessionId && activeSessionId && payloadSessionId !== activeSessionId) return false;
+  return true;
+}
+
+function isAllowedRalplanTerminalStateWriteCommand(
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
+  if (splitStateScanSegments(canonicalCommand).length !== 1) return false;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
+  if (commandHasDeepInterviewWriteIntent(canonicalCommand)) return false;
+
+  const operations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (operations.length !== 1) return false;
+  const operation = operations[0];
+  if (!operation || operation.nested || hasPriorExecutableCommand(operation.prefix)) return false;
+
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isCompleteRalplanTerminalWritePayload(payload, activeState, sessionId) : false;
+}
+
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
+  if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return true;
@@ -5934,7 +6033,12 @@ async function readActiveRalplanStateForPreToolUse(
   return hasActiveAutopilotSkill ? autopilotState : null;
 }
 
-function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
+function isAllowedRalplanBashWrite(
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
@@ -5943,7 +6047,9 @@ function isAllowedRalplanBashWrite(cwd: string, command: string): boolean {
   if (beadsCommand.present) {
     return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
   }
-  if (commandEndsPlanningPhase(cwd, command)) return false;
+  if (commandEndsPlanningPhase(cwd, command)) {
+    return isAllowedRalplanTerminalStateWriteCommand(cwd, command, activeState, sessionId);
+  }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (targets.some((target) => !isAllowedRalplanArtifactPath(cwd, target))) return false;
@@ -5994,7 +6100,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
   if (toolName === "Bash") {
-    blocked = !isAllowedRalplanBashWrite(cwd, command);
+    blocked = !isAllowedRalplanBashWrite(cwd, command, activeState, sessionId);
     if (blocked) {
       blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
     }
@@ -6179,7 +6285,9 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
   const toolName = safeString(payload.tool_name).trim();
   let blocked = false;
   if (toolName === "Bash") {
-    blocked = !isAllowedRalplanBashWrite(cwd, readPreToolUseCommand(payload));
+    const command = readPreToolUseCommand(payload);
+    blocked = commandEndsPlanningPhase(cwd, command)
+      || !isAllowedRalplanBashWrite(cwd, command, ralplanState, rootSessionId);
   } else if (
     toolName === "mcp__omx_state__state_clear"
     || (
@@ -6237,7 +6345,13 @@ async function readActiveMainRootConductorStateForPreToolUse(
 ): Promise<ActiveConductorState | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const payloadSessionId = readPayloadSessionId(payload);
-  const payloadMappedToCanonical = Boolean(resolvedSessionId && payloadSessionId && payloadSessionId !== resolvedSessionId);
+  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) {
+    const currentSession = await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
+    const payloadMatchesMappedSession = payloadSessionId === safeString(currentSession?.native_session_id).trim()
+      || payloadSessionId === safeString(currentSession?.owner_omx_session_id).trim()
+      || payloadSessionId === safeString(currentSession?.owner_codex_session_id).trim();
+    if (!payloadMatchesMappedSession) return null;
+  }
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
   if (await isTypedSubagentOrWorkerForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
@@ -6251,18 +6365,27 @@ async function readActiveMainRootConductorStateForPreToolUse(
 
 
   if (hasActiveSkill("ralph")) {
-    const ralphState = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
-    if (ralphState && isActiveConductorModeState(ralphState, "ralph", sessionId) && !isRalphStartingPhase(ralphState)) {
-      return { mode: "ralph", phase: safeString(ralphState?.current_phase ?? ralphState?.currentPhase) || "active" };
+    const state = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(state, "ralph", sessionId)) {
+      const phase = safeString(state?.current_phase ?? state?.currentPhase) || "active";
+      if (phase.toLowerCase() !== "starting") return { mode: "ralph", phase };
     }
   }
 
-  if (hasActiveSkill("ultragoal") && hasActiveSkill("ralplan")) {
-    const ralplanState = await readStopSessionPinnedState("ralplan-state.json", cwd, sessionId, stateDir);
-    if (payloadMappedToCanonical && !isActiveRalplanPhase(ralplanState)) return null;
-    const ultragoalState = await readStopSessionPinnedState("ultragoal-state.json", cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(ultragoalState, "ultragoal", sessionId)) {
-      return { mode: "ultragoal", phase: safeString(ultragoalState?.current_phase ?? ultragoalState?.currentPhase) || "active" };
+  if (hasActiveSkill("ultragoal")) {
+    const state = await readStopSessionPinnedState("ultragoal-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(state, "ultragoal", sessionId)) {
+      return { mode: "ultragoal", phase: safeString(state?.current_phase ?? state?.currentPhase) || "active" };
+    }
+  }
+
+  if (hasActiveSkill("team") && !hasTeamWorkerEnvironment()) {
+    const teamStateForStop = await readTeamModeStateForStop(cwd, stateDir, sessionId, threadId);
+    const state = teamStateForStop?.state ?? null;
+    if (isActiveConductorModeState(state, "team", sessionId)) {
+      const teamName = safeString(state?.team_name).trim();
+      const phase = teamName ? (await readTeamPhase(teamName, cwd).catch(() => null))?.current_phase ?? state?.current_phase : state?.current_phase;
+      if (isNonTerminalPhase(phase)) return { mode: "team", phase: safeString(phase) || "active" };
     }
   }
 
@@ -6271,6 +6394,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
 
 const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".omx/state",
+  ".omx/context",
   ".omx/ultragoal",
   ".omx/ralph",
   ".omx/team",
@@ -6279,13 +6403,7 @@ const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".omx/handoffs",
   ".omx/goals",
   ".omx/notepad",
-  ".omx/context",
-  ".omx/plans",
-  ".omx/wiki",
-  ".beads",
 ] as const;
-
-const LEADER_CONDUCTOR_GOLDEN_RULE = "Conductor golden rule: delegate source edits and plan/spec authorship to specialized agents.";
 
 function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null {
   const candidate = rawPath.trim().replace(/^['"]|['"]$/g, "");
@@ -6346,13 +6464,6 @@ const CONDUCTOR_BASH_DOWNLOADER_COMMANDS = new Set([
   "wget",
 ]);
 
-const CONDUCTOR_BASH_TARGET_DIRECTORY_COMMANDS = new Set([
-  "cp",
-  "mv",
-  "install",
-  "ln",
-]);
-
 const CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS = new Set([
   "if",
   "then",
@@ -6372,7 +6483,6 @@ const CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS = new Set([
   "(",
   ")",
 ]);
-
 const CONDUCTOR_BASH_OPTIONS_WITH_VALUES = new Set([
   "-S",
   "--suffix",
@@ -6392,6 +6502,7 @@ const CONDUCTOR_BASH_OPTIONS_WITH_VALUES = new Set([
   "-of",
   "of",
 ]);
+
 
 interface ConductorBashMutation {
   command: string;
@@ -6425,6 +6536,14 @@ function extractConductorInterpreterWrites(command: string): ConductorInterprete
     const target = safeString(match[2]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
   }
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']+)\3/g)) {
+    const target = safeString(match[4]).trim();
+    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+  }
+  if (/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(/.test(scanCommand)
+    && !writes.some((write) => write.runtime === "python")) {
+    writes.push({ runtime: "python", targets: [], unresolved: true });
+  }
   if (/\bpython3?\b[\s\S]{0,520}\b(?:open\s*\([^)]*,\s*["'][^"']*[wax+]|Path\s*\([^)]*\)\s*\.\s*(?:write_text|write_bytes))/.test(scanCommand)
     && !writes.some((write) => write.runtime === "python")) {
     writes.push({ runtime: "python", targets: [], unresolved: true });
@@ -6442,6 +6561,17 @@ function isShellCommandSeparator(word: string): boolean {
   return word === "&&" || word === "||" || word === ";" || word === "&" || word === "|" || word === "|&";
 }
 
+function isShellGroupingSyntaxWord(word: string): boolean {
+  return word === "(" || word === ")" || word === "{" || word === "}";
+}
+
+function isShellCommandTerminatorOrGroupClose(word: string): boolean {
+  return isShellCommandSeparator(word) || word === ")" || word === "}";
+}
+
+function commandUsesTargetDirectoryOption(commandName: string): boolean {
+  return commandName === "cp" || commandName === "mv" || commandName === "install" || commandName === "ln";
+}
 function isEnvironmentAssignmentWord(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
@@ -6507,10 +6637,19 @@ function findConductorWrapperOperandIndex(commandName: string, words: string[], 
   }
 }
 
-function isConductorCopyLikeMutationCommand(commandName: string): boolean {
-  return commandName === "cp" || commandName === "install" || commandName === "ln";
+function isConductorDestinationOnlyMutationCommand(commandName: string): boolean {
+  return commandName === "cp" || commandName === "install" || commandName === "ln" || commandName === "rsync";
 }
 
+function isConductorInstallDirectoryMode(words: string[], commandIndex: number): boolean {
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (word === "-d" || word === "--directory") return true;
+    if (word.startsWith("-") && !word.startsWith("--") && word.includes("d")) return true;
+  }
+  return false;
+}
 function collectConductorDownloaderOutputTargets(
   commandName: string,
   words: string[],
@@ -6518,37 +6657,76 @@ function collectConductorDownloaderOutputTargets(
 ): { sawOutputFlag: boolean; targets: string[] } {
   const targets: string[] = [];
   let sawOutputFlag = false;
+  let sawCurlRemoteName = false;
+  const curlOutputDirs: string[] = [];
+
+  const pushTarget = (rawTarget: string): void => {
+    const target = safeString(rawTarget).trim();
+    if (target) targets.push(target);
+  };
+
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
-    if (!word || isShellCommandSeparator(word)) break;
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (isEnvironmentAssignmentWord(word)) continue;
+    if (word === "--") continue;
 
     const inlineCurlOutput = commandName === "curl" ? word.match(/^--output=(.+)$/) : null;
+    const inlineWgetOutput = commandName === "wget" ? word.match(/^--(?:output-document|output-file|append-output)=(.+)$/) : null;
+    const inlineWgetDirectoryPrefix = commandName === "wget" ? word.match(/^--directory-prefix=(.+)$/) : null;
     const inlineCurlOutputDir = commandName === "curl" ? word.match(/^--output-dir=(.+)$/) : null;
-    const inlineWgetOutput = commandName === "wget" ? word.match(/^--output-document=(.+)$/) : null;
-    const inlineWgetOutputDir = commandName === "wget" ? word.match(/^--directory-prefix=(.+)$/) : null;
-    const inlineTarget = inlineCurlOutput?.[1]
-      ?? inlineCurlOutputDir?.[1]
-      ?? inlineWgetOutput?.[1]
-      ?? inlineWgetOutputDir?.[1];
+    const inlineTarget = inlineCurlOutput?.[1] ?? inlineWgetOutput?.[1] ?? inlineWgetDirectoryPrefix?.[1];
     if (inlineTarget !== undefined) {
       sawOutputFlag = true;
-      const target = safeString(inlineTarget).trim();
-      if (target) targets.push(target);
+      pushTarget(inlineTarget);
+      continue;
+    }
+    if (inlineCurlOutputDir?.[1] !== undefined) {
+      curlOutputDirs.push(inlineCurlOutputDir[1]);
       continue;
     }
 
-    const separateOutputFlag = (commandName === "curl" && (word === "-o" || word === "--output" || word === "--output-dir"))
-      || (commandName === "wget" && (word === "-O" || word === "--output-document" || word === "-P" || word === "--directory-prefix"));
-    if (!separateOutputFlag) continue;
+    if (commandName === "curl" && (word === "-O" || word === "--remote-name" || word === "--remote-name-all")) {
+      sawCurlRemoteName = true;
+      continue;
+    }
+    if (commandName === "curl" && word.startsWith("-o") && word.length > 2) {
+      sawOutputFlag = true;
+      pushTarget(word.slice(2));
+      continue;
+    }
+    if (commandName === "wget" && (word.startsWith("-O") || word.startsWith("-o") || word.startsWith("-a")) && word.length > 2) {
+      sawOutputFlag = true;
+      pushTarget(word.slice(2));
+      continue;
+    }
+
+    const separateOutputFlag = (commandName === "curl" && (word === "-o" || word === "--output" || word === "--append-output"))
+      || (commandName === "wget" && (word === "-O" || word === "-o" || word === "-a" || word === "--output-document" || word === "--output-file" || word === "--append-output" || word === "-P" || word === "--directory-prefix"));
+    if (!separateOutputFlag) {
+      if (commandName === "curl" && word === "--output-dir") {
+        const nextWord = words[index + 1] ?? "";
+        if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
+          curlOutputDirs.push(nextWord);
+          index += 1;
+        }
+      }
+      continue;
+    }
 
     sawOutputFlag = true;
     const nextWord = words[index + 1] ?? "";
-    if (nextWord && !isShellCommandSeparator(nextWord)) {
-      targets.push(nextWord);
+    if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
+      pushTarget(nextWord);
       index += 1;
     }
   }
+
+  if (commandName === "curl" && sawCurlRemoteName) {
+    sawOutputFlag = true;
+    targets.push(...(curlOutputDirs.length > 0 ? curlOutputDirs : ["."]));
+  }
+
   return { sawOutputFlag, targets };
 }
 
@@ -6560,7 +6738,7 @@ function collectConductorSedTargets(words: string[], commandIndex: number): stri
 
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
-    if (!word || isShellCommandSeparator(word)) break;
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (isEnvironmentAssignmentWord(word)) continue;
 
     if (word === "--") {
@@ -6598,7 +6776,7 @@ function collectConductorPerlTargets(words: string[], commandIndex: number): str
 
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
-    if (!word || isShellCommandSeparator(word)) break;
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (isEnvironmentAssignmentWord(word)) continue;
 
     if (word === "--") continue;
@@ -6619,21 +6797,61 @@ function collectConductorPerlTargets(words: string[], commandIndex: number): str
   return sawInPlace ? targets : [];
 }
 
+function isConductorXargsOptionWithValue(word: string): boolean {
+  return word === "-a"
+    || word === "--arg-file"
+    || word === "-d"
+    || word === "--delimiter"
+    || word === "-E"
+    || word === "-I"
+    || word === "-i"
+    || word === "-L"
+    || word === "-l"
+    || word === "-n"
+    || word === "--max-args"
+    || word === "-P"
+    || word === "--max-procs"
+    || word === "-s"
+    || word === "--max-chars";
+}
+
+function collectConductorXargsMutationTargets(words: string[], commandIndex: number): string[] | null {
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (word === "--") continue;
+    if (word.startsWith("-")) {
+      if (CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(word)) index += 1;
+      if (isConductorXargsOptionWithValue(word)) {
+        if ((words[index + 1] ?? "") === "{" && (words[index + 2] ?? "") === "}") {
+          index += 2;
+        } else {
+          index += 1;
+        }
+      }
+      continue;
+    }
+    const commandName = commandNameFromShellWord(word);
+    if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName) || CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) return [];
+    return null;
+  }
+  return null;
+}
+
 function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] {
   const targets: string[] = [];
   const positionalTargets: string[] = [];
   const targetDirectoryTargets: string[] = [];
-  const supportsTargetDirectory = CONDUCTOR_BASH_TARGET_DIRECTORY_COMMANDS.has(commandName);
   let sawTargetDirectory = false;
   let positionalCount = 0;
   if (commandName === "sed") return collectConductorSedTargets(words, commandIndex);
   if (commandName === "perl") return collectConductorPerlTargets(words, commandIndex);
+  const installDirectoryMode = commandName === "install" && isConductorInstallDirectoryMode(words, commandIndex);
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
-    if (!word || isShellCommandSeparator(word)) break;
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
     if (isEnvironmentAssignmentWord(word)) continue;
-
     if (commandName === "dd") {
       const ofMatch = word.match(/^of=(.+)$/);
       if (ofMatch) targets.push(safeString(ofMatch[1]).trim());
@@ -6643,17 +6861,15 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
     if (word === "--") continue;
     if (word.startsWith("--")) {
       const [option, inlineValue] = word.split("=", 2);
-      if (supportsTargetDirectory && option === "--target-directory") {
+      if (option === "--target-directory" && commandUsesTargetDirectoryOption(commandName)) {
         sawTargetDirectory = true;
         if (inlineValue !== undefined) {
           const target = safeString(inlineValue).trim();
           if (target) targetDirectoryTargets.push(target);
         } else {
-          const nextWord = words[index + 1] ?? "";
-          if (nextWord && !isShellCommandSeparator(nextWord)) {
-            targetDirectoryTargets.push(nextWord);
-            index += 1;
-          }
+          const target = words[index + 1] ?? "";
+          if (target && !isShellCommandTerminatorOrGroupClose(target)) targetDirectoryTargets.push(target);
+          index += 1;
         }
         continue;
       }
@@ -6663,16 +6879,19 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
       }
       continue;
     }
+    if (word === "-t" && commandUsesTargetDirectoryOption(commandName)) {
+      sawTargetDirectory = true;
+      const target = words[index + 1] ?? "";
+      if (target && !isShellCommandTerminatorOrGroupClose(target)) targetDirectoryTargets.push(target);
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-t") && word.length > 2 && commandUsesTargetDirectoryOption(commandName)) {
+      sawTargetDirectory = true;
+      targetDirectoryTargets.push(word.slice(2));
+      continue;
+    }
     if (word.startsWith("-") && word.length > 1) {
-      if (supportsTargetDirectory && word === "-t") {
-        sawTargetDirectory = true;
-        const nextWord = words[index + 1] ?? "";
-        if (nextWord && !isShellCommandSeparator(nextWord)) {
-          targetDirectoryTargets.push(nextWord);
-          index += 1;
-        }
-        continue;
-      }
       if (CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(word)) index += 1;
       continue;
     }
@@ -6685,8 +6904,13 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
     }
     positionalTargets.push(word);
   }
-  if (sawTargetDirectory) return targetDirectoryTargets;
-  if (isConductorCopyLikeMutationCommand(commandName)) return positionalTargets.slice(-1);
+  if (installDirectoryMode) return [...targets, ...positionalTargets];
+  if (sawTargetDirectory) {
+    return commandName === "mv"
+      ? [...targets, ...targetDirectoryTargets, ...positionalTargets]
+      : [...targets, ...targetDirectoryTargets];
+  }
+  if (isConductorDestinationOnlyMutationCommand(commandName)) return [...targets, ...positionalTargets.slice(-1)];
   return [...targets, ...positionalTargets];
 }
 
@@ -6700,6 +6924,9 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
       if (!word) continue;
       if (isShellCommandSeparator(word)) {
         commandStart = true;
+        continue;
+      }
+      if (isShellGroupingSyntaxWord(word)) {
         continue;
       }
       if (commandStart && isEnvironmentAssignmentWord(word)) continue;
@@ -6722,12 +6949,17 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
         continue;
       }
       if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)) {
-        const outputTargets = collectConductorDownloaderOutputTargets(commandName, words, index);
-        if (outputTargets.sawOutputFlag) {
-          mutations.push({ command: commandName, targets: outputTargets.targets });
+        const downloaderTargets = collectConductorDownloaderOutputTargets(commandName, words, index);
+        if (downloaderTargets.sawOutputFlag) {
+          mutations.push({
+            command: commandName,
+            targets: downloaderTargets.targets,
+          });
         }
-      }
-      if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
+      } else if (commandName === "xargs") {
+        const xargsTargets = collectConductorXargsMutationTargets(words, index);
+        if (xargsTargets !== null) mutations.push({ command: commandName, targets: xargsTargets });
+      } else if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
         mutations.push({
           command: commandName,
           targets: collectConductorMutationCommandTargets(commandName, words, index),
@@ -6883,7 +7115,7 @@ function buildConductorBashBlockedDetail(cwd: string, command: string): string {
     ?? "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata";
 }
 
-async function buildConductorPreToolUseWriteGuardOutput(
+export async function buildConductorPreToolUseWriteGuardOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
@@ -6891,8 +7123,6 @@ async function buildConductorPreToolUseWriteGuardOutput(
 ): Promise<Record<string, unknown> | null> {
   const activeState = await readActiveMainRootConductorStateForPreToolUse(payload, cwd, stateDir, resolvedSessionId);
   if (!activeState) return null;
-  const activePhase = formatPhase(activeState.phase, "active");
-  if (activePhase === "planning" || activePhase === "starting") return null;
 
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
@@ -6927,14 +7157,14 @@ async function buildConductorPreToolUseWriteGuardOutput(
       additionalContext:
         `${LEADER_CONDUCTOR_GOLDEN_RULE} `
         + "Use specialized agents for source edits and plan/spec authorship. "
-      + `Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata under ${CONDUCTOR_ALLOWED_METADATA_PREFIXES.join(", ")}. `
+        + `Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata under ${CONDUCTOR_ALLOWED_METADATA_PREFIXES.join(", ")}. `
         + "Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
     },
   };
 }
 
 function isInPlaceEditorCommand(word: string, commandName: string): boolean {
-  if (commandName === "sed") return word === "-i" || /^-i(?:\..+)?$/.test(word);
+  if (commandName === "sed") return word === "-i" || /^-i(?:\..+)?$/.test(word) || word === "--in-place" || /^--in-place(?:=.+)?$/.test(word);
   if (commandName === "perl") return word === "-i" || word === "-pi" || /^-pi(?:\..+)?$/.test(word) || /^-p.*i(?:\..+)?$/.test(word);
   return false;
 }
@@ -6943,7 +7173,7 @@ function collectInPlaceEditorWriteTargets(commandName: "sed" | "perl", words: st
   const targets: string[] = [];
   let sawInPlaceEdit = false;
   let awaitingOptionValue = false;
-  let lastCandidateTarget: string | null = null;
+  let consumedImplicitSedScript = commandName !== "sed";
 
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
@@ -6956,9 +7186,17 @@ function collectInPlaceEditorWriteTargets(commandName: "sed" | "perl", words: st
       continue;
     }
 
-    if (word === "--") continue;
-    if (word === "-e" || word === "-f") {
+    if (word === "--") {
+      consumedImplicitSedScript = true;
+      continue;
+    }
+    if (word === "-e" || word === "-f" || word === "--expression" || word === "--file") {
       awaitingOptionValue = true;
+      consumedImplicitSedScript = true;
+      continue;
+    }
+    if (word.startsWith("-e") || word.startsWith("-f") || word.startsWith("--expression=") || word.startsWith("--file=")) {
+      consumedImplicitSedScript = true;
       continue;
     }
     if (isInPlaceEditorCommand(word, commandName)) {
@@ -6966,10 +7204,15 @@ function collectInPlaceEditorWriteTargets(commandName: "sed" | "perl", words: st
       continue;
     }
     if (word.startsWith("-")) continue;
-    if (sawInPlaceEdit) lastCandidateTarget = word;
+    if (sawInPlaceEdit) {
+      if (commandName === "sed" && !consumedImplicitSedScript) {
+        consumedImplicitSedScript = true;
+        continue;
+      }
+      targets.push(word);
+    }
   }
 
-  if (lastCandidateTarget) targets.push(lastCandidateTarget);
   return targets;
 }
 
@@ -6985,6 +7228,7 @@ function extractConductorEditorWriteTargets(command: string): string[] {
         commandStart = true;
         continue;
       }
+      if (isShellGroupingSyntaxWord(word)) continue;
       if (commandStart && isEnvironmentAssignmentWord(word)) continue;
       if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
       if (commandStart && word.startsWith("-")) continue;
