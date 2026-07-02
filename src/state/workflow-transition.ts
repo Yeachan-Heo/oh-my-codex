@@ -29,6 +29,53 @@ const DENIED_BASH_PATTERNS: RegExp[] = [
   /\bgh\s+pr\s+merge\b/,
 ];
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeProtectedArtifactPath(path: string): string {
+  return path.replace(/^\.\//, '');
+}
+
+function collectProtectedArtifactWritePaths(command: string): Set<string> {
+  const paths = new Set<string>();
+  const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs)\/[^"'\s;|&<>]+)\1`;
+  const redirectPattern = new RegExp(String.raw`(?:^|[^<])>>?\s*${protectedPath}`, 'g');
+  const teePattern = new RegExp(String.raw`\btee\s+(?:-[a-zA-Z]+\s+)*(?:--\s+)?${protectedPath}`, 'g');
+
+  for (const pattern of [redirectPattern, teePattern]) {
+    for (const match of command.matchAll(pattern)) {
+      const path = match[2]?.trim();
+      if (path) paths.add(normalizeProtectedArtifactPath(path));
+    }
+  }
+
+  return paths;
+}
+
+function executesOrSourcesPath(command: string, path: string): boolean {
+  const escapedPath = escapeRegExp(path);
+  const optionalDotSlashPath = String.raw`(?:\.\/)?${escapedPath}`;
+  const quotedPath = String.raw`["']${optionalDotSlashPath}["']|${optionalDotSlashPath}`;
+  const shellExecPattern = new RegExp(
+    String.raw`(?:^|[\s;&|()])(?:sh|bash|dash|zsh|ksh|fish)\s+(?:-[^\s]+\s+)*(${quotedPath})(?:$|[\s;&|)])`,
+  );
+  const sourcePattern = new RegExp(
+    String.raw`(?:^|[\s;&|()])(?:source|\.)\s+(${quotedPath})(?:$|[\s;&|)])`,
+  );
+  const directExecPattern = new RegExp(
+    String.raw`(?:^|[;&|()\n])\s*(?:\.\/)?${escapedPath}(?:$|[\s;&|)])`,
+  );
+  return shellExecPattern.test(command) || sourcePattern.test(command) || directExecPattern.test(command);
+}
+
+function hasSameCommandProtectedArtifactExecution(command: string): boolean {
+  for (const path of collectProtectedArtifactWritePaths(command)) {
+    if (executesOrSourcesPath(command, path)) return true;
+  }
+  return false;
+}
+
 export const PLANNING_GATE_BYPASS_TTL_MS = 10 * 60 * 1000;
 
 export const BYPASS_PLANNING_GATE_PHRASE = 'bypass planning gate';
@@ -36,7 +83,8 @@ export const BYPASS_PLANNING_GATE_PHRASE = 'bypass planning gate';
 export function isImplementationToolCall(input: PreToolUseGateInput): boolean {
   if (IMPLEMENTATION_TOOLS.has(input.tool_name)) return true;
   if (input.tool_name === 'Bash' && typeof input.tool_input === 'string') {
-    return DENIED_BASH_PATTERNS.some((pattern) => pattern.test(input.tool_input!));
+    return DENIED_BASH_PATTERNS.some((pattern) => pattern.test(input.tool_input!))
+      || hasSameCommandProtectedArtifactExecution(input.tool_input);
   }
   return false;
 }

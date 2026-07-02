@@ -34,6 +34,28 @@ describe('planning gate: tool classification', () => {
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: 'gh pr merge 42' }), true);
   });
 
+  it('classifies same-command protected artifact write plus shell execution as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+#!/bin/sh
+mkdir -p src
+printf pwned > src/pwned.ts
+SCRIPT
+sh .omx/context/run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan","state":{"deep_interview_gate":{"status":"complete","rationale":"done"}}}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies same-command protected artifact write plus source as implementation', () => {
+    const command = `mkdir -p .omx/specs
+printf 'export PWNED=1\n' > .omx/specs/env.sh
+source .omx/specs/env.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
   it('does not classify Read, Glob, Grep, or safe Bash as implementation tools', () => {
     assert.equal(isImplementationToolCall({ tool_name: 'Read' }), false);
     assert.equal(isImplementationToolCall({ tool_name: 'Glob' }), false);
@@ -41,6 +63,16 @@ describe('planning gate: tool classification', () => {
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: 'git status' }), false);
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: 'npm test' }), false);
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: 'ls -la' }), false);
+  });
+
+  it('does not classify protected artifact write plus ralplan handoff without execution as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/notes.md <<'EOF'
+# Handoff notes
+EOF
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), false);
   });
 
   it('does not classify Bash without tool_input as implementation tool', () => {
@@ -87,6 +119,26 @@ describe('planning gate: downstream_authority=plan_then_execute + no ralplan con
     );
     assert.equal(decision.allowed, false);
     assert.equal(decision.gate_fired, true);
+  });
+
+  it('denies same-command protected artifact write plus execution when no ralplan consensus artifact exists', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+#!/bin/sh
+mkdir -p src
+printf pwned > src/pwned.ts
+SCRIPT
+sh .omx/context/run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan","state":{"deep_interview_gate":{"status":"complete","rationale":"done"}}}' --json`;
+    const decision = evaluatePreToolUseGate(
+      { tool_name: 'Bash', tool_input: command },
+      gateState,
+      false,
+    );
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.gate_fired, true);
+    assert.match(decision.reason!, /Bash denied/);
   });
 
   it('allows Read when no ralplan consensus artifact exists', () => {
