@@ -199,6 +199,55 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('finds hook-visible run-dir session state from an explicit worktree_cwd alias', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-worktree-alias-source-'));
+    const worktree = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-worktree-alias-wt-'));
+    const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-worktree-alias-runs-'));
+    try {
+      const sessionId = 'sess-run-dir-worktree-alias';
+      const runDir = join(runsRoot, 'run-20260610121751-a11a');
+      const runStateDir = join(runDir, '.omx', 'state');
+      const runSessionDir = join(runStateDir, 'sessions', sessionId);
+      await mkdir(runSessionDir, { recursive: true });
+      await mkdir(join(worktree, '.omx', 'state'), { recursive: true });
+      await mkdir(join(runsRoot, 'active-detached'), { recursive: true });
+      await writeFile(join(runStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(runSessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+      }, null, 2));
+      await writeFile(join(runsRoot, 'active-detached', 'ctx-worktree-alias.json'), `${JSON.stringify({
+        version: 1,
+        context_key: 'ctx-worktree-alias',
+        created_at: '2026-06-10T12:17:51.000Z',
+        source_cwd: wd,
+        worktree_cwd: worktree,
+        argv: ['--madmax', '--worktree', '--tmux'],
+        run_dir: runDir,
+        tmux_session_name: 'omx-detached',
+        session_id: sessionId,
+        tmux_pane_id: '%42',
+      })}\n`);
+
+      const statusResult = runOmxWithEnv(worktree, { OMX_RUNS_DIR: runsRoot }, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /autopilot: ACTIVE \(phase: deep-interview\)/);
+
+      const cancelResult = runOmxWithEnv(worktree, { OMX_RUNS_DIR: runsRoot }, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled: autopilot/);
+
+      const autopilot = JSON.parse(await readFile(join(runSessionDir, 'autopilot-state.json'), 'utf-8'));
+      assert.equal(autopilot.active, false);
+      assert.equal(autopilot.current_phase, 'cancelled');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(worktree, { recursive: true, force: true });
+      await rm(runsRoot, { recursive: true, force: true });
+    }
+  });
+
   it('reports stale current-autopilot in status when no authoritative active modes exist', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-status-stale-current-autopilot-'));
     try {

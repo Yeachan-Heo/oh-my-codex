@@ -50,6 +50,7 @@ import {
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
+  captureMadmaxWorktreeRuntimeContext,
   persistProjectLaunchRuntimeAuthState,
   persistProjectLaunchRuntimeProjectTrustState,
   cleanupRuntimeCodexHome,
@@ -211,6 +212,65 @@ describe("madmax state isolation", () => {
     assert.equal(
       shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_NO_BOX: "1" }, "/repo"),
       false,
+    );
+  });
+
+  it("captures madmax worktree context from parsed worktree state, not remaining args", () => {
+    const sourceCwd = "/repo/source";
+    const worktreeCwd = "/repo/.worktrees/session";
+    const runDir = "/runs/run-issue-3043";
+    const context = captureMadmaxWorktreeRuntimeContext({
+      originalLaunchArgs: ["--madmax", "--worktree", "--version"],
+      worktreeEnabled: true,
+      sourceCwd,
+      worktreeCwd,
+      env: {
+        OMX_ROOT: runDir,
+        OMXBOX_ACTIVE: "1",
+        OMX_SOURCE_CWD: sourceCwd,
+        OMX_MADMAX_DETACHED_CONTEXT: "ctx-3043",
+      },
+    });
+
+    assert.deepEqual(context, {
+      omxRoot: runDir,
+      sourceCwd,
+      worktreeCwd,
+      madmaxDetachedContext: "ctx-3043",
+      boxedActive: true,
+    });
+  });
+
+  it("does not capture ordinary worktree or unboxed madmax launches", () => {
+    assert.equal(
+      captureMadmaxWorktreeRuntimeContext({
+        originalLaunchArgs: ["--worktree"],
+        worktreeEnabled: true,
+        sourceCwd: "/repo/source",
+        worktreeCwd: "/repo/.worktrees/session",
+        env: { OMX_ROOT: "/runs/run", OMXBOX_ACTIVE: "1" },
+      }),
+      undefined,
+    );
+    assert.equal(
+      captureMadmaxWorktreeRuntimeContext({
+        originalLaunchArgs: ["--madmax", "--worktree"],
+        worktreeEnabled: true,
+        sourceCwd: "/repo/source",
+        worktreeCwd: "/repo/.worktrees/session",
+        env: { OMX_ROOT: "/runs/run" },
+      }),
+      undefined,
+    );
+    assert.equal(
+      captureMadmaxWorktreeRuntimeContext({
+        originalLaunchArgs: ["--madmax", "--worktree"],
+        worktreeEnabled: false,
+        sourceCwd: "/repo/source",
+        worktreeCwd: "/repo/.worktrees/session",
+        env: { OMX_ROOT: "/runs/run", OMXBOX_ACTIVE: "1" },
+      }),
+      undefined,
     );
   });
 
@@ -3778,10 +3838,10 @@ exit 0
 
   it("runCodex builds inside-tmux HUD command through explicit runtime-root resolver", async () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
-    assert.match(source, /const hudRuntimeRoot = resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
+    assert.match(source, /const hudRuntimeRoot: HudRuntimeRootForLaunch = runtimeContext\s*\? \{ omxRoot: runtimeContext\.omxRoot, rootSource: 'omx-root-env' \}\s*: resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
     assert.match(
       source,
-      /const hudEnvArgs = Object\.entries\(buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
+      /const hudRuntimeEnv = \{\s*\.\.\.buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env,\s*\.\.\.runtimeEnvOverlay,\s*\};\s*const hudEnvArgs = Object\.entries\(hudRuntimeEnv\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
     );
     assert.match(source, /if \(env\.OMX_TEAM_STATE_ROOT\?\.trim\(\)\) return 'team-env';\s*if \(env\.OMX_ROOT\?\.trim\(\) \|\| omxRootOverride\) return 'omx-root-env';\s*if \(env\.OMX_STATE_ROOT\?\.trim\(\)\) return 'omx-state-root-env';/);
     assert.match(
@@ -3794,7 +3854,7 @@ exit 0
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride,\s*\}\)/,
+      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride,\s*baseEnv: runtimeHookEnv,\s*\}\)/,
     );
     assert.match(
       source,
