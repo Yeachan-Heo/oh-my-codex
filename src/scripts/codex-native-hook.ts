@@ -6797,22 +6797,39 @@ function collectConductorPerlTargets(words: string[], commandIndex: number): str
   return sawInPlace ? targets : [];
 }
 
-function isConductorXargsOptionWithValue(word: string): boolean {
-  return word === "-a"
-    || word === "--arg-file"
-    || word === "-d"
-    || word === "--delimiter"
-    || word === "-E"
-    || word === "-I"
-    || word === "-i"
-    || word === "-L"
-    || word === "-l"
-    || word === "-n"
-    || word === "--max-args"
-    || word === "-P"
-    || word === "--max-procs"
-    || word === "-s"
-    || word === "--max-chars";
+const CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES = new Set([
+  "--arg-file",
+  "--delimiter",
+  "--max-args",
+  "--max-chars",
+  "--max-lines",
+  "--max-procs",
+  "--process-slot-var",
+]);
+
+const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES = new Set(["a", "d", "E", "I", "L", "n", "P", "s"]);
+const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES = new Set(["e", "i", "l"]);
+
+function conductorXargsOptionValueWordCount(words: string[], optionIndex: number): number {
+  const word = words[optionIndex] ?? "";
+  if (!word.startsWith("-") || word === "-") return 0;
+
+  if (word.startsWith("--")) {
+    const [option, inlineValue] = word.split("=", 2);
+    return CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES.has(option) && inlineValue === undefined ? 1 : 0;
+  }
+
+  const shortOptions = word.slice(1);
+  for (let offset = 0; offset < shortOptions.length; offset += 1) {
+    const option = shortOptions[offset] ?? "";
+    if (CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES.has(option)) {
+      if (offset < shortOptions.length - 1) return 0;
+      return option === "I" && (words[optionIndex + 1] ?? "") === "{" && (words[optionIndex + 2] ?? "") === "}" ? 2 : 1;
+    }
+    if (CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES.has(option)) return 0;
+  }
+
+  return 0;
 }
 
 function collectConductorXargsMutationTargets(words: string[], commandIndex: number): string[] | null {
@@ -6821,14 +6838,7 @@ function collectConductorXargsMutationTargets(words: string[], commandIndex: num
     if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (word === "--") continue;
     if (word.startsWith("-")) {
-      if (CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(word)) index += 1;
-      if (isConductorXargsOptionWithValue(word)) {
-        if ((words[index + 1] ?? "") === "{" && (words[index + 2] ?? "") === "}") {
-          index += 2;
-        } else {
-          index += 1;
-        }
-      }
+      index += conductorXargsOptionValueWordCount(words, index);
       continue;
     }
     const commandName = commandNameFromShellWord(word);
