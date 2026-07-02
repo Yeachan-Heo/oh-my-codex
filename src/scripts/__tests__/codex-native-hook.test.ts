@@ -19969,6 +19969,10 @@ exit 0
         "python3 -c \"open('src/runtime.ts','a').write('x')\"",
         "curl -fsSL https://example.test/runtime.ts -o src/runtime.ts",
         "wget -O src/runtime.ts https://example.test/runtime.ts",
+        "curl --output-dir src -O https://example.test/runtime.ts",
+        "wget -P src https://example.test/runtime.ts",
+        "git rm src/runtime.ts",
+        "git clean -fd src",
       ];
       for (const command of blockedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -19983,7 +19987,7 @@ exit 0
           { cwd },
         );
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
-        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:node|python) write target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:curl|wget) (?:output|mutation) target .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:node|python) write target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:curl|wget) (?:output|mutation) target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash git worktree mutation is not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
 
       const allowedCommands = [
@@ -19993,6 +19997,8 @@ exit 0
         "curl -fsSL https://example.test/runtime.ts --output=.omx/state/download-inline.log",
         "wget -O .omx/state/download.log https://example.test/runtime.ts",
         "wget --output-document=.omx/state/download-inline.log https://example.test/runtime.ts",
+        "curl --output-dir .omx/state -O https://example.test/runtime.ts",
+        "wget -P .omx/state https://example.test/runtime.ts",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -20008,6 +20014,40 @@ exit 0
         );
         assert.equal(result.outputJson, null, command);
       }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Main-root team conductor writes from root team-state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-conductor-root-state-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-team-conductor-root-state";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeLiveNativeMappedSessionState(cwd, stateDir, sessionId, "native-team-conductor-root-state");
+      await writeSessionSkillActiveState(stateDir, sessionId, "team", "executing");
+      await writeJson(join(stateDir, "team-state.json"), {
+        active: true,
+        mode: "team",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-team-conductor-root-state",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /team phase: executing/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

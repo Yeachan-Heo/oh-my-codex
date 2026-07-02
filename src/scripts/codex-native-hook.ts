@@ -3574,7 +3574,9 @@ function commandHasDestructiveGitSubcommand(command: string): boolean {
     "rebase",
     "reset",
     "restore",
+    "rm",
     "switch",
+    "clean",
   ]);
 
   for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
@@ -6183,9 +6185,13 @@ async function readActiveMainRootConductorStateForPreToolUse(
 
   if (hasActiveSkill("team") && !hasTeamWorkerEnvironment()) {
     const state = await readStopSessionPinnedState("team-state.json", cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, "team", sessionId)) {
-      const teamName = safeString(state?.team_name).trim();
-      const phase = teamName ? (await readTeamPhase(teamName, cwd).catch(() => null))?.current_phase ?? state?.current_phase : state?.current_phase;
+    const rootState = state === null
+      ? await readJsonIfExists(join(stateDir, "team-state.json"))
+      : null;
+    const candidateState = state ?? rootState;
+    if (isActiveConductorModeState(candidateState, "team", sessionId)) {
+      const teamName = safeString(candidateState?.team_name).trim();
+      const phase = teamName ? (await readTeamPhase(teamName, cwd).catch(() => null))?.current_phase ?? candidateState?.current_phase : candidateState?.current_phase;
       if (isNonTerminalPhase(phase)) return { mode: "team", phase: safeString(phase) || "active" };
     }
   }
@@ -6405,6 +6411,7 @@ function collectConductorDownloaderOutputTargets(
 ): { sawOutputFlag: boolean; targets: string[] } {
   const targets: string[] = [];
   let sawOutputFlag = false;
+  let outputDir: string | null = null;
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
     if (!word || isShellCommandSeparator(word)) break;
@@ -6417,6 +6424,34 @@ function collectConductorDownloaderOutputTargets(
       sawOutputFlag = true;
       const target = safeString(inlineTarget).trim();
       if (target) targets.push(target);
+      continue;
+    }
+
+    const inlineCurlOutputDir = commandName === "curl" ? word.match(/^--output-dir=(.+)$/) : null;
+    const inlineWgetDirectory = commandName === "wget" ? word.match(/^--directory-prefix=(.+)$/) : null;
+    const inlineDirectoryTarget = inlineCurlOutputDir?.[1] ?? inlineWgetDirectory?.[1];
+    if (inlineDirectoryTarget !== undefined) {
+      outputDir = safeString(inlineDirectoryTarget).trim() || null;
+      continue;
+    }
+
+    const separateOutputDirFlag = (commandName === "curl" && word === "--output-dir")
+      || (commandName === "wget" && (word === "-P" || word === "--directory-prefix"));
+    if (separateOutputDirFlag) {
+      const nextWord = words[index + 1] ?? "";
+      if (nextWord && !isShellCommandSeparator(nextWord)) {
+        outputDir = nextWord;
+        index += 1;
+      }
+      continue;
+    }
+
+    const remoteNameFlag = (commandName === "curl" && (word === "-O" || word === "--remote-name"))
+      || (commandName === "wget" && !sawOutputFlag && !word.startsWith("-"));
+    if (remoteNameFlag) {
+      sawOutputFlag = true;
+      targets.push(outputDir ?? ".");
+      if (commandName === "wget") break;
       continue;
     }
 
