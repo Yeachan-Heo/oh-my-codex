@@ -88,7 +88,7 @@ import {
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
-import { isAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
+import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
