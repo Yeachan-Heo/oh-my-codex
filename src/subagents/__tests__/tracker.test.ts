@@ -488,4 +488,59 @@ describe('subagents/tracker', () => {
     assert.deepEqual(ledger?.unavailableSubagents.map((entry) => entry.agentId), ['thread-critic']);
   });
 
+  it('preserves explicit closed ledger status so older available lanes win reuse selection', () => {
+    let state = createSubagentTrackingState();
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-leader',
+      timestamp: '2026-06-29T00:00:00.000Z',
+      mode: 'ralph',
+      kind: 'leader',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-available-older',
+      timestamp: '2026-06-29T00:00:30.000Z',
+      mode: 'executor',
+      role: 'executor',
+      laneId: 'implementation-fix',
+      scope: 'conductor reuse ledger',
+      kind: 'subagent',
+      leaderThreadId: 'thread-leader',
+      status: 'available',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-conductor',
+      threadId: 'thread-closed-recent',
+      timestamp: '2026-06-29T00:01:30.000Z',
+      mode: 'executor',
+      role: 'executor',
+      laneId: 'implementation-fix',
+      scope: 'conductor reuse ledger',
+      kind: 'subagent',
+      leaderThreadId: 'thread-leader',
+      status: 'closed',
+    });
+
+    const ledger = buildSubagentResumeLedger(state, 'sess-conductor', {
+      now: '2026-06-29T00:01:45.000Z',
+      activeWindowMs: 120_000,
+    });
+
+    assert.ok(ledger);
+    assert.equal(ledger.savedSubagents.find((entry) => entry.agentId === 'thread-closed-recent')?.status, 'closed');
+    assert.deepEqual(ledger.resumeTargets.map((entry) => entry.agentId), [
+      'thread-available-older',
+      'thread-closed-recent',
+    ]);
+    assert.equal(
+      selectReusableSubagentEntry(ledger.resumeTargets, {
+        role: 'executor',
+        laneId: 'implementation-fix',
+        scope: 'conductor reuse ledger',
+      })?.agentId,
+      'thread-available-older',
+    );
+  });
+
 });

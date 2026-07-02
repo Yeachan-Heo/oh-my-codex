@@ -163,7 +163,6 @@ function compareResumeEntries(left: SubagentLedgerEntry, right: SubagentLedgerEn
 function normalizeLedgerEntry(
   thread: TrackedSubagentThread,
   status: SubagentAvailabilityStatus,
-  active: boolean,
 ): SubagentLedgerEntry {
   const role = thread.role ?? thread.mode;
   const laneId = thread.lane_id ?? thread.agent_nickname ?? role;
@@ -174,7 +173,7 @@ function normalizeLedgerEntry(
     ...(laneId ? { laneId } : {}),
     ...(thread.scope ? { scope: thread.scope } : {}),
     ...(thread.agent_nickname ? { agentNickname: thread.agent_nickname } : {}),
-    status: active && status !== 'unavailable' ? 'available' : status === 'available' ? 'available' : status,
+    status,
     ...(thread.last_seen_at ? { lastSeenAt: thread.last_seen_at } : {}),
     ...(thread.completed_at ? { completedAt: thread.completed_at } : {}),
     ...(thread.last_handoff_summary ? { lastHandoffSummary: thread.last_handoff_summary } : {}),
@@ -493,13 +492,11 @@ export function buildSubagentResumeLedger(
   const session = normalized.sessions[sessionId];
   if (!session) return null;
 
-  const activeSubagentThreadIdSet = new Set(summary.activeSubagentThreadIds);
   const savedSubagents = summary.savedSubagents.map((entry): SubagentLedgerEntry => {
     const thread = session.threads[entry.threadId];
     if (!thread) return { ...entry } as SubagentLedgerEntry;
     const computedStatus = thread.status ?? entry.status;
-    const active = activeSubagentThreadIdSet.has(entry.threadId);
-    return normalizeLedgerEntry(thread, computedStatus, active);
+    return normalizeLedgerEntry(thread, computedStatus);
   });
 
   const resumeTargets = [...savedSubagents].sort(compareResumeEntries);
