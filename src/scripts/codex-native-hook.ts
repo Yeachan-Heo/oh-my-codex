@@ -4115,6 +4115,20 @@ function tokenizeShellWords(segment: string): string[] {
       }
       continue;
     }
+    if (!quote && (char === ";" || char === "&")) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      const next = segment[index + 1] ?? "";
+      if (char === "&" && next === "&") {
+        words.push("&&");
+        index += 1;
+      } else {
+        words.push(char);
+      }
+      continue;
+    }
     if (!quote && /\s/.test(char)) {
       if (current) {
         words.push(current);
@@ -5747,6 +5761,7 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
 }
 
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
+  if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return true;
@@ -6164,7 +6179,13 @@ async function readActiveMainRootConductorStateForPreToolUse(
 ): Promise<ActiveConductorState | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const payloadSessionId = readPayloadSessionId(payload);
-  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) return null;
+  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) {
+    const currentSession = await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
+    const payloadMatchesMappedSession = payloadSessionId === safeString(currentSession?.native_session_id).trim()
+      || payloadSessionId === safeString(currentSession?.owner_omx_session_id).trim()
+      || payloadSessionId === safeString(currentSession?.owner_codex_session_id).trim();
+    if (!payloadMatchesMappedSession) return null;
+  }
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
   if (await isTypedSubagentOrWorkerForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
@@ -6184,7 +6205,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
     }
   }
 
-  if (hasActiveSkill("ultragoal") && hasActiveSkill("ralplan")) {
+  if (hasActiveSkill("ultragoal")) {
     const state = await readStopSessionPinnedState("ultragoal-state.json", cwd, sessionId, stateDir);
     if (isActiveConductorModeState(state, "ultragoal", sessionId)) {
       return { mode: "ultragoal", phase: safeString(state?.current_phase ?? state?.currentPhase) || "active" };
@@ -6263,6 +6284,8 @@ const CONDUCTOR_BASH_MUTATION_COMMANDS = new Set([
   "truncate",
   "dd",
   "rsync",
+  "curl",
+  "wget",
 ]);
 
 const CONDUCTOR_BASH_TRANSPARENT_WRAPPERS = new Set([
@@ -6289,6 +6312,61 @@ const CONDUCTOR_BASH_OPTIONS_WITH_VALUES = new Set([
   "-of",
   "of",
 ]);
+
+const CONDUCTOR_CURL_WGET_SHORT_OUTPUT_OPTIONS = new Set(["-o", "-O"]);
+const CONDUCTOR_CURL_WGET_LONG_OUTPUT_OPTIONS = new Set([
+  "--output",
+  "--remote-name",
+  "--remote-name-all",
+  "--output-document",
+  "--append-output",
+]);
+
+function collectConductorCurlWgetTargets(commandName: string, words: string[], commandIndex: number): string[] {
+  const targets: string[] = [];
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
+    if (word === "--") continue;
+
+    if (CONDUCTOR_CURL_WGET_SHORT_OUTPUT_OPTIONS.has(word)) {
+      const target = words[index + 1] ?? "";
+      if (target) targets.push(target);
+      index += 1;
+      continue;
+    }
+    if (word === "-O") {
+      const target = commandName === "wget" ? words[index + 1] ?? "." : ".";
+      if (target) targets.push(target);
+      if (commandName === "wget" && words[index + 1]) index += 1;
+      continue;
+    }
+    if (word.startsWith("-O") && word.length > 2) {
+      targets.push(commandName === "wget" ? word.slice(2) : ".");
+      continue;
+    }
+    if (word.startsWith("-o") && word.length > 2) {
+      targets.push(word.slice(2));
+      continue;
+    }
+    if (word.startsWith("--")) {
+      const [option, inlineValue] = word.split("=", 2);
+      if (CONDUCTOR_CURL_WGET_LONG_OUTPUT_OPTIONS.has(option ?? "")) {
+        if (option === "--remote-name" || option === "--remote-name-all") {
+          targets.push(".");
+        } else if (inlineValue !== undefined) {
+          targets.push(inlineValue);
+        } else {
+          const target = words[index + 1] ?? "";
+          if (target) targets.push(target);
+          index += 1;
+        }
+      }
+    }
+  }
+  return targets;
+}
 
 interface ConductorBashMutation {
   command: string;
@@ -6376,6 +6454,10 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
     const word = words[index] ?? "";
     if (!word || isShellCommandSeparator(word)) break;
     if (isEnvironmentAssignmentWord(word)) continue;
+
+    if (commandName === "curl" || commandName === "wget") {
+      return collectConductorCurlWgetTargets(commandName, words, commandIndex);
+    }
 
     if (commandName === "dd") {
       const ofMatch = word.match(/^of=(.+)$/);
