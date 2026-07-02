@@ -161,6 +161,12 @@ The approved explicit terminal stop model adds a canonical lifecycle layer for a
 Hook readers should prefer explicit lifecycle metadata over assistant-text heuristics when those signals are available.
 During migration, legacy `blocked_on_user` still suppresses continuation, but `cancelled` should be treated as internal legacy/admin compatibility rather than a canonical user-facing outcome.
 
+For `ralplan`, native `PreToolUse` allows only a standalone terminal
+`omx state write` transport for the current session's complete closeout
+(`active:false`, `current_phase:"complete"`). The state backend remains the
+authority for consensus validation and root/session terminalization, so compound
+Bash commands that add any suffix after the closeout command stay blocked.
+
 There is still no distinct native Codex `ask-user-question` hook today. That means `askuserQuestion` classification remains a runtime/fallback responsibility unless a future native hook surface exposes first-class question-stop metadata.
 
 ## Combined workflow note

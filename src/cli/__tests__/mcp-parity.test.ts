@@ -121,10 +121,8 @@ describe("mcpParityCommand", () => {
         "--input",
         JSON.stringify({
           mode: "ralplan",
-          active: false,
-          current_phase: "complete",
-          status: "complete",
-          terminal_state: "complete",
+          active: true,
+          current_phase: "planning",
           workingDirectory: cwd,
         }),
         "--json",
