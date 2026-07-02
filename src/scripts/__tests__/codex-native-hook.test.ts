@@ -19994,6 +19994,37 @@ exit 0
       assert.equal(blocked.outputJson?.decision, "block");
       assert.match(String(blocked.outputJson?.reason ?? ""), /ralph phase: executing/);
 
+      const nativeMappedCwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-conductor-native-write-"));
+      try {
+        const nativeMappedStateDir = join(nativeMappedCwd, ".omx", "state");
+        const canonicalSessionId = "omx-canonical-ralph-conductor-write";
+        const nativeSessionId = "codex-native-ralph-conductor-write";
+        await writeNativeMappedSessionState(nativeMappedCwd, nativeMappedStateDir, canonicalSessionId, nativeSessionId);
+        await writeSessionSkillActiveState(nativeMappedStateDir, canonicalSessionId, "ralph", "executing");
+        await writeJson(join(nativeMappedStateDir, "sessions", canonicalSessionId, "ralph-state.json"), {
+          active: true,
+          mode: "ralph",
+          current_phase: "executing",
+          session_id: canonicalSessionId,
+        });
+
+        const nativeMappedBlocked = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd: nativeMappedCwd,
+            session_id: nativeSessionId,
+            thread_id: "thread-native-ralph-conductor-write",
+            tool_name: "Edit",
+            tool_input: { file_path: "src/runtime.ts" },
+          },
+          { cwd: nativeMappedCwd },
+        );
+        assert.equal(nativeMappedBlocked.outputJson?.decision, "block");
+        assert.match(String(nativeMappedBlocked.outputJson?.reason ?? ""), /ralph phase: executing/);
+      } finally {
+        await rm(nativeMappedCwd, { recursive: true, force: true });
+      }
+
       const allowed = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -20087,6 +20118,8 @@ exit 0
         "ln .omx/state/conductor-ledger.json -t .omx/handoffs/run-1",
         "if true; then cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/if-ledger.json; fi",
         "(cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/subshell-ledger.json)",
+        "sed -i 's/old/new/' .omx/state/conductor-ledger.json",
+        "perl -pi -e 's/old/new/' .omx/state/conductor-ledger.json",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(

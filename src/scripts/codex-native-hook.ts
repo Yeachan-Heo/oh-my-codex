@@ -6164,7 +6164,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
 ): Promise<ActiveConductorState | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const payloadSessionId = readPayloadSessionId(payload);
-  if (resolvedSessionId && payloadSessionId && payloadSessionId !== resolvedSessionId) return null;
+  const payloadMappedToCanonical = Boolean(resolvedSessionId && payloadSessionId && payloadSessionId !== resolvedSessionId);
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
   if (await isTypedSubagentOrWorkerForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
@@ -6176,6 +6176,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
   ));
   const hasActiveSkill = (skill: string): boolean => activeEntries.some((entry) => entry.skill === skill);
 
+
   if (hasActiveSkill("ralph")) {
     const ralphState = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
     if (ralphState && isActiveConductorModeState(ralphState, "ralph", sessionId) && !isRalphStartingPhase(ralphState)) {
@@ -6184,6 +6185,8 @@ async function readActiveMainRootConductorStateForPreToolUse(
   }
 
   if (hasActiveSkill("ultragoal") && hasActiveSkill("ralplan")) {
+    const ralplanState = await readStopSessionPinnedState("ralplan-state.json", cwd, sessionId, stateDir);
+    if (payloadMappedToCanonical && !isActiveRalplanPhase(ralplanState)) return null;
     const ultragoalState = await readStopSessionPinnedState("ultragoal-state.json", cwd, sessionId, stateDir);
     if (isActiveConductorModeState(ultragoalState, "ultragoal", sessionId)) {
       return { mode: "ultragoal", phase: safeString(ultragoalState?.current_phase ?? ultragoalState?.currentPhase) || "active" };
@@ -6465,12 +6468,81 @@ function collectConductorDownloaderOutputTargets(
   return { sawOutputFlag, targets };
 }
 
+function collectConductorSedTargets(words: string[], commandIndex: number): string[] {
+  const targets: string[] = [];
+  let sawInPlace = false;
+  let sawExplicitScript = false;
+  let consumedImplicitScript = false;
+
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
+
+    if (word === "--") {
+      consumedImplicitScript = true;
+      continue;
+    }
+    if (word === "-i" || word === "--in-place" || word.startsWith("-i") || word.startsWith("--in-place=")) {
+      sawInPlace = true;
+      continue;
+    }
+    if (word === "-e" || word === "--expression" || word === "-f" || word === "--file") {
+      sawExplicitScript = true;
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-e") || word.startsWith("--expression=") || word.startsWith("-f") || word.startsWith("--file=")) {
+      sawExplicitScript = true;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+
+    if (!sawExplicitScript && !consumedImplicitScript) {
+      consumedImplicitScript = true;
+      continue;
+    }
+    targets.push(word);
+  }
+
+  return sawInPlace ? targets : [];
+}
+
+function collectConductorPerlTargets(words: string[], commandIndex: number): string[] {
+  const targets: string[] = [];
+  let sawInPlace = false;
+
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
+
+    if (word === "--") continue;
+    if (word === "-i" || word.startsWith("-i") || /^-[^-]*i/.test(word)) {
+      sawInPlace = true;
+      continue;
+    }
+    if (word === "-e") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-e") || /^-[^-]*e/.test(word)) continue;
+    if (word.startsWith("-")) continue;
+
+    targets.push(word);
+  }
+
+  return sawInPlace ? targets : [];
+}
+
 function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] {
   const targets: string[] = [];
   const targetDirectoryTargets: string[] = [];
   const supportsTargetDirectory = CONDUCTOR_BASH_TARGET_DIRECTORY_COMMANDS.has(commandName);
   let sawTargetDirectory = false;
   let positionalCount = 0;
+  if (commandName === "sed") return collectConductorSedTargets(words, commandIndex);
+  if (commandName === "perl") return collectConductorPerlTargets(words, commandIndex);
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
     if (!word || isShellCommandSeparator(word)) break;
@@ -6656,8 +6728,13 @@ function evaluateConductorBashWrite(
     }
   }
 
-  if (!commandHasDeepInterviewWriteIntent(commandWithHeredocBodies)) return { allowed: true };
+  const hasGenericWriteIntent = commandHasDeepInterviewWriteIntent(commandWithHeredocBodies);
+  if (!hasGenericWriteIntent) return { allowed: true };
   const targets = extractDeepInterviewCommandWriteTargets(commandWithHeredocBodies);
+  const accountedShellOnlyWriteIntent = shellMutations.length > 0
+    && targets.length === 0
+    && shellMutations.every((mutation) => mutation.command === "sed" || mutation.command === "perl");
+  if (accountedShellOnlyWriteIntent) return { allowed: true };
   if (commandInvokesApplyPatch(normalizedCommand) && targets.length === 0) {
     return {
       allowed: false,
