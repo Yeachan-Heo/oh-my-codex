@@ -59,6 +59,9 @@ import {
   buildAutopilotRalplanUltragoalGateError,
   canAdvanceAutopilotRalplanToUltragoal,
 } from '../autopilot/ralplan-gate.js';
+import {
+  buildRalplanConsensusGateFromSources,
+} from '../ralplan/consensus-gate.js';
 
 
 const AUTOPILOT_CHILD_PHASE_ORDER: AutopilotChildPhase[] = [
@@ -244,6 +247,21 @@ function optionalSessionId(value: unknown): string | undefined {
   }
 }
 
+function normalizeCurrentPhaseAliasForWrite(
+  state: Record<string, unknown>,
+  fields: Record<string, unknown>,
+  customState: unknown,
+): void {
+  const hasCanonicalPhase = hasExplicitStateField(fields, customState, 'current_phase');
+  const hasAliasPhase = hasExplicitStateField(fields, customState, 'currentPhase');
+  if (!hasCanonicalPhase && hasAliasPhase) {
+    state.current_phase = state.currentPhase;
+  }
+  if (hasCanonicalPhase || hasAliasPhase) {
+    delete state.currentPhase;
+  }
+}
+
 function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown>): void {
   if (!isAutopilotSuccessfulTerminalState(state) || !hasCleanAutopilotReviewAndQaEvidence(state)) return;
 
@@ -269,6 +287,42 @@ function isCompleteRalplanTerminalState(state: Record<string, unknown>): boolean
   return state.active === false
     && currentPhase === 'complete'
     && gate.complete === true;
+}
+
+function isRalplanCompleteCloseoutAttempt(state: Record<string, unknown>): boolean {
+  const currentPhase = stringValue(state.current_phase).trim().toLowerCase();
+  return state.active === false && currentPhase === 'complete';
+}
+
+export function validateRalplanTerminalConsensus(
+  cwd: string,
+  state: Record<string, unknown>,
+  sessionId: string | undefined,
+  options: { requireNativeSubagents?: boolean } = {},
+): string | null {
+  if (!isRalplanCompleteCloseoutAttempt(state)) return null;
+  const stateSessionId = sessionId ?? optionalSessionId(state.session_id);
+  const gate = buildRalplanConsensusGateFromSources([
+    { source: 'state-write-ralplan-terminal', value: state, sessionId: stateSessionId },
+  ], {
+    cwd,
+    sessionId: stateSessionId,
+    requireNativeSubagents: options.requireNativeSubagents === true,
+  });
+  if (gate.complete === true) {
+    if (options.requireNativeSubagents === true) {
+      state.ralplan_consensus_gate = {
+        ...objectRecord(state.ralplan_consensus_gate),
+        ...gate,
+      };
+    }
+    return null;
+  }
+  const details = gate.blockedDetails?.length ? ` Details: ${gate.blockedDetails.join('; ')}.` : '';
+  const evidenceDescription = options.requireNativeSubagents === true
+    ? 'tracker-backed native architect and critic consensus evidence'
+    : 'architect and critic consensus evidence';
+  return `ralplan complete state requires ${evidenceDescription} (${gate.blockedReason ?? 'missing_consensus'}).${details}`;
 }
 
 function buildRalplanTerminalState(
@@ -421,8 +475,13 @@ export async function completeRalplanSession(options: {
   baseStateDir: string;
   state: Record<string, unknown>;
   explicitSessionId?: string;
+  requireNativeSubagents?: boolean;
 }): Promise<boolean> {
   if (!isCompleteRalplanTerminalState(options.state)) return false;
+  const validationError = validateRalplanTerminalConsensus(options.cwd, options.state, options.explicitSessionId, {
+    requireNativeSubagents: options.requireNativeSubagents === true,
+  });
+  if (validationError) throw new Error(validationError);
 
   const sessionId = optionalSessionId(options.explicitSessionId);
   const completedSessionId = sessionId ?? optionalSessionId(options.state.session_id);
@@ -668,6 +727,7 @@ export async function executeStateOperation(
             ...fields,
             ...((customState as Record<string, unknown>) || {}),
           } as Record<string, unknown>;
+          normalizeCurrentPhaseAliasForWrite(mergedRaw, fields, customState);
           delete mergedRaw.trustedPipelineProgress;
           if (!hasExplicitStateField(fields, customState, 'run_outcome')) {
             delete mergedRaw.run_outcome;
@@ -726,6 +786,13 @@ export async function executeStateOperation(
 
           if (mode === 'autopilot') {
             normalizeCleanAutopilotCompletionEvidence(mergedRaw);
+          }
+
+          if (mode === 'ralplan') {
+            validationError = validateRalplanTerminalConsensus(cwd, mergedRaw, effectiveSessionId, {
+              requireNativeSubagents: true,
+            });
+            if (validationError) return;
           }
 
           const currentAutopilotChildPhase = mode === 'autopilot'
@@ -874,6 +941,7 @@ export async function executeStateOperation(
             baseStateDir,
             state: data,
             explicitSessionId: effectiveSessionId,
+            requireNativeSubagents: true,
           });
           if (!ralplanCompletionHandled) {
             await syncCanonicalSkillStateForMode({
