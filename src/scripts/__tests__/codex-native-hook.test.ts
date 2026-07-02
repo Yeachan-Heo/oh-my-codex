@@ -6925,6 +6925,46 @@ exit 0
       );
       assert.equal(allowedAppendBash.outputJson, null);
 
+      const allowedReadOnlyEditors = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-read-only-editors",
+          tool_input: { command: "sed -n '1,20p' src/runtime.ts; perl -ne 'print if $. < 3' src/runtime.ts" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedReadOnlyEditors.outputJson, null);
+
+      const blockedCombinedSedSourceEdit = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-sed-combined-source-edit",
+          tool_input: { command: "sed -Ei 's/old/new/' src/runtime.ts" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedCombinedSedSourceEdit.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedCombinedSedSourceEdit.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/runtime\.ts/);
+
+      const allowedCombinedSedArtifactEdit = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-sed-combined-artifact-edit",
+          tool_input: { command: "sed -Ei 's/old/new/' .omx/specs/deep-interview-demo.md" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedCombinedSedArtifactEdit.outputJson, null);
+
       const allowedPlanningStateWrite = await preToolUse(
         {
           hook_event_name: "PreToolUse",
@@ -9626,6 +9666,22 @@ exit 0
         command: "printf '\\nmore\\n' | tee -a .omx/specs/issue-2863.md",
       });
       assert.equal(allowedTee.outputJson, null);
+
+      const allowedCombinedSedArtifact = await preToolUse("Bash", "tool-ralplan-sed-combined-artifact-allow", {
+        command: "sed -Ei 's/old/new/' .omx/plans/issue-2863.md",
+      });
+      assert.equal(allowedCombinedSedArtifact.outputJson, null);
+
+      const allowedReadOnlyEditors = await preToolUse("Bash", "tool-ralplan-read-only-editors-allow", {
+        command: "sed -n '1,20p' src/runtime.ts; perl -ne 'print if $. < 3' src/runtime.ts",
+      });
+      assert.equal(allowedReadOnlyEditors.outputJson, null);
+
+      const blockedCombinedSedSource = await preToolUse("Bash", "tool-ralplan-sed-combined-source-block", {
+        command: "sed -Ei 's/old/new/' src/runtime.ts",
+      });
+      assert.equal((blockedCombinedSedSource.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedCombinedSedSource.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/runtime\.ts/);
 
       const blockedRedirect = await preToolUse("Bash", "tool-ralplan-redirect-block", {
         command: "printf 'bad' > src/implementation.ts",

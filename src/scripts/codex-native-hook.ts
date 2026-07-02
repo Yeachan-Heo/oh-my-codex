@@ -3662,6 +3662,7 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return commandInvokesApplyPatch(command)
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
+    || extractConductorEditorWriteTargets(command).length > 0
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\bperl\s+(?:[^\n;&|]*\s)?-[^-\s]*i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
@@ -6082,6 +6083,26 @@ function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
   return "Bash write intent did not identify an allowed planning artifact path or metadata path";
 }
 
+function buildDeepInterviewBashBlockedDetail(cwd: string, command: string): string {
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  const blockedTarget = targets.find((target) => !isAllowedDeepInterviewArtifactPath(cwd, target));
+  if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
+    return `unresolved Bash write target ${blockedTarget} is not under allowed deep-interview artifact paths or metadata paths (${DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  if (blockedTarget) {
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash write";
+    return `${operationClass} target ${blockedTarget} is not under allowed deep-interview artifact paths or metadata paths (${DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  if (commandHasPackageInstallIntent(command)) {
+    return "package installation commands are implementation actions and cannot be combined with allowed deep-interview artifact writes";
+  }
+  if (commandHasDestructiveGitSubcommand(command)) {
+    return "destructive git commands are implementation actions and cannot be combined with allowed deep-interview artifact writes";
+  }
+  return "Bash write intent did not identify an allowed deep-interview artifact path or metadata path";
+}
+
+
 async function buildRalplanPreToolUseBoundaryOutput(
   payload: CodexHookPayload,
   cwd: string,
@@ -6164,9 +6185,13 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
   let blocked = false;
+  let blockedDetail = "implementation/write tools are blocked until an explicit handoff workflow is activated";
 
   if (toolName === "Bash") {
     blocked = !isAllowedDeepInterviewBashWrite(cwd, command);
+    if (blocked) {
+      blockedDetail = buildDeepInterviewBashBlockedDetail(cwd, command);
+    }
   } else if (
     toolName === "mcp__omx_state__state_clear"
     || (
@@ -6175,10 +6200,15 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
     )
   ) {
     blocked = true;
+    blockedDetail = `${toolName} would deactivate protected deep-interview planning state`;
   } else if (DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
     const candidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
     blocked = candidates.length === 0
       || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
+    if (blocked) {
+      const blockedPath = candidates.find((candidate) => !isAllowedDeepInterviewArtifactPath(cwd, candidate));
+      blockedDetail = describeImplementationToolBlock(toolName, blockedPath, candidates.length);
+    }
   }
 
   if (!blocked) return null;
@@ -6186,7 +6216,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
   return {
     decision: "block",
-    reason: `Deep-interview is active (phase: ${phase}); implementation/write tools are blocked until an explicit handoff workflow is activated.`,
+    reason: `Deep-interview is active (phase: ${phase}); implementation/write tools are blocked until an explicit handoff workflow is activated; ${blockedDetail}.`,
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
@@ -7211,7 +7241,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 }
 
 function isInPlaceEditorCommand(word: string, commandName: string): boolean {
-  if (commandName === "sed") return word === "-i" || /^-i(?:\..+)?$/.test(word) || word === "--in-place" || /^--in-place(?:=.+)?$/.test(word);
+  if (commandName === "sed") return word === "--in-place" || /^--in-place(?:=.+)?$/.test(word) || /^-[^-\s]*i(?:.*)?$/.test(word);
   if (commandName === "perl") return word === "-i" || word === "-pi" || /^-pi(?:\..+)?$/.test(word) || /^-p.*i(?:\..+)?$/.test(word);
   return false;
 }
