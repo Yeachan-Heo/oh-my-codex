@@ -36,7 +36,6 @@ import {
   cleanupCommand,
   cleanupOmxMcpProcesses,
   findLaunchSafeCleanupCandidates,
-  listOmxProcesses,
   type CleanupDependencies,
   type CleanupResult,
 } from "./cleanup.js";
@@ -80,7 +79,6 @@ import {
 } from "./codex-home.js";
 import { discoverProjectRuntimeCodexHomes } from "./project-runtime-codex-homes.js";
 import {
-  discoverOmxPluginCacheDirs,
   materializePackagedOmxPluginCache,
   packagedOmxPluginVersion,
   resolvePackagedOmxMarketplace,
@@ -1162,23 +1160,6 @@ export interface ResumePluginPreflightResult {
   configUpdated: boolean;
 }
 
-function commandMentionsPath(command: string, path: string): boolean {
-  const normalizedCommand = command.replace(/\\+/g, "/");
-  const normalizedPath = path.replace(/\\+/g, "/");
-  return normalizedCommand.includes(normalizedPath);
-}
-
-function listLiveOmxProcessesForResumePreflight(): ReturnType<typeof listOmxProcesses> {
-  try {
-    return listOmxProcesses();
-  } catch {
-    return [];
-  }
-}
-
-function isPluginCacheDirReferencedByLiveProcess(cacheDir: string, processes: ReturnType<typeof listOmxProcesses>): boolean {
-  return processes.some((processEntry) => commandMentionsPath(processEntry.command, cacheDir));
-}
 
 export async function preflightResumeOmxPluginState(
   codexHomeDir: string | undefined,
@@ -1196,16 +1177,6 @@ export async function preflightResumeOmxPluginState(
   const version = materialized.version ?? (await packagedOmxPluginVersion(packagedMarketplace)) ?? undefined;
   const currentCacheDir = materialized.cacheDir ?? (version ? join(selectedCodexHomeDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex", version) : undefined);
   const prunedStaleDirs: string[] = [];
-  const liveProcesses = listLiveOmxProcessesForResumePreflight();
-
-  if (currentCacheDir) {
-    for (const cacheDir of await discoverOmxPluginCacheDirs(selectedCodexHomeDir)) {
-      if (cacheDir === currentCacheDir) continue;
-      if (isPluginCacheDirReferencedByLiveProcess(cacheDir, liveProcesses)) continue;
-      await rm(cacheDir, { recursive: true, force: true });
-      prunedStaleDirs.push(cacheDir);
-    }
-  }
 
   const configPath = join(selectedCodexHomeDir, "config.toml");
   const existingConfig = existsSync(configPath) ? await readFile(configPath, "utf-8") : "";

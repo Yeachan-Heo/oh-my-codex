@@ -633,7 +633,7 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
     }
   });
 
-  it('preflights default user plugin cache before madmax resume without restoring stale cache metadata', async () => {
+  it('preflights default user plugin cache before madmax resume while preserving stale cache metadata', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-madmax-resume-default-cache-'));
     try {
       const home = join(wd, 'home');
@@ -676,8 +676,11 @@ if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${stal
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:resume session-after-update\b/);
       assert.match(result.stdout, /current-cache=yes/);
-      assert.match(result.stdout, /stale-cache=no/);
-      assert.deepEqual(await readdir(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex')), [packageJson.version]);
+      assert.match(result.stdout, /stale-cache=yes/);
+      assert.deepEqual(
+        new Set(await readdir(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex'))),
+        new Set([packageJson.version, staleVersion]),
+      );
       assert.equal(
         JSON.parse(await readFile(join(expectedCacheDir, '.codex-plugin', 'plugin.json'), 'utf-8')).version,
         packageJson.version,
@@ -687,7 +690,7 @@ if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${stal
     }
   });
 
-  it('keeps stale plugin cache directories referenced by live resume processes', async () => {
+  it('keeps stale plugin cache directories when live resume process does not mention cache path', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-madmax-resume-live-cache-'));
     try {
       const home = join(wd, 'home');
@@ -706,7 +709,7 @@ if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${stal
       await writeFile(join(staleCacheDir, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'oh-my-codex', version: staleVersion }));
       await writeFile(join(codexHome, 'config.toml'), '[plugins]\n"oh-my-codex@oh-my-codex-local" = true\n');
       await writeFile(fakePsPath, `#!/bin/sh
-printf '123 1 node ${staleCacheDir}/hooks/codex-native-hook.mjs\\n'
+printf '123 1 codex resume live-session-after-update\\n'
 `);
       await chmod(fakePsPath, 0o755);
       await writeFile(fakeCodexPath, `#!/bin/sh
