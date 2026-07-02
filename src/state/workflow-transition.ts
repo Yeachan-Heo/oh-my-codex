@@ -37,6 +37,162 @@ function normalizeProtectedArtifactPath(path: string): string {
   return path.replace(/^\.\//, '');
 }
 
+function normalizeShellPath(path: string): string {
+  return path
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/\.\//g, '/')
+    .replace(/\/+/g, '/');
+}
+
+function joinShellPath(cwd: string, path: string): string {
+  if (!cwd || cwd === '.') return normalizeShellPath(path);
+  if (path.startsWith('/')) return normalizeShellPath(path);
+  return normalizeShellPath(`${cwd}/${path}`);
+}
+
+function sameShellPath(candidate: string, target: string): boolean {
+  return normalizeShellPath(candidate) === normalizeShellPath(target);
+}
+
+function shellWords(statement: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let quote: 'single' | 'double' | null = null;
+  let escaped = false;
+
+  for (const char of statement) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== 'single') {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && quote !== 'double') {
+      quote = quote === 'single' ? null : 'single';
+      continue;
+    }
+    if (char === '"' && quote !== 'single') {
+      quote = quote === 'double' ? null : 'double';
+      continue;
+    }
+    if (/\s/.test(char) && !quote) {
+      if (current) {
+        words.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (current) words.push(current);
+  return words;
+}
+
+function shellStatements(command: string): string[] {
+  return command
+    .split(/(?:\n|;|&&|\|\|)/)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
+function isShellName(name: string): boolean {
+  return /^(?:sh|bash|dash|zsh|ksh|fish)$/.test(name);
+}
+
+function resolveCommandOperand(cwd: string, operand: string): string {
+  return joinShellPath(cwd, operand.replace(/^\.\//, ''));
+}
+
+function shellExecutionMatches(words: string[], cwd: string, targetPath: string): boolean {
+  if (words.length === 0) return false;
+  const commandName = words[0]!;
+
+  if (commandName === 'source' || commandName === '.') {
+    const operand = words[1];
+    return Boolean(operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath));
+  }
+
+  if (isShellName(commandName)) {
+    const args = words.slice(1);
+    for (let index = 0; index < args.length; index += 1) {
+      const word = args[index]!;
+      if (word === '--') continue;
+      if (word === '-c') {
+        const inlineCommand = args[index + 1];
+        return Boolean(inlineCommand && hasTokenizedExecutionOfPath(inlineCommand, targetPath, cwd));
+      }
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    return false;
+  }
+
+  if (commandName.startsWith('./') || commandName.includes('/')) {
+    return sameShellPath(resolveCommandOperand(cwd, commandName), targetPath);
+  }
+
+  return false;
+}
+
+function unwrapEnvCommand(words: string[], cwd: string): { words: string[]; cwd: string } {
+  if (words[0] !== 'env') return { words, cwd };
+
+  let index = 1;
+  let envCwd = cwd;
+  while (index < words.length) {
+    const word = words[index]!;
+    if (word === '--') {
+      index += 1;
+      break;
+    }
+    if (word === '-C' || word === '--chdir') {
+      const next = words[index + 1];
+      if (!next) return { words: [], cwd: envCwd };
+      envCwd = resolveCommandOperand(envCwd, next);
+      index += 2;
+      continue;
+    }
+    if (word.startsWith('--chdir=')) {
+      envCwd = resolveCommandOperand(envCwd, word.slice('--chdir='.length));
+      index += 1;
+      continue;
+    }
+    if (word.startsWith('-')) {
+      index += 1;
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(word)) {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+
+  return { words: words.slice(index), cwd: envCwd };
+}
+
+function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd = ''): boolean {
+  const targetPath = normalizeShellPath(path);
+  let cwd = initialCwd;
+  for (const statement of shellStatements(command)) {
+    const words = shellWords(statement);
+    if (words.length === 0) continue;
+    if (words[0] === 'cd' && words[1]) {
+      cwd = resolveCommandOperand(cwd, words[1]);
+      continue;
+    }
+
+    const unwrapped = unwrapEnvCommand(words, cwd);
+    if (shellExecutionMatches(unwrapped.words, unwrapped.cwd, targetPath)) return true;
+  }
+  return false;
+}
+
 function collectProtectedArtifactWritePaths(command: string): Set<string> {
   const paths = new Set<string>();
   const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs)\/[^"'\s;|&<>]+)\1`;
@@ -66,7 +222,10 @@ function executesOrSourcesPath(command: string, path: string): boolean {
   const directExecPattern = new RegExp(
     String.raw`(?:^|[;&|()\n])\s*(?:\.\/)?${escapedPath}(?:$|[\s;&|)])`,
   );
-  return shellExecPattern.test(command) || sourcePattern.test(command) || directExecPattern.test(command);
+  return shellExecPattern.test(command)
+    || sourcePattern.test(command)
+    || directExecPattern.test(command)
+    || hasTokenizedExecutionOfPath(command, path);
 }
 
 function hasSameCommandProtectedArtifactExecution(command: string): boolean {

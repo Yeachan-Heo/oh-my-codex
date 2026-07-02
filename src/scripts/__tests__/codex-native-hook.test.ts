@@ -7192,6 +7192,18 @@ exit 0
           "run-relative.sh",
           "cd .omx/context && ./run-relative.sh",
         ],
+        [
+          "tool-di-reported-handoff-with-env-chdir-relative-sh-exec",
+          ".omx/context",
+          "run.sh",
+          "env -C .omx/context sh run.sh",
+        ],
+        [
+          "tool-di-reported-handoff-with-env-long-chdir-relative-dot-source",
+          ".omx/specs",
+          "env.sh",
+          "env --chdir .omx/specs . env.sh",
+        ],
       ] as const) {
         const blockedCwdRelativeArtifactExecution = await preToolUse(
           {

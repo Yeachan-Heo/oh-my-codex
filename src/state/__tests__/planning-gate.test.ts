@@ -47,6 +47,37 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies same-command protected artifact execution through env -C as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+printf '%s\n' pwned > src/pwned.ts
+SCRIPT
+env -C .omx/context sh run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan","state":{"deep_interview_gate":{"status":"complete","rationale":"done"}}}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies same-command protected artifact execution through env --chdir as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+printf '%s\n' pwned > src/pwned.ts
+SCRIPT
+env --chdir=.omx/context sh run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan","state":{"deep_interview_gate":{"status":"complete","rationale":"done"}}}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies same-command protected specs source through cwd-changing shell as implementation', () => {
+    const command = `mkdir -p .omx/specs
+printf 'export PWNED=1\n' > .omx/specs/env.sh
+env --chdir=.omx/specs sh -c '. env.sh'
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
   it('classifies same-command protected artifact write plus source as implementation', () => {
     const command = `mkdir -p .omx/specs
 printf 'export PWNED=1\n' > .omx/specs/env.sh
