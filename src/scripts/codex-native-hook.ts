@@ -88,7 +88,7 @@ import {
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
-import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
+import { isAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
@@ -2277,6 +2277,12 @@ function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: s
   };
 }
 
+function hasTeamWorkerEnvironment(): boolean {
+  return parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
+    !== null
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER)) !== null;
+}
+
 async function resolveTeamStateDirForWorkerContext(
   cwd: string,
   workerContext: { teamName: string; workerName: string },
@@ -3651,7 +3657,6 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return commandInvokesApplyPatch(command)
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
-    || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || commandHasDestructiveGitSubcommand(command)
     || commandHasPackageInstallIntent(command);
@@ -3661,6 +3666,7 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   const assignments = extractCommandLiteralAssignments(command);
   const targets = extractDeepInterviewCommandRedirectTargets(command)
     .map((target) => resolveCommandRedirectTarget(target, assignments));
+  targets.push(...extractConductorEditorWriteTargets(command));
   for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
     const words = tokenizeShellWords(segment);
     for (let index = 0; index < words.length; index += 1) {
@@ -6212,6 +6218,8 @@ const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".beads",
 ] as const;
 
+const LEADER_CONDUCTOR_GOLDEN_RULE = "Conductor golden rule: delegate source edits and plan/spec authorship to specialized agents.";
+
 function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null {
   const candidate = rawPath.trim().replace(/^['"]|['"]$/g, "");
   if (!candidate || isUnresolvedVariableTarget(candidate)) return null;
@@ -6698,6 +6706,17 @@ function evaluateConductorBashWrite(
     if (!nestedDecision.allowed) return nestedDecision;
   }
 
+  const editorTargets = extractConductorEditorWriteTargets(commandWithHeredocBodies);
+  if (editorTargets.length > 0) {
+    const blockedTarget = editorTargets.find((target) => !isAllowedConductorMetadataPath(cwd, target));
+    if (blockedTarget) {
+      return {
+        allowed: false,
+        blockedDetail: `Bash editor mutation target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
+      };
+    }
+  }
+
   if (commandHasDestructiveGitSubcommand(normalizedCommand)) {
     return {
       allowed: false,
@@ -6775,6 +6794,8 @@ async function buildConductorPreToolUseWriteGuardOutput(
 ): Promise<Record<string, unknown> | null> {
   const activeState = await readActiveMainRootConductorStateForPreToolUse(payload, cwd, stateDir, resolvedSessionId);
   if (!activeState) return null;
+  const activePhase = formatPhase(activeState.phase, "active");
+  if (activePhase === "planning" || activePhase === "starting") return null;
 
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
@@ -6809,10 +6830,77 @@ async function buildConductorPreToolUseWriteGuardOutput(
       additionalContext:
         `${LEADER_CONDUCTOR_GOLDEN_RULE} `
         + "Use specialized agents for source edits and plan/spec authorship. "
-        + `Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata under ${CONDUCTOR_ALLOWED_METADATA_PREFIXES.join(", ")}. `
+      + `Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata under ${CONDUCTOR_ALLOWED_METADATA_PREFIXES.join(", ")}. `
         + "Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
     },
   };
+}
+
+function isInPlaceEditorCommand(word: string, commandName: string): boolean {
+  if (commandName === "sed") return word === "-i" || /^-i(?:\..+)?$/.test(word);
+  if (commandName === "perl") return word === "-i" || word === "-pi" || /^-pi(?:\..+)?$/.test(word) || /^-p.*i(?:\..+)?$/.test(word);
+  return false;
+}
+
+function collectInPlaceEditorWriteTargets(commandName: "sed" | "perl", words: string[], commandIndex: number): string[] {
+  const targets: string[] = [];
+  let sawInPlaceEdit = false;
+  let awaitingOptionValue = false;
+  let lastCandidateTarget: string | null = null;
+
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
+    if (isEnvironmentAssignmentWord(word)) continue;
+
+    if (awaitingOptionValue) {
+      awaitingOptionValue = false;
+      continue;
+    }
+
+    if (word === "--") continue;
+    if (word === "-e" || word === "-f") {
+      awaitingOptionValue = true;
+      continue;
+    }
+    if (isInPlaceEditorCommand(word, commandName)) {
+      sawInPlaceEdit = true;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    if (sawInPlaceEdit) lastCandidateTarget = word;
+  }
+
+  if (lastCandidateTarget) targets.push(lastCandidateTarget);
+  return targets;
+}
+
+function extractConductorEditorWriteTargets(command: string): string[] {
+  const targets: string[] = [];
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (commandStart && isEnvironmentAssignmentWord(word)) continue;
+      if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
+      if (commandStart && word.startsWith("-")) continue;
+      if (!commandStart) continue;
+
+      const commandName = commandNameFromShellWord(word);
+      if (commandName === "sed" || commandName === "perl") {
+        targets.push(...collectInPlaceEditorWriteTargets(commandName, words, index));
+      }
+      commandStart = false;
+    }
+  }
+  return targets;
 }
 function matchesSkillStopContext(
   entry: { session_id?: string; thread_id?: string },

@@ -20070,6 +20070,9 @@ exit 0
         "env FOO=1 mv src/a.ts src/b.ts",
         "git reset --hard > .omx/state/reset.log",
         "npm install > .omx/state/install.log",
+        "printf ok; cp package.json src/package-copy.json",
+        "printf ok && mv src/a.ts src/b.ts",
+        "printf ok\ncp package.json src/package-copy.json",
         "printf ok > .omx/state/log\nmv src/a src/b",
         "cp package.json --target-directory src/generated",
         "mv src/a.ts --target-directory=src/generated",
@@ -20134,6 +20137,68 @@ exit 0
           { cwd },
         );
         assert.equal(result.outputJson, null, command);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows conductor sed/perl metadata edits while blocking non-metadata targets", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-sed-perl-metadata-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-conductor-sed-perl-metadata";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+
+      const allowedCommands = [
+        "sed -i 's/old/new/' .omx/state/conductor.log",
+        "perl -pi -e 's/old/new/' .omx/state/conductor.log",
+        "bash -lc \"sed -i 's/old/new/' .omx/state/conductor.log\"",
+        "bash -lc \"perl -pi -e 's/old/new/' .omx/state/conductor.log\"",
+      ];
+      for (const command of allowedCommands) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-conductor-sed-perl-metadata",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson, null, command);
+      }
+
+      const blockedCommands = [
+        "sed -i 's/old/new/' src/runtime.ts",
+        "perl -pi -e 's/old/new/' src/runtime.ts",
+        "bash -lc \"sed -i 's/old/new/' src/runtime.ts\"",
+        "bash -lc \"perl -pi -e 's/old/new/' src/runtime.ts\"",
+      ];
+      for (const command of blockedCommands) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-conductor-sed-perl-metadata",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* target .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
