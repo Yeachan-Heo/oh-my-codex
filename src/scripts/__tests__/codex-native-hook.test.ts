@@ -20230,6 +20230,7 @@ exit 0
         "touch .omx/plans/conductor-owned-plan.md",
         "cat <<'EOF' > .omx/specs/conductor-owned-spec.md\n# Spec\nEOF",
         "python3 <<'PY'\nfrom pathlib import Path\nPath('src/x.ts').write_text('x')\nPY",
+        "python3 - <<'PY'\nimport shutil\nshutil.copyfile('a', 'src/foo')\nPY",
         "bash -lc \"mv src/old.ts src/new.ts\"",
         "sh -c 'cp package.json src/package-copy.json'",
         "bash -lc \"sed -i 's/old/new/' src/runtime.ts\"",
@@ -20241,6 +20242,7 @@ exit 0
         "curl -O https://example.invalid/data.json",
         "wget -O src/downloaded.json https://example.invalid/data.json",
         "wget -o src/wget.log https://example.invalid/data.json",
+        "cd /tmp && cp .omx/state/foo src/foo",
       ];
       for (const command of blockedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -20265,9 +20267,11 @@ exit 0
         "mv .omx/handoffs/run-1/conductor-ledger.json .omx/handoffs/run-1/ledger.json",
         "env cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/env-ledger.json",
         "exec cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/exec-ledger.json",
+        "cp src/source.ts .omx/state/source-copy.ts",
         "cat <<'EOF' > .omx/state/conductor-heredoc.json\n{}\nEOF",
         "bash -lc \"printf safe\"",
         "sh -c 'printf safe'",
+        "curl https://example.invalid/data.json",
         "curl -o .omx/state/downloaded.json https://example.invalid/data.json",
         "wget -O .omx/state/downloaded.json https://example.invalid/data.json",
       ];
@@ -20417,6 +20421,7 @@ exit 0
       const allowedCommands = [
         "node -e \"console.log('ok')\"",
         "python3 -c \"print('ok')\"",
+        "python3 - <<'PY'\nimport shutil\nshutil.copyfile('a', '.omx/state/foo')\nPY",
         "curl -fsSL https://example.test/runtime.ts -o .omx/state/download.log",
         "curl -fsSL https://example.test/runtime.ts --output=.omx/state/download-inline.log",
         "curl -fsSL -O https://example.test/runtime.ts --output-dir .omx/state",

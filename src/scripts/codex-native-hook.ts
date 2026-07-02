@@ -6436,6 +6436,14 @@ function extractConductorInterpreterWrites(command: string): ConductorInterprete
     const target = safeString(match[2]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
   }
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']+)\3/g)) {
+    const target = safeString(match[4]).trim();
+    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+  }
+  if (/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(/.test(scanCommand)
+    && !writes.some((write) => write.runtime === "python")) {
+    writes.push({ runtime: "python", targets: [], unresolved: true });
+  }
   if (/\bpython3?\b[\s\S]{0,520}\b(?:open\s*\([^)]*,\s*["'][^"']*[wax+]|Path\s*\([^)]*\)\s*\.\s*(?:write_text|write_bytes))/.test(scanCommand)
     && !writes.some((write) => write.runtime === "python")) {
     writes.push({ runtime: "python", targets: [], unresolved: true });
@@ -6610,6 +6618,7 @@ function collectConductorDownloaderOutputTargets(
 function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] {
   const targets: string[] = [];
   let positionalCount = 0;
+  const positionalTargets: string[] = [];
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
     if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
@@ -6660,7 +6669,13 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
     ) {
       continue;
     }
-    targets.push(word);
+    positionalTargets.push(word);
+  }
+  if (commandName === "cp" || commandName === "mv" || commandName === "install") {
+    const destination = positionalTargets.at(-1);
+    if (destination) targets.push(destination);
+  } else {
+    targets.push(...positionalTargets);
   }
   return targets;
 }
