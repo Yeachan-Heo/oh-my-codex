@@ -250,6 +250,43 @@ describe('subagents/tracker', () => {
     );
   });
 
+  it('preserves explicit unavailable and closed status in summaries even when threads are still recent', () => {
+    let state = createSubagentTrackingState();
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-1',
+      threadId: 'leader-thread',
+      turnId: 'turn-1',
+      timestamp: '2026-03-17T00:00:00.000Z',
+      mode: 'ralplan',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-1',
+      threadId: 'sub-thread-unavailable',
+      turnId: 'turn-2',
+      timestamp: '2026-03-17T00:00:30.000Z',
+      mode: 'architect',
+      status: 'unavailable',
+    });
+    state = recordSubagentTurn(state, {
+      sessionId: 'sess-1',
+      threadId: 'sub-thread-closed',
+      turnId: 'turn-3',
+      timestamp: '2026-03-17T00:00:45.000Z',
+      mode: 'critic',
+      status: 'closed',
+    });
+
+    const summary = summarizeSubagentSession(state, 'sess-1', {
+      now: '2026-03-17T00:01:00.000Z',
+      activeWindowMs: 120_000,
+    });
+
+    assert.deepEqual(summary?.savedSubagents, [
+      { agentId: 'sub-thread-closed', threadId: 'sub-thread-closed', role: 'critic', laneId: 'critic', status: 'closed' },
+      { agentId: 'sub-thread-unavailable', threadId: 'sub-thread-unavailable', role: 'architect', laneId: 'architect', status: 'unavailable' },
+    ]);
+  });
+
   it('reactivates a notify-fallback-completed subagent thread after a later non-complete turn', () => {
     let state = createSubagentTrackingState();
     state = recordSubagentTurn(state, {

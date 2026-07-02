@@ -145,6 +145,7 @@ async function recordRalplanSubagentTurn(
     summary?: string;
     completed?: boolean;
     completionSource?: string;
+    preserveCompletionEvidence?: boolean;
   },
 ): Promise<void> {
   const normalizedSessionId = sessionId?.trim();
@@ -160,6 +161,7 @@ async function recordRalplanSubagentTurn(
     ...(input.scope ? { scope: input.scope } : {}),
     ...(input.summary?.trim() ? { lastHandoffSummary: input.summary.trim() } : {}),
     ...(input.completed ? { completed: true, completionSource: input.completionSource } : {}),
+    ...(input.preserveCompletionEvidence ? { preserveCompletionEvidence: true } : {}),
     kind: 'subagent',
   }).catch(() => {});
 }
@@ -324,8 +326,7 @@ export async function runRalplanConsensus(
         laneId: architectReview.lane_id,
         scope: options.task,
         summary: architectReview.summary,
-        completed: true,
-        completionSource: 'ralplan-architect-review',
+        preserveCompletionEvidence: Boolean(options.requireNativeSubagents),
       });
 
       if (architectReview.verdict !== 'approve') {
@@ -396,8 +397,7 @@ export async function runRalplanConsensus(
         laneId: criticReview.lane_id,
         scope: options.task,
         summary: criticReview.summary,
-        completed: true,
-        completionSource: 'ralplan-critic-review',
+        preserveCompletionEvidence: Boolean(options.requireNativeSubagents),
       });
 
       const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);

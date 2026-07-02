@@ -63,6 +63,7 @@ export interface RecordSubagentTurnInput {
   resumeCompletedAt?: string;
   resumeFailedAt?: string;
   resumeFailureReason?: string;
+  preserveCompletionEvidence?: boolean;
 }
 
 export interface SubagentSessionSummary {
@@ -353,6 +354,14 @@ export function recordSubagentTurn(
   const status = requestedStatus
     ?? (input.completed ? 'closed' : undefined)
     ?? preservedStatus;
+  const preserveCompletionEvidence = input.preserveCompletionEvidence === true;
+  const preservedCompletion = preserveCompletionEvidence && existingThread?.completed_at
+    ? {
+        completed_at: existingThread.completed_at,
+        ...(existingThread.last_completed_turn_id ? { last_completed_turn_id: existingThread.last_completed_turn_id } : {}),
+        ...(existingThread.completion_source ? { completion_source: existingThread.completion_source } : {}),
+      }
+    : {};
   const nextThread: TrackedSubagentThread = {
     thread_id: threadId,
     kind,
@@ -366,7 +375,7 @@ export function recordSubagentTurn(
           ...(input.turnId?.trim() ? { last_completed_turn_id: input.turnId.trim() } : {}),
           ...(input.completionSource?.trim() ? { completion_source: input.completionSource.trim() } : {}),
         }
-      : {}),
+      : preservedCompletion),
     ...(input.mode?.trim() ? { mode: input.mode.trim() } : existingThread?.mode ? { mode: existingThread.mode } : {}),
     ...(input.role?.trim() ? { role: input.role.trim() } : existingThread?.role ? { role: existingThread.role } : {}),
     ...(input.laneId?.trim() ? { lane_id: input.laneId.trim() } : existingThread?.lane_id ? { lane_id: existingThread.lane_id } : {}),
@@ -457,7 +466,7 @@ export function summarizeSubagentSession(
       ...(laneId ? { laneId } : {}),
       ...(thread.scope ? { scope: thread.scope } : {}),
       ...(thread.agent_nickname ? { agentNickname: thread.agent_nickname } : {}),
-      status: activeSubagentThreadIdSet.has(threadId) ? 'available' : 'closed',
+      status: thread.status ?? (activeSubagentThreadIdSet.has(threadId) ? 'available' : 'closed'),
     };
   });
 
