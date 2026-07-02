@@ -3911,7 +3911,7 @@ function resolveWrappedCommandExecutionContext(words: string[], currentCwd: stri
               ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
               : commandWordBase === "timeout"
                 ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
-                : commandWordBase === "nohup"
+                : commandWordBase === "nohup" || commandWordBase === "setsid"
                   ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
                   : commandWordBase === "coproc"
                     ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
@@ -5142,7 +5142,7 @@ function findWrappedCommandPositionIndex(words: string[], startIndex: number): n
               ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
               : commandWordBase === "timeout"
                 ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
-                : commandWordBase === "nohup"
+                : commandWordBase === "nohup" || commandWordBase === "setsid"
                   ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
                   : commandWordBase === "coproc"
                     ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)

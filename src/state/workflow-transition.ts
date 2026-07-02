@@ -139,6 +139,56 @@ function shellExecutionMatches(words: string[], cwd: string, targetPath: string)
   return false;
 }
 
+function findDirectWrapperOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (!word || word === '--' || /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(word)) continue;
+    if (word.startsWith('-')) continue;
+    return index;
+  }
+  return null;
+}
+
+function findTimeWrapperOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (!word || word === '--' || /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(word)) continue;
+    if (word === '-f' || word === '--format' || word === '-o' || word === '--output') {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith('--format=') || word.startsWith('--output=')) continue;
+    if (word.startsWith('-')) continue;
+    return index;
+  }
+  return null;
+}
+
+function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]; cwd: string } {
+  let currentWords = words;
+  let currentCwd = cwd;
+  for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+    const commandName = currentWords[0];
+    if (commandName === 'env') {
+      const unwrapped = unwrapEnvCommand(currentWords, currentCwd);
+      if (unwrapped.words === currentWords) return unwrapped;
+      currentWords = unwrapped.words;
+      currentCwd = unwrapped.cwd;
+      continue;
+    }
+
+    const operandIndex = commandName === 'command' || commandName === 'nohup' || commandName === 'setsid'
+      ? findDirectWrapperOperandIndex(currentWords, 1)
+      : commandName === 'time'
+        ? findTimeWrapperOperandIndex(currentWords, 1)
+        : null;
+    if (operandIndex === null) return { words: currentWords, cwd: currentCwd };
+    currentWords = currentWords.slice(operandIndex);
+  }
+
+  return { words: currentWords, cwd: currentCwd };
+}
+
 function unwrapEnvCommand(words: string[], cwd: string): { words: string[]; cwd: string } {
   if (words[0] !== 'env') return { words, cwd };
 
@@ -187,7 +237,7 @@ function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd =
       continue;
     }
 
-    const unwrapped = unwrapEnvCommand(words, cwd);
+    const unwrapped = unwrapExecutionCommand(words, cwd);
     if (shellExecutionMatches(unwrapped.words, unwrapped.cwd, targetPath)) return true;
   }
   return false;

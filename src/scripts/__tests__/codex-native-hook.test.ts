@@ -7193,6 +7193,12 @@ exit 0
           "cd .omx/context && ./run-relative.sh",
         ],
         [
+          "tool-di-reported-handoff-with-setsid-direct-exec",
+          ".omx/context",
+          "run.sh",
+          "setsid ./.omx/context/run.sh",
+        ],
+        [
           "tool-di-reported-handoff-with-env-chdir-relative-sh-exec",
           ".omx/context",
           "run.sh",

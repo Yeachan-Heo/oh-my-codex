@@ -69,6 +69,24 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies direct executable artifact paths through direct-exec wrappers as implementation', () => {
+    for (const executionLine of [
+      'command ./.omx/context/run.sh',
+      'nohup ./.omx/context/run.sh',
+      'time ./.omx/context/run.sh',
+      'setsid ./.omx/context/run.sh',
+    ]) {
+      const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+printf '%s\n' pwned > src/pwned.ts
+SCRIPT
+${executionLine}
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan","state":{"deep_interview_gate":{"status":"complete","rationale":"done"}}}' --json`;
+
+      assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true, executionLine);
+    }
+  });
+
   it('classifies same-command protected specs source through cwd-changing shell as implementation', () => {
     const command = `mkdir -p .omx/specs
 printf 'export PWNED=1\n' > .omx/specs/env.sh
