@@ -6173,21 +6173,11 @@ async function readActiveMainRootConductorStateForPreToolUse(
   ));
   const hasActiveSkill = (skill: string): boolean => activeEntries.some((entry) => entry.skill === skill);
 
-  for (const mode of ["ralph", "ultragoal", "ralplan"] as const) {
-    if (!hasActiveSkill(mode)) continue;
-    const state = await readStopSessionPinnedState(`${mode}-state.json`, cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, mode, sessionId)) {
-      return { mode, phase: safeString(state?.current_phase ?? state?.currentPhase) || "active" };
-    }
-  }
-
-  if (hasActiveSkill("autopilot")) {
-    const state = await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir);
-    if (isActiveConductorModeState(state, "autopilot", sessionId)) {
-      const phase = normalizeAutopilotPhase(state?.current_phase ?? state?.currentPhase);
-      if (phase !== null && isAutopilotChildPhase(phase) && phase !== "rework") {
-        return { mode: "autopilot", phase: safeString(state?.current_phase ?? state?.currentPhase) || phase };
-      }
+  if (hasActiveSkill("ralph")) {
+    const state = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(state, "ralph", sessionId)) {
+      const phase = safeString(state?.current_phase ?? state?.currentPhase) || "active";
+      if (phase.toLowerCase() !== "starting") return { mode: "ralph", phase };
     }
   }
 
@@ -8290,6 +8280,7 @@ export async function dispatchCodexNativeHook(
       : "";
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildConductorPreToolUseWriteGuardOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildPlanningRootPointerConflictPreToolUseOutput(payload, cwd, stateDir, rootPointerConflict)
       ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
       ?? buildMalformedPreToolUseBlockTestOutput(payload)

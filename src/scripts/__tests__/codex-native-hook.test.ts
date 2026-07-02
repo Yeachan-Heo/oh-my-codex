@@ -9582,7 +9582,7 @@ exit 0
     }
   });
 
-  it.skip("allows Autopilot ralplan planning artifacts while blocking implementation writes", async () => {
+  it("allows Autopilot ralplan planning artifacts while blocking implementation writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-autopilot-ralplan-artifact-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -9652,7 +9652,7 @@ exit 0
           `${command} should stay blocked during Autopilot ralplan`,
         );
       }
-      const blockedPlanWrite = await dispatchCodexNativeHook(
+      const allowedPlanWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -9664,8 +9664,7 @@ exit 0
         },
         { cwd },
       );
-      assert.equal((blockedPlanWrite.outputJson as { decision?: string } | null)?.decision, "block");
-      assert.match(String((blockedPlanWrite.outputJson as { reason?: string } | null)?.reason ?? ""), /Main-root Conductor mode is active \(ralplan phase: planning\)/);
+      assert.equal(allowedPlanWrite.outputJson, null);
 
       const allowedSpecEdit = await dispatchCodexNativeHook(
         {
@@ -19855,7 +19854,7 @@ exit 0
     }
   });
 
-  it.skip("allows implementation writes when an explicit execution handoff is active", async () => {
+  it("allows implementation writes when an explicit execution handoff is active", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-pretool-handoff-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -19898,14 +19897,13 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "pre-tool-use");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it.skip("blocks Main-root ralph conductor source writes while allowing .omx workflow state writes", async () => {
+  it("blocks Main-root ralph conductor source writes while allowing .omx workflow state writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-conductor-write-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -19951,7 +19949,7 @@ exit 0
     }
   });
 
-  it.skip("blocks non-shell direct writes in Main-root conductor states", async () => {
+  it("blocks non-shell direct writes in Main-root conductor states", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-bash-mutations-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -19985,7 +19983,7 @@ exit 0
           { cwd },
         );
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
-        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:node|python) write target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:curl|wget) output target .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:node|python) write target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:curl|wget) (?:output|mutation) target .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
 
       const allowedCommands = [
