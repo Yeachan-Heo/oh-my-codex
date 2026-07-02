@@ -88,7 +88,7 @@ import {
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
-import { isAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
+import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
@@ -161,11 +161,6 @@ const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH = 240;
 const OMX_OWNER_SESSION_ID_PATTERN = /^omx-[A-Za-z0-9_-]{1,60}$/;
-const LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor must delegate source edits and plan/spec authorship; direct writes are limited to workflow metadata.";
-
-function hasTeamWorkerEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
-  return safeString(env.OMX_TEAM_WORKER).trim() !== "" || safeString(env.OMX_TEAM_INTERNAL_WORKER).trim() !== "";
-}
 const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
   /^\s*(?:launch|release|ship)-?ready\s*:\s*(?:yes|no)\b[^\n\r]*/im,
   /^\s*ready to release\s*:\s*(?:yes|no)\b[^\n\r]*/im,
@@ -2275,6 +2270,12 @@ function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: s
     teamName: match[1] || "",
     workerName: match[2] || "",
   };
+}
+
+function hasTeamWorkerEnvironment(): boolean {
+  return parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
+    !== null
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER)) !== null;
 }
 
 async function resolveTeamStateDirForWorkerContext(
@@ -6255,6 +6256,8 @@ const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".omx/wiki",
   ".beads",
 ] as const;
+
+const LEADER_CONDUCTOR_GOLDEN_RULE = "Conductor golden rule: delegate source edits and plan/spec authorship to specialized agents.";
 
 function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null {
   const candidate = rawPath.trim().replace(/^['"]|['"]$/g, "");
