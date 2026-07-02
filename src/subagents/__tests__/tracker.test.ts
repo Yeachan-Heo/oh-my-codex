@@ -417,6 +417,23 @@ describe('subagents/tracker', () => {
     assert.equal(
       selectReusableSubagentEntry([
         {
+          agentId: 'thread-critic',
+          threadId: 'thread-critic',
+          role: 'critic',
+          laneId: 'risk-review',
+          scope: 'runtime hook guard',
+          status: 'unavailable',
+        },
+      ], {
+        role: 'critic',
+        laneId: 'risk-review',
+        scope: 'runtime hook guard',
+      }),
+      null,
+    );
+    assert.equal(
+      selectReusableSubagentEntry([
+        {
           agentId: 'thread-executor',
           threadId: 'thread-executor',
           role: 'executor',
