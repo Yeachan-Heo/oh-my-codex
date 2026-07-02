@@ -6656,6 +6656,7 @@ function collectConductorDownloaderOutputTargets(
   commandIndex: number,
 ): { sawOutputFlag: boolean; targets: string[] } {
   const targets: string[] = [];
+  const explicitCurlTargets: string[] = [];
   let sawOutputFlag = false;
   let sawCurlRemoteName = false;
   const curlOutputDirs: string[] = [];
@@ -6674,7 +6675,9 @@ function collectConductorDownloaderOutputTargets(
 
   const pushTarget = (rawTarget: string): void => {
     const target = safeString(rawTarget).trim();
-    if (target) targets.push(target);
+    if (!target) return;
+    if (commandName === "curl") explicitCurlTargets.push(target);
+    else targets.push(target);
   };
 
   for (let index = commandIndex + 1; index < words.length; index += 1) {
@@ -6738,8 +6741,19 @@ function collectConductorDownloaderOutputTargets(
     sawOutputFlag = true;
     targets.push(...(curlOutputDirs.length > 0 ? curlOutputDirs : ["."]));
   }
+  if (commandName === "curl" && explicitCurlTargets.length > 0) {
+    const outputDir = curlOutputDirs[curlOutputDirs.length - 1];
+    const effectiveTargets = outputDir
+      ? explicitCurlTargets.map((target) => (isAbsolute(target) ? target : join(outputDir, target)))
+      : explicitCurlTargets;
+    targets.push(...effectiveTargets);
+  }
 
   return { sawOutputFlag, targets };
+}
+
+function isConductorSedInPlaceOption(word: string): boolean {
+  return word === "-i" || word === "--in-place" || word.startsWith("-i") || word.startsWith("--in-place=") || /^-[^-]*i/.test(word);
 }
 
 function collectConductorSedTargets(words: string[], commandIndex: number): string[] | null {
@@ -6757,7 +6771,7 @@ function collectConductorSedTargets(words: string[], commandIndex: number): stri
       consumedImplicitScript = true;
       continue;
     }
-    if (word === "-i" || word === "--in-place" || word.startsWith("-i") || word.startsWith("--in-place=")) {
+    if (isConductorSedInPlaceOption(word)) {
       sawInPlace = true;
       continue;
     }
@@ -6853,9 +6867,16 @@ function collectConductorXargsMutationTargets(words: string[], commandIndex: num
       index += conductorXargsOptionValueWordCount(words, index);
       continue;
     }
-    const commandName = commandNameFromShellWord(word);
-    if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName) || CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) return [];
-    return null;
+    let commandWordIndex = index;
+    for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+      const commandName = commandNameFromShellWord(words[commandWordIndex] ?? "");
+      if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName) || CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) return [];
+      const wrapperOperandIndex = findConductorWrapperOperandIndex(commandName, words, commandWordIndex + 1);
+      if (wrapperOperandIndex === undefined) return null;
+      if (wrapperOperandIndex === null) return [];
+      commandWordIndex = wrapperOperandIndex;
+    }
+    return [];
   }
   return null;
 }
@@ -6866,6 +6887,7 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
   const targetDirectoryTargets: string[] = [];
   let sawTargetDirectory = false;
   let positionalCount = 0;
+  let rsyncRemovesSourceFiles = false;
   if (commandName === "sed") return collectConductorSedTargets(words, commandIndex);
   if (commandName === "perl") return collectConductorPerlTargets(words, commandIndex);
   const installDirectoryMode = commandName === "install" && isConductorInstallDirectoryMode(words, commandIndex);
@@ -6881,6 +6903,10 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
     }
 
     if (word === "--") continue;
+    if (commandName === "rsync" && word === "--remove-source-files") {
+      rsyncRemovesSourceFiles = true;
+      continue;
+    }
     if (word.startsWith("--")) {
       const [option, inlineValue] = word.split("=", 2);
       if (option === "--target-directory" && commandUsesTargetDirectoryOption(commandName)) {
@@ -6932,6 +6958,7 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
       ? [...targets, ...targetDirectoryTargets, ...positionalTargets]
       : [...targets, ...targetDirectoryTargets];
   }
+  if (commandName === "rsync" && rsyncRemovesSourceFiles) return [...targets, ...positionalTargets];
   if (isConductorDestinationOnlyMutationCommand(commandName)) return [...targets, ...positionalTargets.slice(-1)];
   return [...targets, ...positionalTargets];
 }

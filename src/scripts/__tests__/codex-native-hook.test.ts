@@ -20420,6 +20420,7 @@ exit 0
         "curl -fsSL --remote-name --output-dir=src https://example.test/runtime.ts",
         "wget -O src/runtime.ts https://example.test/runtime.ts",
         "curl --output-dir src -O https://example.test/runtime.ts",
+        "curl --create-dirs --output-dir src -o .omx/state/out https://example.test/runtime.ts",
         "wget -P src https://example.test/runtime.ts",
         "wget --directory-prefix=src https://example.test/runtime.ts",
         "git rm src/runtime.ts",
@@ -20453,6 +20454,7 @@ exit 0
         "wget -O .omx/state/download.log https://example.test/runtime.ts",
         "wget --output-document=.omx/state/download-inline.log https://example.test/runtime.ts",
         "curl --output-dir .omx/state -O https://example.test/runtime.ts",
+        "curl --create-dirs --output-dir .omx/state -o out https://example.test/runtime.ts",
         "wget -P .omx/state https://example.test/runtime.ts",
         "wget --directory-prefix=.omx/state https://example.test/runtime.ts",
       ];
@@ -20677,6 +20679,7 @@ exit 0
         "echo `mv src/old.ts src/new.ts`",
         "bash -lc \"sed -i 's/old/new/' src/runtime.ts\"",
         "bash -lc \"perl -pi -e 's/old/new/' src/runtime.ts\"",
+        "sed -Ei 's/old/new/' src/runtime.ts",
         "do_src_write() { cp package.json src/package-copy.json; }; do_src_write",
         "do_src_write() ( mv src/old.ts src/new.ts ); time do_src_write",
         "cat <(cp package.json src/package-copy.json)",
@@ -20684,6 +20687,7 @@ exit 0
         "cat > .omx/state/conductor.log <<EOF\n$(cp package.json src/package-copy.json)\nEOF",
         "true& cp package.json src/package-copy.json",
         "xargs rm src/generated.ts </dev/null",
+        "xargs env rm src/generated.ts </dev/null",
         "xargs -t rm src/generated.ts </dev/null",
         "xargs --verbose rm src/generated.ts </dev/null",
         "xargs -n 1 rm src/generated.ts </dev/null",
@@ -20701,6 +20705,8 @@ exit 0
         "git worktree clean ../stale-worktree",
         "sed -i 's/old/new/' .omx/state/conductor-ledger.json src/runtime.ts",
         "perl -pi -e 's/old/new/' .omx/state/conductor-ledger.json src/runtime.ts",
+        "rsync --remove-source-files src/a.ts .omx/state/",
+        "curl --create-dirs --output-dir src -o .omx/state/out https://example.test/archive.tgz",
       ];
       for (const command of blockedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -20741,14 +20747,17 @@ exit 0
         "perl -ne 'print' src/runtime.ts",
         "sed -i 's/old/new/' .omx/state/conductor-ledger.json",
         "perl -pi -e 's/old/new/' .omx/state/conductor-ledger.json",
+        "sed -Ei 's/old/new/' .omx/state/conductor-ledger.json",
         "cp src/source.ts .omx/state/source-copy.ts",
         "install src/source.ts -t .omx/state",
         "ln src/source.ts -t .omx/handoffs/run-1",
         "curl --output-dir .omx/state -O https://example.test/archive.tgz",
         "curl -OL --output-dir .omx/state https://example.test/archive.tgz",
         "wget -P .omx/state https://example.test/archive.tgz",
+        "curl --create-dirs --output-dir .omx/state -o out https://example.test/archive.tgz",
         "install -d .omx/state .omx/handoffs/run-1",
         "rsync README.md .omx/state/readme.md",
+        "xargs env printf safe </dev/null",
         "sed -i 's/old/new/' .omx/state/conductor-ledger.json .omx/handoffs/run-1/ledger.json",
         "perl -pi -e 's/old/new/' .omx/state/conductor-ledger.json .omx/handoffs/run-1/ledger.json",
       ];
