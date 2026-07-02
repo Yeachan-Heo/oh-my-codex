@@ -3732,6 +3732,8 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\bperl\s+(?:[^\n;&|]*\s)?-[^-\s]*i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
+    || extractConductorBashMutations(command).length > 0
+    || extractConductorInterpreterWrites(command).length > 0
     || commandHasDestructiveGitSubcommand(command)
     || commandHasPackageInstallIntent(command);
 }
@@ -3741,6 +3743,12 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
   const targets = extractDeepInterviewCommandRedirectTargets(command)
     .map((target) => resolveCommandRedirectTarget(target, assignments));
   targets.push(...extractConductorEditorWriteTargets(command));
+  for (const mutation of extractConductorBashMutations(command)) {
+    targets.push(...mutation.targets);
+  }
+  for (const write of extractConductorInterpreterWrites(command)) {
+    targets.push(...write.targets);
+  }
   for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
     const words = tokenizeShellWords(segment);
     for (let index = 0; index < words.length; index += 1) {
@@ -5937,6 +5945,65 @@ function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): b
   return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) !== undefined;
 }
 
+function hasCompleteDeepInterviewGateMetadata(state: Record<string, unknown>): boolean {
+  const nestedState = safeObject(state.state);
+  const gate = safeObject(state.deep_interview_gate) ?? safeObject(nestedState?.deep_interview_gate);
+  if (!gate) return false;
+  const status = safeString(gate.status).trim().toLowerCase().replace(/_/g, "-");
+  if (status === "complete" || gate.complete === true) {
+    return ["rationale", "completion_rationale", "handoff_summary", "summary", "reason"]
+      .some((key) => safeString(gate[key]).trim().length > 0);
+  }
+  if (status !== "skipped") return false;
+  const reason = safeString(gate.reason).trim() || safeString(gate.skip_reason).trim() || safeString(gate.rationale).trim();
+  const timestamp = safeString(gate.skipped_at).trim() || safeString(gate.timestamp).trim() || safeString(gate.updated_at).trim();
+  const source = safeString(gate.source).trim();
+  return (gate.skip_authorized_by_user === true || gate.authorized_by_user === true)
+    && reason.length > 0
+    && timestamp.length > 0
+    && source.length > 0;
+}
+
+function isDeepInterviewRalplanHandoffStatePayload(payload: Record<string, unknown>): boolean {
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  if (mode !== "autopilot") return false;
+  const phase = normalizeAutopilotPhase(safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase());
+  if (phase !== "ralplan" || payload.active === false) return false;
+  return hasCompleteDeepInterviewGateMetadata(payload);
+}
+
+function hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd: string, command: string): boolean {
+  for (const mutation of extractConductorBashMutations(command)) {
+    if (mutation.targets.length === 0) return false;
+    if (mutation.targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
+  }
+  for (const write of extractConductorInterpreterWrites(command)) {
+    if (write.unresolved || write.targets.length === 0) return false;
+    if (write.targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
+  }
+  return true;
+}
+
+function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: string): boolean {
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
+  if (commandHasUntargetedPlanningForbiddenIntent(canonicalCommand)) return false;
+  const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (stateWriteOperations.length !== 1) return false;
+  const stateWriteOperation = stateWriteOperations[0];
+  if (!stateWriteOperation || stateWriteOperation.nested) return false;
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  if (!payload || !isDeepInterviewRalplanHandoffStatePayload(payload)) return false;
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  if (targets.length === 0) return false;
+  if (!hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd, command)) return false;
+  return targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
+}
+
+
 function isCompleteRalplanTerminalWritePayload(
   payload: Record<string, unknown>,
   activeState: Record<string, unknown>,
@@ -5999,13 +6066,13 @@ function commandEndsPlanningPhase(cwd: string, command: string): boolean {
 }
 
 function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
+  if (isAllowedDeepInterviewRalplanHandoffCommand(cwd, command)) return true;
   if (commandEndsPlanningPhase(cwd, command)) return false;
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   const targets = extractDeepInterviewCommandWriteTargets(command);
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
-
 }
 
 async function readActiveDeepInterviewStateForPreToolUse(

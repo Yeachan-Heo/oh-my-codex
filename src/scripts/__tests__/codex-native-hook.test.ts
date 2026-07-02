@@ -7115,6 +7115,88 @@ exit 0
       );
       assert.equal(allowedAppendBash.outputJson, null);
 
+      const deepInterviewRalplanHandoffState = JSON.stringify({
+        mode: "autopilot",
+        active: true,
+        current_phase: "ralplan",
+        state: {
+          deep_interview_gate: {
+            status: "complete",
+            rationale: "Requirements are clarified and ready for ralplan handoff.",
+          },
+        },
+      });
+      const reportedHandoffShape = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-reported-context-spec-handoff",
+          tool_input: {
+            command: [
+              "mkdir -p .omx/context .omx/specs",
+              "cat > .omx/context/deep-interview-demo.md <<'EOF'",
+              "# Context",
+              "EOF",
+              "cat > .omx/specs/deep-interview-demo.md <<'EOF'",
+              "# Spec",
+              "EOF",
+              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+            ].join("\n"),
+          },
+        },
+        { cwd },
+      );
+      assert.equal(reportedHandoffShape.outputJson, null);
+
+      const blockedHandoffWithImplementationWrite = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-reported-handoff-with-source-write",
+          tool_input: {
+            command: [
+              "mkdir -p .omx/context .omx/specs src",
+              "cat > .omx/context/deep-interview-demo.md <<'EOF'",
+              "# Context",
+              "EOF",
+              "cat > src/runtime.ts <<'EOF'",
+              "export const changed = true;",
+              "EOF",
+              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+            ].join("\n"),
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedHandoffWithImplementationWrite.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedHandoffWithImplementationWrite.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/runtime\.ts/);
+
+      const blockedHandoffWithUnredirectedSourceMutation = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-reported-handoff-with-source-mkdir",
+          tool_input: {
+            command: [
+              "mkdir -p .omx/context .omx/specs src/generated",
+              "cat > .omx/context/deep-interview-demo.md <<'EOF'",
+              "# Context",
+              "EOF",
+              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+            ].join("\n"),
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedHandoffWithUnredirectedSourceMutation.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedHandoffWithUnredirectedSourceMutation.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash/);
+
       const allowedReadOnlyEditors = await preToolUse(
         {
           hook_event_name: "PreToolUse",
