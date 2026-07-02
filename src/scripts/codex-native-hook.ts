@@ -2277,12 +2277,6 @@ function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: s
   };
 }
 
-function hasTeamWorkerEnvironment(): boolean {
-  return parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
-    !== null
-    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER)) !== null;
-}
-
 async function resolveTeamStateDirForWorkerContext(
   cwd: string,
   workerContext: { teamName: string; workerName: string },
@@ -3657,6 +3651,8 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
   return commandInvokesApplyPatch(command)
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
+    || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
+    || /\bperl\s+(?:[^\n;&|]*\s)?-(?:p)?i(?:\b|['"])/.test(command)
     || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || commandHasDestructiveGitSubcommand(command)
     || commandHasPackageInstallIntent(command);
@@ -3688,6 +3684,12 @@ function extractDeepInterviewCommandWriteTargets(command: string): string[] {
         if (!isNullDeviceRedirectTarget(word)) targets.push(resolveCommandRedirectTarget(word, assignments));
       }
     }
+  }
+  for (const nestedCommand of extractNestedShellCommandStringsForStateScan(command)) {
+    targets.push(...extractDeepInterviewCommandWriteTargets(nestedCommand));
+  }
+  for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(command)) {
+    targets.push(...extractDeepInterviewCommandWriteTargets(nestedCommand));
   }
   return targets;
 }
@@ -5245,6 +5247,42 @@ function extractNestedShellCommandStringsForStateScan(command: string): string[]
   return nested;
 }
 
+function extractNestedCommandSubstitutionStringsForStateScan(command: string): string[] {
+  const nested: string[] = [];
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (quote !== "'" && char === "$" && command[index + 1] === "(") {
+      const substitutionEnd = findCommandSubstitutionEnd(command, index + 2);
+      const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+      if (substitutionBody) nested.push(substitutionBody);
+      index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      continue;
+    }
+    if (quote !== "'" && char === "`") {
+      const substitutionEnd = findBacktickCommandSubstitutionEnd(command, index + 1);
+      const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      const substitutionBody = command.slice(index + 1, substitutionBodyEnd);
+      if (substitutionBody) nested.push(substitutionBody);
+      index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+    }
+  }
+  return nested;
+}
+
 function isPackageManagerCommandWord(word: string): boolean {
   const base = shellWordBaseName(word);
   return base === "npm" || base === "pnpm" || base === "yarn" || base === "npx" || base === "pnpx";
@@ -6218,8 +6256,6 @@ const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".beads",
 ] as const;
 
-const LEADER_CONDUCTOR_GOLDEN_RULE = "Conductor golden rule: delegate source edits and plan/spec authorship to specialized agents.";
-
 function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null {
   const candidate = rawPath.trim().replace(/^['"]|['"]$/g, "");
   if (!candidate || isUnresolvedVariableTarget(candidate)) return null;
@@ -6702,6 +6738,10 @@ function evaluateConductorBashWrite(
   }
 
   for (const nestedCommand of extractNestedShellCommandStringsForStateScan(normalizedCommand)) {
+    const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
+    if (!nestedDecision.allowed) return nestedDecision;
+  }
+  for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(normalizedCommand)) {
     const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
     if (!nestedDecision.allowed) return nestedDecision;
   }

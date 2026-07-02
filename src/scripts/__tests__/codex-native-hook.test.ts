@@ -18901,6 +18901,28 @@ exit 0
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /(?:Ralplan|Autopilot planning) is active .*implementation\/write tools are blocked/i);
+
+      for (const command of [
+        "sed -i 's/old/new/' src/runtime.ts",
+        "perl -pi -e 's/old/new/' src/runtime.ts",
+      ]) {
+        const writeIntentResult = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-ralplan-pretool-bash-block",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal((writeIntentResult.outputJson as { decision?: string } | null)?.decision, "block", command);
+        assert.match(
+          String((writeIntentResult.outputJson as { reason?: string } | null)?.reason ?? ""),
+          /Bash .* (?:write intent|mutation target) .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>|not under allowed planning artifact paths or metadata paths/,
+        );
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -19958,8 +19980,7 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "pre-tool-use");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -20083,6 +20104,8 @@ exit 0
         "(cp package.json src/package-copy.json)",
         "bash -lc \"mv src/old.ts src/new.ts\"",
         "sh -c 'cp package.json src/package-copy.json'",
+        "echo $(cp package.json src/package-copy.json)",
+        "echo `mv src/old.ts src/new.ts`",
         "bash -lc \"sed -i 's/old/new/' src/runtime.ts\"",
         "bash -lc \"perl -pi -e 's/old/new/' src/runtime.ts\"",
       ];
