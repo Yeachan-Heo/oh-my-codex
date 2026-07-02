@@ -316,6 +316,41 @@ function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]
   return { words: currentWords, cwd: currentCwd };
 }
 
+function unwrapCdCommandWords(words: string[]): string[] {
+  let currentWords = words;
+  for (let unwrapCount = 0; unwrapCount < 4; unwrapCount += 1) {
+    const commandName = currentWords[0];
+    if (commandName === 'command') {
+      const operandIndex = findDirectWrapperOperandIndex(currentWords, 1);
+      if (operandIndex === null) return currentWords;
+      currentWords = currentWords.slice(operandIndex);
+      continue;
+    }
+    if (commandName === 'builtin') {
+      currentWords = currentWords.slice(1);
+      continue;
+    }
+    return currentWords;
+  }
+  return currentWords;
+}
+
+function cdOperand(words: string[]): string | null {
+  if (words[0] !== 'cd') return null;
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (word === '--') continue;
+    if (/^-[LP]+$/.test(word)) continue;
+    return word;
+  }
+  return null;
+}
+
+function cdTransitionTarget(words: string[], cwd: string): string | null {
+  const operand = cdOperand(unwrapCdCommandWords(words));
+  return operand ? resolveCommandOperand(cwd, operand) : null;
+}
+
 function unwrapEnvCommand(words: string[], cwd: string): { words: string[]; cwd: string } {
   if (words[0] !== 'env') return { words, cwd };
 
@@ -407,8 +442,9 @@ function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd =
     const cwd = scopedCwd(cwds, statement.subshellDepth, initialCwd);
     const words = groupedShellWords(statement.text);
     if (words.length > 0) {
-      if (words[0] === 'cd' && words[1]) {
-        cwds.set(statement.subshellDepth, resolveCommandOperand(cwd, words[1]));
+      const cdTarget = cdTransitionTarget(words, cwd);
+      if (cdTarget) {
+        cwds.set(statement.subshellDepth, cdTarget);
       } else {
         const unwrapped = unwrapExecutionCommand(words, cwd);
         if (shellExecutionMatches(unwrapped.words, unwrapped.cwd, targetPath)) return true;

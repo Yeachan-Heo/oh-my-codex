@@ -5134,7 +5134,7 @@ function findWrappedCommandPositionIndex(words: string[], startIndex: number): n
     const operandIndex =
       commandWordBase === "env"
         ? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
-        : commandWordBase === "command"
+        : commandWordBase === "command" || commandWordBase === "builtin"
           ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
           : commandWordBase === "exec"
             ? findExecDispatchOperandIndex(words, commandWordIndex + 1)

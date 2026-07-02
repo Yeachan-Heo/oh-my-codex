@@ -58,6 +58,27 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies same-command protected artifact execution through cd shell wrappers and options as implementation', () => {
+    const executionForms = [
+      'command cd .omx/context && sh run.sh',
+      'builtin cd .omx/context && sh run.sh',
+      'cd -- .omx/context && sh run.sh',
+      'cd -P .omx/context && sh run.sh',
+      'cd -L .omx/context && sh run.sh',
+    ];
+
+    for (const executionForm of executionForms) {
+      const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+${executionForm}
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+      assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true, executionForm);
+    }
+  });
+
   it('classifies grouped cwd same-command protected artifact executions as implementation', () => {
     const executionForms = [
       '(cd .omx/context && sh run.sh)',
@@ -320,6 +341,34 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
 
       assert.equal(decision.allowed, false, command);
       assert.equal(decision.gate_fired, true, command);
+      assert.match(decision.reason!, /Bash denied/);
+    }
+  });
+
+  it('denies cd wrapper and option same-command protected artifact executions', () => {
+    const probes = [
+      'command cd .omx/context && sh run.sh',
+      'builtin cd .omx/context && sh run.sh',
+      'cd -- .omx/context && sh run.sh',
+      'cd -P .omx/context && sh run.sh',
+      'cd -L .omx/context && sh run.sh',
+    ];
+
+    for (const executionForm of probes) {
+      const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+${executionForm}
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+      const decision = evaluatePreToolUseGate(
+        { tool_name: 'Bash', tool_input: command },
+        gateState,
+        false,
+      );
+
+      assert.equal(decision.allowed, false, executionForm);
+      assert.equal(decision.gate_fired, true, executionForm);
       assert.match(decision.reason!, /Bash denied/);
     }
   });

@@ -7181,6 +7181,36 @@ exit 0
           "cd .omx/context && sh run.sh",
         ],
         [
+          "tool-di-reported-handoff-with-command-cd-relative-sh-exec",
+          ".omx/context",
+          "run.sh",
+          "command cd .omx/context && sh run.sh",
+        ],
+        [
+          "tool-di-reported-handoff-with-builtin-cd-relative-sh-exec",
+          ".omx/context",
+          "run.sh",
+          "builtin cd .omx/context && sh run.sh",
+        ],
+        [
+          "tool-di-reported-handoff-with-cd-double-dash-relative-sh-exec",
+          ".omx/context",
+          "run.sh",
+          "cd -- .omx/context && sh run.sh",
+        ],
+        [
+          "tool-di-reported-handoff-with-cd-physical-relative-sh-exec",
+          ".omx/context",
+          "run.sh",
+          "cd -P .omx/context && sh run.sh",
+        ],
+        [
+          "tool-di-reported-handoff-with-cd-logical-relative-sh-exec",
+          ".omx/context",
+          "run.sh",
+          "cd -L .omx/context && sh run.sh",
+        ],
+        [
           "tool-di-reported-handoff-with-cd-relative-dot-source",
           ".omx/specs",
           "env.sh",
