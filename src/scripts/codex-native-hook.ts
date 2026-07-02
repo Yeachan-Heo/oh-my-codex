@@ -6659,6 +6659,18 @@ function collectConductorDownloaderOutputTargets(
   let sawOutputFlag = false;
   let sawCurlRemoteName = false;
   const curlOutputDirs: string[] = [];
+  const curlShortOptionsWithArgument = new Set("AbcCdDeEFHhKmMoPQrTuwxXyYz");
+
+  const isCurlRemoteNameWord = (word: string): boolean => {
+    if (word === "--remote-name" || word === "--remote-name-all") return true;
+    if (!word.startsWith("-") || word.startsWith("--")) return false;
+
+    for (const option of word.slice(1)) {
+      if (option === "O") return true;
+      if (curlShortOptionsWithArgument.has(option)) return false;
+    }
+    return false;
+  };
 
   const pushTarget = (rawTarget: string): void => {
     const target = safeString(rawTarget).trim();
@@ -6686,7 +6698,7 @@ function collectConductorDownloaderOutputTargets(
       continue;
     }
 
-    if (commandName === "curl" && (word === "-O" || word === "--remote-name" || word === "--remote-name-all")) {
+    if (commandName === "curl" && isCurlRemoteNameWord(word)) {
       sawCurlRemoteName = true;
       continue;
     }
