@@ -6837,6 +6837,10 @@ function extractConductorInterpreterWrites(command: string): ConductorInterprete
     const target = safeString(match[2]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
   }
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*mkdir\s*\(/g)) {
+    const target = safeString(match[2]).trim();
+    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+  }
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']+)\3/g)) {
     const target = safeString(match[4]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
