@@ -350,10 +350,13 @@ export function recordSubagentTurn(
       : requestedKind ?? (threadId === leaderThreadId ? 'leader' : existingKind ?? 'subagent');
   const requestedStatus = normalizeSubagentStatus(input.status);
   const preservedStatus = normalizeSubagentStatus(existingThread?.status);
+  const preserveCompletionEvidence = input.preserveCompletionEvidence === true;
+  const clearsPriorCompletion = input.completed !== true
+    && preserveCompletionEvidence !== true
+    && Boolean(existingThread?.completed_at);
   const status = requestedStatus
     ?? (input.completed ? 'closed' : undefined)
-    ?? preservedStatus;
-  const preserveCompletionEvidence = input.preserveCompletionEvidence === true;
+    ?? (clearsPriorCompletion ? undefined : preservedStatus);
   const preservedCompletion = preserveCompletionEvidence && existingThread?.completed_at
     ? {
         completed_at: existingThread.completed_at,
@@ -449,6 +452,8 @@ export function summarizeSubagentSession(
     const thread = session.threads[threadId];
     if (!thread) return false;
     if (thread.completed_at) return false;
+    const status = normalizeSubagentStatus(thread.status);
+    if (status === 'closed' || status === 'unavailable') return false;
     const seenAt = Date.parse(thread.last_seen_at);
     if (!Number.isFinite(seenAt)) return false;
     return nowMs - seenAt <= activeWindowMs;

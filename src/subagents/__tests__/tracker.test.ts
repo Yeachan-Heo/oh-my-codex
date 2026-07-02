@@ -281,10 +281,17 @@ describe('subagents/tracker', () => {
       activeWindowMs: 120_000,
     });
 
+    const ledger = buildSubagentResumeLedger(state, 'sess-1', {
+      now: '2026-03-17T00:01:00.000Z',
+      activeWindowMs: 120_000,
+    });
+
+    assert.deepEqual(summary?.activeSubagentThreadIds, []);
     assert.deepEqual(summary?.savedSubagents, [
       { agentId: 'sub-thread-closed', threadId: 'sub-thread-closed', role: 'critic', laneId: 'critic', status: 'closed' },
       { agentId: 'sub-thread-unavailable', threadId: 'sub-thread-unavailable', role: 'architect', laneId: 'architect', status: 'unavailable' },
     ]);
+    assert.deepEqual(ledger?.activeSubagentThreadIds, []);
   });
 
   it('reactivates a notify-fallback-completed subagent thread after a later non-complete turn', () => {
@@ -317,9 +324,19 @@ describe('subagents/tracker', () => {
       now: '2026-03-17T00:01:15.000Z',
       activeWindowMs: 120_000,
     });
+    const ledger = buildSubagentResumeLedger(state, 'sess-1', {
+      now: '2026-03-17T00:01:15.000Z',
+      activeWindowMs: 120_000,
+    });
     const thread = state.sessions['sess-1']?.threads['sub-thread-1'];
 
     assert.deepEqual(summary?.activeSubagentThreadIds, ['sub-thread-1']);
+    assert.deepEqual(summary?.savedSubagents, [
+      { agentId: 'sub-thread-1', threadId: 'sub-thread-1', role: 'architect', laneId: 'architect', status: 'available' },
+    ]);
+    assert.deepEqual(ledger?.activeSubagentThreadIds, ['sub-thread-1']);
+    assert.equal(ledger?.savedSubagents[0]?.status, 'available');
+    assert.equal(thread?.status, undefined);
     assert.equal(thread?.completed_at, undefined);
     assert.equal(thread?.last_completed_turn_id, undefined);
     assert.equal(thread?.completion_source, undefined);
