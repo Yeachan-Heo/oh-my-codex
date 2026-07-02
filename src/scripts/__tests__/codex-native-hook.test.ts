@@ -10312,26 +10312,34 @@ exit 0
 
   it("allows typed agent-role implementation writes under active ralplan when trusted provenance is present", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-trusted-typed-agent-role-ralplan-"));
+    const originalOmxRoot = process.env.OMX_ROOT;
+    const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const originalOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     try {
+      process.env.OMX_ROOT = cwd;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-trusted-typed-executor-ralplan";
+      const leaderThreadId = "thread-trusted-typed-executor-ralplan-leader";
+      const childThreadId = "thread-trusted-typed-executor-ralplan";
       const sessionDir = join(stateDir, "sessions", sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId, cwd });
       await writeJson(join(sessionDir, "skill-active-state.json"), {
         version: 1,
         active: true,
         skill: "autopilot",
         phase: "ralplan",
         session_id: sessionId,
-        thread_id: "thread-trusted-typed-executor-ralplan",
+        thread_id: leaderThreadId,
         active_skills: [
           {
             skill: "autopilot",
             phase: "ralplan",
             active: true,
             session_id: sessionId,
-            thread_id: "thread-trusted-typed-executor-ralplan",
+            thread_id: leaderThreadId,
           },
         ],
       });
@@ -10342,7 +10350,21 @@ exit 0
         started_at: "2026-04-19T00:00:00.000Z",
         updated_at: "2026-04-19T00:10:00.000Z",
         session_id: sessionId,
-        thread_id: "thread-trusted-typed-executor-ralplan",
+        thread_id: leaderThreadId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            updated_at: "2026-04-19T00:10:00.000Z",
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader", first_seen_at: "2026-04-19T00:00:00.000Z", last_seen_at: "2026-04-19T00:10:00.000Z", turn_count: 1 },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", mode: "executor", first_seen_at: "2026-04-19T00:01:00.000Z", last_seen_at: "2026-04-19T00:10:00.000Z", turn_count: 1, leader_thread_id: leaderThreadId },
+            },
+          },
+        },
       });
 
       const allowedImplementationEdit = await dispatchCodexNativeHook(
@@ -10350,12 +10372,12 @@ exit 0
           hook_event_name: "PreToolUse",
           cwd,
           session_id: sessionId,
-          thread_id: "thread-trusted-typed-executor-ralplan",
+          thread_id: childThreadId,
           agent_role: "executor",
           source: {
             subagent: {
               thread_spawn: {
-                parent_thread_id: "thread-trusted-typed-executor-ralplan",
+                parent_thread_id: leaderThreadId,
               },
             },
           },
@@ -10367,6 +10389,92 @@ exit 0
       );
       assert.equal(allowedImplementationEdit.outputJson, null);
     } finally {
+      if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = originalOmxRoot;
+      if (originalOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
+      if (originalOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = originalOmxTeamStateRoot;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks typed thread-spawn provenance when the parent belongs to another leader session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-stale-typed-thread-spawn-"));
+    const originalOmxRoot = process.env.OMX_ROOT;
+    const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const originalOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      process.env.OMX_ROOT = cwd;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stale-typed-thread-spawn";
+      const leaderThreadId = "thread-stale-typed-leader";
+      const childThreadId = "thread-stale-typed-child";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId, cwd });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "ralplan",
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        active_skills: [
+          { skill: "autopilot", phase: "ralplan", active: true, session_id: sessionId, thread_id: leaderThreadId },
+        ],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            updated_at: "2026-04-19T00:10:00.000Z",
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader", first_seen_at: "2026-04-19T00:00:00.000Z", last_seen_at: "2026-04-19T00:10:00.000Z", turn_count: 1 },
+            },
+          },
+        },
+      });
+
+      const blockedImplementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_role: "executor",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "thread-other-leader",
+              },
+            },
+          },
+          tool_name: "Edit",
+          tool_use_id: "tool-stale-typed-child-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+
+      assert.equal(blockedImplementationEdit.outputJson?.decision, "block");
+    } finally {
+      if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = originalOmxRoot;
+      if (originalOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
+      if (originalOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = originalOmxTeamStateRoot;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -20538,7 +20646,13 @@ exit 0
 
   it("allows conductor writes from tracked typed native subagents", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-tracked-subagent-"));
+    const originalOmxRoot = process.env.OMX_ROOT;
+    const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const originalOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     try {
+      process.env.OMX_ROOT = cwd;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-tracked-subagent";
       const leaderThreadId = "thread-conductor-leader";
@@ -20575,6 +20689,13 @@ exit 0
           session_id: sessionId,
           thread_id: childThreadId,
           agent_role: "executor",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: leaderThreadId,
+              },
+            },
+          },
           tool_name: "Edit",
           tool_input: { file_path: "src/runtime.ts" },
         },
@@ -20583,6 +20704,12 @@ exit 0
 
       assert.equal(result.outputJson, null);
     } finally {
+      if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = originalOmxRoot;
+      if (originalOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
+      if (originalOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = originalOmxTeamStateRoot;
       await rm(cwd, { recursive: true, force: true });
     }
   });

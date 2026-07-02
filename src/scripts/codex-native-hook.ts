@@ -6176,7 +6176,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  if (await hasIndependentSubagentOrWorkerProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
+  if (await hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
@@ -6244,7 +6244,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  if (await hasIndependentSubagentOrWorkerProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
+  if (await hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveDeepInterviewStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
@@ -6412,7 +6412,11 @@ interface ActiveConductorState {
   phase: string;
 }
 
-function hasTrustedSubagentThreadSpawnPayload(payload: CodexHookPayload): boolean {
+async function hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(
+  payload: CodexHookPayload,
+  cwd: string,
+  sessionId: string,
+): Promise<boolean> {
   const source = safeObject(payload.source);
   const subagent = safeObject(source.subagent);
   const threadSpawn = safeObject(subagent.thread_spawn);
@@ -6423,23 +6427,12 @@ function hasTrustedSubagentThreadSpawnPayload(payload: CodexHookPayload): boolea
       ?? threadSpawn.leaderThreadId,
   ).trim();
   if (!parentThreadId) return false;
-  const agentRole = readPayloadAgentRole(payload);
-  return agentRole !== "" && KNOWN_TYPED_AGENT_ROLES.has(agentRole);
-}
-
-async function hasIndependentSubagentOrWorkerProvenanceForPreToolUse(
-  payload: CodexHookPayload,
-  cwd: string,
-  stateDir: string,
-  sessionId: string,
-): Promise<boolean> {
+  if (!isTypedAgentRolePayload(payload)) return false;
   if (hasTeamWorkerEnvironment()) return true;
-  if (hasTrustedSubagentThreadSpawnPayload(payload)) return true;
-  const threadId = readPayloadThreadId(payload);
-  const nativeSessionId = readPayloadSessionId(payload);
-  const currentSession = await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
-  const canonicalLeaderNativeSessionId = safeString(currentSession?.native_session_id).trim();
-  return isNativeSubagentHook(cwd, sessionId, nativeSessionId, threadId, canonicalLeaderNativeSessionId);
+  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
+  const session = trackingState?.sessions?.[sessionId];
+  if (!session) return false;
+  return session.leader_thread_id === parentThreadId || parentThreadId in session.threads;
 }
 
 function isActiveConductorModeState(state: Record<string, unknown> | null, mode: string, sessionId: string): boolean {
@@ -6468,7 +6461,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
   }
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
-  if (await hasIndependentSubagentOrWorkerProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
+  if (await hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
 
   const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
   if (!canonicalState) return null;
