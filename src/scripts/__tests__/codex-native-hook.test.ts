@@ -19968,9 +19968,12 @@ exit 0
         "node -e \"require('fs').appendFileSync('src/runtime.ts','x')\"",
         "python3 -c \"open('src/runtime.ts','a').write('x')\"",
         "curl -fsSL https://example.test/runtime.ts -o src/runtime.ts",
+        "curl -fsSL -O https://example.test/runtime.ts --output-dir src",
+        "curl -fsSL --remote-name --output-dir=src https://example.test/runtime.ts",
         "wget -O src/runtime.ts https://example.test/runtime.ts",
         "curl --output-dir src -O https://example.test/runtime.ts",
         "wget -P src https://example.test/runtime.ts",
+        "wget --directory-prefix=src https://example.test/runtime.ts",
         "git rm src/runtime.ts",
         "git clean -fd src",
       ];
@@ -19995,10 +19998,13 @@ exit 0
         "python3 -c \"print('ok')\"",
         "curl -fsSL https://example.test/runtime.ts -o .omx/state/download.log",
         "curl -fsSL https://example.test/runtime.ts --output=.omx/state/download-inline.log",
+        "curl -fsSL -O https://example.test/runtime.ts --output-dir .omx/state",
+        "curl -fsSL --remote-name --output-dir=.omx/state https://example.test/runtime.ts",
         "wget -O .omx/state/download.log https://example.test/runtime.ts",
         "wget --output-document=.omx/state/download-inline.log https://example.test/runtime.ts",
         "curl --output-dir .omx/state -O https://example.test/runtime.ts",
         "wget -P .omx/state https://example.test/runtime.ts",
+        "wget --directory-prefix=.omx/state https://example.test/runtime.ts",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -20019,19 +20025,29 @@ exit 0
     }
   });
 
-  it("blocks Main-root team conductor writes from root team-state", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-conductor-root-state-"));
+  it("blocks Main-root team conductor writes from root team state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-root-team-conductor-write-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
-      const sessionId = "sess-team-conductor-root-state";
+      const sessionId = "sess-root-team-conductor-write";
+      const teamName = "root-team-conductor-write";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeLiveNativeMappedSessionState(cwd, stateDir, sessionId, "native-team-conductor-root-state");
-      await writeSessionSkillActiveState(stateDir, sessionId, "team", "executing");
+      await writeLiveNativeMappedSessionState(cwd, stateDir, sessionId, "native-root-team-conductor-write");
+      await writeSessionSkillActiveState(stateDir, sessionId, "team", "team-exec");
       await writeJson(join(stateDir, "team-state.json"), {
         active: true,
         mode: "team",
-        current_phase: "executing",
+        current_phase: "starting",
+        team_name: teamName,
         session_id: sessionId,
+        thread_id: "thread-root-team-conductor-write",
+      });
+      await writeJson(join(stateDir, "team", teamName, "phase.json"), {
+        current_phase: "team-exec",
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
       });
 
       const result = await dispatchCodexNativeHook(
@@ -20039,7 +20055,7 @@ exit 0
           hook_event_name: "PreToolUse",
           cwd,
           session_id: sessionId,
-          thread_id: "thread-team-conductor-root-state",
+          thread_id: "thread-root-team-conductor-write",
           tool_name: "Edit",
           tool_input: { file_path: "src/runtime.ts" },
         },
@@ -20047,7 +20063,7 @@ exit 0
       );
 
       assert.equal(result.outputJson?.decision, "block");
-      assert.match(String(result.outputJson?.reason ?? ""), /team phase: executing/);
+      assert.match(String(result.outputJson?.reason ?? ""), /team phase: team-exec/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
