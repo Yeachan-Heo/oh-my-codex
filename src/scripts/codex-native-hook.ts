@@ -88,7 +88,16 @@ import {
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
-import { normalizeAutopilotPhase } from "../autopilot/fsm.js";
+import { AGENT_DEFINITIONS } from "../agents/definitions.js";
+import { deriveAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
+import {
+  CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES,
+  LEADER_CONDUCTOR_BLOCK,
+  LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
+  actionKindForConductorArtifact,
+  authorizeConductorAction,
+  classifyConductorArtifactKind,
+} from "../leader/contract.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
@@ -194,6 +203,7 @@ const RALPH_LIVE_RISK_PATTERNS = [
   /\b(?:database|db|terraform|kubectl|kubernetes|aws|gcp|azure|external|destructive)\b/i,
   /\b(?:telegram|vps|service|restart|send|notify|notification|notifications|cron)\b/i,
 ] as const;
+const KNOWN_TYPED_AGENT_ROLES = new Set(Object.keys(AGENT_DEFINITIONS));
 const RALPH_TASK_TEXT_FIELDS = [
   "task_description",
   "taskDescription",
@@ -2092,6 +2102,8 @@ function buildAutopilotPromptActivationNote(
     "The ralplan phase is not complete until Planner output has been reviewed sequentially by Architect and then Critic; do not hand off to Ultragoal or implementation until the ralplan state/artifact records both ralplan_architect_review and ralplan_critic_review with approval or an explicit blocker.",
     "Do not silently fall back to ordinary $plan/ralplan-only handling; keep autopilot-state.json, skill-active-state.json, HUD/statusline, and Codex goal-mode handoff guidance visible while the workflow is active.",
     "When Codex goal tools are available, call get_goal/create_goal only from the active thread handoff and treat the active goal as the completion contract until code-review and ultraqa are clean.",
+    LEADER_CONDUCTOR_BLOCK,
+    LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
   ].filter(Boolean).join(" ");
 }
 
@@ -2109,6 +2121,9 @@ function buildAdditionalContextMessage(
 ): string | null {
   if (!prompt) return null;
   const promptPriorityMessage = buildPromptPriorityMessage(prompt);
+  if (payload && isTypedAgentRolePayload(payload)) {
+    return promptPriorityMessage;
+  }
   const teamMode = readTeamModeConfig(cwd);
   const matches = detectKeywords(prompt).filter((entry) => teamMode.enabled || entry.skill !== "team");
   const match = matches[0] ?? null;
@@ -2982,6 +2997,31 @@ function readPayloadSessionId(payload: CodexHookPayload): string {
 
 function readPayloadThreadId(payload: CodexHookPayload): string {
   return safeString(payload.owner_codex_thread_id ?? payload.thread_id ?? payload.threadId).trim();
+}
+
+function readPayloadAgentRole(payload: CodexHookPayload): string {
+  const directRole = safeString(
+    payload.agent_role
+      ?? payload.agentRole
+      ?? payload.agent_type
+      ?? payload.agentType,
+  ).trim().toLowerCase();
+  if (directRole) return directRole;
+
+  const source = safeObject(payload.source);
+  const subagent = safeObject(source?.subagent);
+  const threadSpawn = safeObject(subagent?.thread_spawn);
+  return safeString(
+    threadSpawn?.agent_role
+      ?? threadSpawn?.agentRole
+      ?? threadSpawn?.agent_type
+      ?? threadSpawn?.agentType,
+  ).trim().toLowerCase();
+}
+
+function isTypedAgentRolePayload(payload: CodexHookPayload): boolean {
+  const agentRole = readPayloadAgentRole(payload);
+  return agentRole !== "" && KNOWN_TYPED_AGENT_ROLES.has(agentRole);
 }
 
 function readPayloadTurnId(payload: CodexHookPayload): string {
@@ -6109,6 +6149,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   stateDir: string,
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
+  if (isTypedAgentRolePayload(payload)) return null;
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
@@ -6176,6 +6217,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   stateDir: string,
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
+  if (isTypedAgentRolePayload(payload)) return null;
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveDeepInterviewStateForPreToolUse(cwd, stateDir, sessionId, threadId);
@@ -6351,6 +6393,7 @@ async function isTypedSubagentOrWorkerForPreToolUse(
   sessionId: string,
 ): Promise<boolean> {
   if (hasTeamWorkerEnvironment()) return true;
+  if (isTypedAgentRolePayload(payload)) return true;
   const threadId = readPayloadThreadId(payload);
   const nativeSessionId = readPayloadSessionId(payload);
   const currentSession = await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
@@ -6393,6 +6436,25 @@ async function readActiveMainRootConductorStateForPreToolUse(
   ));
   const hasActiveSkill = (skill: string): boolean => activeEntries.some((entry) => entry.skill === skill);
 
+  if (hasActiveSkill("autopilot")) {
+    const state = await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir);
+    const childPhase = deriveAutopilotChildPhase(state);
+    const hasMatchingAutopilotEntry = activeEntries.some((entry) => (
+      entry.skill === "autopilot"
+      && normalizeAutopilotPhase(safeString(entry.phase).trim().toLowerCase()) === childPhase
+    ));
+    if (
+      state
+      && childPhase
+      && childPhase !== "deep-interview"
+      && childPhase !== "ralplan"
+      && childPhase !== "rework"
+      && hasMatchingAutopilotEntry
+      && isActiveConductorModeState(state, "autopilot", sessionId)
+    ) {
+      return { mode: "autopilot", phase: childPhase };
+    }
+  }
 
   if (hasActiveSkill("ralph")) {
     const state = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
@@ -6450,10 +6512,15 @@ function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null 
 function isAllowedConductorMetadataPath(cwd: string, rawPath: string): boolean {
   const relativePath = normalizeRepoRelativePath(cwd, rawPath);
   if (!relativePath) return false;
-  if (relativePath === ".omx/context/ralplan-wrapper-notes.md") return true;
-  return CONDUCTOR_ALLOWED_METADATA_PREFIXES.some((prefix) => (
-    relativePath === prefix || relativePath.startsWith(`${prefix}/`)
-  ));
+  if (isProtectedPlanningStatePath(relativePath)) return false;
+  const artifactKind = classifyConductorArtifactKind(relativePath);
+  const actionKind = actionKindForConductorArtifact(artifactKind);
+  return authorizeConductorAction({
+    phase: "autopilot-supervision",
+    laneKind: "main-conductor",
+    actionKind,
+    artifactKind,
+  }).allowed;
 }
 
 function describeConductorBlockedWrite(toolName: string, blockedPath: string | undefined, pathCount: number): string {
@@ -7234,7 +7301,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
       additionalContext:
         `${LEADER_CONDUCTOR_GOLDEN_RULE} `
         + "Use specialized agents for source edits and plan/spec authorship. "
-        + `Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata under ${CONDUCTOR_ALLOWED_METADATA_PREFIXES.join(", ")}. `
+        + `Main-root Conductor may write only orchestration metadata/transport/ledger artifacts under ${CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES.join(", ")}; path location alone is not authorization for substantive deliverables. `
         + "Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
     },
   };
@@ -8712,8 +8779,9 @@ export async function dispatchCodexNativeHook(
   const eventSessionId = canonicalSessionId || nativeSessionId || undefined;
   const sessionIdForState = canonicalSessionId || nativeSessionId;
   let outputJson: Record<string, unknown> | null = null;
+  const typedAgentRolePayload = isTypedAgentRolePayload(payload);
   const isSubagentPromptSubmit = hookEventName === "UserPromptSubmit"
-    ? await isNativeSubagentHook(
+    ? typedAgentRolePayload || await isNativeSubagentHook(
       cwd,
       canonicalSessionId,
       nativeSessionId,

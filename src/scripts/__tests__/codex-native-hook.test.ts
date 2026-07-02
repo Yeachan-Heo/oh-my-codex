@@ -4218,6 +4218,94 @@ standardMaxRounds = 15
     }
   });
 
+  it("does not activate Conductor guidance for typed agent-role prompts without native subagent tracking", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-typed-agent-role-autopilot-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-typed-executor",
+          thread_id: "thread-typed-executor",
+          agent_role: "executor",
+          turn_id: "turn-typed-executor",
+          prompt: "$autopilot continue the current implementation lane",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState, null);
+      assert.equal(result.outputJson, null);
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "sessions", "sess-typed-executor", "autopilot-state.json")),
+        false,
+      );
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "sessions", "sess-typed-executor", "skill-active-state.json")),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inject Conductor guidance into typed agent-role autopilot continuations", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-typed-agent-role-active-autopilot-"));
+    try {
+      const sessionId = "sess-typed-executor-active";
+      const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        keyword: "$autopilot",
+        phase: "planning",
+        initialized_mode: "autopilot",
+        initialized_state_path: `.omx/state/sessions/${sessionId}/autopilot-state.json`,
+        session_id: sessionId,
+        active_skills: [
+          { skill: "autopilot", phase: "planning", active: true, session_id: sessionId },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "execution",
+        started_at: "2026-04-19T00:00:00.000Z",
+        updated_at: "2026-04-19T00:10:00.000Z",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-typed-executor-active",
+          turn_id: "turn-typed-executor-active",
+          agent_role: "executor",
+          prompt: "keep going now",
+        },
+        { cwd },
+      );
+
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.doesNotMatch(message, /Conductor mode contract:/);
+      assert.doesNotMatch(message, /Golden Rule: When the Main agent is acting in Conductor mode/);
+      assert.doesNotMatch(message, /Conductor reuse and ledger guidance:/);
+      assert.doesNotMatch(message, /typed subagents never receive this block/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat a corrupt leader kind=subagent tracker entry as native subagent prompt scope", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-corrupt-leader-subagent-"));
     try {
@@ -4619,6 +4707,10 @@ standardMaxRounds = 15
       assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
       assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
       assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
+      assert.match(message, /Conductor mode contract:/);
+      assert.match(message, /Golden Rule: When the Main agent is acting in Conductor mode/);
+      assert.match(message, /Conductor reuse and ledger guidance:/);
+      assert.match(message, /typed subagents never receive this block/);
 
       const autopilotState = JSON.parse(await readFile(
         join(cwd, ".omx", "state", "sessions", "sess-autopilot-ralplan-gate", "autopilot-state.json"),
@@ -10106,6 +10198,60 @@ exit 0
           thread_id: "thread-autopilot-rework",
           tool_name: "Edit",
           tool_use_id: "tool-autopilot-rework-src-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedImplementationEdit.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block typed agent-role implementation writes under active ralplan", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-typed-agent-role-ralplan-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-typed-executor-ralplan";
+      const sessionDir = join(stateDir, "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "ralplan",
+        session_id: sessionId,
+        thread_id: "thread-typed-executor-ralplan",
+        active_skills: [
+          {
+            skill: "autopilot",
+            phase: "ralplan",
+            active: true,
+            session_id: sessionId,
+            thread_id: "thread-typed-executor-ralplan",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        started_at: "2026-04-19T00:00:00.000Z",
+        updated_at: "2026-04-19T00:10:00.000Z",
+        session_id: sessionId,
+        thread_id: "thread-typed-executor-ralplan",
+      });
+
+      const allowedImplementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-typed-executor-ralplan",
+          agent_role: "executor",
+          tool_name: "Edit",
+          tool_use_id: "tool-typed-executor-ralplan-edit",
           tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
         },
         { cwd },
@@ -20271,6 +20417,32 @@ exit 0
         { cwd },
       );
       assert.equal(allowed.outputJson, null);
+
+      const protectedRawState = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralph-conductor-write",
+          tool_name: "Write",
+          tool_input: { file_path: ".omx/state/sessions/sess-ralph-conductor-write/autopilot-state.json" },
+        },
+        { cwd },
+      );
+      assert.equal(protectedRawState.outputJson?.decision, "block");
+
+      const safeTransport = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralph-conductor-write",
+          tool_name: "Bash",
+          tool_input: { command: "omx state write --input '{\"mode\":\"ralph\",\"current_phase\":\"executing\",\"active\":true}' --json" },
+        },
+        { cwd },
+      );
+      assert.equal(safeTransport.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
