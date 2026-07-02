@@ -20108,6 +20108,15 @@ exit 0
         "echo `mv src/old.ts src/new.ts`",
         "bash -lc \"sed -i 's/old/new/' src/runtime.ts\"",
         "bash -lc \"perl -pi -e 's/old/new/' src/runtime.ts\"",
+        "do_src_write() { cp package.json src/package-copy.json; }; do_src_write",
+        "do_src_write() ( mv src/old.ts src/new.ts ); time do_src_write",
+        "cat <(cp package.json src/package-copy.json)",
+        "cat >(mv src/old.ts src/new.ts)",
+        "cat > .omx/state/conductor.log <<EOF\n$(cp package.json src/package-copy.json)\nEOF",
+        "curl --output-dir src -O https://example.test/archive.tgz",
+        "curl --output-dir=src -O https://example.test/archive.tgz",
+        "wget -P src https://example.test/archive.tgz",
+        "wget --directory-prefix=src https://example.test/archive.tgz",
       ];
       for (const command of blockedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -20122,7 +20131,7 @@ exit 0
           { cwd },
         );
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
-        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* mutation target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:git worktree mutation|package manager install) is not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* mutation target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:git worktree mutation|package manager install|unquoted heredoc expansion) is not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
 
       const allowedCommands = [
@@ -20146,6 +20155,11 @@ exit 0
         "(cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/subshell-ledger.json)",
         "sed -i 's/old/new/' .omx/state/conductor-ledger.json",
         "perl -pi -e 's/old/new/' .omx/state/conductor-ledger.json",
+        "cp src/source.ts .omx/state/source-copy.ts",
+        "install src/source.ts -t .omx/state",
+        "ln src/source.ts -t .omx/handoffs/run-1",
+        "curl --output-dir .omx/state -O https://example.test/archive.tgz",
+        "wget -P .omx/state https://example.test/archive.tgz",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(

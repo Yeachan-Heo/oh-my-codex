@@ -5284,6 +5284,34 @@ function extractNestedCommandSubstitutionStringsForStateScan(command: string): s
   return nested;
 }
 
+function extractNestedProcessSubstitutionStringsForStateScan(command: string): string[] {
+  const nested: string[] = [];
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (quote !== "'" && (char === "<" || char === ">") && command[index + 1] === "(") {
+      const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
+      const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+      if (substitutionBody) nested.push(substitutionBody);
+      index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+    }
+  }
+  return nested;
+}
+
 function isPackageManagerCommandWord(word: string): boolean {
   const base = shellWordBaseName(word);
   return base === "npm" || base === "pnpm" || base === "yarn" || base === "npx" || base === "pnpx";
@@ -6479,6 +6507,10 @@ function findConductorWrapperOperandIndex(commandName: string, words: string[], 
   }
 }
 
+function isConductorCopyLikeMutationCommand(commandName: string): boolean {
+  return commandName === "cp" || commandName === "install" || commandName === "ln";
+}
+
 function collectConductorDownloaderOutputTargets(
   commandName: string,
   words: string[],
@@ -6492,8 +6524,13 @@ function collectConductorDownloaderOutputTargets(
     if (isEnvironmentAssignmentWord(word)) continue;
 
     const inlineCurlOutput = commandName === "curl" ? word.match(/^--output=(.+)$/) : null;
+    const inlineCurlOutputDir = commandName === "curl" ? word.match(/^--output-dir=(.+)$/) : null;
     const inlineWgetOutput = commandName === "wget" ? word.match(/^--output-document=(.+)$/) : null;
-    const inlineTarget = inlineCurlOutput?.[1] ?? inlineWgetOutput?.[1];
+    const inlineWgetOutputDir = commandName === "wget" ? word.match(/^--directory-prefix=(.+)$/) : null;
+    const inlineTarget = inlineCurlOutput?.[1]
+      ?? inlineCurlOutputDir?.[1]
+      ?? inlineWgetOutput?.[1]
+      ?? inlineWgetOutputDir?.[1];
     if (inlineTarget !== undefined) {
       sawOutputFlag = true;
       const target = safeString(inlineTarget).trim();
@@ -6501,8 +6538,8 @@ function collectConductorDownloaderOutputTargets(
       continue;
     }
 
-    const separateOutputFlag = (commandName === "curl" && (word === "-o" || word === "--output"))
-      || (commandName === "wget" && (word === "-O" || word === "--output-document"));
+    const separateOutputFlag = (commandName === "curl" && (word === "-o" || word === "--output" || word === "--output-dir"))
+      || (commandName === "wget" && (word === "-O" || word === "--output-document" || word === "-P" || word === "--directory-prefix"));
     if (!separateOutputFlag) continue;
 
     sawOutputFlag = true;
@@ -6584,6 +6621,7 @@ function collectConductorPerlTargets(words: string[], commandIndex: number): str
 
 function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] {
   const targets: string[] = [];
+  const positionalTargets: string[] = [];
   const targetDirectoryTargets: string[] = [];
   const supportsTargetDirectory = CONDUCTOR_BASH_TARGET_DIRECTORY_COMMANDS.has(commandName);
   let sawTargetDirectory = false;
@@ -6645,9 +6683,11 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
     ) {
       continue;
     }
-    targets.push(word);
+    positionalTargets.push(word);
   }
-  return sawTargetDirectory ? targetDirectoryTargets : targets;
+  if (sawTargetDirectory) return targetDirectoryTargets;
+  if (isConductorCopyLikeMutationCommand(commandName)) return positionalTargets.slice(-1);
+  return [...targets, ...positionalTargets];
 }
 
 function extractConductorBashMutations(command: string): ConductorBashMutation[] {
@@ -6720,6 +6760,12 @@ function evaluateConductorBashWrite(
       blockedDetail: "Bash nested shell execution is dynamic and cannot be validated for Main-root Conductor writes",
     };
   }
+  if (hasUnsafeUnquotedHeredocExpansion(commandWithHeredocBodies)) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash unquoted heredoc expansion is not workflow state/ledger/mailbox/handoff metadata",
+    };
+  }
 
   const shellMutations = extractConductorBashMutations(normalizedCommand);
   if (shellMutations.length > 0) {
@@ -6740,11 +6786,19 @@ function evaluateConductorBashWrite(
     }
   }
 
+  for (const functionBody of extractInvokedShellFunctionBodiesForStateScan(normalizedCommand)) {
+    const nestedDecision = evaluateConductorBashWrite(cwd, functionBody, depth + 1);
+    if (!nestedDecision.allowed) return nestedDecision;
+  }
   for (const nestedCommand of extractNestedShellCommandStringsForStateScan(normalizedCommand)) {
     const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
     if (!nestedDecision.allowed) return nestedDecision;
   }
   for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(normalizedCommand)) {
+    const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
+    if (!nestedDecision.allowed) return nestedDecision;
+  }
+  for (const nestedCommand of extractNestedProcessSubstitutionStringsForStateScan(normalizedCommand)) {
     const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
     if (!nestedDecision.allowed) return nestedDecision;
   }
