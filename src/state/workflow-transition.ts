@@ -93,11 +93,34 @@ function shellWords(statement: string): string[] {
   return words;
 }
 
-function shellStatements(command: string): string[] {
-  const statements: string[] = [];
+interface ShellStatementRecord {
+  text: string;
+  subshellDepth: number;
+  closesSubshells: number;
+}
+
+function shellStatementRecords(command: string): ShellStatementRecord[] {
+  const statements: ShellStatementRecord[] = [];
   let current = '';
   let quote: 'single' | 'double' | null = null;
   let escaped = false;
+  let subshellDepth = 0;
+  let statementSubshellDepth = 0;
+  let closesSubshells = 0;
+
+  const pushStatement = () => {
+    const statement = current.trim();
+    if (statement) {
+      statements.push({
+        text: statement,
+        subshellDepth: statementSubshellDepth,
+        closesSubshells,
+      });
+    }
+    current = '';
+    statementSubshellDepth = subshellDepth;
+    closesSubshells = 0;
+  };
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index]!;
@@ -124,20 +147,35 @@ function shellStatements(command: string): string[] {
       continue;
     }
 
-    if (!quote && (char === '\n' || char === ';' || (char === '&' && next === '&') || (char === '|' && next === '|'))) {
-      const statement = current.trim();
-      if (statement) statements.push(statement);
-      current = '';
-      if ((char === '&' && next === '&') || (char === '|' && next === '|')) index += 1;
+    if (!quote && char === '(' && !current.trim()) {
+      subshellDepth += 1;
+      statementSubshellDepth = subshellDepth;
+      current += char;
       continue;
     }
 
     current += char;
+
+    if (!quote && char === ')' && subshellDepth > 0) {
+      subshellDepth -= 1;
+      closesSubshells += 1;
+      continue;
+    }
+
+    if (!quote && (char === '\n' || char === ';' || (char === '&' && next === '&') || (char === '|' && next === '|'))) {
+      current = current.slice(0, -1);
+      pushStatement();
+      if ((char === '&' && next === '&') || (char === '|' && next === '|')) index += 1;
+      continue;
+    }
   }
 
-  const statement = current.trim();
-  if (statement) statements.push(statement);
+  pushStatement();
   return statements;
+}
+
+function shellStatements(command: string): string[] {
+  return shellStatementRecords(command).map((statement) => statement.text);
 }
 
 function isShellName(name: string): boolean {
@@ -320,19 +358,68 @@ function unwrapEnvCommand(words: string[], cwd: string): { words: string[]; cwd:
   return { words: words.slice(index), cwd: envCwd };
 }
 
-function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd = ''): boolean {
-  const targetPath = normalizeShellPath(path);
-  let cwd = initialCwd;
-  for (const statement of shellStatements(command)) {
-    const words = shellWords(statement);
-    if (words.length === 0) continue;
-    if (words[0] === 'cd' && words[1]) {
-      cwd = resolveCommandOperand(cwd, words[1]);
+function groupedShellWords(statement: string): string[] {
+  const words = shellWords(statement);
+  while (words.length > 0) {
+    const first = words[0]!;
+    if (first === '{') {
+      words.shift();
       continue;
     }
+    const stripped = first.replace(/^\(+/, '');
+    if (stripped !== first) {
+      if (stripped) words[0] = stripped;
+      else words.shift();
+      continue;
+    }
+    break;
+  }
 
-    const unwrapped = unwrapExecutionCommand(words, cwd);
-    if (shellExecutionMatches(unwrapped.words, unwrapped.cwd, targetPath)) return true;
+  while (words.length > 0) {
+    const lastIndex = words.length - 1;
+    const last = words[lastIndex]!;
+    if (last === '}') {
+      words.pop();
+      continue;
+    }
+    const stripped = last.replace(/[)}]+$/, '');
+    if (stripped !== last) {
+      if (stripped) words[lastIndex] = stripped;
+      else words.pop();
+      continue;
+    }
+    break;
+  }
+
+  return words;
+}
+
+function scopedCwd(cwds: Map<number, string>, depth: number, initialCwd: string): string {
+  if (cwds.has(depth)) return cwds.get(depth)!;
+  if (depth <= 0) return initialCwd;
+  return scopedCwd(cwds, depth - 1, initialCwd);
+}
+
+function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd = ''): boolean {
+  const targetPath = normalizeShellPath(path);
+  const cwds = new Map<number, string>([[0, initialCwd]]);
+  for (const statement of shellStatementRecords(command)) {
+    const cwd = scopedCwd(cwds, statement.subshellDepth, initialCwd);
+    const words = groupedShellWords(statement.text);
+    if (words.length > 0) {
+      if (words[0] === 'cd' && words[1]) {
+        cwds.set(statement.subshellDepth, resolveCommandOperand(cwd, words[1]));
+      } else {
+        const unwrapped = unwrapExecutionCommand(words, cwd);
+        if (shellExecutionMatches(unwrapped.words, unwrapped.cwd, targetPath)) return true;
+      }
+    }
+
+    if (statement.closesSubshells > 0) {
+      for (let depth = statement.subshellDepth; depth > statement.subshellDepth - statement.closesSubshells; depth -= 1) {
+        cwds.delete(depth);
+      }
+    }
   }
   return false;
 }
