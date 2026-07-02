@@ -6417,6 +6417,7 @@ async function hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(
   cwd: string,
   sessionId: string,
 ): Promise<boolean> {
+  if (hasTeamWorkerEnvironment()) return true;
   const source = safeObject(payload.source);
   const subagent = safeObject(source.subagent);
   const threadSpawn = safeObject(subagent.thread_spawn);
@@ -6428,7 +6429,6 @@ async function hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(
   ).trim();
   if (!parentThreadId) return false;
   if (!isTypedAgentRolePayload(payload)) return false;
-  if (hasTeamWorkerEnvironment()) return true;
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
   const session = trackingState?.sessions?.[sessionId];
   if (!session) return false;

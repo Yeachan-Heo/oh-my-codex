@@ -782,6 +782,57 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("preserves team-worker typed subagent PreToolUse exemption without thread spawn provenance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-typed-pretool-exempt-"));
+    const sessionId = "sess-team-worker-typed-pretool-exempt";
+    const stateDir = join(cwd, ".omx", "state");
+    const basePayload = {
+      hook_event_name: "PreToolUse",
+      cwd,
+      session_id: sessionId,
+      thread_id: "thread-team-worker-typed-pretool-exempt",
+      agent_role: "executor",
+      tool_name: "Edit",
+      tool_use_id: "tool-team-worker-typed-pretool-exempt",
+      tool_input: { file_path: "src/runtime.ts", old_string: "a", new_string: "b" },
+    };
+    try {
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "critic-review",
+        session_id: sessionId,
+      });
+
+      const nonTeamWorkerTypedSubagent = await dispatchCodexNativeHook(basePayload, { cwd });
+      assert.equal(
+        (nonTeamWorkerTypedSubagent.outputJson as { decision?: string } | null)?.decision,
+        "block",
+        "typed/native subagent PreToolUse without trusted thread_spawn provenance must remain protected outside team workers",
+      );
+
+      process.env.OMX_TEAM_INTERNAL_WORKER = "typed-pretool-exempt/worker-1";
+      process.env.OMX_TEAM_WORKER = "typed-pretool-exempt/worker-1";
+
+      const teamWorkerTypedSubagent = await dispatchCodexNativeHook(basePayload, { cwd });
+      assert.equal(
+        teamWorkerTypedSubagent.outputJson,
+        null,
+        "team workers must bypass typed-subagent thread_spawn provenance requirements before planning guards block implementation tools",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("preserves deep-interview PreToolUse planning guard as hook-specific deny JSON", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-deep-interview-pretool-boundary-"));
     const sessionId = "sess-cli-deep-interview-pretool-boundary";
