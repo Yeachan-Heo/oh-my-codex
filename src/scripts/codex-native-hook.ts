@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
 import { extname, isAbsolute, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
@@ -41,7 +41,7 @@ import {
   writeTeamLeaderAttention,
   writeTeamPhase,
 } from "../team/state.js";
-import { omxNotepadPath, resolveProjectMemoryPath } from "../utils/paths.js";
+import { codexAgentsDir, omxNotepadPath, projectCodexAgentsDir, resolveProjectMemoryPath } from "../utils/paths.js";
 import { findGitLayout } from "../utils/git-layout.js";
 import { getBaseStateDir, getStateFilePath, getStatePath, getAuthoritativeActiveStatePaths } from "../mcp/state-paths.js";
 import {
@@ -204,6 +204,8 @@ const RALPH_LIVE_RISK_PATTERNS = [
   /\b(?:telegram|vps|service|restart|send|notify|notification|notifications|cron)\b/i,
 ] as const;
 const KNOWN_TYPED_AGENT_ROLES = new Set(Object.keys(AGENT_DEFINITIONS));
+let installedTypedAgentRoleNamesCacheKey = "";
+let installedTypedAgentRoleNamesCache: Set<string> = new Set();
 const RALPH_TASK_TEXT_FIELDS = [
   "task_description",
   "taskDescription",
@@ -3019,9 +3021,33 @@ function readPayloadAgentRole(payload: CodexHookPayload): string {
   ).trim().toLowerCase();
 }
 
+function readInstalledTypedAgentRoleNames(): Set<string> {
+  const cacheKey = [codexAgentsDir(), projectCodexAgentsDir()].join("|");
+  if (installedTypedAgentRoleNamesCacheKey === cacheKey) return installedTypedAgentRoleNamesCache;
+
+  const installedRoleNames = new Set<string>();
+  for (const agentsDir of [codexAgentsDir(), projectCodexAgentsDir()]) {
+    try {
+      for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".toml")) continue;
+        installedRoleNames.add(entry.name.slice(0, -5).trim().toLowerCase());
+      }
+    } catch {
+      // Ignore missing or unreadable agent directories; built-in definitions remain authoritative.
+    }
+  }
+
+  installedTypedAgentRoleNamesCacheKey = cacheKey;
+  installedTypedAgentRoleNamesCache = installedRoleNames;
+  return installedTypedAgentRoleNamesCache;
+}
+
 function isTypedAgentRolePayload(payload: CodexHookPayload): boolean {
   const agentRole = readPayloadAgentRole(payload);
-  return agentRole !== "" && KNOWN_TYPED_AGENT_ROLES.has(agentRole);
+  return agentRole !== "" && (
+    KNOWN_TYPED_AGENT_ROLES.has(agentRole)
+    || readInstalledTypedAgentRoleNames().has(agentRole)
+  );
 }
 
 function readPayloadTurnId(payload: CodexHookPayload): string {
@@ -6498,19 +6524,6 @@ async function readActiveMainRootConductorStateForPreToolUse(
 
   return null;
 }
-
-const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
-  ".omx/state",
-  ".omx/context",
-  ".omx/ultragoal",
-  ".omx/ralph",
-  ".omx/team",
-  ".omx/mailbox",
-  ".omx/handoff",
-  ".omx/handoffs",
-  ".omx/goals",
-  ".omx/notepad",
-] as const;
 
 function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null {
   const candidate = rawPath.trim().replace(/^['"]|['"]$/g, "");

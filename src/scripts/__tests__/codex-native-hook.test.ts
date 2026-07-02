@@ -4252,6 +4252,53 @@ standardMaxRounds = 15
     }
   });
 
+  it("treats installed custom native agent roles as typed lanes for prompt submit", async () => {
+    await withIsolatedHome("custom-native-agent-role", async (homeDir) => {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-custom-agent-role-autopilot-"));
+      try {
+        const agentsDir = join(homeDir, ".codex", "agents");
+        await mkdir(agentsDir, { recursive: true });
+        await writeFile(
+          join(agentsDir, "custom-executor.toml"),
+          [
+            '# oh-my-codex agent: custom-executor',
+            'name = "custom-executor"',
+            'description = "Custom executor lane"',
+          ].join("\n"),
+          "utf-8",
+        );
+        await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "UserPromptSubmit",
+            cwd,
+            session_id: "sess-custom-executor",
+            thread_id: "thread-custom-executor",
+            agent_type: "custom-executor",
+            turn_id: "turn-custom-executor",
+            prompt: "$autopilot continue the current implementation lane",
+          },
+          { cwd },
+        );
+
+        assert.equal(result.omxEventName, "keyword-detector");
+        assert.equal(result.skillState, null);
+        assert.equal(result.outputJson, null);
+        assert.equal(
+          existsSync(join(cwd, ".omx", "state", "sessions", "sess-custom-executor", "autopilot-state.json")),
+          false,
+        );
+        assert.equal(
+          existsSync(join(cwd, ".omx", "state", "sessions", "sess-custom-executor", "skill-active-state.json")),
+          false,
+        );
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("does not inject Conductor guidance into typed agent-role autopilot continuations", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-typed-agent-role-active-autopilot-"));
     try {
