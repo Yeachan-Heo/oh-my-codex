@@ -7173,6 +7173,50 @@ exit 0
       assert.equal((blockedHandoffWithSameCommandArtifactExecution.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(String((blockedHandoffWithSameCommandArtifactExecution.outputJson as { reason?: string } | null)?.reason ?? ""), /same-command|Bash write intent|handoff/i);
 
+      for (const [toolUseId, artifactDir, scriptName, executionLine] of [
+        [
+          "tool-di-reported-handoff-with-cd-relative-sh-exec",
+          ".omx/context",
+          "run.sh",
+          "cd .omx/context && sh run.sh",
+        ],
+        [
+          "tool-di-reported-handoff-with-cd-relative-dot-source",
+          ".omx/specs",
+          "env.sh",
+          "cd .omx/specs && . env.sh",
+        ],
+        [
+          "tool-di-reported-handoff-with-cd-relative-direct-exec",
+          ".omx/context",
+          "run-relative.sh",
+          "cd .omx/context && ./run-relative.sh",
+        ],
+      ] as const) {
+        const blockedCwdRelativeArtifactExecution = await preToolUse(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-artifact",
+            tool_name: "Bash",
+            tool_use_id: toolUseId,
+            tool_input: {
+              command: [
+                `mkdir -p ${artifactDir}`,
+                `cat > ${artifactDir}/${scriptName} <<'EOF'`,
+                "printf '%s\\n' same-command-cwd-relative-artifact-executed",
+                "EOF",
+                executionLine,
+                `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+              ].join("\n"),
+            },
+          },
+          { cwd },
+        );
+        assert.equal((blockedCwdRelativeArtifactExecution.outputJson as { decision?: string } | null)?.decision, "block", executionLine);
+        assert.match(String((blockedCwdRelativeArtifactExecution.outputJson as { reason?: string } | null)?.reason ?? ""), /same-command|Bash write intent|handoff/i, executionLine);
+      }
+
       const blockedHandoffWithImplementationWrite = await preToolUse(
         {
           hook_event_name: "PreToolUse",

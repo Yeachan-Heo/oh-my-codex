@@ -3825,6 +3825,28 @@ function normalizeCommandDirectoryTarget(rawPath: string): string | null {
   return trimmed;
 }
 
+function resolveSimpleCdCommandCwd(currentCwd: string, words: string[]): string | null {
+  const commandIndex = findWrappedCommandPositionIndex(words, 0);
+  if (commandIndex === null || shellWordBaseName(words[commandIndex] ?? "") !== "cd") return null;
+
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (word === "-L" || word === "-P" || word === "-e") continue;
+    if (word.startsWith("-")) return null;
+
+    const normalizedTarget = normalizeCommandDirectoryTarget(word);
+    if (normalizedTarget === null) return null;
+    try {
+      return resolve(currentCwd, normalizedTarget);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function isEnvCwdChangingOption(word: string): boolean {
   return word === "-C"
     || word === "--chdir"
@@ -4026,23 +4048,30 @@ function firstShellScriptOperand(words: string[], shellWordIndex: number): strin
 }
 
 function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): boolean {
-  const scanCommand = (currentCommand: string, activeCommands: Set<string>, writtenTargets: Set<string>): boolean => {
+  const scanCommand = (currentCwd: string, currentCommand: string, activeCommands: Set<string>, writtenTargets: Set<string>): boolean => {
     const normalizedCommand = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(currentCommand));
-    const commandKey = normalizedCommand.trim();
-    if (!commandKey || activeCommands.has(commandKey)) return false;
+    const commandKey = `${currentCwd}\0${normalizedCommand.trim()}`;
+    if (!normalizedCommand.trim() || activeCommands.has(commandKey)) return false;
 
     const assignments = extractCommandLiteralAssignments(normalizedCommand);
     const nextActiveCommands = new Set(activeCommands);
     nextActiveCommands.add(commandKey);
+    let effectiveCwd = currentCwd;
 
     for (const segment of splitShellCommandSegments(normalizedCommand)) {
       const words = tokenizeShellWords(segment);
+      const cdCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
+      if (cdCwd !== null) {
+        effectiveCwd = cdCwd;
+        continue;
+      }
+
       for (let index = 0; index < words.length; index += 1) {
         const word = words[index] ?? "";
         const operand = word === "source" || word === "."
-          ? normalizeSameCommandScriptTarget(cwd, firstNonOptionSourceOperand(words, index), assignments)
+          ? normalizeSameCommandScriptTarget(effectiveCwd, firstNonOptionSourceOperand(words, index), assignments)
           : isNestedShellCommandWord(word)
-            ? normalizeSameCommandScriptTarget(cwd, firstShellScriptOperand(words, index), assignments)
+            ? normalizeSameCommandScriptTarget(effectiveCwd, firstShellScriptOperand(words, index), assignments)
             : null;
         if (operand && writtenTargets.has(operand)) return true;
       }
@@ -4050,15 +4079,15 @@ function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): b
       const commandWordIndex = findWrappedCommandPositionIndex(words, 0);
       const directExecutionTarget = commandWordIndex === null
         ? null
-        : normalizeSameCommandScriptTarget(cwd, words[commandWordIndex] ?? "", assignments);
+        : normalizeSameCommandScriptTarget(effectiveCwd, words[commandWordIndex] ?? "", assignments);
       if (directExecutionTarget && writtenTargets.has(directExecutionTarget)) return true;
 
       for (const nestedCommand of extractNestedShellCommandStringsForStateScan(segment)) {
-        if (scanCommand(nestedCommand, nextActiveCommands, writtenTargets)) return true;
+        if (scanCommand(effectiveCwd, nestedCommand, nextActiveCommands, writtenTargets)) return true;
       }
 
       for (const target of extractDeepInterviewCommandWriteTargets(segment)) {
-        const normalizedTarget = normalizeSameCommandScriptTarget(cwd, target, assignments);
+        const normalizedTarget = normalizeSameCommandScriptTarget(effectiveCwd, target, assignments);
         if (normalizedTarget) writtenTargets.add(normalizedTarget);
       }
     }
@@ -4066,7 +4095,7 @@ function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): b
     return false;
   };
 
-  return scanCommand(command, new Set(), new Set());
+  return scanCommand(cwd, command, new Set(), new Set());
 }
 
 
