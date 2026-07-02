@@ -6730,7 +6730,7 @@ function collectConductorDownloaderOutputTargets(
   return { sawOutputFlag, targets };
 }
 
-function collectConductorSedTargets(words: string[], commandIndex: number): string[] {
+function collectConductorSedTargets(words: string[], commandIndex: number): string[] | null {
   const targets: string[] = [];
   let sawInPlace = false;
   let sawExplicitScript = false;
@@ -6767,10 +6767,10 @@ function collectConductorSedTargets(words: string[], commandIndex: number): stri
     targets.push(word);
   }
 
-  return sawInPlace ? targets : [];
+  return sawInPlace ? targets : null;
 }
 
-function collectConductorPerlTargets(words: string[], commandIndex: number): string[] {
+function collectConductorPerlTargets(words: string[], commandIndex: number): string[] | null {
   const targets: string[] = [];
   let sawInPlace = false;
 
@@ -6794,7 +6794,7 @@ function collectConductorPerlTargets(words: string[], commandIndex: number): str
     targets.push(word);
   }
 
-  return sawInPlace ? targets : [];
+  return sawInPlace ? targets : null;
 }
 
 const CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES = new Set([
@@ -6848,7 +6848,7 @@ function collectConductorXargsMutationTargets(words: string[], commandIndex: num
   return null;
 }
 
-function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] {
+function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] | null {
   const targets: string[] = [];
   const positionalTargets: string[] = [];
   const targetDirectoryTargets: string[] = [];
@@ -6970,10 +6970,8 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
         const xargsTargets = collectConductorXargsMutationTargets(words, index);
         if (xargsTargets !== null) mutations.push({ command: commandName, targets: xargsTargets });
       } else if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
-        mutations.push({
-          command: commandName,
-          targets: collectConductorMutationCommandTargets(commandName, words, index),
-        });
+        const mutationTargets = collectConductorMutationCommandTargets(commandName, words, index);
+        if (mutationTargets !== null) mutations.push({ command: commandName, targets: mutationTargets });
       }
       commandStart = false;
     }

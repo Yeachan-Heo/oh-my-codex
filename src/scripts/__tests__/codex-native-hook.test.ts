@@ -20734,6 +20734,8 @@ exit 0
         "ln .omx/state/conductor-ledger.json -t .omx/handoffs/run-1",
         "if true; then cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/if-ledger.json; fi",
         "(cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/subshell-ledger.json)",
+        "sed -n '1,20p' src/runtime.ts",
+        "perl -ne 'print' src/runtime.ts",
         "sed -i 's/old/new/' .omx/state/conductor-ledger.json",
         "perl -pi -e 's/old/new/' .omx/state/conductor-ledger.json",
         "cp src/source.ts .omx/state/source-copy.ts",
