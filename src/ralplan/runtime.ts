@@ -35,7 +35,7 @@ export interface RalplanReviewResult {
   thread_id?: string;
   native_session_id?: string;
   artifact_path?: string;
-  agent_role?: 'planner' | 'architect' | 'critic';
+  agent_role?: 'architect' | 'critic';
   lane_id?: string;
   tracker_path?: string;
 }
@@ -242,6 +242,28 @@ function buildRalplanConsensusGate(
   };
 }
 
+
+function hasNativeOrThreadEvidence(review: RalplanReviewResult): boolean {
+  return review.provenance_kind === 'native_subagent'
+    || Boolean(review.thread_id?.trim())
+    || Boolean(review.native_session_id?.trim())
+    || Boolean(review.tracker_path?.trim());
+}
+
+function normalizeReviewForLane(
+  review: RalplanReviewResult,
+  laneRole: 'architect' | 'critic',
+  options: { requireNativeSubagents?: boolean },
+): RalplanReviewResult {
+  if (review.agent_role !== undefined && review.agent_role !== laneRole) {
+    throw new Error(`ralplan_${laneRole}_review_role_mismatch: expected agent_role=${laneRole}, received ${String(review.agent_role)}`);
+  }
+  if (review.agent_role === undefined && (options.requireNativeSubagents || hasNativeOrThreadEvidence(review))) {
+    throw new Error(`ralplan_${laneRole}_review_role_missing: native or thread-backed ${laneRole} review must declare agent_role=${laneRole}`);
+  }
+  return { ...review, agent_role: laneRole };
+}
+
 async function updateRalplanState(
   cwd: string,
   updates: RalplanModeUpdates,
@@ -314,10 +336,10 @@ export async function runRalplanConsensus(
         ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
       });
-      const architectReview = await executor.architectReview({
+      const architectReview = normalizeReviewForLane(await executor.architectReview({
         ...iterationContext,
         draft,
-      });
+      }), 'architect', gateOptions);
       architectReviews.push(architectReview);
       if (architectReview.artifacts) Object.assign(aggregatedArtifacts, architectReview.artifacts);
       await recordRalplanSubagentTurn(cwd, options.sessionId, {
@@ -326,7 +348,7 @@ export async function runRalplanConsensus(
         laneId: architectReview.lane_id,
         scope: options.task,
         summary: architectReview.summary,
-        preserveCompletionEvidence: Boolean(options.requireNativeSubagents),
+        preserveCompletionEvidence: true,
       });
 
       if (architectReview.verdict !== 'approve') {
@@ -384,11 +406,11 @@ export async function runRalplanConsensus(
         ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
       });
-      const criticReview = await executor.criticReview({
+      const criticReview = normalizeReviewForLane(await executor.criticReview({
         ...iterationContext,
         draft,
         architectReview,
-      });
+      }), 'critic', gateOptions);
       criticReviews.push(criticReview);
       if (criticReview.artifacts) Object.assign(aggregatedArtifacts, criticReview.artifacts);
       await recordRalplanSubagentTurn(cwd, options.sessionId, {
@@ -397,7 +419,7 @@ export async function runRalplanConsensus(
         laneId: criticReview.lane_id,
         scope: options.task,
         summary: criticReview.summary,
-        preserveCompletionEvidence: Boolean(options.requireNativeSubagents),
+        preserveCompletionEvidence: true,
       });
 
       const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);
