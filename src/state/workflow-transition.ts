@@ -94,18 +94,92 @@ function shellWords(statement: string): string[] {
 }
 
 function shellStatements(command: string): string[] {
-  return command
-    .split(/(?:\n|;|&&|\|\|)/)
-    .map((statement) => statement.trim())
-    .filter(Boolean);
+  const statements: string[] = [];
+  let current = '';
+  let quote: 'single' | 'double' | null = null;
+  let escaped = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    const next = command[index + 1];
+
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== 'single') {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && quote !== 'double') {
+      current += char;
+      quote = quote === 'single' ? null : 'single';
+      continue;
+    }
+    if (char === '"' && quote !== 'single') {
+      current += char;
+      quote = quote === 'double' ? null : 'double';
+      continue;
+    }
+
+    if (!quote && (char === '\n' || char === ';' || (char === '&' && next === '&') || (char === '|' && next === '|'))) {
+      const statement = current.trim();
+      if (statement) statements.push(statement);
+      current = '';
+      if ((char === '&' && next === '&') || (char === '|' && next === '|')) index += 1;
+      continue;
+    }
+
+    current += char;
+  }
+
+  const statement = current.trim();
+  if (statement) statements.push(statement);
+  return statements;
 }
 
 function isShellName(name: string): boolean {
   return /^(?:sh|bash|dash|zsh|ksh|fish)$/.test(name);
 }
 
+function isScriptInterpreterName(name: string): boolean {
+  return /^(?:python[0-9.]?|python3(?:\.[0-9]+)?|node|ruby|perl|php|lua|deno|bun)$/.test(name);
+}
+
+function isProtectedArtifactPath(path: string): boolean {
+  return /^(?:\.\/)?\.omx\/(?:context|specs)\/[^"'\s;|&<>]+$/.test(path);
+}
+
 function resolveCommandOperand(cwd: string, operand: string): string {
   return joinShellPath(cwd, operand.replace(/^\.\//, ''));
+}
+
+function shellScriptOperand(args: string[], cwd: string, targetPath: string): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === '--') {
+      const operand = args[index + 1];
+      return Boolean(operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath));
+    }
+    if (word === '-c' || word === '--command') {
+      const inlineCommand = args[index + 1];
+      return Boolean(inlineCommand && hasTokenizedExecutionOfPath(inlineCommand, targetPath, cwd));
+    }
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word)) {
+      const inlineCommand = args[index + 1];
+      return Boolean(inlineCommand && hasTokenizedExecutionOfPath(inlineCommand, targetPath, cwd));
+    }
+    if (word === '-o' || word === '+o' || word === '-O' || word === '+O' || word === '--init-file' || word === '--rcfile') {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith('--init-file=') || word.startsWith('--rcfile=')) continue;
+    if (word.startsWith('-') || word.startsWith('+')) continue;
+    return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+  }
+  return false;
 }
 
 function shellExecutionMatches(words: string[], cwd: string, targetPath: string): boolean {
@@ -118,18 +192,11 @@ function shellExecutionMatches(words: string[], cwd: string, targetPath: string)
   }
 
   if (isShellName(commandName)) {
-    const args = words.slice(1);
-    for (let index = 0; index < args.length; index += 1) {
-      const word = args[index]!;
-      if (word === '--') continue;
-      if (word === '-c') {
-        const inlineCommand = args[index + 1];
-        return Boolean(inlineCommand && hasTokenizedExecutionOfPath(inlineCommand, targetPath, cwd));
-      }
-      if (word.startsWith('-')) continue;
-      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
-    }
-    return false;
+    return shellScriptOperand(words.slice(1), cwd, targetPath);
+  }
+
+  if (isScriptInterpreterName(commandName)) {
+    return shellScriptOperand(words.slice(1), cwd, targetPath);
   }
 
   if (commandName.startsWith('./') || commandName.includes('/')) {
@@ -164,6 +231,26 @@ function findTimeWrapperOperandIndex(words: string[], startIndex: number): numbe
   return null;
 }
 
+function findTimeoutWrapperOperandIndex(words: string[], startIndex: number): number | null {
+  let sawDuration = false;
+  for (let index = startIndex; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (!word || word === '--' || /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(word)) continue;
+    if (word === '-k' || word === '--kill-after' || word === '-s' || word === '--signal') {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith('--kill-after=') || word.startsWith('--signal=')) continue;
+    if (word.startsWith('-')) continue;
+    if (!sawDuration) {
+      sawDuration = true;
+      continue;
+    }
+    return index;
+  }
+  return null;
+}
+
 function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]; cwd: string } {
   let currentWords = words;
   let currentCwd = cwd;
@@ -181,7 +268,9 @@ function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]
       ? findDirectWrapperOperandIndex(currentWords, 1)
       : commandName === 'time'
         ? findTimeWrapperOperandIndex(currentWords, 1)
-        : null;
+        : commandName === 'timeout' || commandName === 'gtimeout'
+          ? findTimeoutWrapperOperandIndex(currentWords, 1)
+          : null;
     if (operandIndex === null) return { words: currentWords, cwd: currentCwd };
     currentWords = currentWords.slice(operandIndex);
   }
@@ -205,6 +294,11 @@ function unwrapEnvCommand(words: string[], cwd: string): { words: string[]; cwd:
       if (!next) return { words: [], cwd: envCwd };
       envCwd = resolveCommandOperand(envCwd, next);
       index += 2;
+      continue;
+    }
+    if (word.startsWith('-C') && word.length > 2) {
+      envCwd = resolveCommandOperand(envCwd, word.slice(2));
+      index += 1;
       continue;
     }
     if (word.startsWith('--chdir=')) {
@@ -247,12 +341,21 @@ function collectProtectedArtifactWritePaths(command: string): Set<string> {
   const paths = new Set<string>();
   const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs)\/[^"'\s;|&<>]+)\1`;
   const redirectPattern = new RegExp(String.raw`(?:^|[^<])>>?\s*${protectedPath}`, 'g');
-  const teePattern = new RegExp(String.raw`\btee\s+(?:-[a-zA-Z]+\s+)*(?:--\s+)?${protectedPath}`, 'g');
 
-  for (const pattern of [redirectPattern, teePattern]) {
-    for (const match of command.matchAll(pattern)) {
-      const path = match[2]?.trim();
-      if (path) paths.add(normalizeProtectedArtifactPath(path));
+  for (const match of command.matchAll(redirectPattern)) {
+    const path = match[2]?.trim();
+    if (path) paths.add(normalizeProtectedArtifactPath(path));
+  }
+
+  for (const statement of shellStatements(command)) {
+    const words = shellWords(statement);
+    const teeIndex = words.findIndex((word) => word === 'tee');
+    if (teeIndex === -1) continue;
+    for (let index = teeIndex + 1; index < words.length; index += 1) {
+      const word = words[index]!;
+      if (word === '--') continue;
+      if (word.startsWith('-')) continue;
+      if (isProtectedArtifactPath(word)) paths.add(normalizeProtectedArtifactPath(word));
     }
   }
 

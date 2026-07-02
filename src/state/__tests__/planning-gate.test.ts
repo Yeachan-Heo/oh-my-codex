@@ -47,6 +47,70 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies same-command protected artifact execution through cd plus timeout as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+cd .omx/context && timeout 5 sh run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies same-command protected artifact execution through bash -lc as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+bash -lc 'sh .omx/context/run.sh'
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies tee writes when the protected executable is a later output file', () => {
+    const command = `mkdir -p .omx/context
+printf 'echo pwned\n' | tee .omx/context/notes.md .omx/context/run.sh
+sh .omx/context/run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies same-command protected artifact execution through script interpreters as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.py <<'PY'
+print('pwned')
+PY
+python3 .omx/context/run.py
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies shell script operands after shell options that consume the next word', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+bash -o posix .omx/context/run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies same-command protected artifact execution through attached env chdir as implementation', () => {
+    const command = `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+env -C.omx/context sh run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
   it('classifies same-command protected artifact execution through env -C as implementation', () => {
     const command = `mkdir -p .omx/context
 cat > .omx/context/run.sh <<'SCRIPT'
@@ -188,6 +252,57 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
     assert.equal(decision.allowed, false);
     assert.equal(decision.gate_fired, true);
     assert.match(decision.reason!, /Bash denied/);
+  });
+
+  it('denies review5 protected artifact write plus same-command execution probes', () => {
+    const probes = [
+      `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+cd .omx/context && timeout 5 sh run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`,
+      `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+bash -lc 'sh .omx/context/run.sh'
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`,
+      `mkdir -p .omx/context
+printf 'echo pwned\n' | tee .omx/context/notes.md .omx/context/run.sh
+sh .omx/context/run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`,
+      `mkdir -p .omx/context
+cat > .omx/context/run.py <<'PY'
+print('pwned')
+PY
+python3 .omx/context/run.py
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`,
+      `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+bash -o posix .omx/context/run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`,
+      `mkdir -p .omx/context
+cat > .omx/context/run.sh <<'SCRIPT'
+echo pwned
+SCRIPT
+env -C.omx/context sh run.sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan"}' --json`,
+    ];
+
+    for (const command of probes) {
+      const decision = evaluatePreToolUseGate(
+        { tool_name: 'Bash', tool_input: command },
+        gateState,
+        false,
+      );
+
+      assert.equal(decision.allowed, false, command);
+      assert.equal(decision.gate_fired, true, command);
+      assert.match(decision.reason!, /Bash denied/);
+    }
   });
 
   it('allows Read when no ralplan consensus artifact exists', () => {
