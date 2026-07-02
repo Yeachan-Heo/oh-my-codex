@@ -6206,8 +6206,6 @@ async function readActiveMainRootConductorStateForPreToolUse(
 const CONDUCTOR_ALLOWED_METADATA_PREFIXES = [
   ".omx/state",
   ".omx/context",
-  ".omx/plans",
-  ".omx/specs",
   ".omx/ultragoal",
   ".omx/ralph",
   ".omx/team",

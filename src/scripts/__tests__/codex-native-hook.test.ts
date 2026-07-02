@@ -19964,7 +19964,7 @@ exit 0
     }
   });
 
-  it("blocks Main-root ralph conductor source writes while allowing .omx workflow state writes", async () => {
+  it("blocks Main-root ralph conductor source and planning artifact writes while allowing .omx workflow state writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-conductor-write-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -19992,6 +19992,25 @@ exit 0
       );
       assert.equal(blocked.outputJson?.decision, "block");
       assert.match(String(blocked.outputJson?.reason ?? ""), /ralph phase: executing/);
+
+      for (const [toolName, filePath] of [
+        ["Write", ".omx/plans/conductor-owned-plan.md"],
+        ["Edit", ".omx/specs/conductor-owned-spec.md"],
+      ] as const) {
+        const planningArtifactWrite = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-ralph-conductor-write",
+            tool_name: toolName,
+            tool_input: { file_path: filePath },
+          },
+          { cwd },
+        );
+        assert.equal(planningArtifactWrite.outputJson?.decision, "block", `${toolName} ${filePath}`);
+        assert.match(String(planningArtifactWrite.outputJson?.reason ?? ""), /plan\/code writes are blocked/);
+      }
 
       const allowed = await dispatchCodexNativeHook(
         {
@@ -20036,6 +20055,8 @@ exit 0
         "env cp package.json src/package-copy.json",
         "exec cp package.json src/package-copy.json",
         "env FOO=1 mv src/a.ts src/b.ts",
+        "touch .omx/plans/conductor-owned-plan.md",
+        "cat <<'EOF' > .omx/specs/conductor-owned-spec.md\n# Spec\nEOF",
         "python3 <<'PY'\nfrom pathlib import Path\nPath('src/x.ts').write_text('x')\nPY",
         "bash -lc \"mv src/old.ts src/new.ts\"",
         "sh -c 'cp package.json src/package-copy.json'",
@@ -20055,7 +20076,7 @@ exit 0
           { cwd },
         );
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
-        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* mutation target .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:.* mutation target|write target) .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
 
       const allowedCommands = [
