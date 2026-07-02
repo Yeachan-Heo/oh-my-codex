@@ -5991,6 +5991,7 @@ function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: strin
   if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
   if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
   if (commandHasUntargetedPlanningForbiddenIntent(canonicalCommand)) return false;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
   if (stateWriteOperations.length !== 1) return false;
   const stateWriteOperation = stateWriteOperations[0];

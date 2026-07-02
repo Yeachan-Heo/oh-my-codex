@@ -7150,6 +7150,29 @@ exit 0
       );
       assert.equal(reportedHandoffShape.outputJson, null);
 
+      const blockedHandoffWithSameCommandArtifactExecution = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-reported-handoff-with-artifact-exec",
+          tool_input: {
+            command: [
+              "mkdir -p .omx/context",
+              "cat > .omx/context/run.sh <<'EOF'",
+              "printf '%s\\n' same-command-artifact-executed",
+              "EOF",
+              "sh .omx/context/run.sh",
+              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+            ].join("\n"),
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedHandoffWithSameCommandArtifactExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedHandoffWithSameCommandArtifactExecution.outputJson as { reason?: string } | null)?.reason ?? ""), /same-command|Bash write intent|handoff/i);
+
       const blockedHandoffWithImplementationWrite = await preToolUse(
         {
           hook_event_name: "PreToolUse",
