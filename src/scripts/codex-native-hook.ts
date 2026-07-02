@@ -6186,6 +6186,7 @@ function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean 
   if (commandEndsPlanningPhase(cwd, command)) return false;
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
+  if (hasUnresolvedConductorInterpreterWrite(command)) return false;
   const targets = extractDeepInterviewCommandWriteTargets(command);
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
@@ -6302,6 +6303,7 @@ function isAllowedRalplanBashWrite(
   }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
+  if (hasUnresolvedConductorInterpreterWrite(command)) return false;
   if (targets.some((target) => !isAllowedRalplanArtifactPath(cwd, target))) return false;
   return hasAllowedTargets;
 }
@@ -6819,6 +6821,9 @@ interface ConductorInterpreterWrite {
 function extractConductorInterpreterWrites(command: string): ConductorInterpreterWrite[] {
   const writes: ConductorInterpreterWrite[] = [];
   const scanCommand = normalizeShellLineContinuations(command);
+  let recognizedPythonOpenWrites = 0;
+  let recognizedPythonPathMutations = 0;
+  let recognizedPythonShutilMutations = 0;
 
   for (const match of scanCommand.matchAll(/\bnode\b[\s\S]{0,520}\b(?:appendFileSync|writeFileSync|appendFile|writeFile|createWriteStream)\s*\(\s*(["'])([^"']+)\1/g)) {
     const target = safeString(match[2]).trim();
@@ -6832,29 +6837,46 @@ function extractConductorInterpreterWrites(command: string): ConductorInterprete
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bopen\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']*[wax+][^"']*)\3/g)) {
     const target = safeString(match[2]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonOpenWrites += 1;
   }
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/g)) {
     const target = safeString(match[2]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonPathMutations += 1;
   }
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*mkdir\s*\(/g)) {
     const target = safeString(match[2]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonPathMutations += 1;
   }
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']+)\3/g)) {
     const target = safeString(match[4]).trim();
     writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonShutilMutations += 1;
   }
-  if (/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(/.test(scanCommand)
-    && !writes.some((write) => write.runtime === "python")) {
-    writes.push({ runtime: "python", targets: [], unresolved: true });
-  }
-  if (/\bpython3?\b[\s\S]{0,520}\b(?:open\s*\([^)]*,\s*["'][^"']*[wax+]|Path\s*\([^)]*\)\s*\.\s*(?:write_text|write_bytes))/.test(scanCommand)
-    && !writes.some((write) => write.runtime === "python")) {
+  const hasPythonRuntime = /\bpython3?\b/.test(scanCommand);
+  const pythonOpenWriteCalls = hasPythonRuntime
+    ? [...scanCommand.matchAll(/\bopen\s*\([^\n;)]*,\s*["'][^"']*[wax+][^"']*["']/g)].length
+    : 0;
+  const pythonPathMutationCalls = hasPythonRuntime
+    ? [...scanCommand.matchAll(/(?:^|[\n;])\s*(?:\([^\n;#]*\bPath\s*\([^\n;#]*\)[^\n;#]*\)|\bPath\s*\([^\n;#]*\))\s*\.\s*(?:write_text|write_bytes|mkdir)\s*\(/g)].length
+    : 0;
+  const pythonShutilMutationCalls = hasPythonRuntime
+    ? [...scanCommand.matchAll(/\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(/g)].length
+    : 0;
+  if (
+    pythonOpenWriteCalls > recognizedPythonOpenWrites
+    || pythonPathMutationCalls > recognizedPythonPathMutations
+    || pythonShutilMutationCalls > recognizedPythonShutilMutations
+  ) {
     writes.push({ runtime: "python", targets: [], unresolved: true });
   }
 
   return writes;
+}
+
+function hasUnresolvedConductorInterpreterWrite(command: string): boolean {
+  return extractConductorInterpreterWrites(command).some((write) => write.unresolved || write.targets.length === 0);
 }
 
 function commandNameFromShellWord(word: string): string {
