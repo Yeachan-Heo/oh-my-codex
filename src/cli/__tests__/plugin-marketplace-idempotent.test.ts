@@ -58,6 +58,30 @@ describe("plugin marketplace config upserts", () => {
 		assert.doesNotThrow(() => TOML.parse(second));
 	});
 
+	it("normalizes legacy local plugin scalar before emitting plugin table", () => {
+		const repaired = upsertLocalOmxPluginEnablement(
+			[
+				'model = "gpt-5.5"',
+				'',
+				'[plugins]',
+				`"${OMX_LOCAL_PLUGIN_CONFIG_KEY}" = true`,
+				'other-plugin = true',
+				'',
+			].join("\n"),
+		);
+
+		assert.doesNotThrow(() => TOML.parse(repaired));
+		assert.doesNotMatch(repaired, new RegExp(`^"${OMX_LOCAL_PLUGIN_CONFIG_KEY}"\\s*=`, "m"));
+		assert.match(repaired, /^other-plugin = true$/m);
+		assert.equal(
+			countMatches(
+				repaired,
+				/^\[plugins\."oh-my-codex@oh-my-codex-local"\]$/gm,
+			),
+			1,
+		);
+	});
+
 	it("dedupes existing local marketplace and plugin MCP blocks without removing unrelated config", () => {
 		const packageRoot = "/tmp/oh-my-codex-new";
 		const duplicated = [

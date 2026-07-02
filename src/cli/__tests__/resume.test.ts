@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import TOML from '@iarna/toml';
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -677,6 +678,10 @@ if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${stal
       assert.match(result.stdout, /fake-codex:resume session-after-update\b/);
       assert.match(result.stdout, /current-cache=yes/);
       assert.match(result.stdout, /stale-cache=yes/);
+      const repairedConfig = await readFile(join(codexHome, 'config.toml'), 'utf-8');
+      assert.doesNotThrow(() => TOML.parse(repairedConfig));
+      assert.doesNotMatch(repairedConfig, /^"oh-my-codex@oh-my-codex-local"\s*=/m);
+      assert.match(repairedConfig, /^\[plugins\."oh-my-codex@oh-my-codex-local"\]$/m);
       assert.deepEqual(
         new Set(await readdir(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex'))),
         new Set([packageJson.version, staleVersion]),
