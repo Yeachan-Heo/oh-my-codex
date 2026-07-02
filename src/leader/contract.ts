@@ -96,7 +96,7 @@ const CONDUCTOR_SUBSTANTIVE_DELIVERABLE_PREFIXES = [
 export function classifyConductorArtifactKind(relativePath: string): ConductorArtifactKind {
   const normalized = relativePath.trim().replace(/^\.\//, '').replace(/\\/g, '/');
   if (!normalized) return 'unknown';
-  if (normalized === '.omx/state/subagent-tracking.json' || /(^|\/)subagent-tracking\.json$/.test(normalized)) {
+  if (/^\.omx\/state(?:\/.*)?\/subagent-tracking\.json$/.test(normalized)) {
     return 'ledger';
   }
   if (normalized.startsWith('.omx/state/')) return 'transport';

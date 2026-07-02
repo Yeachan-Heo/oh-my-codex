@@ -56,6 +56,10 @@ describe('leader conductor contract', () => {
   it('classifies and authorizes Conductor writes by phase/lane/action/artifact, not path alone', () => {
     const stateLedger = classifyConductorArtifactKind('.omx/state/sessions/sess-1/subagent-tracking.json');
     assert.equal(stateLedger, 'ledger');
+    assert.equal(classifyConductorArtifactKind('.omx/state/subagent-tracking.json'), 'ledger');
+    assert.equal(classifyConductorArtifactKind('src/subagent-tracking.json'), 'implementation-source-package-git');
+    assert.equal(classifyConductorArtifactKind('subagent-tracking.json'), 'implementation-source-package-git');
+    assert.equal(classifyConductorArtifactKind('.omx/plans/subagent-tracking.json'), 'substantive-plan-spec-interview-review-qa');
     assert.equal(authorizeConductorAction({
       phase: 'autopilot-supervision',
       laneKind: 'main-conductor',

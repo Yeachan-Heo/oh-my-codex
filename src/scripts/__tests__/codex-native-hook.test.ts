@@ -10208,7 +10208,7 @@ exit 0
     }
   });
 
-  it("does not block typed agent-role implementation writes under active ralplan", async () => {
+  it("blocks typed agent-role-only implementation writes under active ralplan", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-typed-agent-role-ralplan-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -10252,6 +10252,68 @@ exit 0
           agent_role: "executor",
           tool_name: "Edit",
           tool_use_id: "tool-typed-executor-ralplan-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedImplementationEdit.outputJson?.decision, "block");
+      assert.match(String(allowedImplementationEdit.outputJson?.reason ?? ""), /Autopilot planning is active \(phase: ralplan\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows typed agent-role implementation writes under active ralplan when trusted provenance is present", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-trusted-typed-agent-role-ralplan-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-trusted-typed-executor-ralplan";
+      const sessionDir = join(stateDir, "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        phase: "ralplan",
+        session_id: sessionId,
+        thread_id: "thread-trusted-typed-executor-ralplan",
+        active_skills: [
+          {
+            skill: "autopilot",
+            phase: "ralplan",
+            active: true,
+            session_id: sessionId,
+            thread_id: "thread-trusted-typed-executor-ralplan",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "ralplan",
+        started_at: "2026-04-19T00:00:00.000Z",
+        updated_at: "2026-04-19T00:10:00.000Z",
+        session_id: sessionId,
+        thread_id: "thread-trusted-typed-executor-ralplan",
+      });
+
+      const allowedImplementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-trusted-typed-executor-ralplan",
+          agent_role: "executor",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "thread-trusted-typed-executor-ralplan",
+              },
+            },
+          },
+          tool_name: "Edit",
+          tool_use_id: "tool-trusted-typed-executor-ralplan-edit",
           tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
         },
         { cwd },
@@ -20352,6 +20414,127 @@ exit 0
 
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Main-root ralplan writes even when payload has only a typed agent_role", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-agent-role-main-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-ralplan-agent-role-main";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralplan", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-agent-role-main",
+          agent_role: "executor",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /Ralplan is active \(phase: planning\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Main-root conductor writes even when payload has only a typed agent_role", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-agent-role-main-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-conductor-agent-role-main";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-conductor-agent-role-main",
+          agent_role: "executor",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows conductor writes from tracked typed native subagents", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-tracked-subagent-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-conductor-tracked-subagent";
+      const leaderThreadId = "thread-conductor-leader";
+      const childThreadId = "thread-conductor-child";
+      const nowIso = new Date().toISOString();
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            updated_at: nowIso,
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader", first_seen_at: nowIso, last_seen_at: nowIso, turn_count: 1 },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", mode: "executor", first_seen_at: nowIso, last_seen_at: nowIso, turn_count: 1 },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_role: "executor",
+          tool_name: "Edit",
+          tool_input: { file_path: "src/runtime.ts" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
