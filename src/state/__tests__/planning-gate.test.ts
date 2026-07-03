@@ -57,6 +57,98 @@ sh .omx/plans/run.sh`;
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies Python literal tmp artifact write plus shell execution as implementation', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.sh').write_text('echo pwned')
+PY
+sh .omx/tmp/sess/run.sh`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies Python literal tmp artifact write plus tsx execution as implementation', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx .omx/tmp/sess/run.ts`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('classifies same-command tmp source runner and preload transports as implementation', () => {
+    const commands = [
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx --tsconfig tsconfig.json watch .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+deno run .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.txt').write_text('print(1)')
+PY
+python -X dev .omx/tmp/sess/run.txt`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/probe.go').write_text('package main')
+PY
+go run .omx/tmp/sess/probe.go`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/preload').write_text('')
+PY
+node --require .omx/tmp/sess/preload -e ''`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/rc').write_text('')
+PY
+bash --rcfile .omx/tmp/sess/rc -i -c true`,
+    ];
+
+    for (const command of commands) {
+      assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true, command);
+    }
+  });
+
+  it('classifies tmp stdin redirection into interpreters and shells as implementation', () => {
+    const commands = [
+      'python < .omx/tmp/s/run.txt',
+      'node < .omx/tmp/s/run.txt',
+      'ruby < .omx/tmp/s/run.txt',
+      'perl < .omx/tmp/s/run.txt',
+      'sh < .omx/tmp/s/run.txt',
+      'bash < .omx/tmp/s/run.txt',
+      '/usr/bin/python < .omx/tmp/s/run.txt',
+      '/bin/sh < .omx/tmp/s/run.txt',
+      'env /bin/bash < .omx/tmp/s/run.txt',
+      'command /usr/bin/node < .omx/tmp/s/run.txt',
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/s/run.txt').write_text('print(1)')
+PY
+python < .omx/tmp/s/run.txt`,
+    ];
+
+    for (const command of commands) {
+      assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true, command);
+    }
+  });
+
+  it('does not classify Python literal tmp artifact write without execution as implementation', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/notes.md').write_text('# Scratch notes\\n')
+PY`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), false);
+  });
+
   it('does not classify Python literal planning artifact write without execution as implementation', () => {
     const command = `python3 - <<'PY'
 from pathlib import Path
@@ -311,6 +403,86 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
     assert.equal(decision.allowed, false);
     assert.equal(decision.gate_fired, true);
     assert.match(decision.reason!, /Bash denied/);
+  });
+
+  it('denies same-command tmp TypeScript artifact execution through tsx when no ralplan consensus artifact exists', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx .omx/tmp/sess/run.ts`;
+    const decision = evaluatePreToolUseGate(
+      { tool_name: 'Bash', tool_input: command },
+      gateState,
+      false,
+    );
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.gate_fired, true);
+    assert.match(decision.reason!, /Bash denied/);
+  });
+
+  it('denies same-command tmp source runner and preload transports when no ralplan consensus artifact exists', () => {
+    const commands = [
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx --tsconfig tsconfig.json watch .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+deno run .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.txt').write_text('print(1)')
+PY
+python -X dev .omx/tmp/sess/run.txt`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/probe.go').write_text('package main')
+PY
+go run .omx/tmp/sess/probe.go`,
+    ];
+
+    for (const command of commands) {
+      const decision = evaluatePreToolUseGate(
+        { tool_name: 'Bash', tool_input: command },
+        gateState,
+        false,
+      );
+      assert.equal(decision.allowed, false, command);
+      assert.equal(decision.gate_fired, true, command);
+      assert.match(decision.reason!, /Bash denied/);
+    }
+  });
+
+  it('denies tmp stdin redirection into interpreters and shells when no ralplan consensus artifact exists', () => {
+    const commands = [
+      'python < .omx/tmp/s/run.txt',
+      'node < .omx/tmp/s/run.txt',
+      'ruby < .omx/tmp/s/run.txt',
+      'perl < .omx/tmp/s/run.txt',
+      'sh < .omx/tmp/s/run.txt',
+      'bash < .omx/tmp/s/run.txt',
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/s/run.txt').write_text('print(1)')
+PY
+python < .omx/tmp/s/run.txt`,
+    ];
+
+    for (const command of commands) {
+      const decision = evaluatePreToolUseGate(
+        { tool_name: 'Bash', tool_input: command },
+        gateState,
+        false,
+      );
+      assert.equal(decision.allowed, false, command);
+      assert.equal(decision.gate_fired, true, command);
+      assert.match(decision.reason!, /Bash denied/);
+    }
   });
 
   it('denies review5 protected artifact write plus same-command execution probes', () => {

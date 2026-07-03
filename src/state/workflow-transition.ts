@@ -55,6 +55,11 @@ function sameShellPath(candidate: string, target: string): boolean {
   return normalizeShellPath(candidate) === normalizeShellPath(target);
 }
 
+function shellCommandBasename(commandName: string): string {
+  const normalized = normalizeShellPath(commandName);
+  return normalized.slice(normalized.lastIndexOf('/') + 1);
+}
+
 function shellWords(statement: string): string[] {
   const words: string[] = [];
   let current = '';
@@ -183,17 +188,48 @@ function isShellName(name: string): boolean {
 }
 
 function isScriptInterpreterName(name: string): boolean {
-  return /^(?:python[0-9.]?|python3(?:\.[0-9]+)?|node|ruby|perl|php|lua|deno|bun)$/.test(name);
+  return /^(?:python[0-9.]?|python3(?:\.[0-9]+)?|node|nodejs|ruby|perl|php|lua|deno|bun|tsx|go|npx|npm|pnpm|yarn)$/.test(name);
 }
 
 function isProtectedArtifactPath(path: string): boolean {
-  return /^(?:\.\/)?\.omx\/(?:context|specs)\/[^"'\s;|&<>]+$/.test(path);
+  return /^(?:\.\/)?\.omx\/(?:context|specs|tmp)\/[^"'\s;|&<>]+$/.test(path);
 }
 
 function resolveCommandOperand(cwd: string, operand: string): string {
   return joinShellPath(cwd, operand.replace(/^\.\//, ''));
 }
 
+function isPythonRuntimeOptionWithSeparateValue(word: string): boolean {
+  return word === '-W' || word === '-X' || word === '--check-hash-based-pycs';
+}
+
+function runtimeLoadOptionOperandMatches(word: string, args: string[], index: number, cwd: string, targetPath: string): boolean {
+  if (word === '-r' || word === '--require' || word === '--import' || word === '--loader' || word === '--experimental-loader') {
+    const operand = args[index + 1];
+    return Boolean(operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath));
+  }
+  for (const prefix of ['--require=', '--import=', '--loader=', '--experimental-loader=']) {
+    if (word.startsWith(prefix)) return sameShellPath(resolveCommandOperand(cwd, word.slice(prefix.length)), targetPath);
+  }
+  return false;
+}
+
+function stdinRedirectOperandMatches(args: string[], cwd: string, targetPath: string): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === '<') {
+      const operand = args[index + 1];
+      if (operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath)) return true;
+      index += 1;
+      continue;
+    }
+    if (/^\d*<[^<&].+/.test(word)) {
+      const operand = word.replace(/^\d*</, '');
+      if (sameShellPath(resolveCommandOperand(cwd, operand), targetPath)) return true;
+    }
+  }
+  return false;
+}
 function shellScriptOperand(args: string[], cwd: string, targetPath: string): boolean {
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
@@ -209,12 +245,86 @@ function shellScriptOperand(args: string[], cwd: string, targetPath: string): bo
       const inlineCommand = args[index + 1];
       return Boolean(inlineCommand && hasTokenizedExecutionOfPath(inlineCommand, targetPath, cwd));
     }
-    if (word === '-o' || word === '+o' || word === '-O' || word === '+O' || word === '--init-file' || word === '--rcfile') {
+    if (word === '--init-file' || word === '--rcfile') {
+      const operand = args[index + 1];
+      if (operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath)) return true;
       index += 1;
       continue;
     }
-    if (word.startsWith('--init-file=') || word.startsWith('--rcfile=')) continue;
+    if (word.startsWith('--init-file=') || word.startsWith('--rcfile=')) {
+      if (sameShellPath(resolveCommandOperand(cwd, word.slice(word.indexOf('=') + 1)), targetPath)) return true;
+      continue;
+    }
+    if (word === '-o' || word === '+o' || word === '-O' || word === '+O') {
+      index += 1;
+      continue;
+    }
     if (word.startsWith('-') || word.startsWith('+')) continue;
+    return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+  }
+  return false;
+}
+
+function scriptInterpreterOperand(args: string[], cwd: string, targetPath: string, commandName: string): boolean {
+  let sawGoRun = false;
+  let sawPackageRunner = commandName === 'npx';
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (!word || word === '--') continue;
+    if (/^python/.test(commandName)) {
+      if (word === '-c' || word === '-m') return false;
+      if (isPythonRuntimeOptionWithSeparateValue(word)) {
+        index += 1;
+        continue;
+      }
+      if (word.startsWith('-W') || word.startsWith('-X')) continue;
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'node' || commandName === 'nodejs' || commandName === 'bun' || commandName === 'tsx') {
+      if (word === '-e' || word === '--eval' || word === '-p' || word === '--print') return false;
+      if (runtimeLoadOptionOperandMatches(word, args, index, cwd, targetPath)) return true;
+      if (word === '-r' || word === '--require' || word === '--import' || word === '--loader' || word === '--experimental-loader' || word === '--tsconfig' || word === '-C') {
+        index += 1;
+        continue;
+      }
+      if (word.startsWith('--require=') || word.startsWith('--import=') || word.startsWith('--loader=') || word.startsWith('--experimental-loader=')) continue;
+      if (word.startsWith('--eval=') || word.startsWith('--print=')) return false;
+      if (commandName === 'tsx' && word === 'watch') continue;
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'deno') {
+      if (word === 'eval' || word === 'repl') return false;
+      if (word === 'run') continue;
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'go') {
+      if (!sawGoRun) {
+        if (word === 'run') {
+          sawGoRun = true;
+          continue;
+        }
+        return false;
+      }
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'npm' || commandName === 'pnpm' || commandName === 'yarn' || commandName === 'npx') {
+      if (!sawPackageRunner) {
+        if (word === 'exec' || word === 'x' || word === 'dlx') {
+          sawPackageRunner = true;
+          continue;
+        }
+        return false;
+      }
+      if (word.startsWith('-')) continue;
+      if (word === 'tsx' || word === 'node' || word === 'bun' || word === 'deno') continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (word === '-e' || word.startsWith('-e')) return false;
+    if (word.startsWith('-')) continue;
     return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
   }
   return false;
@@ -222,7 +332,8 @@ function shellScriptOperand(args: string[], cwd: string, targetPath: string): bo
 
 function shellExecutionMatches(words: string[], cwd: string, targetPath: string): boolean {
   if (words.length === 0) return false;
-  const commandName = words[0]!;
+  const rawCommandName = words[0]!;
+  const commandName = shellCommandBasename(rawCommandName);
 
   if (commandName === 'source' || commandName === '.') {
     const operand = words[1];
@@ -230,15 +341,17 @@ function shellExecutionMatches(words: string[], cwd: string, targetPath: string)
   }
 
   if (isShellName(commandName)) {
-    return shellScriptOperand(words.slice(1), cwd, targetPath);
+    return stdinRedirectOperandMatches(words.slice(1), cwd, targetPath)
+      || shellScriptOperand(words.slice(1), cwd, targetPath);
   }
 
   if (isScriptInterpreterName(commandName)) {
-    return shellScriptOperand(words.slice(1), cwd, targetPath);
+    return stdinRedirectOperandMatches(words.slice(1), cwd, targetPath)
+      || scriptInterpreterOperand(words.slice(1), cwd, targetPath, commandName);
   }
 
-  if (commandName.startsWith('./') || commandName.includes('/')) {
-    return sameShellPath(resolveCommandOperand(cwd, commandName), targetPath);
+  if (rawCommandName.startsWith('./') || rawCommandName.includes('/')) {
+    return sameShellPath(resolveCommandOperand(cwd, rawCommandName), targetPath);
   }
 
   return false;
@@ -293,7 +406,7 @@ function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]
   let currentWords = words;
   let currentCwd = cwd;
   for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
-    const commandName = currentWords[0];
+    const commandName = shellCommandBasename(currentWords[0] ?? '');
     if (commandName === 'env') {
       const unwrapped = unwrapEnvCommand(currentWords, currentCwd);
       if (unwrapped.words === currentWords) return unwrapped;
@@ -319,7 +432,7 @@ function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]
 function unwrapCdCommandWords(words: string[]): string[] {
   let currentWords = words;
   for (let unwrapCount = 0; unwrapCount < 4; unwrapCount += 1) {
-    const commandName = currentWords[0];
+    const commandName = shellCommandBasename(currentWords[0] ?? '');
     if (commandName === 'command') {
       const operandIndex = findDirectWrapperOperandIndex(currentWords, 1);
       if (operandIndex === null) return currentWords;
@@ -352,7 +465,7 @@ function cdTransitionTarget(words: string[], cwd: string): string | null {
 }
 
 function unwrapEnvCommand(words: string[], cwd: string): { words: string[]; cwd: string } {
-  if (words[0] !== 'env') return { words, cwd };
+  if (shellCommandBasename(words[0] ?? '') !== 'env') return { words, cwd };
 
   let index = 1;
   let envCwd = cwd;
@@ -460,9 +573,57 @@ function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd =
   return false;
 }
 
+function isPlanningTmpShellPath(path: string): boolean {
+  const normalized = normalizeShellPath(path);
+  return normalized === '.omx/tmp' || normalized.startsWith('.omx/tmp/');
+}
+
+function stdinRedirectsPlanningTmp(args: string[], cwd: string): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === '<') {
+      const operand = args[index + 1];
+      if (operand && isPlanningTmpShellPath(resolveCommandOperand(cwd, operand))) return true;
+      index += 1;
+      continue;
+    }
+    if (/^\d*<[^<&].+/.test(word)) {
+      const operand = word.replace(/^\d*</, '');
+      if (isPlanningTmpShellPath(resolveCommandOperand(cwd, operand))) return true;
+    }
+  }
+  return false;
+}
+
+function commandStdinRedirectsPlanningTmpIntoInterpreter(command: string, initialCwd = ''): boolean {
+  const cwds = new Map<number, string>([[0, initialCwd]]);
+  for (const statement of shellStatementRecords(command)) {
+    const cwd = scopedCwd(cwds, statement.subshellDepth, initialCwd);
+    const words = groupedShellWords(statement.text);
+    if (words.length > 0) {
+      const cdTarget = cdTransitionTarget(words, cwd);
+      if (cdTarget) {
+        cwds.set(statement.subshellDepth, cdTarget);
+      } else {
+        const unwrapped = unwrapExecutionCommand(words, cwd);
+        const commandName = shellCommandBasename(unwrapped.words[0] ?? '');
+        if ((isShellName(commandName) || isScriptInterpreterName(commandName))
+          && stdinRedirectsPlanningTmp(unwrapped.words.slice(1), unwrapped.cwd)) return true;
+      }
+    }
+
+    if (statement.closesSubshells > 0) {
+      for (let depth = statement.subshellDepth; depth > statement.subshellDepth - statement.closesSubshells; depth -= 1) {
+        cwds.delete(depth);
+      }
+    }
+  }
+  return false;
+}
+
 function collectProtectedArtifactWritePaths(command: string): Set<string> {
   const paths = new Set<string>();
-  const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs|plans)\/[^"'\s;|&<>]+)\1`;
+  const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs|plans|tmp)\/[^"'\s;|&<>]+)\1`;
   const redirectPattern = new RegExp(String.raw`(?:^|[^<])>>?\s*${protectedPath}`, 'g');
 
   for (const match of command.matchAll(redirectPattern)) {
@@ -470,7 +631,7 @@ function collectProtectedArtifactWritePaths(command: string): Set<string> {
     if (path) paths.add(normalizeProtectedArtifactPath(path));
   }
 
-  const pythonPathWritePattern = /\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])((?:\.\/)?\.omx\/(?:context|specs|plans)\/[^"']+)\1\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/g;
+  const pythonPathWritePattern = /\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])((?:\.\/)?\.omx\/(?:context|specs|plans|tmp)\/[^"']+)\1\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/g;
   for (const match of command.matchAll(pythonPathWritePattern)) {
     const path = match[2]?.trim();
     if (path) paths.add(normalizeProtectedArtifactPath(path));
@@ -525,6 +686,7 @@ export function isImplementationToolCall(input: PreToolUseGateInput): boolean {
   if (IMPLEMENTATION_TOOLS.has(input.tool_name)) return true;
   if (input.tool_name === 'Bash' && typeof input.tool_input === 'string') {
     return DENIED_BASH_PATTERNS.some((pattern) => pattern.test(input.tool_input!))
+      || commandStdinRedirectsPlanningTmpIntoInterpreter(input.tool_input)
       || hasSameCommandProtectedArtifactExecution(input.tool_input);
   }
   return false;
