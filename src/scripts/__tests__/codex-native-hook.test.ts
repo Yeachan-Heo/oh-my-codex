@@ -7395,6 +7395,30 @@ exit 0
       assert.equal((blockedTmpTsxExecution.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(JSON.stringify(blockedTmpTsxExecution.outputJson), /generated-script transport|\.omx\/tmp/);
 
+      for (const [toolUseId, command] of [
+        ["tool-di-tmp-python-option-txt-exec", "python -X dev .omx/tmp/sess-di-artifact/run.txt"],
+        ["tool-di-tmp-node-require-load", "node --require .omx/tmp/sess-di-artifact/preload -e ''"],
+        ["tool-di-tmp-node-import-load", "node --import .omx/tmp/sess-di-artifact/preload -e ''"],
+        ["tool-di-tmp-bun-require-load", "bun --require .omx/tmp/sess-di-artifact/preload -e ''"],
+        ["tool-di-tmp-bash-rcfile-load", "bash --rcfile .omx/tmp/sess-di-artifact/rc -i -c true"],
+        ["tool-di-tmp-go-run-exec", "go run .omx/tmp/sess-di-artifact/probe.go"],
+        ["tool-di-tmp-deno-run-exec", "deno run .omx/tmp/sess-di-artifact/generated.ts"],
+      ] as const) {
+        const blockedTmpTransport = await preToolUse(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-di-artifact",
+            tool_name: "Bash",
+            tool_use_id: toolUseId,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal((blockedTmpTransport.outputJson as { decision?: string } | null)?.decision, "block", command);
+        assert.match(JSON.stringify(blockedTmpTransport.outputJson), /generated-script transport|\.omx\/tmp/);
+      }
+
       const allowedAppendBash = await preToolUse(
         {
           hook_event_name: "PreToolUse",
@@ -7442,6 +7466,28 @@ exit 0
         { cwd },
       );
       assert.equal(reportedHandoffShape.outputJson, null);
+
+      const blockedTmpOnlyHandoffShape = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-reported-tmp-only-handoff",
+          tool_input: {
+            command: [
+              "mkdir -p .omx/tmp/sess-di-artifact",
+              "cat > .omx/tmp/sess-di-artifact/only.md <<'EOF'",
+              "# Tmp-only scratch",
+              "EOF",
+              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+            ].join("\n"),
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedTmpOnlyHandoffShape.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedTmpOnlyHandoffShape.outputJson as { reason?: string } | null)?.reason ?? ""), /handoff|Bash write intent|deep-interview/i);
 
       const blockedHandoffWithSameCommandArtifactExecution = await preToolUse(
         {

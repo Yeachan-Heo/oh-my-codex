@@ -77,6 +77,45 @@ tsx .omx/tmp/sess/run.ts`;
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies same-command tmp source runner and preload transports as implementation', () => {
+    const commands = [
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx --tsconfig tsconfig.json watch .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+deno run .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.txt').write_text('print(1)')
+PY
+python -X dev .omx/tmp/sess/run.txt`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/probe.go').write_text('package main')
+PY
+go run .omx/tmp/sess/probe.go`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/preload').write_text('')
+PY
+node --require .omx/tmp/sess/preload -e ''`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/rc').write_text('')
+PY
+bash --rcfile .omx/tmp/sess/rc -i -c true`,
+    ];
+
+    for (const command of commands) {
+      assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true, command);
+    }
+  });
+
   it('does not classify Python literal tmp artifact write without execution as implementation', () => {
     const command = `python3 - <<'PY'
 from pathlib import Path
@@ -357,6 +396,42 @@ tsx .omx/tmp/sess/run.ts`;
     assert.equal(decision.allowed, false);
     assert.equal(decision.gate_fired, true);
     assert.match(decision.reason!, /Bash denied/);
+  });
+
+  it('denies same-command tmp source runner and preload transports when no ralplan consensus artifact exists', () => {
+    const commands = [
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx --tsconfig tsconfig.json watch .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+deno run .omx/tmp/sess/run.ts`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.txt').write_text('print(1)')
+PY
+python -X dev .omx/tmp/sess/run.txt`,
+      `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/probe.go').write_text('package main')
+PY
+go run .omx/tmp/sess/probe.go`,
+    ];
+
+    for (const command of commands) {
+      const decision = evaluatePreToolUseGate(
+        { tool_name: 'Bash', tool_input: command },
+        gateState,
+        false,
+      );
+      assert.equal(decision.allowed, false, command);
+      assert.equal(decision.gate_fired, true, command);
+      assert.match(decision.reason!, /Bash denied/);
+    }
   });
 
   it('denies review5 protected artifact write plus same-command execution probes', () => {

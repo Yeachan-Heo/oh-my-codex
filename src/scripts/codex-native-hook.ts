@@ -4159,19 +4159,31 @@ function firstNonOptionSourceOperand(words: string[], sourceWordIndex: number): 
   return "";
 }
 
-function firstShellScriptOperand(words: string[], shellWordIndex: number): string {
+function firstShellScriptOperands(words: string[], shellWordIndex: number): string[] {
+  const operands: string[] = [];
   for (let index = shellWordIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
     if (!word || word === "--") continue;
-    if (isShellCommandStringOption(word)) return "";
+    if (isShellCommandStringOption(word)) return operands;
     if (isShellOptionWithSeparateValue(word)) {
+      const value = words[index + 1] ?? "";
+      if (value) operands.push(value);
       index += 1;
       continue;
     }
+    if (word.startsWith("--init-file=") || word.startsWith("--rcfile=")) {
+      operands.push(word.slice(word.indexOf("=") + 1));
+      continue;
+    }
     if (word.startsWith("-")) continue;
-    return word;
+    operands.push(word);
+    return operands;
   }
-  return "";
+  return operands;
+}
+
+function firstShellScriptOperand(words: string[], shellWordIndex: number): string {
+  return firstShellScriptOperands(words, shellWordIndex)[0] ?? "";
 }
 
 function isPythonInterpreterCommandWord(base: string): boolean {
@@ -4180,6 +4192,28 @@ function isPythonInterpreterCommandWord(base: string): boolean {
 
 function isNodeInterpreterCommandWord(base: string): boolean {
   return /^(?:node|nodejs)$/.test(base);
+}
+
+function isPythonRuntimeOptionWithSeparateValue(word: string): boolean {
+  return word === "-B"
+    || word === "-b"
+    || word === "-d"
+    || word === "-E"
+    || word === "-i"
+    || word === "-I"
+    || word === "-O"
+    || word === "-OO"
+    || word === "-P"
+    || word === "-q"
+    || word === "-R"
+    || word === "-s"
+    || word === "-S"
+    || word === "-u"
+    || word === "-v"
+    || word === "-V"
+    || word === "--check-hash-based-pycs"
+    || word === "-W"
+    || word === "-X";
 }
 
 function isScriptInterpreterCommandWord(word: string): boolean {
@@ -4193,7 +4227,12 @@ function isScriptInterpreterCommandWord(word: string): boolean {
     || base === "perl"
     || base === "ruby"
     || base === "php"
-    || base === "lua";
+    || base === "lua"
+    || base === "go"
+    || base === "npx"
+    || base === "npm"
+    || base === "pnpm"
+    || base === "yarn";
 }
 
 function isTsxRuntimeOptionWithSeparateValue(word: string): boolean {
@@ -4205,43 +4244,89 @@ function isTsxRuntimeModeWord(word: string): boolean {
 }
 
 
-function firstInterpreterScriptOperand(words: string[], interpreterWordIndex: number): string {
+function firstInterpreterScriptOperands(words: string[], interpreterWordIndex: number): string[] {
   const base = shellWordBaseName(words[interpreterWordIndex] ?? "");
-  if (isNestedShellCommandWord(base)) return firstShellScriptOperand(words, interpreterWordIndex);
+  if (isNestedShellCommandWord(base)) return firstShellScriptOperands(words, interpreterWordIndex);
 
+  const operands: string[] = [];
+  let sawGoRun = false;
+  let sawPackageRunner = base === "npx";
   for (let index = interpreterWordIndex + 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
     if (!word || word === "--") continue;
     if (isPythonInterpreterCommandWord(base)) {
-      if (word === "-c" || word === "-m") return "";
-      if (word.startsWith("-")) continue;
-      return word;
-    }
-    if (isNodeInterpreterCommandWord(base) || base === "bun" || base === "tsx") {
-      if (word === "-e" || word === "--eval" || word === "-p" || word === "--print") return "";
-      if (runtimeOptionConsumesNextWord(word) || (base === "tsx" && isTsxRuntimeOptionWithSeparateValue(word))) {
+      if (word === "-c" || word === "-m") return operands;
+      if (isPythonRuntimeOptionWithSeparateValue(word)) {
         index += 1;
         continue;
       }
-      if (word.startsWith("--eval=") || word.startsWith("--print=")) return "";
+      if (word.startsWith("-W") || word.startsWith("-X")) continue;
+      if (word.startsWith("-")) continue;
+      operands.push(word);
+      return operands;
+    }
+    if (isNodeInterpreterCommandWord(base) || base === "bun" || base === "tsx") {
+      if (word === "-e" || word === "--eval" || word === "-p" || word === "--print") return operands;
+      if (runtimeOptionConsumesNextWord(word) || (base === "tsx" && isTsxRuntimeOptionWithSeparateValue(word))) {
+        const value = words[index + 1] ?? "";
+        if (value && (word === "-r" || word === "--require" || word === "--import" || word === "--loader" || word === "--experimental-loader")) {
+          operands.push(value);
+        }
+        index += 1;
+        continue;
+      }
+      if (word.startsWith("--require=") || word.startsWith("--import=") || word.startsWith("--loader=") || word.startsWith("--experimental-loader=")) {
+        operands.push(word.slice(word.indexOf("=") + 1));
+        continue;
+      }
+      if (word.startsWith("--eval=") || word.startsWith("--print=")) return operands;
       if (base === "tsx" && isTsxRuntimeModeWord(word)) continue;
       if (word.startsWith("-")) continue;
-      return word;
+      operands.push(word);
+      return operands;
     }
     if (base === "deno") {
-      if (word === "eval" || word === "repl") return "";
+      if (word === "eval" || word === "repl") return operands;
       if (word === "run") continue;
       if (word.startsWith("-")) continue;
-      return word;
+      operands.push(word);
+      return operands;
+    }
+    if (base === "go") {
+      if (!sawGoRun) {
+        if (word === "run") {
+          sawGoRun = true;
+          continue;
+        }
+        return operands;
+      }
+      if (word.startsWith("-")) continue;
+      operands.push(word);
+      return operands;
+    }
+    if (base === "npm" || base === "pnpm" || base === "yarn" || base === "npx") {
+      if (!sawPackageRunner) {
+        if (word === "exec" || word === "x" || word === "dlx") {
+          sawPackageRunner = true;
+          continue;
+        }
+        return operands;
+      }
+      if (word.startsWith("-")) continue;
+      if (word === "tsx" || word === "node" || word === "bun" || word === "deno") continue;
+      operands.push(word);
+      return operands;
     }
     if (base === "perl" || base === "ruby" || base === "php" || base === "lua") {
-      if (word === "-e" || word.startsWith("-e")) return "";
+      if (word === "-e" || word.startsWith("-e")) return operands;
       if (word.startsWith("-")) continue;
-      return word;
+      operands.push(word);
+      return operands;
     }
   }
-  return "";
+  return operands;
 }
+
 
 function firstPlanningTmpScriptExecutionTarget(cwd: string, command: string): string | null {
   const scanCommand = (currentCwd: string, currentCommand: string, activeCommands: Set<string>): string | null => {
@@ -4274,15 +4359,15 @@ function firstPlanningTmpScriptExecutionTarget(cwd: string, command: string): st
       for (let index = 0; index < words.length; index += 1) {
         const word = words[index] ?? "";
         const operandCwd = wrappedCommandContext && index >= wrappedCommandContext.index ? wrappedCommandContext.cwd : effectiveCwd;
-        const operand = word === "source" || word === "."
-          ? firstNonOptionSourceOperand(words, index)
+        const operands = word === "source" || word === "."
+          ? [firstNonOptionSourceOperand(words, index)].filter(Boolean)
           : isScriptInterpreterCommandWord(word)
-            ? firstInterpreterScriptOperand(words, index)
-            : "";
-        if (!operand) continue;
-        const relativePath = normalizeExecutionTarget(operandCwd, operand);
-
-        if (relativePath && isPlanningTmpRelativePath(relativePath)) return relativePath;
+            ? firstInterpreterScriptOperands(words, index)
+            : [];
+        for (const operand of operands) {
+          const relativePath = normalizeExecutionTarget(operandCwd, operand);
+          if (relativePath && isPlanningTmpRelativePath(relativePath)) return relativePath;
+        }
       }
 
       if (wrappedCommandContext !== null) {
@@ -6286,6 +6371,17 @@ function hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd: string, command
   return true;
 }
 
+function isDurableDeepInterviewHandoffEvidencePath(cwd: string, rawPath: string): boolean {
+  const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
+  if (!relativePath) return false;
+  return relativePath === ".omx/context"
+    || relativePath.startsWith(".omx/context/")
+    || relativePath === ".omx/interviews"
+    || relativePath.startsWith(".omx/interviews/")
+    || relativePath === ".omx/specs"
+    || relativePath.startsWith(".omx/specs/");
+}
+
 function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: string): boolean {
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
@@ -6302,10 +6398,19 @@ function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: strin
   if (!payload || !isDeepInterviewRalplanHandoffStatePayload(payload)) return false;
   const targets = extractDeepInterviewCommandWriteTargets(command);
   if (targets.length === 0) return false;
+  if (!targets.some((target) => isDurableDeepInterviewHandoffEvidencePath(cwd, target))) return false;
   if (!hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd, command)) return false;
   return targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
 }
 
+
+function hasDeepInterviewRalplanHandoffStateMutation(cwd: string, command: string): boolean {
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (stateWriteOperations.length === 0) return false;
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isDeepInterviewRalplanHandoffStatePayload(payload) : false;
+}
 
 function isCompleteRalplanTerminalWritePayload(
   payload: Record<string, unknown>,
@@ -6370,6 +6475,7 @@ function commandEndsPlanningPhase(cwd: string, command: string): boolean {
 
 function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
   if (isAllowedDeepInterviewRalplanHandoffCommand(cwd, command)) return true;
+  if (hasDeepInterviewRalplanHandoffStateMutation(cwd, command)) return false;
   if (commandEndsPlanningPhase(cwd, command)) return false;
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;

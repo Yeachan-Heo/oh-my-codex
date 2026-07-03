@@ -183,7 +183,7 @@ function isShellName(name: string): boolean {
 }
 
 function isScriptInterpreterName(name: string): boolean {
-  return /^(?:python[0-9.]?|python3(?:\.[0-9]+)?|node|ruby|perl|php|lua|deno|bun|tsx)$/.test(name);
+  return /^(?:python[0-9.]?|python3(?:\.[0-9]+)?|node|nodejs|ruby|perl|php|lua|deno|bun|tsx|go|npx|npm|pnpm|yarn)$/.test(name);
 }
 
 function isProtectedArtifactPath(path: string): boolean {
@@ -194,6 +194,20 @@ function resolveCommandOperand(cwd: string, operand: string): string {
   return joinShellPath(cwd, operand.replace(/^\.\//, ''));
 }
 
+function isPythonRuntimeOptionWithSeparateValue(word: string): boolean {
+  return word === '-W' || word === '-X' || word === '--check-hash-based-pycs';
+}
+
+function runtimeLoadOptionOperandMatches(word: string, args: string[], index: number, cwd: string, targetPath: string): boolean {
+  if (word === '-r' || word === '--require' || word === '--import' || word === '--loader' || word === '--experimental-loader') {
+    const operand = args[index + 1];
+    return Boolean(operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath));
+  }
+  for (const prefix of ['--require=', '--import=', '--loader=', '--experimental-loader=']) {
+    if (word.startsWith(prefix)) return sameShellPath(resolveCommandOperand(cwd, word.slice(prefix.length)), targetPath);
+  }
+  return false;
+}
 function shellScriptOperand(args: string[], cwd: string, targetPath: string): boolean {
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
@@ -209,12 +223,86 @@ function shellScriptOperand(args: string[], cwd: string, targetPath: string): bo
       const inlineCommand = args[index + 1];
       return Boolean(inlineCommand && hasTokenizedExecutionOfPath(inlineCommand, targetPath, cwd));
     }
-    if (word === '-o' || word === '+o' || word === '-O' || word === '+O' || word === '--init-file' || word === '--rcfile') {
+    if (word === '--init-file' || word === '--rcfile') {
+      const operand = args[index + 1];
+      if (operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath)) return true;
       index += 1;
       continue;
     }
-    if (word.startsWith('--init-file=') || word.startsWith('--rcfile=')) continue;
+    if (word.startsWith('--init-file=') || word.startsWith('--rcfile=')) {
+      if (sameShellPath(resolveCommandOperand(cwd, word.slice(word.indexOf('=') + 1)), targetPath)) return true;
+      continue;
+    }
+    if (word === '-o' || word === '+o' || word === '-O' || word === '+O') {
+      index += 1;
+      continue;
+    }
     if (word.startsWith('-') || word.startsWith('+')) continue;
+    return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+  }
+  return false;
+}
+
+function scriptInterpreterOperand(args: string[], cwd: string, targetPath: string, commandName: string): boolean {
+  let sawGoRun = false;
+  let sawPackageRunner = commandName === 'npx';
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (!word || word === '--') continue;
+    if (/^python/.test(commandName)) {
+      if (word === '-c' || word === '-m') return false;
+      if (isPythonRuntimeOptionWithSeparateValue(word)) {
+        index += 1;
+        continue;
+      }
+      if (word.startsWith('-W') || word.startsWith('-X')) continue;
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'node' || commandName === 'nodejs' || commandName === 'bun' || commandName === 'tsx') {
+      if (word === '-e' || word === '--eval' || word === '-p' || word === '--print') return false;
+      if (runtimeLoadOptionOperandMatches(word, args, index, cwd, targetPath)) return true;
+      if (word === '-r' || word === '--require' || word === '--import' || word === '--loader' || word === '--experimental-loader' || word === '--tsconfig' || word === '-C') {
+        index += 1;
+        continue;
+      }
+      if (word.startsWith('--require=') || word.startsWith('--import=') || word.startsWith('--loader=') || word.startsWith('--experimental-loader=')) continue;
+      if (word.startsWith('--eval=') || word.startsWith('--print=')) return false;
+      if (commandName === 'tsx' && word === 'watch') continue;
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'deno') {
+      if (word === 'eval' || word === 'repl') return false;
+      if (word === 'run') continue;
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'go') {
+      if (!sawGoRun) {
+        if (word === 'run') {
+          sawGoRun = true;
+          continue;
+        }
+        return false;
+      }
+      if (word.startsWith('-')) continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (commandName === 'npm' || commandName === 'pnpm' || commandName === 'yarn' || commandName === 'npx') {
+      if (!sawPackageRunner) {
+        if (word === 'exec' || word === 'x' || word === 'dlx') {
+          sawPackageRunner = true;
+          continue;
+        }
+        return false;
+      }
+      if (word.startsWith('-')) continue;
+      if (word === 'tsx' || word === 'node' || word === 'bun' || word === 'deno') continue;
+      return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
+    }
+    if (word === '-e' || word.startsWith('-e')) return false;
+    if (word.startsWith('-')) continue;
     return sameShellPath(resolveCommandOperand(cwd, word), targetPath);
   }
   return false;
@@ -234,7 +322,7 @@ function shellExecutionMatches(words: string[], cwd: string, targetPath: string)
   }
 
   if (isScriptInterpreterName(commandName)) {
-    return shellScriptOperand(words.slice(1), cwd, targetPath);
+    return scriptInterpreterOperand(words.slice(1), cwd, targetPath, commandName);
   }
 
   if (commandName.startsWith('./') || commandName.includes('/')) {
