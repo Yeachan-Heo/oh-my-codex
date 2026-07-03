@@ -1015,6 +1015,27 @@ PY`,
       );
       assert.equal(allowedPythonPlanningArtifactWrite.outputJson, null);
 
+      const blockedPythonPlanningArtifactExecution = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-wrapper-python-planning-artifact-exec",
+          tool_input: {
+            command: `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/plans/run.sh').write_text('echo ran')
+PY
+sh .omx/plans/run.sh`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal(blockedPythonPlanningArtifactExecution.outputJson && typeof blockedPythonPlanningArtifactExecution.outputJson === "object" ? (blockedPythonPlanningArtifactExecution.outputJson as { decision?: string }).decision : undefined, "block");
+      assert.match(JSON.stringify(blockedPythonPlanningArtifactExecution.outputJson), /same-command|Bash write intent|implementation/i);
+
       const blockedPythonAllowedMkdirDynamicSourceWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -7254,6 +7275,29 @@ exit 0
       );
       assert.equal((blockedHandoffWithSameCommandArtifactExecution.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(String((blockedHandoffWithSameCommandArtifactExecution.outputJson as { reason?: string } | null)?.reason ?? ""), /same-command|Bash write intent|handoff/i);
+
+      const blockedHandoffWithPythonSameCommandArtifactExecution = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-reported-handoff-with-python-artifact-exec",
+          tool_input: {
+            command: [
+              "python3 - <<'PY'",
+              "from pathlib import Path",
+              "Path('.omx/context/run.sh').write_text('echo ran')",
+              "PY",
+              "sh .omx/context/run.sh",
+              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+            ].join("\n"),
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedHandoffWithPythonSameCommandArtifactExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedHandoffWithPythonSameCommandArtifactExecution.outputJson as { reason?: string } | null)?.reason ?? ""), /same-command|Bash write intent|handoff/i);
 
       for (const [toolUseId, artifactDir, scriptName, executionLine] of [
         [

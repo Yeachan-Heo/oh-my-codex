@@ -4140,6 +4140,13 @@ function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): b
     const assignments = extractCommandLiteralAssignments(normalizedCommand);
     const nextActiveCommands = new Set(activeCommands);
     nextActiveCommands.add(commandKey);
+
+    for (const write of extractConductorInterpreterWrites(currentCommand)) {
+      for (const target of write.targets) {
+        const normalizedTarget = normalizeSameCommandScriptTarget(currentCwd, target, assignments);
+        if (normalizedTarget) writtenTargets.add(normalizedTarget);
+      }
+    }
     let effectiveCwd = currentCwd;
 
     for (const segment of splitShellCommandSegments(normalizedCommand)) {

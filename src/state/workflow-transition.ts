@@ -462,10 +462,16 @@ function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd =
 
 function collectProtectedArtifactWritePaths(command: string): Set<string> {
   const paths = new Set<string>();
-  const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs)\/[^"'\s;|&<>]+)\1`;
+  const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs|plans)\/[^"'\s;|&<>]+)\1`;
   const redirectPattern = new RegExp(String.raw`(?:^|[^<])>>?\s*${protectedPath}`, 'g');
 
   for (const match of command.matchAll(redirectPattern)) {
+    const path = match[2]?.trim();
+    if (path) paths.add(normalizeProtectedArtifactPath(path));
+  }
+
+  const pythonPathWritePattern = /\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])((?:\.\/)?\.omx\/(?:context|specs|plans)\/[^"']+)\1\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/g;
+  for (const match of command.matchAll(pythonPathWritePattern)) {
     const path = match[2]?.trim();
     if (path) paths.add(normalizeProtectedArtifactPath(path));
   }
