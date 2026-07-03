@@ -4196,6 +4196,15 @@ function isScriptInterpreterCommandWord(word: string): boolean {
     || base === "lua";
 }
 
+function isTsxRuntimeOptionWithSeparateValue(word: string): boolean {
+  return word === "--tsconfig";
+}
+
+function isTsxRuntimeModeWord(word: string): boolean {
+  return word === "watch";
+}
+
+
 function firstInterpreterScriptOperand(words: string[], interpreterWordIndex: number): string {
   const base = shellWordBaseName(words[interpreterWordIndex] ?? "");
   if (isNestedShellCommandWord(base)) return firstShellScriptOperand(words, interpreterWordIndex);
@@ -4210,11 +4219,12 @@ function firstInterpreterScriptOperand(words: string[], interpreterWordIndex: nu
     }
     if (isNodeInterpreterCommandWord(base) || base === "bun" || base === "tsx") {
       if (word === "-e" || word === "--eval" || word === "-p" || word === "--print") return "";
-      if (runtimeOptionConsumesNextWord(word)) {
+      if (runtimeOptionConsumesNextWord(word) || (base === "tsx" && isTsxRuntimeOptionWithSeparateValue(word))) {
         index += 1;
         continue;
       }
       if (word.startsWith("--eval=") || word.startsWith("--print=")) return "";
+      if (base === "tsx" && isTsxRuntimeModeWord(word)) continue;
       if (word.startsWith("-")) continue;
       return word;
     }

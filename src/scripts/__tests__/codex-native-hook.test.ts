@@ -1047,6 +1047,36 @@ describe("codex native hook dispatch", () => {
       assert.equal((blockedPlanningTmpVersionedInterpreterExecution.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(JSON.stringify(blockedPlanningTmpVersionedInterpreterExecution.outputJson), /generated-script transport|\.omx\/tmp/);
 
+      const blockedPlanningTmpTsxExecution = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-wrapper-planning-tmp-tsx-exec",
+          tool_input: { command: "tsx .omx/tmp/sess-ralplan-wrapper/generated.ts" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedPlanningTmpTsxExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedPlanningTmpTsxExecution.outputJson), /generated-script transport|\.omx\/tmp/);
+
+      const blockedPlanningTmpTsxWithOptionsExecution = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-wrapper-planning-tmp-tsx-options-exec",
+          tool_input: { command: "tsx --tsconfig tsconfig.json watch .omx/tmp/sess-ralplan-wrapper/generated.ts" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedPlanningTmpTsxWithOptionsExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedPlanningTmpTsxWithOptionsExecution.outputJson), /generated-script transport|\.omx\/tmp/);
+
 
       const allowedBeadsMetadataWrite = await dispatchCodexNativeHook(
         {
@@ -7350,6 +7380,20 @@ exit 0
       );
       assert.equal((blockedTmpInterpreterExecution.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(JSON.stringify(blockedTmpInterpreterExecution.outputJson), /generated-script transport|\.omx\/tmp/);
+
+      const blockedTmpTsxExecution = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-tmp-tsx-exec",
+          tool_input: { command: "tsx --tsconfig tsconfig.json watch .omx/tmp/sess-di-artifact/generated.ts" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedTmpTsxExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedTmpTsxExecution.outputJson), /generated-script transport|\.omx\/tmp/);
 
       const allowedAppendBash = await preToolUse(
         {
