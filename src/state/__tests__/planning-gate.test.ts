@@ -67,6 +67,16 @@ sh .omx/tmp/sess/run.sh`;
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies Python literal tmp artifact write plus tsx execution as implementation', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx .omx/tmp/sess/run.ts`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
   it('does not classify Python literal tmp artifact write without execution as implementation', () => {
     const command = `python3 - <<'PY'
 from pathlib import Path
@@ -321,6 +331,23 @@ printf pwned > src/pwned.ts
 SCRIPT
 sh .omx/context/run.sh
 omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan","state":{"deep_interview_gate":{"status":"complete","rationale":"done"}}}' --json`;
+    const decision = evaluatePreToolUseGate(
+      { tool_name: 'Bash', tool_input: command },
+      gateState,
+      false,
+    );
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.gate_fired, true);
+    assert.match(decision.reason!, /Bash denied/);
+  });
+
+  it('denies same-command tmp TypeScript artifact execution through tsx when no ralplan consensus artifact exists', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.ts').write_text('console.log(1)')
+PY
+tsx .omx/tmp/sess/run.ts`;
     const decision = evaluatePreToolUseGate(
       { tool_name: 'Bash', tool_input: command },
       gateState,

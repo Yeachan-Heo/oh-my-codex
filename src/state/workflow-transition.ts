@@ -183,7 +183,7 @@ function isShellName(name: string): boolean {
 }
 
 function isScriptInterpreterName(name: string): boolean {
-  return /^(?:python[0-9.]?|python3(?:\.[0-9]+)?|node|ruby|perl|php|lua|deno|bun)$/.test(name);
+  return /^(?:python[0-9.]?|python3(?:\.[0-9]+)?|node|ruby|perl|php|lua|deno|bun|tsx)$/.test(name);
 }
 
 function isProtectedArtifactPath(path: string): boolean {
