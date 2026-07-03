@@ -967,6 +967,23 @@ describe("codex native hook dispatch", () => {
       );
       assert.equal(allowedPlanningArtifactWrite.outputJson, null);
 
+      const allowedPlanningTmpWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Write",
+          tool_use_id: "tool-ralplan-wrapper-planning-tmp",
+          tool_input: {
+            file_path: ".omx/tmp/sess-ralplan-wrapper/notes.md",
+            content: "# Scratch notes\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedPlanningTmpWrite.outputJson, null);
+
       const allowedBeadsMetadataWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -7204,6 +7221,26 @@ exit 0
         { cwd },
       );
       assert.equal(allowedBash.outputJson, null);
+
+      const allowedTmpBash = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-tmp-bash",
+          tool_input: {
+            command: [
+              "mkdir -p .omx/tmp/sess-di-artifact",
+              "cat > .omx/tmp/sess-di-artifact/demo.md <<'EOF'",
+              "# Scratch",
+              "EOF",
+            ].join("\n"),
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedTmpBash.outputJson, null);
 
       const allowedAppendBash = await preToolUse(
         {

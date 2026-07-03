@@ -57,6 +57,25 @@ sh .omx/plans/run.sh`;
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies Python literal tmp artifact write plus shell execution as implementation', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/run.sh').write_text('echo pwned')
+PY
+sh .omx/tmp/sess/run.sh`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
+  });
+
+  it('does not classify Python literal tmp artifact write without execution as implementation', () => {
+    const command = `python3 - <<'PY'
+from pathlib import Path
+Path('.omx/tmp/sess/notes.md').write_text('# Scratch notes\\n')
+PY`;
+
+    assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), false);
+  });
+
   it('does not classify Python literal planning artifact write without execution as implementation', () => {
     const command = `python3 - <<'PY'
 from pathlib import Path
