@@ -124,6 +124,10 @@ bash --rcfile .omx/tmp/sess/rc -i -c true`,
       'perl < .omx/tmp/s/run.txt',
       'sh < .omx/tmp/s/run.txt',
       'bash < .omx/tmp/s/run.txt',
+      '/usr/bin/python < .omx/tmp/s/run.txt',
+      '/bin/sh < .omx/tmp/s/run.txt',
+      'env /bin/bash < .omx/tmp/s/run.txt',
+      'command /usr/bin/node < .omx/tmp/s/run.txt',
       `python3 - <<'PY'
 from pathlib import Path
 Path('.omx/tmp/s/run.txt').write_text('print(1)')

@@ -55,6 +55,11 @@ function sameShellPath(candidate: string, target: string): boolean {
   return normalizeShellPath(candidate) === normalizeShellPath(target);
 }
 
+function shellCommandBasename(commandName: string): string {
+  const normalized = normalizeShellPath(commandName);
+  return normalized.slice(normalized.lastIndexOf('/') + 1);
+}
+
 function shellWords(statement: string): string[] {
   const words: string[] = [];
   let current = '';
@@ -327,7 +332,8 @@ function scriptInterpreterOperand(args: string[], cwd: string, targetPath: strin
 
 function shellExecutionMatches(words: string[], cwd: string, targetPath: string): boolean {
   if (words.length === 0) return false;
-  const commandName = words[0]!;
+  const rawCommandName = words[0]!;
+  const commandName = shellCommandBasename(rawCommandName);
 
   if (commandName === 'source' || commandName === '.') {
     const operand = words[1];
@@ -344,8 +350,8 @@ function shellExecutionMatches(words: string[], cwd: string, targetPath: string)
       || scriptInterpreterOperand(words.slice(1), cwd, targetPath, commandName);
   }
 
-  if (commandName.startsWith('./') || commandName.includes('/')) {
-    return sameShellPath(resolveCommandOperand(cwd, commandName), targetPath);
+  if (rawCommandName.startsWith('./') || rawCommandName.includes('/')) {
+    return sameShellPath(resolveCommandOperand(cwd, rawCommandName), targetPath);
   }
 
   return false;
@@ -400,7 +406,7 @@ function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]
   let currentWords = words;
   let currentCwd = cwd;
   for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
-    const commandName = currentWords[0];
+    const commandName = shellCommandBasename(currentWords[0] ?? '');
     if (commandName === 'env') {
       const unwrapped = unwrapEnvCommand(currentWords, currentCwd);
       if (unwrapped.words === currentWords) return unwrapped;
@@ -426,7 +432,7 @@ function unwrapExecutionCommand(words: string[], cwd: string): { words: string[]
 function unwrapCdCommandWords(words: string[]): string[] {
   let currentWords = words;
   for (let unwrapCount = 0; unwrapCount < 4; unwrapCount += 1) {
-    const commandName = currentWords[0];
+    const commandName = shellCommandBasename(currentWords[0] ?? '');
     if (commandName === 'command') {
       const operandIndex = findDirectWrapperOperandIndex(currentWords, 1);
       if (operandIndex === null) return currentWords;
@@ -459,7 +465,7 @@ function cdTransitionTarget(words: string[], cwd: string): string | null {
 }
 
 function unwrapEnvCommand(words: string[], cwd: string): { words: string[]; cwd: string } {
-  if (words[0] !== 'env') return { words, cwd };
+  if (shellCommandBasename(words[0] ?? '') !== 'env') return { words, cwd };
 
   let index = 1;
   let envCwd = cwd;
@@ -600,7 +606,7 @@ function commandStdinRedirectsPlanningTmpIntoInterpreter(command: string, initia
         cwds.set(statement.subshellDepth, cdTarget);
       } else {
         const unwrapped = unwrapExecutionCommand(words, cwd);
-        const commandName = unwrapped.words[0] ?? '';
+        const commandName = shellCommandBasename(unwrapped.words[0] ?? '');
         if ((isShellName(commandName) || isScriptInterpreterName(commandName))
           && stdinRedirectsPlanningTmp(unwrapped.words.slice(1), unwrapped.cwd)) return true;
       }
