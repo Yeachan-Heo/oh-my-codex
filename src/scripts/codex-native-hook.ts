@@ -1561,6 +1561,30 @@ const SOURCE_DIFF_EXTENSIONS = new Set([
   ".tsx",
 ]);
 
+const PLANNING_TMP_SCRIPT_LIKE_EXTENSIONS = new Set([
+  ".bash",
+  ".bat",
+  ".cjs",
+  ".cmd",
+  ".cts",
+  ".fish",
+  ".js",
+  ".jsx",
+  ".ksh",
+  ".mjs",
+  ".mts",
+  ".php",
+  ".pl",
+  ".ps1",
+  ".py",
+  ".rb",
+  ".sh",
+  ".ts",
+  ".tsx",
+  ".zsh",
+]);
+
+
 function gitOutput(cwd: string, args: string[]): string {
   try {
     return execFileSync("git", args, {
@@ -3388,6 +3412,19 @@ function isProtectedPlanningStatePath(relativePath: string): boolean {
   return PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
 }
 
+function isPlanningTmpRelativePath(relativePath: string): boolean {
+  return relativePath === ".omx/tmp" || relativePath.startsWith(".omx/tmp/");
+}
+
+function isAllowedPlanningTmpScratchPath(relativePath: string): boolean {
+  if (!isPlanningTmpRelativePath(relativePath)) return true;
+  const fileName = relativePath.split("/").pop() ?? "";
+  if (!fileName || fileName === "tmp") return true;
+  const extension = extname(fileName).toLowerCase();
+  return !PLANNING_TMP_SCRIPT_LIKE_EXTENSIONS.has(extension);
+}
+
+
 function isAllowedPlanningArtifactPath(
   cwd: string,
   rawPath: string,
@@ -3396,9 +3433,13 @@ function isAllowedPlanningArtifactPath(
   const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
   if (!relativePath) return false;
   if (isProtectedPlanningStatePath(relativePath)) return false;
+  if (isPlanningTmpRelativePath(relativePath)) {
+    return allowedPrefixes.includes(".omx/tmp") && isAllowedPlanningTmpScratchPath(relativePath);
+  }
   return allowedPrefixes.some((prefix) => (
     relativePath === prefix || relativePath.startsWith(`${prefix}/`)
   ));
+
 }
 
 function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boolean {
@@ -4132,6 +4173,133 @@ function firstShellScriptOperand(words: string[], shellWordIndex: number): strin
   }
   return "";
 }
+
+function isPythonInterpreterCommandWord(base: string): boolean {
+  return /^python(?:[0-9]+(?:\.[0-9]+)*)?$/.test(base);
+}
+
+function isNodeInterpreterCommandWord(base: string): boolean {
+  return /^(?:node|nodejs)$/.test(base);
+}
+
+function isScriptInterpreterCommandWord(word: string): boolean {
+  const base = shellWordBaseName(word);
+  return isNestedShellCommandWord(base)
+    || isNodeInterpreterCommandWord(base)
+    || base === "bun"
+    || base === "tsx"
+    || base === "deno"
+    || isPythonInterpreterCommandWord(base)
+    || base === "perl"
+    || base === "ruby"
+    || base === "php"
+    || base === "lua";
+}
+
+function firstInterpreterScriptOperand(words: string[], interpreterWordIndex: number): string {
+  const base = shellWordBaseName(words[interpreterWordIndex] ?? "");
+  if (isNestedShellCommandWord(base)) return firstShellScriptOperand(words, interpreterWordIndex);
+
+  for (let index = interpreterWordIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (isPythonInterpreterCommandWord(base)) {
+      if (word === "-c" || word === "-m") return "";
+      if (word.startsWith("-")) continue;
+      return word;
+    }
+    if (isNodeInterpreterCommandWord(base) || base === "bun" || base === "tsx") {
+      if (word === "-e" || word === "--eval" || word === "-p" || word === "--print") return "";
+      if (runtimeOptionConsumesNextWord(word)) {
+        index += 1;
+        continue;
+      }
+      if (word.startsWith("--eval=") || word.startsWith("--print=")) return "";
+      if (word.startsWith("-")) continue;
+      return word;
+    }
+    if (base === "deno") {
+      if (word === "eval" || word === "repl") return "";
+      if (word === "run") continue;
+      if (word.startsWith("-")) continue;
+      return word;
+    }
+    if (base === "perl" || base === "ruby" || base === "php" || base === "lua") {
+      if (word === "-e" || word.startsWith("-e")) return "";
+      if (word.startsWith("-")) continue;
+      return word;
+    }
+  }
+  return "";
+}
+
+function firstPlanningTmpScriptExecutionTarget(cwd: string, command: string): string | null {
+  const scanCommand = (currentCwd: string, currentCommand: string, activeCommands: Set<string>): string | null => {
+    const normalizedCommand = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(currentCommand));
+    const commandKey = `${currentCwd}\0${normalizedCommand.trim()}`;
+    if (!normalizedCommand.trim() || activeCommands.has(commandKey)) return null;
+
+    const assignments = extractCommandLiteralAssignments(normalizedCommand);
+    const nextActiveCommands = new Set(activeCommands);
+    nextActiveCommands.add(commandKey);
+    let effectiveCwd = currentCwd;
+    const normalizeExecutionTarget = (operandCwd: string, rawPath: string): string | null => {
+      const absoluteTarget = normalizeSameCommandScriptTarget(operandCwd, rawPath, assignments);
+      if (!absoluteTarget) return null;
+      const relativePath = relative(cwd, absoluteTarget).replace(/\\/g, "/");
+      if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith("/")) return null;
+      return relativePath;
+    };
+
+
+    for (const segment of splitShellCommandSegments(normalizedCommand)) {
+      const words = tokenizeShellWords(segment);
+      const cdCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
+      if (cdCwd !== null) {
+        effectiveCwd = cdCwd;
+        continue;
+      }
+
+      const wrappedCommandContext = resolveWrappedCommandExecutionContext(words, effectiveCwd);
+      for (let index = 0; index < words.length; index += 1) {
+        const word = words[index] ?? "";
+        const operandCwd = wrappedCommandContext && index >= wrappedCommandContext.index ? wrappedCommandContext.cwd : effectiveCwd;
+        const operand = word === "source" || word === "."
+          ? firstNonOptionSourceOperand(words, index)
+          : isScriptInterpreterCommandWord(word)
+            ? firstInterpreterScriptOperand(words, index)
+            : "";
+        if (!operand) continue;
+        const relativePath = normalizeExecutionTarget(operandCwd, operand);
+
+        if (relativePath && isPlanningTmpRelativePath(relativePath)) return relativePath;
+      }
+
+      if (wrappedCommandContext !== null) {
+        const directTarget = words[wrappedCommandContext.index] ?? "";
+        const relativePath = normalizeExecutionTarget(
+          wrappedCommandContext.cwd,
+          directTarget,
+        );
+        if (relativePath && isPlanningTmpRelativePath(relativePath)) return relativePath;
+      }
+
+      for (const nestedCommand of extractNestedShellCommandStringsForStateScan(segment)) {
+        const nestedTarget = scanCommand(effectiveCwd, nestedCommand, nextActiveCommands);
+        if (nestedTarget) return nestedTarget;
+      }
+      for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(segment)) {
+        const nestedTarget = scanCommand(effectiveCwd, nestedCommand, nextActiveCommands);
+        if (nestedTarget) return nestedTarget;
+      }
+    }
+
+    return null;
+  };
+
+  return scanCommand(cwd, command, new Set());
+}
+
 
 function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): boolean {
   const scanCommand = (currentCwd: string, currentCommand: string, activeCommands: Set<string>, writtenTargets: Set<string>): boolean => {
@@ -6194,9 +6362,11 @@ function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean 
   if (isAllowedDeepInterviewRalplanHandoffCommand(cwd, command)) return true;
   if (commandEndsPlanningPhase(cwd, command)) return false;
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
+  if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (hasUnresolvedConductorInterpreterWrite(command)) return false;
   const targets = extractDeepInterviewCommandWriteTargets(command);
+
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
 }
@@ -6311,9 +6481,11 @@ function isAllowedRalplanBashWrite(
     return isAllowedRalplanTerminalStateWriteCommand(cwd, command, activeState, sessionId);
   }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
+  if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (hasUnresolvedConductorInterpreterWrite(command)) return false;
   if (targets.some((target) => !isAllowedRalplanArtifactPath(cwd, target))) return false;
+
   return hasAllowedTargets;
 }
 
@@ -6327,6 +6499,11 @@ function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
     const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash redirect write";
     return `${operationClass} target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
   }
+  const executedTmpTarget = firstPlanningTmpScriptExecutionTarget(cwd, command);
+  if (executedTmpTarget) {
+    return `execution target ${executedTmpTarget} is under .omx/tmp; planning tmp artifacts must not be used as generated-script transport`;
+  }
+
   if (commandHasPackageInstallIntent(command)) {
     return "package installation commands are implementation actions and cannot be combined with allowed planning artifact writes";
   }
@@ -6352,6 +6529,10 @@ function buildDeepInterviewBashBlockedDetail(cwd: string, command: string): stri
   if (blockedTarget) {
     const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash write";
     return `${operationClass} target ${blockedTarget} is not under allowed deep-interview artifact paths or metadata paths (${DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const executedTmpTarget = firstPlanningTmpScriptExecutionTarget(cwd, command);
+  if (executedTmpTarget) {
+    return `execution target ${executedTmpTarget} is under .omx/tmp; deep-interview tmp artifacts must not be used as generated-script transport`;
   }
   if (commandHasPackageInstallIntent(command)) {
     return "package installation commands are implementation actions and cannot be combined with allowed deep-interview artifact writes";

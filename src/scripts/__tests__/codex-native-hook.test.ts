@@ -984,6 +984,70 @@ describe("codex native hook dispatch", () => {
       );
       assert.equal(allowedPlanningTmpWrite.outputJson, null);
 
+      const blockedPlanningTmpScriptWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Write",
+          tool_use_id: "tool-ralplan-wrapper-planning-tmp-script-write",
+          tool_input: {
+            file_path: ".omx/tmp/sess-ralplan-wrapper/run.sh",
+            content: "printf pwned > src/pwned.ts\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedPlanningTmpScriptWrite.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedPlanningTmpScriptWrite.outputJson), /\.omx\/tmp|planning artifact paths/);
+
+      const blockedPlanningTmpScriptExecution = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-wrapper-planning-tmp-script-exec",
+          tool_input: { command: "sh .omx/tmp/sess-ralplan-wrapper/run.sh" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedPlanningTmpScriptExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedPlanningTmpScriptExecution.outputJson), /generated-script transport|\.omx\/tmp/);
+
+      const blockedPlanningTmpExtensionlessExecution = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-wrapper-planning-tmp-extensionless-exec",
+          tool_input: { command: "./.omx/tmp/sess-ralplan-wrapper/generated" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedPlanningTmpExtensionlessExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedPlanningTmpExtensionlessExecution.outputJson), /generated-script transport|\.omx\/tmp/);
+
+      const blockedPlanningTmpVersionedInterpreterExecution = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-ralplan-wrapper-implementation-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-ralplan-wrapper-planning-tmp-versioned-python-exec",
+          tool_input: { command: "python3.12 .omx/tmp/sess-ralplan-wrapper/generated.txt" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedPlanningTmpVersionedInterpreterExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedPlanningTmpVersionedInterpreterExecution.outputJson), /generated-script transport|\.omx\/tmp/);
+
+
       const allowedBeadsMetadataWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -7241,6 +7305,51 @@ exit 0
         { cwd },
       );
       assert.equal(allowedTmpBash.outputJson, null);
+
+      const blockedTmpScriptWrite = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Write",
+          tool_use_id: "tool-di-tmp-script-write",
+          tool_input: {
+            file_path: ".omx/tmp/sess-di-artifact/run.sh",
+            content: "printf pwned > src/pwned.ts\n",
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedTmpScriptWrite.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedTmpScriptWrite.outputJson), /\.omx\/tmp|planning artifact paths/);
+
+      const blockedTmpScriptExecution = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-tmp-script-exec",
+          tool_input: { command: "sh .omx/tmp/sess-di-artifact/run.sh" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedTmpScriptExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedTmpScriptExecution.outputJson), /generated-script transport|\.omx\/tmp/);
+
+      const blockedTmpInterpreterExecution = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-tmp-python-exec",
+          tool_input: { command: "python3.12 .omx/tmp/sess-di-artifact/generated.txt" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedTmpInterpreterExecution.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(blockedTmpInterpreterExecution.outputJson), /generated-script transport|\.omx\/tmp/);
 
       const allowedAppendBash = await preToolUse(
         {
