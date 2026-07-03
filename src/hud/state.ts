@@ -117,6 +117,7 @@ interface RawUltragoalGoal {
   title?: unknown;
   objective?: unknown;
   status?: unknown;
+  steeringStatus?: unknown;
 }
 
 interface RawUltragoalPlan {
@@ -133,6 +134,7 @@ type NormalizedUltragoalGoal = {
   title: string;
   objective: string;
   status: string;
+  steeringStatus?: string;
 };
 
 function normalizeUltragoalGoal(raw: unknown): NormalizedUltragoalGoal | null {
@@ -142,8 +144,17 @@ function normalizeUltragoalGoal(raw: unknown): NormalizedUltragoalGoal | null {
   const title = sanitizeOptionalString(goal.title);
   const objective = sanitizeOptionalString(goal.objective);
   const status = sanitizeOptionalString(goal.status);
+  const steeringStatus = sanitizeOptionalString(goal.steeringStatus);
   if (!id || !title || !objective || !status) return null;
-  return { id, title, objective, status };
+  return { id, title, objective, status, steeringStatus };
+}
+
+function isSupersededUltragoalGoal(goal: NormalizedUltragoalGoal): boolean {
+  return goal.steeringStatus === 'superseded';
+}
+
+function isHudUnresolvedUltragoalGoal(goal: NormalizedUltragoalGoal): boolean {
+  return !isSupersededUltragoalGoal(goal) && goal.status !== 'complete';
 }
 
 export async function readUltragoalState(cwd: string): Promise<UltragoalStateForHud | null> {
@@ -154,17 +165,17 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
   if (goals.length === 0) return null;
 
   const completed_goals = goals.filter((goal) => goal.status === 'complete').length;
-  const pending_goals = goals.filter((goal) => goal.status === 'pending').length;
-  const in_progress_goals = goals.filter((goal) => goal.status === 'in_progress').length;
-  const failed_goals = goals.filter((goal) => goal.status === 'failed').length;
-  const review_blocked_goals = goals.filter((goal) => goal.status === 'review_blocked').length;
-  const needs_user_decision_goals = goals.filter((goal) => goal.status === 'needs_user_decision').length;
-  const unresolved_goals = goals.length - completed_goals;
+  const pending_goals = goals.filter((goal) => goal.status === 'pending' && !isSupersededUltragoalGoal(goal)).length;
+  const in_progress_goals = goals.filter((goal) => goal.status === 'in_progress' && !isSupersededUltragoalGoal(goal)).length;
+  const failed_goals = goals.filter((goal) => goal.status === 'failed' && !isSupersededUltragoalGoal(goal)).length;
+  const review_blocked_goals = goals.filter((goal) => goal.status === 'review_blocked' && !isSupersededUltragoalGoal(goal)).length;
+  const needs_user_decision_goals = goals.filter((goal) => goal.status === 'needs_user_decision' && !isSupersededUltragoalGoal(goal)).length;
+  const unresolved_goals = goals.filter(isHudUnresolvedUltragoalGoal).length;
   const activeGoalId = sanitizeOptionalString(plan.activeGoalId);
   const activeGoal = (
-    (activeGoalId ? goals.find((goal) => goal.id === activeGoalId && goal.status !== 'complete') : undefined)
-    ?? goals.find((goal) => ULTRAGOAL_ACTIVE_STATUSES.has(goal.status))
-    ?? goals.find((goal) => ULTRAGOAL_UNRESOLVED_STATUSES.has(goal.status))
+    (activeGoalId ? goals.find((goal) => goal.id === activeGoalId && isHudUnresolvedUltragoalGoal(goal)) : undefined)
+    ?? goals.find((goal) => !isSupersededUltragoalGoal(goal) && ULTRAGOAL_ACTIVE_STATUSES.has(goal.status))
+    ?? goals.find((goal) => !isSupersededUltragoalGoal(goal) && ULTRAGOAL_UNRESOLVED_STATUSES.has(goal.status))
   );
   const activeIndex = activeGoal ? goals.findIndex((goal) => goal.id === activeGoal.id) : -1;
   const complete = unresolved_goals === 0;
@@ -177,7 +188,7 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
   });
   const nextPendingGoals = goals
     .map((goal, index) => ({ goal, index }))
-    .filter(({ goal, index }) => index > activeIndex && goal.status === 'pending' && goal.id !== activeGoal?.id)
+    .filter(({ goal, index }) => index > activeIndex && goal.status === 'pending' && !isSupersededUltragoalGoal(goal) && goal.id !== activeGoal?.id)
     .slice(0, 3)
     .map(toHudGoal);
   const orderedOngoingGoals = [
