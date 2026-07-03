@@ -4159,6 +4159,23 @@ function firstNonOptionSourceOperand(words: string[], sourceWordIndex: number): 
   return "";
 }
 
+function stdinRedirectOperands(words: string[]): string[] {
+  const operands: string[] = [];
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (word === "<") {
+      const operand = words[index + 1] ?? "";
+      if (operand) operands.push(operand);
+      index += 1;
+      continue;
+    }
+    if (/^\d*<[^<&].+/.test(word)) {
+      operands.push(word.replace(/^\d*</, ""));
+    }
+  }
+  return operands;
+}
+
 function firstShellScriptOperands(words: string[], shellWordIndex: number): string[] {
   const operands: string[] = [];
   for (let index = shellWordIndex + 1; index < words.length; index += 1) {
@@ -4362,7 +4379,7 @@ function firstPlanningTmpScriptExecutionTarget(cwd: string, command: string): st
         const operands = word === "source" || word === "."
           ? [firstNonOptionSourceOperand(words, index)].filter(Boolean)
           : isScriptInterpreterCommandWord(word)
-            ? firstInterpreterScriptOperands(words, index)
+            ? [...firstInterpreterScriptOperands(words, index), ...stdinRedirectOperands(words)]
             : [];
         for (const operand of operands) {
           const relativePath = normalizeExecutionTarget(operandCwd, operand);

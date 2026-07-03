@@ -7403,6 +7403,22 @@ exit 0
         ["tool-di-tmp-bash-rcfile-load", "bash --rcfile .omx/tmp/sess-di-artifact/rc -i -c true"],
         ["tool-di-tmp-go-run-exec", "go run .omx/tmp/sess-di-artifact/probe.go"],
         ["tool-di-tmp-deno-run-exec", "deno run .omx/tmp/sess-di-artifact/generated.ts"],
+        ["tool-di-tmp-python-stdin-exec", "python < .omx/tmp/sess-di-artifact/run.txt"],
+        ["tool-di-tmp-node-stdin-exec", "node < .omx/tmp/sess-di-artifact/run.txt"],
+        ["tool-di-tmp-ruby-stdin-exec", "ruby < .omx/tmp/sess-di-artifact/run.txt"],
+        ["tool-di-tmp-perl-stdin-exec", "perl < .omx/tmp/sess-di-artifact/run.txt"],
+        ["tool-di-tmp-sh-stdin-exec", "sh < .omx/tmp/sess-di-artifact/run.txt"],
+        ["tool-di-tmp-bash-stdin-exec", "bash < .omx/tmp/sess-di-artifact/run.txt"],
+        [
+          "tool-di-tmp-same-command-stdin-exec",
+          [
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "Path('.omx/tmp/sess-di-artifact/run.txt').write_text('print(1)')",
+            "PY",
+            "python < .omx/tmp/sess-di-artifact/run.txt",
+          ].join("\n"),
+        ],
       ] as const) {
         const blockedTmpTransport = await preToolUse(
           {
@@ -10420,6 +10436,29 @@ exit 0
         command: "sed -Ei 's/old/new/' .omx/plans/issue-2863.md",
       });
       assert.equal(allowedCombinedSedArtifact.outputJson, null);
+
+      for (const [toolUseId, command] of [
+        ["tool-ralplan-tmp-python-stdin-exec", "python < .omx/tmp/sess-ralplan-guard/run.txt"],
+        ["tool-ralplan-tmp-node-stdin-exec", "node < .omx/tmp/sess-ralplan-guard/run.txt"],
+        ["tool-ralplan-tmp-ruby-stdin-exec", "ruby < .omx/tmp/sess-ralplan-guard/run.txt"],
+        ["tool-ralplan-tmp-perl-stdin-exec", "perl < .omx/tmp/sess-ralplan-guard/run.txt"],
+        ["tool-ralplan-tmp-sh-stdin-exec", "sh < .omx/tmp/sess-ralplan-guard/run.txt"],
+        ["tool-ralplan-tmp-bash-stdin-exec", "bash < .omx/tmp/sess-ralplan-guard/run.txt"],
+        [
+          "tool-ralplan-tmp-same-command-stdin-exec",
+          [
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "Path('.omx/tmp/sess-ralplan-guard/run.txt').write_text('print(1)')",
+            "PY",
+            "python < .omx/tmp/sess-ralplan-guard/run.txt",
+          ].join("\n"),
+        ],
+      ] as const) {
+        const blockedTmpStdin = await preToolUse("Bash", toolUseId, { command });
+        assert.equal((blockedTmpStdin.outputJson as { decision?: string } | null)?.decision, "block", command);
+        assert.match(JSON.stringify(blockedTmpStdin.outputJson), /generated-script transport|\.omx\/tmp/);
+      }
 
       const allowedReadOnlyEditors = await preToolUse("Bash", "tool-ralplan-read-only-editors-allow", {
         command: "sed -n '1,20p' src/runtime.ts; perl -ne 'print if $. < 3' src/runtime.ts",

@@ -208,6 +208,23 @@ function runtimeLoadOptionOperandMatches(word: string, args: string[], index: nu
   }
   return false;
 }
+
+function stdinRedirectOperandMatches(args: string[], cwd: string, targetPath: string): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === '<') {
+      const operand = args[index + 1];
+      if (operand && sameShellPath(resolveCommandOperand(cwd, operand), targetPath)) return true;
+      index += 1;
+      continue;
+    }
+    if (/^\d*<[^<&].+/.test(word)) {
+      const operand = word.replace(/^\d*</, '');
+      if (sameShellPath(resolveCommandOperand(cwd, operand), targetPath)) return true;
+    }
+  }
+  return false;
+}
 function shellScriptOperand(args: string[], cwd: string, targetPath: string): boolean {
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
@@ -318,11 +335,13 @@ function shellExecutionMatches(words: string[], cwd: string, targetPath: string)
   }
 
   if (isShellName(commandName)) {
-    return shellScriptOperand(words.slice(1), cwd, targetPath);
+    return stdinRedirectOperandMatches(words.slice(1), cwd, targetPath)
+      || shellScriptOperand(words.slice(1), cwd, targetPath);
   }
 
   if (isScriptInterpreterName(commandName)) {
-    return scriptInterpreterOperand(words.slice(1), cwd, targetPath, commandName);
+    return stdinRedirectOperandMatches(words.slice(1), cwd, targetPath)
+      || scriptInterpreterOperand(words.slice(1), cwd, targetPath, commandName);
   }
 
   if (commandName.startsWith('./') || commandName.includes('/')) {
@@ -548,6 +567,54 @@ function hasTokenizedExecutionOfPath(command: string, path: string, initialCwd =
   return false;
 }
 
+function isPlanningTmpShellPath(path: string): boolean {
+  const normalized = normalizeShellPath(path);
+  return normalized === '.omx/tmp' || normalized.startsWith('.omx/tmp/');
+}
+
+function stdinRedirectsPlanningTmp(args: string[], cwd: string): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === '<') {
+      const operand = args[index + 1];
+      if (operand && isPlanningTmpShellPath(resolveCommandOperand(cwd, operand))) return true;
+      index += 1;
+      continue;
+    }
+    if (/^\d*<[^<&].+/.test(word)) {
+      const operand = word.replace(/^\d*</, '');
+      if (isPlanningTmpShellPath(resolveCommandOperand(cwd, operand))) return true;
+    }
+  }
+  return false;
+}
+
+function commandStdinRedirectsPlanningTmpIntoInterpreter(command: string, initialCwd = ''): boolean {
+  const cwds = new Map<number, string>([[0, initialCwd]]);
+  for (const statement of shellStatementRecords(command)) {
+    const cwd = scopedCwd(cwds, statement.subshellDepth, initialCwd);
+    const words = groupedShellWords(statement.text);
+    if (words.length > 0) {
+      const cdTarget = cdTransitionTarget(words, cwd);
+      if (cdTarget) {
+        cwds.set(statement.subshellDepth, cdTarget);
+      } else {
+        const unwrapped = unwrapExecutionCommand(words, cwd);
+        const commandName = unwrapped.words[0] ?? '';
+        if ((isShellName(commandName) || isScriptInterpreterName(commandName))
+          && stdinRedirectsPlanningTmp(unwrapped.words.slice(1), unwrapped.cwd)) return true;
+      }
+    }
+
+    if (statement.closesSubshells > 0) {
+      for (let depth = statement.subshellDepth; depth > statement.subshellDepth - statement.closesSubshells; depth -= 1) {
+        cwds.delete(depth);
+      }
+    }
+  }
+  return false;
+}
+
 function collectProtectedArtifactWritePaths(command: string): Set<string> {
   const paths = new Set<string>();
   const protectedPath = String.raw`(["']?)((?:\.\/)?\.omx\/(?:context|specs|plans|tmp)\/[^"'\s;|&<>]+)\1`;
@@ -613,6 +680,7 @@ export function isImplementationToolCall(input: PreToolUseGateInput): boolean {
   if (IMPLEMENTATION_TOOLS.has(input.tool_name)) return true;
   if (input.tool_name === 'Bash' && typeof input.tool_input === 'string') {
     return DENIED_BASH_PATTERNS.some((pattern) => pattern.test(input.tool_input!))
+      || commandStdinRedirectsPlanningTmpIntoInterpreter(input.tool_input)
       || hasSameCommandProtectedArtifactExecution(input.tool_input);
   }
   return false;
