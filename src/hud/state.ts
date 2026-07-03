@@ -118,6 +118,7 @@ interface RawUltragoalGoal {
   objective?: unknown;
   status?: unknown;
   steeringStatus?: unknown;
+  supersededBy?: unknown;
 }
 
 interface RawUltragoalPlan {
@@ -135,6 +136,7 @@ type NormalizedUltragoalGoal = {
   objective: string;
   status: string;
   steeringStatus?: string;
+  supersededBy: string[];
 };
 
 function normalizeUltragoalGoal(raw: unknown): NormalizedUltragoalGoal | null {
@@ -146,15 +148,33 @@ function normalizeUltragoalGoal(raw: unknown): NormalizedUltragoalGoal | null {
   const status = sanitizeOptionalString(goal.status);
   const steeringStatus = sanitizeOptionalString(goal.steeringStatus);
   if (!id || !title || !objective || !status) return null;
-  return { id, title, objective, status, steeringStatus };
+  return { id, title, objective, status, steeringStatus, supersededBy: Array.isArray(goal.supersededBy) ? goal.supersededBy.map(sanitizeOptionalString).filter((id): id is string => id !== undefined) : [] };
 }
 
-function isSupersededUltragoalGoal(goal: NormalizedUltragoalGoal): boolean {
-  return goal.steeringStatus === 'superseded';
+function isResolvedUltragoalStatus(status: string): boolean {
+  return status === 'complete';
 }
 
-function isHudUnresolvedUltragoalGoal(goal: NormalizedUltragoalGoal): boolean {
-  return !isSupersededUltragoalGoal(goal) && goal.status !== 'complete';
+function isSupersededUltragoalGoalResolved(goal: NormalizedUltragoalGoal, goals: NormalizedUltragoalGoal[]): boolean {
+  if (goal.steeringStatus !== 'superseded') return false;
+  if (goal.supersededBy.length === 0) return false;
+  return goal.supersededBy.every((id) => {
+    const replacement = goals.find((candidate) => candidate.id === id);
+    return replacement !== undefined && isResolvedUltragoalStatus(replacement.status);
+  });
+}
+
+function isNonBlockingSupersededUltragoalGoal(goal: NormalizedUltragoalGoal, goals: NormalizedUltragoalGoal[]): boolean {
+  return isSupersededUltragoalGoalResolved(goal, goals);
+}
+function isHudCompletionBlockingUltragoalGoal(goal: NormalizedUltragoalGoal, goals: NormalizedUltragoalGoal[]): boolean {
+  if (goal.steeringStatus === 'superseded') return !isSupersededUltragoalGoalResolved(goal, goals);
+  if (goal.steeringStatus === 'blocked') return true;
+  return !isResolvedUltragoalStatus(goal.status);
+}
+
+function isHudUnresolvedUltragoalGoal(goal: NormalizedUltragoalGoal, goals: NormalizedUltragoalGoal[]): boolean {
+  return isHudCompletionBlockingUltragoalGoal(goal, goals);
 }
 
 export async function readUltragoalState(cwd: string): Promise<UltragoalStateForHud | null> {
@@ -165,17 +185,17 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
   if (goals.length === 0) return null;
 
   const completed_goals = goals.filter((goal) => goal.status === 'complete').length;
-  const pending_goals = goals.filter((goal) => goal.status === 'pending' && !isSupersededUltragoalGoal(goal)).length;
-  const in_progress_goals = goals.filter((goal) => goal.status === 'in_progress' && !isSupersededUltragoalGoal(goal)).length;
-  const failed_goals = goals.filter((goal) => goal.status === 'failed' && !isSupersededUltragoalGoal(goal)).length;
-  const review_blocked_goals = goals.filter((goal) => goal.status === 'review_blocked' && !isSupersededUltragoalGoal(goal)).length;
-  const needs_user_decision_goals = goals.filter((goal) => goal.status === 'needs_user_decision' && !isSupersededUltragoalGoal(goal)).length;
-  const unresolved_goals = goals.filter(isHudUnresolvedUltragoalGoal).length;
+  const pending_goals = goals.filter((goal) => goal.status === 'pending' && !isNonBlockingSupersededUltragoalGoal(goal, goals)).length;
+  const in_progress_goals = goals.filter((goal) => goal.status === 'in_progress' && !isNonBlockingSupersededUltragoalGoal(goal, goals)).length;
+  const failed_goals = goals.filter((goal) => goal.status === 'failed' && !isNonBlockingSupersededUltragoalGoal(goal, goals)).length;
+  const review_blocked_goals = goals.filter((goal) => goal.status === 'review_blocked' && !isNonBlockingSupersededUltragoalGoal(goal, goals)).length;
+  const needs_user_decision_goals = goals.filter((goal) => goal.status === 'needs_user_decision' && !isNonBlockingSupersededUltragoalGoal(goal, goals)).length;
+  const unresolved_goals = goals.filter((goal) => isHudUnresolvedUltragoalGoal(goal, goals)).length;
   const activeGoalId = sanitizeOptionalString(plan.activeGoalId);
   const activeGoal = (
-    (activeGoalId ? goals.find((goal) => goal.id === activeGoalId && isHudUnresolvedUltragoalGoal(goal)) : undefined)
-    ?? goals.find((goal) => !isSupersededUltragoalGoal(goal) && ULTRAGOAL_ACTIVE_STATUSES.has(goal.status))
-    ?? goals.find((goal) => !isSupersededUltragoalGoal(goal) && ULTRAGOAL_UNRESOLVED_STATUSES.has(goal.status))
+    (activeGoalId ? goals.find((goal) => goal.id === activeGoalId && isHudUnresolvedUltragoalGoal(goal, goals)) : undefined)
+    ?? goals.find((goal) => isHudUnresolvedUltragoalGoal(goal, goals) && ULTRAGOAL_ACTIVE_STATUSES.has(goal.status))
+    ?? goals.find((goal) => isHudUnresolvedUltragoalGoal(goal, goals) && ULTRAGOAL_UNRESOLVED_STATUSES.has(goal.status))
   );
   const activeIndex = activeGoal ? goals.findIndex((goal) => goal.id === activeGoal.id) : -1;
   const complete = unresolved_goals === 0;
@@ -188,7 +208,7 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
   });
   const nextPendingGoals = goals
     .map((goal, index) => ({ goal, index }))
-    .filter(({ goal, index }) => index > activeIndex && goal.status === 'pending' && !isSupersededUltragoalGoal(goal) && goal.id !== activeGoal?.id)
+    .filter(({ goal, index }) => index > activeIndex && goal.status === 'pending' && isHudUnresolvedUltragoalGoal(goal, goals) && goal.id !== activeGoal?.id)
     .slice(0, 3)
     .map(toHudGoal);
   const orderedOngoingGoals = [
