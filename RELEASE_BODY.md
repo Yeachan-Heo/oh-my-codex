@@ -26,4 +26,8 @@ Release-prep gates include version sync for `v0.18.17`, build, native-agent veri
 
 Open PRs #3018 and #3010 are blocked/dirty/draft and are not included in this release candidate unless separately fixed and merged before publication.
 
+## Contributors
+
+Thanks to the contributors who made this release possible.
+
 **Full Changelog**: [`v0.18.16...v0.18.17`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.16...v0.18.17)
