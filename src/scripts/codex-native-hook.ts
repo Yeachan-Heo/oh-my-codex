@@ -6399,6 +6399,33 @@ function isDurableDeepInterviewHandoffEvidencePath(cwd: string, rawPath: string)
     || relativePath.startsWith(".omx/specs/");
 }
 
+function hasExistingDurableDeepInterviewHandoffEvidence(cwd: string): boolean {
+  const roots = [".omx/context", ".omx/interviews", ".omx/specs"] as const;
+  const maxEntries = 2_000;
+  let visited = 0;
+
+  for (const root of roots) {
+    const stack = [resolve(cwd, root)];
+    while (stack.length > 0 && visited < maxEntries) {
+      const current = stack.pop();
+      if (!current) continue;
+      visited += 1;
+      try {
+        const stat = statSync(current);
+        if (stat.isFile()) return true;
+        if (!stat.isDirectory()) continue;
+        for (const entry of readdirSync(current)) {
+          stack.push(join(current, entry));
+        }
+      } catch {
+        // Missing or unreadable roots are not completion evidence.
+      }
+    }
+  }
+
+  return false;
+}
+
 function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: string): boolean {
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
@@ -6414,7 +6441,10 @@ function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: strin
   const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
   if (!payload || !isDeepInterviewRalplanHandoffStatePayload(payload)) return false;
   const targets = extractDeepInterviewCommandWriteTargets(command);
-  if (targets.length === 0) return false;
+  if (targets.length === 0) {
+    return !hasPriorExecutableCommand(stateWriteOperation.prefix)
+      && hasExistingDurableDeepInterviewHandoffEvidence(cwd);
+  }
   if (!targets.some((target) => isDurableDeepInterviewHandoffEvidencePath(cwd, target))) return false;
   if (!hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd, command)) return false;
   return targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));

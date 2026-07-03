@@ -7843,6 +7843,58 @@ exit 0
       );
       assert.equal(allowedStateInputFileMutation.outputJson, null);
 
+      const standaloneAutopilotRalplanHandoffPayload = {
+        mode: "autopilot",
+        active: true,
+        current_phase: "ralplan",
+        state: {
+          deep_interview_gate: {
+            status: "complete",
+            rationale: "The bounded PMO catalog task is clear and ready for ralplan handoff.",
+            handoff_summary: "Create the root-level pmo catalog from the captured spec.",
+          },
+        },
+      };
+      const standaloneAutopilotRalplanHandoffInputFile = join(cwd, ".omx", "tmp", "pmo-autopilot-state.json");
+      await mkdir(dirname(standaloneAutopilotRalplanHandoffInputFile), { recursive: true });
+      await writeJson(standaloneAutopilotRalplanHandoffInputFile, standaloneAutopilotRalplanHandoffPayload);
+
+      const blockedStandaloneAutopilotRalplanHandoffWithoutEvidence = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-standalone-autopilot-ralplan-handoff-without-evidence",
+          tool_input: { command: `omx state write --input-file ${standaloneAutopilotRalplanHandoffInputFile} --json` },
+        },
+        { cwd },
+      );
+      assert.equal(
+        (blockedStandaloneAutopilotRalplanHandoffWithoutEvidence.outputJson as { decision?: string } | null)?.decision,
+        "block",
+      );
+
+      const priorDeepInterviewSpec = join(cwd, ".omx", "specs", "pmo-catalog-spec.md");
+      await mkdir(dirname(priorDeepInterviewSpec), { recursive: true });
+      await writeFile(priorDeepInterviewSpec, "# PMO catalog spec\n");
+      const allowedStandaloneAutopilotRalplanHandoffWithEvidence = await preToolUse(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-standalone-autopilot-ralplan-handoff-with-evidence",
+          tool_input: { command: `omx state write --input-file ${standaloneAutopilotRalplanHandoffInputFile} --json` },
+        },
+        { cwd },
+      );
+      assert.equal(
+        allowedStandaloneAutopilotRalplanHandoffWithEvidence.outputJson,
+        null,
+        "a valid autopilot deep-interview -> ralplan state write may use prior durable .omx/specs evidence",
+      );
+
       // A deactivating `omx state write` (or `omx state clear`) ends the planning
       // phase, which the backend does not gate for standalone modes; the hook
       // rejects these deactivation vectors at the transport boundary.
