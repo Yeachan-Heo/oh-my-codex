@@ -16368,6 +16368,79 @@ PY`,
     }
   });
 
+  it("clears stale ralplan Stop cache when authoritative state is terminal inactive", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralplan-terminal-cache-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-ralplan-terminal-cache";
+      const threadId = "thread-stop-ralplan-terminal-cache";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: false,
+        skill: "ralplan",
+        phase: "complete",
+        session_id: sessionId,
+        active_skills: [],
+      });
+      await writeJson(join(stateDir, "ralplan-state.json"), {
+        active: false,
+        mode: "ralplan",
+        current_phase: "complete",
+        status: "complete",
+        run_outcome: "complete",
+        session_id: sessionId,
+        cwd,
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: false,
+        skill: "ralplan",
+        phase: "complete",
+        session_id: sessionId,
+        active_skills: [],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: false,
+        mode: "ralplan",
+        current_phase: "complete",
+        status: "complete",
+        run_outcome: "complete",
+        session_id: sessionId,
+        cwd,
+      });
+      await writeJson(join(stateDir, "native-stop-state.json"), {
+        sessions: {
+          [sessionId]: {
+            last_signature: `skill-stop|${sessionId}|${threadId}|no-message|skill_ralplan_planning_continue_artifact`,
+            updated_at: "2026-07-04T00:00:00.000Z",
+          },
+          [threadId]: {
+            last_signature: `skill-stop|${sessionId}|${threadId}|no-message|skill_ralplan_planning_continue_artifact`,
+            updated_at: "2026-07-04T00:00:00.000Z",
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          stop_hook_active: true,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+      const stopState = JSON.parse(await readFile(join(stateDir, "native-stop-state.json"), "utf-8")) as { sessions?: Record<string, unknown> };
+      assert.deepEqual(stopState.sessions, {});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps blocking current session ralplan when canonical root inactive ralplan state lacks project context", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralplan-canonical-root-no-cwd-"));
     try {

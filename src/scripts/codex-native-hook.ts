@@ -8031,6 +8031,54 @@ function modeStateHasExplicitMatchingCwd(state: Record<string, unknown>, cwd: st
   }
 }
 
+async function clearNativeStopSessionEntries(
+  stateDir: string,
+  payload: CodexHookPayload,
+  canonicalSessionId?: string,
+): Promise<void> {
+  const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
+  const state = await readJsonIfExists(statePath);
+  if (!state) return;
+
+  const sessions = safeObject(state.sessions);
+  const keys = new Set(uniqueNonEmpty([
+    readNativeStopSessionKey(payload, canonicalSessionId),
+    canonicalSessionId,
+    readPayloadSessionId(payload),
+    readPayloadThreadId(payload),
+  ]));
+  let changed = false;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(sessions, key)) {
+      delete sessions[key];
+      changed = true;
+    }
+  }
+  if (!changed) return;
+
+  await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
+}
+
+async function hasAuthoritativeInactiveSkillStopState(
+  cwd: string,
+  stateDir: string,
+  skill: string,
+  sessionId: string,
+  threadId: string,
+): Promise<boolean> {
+  const sessionModeState = await readStopSessionPinnedState(`${skill}-state.json`, cwd, sessionId, stateDir);
+  if (!sessionModeState || !isTerminalOrInactiveModeState(sessionModeState)) return false;
+
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  if (canonicalState && !rootSkillStateHasNoActiveSkillForStopContext(canonicalState, skill, sessionId, threadId)) {
+    return false;
+  }
+
+  const rootModeState = await readJsonIfExists(join(stateDir, `${skill}-state.json`));
+  if (!rootModeState) return true;
+  if (!modeStateMatchesSkillStopContext(rootModeState, cwd, sessionId)) return true;
+  return isTerminalOrInactiveModeState(rootModeState);
+}
 async function readBlockingSkillForStop(
   cwd: string,
   stateDir: string,
@@ -8939,6 +8987,9 @@ async function buildStopHookOutput(
   const suppressParentWorkflowStop = shouldSuppressParentWorkflowStopForSideConversation(payload);
   if (canonicalSessionId) {
     await reconcileStaleRootSkillActiveStateForStop(cwd, stateDir, canonicalSessionId);
+    if (await hasAuthoritativeInactiveSkillStopState(cwd, stateDir, "ralplan", canonicalSessionId, threadId)) {
+      await clearNativeStopSessionEntries(stateDir, payload, canonicalSessionId);
+    }
   }
   if (suppressParentWorkflowStop) {
     return null;
