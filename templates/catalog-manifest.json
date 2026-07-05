@@ -73,6 +73,13 @@
       "internalRequired": false
     },
     {
+      "name": "minimax",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "ultragoal",
       "category": "execution",
       "status": "active",

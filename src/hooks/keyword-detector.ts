@@ -45,6 +45,7 @@ import {
 } from '../config/deep-interview.js';
 import { inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import { resolveAutopilotPlannerRouting } from '../autopilot/planner-routing.js';
+import { normalizeMinimaxLookaheadPolicy } from '../minimax/lookahead.js';
 import { deriveAutopilotChildPhase, AUTOPILOT_CHILD_PHASES } from '../autopilot/fsm.js';
 import { canAdvanceAutopilotDeepInterviewToRalplan } from '../autopilot/deep-interview-gate.js';
 import { canAdvanceAutopilotRalplanToUltragoal } from '../autopilot/ralplan-gate.js';
@@ -123,7 +124,7 @@ export const DEEP_INTERVIEW_STATE_FILE = 'deep-interview-state.json';
 export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'] as const;
 export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
 
-type StatefulSkillMode = 'deep-interview' | 'autopilot' | 'ralph' | 'ralplan' | 'ultragoal' | 'ultrawork' | 'ultraqa' | 'team' | 'autoresearch';
+type StatefulSkillMode = 'deep-interview' | 'autopilot' | 'ralph' | 'ralplan' | 'ultragoal' | 'ultrawork' | 'ultraqa' | 'team' | 'autoresearch' | 'minimax';
 
 interface StatefulSkillSeedConfig {
   mode: StatefulSkillMode;
@@ -140,6 +141,7 @@ const PLANNING_LIKE_WORKFLOW_SKILLS = new Set<TrackedWorkflowMode>([
 const EXECUTION_LIKE_WORKFLOW_SKILLS = new Set<TrackedWorkflowMode>([
   'autopilot',
   'autoresearch',
+  'minimax',
   'ralph',
   'team',
   'ultragoal',
@@ -151,6 +153,7 @@ const STATEFUL_SKILL_SEED_CONFIG: Record<StatefulSkillMode, StatefulSkillSeedCon
   'deep-interview': { mode: 'deep-interview', initialPhase: 'intent-first' },
   autopilot: { mode: 'autopilot', initialPhase: 'deep-interview', includeIteration: true },
   autoresearch: { mode: 'autoresearch', initialPhase: 'executing' },
+  minimax: { mode: 'minimax', initialPhase: 'planning' },
   ralph: { mode: 'ralph', initialPhase: 'starting', includeIteration: true },
   ralplan: { mode: 'ralplan', initialPhase: 'planning' },
   team: { mode: 'team', initialPhase: 'starting', scope: 'root' },
@@ -647,10 +650,14 @@ async function persistStatefulSkillSeedState(
     && existingPhase !== ''
     && !existingModeTerminal
     && (
-      sameActiveSkill
+      (sameActiveSkill && (config.mode !== 'minimax' || options.activeContinuation === true))
       || (config.mode === 'team' && existingModeState?.active === true)
     );
-  const startedAt = previousSkill?.skill === nextSkill.skill && previousSkill.active && !existingModeTerminal
+  const preservePreviousStartedAt = previousSkill?.skill === nextSkill.skill
+    && previousSkill.active
+    && !existingModeTerminal
+    && (config.mode !== 'minimax' || options.activeContinuation === true);
+  const startedAt = preservePreviousStartedAt
     ? safeString(existingModeState?.started_at).trim() || previousSkill.activated_at || nowIso
     : preserveExistingModeState
       ? safeString(existingModeState?.started_at).trim() || nowIso
@@ -686,6 +693,69 @@ async function persistStatefulSkillSeedState(
 
   if (config.mode === 'deep-interview') {
     Object.assign(baseState, buildDeepInterviewConfigStateFields(nextSkill.deep_interview_config));
+  }
+
+  if (config.mode === 'minimax') {
+    const reusableModeState = preserveExistingModeState ? existingModeState : null;
+    const existingState = (reusableModeState?.state && typeof reusableModeState.state === 'object')
+      ? reusableModeState.state as Record<string, unknown>
+      : {};
+    const existingArbiterHistory = Array.isArray(reusableModeState?.arbiter_history)
+      ? reusableModeState.arbiter_history.map((entry) => safeString(entry).trim()).filter(Boolean)
+      : [];
+    const existingEscalationHistory = Array.isArray(reusableModeState?.escalation_history)
+      ? reusableModeState.escalation_history.map((entry) => safeString(entry).trim()).filter(Boolean)
+      : [];
+    const hadEscalation = reusableModeState?.escalated === true
+      || safeString(reusableModeState?.min_verdict).trim().toLowerCase() === 'escalate'
+      || safeString(reusableModeState?.last_arbiter_decision).trim().toLowerCase() === 'escalate'
+      || existingArbiterHistory.some((entry) => entry.toLowerCase() === 'escalate')
+      || existingEscalationHistory.some((entry) => entry.toLowerCase() === 'escalate');
+    baseState.step = typeof reusableModeState?.step === 'number' && Number.isFinite(reusableModeState.step)
+      ? reusableModeState.step
+      : 1;
+    baseState.packet_dir = safeString(reusableModeState?.packet_dir).trim() || '.omx/minimax';
+    baseState.last_packet_path = Object.prototype.hasOwnProperty.call(reusableModeState ?? {}, 'last_packet_path')
+      ? reusableModeState?.last_packet_path
+      : null;
+    baseState.max_next_action = safeString(reusableModeState?.max_next_action).trim() || null;
+    baseState.lookahead = safeString(reusableModeState?.lookahead).trim() || null;
+    baseState.min_verdict = safeString(reusableModeState?.min_verdict).trim() || 'pending';
+    baseState.arbiter_decision = safeString(reusableModeState?.arbiter_decision).trim() || 'pending';
+    baseState.verification_evidence = Array.isArray(reusableModeState?.verification_evidence)
+      ? reusableModeState?.verification_evidence
+      : [];
+    baseState.verification_evidence_step = Object.prototype.hasOwnProperty.call(reusableModeState ?? {}, 'verification_evidence_step')
+      ? reusableModeState?.verification_evidence_step
+      : null;
+    baseState.verification_evidence_path = safeString(reusableModeState?.verification_evidence_path).trim() || null;
+    baseState.council_evidence_step = Object.prototype.hasOwnProperty.call(reusableModeState ?? {}, 'council_evidence_step')
+      ? reusableModeState?.council_evidence_step
+      : null;
+    baseState.escalated = hadEscalation;
+    baseState.last_arbiter_decision = safeString(reusableModeState?.last_arbiter_decision).trim() || null;
+    baseState.arbiter_history = existingArbiterHistory;
+    baseState.escalation_history = existingEscalationHistory;
+    baseState.lookahead_policy = normalizeMinimaxLookaheadPolicy(reusableModeState?.lookahead_policy);
+    baseState.completion_gate = {
+      arbiter_decision_required: 'complete',
+      verification_evidence_required: true,
+      fresh_verification_evidence_required: true,
+      council_artifact_required_when_escalated: true,
+    };
+    baseState.state = {
+      ...existingState,
+      role_loop: Array.isArray(existingState.role_loop)
+        ? existingState.role_loop
+        : ['MAX', 'LOOKAHEAD', 'MIN', 'ARBITER'],
+      council: (existingState.council && typeof existingState.council === 'object')
+        ? existingState.council
+        : {
+            required: false,
+            artifact_path: null,
+            verdict: null,
+          },
+    };
   }
 
   if (config.mode === 'autopilot') {
@@ -813,9 +883,9 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'stop', 'abort', 'parallel', 'autoresearch', 'ultragoal', 'autopilot']);
+const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'stop', 'abort', 'parallel', 'autoresearch', 'ultragoal', 'autopilot', 'minimax', 'minimax workflow']);
 
-type IntentKeyword = 'ralph' | 'team' | 'stop' | 'abort' | 'parallel' | 'autoresearch' | 'ultragoal' | 'autopilot';
+type IntentKeyword = 'ralph' | 'team' | 'stop' | 'abort' | 'parallel' | 'autoresearch' | 'ultragoal' | 'autopilot' | 'minimax' | 'minimax workflow';
 
 const DEEP_INTERVIEW_ACTIVATION_PATTERNS: RegExp[] = [
   /(?:^|[^\w])\$(?:deep-interview)\b/i,
@@ -840,6 +910,12 @@ const DEEP_INTERVIEW_MANAGEMENT_MENTION_PATTERN = /\b(?:clear|cleanup|clean\s+up
  * "parallel" requires an explicit instruction to run in parallel mode so that
  * CI output like "running 8 tests in parallel" does not trigger ultrawork.
  */
+const MINIMAX_INTENT_PATTERNS: RegExp[] = [
+  /(?:^|[^\w])\$(?:minimax)\b/i,
+  /^\s*\/minimax\b/i,
+  /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?minimax\s+(?:mode|workflow|skill|loop)\b/i,
+];
+
 const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
   ralph: [
     /(?:^|[^\w])\$(?:ralph)\b/i,
@@ -897,6 +973,8 @@ const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
     /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?autopilot(?:\s+(?:mode|workflow|skill|loop|now))?\s*[.!]?\s*$/i,
     /\bautopilot\s+(?:mode|workflow|skill|loop)\b/i,
   ],
+  minimax: MINIMAX_INTENT_PATTERNS,
+  'minimax workflow': MINIMAX_INTENT_PATTERNS,
 };
 
 function hasExplicitPromptsInvocation(text: string): boolean {
@@ -1320,6 +1398,7 @@ function resolveContinuationKeywordMatch(
 
 function initialWorkflowPhaseForMode(mode: TrackedWorkflowMode): SkillActivePhase {
   if (mode === 'autoresearch') return 'executing';
+  if (mode === 'minimax') return 'planning';
   if (mode === 'autopilot') return 'deep-interview';
   return 'planning';
 }
@@ -1677,7 +1756,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           previous,
           input.text,
           sourceCwd,
-          { activeContinuation: requestedEntry.skill === 'autopilot' && sameSkillContinuation },
+          { activeContinuation: (requestedEntry.skill === 'autopilot' || requestedEntry.skill === 'minimax') && sameSkillContinuation },
         );
         if (requestedEntry.skill === workflowState.skill) {
           nextState = {
@@ -1737,7 +1816,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       previous,
       input.text,
       sourceCwd,
-      { activeContinuation: match.skill === 'autopilot' && sameSkillContinuation },
+      { activeContinuation: (match.skill === 'autopilot' || match.skill === 'minimax') && sameSkillContinuation },
     );
     nextState.active_skills = buildActiveSkills(nextState);
     await writeSkillActiveStateCopiesForStateDir(
@@ -1772,6 +1851,7 @@ export const EXECUTION_GATE_KEYWORDS = new Set<string>([
   'autopilot',
   'team',
   'ultrawork',
+  'minimax',
 ]);
 
 /**
@@ -1834,7 +1914,7 @@ export function isUnderspecifiedForExecution(text: string): boolean {
 
   // Strip mode keywords for effective word counting
   const stripped = trimmed
-    .replace(/\b(?:ralph|autopilot|team|ultrawork|ulw)\b/gi, '')
+    .replace(/\b(?:ralph|autopilot|team|ultrawork|ulw|minimax|autoresearch)\b/gi, '')
     .trim();
   const effectiveWords = stripped.split(/\s+/).filter(w => w.length > 0).length;
 

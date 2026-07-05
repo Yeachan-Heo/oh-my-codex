@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildTmuxSessionName } from '../../cli/index.js';
+import { syncSkillStateFromTurn } from '../../scripts/notify-hook/auto-nudge.js';
 
 const NOTIFY_HOOK_SCRIPT = new URL('../../../dist/scripts/notify-hook.js', import.meta.url);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
@@ -2903,6 +2904,208 @@ exit 0
     });
   });
 
+  it('keeps minimax active when assistant claims completion without arbiter evidence', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: false, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        active: true,
+        skill: 'minimax',
+        keyword: '$minimax',
+        phase: 'reviewing',
+        source: 'keyword-detector',
+        session_id: 'sess-managed',
+      });
+      await writeJson(join(sessionStateDir, 'minimax-state.json'), {
+        active: true,
+        mode: 'minimax',
+        current_phase: 'reviewing',
+        session_id: 'sess-managed',
+        step: 2,
+        arbiter_decision: 'continue',
+        verification_evidence: [],
+      });
+
+      await syncSkillStateFromTurn(stateDir, {
+        cwd,
+        'session-id': 'sess-managed',
+        'last-assistant-message': 'Completed with final summary.',
+      });
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        minimax_completion_reason?: string;
+        arbiter_decision?: string;
+      };
+      assert.equal(skillState.active, true);
+      assert.equal(skillState.phase, 'reviewing');
+      assert.equal(skillState.arbiter_decision, 'continue');
+      assert.equal(skillState.minimax_completion_reason, 'arbiter_not_complete');
+    });
+  });
+
+  it('completes minimax when arbiter decision has verification evidence', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const minimaxDir = join(cwd, '.omx', 'minimax');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await mkdir(minimaxDir, { recursive: true });
+      await writeJson(join(minimaxDir, 'verification-step-4.json'), {
+        schema_version: 'minimax-verification-v1',
+        step: 4,
+        status: 'passed',
+        passed: true,
+      });
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: false, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        active: true,
+        skill: 'minimax',
+        keyword: '$minimax',
+        phase: 'reviewing',
+        source: 'keyword-detector',
+        session_id: 'sess-managed',
+      });
+      await writeJson(join(sessionStateDir, 'minimax-state.json'), {
+        active: true,
+        mode: 'minimax',
+        current_phase: 'reviewing',
+        session_id: 'sess-managed',
+        step: 4,
+        arbiter_decision: 'complete',
+        verification_evidence: ['npm run build', 'targeted minimax tests passed'],
+        verification_evidence_step: 4,
+        verification_evidence_path: '.omx/minimax/verification-step-4.json',
+      });
+
+      await syncSkillStateFromTurn(stateDir, {
+        cwd,
+        'session-id': 'sess-managed',
+        'last-assistant-message': 'Completed with final summary.',
+      });
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        minimax_completion_reason?: string;
+        arbiter_decision?: string;
+      };
+      const modeState = JSON.parse(await readFile(join(sessionStateDir, 'minimax-state.json'), 'utf-8')) as {
+        active: boolean;
+        current_phase: string;
+        minimax_completion_reason?: string;
+      };
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.phase, 'completing');
+      assert.equal(skillState.arbiter_decision, 'complete');
+      assert.equal(skillState.minimax_completion_reason, 'arbiter_complete_with_evidence');
+      assert.equal(modeState.active, false);
+      assert.equal(modeState.current_phase, 'complete');
+      assert.equal(modeState.minimax_completion_reason, 'arbiter_complete_with_evidence');
+    });
+  });
+
+  it('keeps minimax active when required council evidence is missing', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const minimaxDir = join(cwd, '.omx', 'minimax');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await mkdir(minimaxDir, { recursive: true });
+      await writeJson(join(minimaxDir, 'verification-step-5.json'), {
+        schema_version: 'minimax-verification-v1',
+        step: 5,
+        status: 'passed',
+        passed: true,
+      });
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: false, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'skill-active-state.json'), {
+        active: true,
+        skill: 'minimax',
+        keyword: '$minimax',
+        phase: 'reviewing',
+        source: 'keyword-detector',
+        session_id: 'sess-managed',
+      });
+      await writeJson(join(sessionStateDir, 'minimax-state.json'), {
+        active: true,
+        mode: 'minimax',
+        current_phase: 'reviewing',
+        session_id: 'sess-managed',
+        step: 5,
+        arbiter_decision: 'complete',
+        min_verdict: 'escalate',
+        verification_evidence: ['npm run build', 'targeted minimax tests passed'],
+        verification_evidence_step: 5,
+        verification_evidence_path: '.omx/minimax/verification-step-5.json',
+        completion_gate: {
+          council_artifact_required_when_escalated: true,
+        },
+        state: {
+          council: {
+            required: false,
+            artifact_path: null,
+            verdict: null,
+          },
+        },
+      });
+
+      await syncSkillStateFromTurn(stateDir, {
+        cwd,
+        'session-id': 'sess-managed',
+        'last-assistant-message': 'Reviewing required council evidence.',
+      });
+
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        minimax_completion_reason?: string;
+      };
+      assert.equal(skillState.active, true);
+      assert.equal(skillState.phase, 'reviewing');
+      assert.equal(skillState.minimax_completion_reason, 'missing_required_council_artifact');
+    });
+  });
+
   it('releases the deep-interview input lock on success', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
@@ -2917,7 +3120,7 @@ exit 0
       await mkdir(fakeBinDir, { recursive: true });
 
       await writeJson(join(codexHome, '.omx-config.json'), {
-        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+        autoNudge: { enabled: false, delaySec: 0, stallMs: 0 },
       });
       await writeManagedSessionState(stateDir, cwd);
       const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');

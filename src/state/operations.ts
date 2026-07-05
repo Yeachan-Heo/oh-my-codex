@@ -59,6 +59,8 @@ import {
   buildAutopilotRalplanUltragoalGateError,
   canAdvanceAutopilotRalplanToUltragoal,
 } from '../autopilot/ralplan-gate.js';
+import { assessMinimaxCompletionState } from '../minimax/skill-validation.js';
+import { normalizeMinimaxLookaheadPolicy } from '../minimax/lookahead.js';
 import {
   buildRalplanConsensusGateFromSources,
 } from '../ralplan/consensus-gate.js';
@@ -97,9 +99,61 @@ function isNextAutopilotPhase(
   return currentOrder >= 0 && nextOrder === currentOrder + 1;
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((entry) => typeof entry === 'string' ? entry.trim() : '').filter(Boolean)
+    : [];
+}
+
+function hasMinimaxEscalation(state: Record<string, unknown>): boolean {
+  return state.escalated === true
+    || (typeof state.min_verdict === 'string' && state.min_verdict.trim().toLowerCase() === 'escalate')
+    || (typeof state.last_arbiter_decision === 'string' && state.last_arbiter_decision.trim().toLowerCase() === 'escalate')
+    || stringArray(state.arbiter_history).some((entry) => entry.toLowerCase() === 'escalate')
+    || stringArray(state.escalation_history).some((entry) => entry.toLowerCase() === 'escalate');
+}
+
+function preserveMinimaxEscalation(existing: Record<string, unknown>, next: Record<string, unknown>): void {
+  if (!hasMinimaxEscalation(existing) && !hasMinimaxEscalation(next)) return;
+  next.escalated = true;
+  const history = new Set([
+    ...stringArray(existing.arbiter_history),
+    ...stringArray(next.arbiter_history),
+  ]);
+  history.add('escalate');
+  next.arbiter_history = [...history];
+}
+
+function normalizedStringField(state: Record<string, unknown>, key: string): string {
+  const value = state[key];
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function isMinimaxCancellationState(state: Record<string, unknown>): boolean {
+  const terminal = [
+    normalizedStringField(state, 'current_phase'),
+    normalizedStringField(state, 'run_outcome'),
+    normalizedStringField(state, 'lifecycle_outcome'),
+    normalizedStringField(state, 'terminal_outcome'),
+  ];
+  return terminal.some((value) => ['cancelled', 'canceled', 'stopped', 'failed', 'blocked', 'user-stopped'].includes(value));
+}
+
+function isMinimaxCompletionAttempt(state: Record<string, unknown>): boolean {
+  if (normalizedStringField(state, 'arbiter_decision') === 'complete') return true;
+  if (['complete', 'completed'].includes(normalizedStringField(state, 'current_phase'))) return true;
+  if (['success', 'succeeded', 'complete', 'completed', 'finished'].some((value) => [
+    normalizedStringField(state, 'run_outcome'),
+    normalizedStringField(state, 'lifecycle_outcome'),
+    normalizedStringField(state, 'terminal_outcome'),
+  ].includes(value))) return true;
+  return state.active === false && !isMinimaxCancellationState(state);
+}
+
 export const SUPPORTED_STATE_READ_MODES = [
   'autopilot',
   'autoresearch',
+  'minimax',
   'team',
   'ralph',
   'ultrawork',
@@ -786,6 +840,18 @@ export async function executeStateOperation(
 
           if (mode === 'autopilot') {
             normalizeCleanAutopilotCompletionEvidence(mergedRaw);
+          }
+
+          if (mode === 'minimax') {
+            mergedRaw.lookahead_policy = normalizeMinimaxLookaheadPolicy(mergedRaw.lookahead_policy);
+            preserveMinimaxEscalation(existing as Record<string, unknown>, mergedRaw);
+            if (isMinimaxCompletionAttempt(mergedRaw)) {
+              const completion = await assessMinimaxCompletionState(mergedRaw, cwd);
+              if (!completion.complete) {
+                validationError = `minimax complete state requires fresh verification evidence (${completion.reason})`;
+                return;
+              }
+            }
           }
 
           if (mode === 'ralplan') {

@@ -42,7 +42,7 @@ describe('workflow transition rules', () => {
   it('allows the approved overlap matrix and denies unsupported combinations', () => {
     const cases: Array<{
       current: string[];
-      requested: 'team' | 'ralph' | 'ultrawork' | 'autopilot' | 'autoresearch';
+      requested: 'team' | 'ralph' | 'ultrawork' | 'autopilot' | 'autoresearch' | 'minimax';
       allowed: boolean;
       resulting: string[];
     }> = [
@@ -56,6 +56,9 @@ describe('workflow transition rules', () => {
       { current: ['autopilot'], requested: 'team', allowed: false, resulting: ['autopilot'] },
       { current: ['team'], requested: 'autopilot', allowed: false, resulting: ['team'] },
       { current: ['autoresearch'], requested: 'ralph', allowed: false, resulting: ['autoresearch'] },
+      { current: ['minimax'], requested: 'team', allowed: false, resulting: ['minimax'] },
+      { current: ['ultrawork'], requested: 'minimax', allowed: false, resulting: ['ultrawork'] },
+      { current: ['minimax'], requested: 'ultrawork', allowed: false, resulting: ['minimax'] },
       { current: ['team', 'ralph'], requested: 'ultrawork', allowed: true, resulting: ['team', 'ralph', 'ultrawork'] },
       { current: ['team', 'ultrawork'], requested: 'ralph', allowed: true, resulting: ['team', 'ultrawork', 'ralph'] },
     ];
@@ -92,6 +95,13 @@ describe('workflow transition rules', () => {
     assert.deepEqual(interviewToAutoresearch.resultingModes, ['autoresearch']);
     assert.equal(interviewToAutoresearch.transitionMessage, 'mode transiting: deep-interview -> autoresearch');
 
+    const interviewToMinimax = evaluateWorkflowTransition(['deep-interview'], 'minimax');
+    assert.equal(interviewToMinimax.allowed, true);
+    assert.equal(interviewToMinimax.kind, 'auto-complete');
+    assert.deepEqual(interviewToMinimax.autoCompleteModes, ['deep-interview']);
+    assert.deepEqual(interviewToMinimax.resultingModes, ['minimax']);
+    assert.equal(interviewToMinimax.transitionMessage, 'mode transiting: deep-interview -> minimax');
+
     const interviewToUltragoal = evaluateWorkflowTransition(['deep-interview'], 'ultragoal');
     assert.equal(interviewToUltragoal.allowed, true);
     assert.equal(interviewToUltragoal.kind, 'auto-complete');
@@ -117,6 +127,17 @@ describe('workflow transition rules', () => {
     assert.equal(ralplanToAutoresearch.kind, 'auto-complete');
     assert.deepEqual(ralplanToAutoresearch.autoCompleteModes, ['ralplan']);
     assert.deepEqual(ralplanToAutoresearch.resultingModes, ['autoresearch']);
+
+    const ralplanToMinimax = evaluateWorkflowTransition(['ralplan'], 'minimax');
+    assert.equal(ralplanToMinimax.allowed, true);
+    assert.equal(ralplanToMinimax.kind, 'auto-complete');
+    assert.deepEqual(ralplanToMinimax.autoCompleteModes, ['ralplan']);
+    assert.deepEqual(ralplanToMinimax.resultingModes, ['minimax']);
+
+    const ralplanUltraworkToMinimax = evaluateWorkflowTransition(['ralplan', 'ultrawork'], 'minimax');
+    assert.equal(ralplanUltraworkToMinimax.allowed, false);
+    assert.deepEqual(ralplanUltraworkToMinimax.autoCompleteModes, []);
+    assert.deepEqual(ralplanUltraworkToMinimax.resultingModes, ['ralplan', 'ultrawork']);
   });
 
   it('builds rollback denial guidance for execution-to-planning transitions', () => {

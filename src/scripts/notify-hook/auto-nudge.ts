@@ -22,6 +22,7 @@ import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPa
 import { stripOrchestrationIntentTags } from './orchestration-intent.js';
 import { buildCapturePaneArgv, DEFAULT_MARKER, tmuxHookExplicitlyDisablesInjection } from '../tmux-hook-engine.js';
 import { readAutoresearchCompletionStatus } from '../../autoresearch/skill-validation.js';
+import { readMinimaxCompletionStatusForActiveDecision } from '../../minimax/skill-validation.js';
 import { persistDeepInterviewModeState } from '../../hooks/keyword-detector.js';
 import {
   isManagedOmxSession,
@@ -195,6 +196,22 @@ async function persistSkillActiveState(stateDir, sessionId, state) {
   await writeScopedJson(stateDir, SKILL_ACTIVE_STATE_FILE, sessionId, state).catch(() => {});
 }
 
+async function persistMinimaxModeCompletionState(stateDir, sessionId, completion, nowIso) {
+  const modeState = await readScopedJsonIfExists(stateDir, 'minimax-state.json', sessionId, null);
+  if (!modeState || modeState.mode !== 'minimax') return;
+  await writeScopedJson(stateDir, 'minimax-state.json', sessionId, {
+    ...modeState,
+    active: false,
+    current_phase: 'complete',
+    completed_at: modeState.completed_at || nowIso,
+    updated_at: nowIso,
+    arbiter_decision: completion.arbiterDecision || modeState.arbiter_decision,
+    minimax_completion_reason: completion.reason,
+    verification_evidence_path: completion.verificationEvidencePath,
+    council_artifact_path: completion.councilArtifactPath,
+  }).catch(() => {});
+}
+
 function cloneSkillActiveState(state) {
   if (!state || typeof state !== 'object') return null;
   return {
@@ -233,6 +250,7 @@ export async function syncSkillStateFromTurn(stateDir, payload) {
     : inferredPhase;
   skillState.phase = nextPhase;
   skillState.active = nextPhase !== 'completing';
+  const nowIso = new Date().toISOString();
 
   if (skillState.skill === 'autoresearch') {
     const completion = await readAutoresearchCompletionStatus(payload.cwd || process.cwd(), invocationSessionId);
@@ -248,7 +266,22 @@ export async function syncSkillStateFromTurn(stateDir, payload) {
     }
   }
 
-  const nowIso = new Date().toISOString();
+  if (skillState.skill === 'minimax') {
+    const completion = await readMinimaxCompletionStatusForActiveDecision(payload.cwd || process.cwd(), invocationSessionId);
+    skillState.arbiter_decision = completion.arbiterDecision;
+    skillState.minimax_completion_reason = completion.reason;
+    skillState.verification_evidence_path = completion.verificationEvidencePath;
+    skillState.council_artifact_path = completion.councilArtifactPath;
+    if (completion.complete) {
+      skillState.phase = 'completing';
+      skillState.active = false;
+      await persistMinimaxModeCompletionState(stateDir, invocationSessionId, completion, nowIso);
+    } else if (inferredPhase === 'completing') {
+      skillState.phase = previousPhase === 'completing' ? 'reviewing' : previousPhase;
+      skillState.active = true;
+    }
+  }
+
   skillState.updated_at = nowIso;
   releaseReason = inferDeepInterviewReleaseReason({ skillState, latestUserInput, lastMessage });
   if (releaseReason && isDeepInterviewAutoApprovalLocked(skillState)) {

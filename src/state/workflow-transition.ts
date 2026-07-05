@@ -764,6 +764,7 @@ export function buildPlanningGateLogEvent(
 export const TRACKED_WORKFLOW_MODES = [
   'autopilot',
   'autoresearch',
+  'minimax',
   'team',
   'ultragoal',
   'ralph',
@@ -784,6 +785,7 @@ const ALLOWED_OVERLAP_PAIRS = new Set([
 const AUTO_COMPLETE_TRANSITIONS = new Set([
   'deep-interview->autopilot',
   'deep-interview->autoresearch',
+  'deep-interview->minimax',
   'deep-interview->ralph',
   'deep-interview->team',
   'deep-interview->ultragoal',
@@ -793,6 +795,7 @@ const AUTO_COMPLETE_TRANSITIONS = new Set([
   'ralplan->ralph',
   'ralplan->autopilot',
   'ralplan->autoresearch',
+  'ralplan->minimax',
   'ultragoal->ultraqa',
 ]);
 
@@ -808,6 +811,7 @@ const PLANNING_LIKE_MODES = new Set<TrackedWorkflowMode>([
 const EXECUTION_LIKE_MODES = new Set<TrackedWorkflowMode>([
   'autopilot',
   'autoresearch',
+  'minimax',
   'team',
   'ultragoal',
   'ralph',
@@ -834,6 +838,7 @@ function buildPairKey(a: string, b: string): string {
 }
 
 function isAllowedOverlap(a: TrackedWorkflowMode, b: TrackedWorkflowMode): boolean {
+  if (a === 'minimax' || b === 'minimax') return false;
   if (a === 'ultrawork' || b === 'ultrawork') return true;
   return ALLOWED_OVERLAP_PAIRS.has(buildPairKey(a, b));
 }
