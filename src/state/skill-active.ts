@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, unlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
-import { omxStateDir } from '../utils/paths.js';
+import { getBaseStateDir } from '../mcp/state-paths.js';
 import { isTerminalRunOutcome, normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import {
   assertWorkflowTransitionAllowed,
@@ -259,7 +259,7 @@ export function getSkillActiveStatePaths(cwd: string, sessionId?: string): {
   rootPath: string;
   sessionPath?: string;
 } {
-  return getSkillActiveStatePathsForStateDir(omxStateDir(cwd), sessionId);
+  return getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd), sessionId);
 }
 
 export function getSkillActiveStatePathsForStateDir(stateDir: string, sessionId?: string): {
@@ -358,7 +358,7 @@ export function tracksCanonicalWorkflowSkill(mode: string): mode is CanonicalWor
 export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkillStateOptions): Promise<void> {
   const {
     cwd,
-    baseStateDir = omxStateDir(cwd),
+    baseStateDir = getBaseStateDir(cwd),
     mode,
     active,
     currentPhase,

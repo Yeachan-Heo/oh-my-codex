@@ -7,6 +7,7 @@ import {
   getAllScopedStatePaths,
   getAuthoritativeActiveStateDirs,
   getBaseStateDir,
+  getBaseStateDirWithSource,
   getReadScopedStateDirs,
   getReadScopedStatePaths,
   getStateDir,
@@ -16,6 +17,7 @@ import {
   resolveWorkingDirectoryForState,
   validateSessionId,
   validateStateModeSegment,
+  type StateRootSource,
 } from '../mcp/state-paths.js';
 import { evaluateRalphCompletionAuditEvidence } from '../ralph/completion-audit.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
@@ -210,11 +212,16 @@ function validateStrictReadableMode(mode: unknown): string {
   return normalized;
 }
 
-async function initializeStateEnvironment(cwd: string, effectiveSessionId?: string): Promise<void> {
+async function initializeStateEnvironment(
+  cwd: string,
+  effectiveSessionId?: string,
+  rootSource?: StateRootSource,
+): Promise<void> {
   await mkdir(getStateDir(cwd), { recursive: true });
   if (effectiveSessionId) {
     await mkdir(getStateDir(cwd, effectiveSessionId), { recursive: true });
   }
+  if (rootSource === 'team-env') return;
   const { ensureTmuxHookInitialized } = await import('../cli/tmux-hook.js');
   await ensureTmuxHookInitialized(cwd);
 }
@@ -696,10 +703,10 @@ export async function executeStateOperation(
       case 'state_write': {
         const stateScope = await resolveStateScope(cwd, explicitSessionId);
         const effectiveSessionId = stateScope.sessionId;
-        await initializeStateEnvironment(cwd, effectiveSessionId);
+        const { baseStateDir, rootSource } = getBaseStateDirWithSource(cwd);
+        await initializeStateEnvironment(cwd, effectiveSessionId, rootSource);
 
         const mode = validateStateModeSegment(rawArgs.mode);
-        const baseStateDir = getBaseStateDir(cwd);
         const path = getStatePath(mode, cwd, effectiveSessionId);
         const {
           mode: _mode,
@@ -969,10 +976,10 @@ export async function executeStateOperation(
       case 'state_clear': {
         const stateScope = await resolveStateScope(cwd, explicitSessionId);
         const effectiveSessionId = stateScope.sessionId;
-        await initializeStateEnvironment(cwd, effectiveSessionId);
+        const { baseStateDir, rootSource } = getBaseStateDirWithSource(cwd);
+        await initializeStateEnvironment(cwd, effectiveSessionId, rootSource);
 
         const mode = validateStateModeSegment(rawArgs.mode);
-        const baseStateDir = getBaseStateDir(cwd);
         const allSessions = rawArgs.all_sessions === true;
 
         if (!allSessions) {

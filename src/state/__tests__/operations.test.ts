@@ -51,6 +51,33 @@ async function withOmxRootEnv<T>(root: string, run: () => Promise<T>): Promise<T
     else delete process.env.OMX_TEAM_STATE_ROOT;
   }
 }
+async function withStateRootEnv<T>(env: Partial<Record<'OMX_ROOT' | 'OMX_STATE_ROOT' | 'OMX_TEAM_STATE_ROOT', string>>, run: () => Promise<T>): Promise<T> {
+  const previousOmxRoot = process.env.OMX_ROOT;
+  const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+  const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+  if (typeof env.OMX_ROOT === 'string') process.env.OMX_ROOT = env.OMX_ROOT;
+  else delete process.env.OMX_ROOT;
+  if (typeof env.OMX_STATE_ROOT === 'string') process.env.OMX_STATE_ROOT = env.OMX_STATE_ROOT;
+  else delete process.env.OMX_STATE_ROOT;
+  if (typeof env.OMX_TEAM_STATE_ROOT === 'string') process.env.OMX_TEAM_STATE_ROOT = env.OMX_TEAM_STATE_ROOT;
+  else delete process.env.OMX_TEAM_STATE_ROOT;
+  try {
+    return await run();
+  } finally {
+    if (typeof previousOmxRoot === 'string') process.env.OMX_ROOT = previousOmxRoot;
+    else delete process.env.OMX_ROOT;
+    if (typeof previousOmxStateRoot === 'string') process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+    else delete process.env.OMX_STATE_ROOT;
+    if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+    else delete process.env.OMX_TEAM_STATE_ROOT;
+  }
+}
+
+function responsePayload<T extends Record<string, unknown>>(response: { payload: unknown; isError?: boolean }): T {
+  assert.equal(response.isError, undefined);
+  assert.ok(response.payload && typeof response.payload === 'object' && !Array.isArray(response.payload));
+  return response.payload as T;
+}
 
 function validExecutionContract(stride: 'task' | 'deliverable' | 'milestone'): Record<string, unknown> {
   const perStride = {
@@ -239,6 +266,135 @@ describe('state operations directory initialization', () => {
       assert.deepEqual(response.payload, { statuses: {} });
     } finally {
       await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('writes and clears session state under OMX_TEAM_STATE_ROOT without creating cwd .omx', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-state-ops-team-root-'));
+    try {
+      const wd = join(root, 'workspace');
+      const teamStateRoot = join(root, 'team-state');
+      await mkdir(wd, { recursive: true });
+
+      await withStateRootEnv({ OMX_TEAM_STATE_ROOT: teamStateRoot }, async () => {
+        const writeResponse = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: 'sess-team-write',
+          mode: 'autoresearch',
+          active: true,
+          current_phase: 'running',
+        });
+        const writePayload = responsePayload<{ path: string }>(writeResponse);
+        assert.equal(writePayload.path, join(teamStateRoot, 'sessions', 'sess-team-write', 'autoresearch-state.json'));
+        assert.equal(existsSync(writePayload.path), true);
+        assert.equal(existsSync(join(teamStateRoot, 'sessions', 'sess-team-write', 'skill-active-state.json')), true);
+        assert.equal(existsSync(join(wd, '.omx')), false);
+
+        const clearResponse = await executeStateOperation('state_clear', {
+          workingDirectory: wd,
+          session_id: 'sess-team-write',
+          mode: 'autoresearch',
+        });
+        const clearPayload = responsePayload<{ path: string }>(clearResponse);
+        assert.equal(clearPayload.path, writePayload.path);
+        assert.equal(existsSync(writePayload.path), false);
+        assert.equal(existsSync(join(teamStateRoot, 'sessions', 'sess-team-write', 'skill-active-state.json')), true);
+        assert.equal(existsSync(join(wd, '.omx')), false);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('writes and clears session state under OMX_ROOT when cwd is filesystem root', async () => {
+    const boxRoot = await mkdtemp(join(tmpdir(), 'omx-state-ops-omx-root-'));
+    try {
+      await withStateRootEnv({ OMX_ROOT: boxRoot }, async () => {
+        const writeResponse = await executeStateOperation('state_write', {
+          workingDirectory: '/',
+          session_id: 'sess-omx-root',
+          mode: 'autoresearch',
+          active: true,
+          current_phase: 'running',
+        });
+        const writePayload = responsePayload<{ path: string }>(writeResponse);
+        const expectedPath = join(boxRoot, '.omx', 'state', 'sessions', 'sess-omx-root', 'autoresearch-state.json');
+        assert.equal(writePayload.path, expectedPath);
+        assert.equal(existsSync(expectedPath), true);
+
+        const clearResponse = await executeStateOperation('state_clear', {
+          workingDirectory: '/',
+          session_id: 'sess-omx-root',
+          mode: 'autoresearch',
+        });
+        const clearPayload = responsePayload<{ path: string }>(clearResponse);
+        assert.equal(clearPayload.path, expectedPath);
+        assert.equal(existsSync(expectedPath), false);
+
+        const workspace = join(boxRoot, 'workspace');
+        await mkdir(workspace, { recursive: true });
+        const workspaceResponse = await executeStateOperation('state_write', {
+          workingDirectory: workspace,
+          session_id: 'sess-omx-root-workspace',
+          mode: 'autoresearch',
+          active: true,
+          current_phase: 'running',
+        });
+        const workspacePayload = responsePayload<{ path: string }>(workspaceResponse);
+        assert.equal(
+          workspacePayload.path,
+          join(boxRoot, '.omx', 'state', 'sessions', 'sess-omx-root-workspace', 'autoresearch-state.json'),
+        );
+        assert.equal(existsSync(join(workspace, '.omx')), false);
+      });
+    } finally {
+      await rm(boxRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('writes and clears session state under OMX_STATE_ROOT when cwd is filesystem root', async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-state-ops-state-root-'));
+    try {
+      await withStateRootEnv({ OMX_STATE_ROOT: stateRoot }, async () => {
+        const writeResponse = await executeStateOperation('state_write', {
+          workingDirectory: '/',
+          session_id: 'sess-state-root',
+          mode: 'autoresearch',
+          active: true,
+          current_phase: 'running',
+        });
+        const writePayload = responsePayload<{ path: string }>(writeResponse);
+        const expectedPath = join(stateRoot, '.omx', 'state', 'sessions', 'sess-state-root', 'autoresearch-state.json');
+        assert.equal(writePayload.path, expectedPath);
+        assert.equal(existsSync(expectedPath), true);
+
+        const clearResponse = await executeStateOperation('state_clear', {
+          workingDirectory: '/',
+          session_id: 'sess-state-root',
+          mode: 'autoresearch',
+        });
+        const clearPayload = responsePayload<{ path: string }>(clearResponse);
+        assert.equal(clearPayload.path, expectedPath);
+        assert.equal(existsSync(expectedPath), false);
+
+        const workspace = join(stateRoot, 'workspace');
+        await mkdir(workspace, { recursive: true });
+        const workspaceResponse = await executeStateOperation('state_write', {
+          workingDirectory: workspace,
+          session_id: 'sess-state-root-workspace',
+          mode: 'autoresearch',
+          active: true,
+          current_phase: 'running',
+        });
+        const workspacePayload = responsePayload<{ path: string }>(workspaceResponse);
+        assert.equal(
+          workspacePayload.path,
+          join(stateRoot, '.omx', 'state', 'sessions', 'sess-state-root-workspace', 'autoresearch-state.json'),
+        );
+        assert.equal(existsSync(join(workspace, '.omx')), false);
+      });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
     }
   });
 
