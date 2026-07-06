@@ -7,6 +7,9 @@
 ```sh
 omx mission ./mission.md --dry-run
 omx mission run ./mission.md --continue-on-error -- --model gpt-5
+omx mission status ./mission.md
+omx mission resume ./mission.md -- --model gpt-5
+omx mission rerun ./mission.md --task task-002
 ```
 
 ## Input format
@@ -26,6 +29,9 @@ Use one prompt per non-empty line. Markdown bullets, numbered lists, and task ch
 - Each task is passed to `omx exec` as its prompt. Arguments after `--` are forwarded to `codex exec` for every task.
 - The run stops on the first failed task unless `--continue-on-error` is set.
 - `omx mission plan <file>` or `--dry-run` validates parsing and writes the same durable summary without executing Codex.
+- `omx mission status <file|slug>` reads an existing `summary.json` and prints the current task states without executing anything.
+- `omx mission resume <file>` reads the existing summary for that mission, skips tasks already marked `passed`, treats stale `running` tasks as retryable, and continues the remaining tasks.
+- `omx mission rerun <file> --task <id>` reruns one specific task from the existing summary, including a previously failed or passed task.
 
 ## Artifacts
 

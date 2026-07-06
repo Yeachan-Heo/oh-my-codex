@@ -91,6 +91,86 @@ describe("omx mission", () => {
     });
   });
 
+  it("reports status from an existing summary by file or slug", async () => {
+    await withTempDir(async (cwd) => {
+      await writeFile(join(cwd, "mission.md"), "First\nSecond\n", "utf-8");
+      await missionCommand(["mission.md", "--dry-run", "--slug", "demo"], { cwd, stdout: () => undefined });
+
+      const byFile: string[] = [];
+      await missionCommand(["status", "mission.md", "--slug", "demo"], { cwd, stdout: (line) => byFile.push(line) });
+      assert.match(byFile.join("\n"), /mission status: demo \[planned\]/);
+      assert.match(byFile.join("\n"), /\[planned\] task-001 line 1: First/);
+
+      const bySlug: string[] = [];
+      await missionCommand(["status", "demo"], { cwd, stdout: (line) => bySlug.push(line) });
+      assert.match(bySlug.join("\n"), /summary: .*\.omx.*missions.*demo.*summary\.json/);
+    });
+  });
+
+  it("resumes durable summaries by skipping passed tasks and retrying stale running work", async () => {
+    await withTempDir(async (cwd) => {
+      await writeFile(join(cwd, "mission.md"), "First\nSecond\nThird\n", "utf-8");
+      await missionCommand(["run", "mission.md", "--slug", "demo", "--continue-on-error"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async (prompt) => prompt === "First" ? 0 : 9,
+      });
+      process.exitCode = undefined;
+
+      const summaryPath = join(cwd, ".omx", "missions", "demo", "summary.json");
+      const interrupted = JSON.parse(await readFile(summaryPath, "utf-8"));
+      interrupted.status = "running";
+      interrupted.completed_at = undefined;
+      interrupted.tasks[1].status = "running";
+      interrupted.tasks[1].completed_at = undefined;
+      await writeFile(summaryPath, `${JSON.stringify(interrupted, null, 2)}\n`, "utf-8");
+
+      const seen: string[] = [];
+      await missionCommand(["resume", "mission.md", "--slug", "demo", "--continue-on-error"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async (prompt) => {
+          seen.push(prompt);
+          return 0;
+        },
+      });
+
+      assert.deepEqual(seen, ["Second", "Third"]);
+      const resumed = JSON.parse(await readFile(summaryPath, "utf-8"));
+      assert.equal(resumed.status, "passed");
+      assert.deepEqual(resumed.tasks.map((task: { status: string }) => task.status), ["passed", "passed", "passed"]);
+      const ledger = await readFile(join(cwd, ".omx", "missions", "demo", "ledger.jsonl"), "utf-8");
+      assert.match(ledger, /mission_resumed/);
+    });
+  });
+
+  it("reruns one requested task from the existing summary", async () => {
+    await withTempDir(async (cwd) => {
+      await writeFile(join(cwd, "mission.md"), "First\nSecond\nThird\n", "utf-8");
+      await missionCommand(["run", "mission.md", "--slug", "demo", "--continue-on-error"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async (prompt) => prompt === "Second" ? 4 : 0,
+      });
+      process.exitCode = undefined;
+
+      const seen: string[] = [];
+      await missionCommand(["rerun", "mission.md", "--slug", "demo", "--task", "task-002"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async (prompt) => {
+          seen.push(prompt);
+          return 0;
+        },
+      });
+
+      assert.deepEqual(seen, ["Second"]);
+      const summary = JSON.parse(await readFile(join(cwd, ".omx", "missions", "demo", "summary.json"), "utf-8"));
+      assert.equal(summary.status, "passed");
+      assert.deepEqual(summary.tasks.map((task: { status: string }) => task.status), ["passed", "passed", "passed"]);
+    });
+  });
+
   it("documents mission in top-level help", () => {
     assert.match(HELP, /omx mission <file>/);
     assert.match(HELP, /prompt\/checklist file sequentially through omx exec/);

@@ -307,7 +307,7 @@ These are useful, but they are not the main onboarding path.
 
 ### Mission queue runner
 
-Use `omx mission` when you have a short checklist of OmX/Codex prompts that should run one after another instead of opening a separate shell command for each prompt. Start with `omx mission plan ./mission.md` or `omx mission ./mission.md --dry-run` to validate parsing and inspect the durable summary, then run `omx mission run ./mission.md -- --model gpt-5` when the prompts are ready. See [`docs/mission.md`](./docs/mission.md) for input format, status output, and artifact details.
+Use `omx mission` when you have a short checklist of OmX/Codex prompts that should run one after another instead of opening a separate shell command for each prompt. Start with `omx mission plan ./mission.md` or `omx mission ./mission.md --dry-run` to validate parsing and inspect the durable summary, then run `omx mission run ./mission.md -- --model gpt-5` when the prompts are ready. Interrupted runs can be inspected with `omx mission status ./mission.md`, continued with `omx mission resume ./mission.md`, and repaired task-by-task with `omx mission rerun ./mission.md --task task-002`. See [`docs/mission.md`](./docs/mission.md) for input format, status output, and artifact details.
 
 ### Team runtime
 
