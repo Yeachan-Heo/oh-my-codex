@@ -53,6 +53,7 @@ import { mcpServeCommand } from "./mcp-serve.js";
 import { adaptCommand } from "./adapt.js";
 import { listCommand } from "./list.js";
 import { authCommand } from "./auth.js";
+import { missionCommand } from "./mission.js";
 import { runAuthHotswap } from "../auth/hotswap.js";
 import {
   MADMAX_FLAG,
@@ -216,6 +217,8 @@ Usage:
   omx exec      Run codex exec non-interactively with OMX AGENTS/overlay injection
   omx exec inject <session-id> --prompt <text>
                 Queue audited follow-up instructions for a running non-interactive exec job
+  omx mission <file>
+                Run a prompt/checklist file sequentially through omx exec with durable summary
   omx imagegen continuation <session-id> --artifact <name>
                 Queue a Stop-hook continuation for built-in image generation turns
   omx setup     Install skills, prompts, CLI-first config, and scope-specific AGENTS.md
@@ -380,6 +383,7 @@ const TMUX_EXTENDED_KEYS_LOCK_STALE_MS = 30_000;
 type CliCommand =
   | "launch"
   | "exec"
+  | "mission"
   | "imagegen"
   | "setup"
   | "update"
@@ -433,6 +437,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "agents-init",
   "deepinit",
   "exec",
+  "mission",
   "imagegen",
   "hooks",
   "list",
@@ -2573,6 +2578,7 @@ export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
     "launch",
     "exec",
+    "mission",
     "imagegen",
     "setup",
     "update",
@@ -2714,6 +2720,18 @@ export async function main(args: string[]): Promise<void> {
         } else {
           await execWithOverlay(launchArgs);
         }
+        break;
+      case "mission":
+        await missionCommand(args.slice(1), {
+          runTask: async (prompt, codexArgs) => {
+            const priorExitCode = process.exitCode;
+            process.exitCode = undefined;
+            await execWithOverlay([...codexArgs, prompt]);
+            const exitCode = typeof process.exitCode === "number" ? process.exitCode : 0;
+            process.exitCode = priorExitCode;
+            return exitCode;
+          },
+        });
         break;
       case "imagegen":
         await imagegenCommand(args.slice(1));
