@@ -171,6 +171,78 @@ describe("omx mission", () => {
     });
   });
 
+  it("marks blocked and needs-human-review tasks in status counts", async () => {
+    await withTempDir(async (cwd) => {
+      await writeFile(join(cwd, "mission.md"), "First\nSecond\nThird\n", "utf-8");
+      await missionCommand(["run", "mission.md", "--slug", "demo"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async () => 0,
+      });
+
+      await missionCommand(["mark", "demo", "--task", "task-002", "--status", "blocked"], { cwd, stdout: () => undefined });
+      await missionCommand(["mark", "demo", "--task", "task-003", "--status", "needs-human-review"], { cwd, stdout: () => undefined });
+
+      const out: string[] = [];
+      await missionCommand(["status", "demo"], { cwd, stdout: (line) => out.push(line) });
+      const status = out.join("\n");
+      assert.match(status, /mission status: demo \[blocked\]/);
+      assert.match(status, /1\/3 passed, 0 failed, 0 skipped, 1 blocked, 1 needs-human-review, 0 planned/);
+      assert.match(status, /\[blocked\] task-002 line 2: Second/);
+      assert.match(status, /\[needs-human-review\] task-003 line 3: Third/);
+
+      const summary = JSON.parse(await readFile(join(cwd, ".omx", "missions", "demo", "summary.json"), "utf-8"));
+      assert.equal(summary.status, "blocked");
+      assert.equal(summary.counts.blocked, 1);
+      assert.equal(summary.counts["needs-human-review"], 1);
+      const ledger = await readFile(join(cwd, ".omx", "missions", "demo", "ledger.jsonl"), "utf-8");
+      assert.match(ledger, /task_marked/);
+    });
+  });
+
+  it("leaves operator-marked tasks on resume and allows explicit rerun", async () => {
+    await withTempDir(async (cwd) => {
+      await writeFile(join(cwd, "mission.md"), "First\nSecond\nThird\n", "utf-8");
+      await missionCommand(["run", "mission.md", "--slug", "demo"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async () => 0,
+      });
+      await missionCommand(["mark", "mission.md", "--slug", "demo", "--task", "task-002", "--status", "blocked"], { cwd, stdout: () => undefined });
+      await missionCommand(["mark", "mission.md", "--slug", "demo", "--task", "task-003", "--status", "needs-human-review"], { cwd, stdout: () => undefined });
+
+      const resumedPrompts: string[] = [];
+      await missionCommand(["resume", "mission.md", "--slug", "demo"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async (prompt) => {
+          resumedPrompts.push(prompt);
+          return 0;
+        },
+      });
+      assert.deepEqual(resumedPrompts, []);
+      assert.equal(process.exitCode, 1);
+      process.exitCode = undefined;
+
+      const rerunPrompts: string[] = [];
+      await missionCommand(["rerun", "mission.md", "--slug", "demo", "--task", "task-002"], {
+        cwd,
+        stdout: () => undefined,
+        runTask: async (prompt) => {
+          rerunPrompts.push(prompt);
+          return 0;
+        },
+      });
+      assert.deepEqual(rerunPrompts, ["Second"]);
+
+      const summary = JSON.parse(await readFile(join(cwd, ".omx", "missions", "demo", "summary.json"), "utf-8"));
+      assert.equal(summary.status, "needs-human-review");
+      assert.deepEqual(summary.tasks.map((task: { status: string }) => task.status), ["passed", "passed", "needs-human-review"]);
+      assert.equal(process.exitCode, 1);
+      process.exitCode = undefined;
+    });
+  });
+
   it("documents mission in top-level help", () => {
     assert.match(HELP, /omx mission <file>/);
     assert.match(HELP, /prompt\/checklist file sequentially through omx exec/);
