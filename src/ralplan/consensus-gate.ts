@@ -734,12 +734,37 @@ function trackerBackedNativeReviewProblem(
 
   const expectedTrackerPath = subagentTrackingPath(cwd);
   const tracking = readJsonState(expectedTrackerPath);
+  const expectedProblem = trackerThreadProblem(tracking, sessionId, threadId, agentRole, expectedTrackerPath, options.cwd);
+  if (expectedProblem === null) return null;
+
+  const fallbackTrackerPath = findCompletedNativeReviewThreadInLocalTracker(
+    cwd,
+    expectedTrackerPath,
+    sessionId,
+    threadId,
+    agentRole,
+    options.cwd,
+  );
+  if (fallbackTrackerPath) return null;
+
+  return expectedProblem;
+
+}
+
+function trackerThreadProblem(
+  tracking: Record<string, unknown> | null,
+  sessionId: string,
+  threadId: string,
+  agentRole: 'architect' | 'critic',
+  trackerPath: string,
+  cwd: string | undefined,
+): string | null {
   const session = asRecord(asRecord(tracking?.sessions)?.[sessionId]);
   const thread = asRecord(asRecord(session?.threads)?.[threadId]);
-  if (!session) return `${agentRole} tracker session ${sessionId} is missing in ${expectedTrackerPath}; only reviews recorded in OMX subagent-tracking.json count as native lanes`;
-  if (!thread) return `${agentRole} tracker thread ${threadId} is missing in ${expectedTrackerPath}; external/collab subagent reviews are not tracker-backed native lanes`;
+  if (!session) return `${agentRole} tracker session ${sessionId} is missing in ${trackerPath}; only reviews recorded in OMX subagent-tracking.json count as native lanes`;
+  if (!thread) return `${agentRole} tracker thread ${threadId} is missing in ${trackerPath}; external/collab subagent reviews are not tracker-backed native lanes`;
   const leaderThreadId = typeof session.leader_thread_id === 'string' ? session.leader_thread_id.trim() : '';
-  const currentLeaderThreadId = currentSessionNativeLeaderThreadId(options.cwd);
+  const currentLeaderThreadId = currentSessionNativeLeaderThreadId(cwd);
   if (
     (currentLeaderThreadId && currentLeaderThreadId === threadId)
     || (leaderThreadId && leaderThreadId === threadId && thread.kind !== 'subagent')
@@ -747,6 +772,28 @@ function trackerBackedNativeReviewProblem(
   if (thread.kind !== 'subagent') return `${agentRole} tracker thread ${threadId} has kind=${String(thread.kind || 'missing')}`;
   const completedAt = typeof thread.completed_at === 'string' ? thread.completed_at.trim() : '';
   if (!completedAt) return `${agentRole} tracker thread ${threadId} is not completed`;
+  return null;
+}
+
+function findCompletedNativeReviewThreadInLocalTracker(
+  cwd: string,
+  expectedTrackerPath: string,
+  sessionId: string,
+  threadId: string,
+  agentRole: 'architect' | 'critic',
+  leaderCwd: string | undefined,
+): string | null {
+  const fallbackTrackerPaths = uniquePaths([
+    join(localBaseStateDir(cwd), 'subagent-tracking.json'),
+  ]).filter((path) => path !== expectedTrackerPath);
+
+  for (const trackerPath of fallbackTrackerPaths) {
+    const tracking = readJsonState(trackerPath);
+    if (trackerThreadProblem(tracking, sessionId, threadId, agentRole, trackerPath, leaderCwd) === null) {
+      return trackerPath;
+    }
+  }
+
   return null;
 }
 
