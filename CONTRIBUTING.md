@@ -69,8 +69,8 @@ If `node_modules` is already fresh and you are iterating locally, you can skip `
 ## Project structure
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
-- `prompts/` -- 30 agent prompt markdown files (installed to `~/.codex/prompts/`)
-- `skills/` -- 39 skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
+- `prompts/` -- agent prompt markdown files (installed to `~/.codex/prompts/`)
+- `skills/` -- skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
 - `templates/` -- `AGENTS.md` orchestration brain template
 
 ### Adding a new agent prompt
