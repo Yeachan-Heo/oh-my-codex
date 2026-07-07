@@ -149,8 +149,20 @@ export function readWorkspaceStatusLines(cwd: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * `.omx/` holds OMX-generated artifacts (team/dispatch state, logs, reports).
+ * OMX writes these itself during a team run, so they must never gate a launch —
+ * otherwise the first run leaves untracked `.omx/` files that block every
+ * subsequent launch with `leader_workspace_dirty_for_worktrees`.
+ */
+function isOmxManagedStatusLine(line: string): boolean {
+  // `git status --porcelain` prefixes each entry with a 2-char status + space.
+  const path = line.slice(3).trim().replace(/^"(.*)"$/, '$1');
+  return path.startsWith('.omx/') || path.startsWith('.omx\\');
+}
+
 export function assertCleanLeaderWorkspaceForWorkerWorktrees(cwd: string): void {
-  const lines = readWorkspaceStatusLines(cwd);
+  const lines = readWorkspaceStatusLines(cwd).filter((line) => !isOmxManagedStatusLine(line));
   if (lines.length === 0) return;
   const preview = lines.slice(0, 8).join(' | ');
   throw new Error(

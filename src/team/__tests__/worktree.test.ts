@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import {
   planWorktreeTarget,
   ensureWorktree,
   rollbackProvisionedWorktrees,
+  assertCleanLeaderWorkspaceForWorkerWorktrees,
 } from '../worktree.js';
 
 async function initRepo(): Promise<string> {
@@ -327,6 +328,39 @@ describe('worktree ensure + rollback', () => {
       assert.equal(existsSync(ensured.worktreePath), false);
       // Branch is preserved when skipBranchDeletion is true (ralph policy)
       assert.equal(branchExists(repo, 'feature/ralph-keep'), true);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('assertCleanLeaderWorkspaceForWorkerWorktrees', () => {
+  it('ignores OMX-generated .omx artifacts so back-to-back launches are not blocked', async () => {
+    const repo = await initRepo();
+    try {
+      // Simulate the untracked state a prior team run leaves behind.
+      await mkdir(join(repo, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(repo, '.omx', 'reports'), { recursive: true });
+      await mkdir(join(repo, '.omx', 'state'), { recursive: true });
+      await writeFile(join(repo, '.omx', 'logs', 'team-dispatch.jsonl'), '{}\n', 'utf-8');
+      await writeFile(join(repo, '.omx', 'reports', 'team-commit-hygiene.md'), '# report\n', 'utf-8');
+      await writeFile(join(repo, '.omx', 'state', 'dispatch.json'), '{}\n', 'utf-8');
+
+      // .omx-only dirtiness must NOT block a launch.
+      assert.doesNotThrow(() => assertCleanLeaderWorkspaceForWorkerWorktrees(repo));
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects real uncommitted work outside .omx', async () => {
+    const repo = await initRepo();
+    try {
+      await writeFile(join(repo, 'notes.txt'), 'local only\n', 'utf-8');
+      await assert.throws(
+        () => assertCleanLeaderWorkspaceForWorkerWorktrees(repo),
+        /leader_workspace_dirty_for_worktrees:.*notes\.txt.*commit_or_stash_before_omx_team/s,
+      );
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
