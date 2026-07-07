@@ -2858,6 +2858,12 @@ async function readStaleCurrentAutopilotStatus(cwd: string): Promise<StaleCurren
   return { phase: phase ?? "active" };
 }
 
+function formatDurableUltragoalStatusForCli(status: string): string {
+  return status === "failed"
+    ? "ultragoal: FAILED (phase: failed)"
+    : `ultragoal: ACTIVE (phase: ${status})`;
+}
+
 async function showStatus(): Promise<void> {
   const { readFile } = await import("fs/promises");
   const cwd = process.cwd();
@@ -2891,7 +2897,7 @@ async function showStatus(): Promise<void> {
     const ultragoalState = await readUltragoalState(cwd).catch(() => null);
     if (states.length === 0) {
       if (ultragoalState?.active) {
-        console.log(`ultragoal: ACTIVE (phase: ${ultragoalState.status})`);
+        console.log(formatDurableUltragoalStatusForCli(ultragoalState.status ?? "active"));
         return;
       }
       const staleAutopilot = await readStaleCurrentAutopilotStatus(cwd);
@@ -2902,6 +2908,7 @@ async function showStatus(): Promise<void> {
       console.log("No active modes.");
       return;
     }
+    let hasAuthoritativeActiveUltragoalMode = false;
     for (const path of states) {
       const content = await readFile(path, "utf-8");
       let state: Record<string, unknown>;
@@ -2913,13 +2920,16 @@ async function showStatus(): Promise<void> {
       }
       const file = basename(path);
       const mode = file.replace("-state.json", "");
-      if (mode === "ultragoal" && ultragoalState?.active) continue;
+      if (mode === "ultragoal" && state.active === true) {
+        hasAuthoritativeActiveUltragoalMode = true;
+      }
+      if (mode === "ultragoal" && ultragoalState?.active && state.active !== true) continue;
       console.log(
         `${mode}: ${state.active === true ? "ACTIVE" : "inactive"} (phase: ${String(state.current_phase || "n/a")})`,
       );
     }
-    if (ultragoalState?.active) {
-      console.log(`ultragoal: ACTIVE (phase: ${ultragoalState.status})`);
+    if (ultragoalState?.active && !hasAuthoritativeActiveUltragoalMode) {
+      console.log(formatDurableUltragoalStatusForCli(ultragoalState.status ?? "active"));
     }
     if (!hasAuthoritativeActiveMode && !ultragoalState?.active) {
       const staleAutopilot = await readStaleCurrentAutopilotStatus(cwd);

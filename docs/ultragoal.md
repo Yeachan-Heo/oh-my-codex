@@ -66,6 +66,14 @@ omx ultragoal checkpoint --goal-id G001-example --status failed --evidence "bloc
 omx ultragoal complete-goals --retry-failed
 ```
 
+Failed goals remain durable retry/blocker evidence in `.omx/ultragoal`; they
+are not a live execution mode by themselves. `omx status` reports a durable
+failed Ultragoal plan as `FAILED` rather than `ACTIVE`, while `omx cancel`
+continues to cancel only active mode-state entries. HUD and state API readers
+may still expose failed goals as active unresolved durable artifacts; that
+`active` field is a visibility/lifecycle signal, not proof of a cancellable
+runtime mode.
+
 Completed legacy thread-goal blocker handling:
 
 ```sh

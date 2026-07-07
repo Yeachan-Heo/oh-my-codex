@@ -6714,7 +6714,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  if (await hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
+  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
@@ -6782,7 +6782,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  if (await hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
+  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveDeepInterviewStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
@@ -6950,12 +6950,20 @@ interface ActiveConductorState {
   phase: string;
 }
 
-async function hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(
+async function hasTrustedTypedSubagentProvenanceForPreToolUse(
   payload: CodexHookPayload,
   cwd: string,
   sessionId: string,
 ): Promise<boolean> {
   if (hasTeamWorkerEnvironment()) return true;
+  if (!isTypedAgentRolePayload(payload)) return false;
+  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
+  const session = trackingState?.sessions?.[sessionId];
+  if (!session) return false;
+
+  const payloadThreadId = readPayloadThreadId(payload);
+  if (payloadThreadId && isTrustedSubagentThread(session, payloadThreadId)) return true;
+
   const source = safeObject(payload.source);
   const subagent = safeObject(source.subagent);
   const threadSpawn = safeObject(subagent.thread_spawn);
@@ -6966,11 +6974,9 @@ async function hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(
       ?? threadSpawn.leaderThreadId,
   ).trim();
   if (!parentThreadId) return false;
-  if (!isTypedAgentRolePayload(payload)) return false;
-  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
-  const session = trackingState?.sessions?.[sessionId];
-  if (!session) return false;
-  return session.leader_thread_id === parentThreadId || parentThreadId in session.threads;
+  const leaderThreadId = safeString(session.leader_thread_id).trim();
+  if (payloadThreadId && leaderThreadId && payloadThreadId === leaderThreadId) return false;
+  return leaderThreadId === parentThreadId || parentThreadId in session.threads;
 }
 
 function isActiveConductorModeState(state: Record<string, unknown> | null, mode: string, sessionId: string): boolean {
@@ -6999,7 +7005,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
   }
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
-  if (await hasTrustedTypedSubagentThreadSpawnProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
+  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
 
   const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
   if (!canonicalState) return null;

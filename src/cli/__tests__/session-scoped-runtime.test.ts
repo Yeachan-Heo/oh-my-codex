@@ -358,6 +358,76 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('reports durable failed Ultragoal artifacts without advertising a cancellable active mode', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-status-failed-ultragoal-'));
+    try {
+      const ultragoalDir = join(wd, '.omx', 'ultragoal');
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        activeGoalId: 'G001-failed',
+        goals: [
+          {
+            id: 'G001-failed',
+            title: 'Failed story',
+            objective: 'Preserve failed evidence for retry.',
+            status: 'failed',
+          },
+        ],
+      }, null, 2));
+
+      const statusResult = runOmx(wd, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /ultragoal: FAILED \(phase: failed\)/);
+      assert.doesNotMatch(statusResult.stdout, /ultragoal: ACTIVE \(phase: failed\)/);
+
+      const cancelResult = runOmx(wd, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves active Ultragoal mode status when durable failed artifacts coexist', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-status-active-ultragoal-failed-artifact-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-active-ultragoal-failed-artifact';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const ultragoalDir = join(wd, '.omx', 'ultragoal');
+      await mkdir(sessionDir, { recursive: true });
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'ultragoal-state.json'), JSON.stringify({
+        active: true,
+        mode: 'ultragoal',
+        current_phase: 'executing',
+        session_id: sessionId,
+      }, null, 2));
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        activeGoalId: 'G001-failed',
+        goals: [
+          {
+            id: 'G001-failed',
+            title: 'Failed story',
+            objective: 'Preserve failed evidence for retry.',
+            status: 'failed',
+          },
+        ],
+      }, null, 2));
+
+      const statusResult = runOmx(wd, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.match(statusResult.stdout, /ultragoal: ACTIVE \(phase: executing\)/);
+      assert.doesNotMatch(statusResult.stdout, /ultragoal: FAILED \(phase: failed\)/);
+      assert.doesNotMatch(statusResult.stdout, /No active modes\./);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('cancels linked ultrawork when Ralph is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-link-'));
     try {

@@ -70,6 +70,17 @@ Setup-owned trust state is limited to those generated wrapper identities; user h
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 
 
+## PreToolUse: conductor typed-lane recognition
+
+The Main-root Conductor write guard blocks source, package, git, and substantive
+plan/spec/review edits from the leader while allowing workflow metadata writes.
+Delegated performer lanes are exempt only when the event is a known typed role
+and trusted lane provenance exists. Native Codex events may provide that
+provenance either through `source.subagent.thread_spawn.parent_thread_id` or
+through an existing `.omx/state/subagent-tracking.json` entry whose `thread_id`
+is recorded as `kind:"subagent"`. A bare typed role on the leader event is not
+enough to bypass the guard.
+
 ## Document-refresh warning MVP
 
 The native hook adapter includes an agent-only document-refresh warning MVP for
