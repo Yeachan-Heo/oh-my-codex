@@ -403,6 +403,56 @@ function normalizeObjective(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+const OBJECTIVE_MAPPING_STOP_WORDS = new Set([
+  'about',
+  'active',
+  'aggregate',
+  'audit',
+  'brief',
+  'build',
+  'clean',
+  'codex',
+  'complete',
+  'completed',
+  'different',
+  'evidence',
+  'fix',
+  'goal',
+  'goals',
+  'implementation',
+  'json',
+  'ledger',
+  'omx',
+  'plan',
+  'planned',
+  'reconcile',
+  'task',
+  'tests',
+  'ultragoal',
+  'unrelated',
+  'validation',
+  'work',
+]);
+
+function objectiveMappingTokens(value: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const token of value.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (token.length < 5) continue;
+    if (OBJECTIVE_MAPPING_STOP_WORDS.has(token)) continue;
+    tokens.add(token);
+  }
+  return tokens;
+}
+
+function objectivesHaveConservativeSpecificTokenOverlap(actual: string, brief: string): boolean {
+  const actualTokens = objectiveMappingTokens(actual);
+  const briefTokens = objectiveMappingTokens(brief);
+  if (actualTokens.size < 4 || briefTokens.size < 4) return false;
+  const shared = [...actualTokens].filter((token) => briefTokens.has(token)).length;
+  const smallerSpecificSetSize = Math.min(actualTokens.size, briefTokens.size);
+  return shared >= 4 && shared / smallerSpecificSetSize >= 0.6;
+}
+
 function normalizeBlockerEvidence(value: string | undefined): string {
   return (value ?? '')
     .toLowerCase()
@@ -483,12 +533,11 @@ function textHasCompletionValidationEvidence(value: string | undefined): boolean
 
 async function snapshotObjectiveMapsToUltragoalPlan(cwd: string, snapshotObjective: string): Promise<boolean> {
   const actual = normalizeObjective(snapshotObjective).toLowerCase();
-  if (textMentionsUltragoalPlanArtifact(actual)) return true;
   if (actual.length < 24) return false;
   try {
     const brief = normalizeObjective(await readFile(ultragoalBriefPath(cwd), 'utf-8')).toLowerCase();
     if (!brief || brief.length < 24) return false;
-    return brief.includes(actual) || actual.includes(brief);
+    return brief.includes(actual) || actual.includes(brief) || objectivesHaveConservativeSpecificTokenOverlap(actual, brief);
   } catch {
     return false;
   }
@@ -1590,7 +1639,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
         }
       } else {
         const taskScopedRequirement = aggregateMode && snapshot?.status === 'complete' && Boolean(snapshot.objective)
-          ? ' Completed task-scoped aggregate reconciliation requires the checkpoint goal to be the active in-progress OMX goal, evidence that names that active OMX goal id, names .omx/ultragoal/goals.json or ledger.jsonl, includes completed implementation plus validation/review evidence, and a get_goal objective that maps to the ultragoal brief/artifact.'
+          ? ' Completed task-scoped aggregate reconciliation requires the checkpoint goal to be the active in-progress OMX goal, evidence that names that active OMX goal id, names .omx/ultragoal/goals.json or ledger.jsonl, includes completed implementation plus validation/review evidence, and a get_goal objective that maps to the ultragoal brief.'
           : '';
         const remediation = reconciliation.snapshot.available
           && reconciliation.snapshot.status === 'complete'

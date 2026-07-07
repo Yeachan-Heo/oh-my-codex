@@ -457,6 +457,17 @@ describe('ultragoal artifacts', () => {
         () => checkpointUltragoal(cwd, {
           goalId: first.goal!.id,
           status: 'complete',
+          evidence: 'Actual planned work done for .omx/ultragoal/goals.json G001-first; validation complete; reviews clean.',
+          codexGoal: { goal: { objective: 'Audit .omx/ultragoal/goals.json for a different unrelated task', status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /objective mismatch/,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
           evidence: 'done',
           codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
           qualityGate: cleanQualityGate(),
