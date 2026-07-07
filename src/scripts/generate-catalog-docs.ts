@@ -17,6 +17,7 @@ const docsToScan = [
   join(root, 'docs', 'skills.html'),
   join(root, 'docs', 'agents.html'),
   join(root, 'README.md'),
+  join(root, 'CONTRIBUTING.md'),
   join(root, 'src', 'cli', 'setup.ts'),
   join(root, 'src', 'cli', 'doctor.ts'),
 ];
