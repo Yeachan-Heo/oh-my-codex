@@ -289,7 +289,12 @@ async function readSummary(summaryPath: string): Promise<MissionSummary> {
   } catch {
     throw new MissionCommandError(`No mission summary found at ${summaryPath}.`);
   }
-  const summary = JSON.parse(raw) as MissionSummary;
+  let summary: MissionSummary;
+  try {
+    summary = JSON.parse(raw) as MissionSummary;
+  } catch {
+    throw new MissionCommandError(`Invalid mission summary at ${summaryPath}.`);
+  }
   if (summary.version !== 1 || !Array.isArray(summary.tasks)) {
     throw new MissionCommandError(`Invalid mission summary at ${summaryPath}.`);
   }

@@ -107,6 +107,24 @@ describe("omx mission", () => {
     });
   });
 
+  it("reports invalid summary JSON as a mission error", async () => {
+    await withTempDir(async (cwd) => {
+      const summaryPath = join(cwd, "summary.json");
+      await writeFile(summaryPath, "{not json", "utf-8");
+
+      const err: string[] = [];
+      await missionCommand(["status", "demo", "--summary", summaryPath], {
+        cwd,
+        stdout: () => undefined,
+        stderr: (line) => err.push(line),
+      });
+
+      assert.deepEqual(err, [`[mission] Invalid mission summary at ${summaryPath}.`]);
+      assert.equal(process.exitCode, 1);
+      process.exitCode = undefined;
+    });
+  });
+
   it("resumes durable summaries by skipping passed tasks and retrying stale running work", async () => {
     await withTempDir(async (cwd) => {
       await writeFile(join(cwd, "mission.md"), "First\nSecond\nThird\n", "utf-8");
