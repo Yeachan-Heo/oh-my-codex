@@ -307,7 +307,7 @@ describe('readUltragoalState', { concurrency: false }, () => {
     });
   });
 
-  it('keeps HUD active when aggregate completion exists but repo-native ultragoal work is still running', async () => {
+  it('treats aggregate completion as terminal for HUD while preserving microgoal bookkeeping counts', async () => {
     await withTempRepo('omx-hud-ultragoal-aggregate-active-', async (cwd) => {
       const ultragoalDir = join(cwd, '.omx', 'ultragoal');
       await mkdir(ultragoalDir, { recursive: true });
@@ -317,7 +317,7 @@ describe('readUltragoalState', { concurrency: false }, () => {
         aggregateCompletion: {
           status: 'complete',
           completedAt: '2026-06-01T12:00:00.000Z',
-          evidence: 'task-scoped Codex aggregate completed before microgoal ledger reconciliation finished',
+          evidence: 'task-scoped Codex aggregate completed after strict reconciliation',
         },
         goals: [
           { id: 'G001-done', title: 'Done', objective: 'Completed prior work', status: 'complete' },
@@ -328,13 +328,40 @@ describe('readUltragoalState', { concurrency: false }, () => {
 
       const state = await readUltragoalState(cwd);
 
-      assert.equal(state?.active, true);
-      assert.equal(state?.status, 'in_progress');
-      assert.equal(state?.activeGoal?.id, 'G002-running');
+      assert.equal(state?.active, false);
+      assert.equal(state?.status, 'complete');
+      assert.equal(state?.activeGoal, undefined);
       assert.equal(state?.complete, 1);
       assert.equal(state?.inProgress, 1);
       assert.equal(state?.pending, 1);
-      assert.deepEqual(state?.ongoingGoals?.map((goal) => goal.id), ['G002-running', 'G003-pending']);
+      assert.deepEqual(state?.ongoingGoals, []);
+    });
+  });
+  it('treats reconciled task-scoped aggregate completion as inactive in HUD state', async () => {
+    await withTempRepo('omx-hud-ultragoal-aggregate-reconciled-', async (cwd) => {
+      const ultragoalDir = join(cwd, '.omx', 'ultragoal');
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        aggregateCompletion: {
+          status: 'complete',
+          completedAt: '2026-06-01T12:00:00.000Z',
+          evidence: 'task-scoped Codex aggregate completed and active microgoal row was reconciled',
+        },
+        goals: [
+          { id: 'G001-reconciled', title: 'Reconciled', objective: 'Finish active repo-native work', status: 'complete', completedAt: '2026-06-01T12:00:00.000Z' },
+        ],
+      }));
+
+      const state = await readUltragoalState(cwd);
+
+      assert.equal(state?.active, false);
+      assert.equal(state?.status, 'complete');
+      assert.equal(state?.activeGoal, undefined);
+      assert.equal(state?.complete, 1);
+      assert.equal(state?.inProgress, 0);
+      assert.equal(state?.pending, 0);
+      assert.deepEqual(state?.ongoingGoals, []);
     });
   });
 

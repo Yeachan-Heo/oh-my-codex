@@ -290,7 +290,7 @@ describe('cli/ultragoal', () => {
       const status = await capture(() => ultragoalCommand(['status']));
       const output = status.stdout.join('\n');
       assert.match(output, /ultragoal aggregate product: complete/);
-      assert.match(output, /microgoal ledger bookkeeping \(progress-only\): 0\/2 complete, 1 pending, 1 in progress/);
+      assert.match(output, /microgoal ledger bookkeeping \(progress-only\): 1\/2 complete, 1 pending, 0 in progress/);
     });
   });
 

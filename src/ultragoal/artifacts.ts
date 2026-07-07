@@ -1626,10 +1626,27 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     ? validateQualityGate(options.qualityGate, requiredArchitectureInvariants)
     : undefined;
   if (aggregateCompletion) {
+    goal.status = 'complete';
+    goal.completedAt = now;
+    goal.updatedAt = now;
+    goal.evidence = options.evidence;
+    goal.failureReason = undefined;
+    goal.failedAt = undefined;
+    clearGoalBlockerFields(goal);
     plan.aggregateCompletion = aggregateCompletion;
     if (plan.activeGoalId === goal.id) delete plan.activeGoalId;
     plan.updatedAt = now;
     await writePlan(cwd, plan);
+    await appendLedger(cwd, {
+      ts: now,
+      event: 'goal_completed',
+      goalId: goal.id,
+      status: goal.status,
+      evidence: options.evidence,
+      codexGoal: options.codexGoal,
+      qualityGate,
+      message: 'Active repo-native microgoal completed while reconciling a completed task-scoped aggregate Codex goal snapshot.',
+    });
     await appendLedger(cwd, {
       ts: now,
       event: 'aggregate_completed',
@@ -1638,7 +1655,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       evidence: options.evidence,
       codexGoal: options.codexGoal,
       qualityGate,
-      message: 'Aggregate ultragoal plan completed via task-scoped Codex goal snapshot; microgoal ledger progress remains independent.',
+      message: 'Aggregate ultragoal plan completed via task-scoped Codex goal snapshot; checkpointed active microgoal row was reconciled to complete.',
     });
     return plan;
   }

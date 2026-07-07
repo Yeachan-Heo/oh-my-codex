@@ -436,6 +436,64 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('reports reconciled task-scoped aggregate ultragoal artifacts as inactive in get-status', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ultragoal-reconciled-'));
+    try {
+      await mkdir(join(wd, '.omx', 'ultragoal'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'ultragoal', 'goals.json'),
+        JSON.stringify({
+          aggregateCompletion: {
+            status: 'complete',
+            completedAt: '2026-06-01T12:00:00.000Z',
+            evidence: 'task-scoped Codex aggregate completed and active microgoal row was reconciled',
+          },
+          activeGoalId: 'G002',
+          goals: [{
+            id: 'G001',
+            title: 'Fix duplicate HUD panes',
+            objective: 'Keep one HUD renderer per leader.',
+            status: 'complete',
+            completedAt: '2026-06-01T12:00:00.000Z',
+          }, {
+            id: 'G002',
+            title: 'Still marked running',
+            objective: 'Progress-only row left running by the old aggregate path.',
+            status: 'in_progress',
+          }, {
+            id: 'G003',
+            title: 'Still marked pending',
+            objective: 'Progress-only row left pending by the old aggregate path.',
+            status: 'pending',
+          }],
+        }, null, 2),
+      );
+
+      const activeResponse = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+      });
+      assert.deepEqual(activeResponse.payload, { active_modes: [] });
+
+      const statusResponse = await executeStateOperation('state_get_status', {
+        workingDirectory: wd,
+        mode: 'ultragoal',
+      });
+      const statuses = (statusResponse.payload as {
+        statuses?: Record<string, { active?: boolean; phase?: string; path?: string; source?: string; data?: { activeGoal?: unknown; inProgress?: number; pending?: number; complete?: number } }>;
+      }).statuses || {};
+      assert.equal(statuses.ultragoal?.active, false);
+      assert.equal(statuses.ultragoal?.phase, 'complete');
+      assert.equal(statuses.ultragoal?.path, join(wd, '.omx', 'ultragoal', 'goals.json'));
+      assert.equal(statuses.ultragoal?.source, 'ultragoal-artifacts');
+      assert.equal(statuses.ultragoal?.data?.activeGoal, undefined);
+      assert.equal(statuses.ultragoal?.data?.complete, 1);
+      assert.equal(statuses.ultragoal?.data?.inProgress, 1);
+      assert.equal(statuses.ultragoal?.data?.pending, 1);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('prefers active ultragoal artifacts over stale inactive mode state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ultragoal-stale-state-'));
     try {

@@ -191,6 +191,10 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
   const review_blocked_goals = goals.filter((goal) => goal.status === 'review_blocked' && !isNonBlockingSupersededUltragoalGoal(goal, goals)).length;
   const needs_user_decision_goals = goals.filter((goal) => goal.status === 'needs_user_decision' && !isNonBlockingSupersededUltragoalGoal(goal, goals)).length;
   const unresolved_goals = goals.filter((goal) => isHudUnresolvedUltragoalGoal(goal, goals)).length;
+  const aggregateCompletion = plan.aggregateCompletion && typeof plan.aggregateCompletion === 'object' && !Array.isArray(plan.aggregateCompletion)
+    ? plan.aggregateCompletion as { status?: unknown }
+    : null;
+  const aggregateComplete = aggregateCompletion?.status === 'complete';
   const activeGoalId = sanitizeOptionalString(plan.activeGoalId);
   const activeGoal = (
     (activeGoalId ? goals.find((goal) => goal.id === activeGoalId && isHudUnresolvedUltragoalGoal(goal, goals)) : undefined)
@@ -198,7 +202,7 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
     ?? goals.find((goal) => isHudUnresolvedUltragoalGoal(goal, goals) && ULTRAGOAL_UNRESOLVED_STATUSES.has(goal.status))
   );
   const activeIndex = activeGoal ? goals.findIndex((goal) => goal.id === activeGoal.id) : -1;
-  const complete = unresolved_goals === 0;
+  const complete = aggregateComplete || unresolved_goals === 0;
   const toHudGoal = ({ goal, index }: { goal: NormalizedUltragoalGoal; index: number }) => ({
     id: goal.id,
     title: goal.title,
@@ -211,7 +215,7 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
     .filter(({ goal, index }) => index > activeIndex && goal.status === 'pending' && isHudUnresolvedUltragoalGoal(goal, goals) && goal.id !== activeGoal?.id)
     .slice(0, 3)
     .map(toHudGoal);
-  const orderedOngoingGoals = [
+  const orderedOngoingGoals = complete ? [] : [
     ...(activeGoal && activeIndex >= 0 ? [toHudGoal({ goal: activeGoal, index: activeIndex })] : []),
     ...nextPendingGoals,
   ];
@@ -227,7 +231,7 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
     reviewBlocked: review_blocked_goals,
     needsUserDecision: needs_user_decision_goals,
     progressTotal: goals.length,
-    activeGoal: activeGoal && activeIndex >= 0 ? {
+    activeGoal: !complete && activeGoal && activeIndex >= 0 ? {
       id: activeGoal.id,
       title: activeGoal.title,
       objective: activeGoal.objective,

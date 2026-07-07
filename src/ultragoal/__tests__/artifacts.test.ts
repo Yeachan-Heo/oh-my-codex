@@ -409,8 +409,11 @@ describe('ultragoal artifacts', () => {
       });
 
       assert.equal(reconciled.goals.length, 136);
-      assert.equal(reconciled.goals.filter((goal) => goal.status === 'complete').length, 0);
-      assert.equal(reconciled.goals[0]?.status, 'in_progress');
+      assert.equal(reconciled.goals.filter((candidate) => candidate.status === 'complete').length, 1);
+      assert.equal(reconciled.goals[0]?.status, 'complete');
+      assert.equal(reconciled.goals[0]?.completedAt, '2026-05-04T10:04:00.000Z');
+      assert.match(reconciled.goals[0]?.evidence ?? '', /planned work done/);
+      assert.equal(reconciled.goals[0]?.failureReason, undefined);
       assert.equal(reconciled.activeGoalId, undefined);
       assert.equal(reconciled.aggregateCompletion?.status, 'complete');
       assert.match(reconciled.aggregateCompletion?.evidence ?? '', /planned work done/);
@@ -421,9 +424,9 @@ describe('ultragoal artifacts', () => {
       assert.equal(next.done, true);
 
       const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
-      assert.match(ledger, /microgoal ledger progress remains independent/);
+      assert.match(ledger, /checkpointed active microgoal row was reconciled to complete/);
       assert.equal((ledger.match(/"event":"aggregate_completed"/g) ?? []).length, 1);
-      assert.equal((ledger.match(/"event":"goal_completed"/g) ?? []).length, 0);
+      assert.equal((ledger.match(/"event":"goal_completed"/g) ?? []).length, 1);
     });
   });
 
