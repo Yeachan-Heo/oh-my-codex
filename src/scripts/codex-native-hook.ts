@@ -3361,6 +3361,14 @@ function isActiveDeepInterviewPhase(state: Record<string, unknown> | null): bool
   return true;
 }
 
+function isInactiveCompletedDeepInterviewPhase(state: Record<string, unknown> | null): boolean {
+  if (!state || state.active !== false) return false;
+  const mode = safeString(state.mode).trim();
+  if (mode && mode !== "deep-interview") return false;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  return phase === "complete" || phase === "completed";
+}
+
 function isActiveRalplanPhase(state: Record<string, unknown> | null): boolean {
   if (!state || state.active !== true) return false;
   const mode = safeString(state.mode).trim();
@@ -6555,6 +6563,7 @@ async function readActiveDeepInterviewStateForPreToolUse(
     ));
     if (hasActiveDeepInterviewSkill) return modeState;
   }
+  if (isInactiveCompletedDeepInterviewPhase(modeState)) return null;
 
   const autopilotState = sessionId
     ? await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir)

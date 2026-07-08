@@ -7253,6 +7253,79 @@ exit 0
     }
   });
 
+  it("does not self-lock PreToolUse after completed deep-interview handoff leaves Autopilot in deep-interview phase", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-completed-autopilot-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-di-completed-autopilot";
+      const threadId = "thread-di-completed-autopilot";
+      const sessionDir = join(stateDir, "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        keyword: "$autopilot",
+        phase: "deep-interview",
+        initialized_mode: "autopilot",
+        initialized_state_path: `.omx/state/sessions/${sessionId}/autopilot-state.json`,
+        session_id: sessionId,
+        thread_id: threadId,
+        active_skills: [{ skill: "autopilot", phase: "deep-interview", active: true, session_id: sessionId, thread_id: threadId }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: false,
+        mode: "deep-interview",
+        current_phase: "completed",
+        session_id: sessionId,
+        thread_id: threadId,
+        deep_interview_gate: {
+          status: "complete",
+          handoff_summary: "Requirements were clarified before the Autopilot handoff.",
+        },
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "deep-interview",
+        session_id: sessionId,
+        thread_id: threadId,
+      });
+
+      const implementationEdit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          tool_name: "Edit",
+          tool_use_id: "tool-di-completed-autopilot-edit",
+          tool_input: { file_path: "src/runtime.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal(implementationEdit.omxEventName, "pre-tool-use");
+      assert.equal(implementationEdit.outputJson, null);
+
+      const stateRepair = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          tool_name: "mcp__omx_state__state_write",
+          tool_use_id: "tool-di-completed-autopilot-state-repair",
+          tool_input: { mode: "autopilot", current_phase: "ralplan", active: true },
+        },
+        { cwd },
+      );
+      assert.equal(stateRepair.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows deep-interview artifact and state writes while blocking implementation Bash writes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-artifact-"));
     try {
