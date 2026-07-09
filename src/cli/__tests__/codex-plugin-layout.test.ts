@@ -583,6 +583,65 @@ exit 7
     });
   });
 
+  it('preserves valid Stop child JSON when stdout includes prior launcher noise', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'noisy-valid-json.cmd' : 'noisy-valid-json.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho runtime notice before json\r\necho {"decision":"block","stopReason":"autopilot_ultragoal"}\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf 'runtime notice before json\n'
+printf '{"decision":"block","stopReason":"autopilot_ultragoal"}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'Stop',
+          session_id: 'omx-1783508412223-c32f1l',
+          cwd: cacheRoot,
+        }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /runtime notice before json/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'autopilot_ultragoal');
+      assert.doesNotMatch(result.stdout, /plugin_stop_hook_launcher_invalid_stdout/);
+    });
+  });
+
+  it('rejects Stop child JSON when later stdout noise follows it', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'valid-json-trailing-noise.cmd' : 'valid-json-trailing-noise.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {"decision":"block","stopReason":"child_valid_json"}\r\necho trailing runtime noise\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{"decision":"block","stopReason":"child_valid_json"}\n'
+printf 'trailing runtime noise\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-trailing-noise-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /trailing runtime noise/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_invalid_stdout');
+    });
+  });
+
   it('replaces oversized Stop child stdout with fallback Stop JSON', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const commandPath = join(cacheRoot, process.platform === 'win32' ? 'oversized-stop-stdout.cmd' : 'oversized-stop-stdout.sh');
