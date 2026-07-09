@@ -5039,6 +5039,82 @@ standardMaxRounds = 15
     }
   });
 
+  it("keeps conductor guidance on autopilot activation after capacity-only native subagent evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-capacity-native-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-autopilot-capacity-native",
+          thread_id: "thread-autopilot-capacity-native",
+          turn_id: "turn-autopilot-capacity-native-spawn",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: { error: "collab spawn failed: agent thread limit reached" },
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-autopilot-capacity-native",
+          thread_id: "thread-autopilot-capacity-native",
+          turn_id: "turn-autopilot-capacity-native-prompt",
+          prompt: "$autopilot implement issue #3078",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "autopilot");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /Autopilot protocol:/);
+      assert.match(message, /Conductor mode contract:/);
+      assert.match(message, /Golden Rule: When the Main agent is acting in Conductor mode/);
+      assert.match(message, /Conductor reuse and ledger guidance:/);
+      assert.doesNotMatch(message, /Native subagent support is unavailable in this environment/);
+      assert.doesNotMatch(message, /Reason: agent_thread_limit_reached/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("omits conductor block and emits unsupported native guidance for unsupported autopilot first-run payload", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-unsupported-native-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-autopilot-unsupported-native",
+          thread_id: "thread-autopilot-unsupported-native",
+          turn_id: "turn-autopilot-unsupported-native",
+          prompt: "$autopilot implement issue #3078",
+          capabilities: { native_subagents: false, multi_agent_v1: false },
+        },
+        { cwd },
+      );
+
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /Autopilot protocol:/);
+      assert.doesNotMatch(message, /Conductor mode contract:/);
+      assert.doesNotMatch(message, /Conductor reuse and ledger guidance:/);
+      assert.match(message, /Native subagent support is unavailable in this environment/);
+      assert.match(message, /Reason: native_subagents_unsupported/);
+      assert.match(message, /Do not call multi_agent_v1\.close_agent/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("records ultragoal prompt skill activation with goal-tool handoff guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-"));
     try {
@@ -11490,6 +11566,38 @@ PY`,
       assert.equal(blocker.tool_name, "multi_agent_v1.spawn_agent");
       assert.match(String(blocker.error_summary), /agent thread limit reached/);
       assert.ok(Date.parse(String(blocker.expires_at)) > Date.parse(String(blocker.observed_at)));
+      assert.equal(existsSync(join(cwd, ".omx", "state", "native-subagent-support.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records unsupported native subagent support blocker from spawn_agent PostToolUse output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-support-record-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-support-record",
+          thread_id: "thread-subagent-support-record",
+          turn_id: "turn-subagent-support-record",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: { error: "unknown tool: multi_agent_v1.spawn_agent is unavailable" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      const blocker = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "native-subagent-support.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(blocker.status, "unsupported");
+      assert.equal(blocker.reason, "multi_agent_v1_unavailable");
+      assert.equal(blocker.session_id, "sess-subagent-support-record");
+      assert.equal(blocker.thread_id, "thread-subagent-support-record");
+      assert.equal(blocker.tool_name, "multi_agent_v1.spawn_agent");
+      assert.match(String(blocker.evidence), /unknown tool/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -21454,6 +21562,55 @@ PY`,
 
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks unsupported active conductor source edits with native delegation recovery guidance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-unsupported-conductor-source-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-unsupported-conductor-source";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "native-subagent-support.json"), {
+        schema_version: 1,
+        status: "unsupported",
+        reason: "multi_agent_v1_unavailable",
+        session_id: sessionId,
+        evidence: "unknown tool: multi_agent_v1.spawn_agent",
+        observed_at: new Date().toISOString(),
+        cwd,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-unsupported-conductor-source",
+          tool_name: "Write",
+          tool_input: { file_path: "src/runtime.ts", content: "export const value = 1;\n" },
+        },
+        { cwd },
+      );
+
+      const output = result.outputJson as { decision?: string; hookSpecificOutput?: { additionalContext?: string } } | null;
+      const context = String(output?.hookSpecificOutput?.additionalContext ?? "");
+      assert.equal(output?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+      assert.match(context, /Native subagent support is unavailable in this environment/);
+      assert.match(context, /Reason: multi_agent_v1_unavailable/);
+      assert.match(context, /blocked\/cancelled/);
+      assert.match(context, /do not call multi_agent_v1\.close_agent/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
