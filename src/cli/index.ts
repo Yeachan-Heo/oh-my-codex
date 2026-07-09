@@ -80,6 +80,8 @@ import {
 } from "./codex-home.js";
 import { discoverProjectRuntimeCodexHomes } from "./project-runtime-codex-homes.js";
 import {
+  discoverOmxPluginCacheDirs,
+  hasLocalOmxPluginEnablement,
   materializePackagedOmxPluginCache,
   packagedOmxPluginVersion,
   resolvePackagedOmxMarketplace,
@@ -1169,21 +1171,46 @@ export function parseResumeCodexHomeSelection(args: string[]): ResumeCodexHomeSe
 }
 
 export interface ResumePluginPreflightResult {
-  status: "unavailable" | "prepared";
+  status: "unavailable" | "skipped" | "prepared";
   version?: string;
   cacheDir?: string;
   prunedStaleDirs: string[];
   configUpdated: boolean;
 }
 
+export interface ResumePluginPreflightOptions {
+  projectRoot?: string;
+}
+
+async function shouldPreflightResumeOmxPluginState(
+  selectedCodexHomeDir: string,
+  existingConfig: string,
+  options: ResumePluginPreflightOptions,
+): Promise<boolean> {
+  if (hasLocalOmxPluginEnablement(existingConfig)) return true;
+  if (
+    options.projectRoot &&
+    readPersistedSetupPreferences(options.projectRoot)?.installMode === "plugin"
+  ) {
+    return true;
+  }
+  return (await discoverOmxPluginCacheDirs(selectedCodexHomeDir)).length > 0;
+}
 
 export async function preflightResumeOmxPluginState(
   codexHomeDir: string | undefined,
   pkgRoot = getPackageRoot(),
+  options: ResumePluginPreflightOptions = {},
 ): Promise<ResumePluginPreflightResult> {
   const selectedCodexHomeDir = codexHomeDir && codexHomeDir.trim() !== ""
     ? codexHomeDir
     : join(homedir(), ".codex");
+  const configPath = join(selectedCodexHomeDir, "config.toml");
+  const existingConfig = existsSync(configPath) ? await readFile(configPath, "utf-8") : "";
+  if (!(await shouldPreflightResumeOmxPluginState(selectedCodexHomeDir, existingConfig, options))) {
+    return { status: "skipped", prunedStaleDirs: [], configUpdated: false };
+  }
+
   const packagedMarketplace = await resolvePackagedOmxMarketplace(pkgRoot);
   if (!packagedMarketplace) {
     return { status: "unavailable", prunedStaleDirs: [], configUpdated: false };
@@ -1194,8 +1221,6 @@ export async function preflightResumeOmxPluginState(
   const currentCacheDir = materialized.cacheDir ?? (version ? join(selectedCodexHomeDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex", version) : undefined);
   const prunedStaleDirs: string[] = [];
 
-  const configPath = join(selectedCodexHomeDir, "config.toml");
-  const existingConfig = existsSync(configPath) ? await readFile(configPath, "utf-8") : "";
   const nextConfig = upsertLocalOmxMarketplaceRegistration(
     upsertLocalOmxPluginEnablement(existingConfig),
     pkgRoot,
@@ -1228,7 +1253,7 @@ async function prepareResumeCodexHomeForLaunch(
   const selection = parseResumeCodexHomeSelection(args);
   if (selection.explicitCodexHome) {
     const codexHomeOverride = resolve(selection.explicitCodexHome);
-    await preflightResumeOmxPluginState(codexHomeOverride);
+    await preflightResumeOmxPluginState(codexHomeOverride, getPackageRoot(), { projectRoot: cwd });
     return {
       args: selection.args,
       prepared: {
@@ -1243,7 +1268,7 @@ async function prepareResumeCodexHomeForLaunch(
       const emptyRuntimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
       await rm(emptyRuntimeCodexHome, { recursive: true, force: true });
       await mkdir(join(emptyRuntimeCodexHome, "sessions"), { recursive: true });
-      await preflightResumeOmxPluginState(emptyRuntimeCodexHome);
+      await preflightResumeOmxPluginState(emptyRuntimeCodexHome, getPackageRoot(), { projectRoot: cwd });
       return {
         args: selection.args,
         prepared: {
@@ -1256,7 +1281,7 @@ async function prepareResumeCodexHomeForLaunch(
       includeHistoryArtifacts: true,
       extraHistoryCodexHomes: projectHomes.slice(1).map((home) => home.path),
     });
-    await preflightResumeOmxPluginState(runtimeCodexHome);
+    await preflightResumeOmxPluginState(runtimeCodexHome, getPackageRoot(), { projectRoot: cwd });
     return {
       args: selection.args,
       prepared: {
@@ -1269,7 +1294,7 @@ async function prepareResumeCodexHomeForLaunch(
     includeHistoryArtifacts: true,
     extraHistoryCodexHomes: projectHomes.map((home) => home.path),
   });
-  await preflightResumeOmxPluginState(prepared.codexHomeOverride);
+  await preflightResumeOmxPluginState(prepared.codexHomeOverride, getPackageRoot(), { projectRoot: cwd });
   return { args: selection.args, prepared };
 }
 

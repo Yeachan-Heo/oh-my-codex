@@ -801,4 +801,46 @@ if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${stal
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('does not bootstrap plugin mode during clean legacy resume', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-clean-legacy-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(fakeCodexPath, `#!/bin/sh
+set -eu
+selected_codex_home="\${CODEX_HOME:-$HOME/.codex}"
+printf 'fake-codex:%s\n' "$*"
+if [ -f "$selected_codex_home/config.toml" ]; then echo config-created=yes; else echo config-created=no; fi
+if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex" ]; then echo plugin-cache-created=yes; else echo plugin-cache-created=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume', 'legacy-session'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_LAUNCH_POLICY: 'direct',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume legacy-session\b/);
+      assert.match(result.stdout, /config-created=no/);
+      assert.match(result.stdout, /plugin-cache-created=no/);
+      await assert.rejects(readFile(join(codexHome, 'config.toml'), 'utf-8'), /ENOENT/);
+      await assert.rejects(readFile(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex'), 'utf-8'), /ENOENT/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
