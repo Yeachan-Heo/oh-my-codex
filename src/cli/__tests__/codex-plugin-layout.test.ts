@@ -237,6 +237,7 @@ async function assertPluginHookLaunchesPostCompactFromCache(): Promise<void> {
         OMX_ROOT: join(cacheRoot, '.omx-root'),
         OMX_SESSION_ID: 'omx-plugin-hook-postcompact-smoke',
         OMX_SOURCE_CWD: cacheRoot,
+        OMX_ENTRY_PATH: omxBin,
         OMX_STARTUP_CWD: cacheRoot,
       },
     });
@@ -292,6 +293,7 @@ async function assertPluginHookDelegatesPostCompactToPinnedCommand(): Promise<vo
         OMX_ROOT: join(cacheRoot, '.omx-root'),
         OMX_SESSION_ID: 'omx-plugin-hook-postcompact-delegate',
         OMX_SOURCE_CWD: cacheRoot,
+        OMX_ENTRY_PATH: omxBin,
         OMX_STARTUP_CWD: cacheRoot,
       },
     });
@@ -353,10 +355,23 @@ async function withPluginCacheCopy<T>(run: (cachePluginRoot: string, cacheRoot: 
 
 function pluginHookEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  for (const key of ['OMX_TEAM_STATE_ROOT', 'OMX_ROOT', 'OMX_STATE_ROOT', 'OMX_SESSION_ID', 'CODEX_SESSION_ID']) {
+  for (const key of [
+    'OMX_TEAM_STATE_ROOT',
+    'OMX_ROOT',
+    'OMX_STATE_ROOT',
+    'OMX_SESSION_ID',
+    'CODEX_SESSION_ID',
+    'OMX_ENTRY_PATH',
+    'OMX_STARTUP_CWD',
+  ]) {
     delete env[key];
   }
-  return { ...env, ...overrides };
+  return {
+    ...env,
+    OMX_ENTRY_PATH: omxBin,
+    OMX_STARTUP_CWD: root,
+    ...overrides,
+  };
 }
 
 function runPluginNativeHook(
@@ -456,6 +471,45 @@ describe('official Codex plugin layout', () => {
     assert.match(launcher, /return \{ \.\.\.options, windowsHide: true \};/);
     assert.match(launcher, /return \{ \.\.\.options, shell: true, windowsHide: true \};/);
     assert.doesNotMatch(launcher, /shell:\s*process\.platform === 'win32'/);
+  });
+
+  it('no-ops plugin hooks when Codex was not launched through omx', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const calledPath = join(cacheRoot, 'called.txt');
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'record-called.cmd' : 'record-called.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, `@echo off\r\necho called > "${calledPath}"\r\necho {}\r\n`, 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh\necho called > "${calledPath}"\nprintf '{}\\n'\n`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const userPrompt = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: '$ralplan smoke' }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(userPrompt.status, 0, userPrompt.stderr || userPrompt.stdout);
+      assert.equal(userPrompt.stdout, '');
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
+      const stop = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'plain-codex-stop' }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(stop.status, 0, stop.stderr || stop.stdout);
+      assert.deepEqual(parseSingleJsonStdout(stop.stdout), {});
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+    });
   });
 
   it('emits Stop JSON when the plugin hook pinned launcher is invalid', async () => {

@@ -1730,6 +1730,7 @@ async function checkPluginScopedNativeHooks(
 				OMX_ROOT: join(smokeCwd, ".omx-doctor-root"),
 				OMX_SESSION_ID: "omx-doctor-plugin-hook-smoke",
 				OMX_SOURCE_CWD: smokeCwd,
+				OMX_ENTRY_PATH: join(getPackageRoot(), "dist", "cli", "omx.js"),
 				OMX_STARTUP_CWD: smokeCwd,
 			},
 			input: payload,

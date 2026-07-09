@@ -131,6 +131,15 @@ function detectCompactHookInput(input) {
   }
 }
 
+function isOmxLauncherSession() {
+  return typeof process.env.OMX_ENTRY_PATH === 'string' && process.env.OMX_ENTRY_PATH.trim() !== '';
+}
+
+function writePlainCodexNoop(isStop) {
+  if (isStop) process.stdout.write('{}\n');
+  process.exitCode = 0;
+}
+
 async function readBoundedStdin() {
   const chunks = [];
   let totalBytes = 0;
@@ -342,6 +351,11 @@ async function main() {
   const { input, oversized, totalBytes } = await readBoundedStdin();
   const isStop = detectStopHookInput(input);
   const isCompact = detectCompactHookInput(input);
+
+  if (!isOmxLauncherSession()) {
+    writePlainCodexNoop(isStop);
+    return;
+  }
 
   if (oversized) {
     const message = `plugin hook stdin exceeded ${MAX_WRAPPER_STDIN_BYTES} bytes before launcher delegation; totalBytes>${totalBytes}`;
