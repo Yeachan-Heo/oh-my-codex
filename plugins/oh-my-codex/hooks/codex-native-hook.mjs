@@ -336,10 +336,9 @@ function parseJsonObjectCandidate(text) {
   }
 }
 
-function isJsonObjectLookingLine(text) {
-  return text.startsWith('{') && text.endsWith('}');
+function isJsonObjectFragmentLine(text) {
+  return text.startsWith('{') || text.endsWith('}') || /^"[^"]+"\s*:/.test(text);
 }
-
 
 function parseSingleJsonObjectOutput(raw) {
   const text = String(raw ?? '').trim();
@@ -349,9 +348,9 @@ function parseSingleJsonObjectOutput(raw) {
 
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const lastLine = lines.at(-1);
-  if (!lastLine || !isJsonObjectLookingLine(lastLine)) return null;
+  if (!lastLine || !lastLine.startsWith('{') || !lastLine.endsWith('}')) return null;
   for (const line of lines.slice(0, -1)) {
-    if (parseJsonObjectCandidate(line) || isJsonObjectLookingLine(line)) return null;
+    if (parseJsonObjectCandidate(line) || isJsonObjectFragmentLine(line)) return null;
   }
   return parseJsonObjectCandidate(lastLine);
 }

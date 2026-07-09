@@ -583,6 +583,35 @@ exit 7
     });
   });
 
+  it('preserves valid pretty-printed Stop child JSON', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'pretty-valid-json.cmd' : 'pretty-valid-json.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {\r\necho   "decision": "block",\r\necho   "stopReason": "pretty_child_json"\r\necho }\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{\n'
+printf '  "decision": "block",\n'
+printf '  "stopReason": "pretty_child_json"\n'
+printf '}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-pretty-valid-json-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'pretty_child_json');
+      assert.doesNotMatch(result.stdout, /plugin_stop_hook_launcher_invalid_stdout/);
+    });
+  });
+
   it('preserves valid Stop child JSON when stdout includes prior launcher noise', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const commandPath = join(cacheRoot, process.platform === 'win32' ? 'noisy-valid-json.cmd' : 'noisy-valid-json.sh');
@@ -666,6 +695,37 @@ printf '{"decision":"block","stopReason":"second_json"}\n'
       assert.doesNotMatch(result.stdout, /first_json/);
       assert.doesNotMatch(result.stdout, /second_json/);
       assert.doesNotMatch(result.stdout, /trailing runtime noise/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_invalid_stdout');
+    });
+  });
+
+  it('rejects pretty Stop child JSON followed by final JSON log noise', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'pretty-json-final-log.cmd' : 'pretty-json-final-log.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {\r\necho   "decision": "block",\r\necho   "stopReason": "real_block"\r\necho }\r\necho {"level":"info"}\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{\n'
+printf '  "decision": "block",\n'
+printf '  "stopReason": "real_block"\n'
+printf '}\n'
+printf '{"level":"info"}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-pretty-json-final-log-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /real_block/);
+      assert.doesNotMatch(result.stdout, /level/);
       const output = parseSingleJsonStdout(result.stdout);
       assert.equal(output.decision, 'block');
       assert.equal(output.stopReason, 'plugin_stop_hook_launcher_invalid_stdout');
