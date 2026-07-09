@@ -1022,6 +1022,47 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     assert.deepEqual(warnings, []);
   });
 
+  it("normalizes stale terminal deep-interview locks during postLaunch cleanup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-di-terminal-locks-"));
+    const sessionId = "sess-postlaunch-di-terminal-locks";
+    const sessionStateDir = join(wd, ".omx", "state", "sessions", sessionId);
+    const completedAt = "2026-07-09T00:00:00.000Z";
+
+    try {
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeFile(
+        join(sessionStateDir, "deep-interview-state.json"),
+        JSON.stringify({
+          active: false,
+          mode: "deep-interview",
+          current_phase: "cancelled",
+          completed_at: completedAt,
+          input_lock: {
+            active: true,
+            owner: "stale-question",
+          },
+        }, null, 2),
+        "utf-8",
+      );
+
+      await cleanupPostLaunchModeStateFiles(wd, sessionId);
+
+      const deepInterview = JSON.parse(
+        await readFile(join(sessionStateDir, "deep-interview-state.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      const inputLock = deepInterview.input_lock as Record<string, unknown>;
+
+      assert.equal(deepInterview.active, false);
+      assert.equal(deepInterview.current_phase, "cancelled");
+      assert.equal(deepInterview.completed_at, completedAt);
+      assert.equal(inputLock.active, false);
+      assert.equal(inputLock.status, "released");
+      assert.equal(inputLock.released_at, completedAt);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("does not preserve complete Ralph cleanup state without completion-audit evidence", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-ralph-complete-audit-missing-"));
     const sessionId = "sess-postlaunch-ralph-complete-audit-missing";

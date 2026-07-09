@@ -23,6 +23,7 @@ import { evaluateRalphCompletionAuditEvidence } from '../ralph/completion-audit.
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
+import { normalizeTerminalWorkflowState } from './terminal-normalization.js';
 import {
   hasCleanAutopilotReviewAndQaEvidence,
   isAutopilotSuccessfulTerminalState,
@@ -848,6 +849,8 @@ export async function executeStateOperation(
               return;
             }
             Object.assign(mergedRaw, runOutcomeValidation.state);
+            const terminalNormalization = normalizeTerminalWorkflowState(mergedRaw, { mode });
+            Object.assign(mergedRaw, terminalNormalization.state);
           }
 
           if (mode === 'autopilot') {

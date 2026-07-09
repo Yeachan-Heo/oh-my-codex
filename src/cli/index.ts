@@ -72,6 +72,7 @@ import {
   type ModeStateFileRef,
 } from "../mcp/state-paths.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
+import { normalizeTerminalWorkflowState } from "../state/terminal-normalization.js";
 import {
   readPersistedSetupPreferences,
   resolveCodexConfigPathForLaunch,
@@ -4847,6 +4848,14 @@ export async function cleanupPostLaunchModeStateFiles(
         && Array.isArray(result.state.active_skills)
         && result.state.active_skills.length > 0;
       if (result.state.active !== true && !skillStateStillVisible) {
+        const completedAt = now().toISOString();
+        const normalized = mode === SKILL_ACTIVE_STATE_MODE
+          ? { state: result.state, changed: false }
+          : normalizeTerminalWorkflowState(result.state, { mode, nowIso: completedAt });
+        if (normalized.changed) {
+          result.state = normalized.state;
+          await writeFile(path, JSON.stringify(result.state, null, 2));
+        }
         if (mode === "ralph") {
           const completedAt = now().toISOString();
           if (markRalphCompletionAuditBlockedForPostLaunch(result.state, cwd, completedAt)) {
@@ -4885,6 +4894,7 @@ export async function cleanupPostLaunchModeStateFiles(
         result.state.active = false;
         result.state.current_phase = "cancelled";
         result.state.completed_at = completedAt;
+        result.state = normalizeTerminalWorkflowState(result.state, { mode, nowIso: completedAt }).state;
         if (mode === "ralph") {
           result.state.interrupted_at = completedAt;
           result.state.stop_reason = cleanPostLaunchString(result.state.stop_reason) || "session_exit";

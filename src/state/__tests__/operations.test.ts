@@ -659,6 +659,61 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('normalizes terminal deep-interview snapshots by releasing stale locks', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-di-terminal-normalize-'));
+    try {
+      const completedAt = '2026-07-09T00:00:00.000Z';
+      const writeResponse = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'deep-interview',
+        active: false,
+        current_phase: 'cancelled',
+        completed_at: completedAt,
+        input_lock: {
+          active: true,
+          owner: 'question-round',
+        },
+        approval_lock: {
+          status: 'pending',
+          reviewer: 'user',
+        },
+        question_enforcement: {
+          obligation_id: 'obligation-stale',
+          source: 'omx-question',
+          status: 'pending',
+          lifecycle_outcome: 'askuserQuestion',
+          requested_at: '2026-07-08T23:59:00.000Z',
+        },
+      });
+
+      assert.equal(writeResponse.isError, undefined);
+
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'deep-interview',
+      });
+      const readBody = readResponse.payload as Record<string, unknown>;
+      const inputLock = readBody.input_lock as Record<string, unknown>;
+      const approvalLock = readBody.approval_lock as Record<string, unknown>;
+      const questionEnforcement = readBody.question_enforcement as Record<string, unknown>;
+
+      assert.equal(readBody.active, false);
+      assert.equal(readBody.current_phase, 'cancelled');
+      assert.equal(readBody.completed_at, completedAt);
+      assert.equal(readBody.run_outcome, 'cancelled');
+      assert.equal(inputLock.active, false);
+      assert.equal(inputLock.status, 'released');
+      assert.equal(inputLock.released_at, completedAt);
+      assert.equal(approvalLock.active, false);
+      assert.equal(approvalLock.status, 'released');
+      assert.equal(inputLock.release_reason, 'terminal_state_normalization');
+      assert.equal(questionEnforcement.status, 'cleared');
+      assert.equal(questionEnforcement.clear_reason, 'abort');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('writes and reads autoresearch state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autoresearch-'));
     try {
