@@ -139,6 +139,14 @@ function supportEvidenceFromBlocker(
     const expiresAt = supportString(blocker.expires_at ?? blocker.expiresAt);
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN;
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= (input.nowMs ?? Date.now())) return null;
+    return {
+      status: 'unknown',
+      reason,
+      source,
+      ...(supportString(blocker.error_summary ?? blocker.evidenceSummary ?? blocker.evidence) ? { evidenceSummary: supportString(blocker.error_summary ?? blocker.evidenceSummary ?? blocker.evidence) } : {}),
+      ...(supportString(blocker.observed_at ?? blocker.observedAt) ? { observedAt: supportString(blocker.observed_at ?? blocker.observedAt) } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    };
   }
   const status = supportString(blocker.status) || 'unsupported';
   if (status && status !== 'unsupported') return null;
@@ -181,8 +189,6 @@ function availableToolsEvidence(payload: Record<string, unknown> | null): Native
 export function resolveNativeSubagentSupportStatus(input: NativeSubagentCapabilityInput): NativeSubagentSupportEvidence {
   const supportBlockerEvidence = supportEvidenceFromBlocker(input.persistedSupportBlocker, 'persisted_support_blocker', input);
   if (supportBlockerEvidence) return supportBlockerEvidence;
-  const capacityBlockerEvidence = supportEvidenceFromBlocker(input.persistedCapacityBlocker, 'capacity_blocker', input);
-  if (capacityBlockerEvidence) return capacityBlockerEvidence;
 
   const payload = supportRecord(input.payload);
   const explicitCapability = supportRecord(payload?.omx_runtime_capabilities)
@@ -206,6 +212,9 @@ export function resolveNativeSubagentSupportStatus(input: NativeSubagentCapabili
 
   const toolEvidence = availableToolsEvidence(payload);
   if (toolEvidence) return toolEvidence;
+
+  const capacityBlockerEvidence = supportEvidenceFromBlocker(input.persistedCapacityBlocker, 'capacity_blocker', input);
+  if (capacityBlockerEvidence) return capacityBlockerEvidence;
 
   return { status: 'unknown', source: 'default_unknown' };
 }

@@ -191,15 +191,26 @@ describe('leader conductor contract', () => {
       }).status,
       'unknown',
     );
+    const capacityOnlyEvidence = resolveNativeSubagentSupportStatus({
+      nowMs: Date.parse('2026-07-09T00:00:00.000Z'),
+      persistedCapacityBlocker: {
+        reason: 'agent_thread_limit_reached',
+        expires_at: '2026-07-10T00:00:00.000Z',
+      },
+    });
+    assert.equal(capacityOnlyEvidence.status, 'unknown');
+    assert.equal(capacityOnlyEvidence.reason, 'agent_thread_limit_reached');
+    assert.equal(capacityOnlyEvidence.source, 'capacity_blocker');
     assert.equal(
       resolveNativeSubagentSupportStatus({
         nowMs: Date.parse('2026-07-09T00:00:00.000Z'),
+        payload: { available_tools: ['Read', 'multi_agent_v1.spawn_agent'] },
         persistedCapacityBlocker: {
           reason: 'agent_thread_limit_reached',
           expires_at: '2026-07-10T00:00:00.000Z',
         },
       }).status,
-      'unsupported',
+      'supported',
     );
     assert.equal(
       isUnsupportedNativeSubagentEvidence({

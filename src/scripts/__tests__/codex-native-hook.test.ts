@@ -5039,6 +5039,51 @@ standardMaxRounds = 15
     }
   });
 
+  it("keeps conductor guidance on autopilot activation after capacity-only native subagent evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-capacity-native-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-autopilot-capacity-native",
+          thread_id: "thread-autopilot-capacity-native",
+          turn_id: "turn-autopilot-capacity-native-spawn",
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: { error: "collab spawn failed: agent thread limit reached" },
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-autopilot-capacity-native",
+          thread_id: "thread-autopilot-capacity-native",
+          turn_id: "turn-autopilot-capacity-native-prompt",
+          prompt: "$autopilot implement issue #3078",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "autopilot");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /Autopilot protocol:/);
+      assert.match(message, /Conductor mode contract:/);
+      assert.match(message, /Golden Rule: When the Main agent is acting in Conductor mode/);
+      assert.match(message, /Conductor reuse and ledger guidance:/);
+      assert.doesNotMatch(message, /Native subagent support is unavailable in this environment/);
+      assert.doesNotMatch(message, /Reason: agent_thread_limit_reached/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("omits conductor block and emits unsupported native guidance for unsupported autopilot first-run payload", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-unsupported-native-"));
     try {
