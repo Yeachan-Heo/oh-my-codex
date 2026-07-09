@@ -186,6 +186,7 @@ import {
   ensureWorktree,
 } from "../team/worktree.js";
 import { ensureReusableNodeModules } from "../utils/repo-deps.js";
+import { resolveWorktreeToolContext, worktreeToolContextEnv } from "../utils/worktree-tool-context.js";
 import {
   OMX_NOTIFY_TEMP_CONTRACT_ENV,
   parseNotifyTempContractFromArgs,
@@ -2160,6 +2161,21 @@ function applyDisposableWorktreeOmxRootForLaunch(
   env.OMX_ROOT = omxRootOverride;
 }
 
+function applyWorktreeToolContextForLaunch(
+  cwd: string,
+  ensuredWorktree: { enabled: true; repoRoot: string; worktreePath: string } | { enabled: false } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const context = resolveWorktreeToolContext({
+    cwd,
+    scope: "launch",
+    repoRoot: ensuredWorktree?.enabled ? ensuredWorktree.repoRoot : undefined,
+    worktreeRoot: ensuredWorktree?.enabled ? ensuredWorktree.worktreePath : cwd,
+    env,
+  });
+  Object.assign(env, worktreeToolContextEnv(context));
+}
+
 function launchArgRequestsDisposableWorktree(arg: string): boolean {
   return arg === "--worktree" ||
     arg === "-w" ||
@@ -3061,6 +3077,7 @@ export async function launchWithAuthHotswap(args: string[]): Promise<void> {
   }
   clearInheritedMadmaxRootForDisposableWorktreeLaunch(parsedWorktree.remainingArgs);
   applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
+  applyWorktreeToolContextForLaunch(cwd, ensuredLaunchWorktree);
 
   try {
     await maybeCheckAndPromptUpdate(cwd);
@@ -3190,6 +3207,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
   });
   clearInheritedMadmaxRootForDisposableWorktreeLaunch(parsedWorktree.remainingArgs);
   applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
+  applyWorktreeToolContextForLaunch(cwd, ensuredLaunchWorktree);
 
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -3318,6 +3336,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
 
   clearInheritedMadmaxRootForDisposableWorktreeLaunch(parsedWorktree.remainingArgs);
   applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
+  applyWorktreeToolContextForLaunch(cwd, ensuredLaunchWorktree);
 
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 

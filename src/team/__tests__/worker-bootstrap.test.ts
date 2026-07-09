@@ -126,6 +126,34 @@ describe("worker bootstrap", () => {
     assert.doesNotMatch(overlay, /tasks\/\{id\}\.json/);
   });
 
+  it("includes concise CodeGraph guidance for shared leader indexes", () => {
+    const content = generateWorkerRootAgentsContent({
+      teamName: "alpha",
+      workerName: "worker-1",
+      workerRole: "executor",
+      rolePromptContent: "execute",
+      teamStateRoot: "/repo/.omx/state",
+      leaderCwd: "/repo",
+      worktreePath: "/repo/.omx/team/alpha/worktrees/worker-1",
+      toolContext: {
+        repoRoot: "/repo",
+        worktreeRoot: "/repo/.omx/team/alpha/worktrees/worker-1",
+        gitCommonDir: "/repo/.git",
+        worktreeScope: "team",
+        codeGraphMode: "shared",
+        codeGraphProjectPath: "/repo",
+        codeGraphDbPath: "/repo/.codegraph/codegraph.db",
+        codeGraphSource: "leader-shared",
+        requestedCodeGraphMode: "auto",
+      },
+    });
+
+    assert.match(content, /## CodeGraph/);
+    assert.match(content, /shared leader index/);
+    assert.match(content, /not branch-accurate for worktree-only changes/);
+    assert.match(content, /does not install CodeGraph, auto-index worktrees, or copy\/symlink/);
+  });
+
   it("applyWorkerOverlay appends to existing AGENTS.md content", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-worker-bootstrap-"));
     try {

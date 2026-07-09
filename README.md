@@ -198,6 +198,8 @@ clean, commit, or stash that worktree before relying on it for isolation.
 For `omx team`, workers already use dedicated worktrees automatically by
 default; `--worktree` on `omx team` is only a legacy-compatible override.
 
+Repo-aware tools receive the same canonical context in launch, team-worker, and autoresearch runtimes: `OMX_REPO_ROOT`, `OMX_WORKTREE_ROOT`, `OMX_GIT_COMMON_DIR`, `OMX_WORKTREE_SCOPE`, `OMX_CODEGRAPH_MODE`, and `OMX_CODEGRAPH_PROJECT_PATH`. `OMX_CODEGRAPH_MODE=auto` prefers a worktree-local `.codegraph/codegraph.db`, then a leader/repo `.codegraph/codegraph.db`, otherwise resolves to `off`. Explicit `shared`, `local`, and `off` are honored. OMX does not install CodeGraph, auto-index worktrees, or copy/symlink `.codegraph`; shared leader indexes are useful for baseline navigation but are not branch-accurate for worktree-only changes.
+
 If you want a one-off launch with no OMX tmux/HUD management, use `--direct`:
 
 ```bash
