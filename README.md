@@ -470,7 +470,7 @@ If this happens, try:
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](LICENSE).
 
 ## GEO visibility benchmark
 
