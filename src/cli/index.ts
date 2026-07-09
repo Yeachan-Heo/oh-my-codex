@@ -6,7 +6,7 @@
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join, posix, resolve, win32 } from "path";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
-import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "fs/promises";
+import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash } from "crypto";
 import {
@@ -839,6 +839,12 @@ async function linkOrCopyCodexHomeEntry(source: string, destination: string): Pr
   }
 }
 
+async function copyFilePreservingTimestamps(source: string, destination: string): Promise<void> {
+  await copyFile(source, destination);
+  const sourceStat = await stat(source);
+  await utimes(destination, sourceStat.atime, sourceStat.mtime);
+}
+
 function isCodexSqliteArtifact(entryName: string): boolean {
   return /^(?:state|logs)_\d+\.sqlite(?:-(?:shm|wal))?$/.test(entryName);
 }
@@ -906,7 +912,7 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
     if (sourceStat.isSymbolicLink()) continue;
     const destination = join(projectCodexHome, entryName);
     if (sourceStat.isDirectory()) {
-      await cp(source, destination, { recursive: true, force: true, verbatimSymlinks: true });
+      await cp(source, destination, { recursive: true, force: true, preserveTimestamps: true, verbatimSymlinks: true });
       continue;
     }
     if (entryName === "history.jsonl" || entryName === "session_index.jsonl") {
@@ -914,7 +920,7 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
       continue;
     }
     if (sourceStat.isFile()) {
-      await copyFile(source, destination);
+      await copyFilePreservingTimestamps(source, destination);
     }
   }
 }
@@ -948,10 +954,10 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
     await rm(destination, { recursive: true, force: true });
     const sourceStat = await lstat(source);
     if (sourceStat.isDirectory()) {
-      await cp(source, destination, { recursive: true, force: true, dereference: true });
+      await cp(source, destination, { recursive: true, force: true, dereference: true, preserveTimestamps: true });
       continue;
     }
-    await copyFile(source, destination);
+    await copyFilePreservingTimestamps(source, destination);
   }
 }
 
@@ -969,7 +975,7 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
     const sourceStat = await stat(source);
     if (sourceStat.isDirectory()) {
       await mkdir(destination, { recursive: true });
-      await cp(source, destination, { recursive: true, force: true, dereference: true });
+      await cp(source, destination, { recursive: true, force: true, dereference: true, preserveTimestamps: true });
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
@@ -979,7 +985,7 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
       const destinationStat = await stat(destination);
       if (!destinationStat.isFile()) {
         await rm(destination, { recursive: true, force: true });
-        await copyFile(source, destination);
+        await copyFilePreservingTimestamps(source, destination);
         mergedHistorySourceRealpaths.add(sourceRealpath);
         continue;
       }
@@ -990,7 +996,7 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
-    await copyFile(source, destination);
+    await copyFilePreservingTimestamps(source, destination);
     mergedHistorySourceRealpaths.add(sourceRealpath);
   }
 }
