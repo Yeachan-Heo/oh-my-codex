@@ -8,7 +8,7 @@ import { basename, dirname, join, posix, resolve, win32 } from "path";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import {
   setup,
   SETUP_MCP_MODES,
@@ -5114,6 +5114,7 @@ function runCodex(
   );
   const codexEnvWithSession = {
     ...codexBaseEnv,
+    OMX_CODEX_LAUNCH_ID: randomUUID(),
     ...buildHudRuntimeEnv({ sessionId }).env,
   };
   const codexEnv = workerLaunchArgs

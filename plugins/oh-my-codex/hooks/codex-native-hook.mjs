@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { extname } from 'node:path';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -131,8 +131,52 @@ function detectCompactHookInput(input) {
   }
 }
 
-function isOmxLauncherSession() {
-  return typeof process.env.OMX_ENTRY_PATH === 'string' && process.env.OMX_ENTRY_PATH.trim() !== '';
+function parseHookPayload(input) {
+  try {
+    const parsed = JSON.parse(input.toString('utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeLaunchId(value) {
+  return String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 128);
+}
+
+function resolveLaunchClaimPath(payload, launchId) {
+  const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
+  const stateRoot = typeof process.env.OMX_ROOT === 'string' && process.env.OMX_ROOT.trim()
+    ? process.env.OMX_ROOT.trim()
+    : join(cwd, '.omx');
+  return join(stateRoot, 'state', 'plugin-hook-launches', `${sanitizeLaunchId(launchId)}.json`);
+}
+
+function hookPayloadSessionId(input, payload) {
+  const parsedSessionId = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
+  if (parsedSessionId) return parsedSessionId;
+  return extractTopLevelStringField(input.toString('utf8'), ['session_id', 'sessionId'])?.trim() ?? '';
+}
+
+function isOmxLauncherSession(input, payload) {
+  const launchId = process.env.OMX_CODEX_LAUNCH_ID?.trim();
+  const entryPath = process.env.OMX_ENTRY_PATH?.trim();
+  const sessionId = hookPayloadSessionId(input, payload);
+  if (!launchId || !entryPath || !sessionId) return false;
+
+  const claimPath = resolveLaunchClaimPath(payload, launchId);
+
+  try {
+    if (existsSync(claimPath)) {
+      const claimed = JSON.parse(readFileSync(claimPath, 'utf8'));
+      return claimed?.sessionId === sessionId;
+    }
+    mkdirSync(dirname(claimPath), { recursive: true });
+    writeFileSync(claimPath, `${JSON.stringify({ sessionId })}\n`, { encoding: 'utf8', mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function writePlainCodexNoop(isStop) {
@@ -374,8 +418,9 @@ function parseSingleJsonObjectOutput(raw) {
 }
 
 async function main() {
-  const launchedByOmx = isOmxLauncherSession();
-  const { input, oversized, totalBytes } = await readBoundedStdin({ drainOversized: !launchedByOmx });
+  const { input, oversized, totalBytes } = await readBoundedStdin({ drainOversized: true });
+  const payload = parseHookPayload(input);
+  const launchedByOmx = isOmxLauncherSession(input, payload);
   const isStop = detectStopHookInput(input);
   const isCompact = detectCompactHookInput(input);
 
