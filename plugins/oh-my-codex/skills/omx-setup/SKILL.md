@@ -35,11 +35,11 @@ Supported setup flags (current implementation):
    - if a TTY user has persisted setup preferences, `omx setup` first summarizes the recorded choices and asks whether to **keep**, **review/change**, or **reset** them
    - else interactive prompt on TTY (default `user`)
    - else default `user` (safe for CI/tests)
-2. If scope is `user`, resolve user skill delivery mode:
+2. Resolve setup install mode:
    - explicit `--plugin`, `--legacy`, or `--install-mode legacy|plugin`, if present
    - persisted install mode in `./.omx/setup-scope.json`, if present and the TTY review decision is `keep`
-   - else discovered installed plugin cache under `${CODEX_HOME:-~/.codex}/plugins/cache/**/.codex-plugin/plugin.json` with `name: oh-my-codex` makes `plugin` the default
-   - else interactive prompt on TTY (`legacy` by default, or `plugin` when a plugin cache is discovered)
+   - else discovered installed plugin cache under `${CODEX_HOME:-~/.codex}/plugins/cache/**/.codex-plugin/plugin.json` with `name: oh-my-codex` makes `plugin` the default for both `user` and `project` scope, so project setup does not duplicate plugin-provided skills/hooks with legacy `.codex/skills` and `.codex/hooks.json`
+   - else in `user` scope, interactive prompt on TTY (`legacy` by default, or `plugin` when a plugin cache is discovered)
    - else default `legacy` unless a plugin cache is discovered
 3. Create directories and persist effective scope/install mode
 4. In legacy mode, install prompts/native agents/skills and merge full config.toml. In plugin mode, archive/remove legacy OMX-managed prompts/skills, refresh installable native agent TOMLs for `agent_type` routing, clean up stale generated non-installable native agents, and keep native Codex hooks installed.
@@ -51,7 +51,7 @@ Supported setup flags (current implementation):
 
 - `omx setup` prompts for scope when no scope is provided and stdin/stdout are TTY. If `./.omx/setup-scope.json` already exists, setup now summarizes the saved choices first and asks whether to keep them, review/change them, or reset and behave like a fresh setup run.
 - Non-interactive setup never blocks for this review prompt: it keeps deterministic CLI/persisted/default behavior for CI and scripted installs.
-- In `user` scope, `omx setup` also prompts for skill delivery mode when no prior install mode is kept; installed plugin cache discovery makes plugin mode the default prompt/non-interactive choice.
+- In `user` scope, `omx setup` also prompts for skill delivery mode when no prior install mode is kept; installed plugin cache discovery makes plugin mode the default prompt/non-interactive choice. In `project` scope, installed plugin cache discovery selects plugin mode non-interactively to avoid overlapping project legacy skills/hooks with plugin-provided surfaces.
 - Local project orchestration file is `./AGENTS.md` (project root).
 - If `AGENTS.md` exists and neither `--force` nor `--merge-agents` is used, interactive TTY runs ask whether to overwrite. Non-interactive runs preserve the file.
 - Use `--merge-agents` to keep existing project guidance while allowing setup to refresh OMX-managed AGENTS sections and the generated model capability table idempotently.
@@ -73,7 +73,7 @@ Use this map when reconciling setup behavior or debugging a confusing install:
 
 | Surface | Owner | Notes |
 | --- | --- | --- |
-| `./.omx/setup-scope.json` | `omx setup` | Persists setup scope and user-scope skill delivery mode. TTY reruns summarize it and offer keep/review/reset. |
+| `./.omx/setup-scope.json` | `omx setup` | Persists setup scope and install mode when needed. TTY reruns summarize it and offer keep/review/reset. |
 | `~/.codex/config.toml` / `./.codex/config.toml` | `omx setup` generated blocks + user edits | Setup refreshes OMX-managed blocks while preserving supported manual content; setup-owned runtime feature flags include `multi_agent`, `child_agents_md`, the Codex hook feature flag (`hooks` or legacy `codex_hooks`), and `goals`. |
 | `~/.codex/hooks.json` / `./.codex/hooks.json` | `omx setup` shared ownership | Setup owns OMX native hook wrappers and preserves user-owned hooks. |
 | prompts, skills, native agents | `omx setup` or Codex plugin delivery | Legacy mode installs local files; plugin mode relies on plugin discovery for bundled skills, archives/removes legacy OMX-managed prompt/skill copies, and refreshes setup-owned native agent TOMLs for `agent_type` routing while cleaning up stale generated/non-installable native agents. |
