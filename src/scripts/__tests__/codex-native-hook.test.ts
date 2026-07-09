@@ -7917,6 +7917,70 @@ exit 0
         );
       }
 
+      const runtimeRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-runtime-root-"));
+      const previousOmxRoot = process.env.OMX_ROOT;
+      const runtimeSessionId = "sess-di-runtime-artifact";
+      const runtimeStateDir = join(runtimeRoot, ".omx", "state");
+      const runtimeSessionDir = join(runtimeStateDir, "sessions", runtimeSessionId);
+      try {
+        process.env.OMX_ROOT = runtimeRoot;
+        await mkdir(runtimeSessionDir, { recursive: true });
+        await writeJson(join(runtimeStateDir, "session.json"), { session_id: runtimeSessionId, cwd });
+        await writeJson(join(runtimeSessionDir, "skill-active-state.json"), {
+          version: 1,
+          active: true,
+          skill: "deep-interview",
+          phase: "planning",
+          session_id: runtimeSessionId,
+          thread_id: threadId,
+          active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: runtimeSessionId, thread_id: threadId }],
+        });
+        await writeJson(join(runtimeSessionDir, "deep-interview-state.json"), {
+          active: true,
+          mode: "deep-interview",
+          current_phase: "intent-first",
+          session_id: runtimeSessionId,
+          thread_id: threadId,
+        });
+
+        const allowedRuntimeStateWrite = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: runtimeSessionId,
+          thread_id: threadId,
+          tool_name: "Write",
+          tool_use_id: "tool-di-runtime-state-write",
+          tool_input: { file_path: join(runtimeSessionDir, "deep-interview-state.json"), content: "{}\n" },
+        }, { cwd });
+        assert.equal(allowedRuntimeStateWrite.outputJson, null);
+
+        const blockedRuntimeStatePeerWrite = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: runtimeSessionId,
+          thread_id: threadId,
+          tool_name: "Write",
+          tool_use_id: "tool-di-runtime-peer-state-write",
+          tool_input: { file_path: join(runtimeRoot, ".omx", "state", "sessions", "../outside", "deep-interview-state.json"), content: "{}\n" },
+        }, { cwd });
+        assert.equal((blockedRuntimeStatePeerWrite.outputJson as { decision?: string } | null)?.decision, "block");
+
+        const blockedRuntimeUnrelatedWrite = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: runtimeSessionId,
+          thread_id: threadId,
+          tool_name: "Write",
+          tool_use_id: "tool-di-runtime-unrelated-write",
+          tool_input: { file_path: join(runtimeRoot, "unrelated", "deep-interview-state.json"), content: "{}\n" },
+        }, { cwd });
+        assert.equal((blockedRuntimeUnrelatedWrite.outputJson as { decision?: string } | null)?.decision, "block");
+      } finally {
+        if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+        else delete process.env.OMX_ROOT;
+        await rm(runtimeRoot, { recursive: true, force: true });
+      }
+
       // Cross-mode non-terminal `omx state write` payloads are activations,
       // because state_write normalizes them to active=true after the hook.
       const blockedStateCliMutation = await preToolUse(

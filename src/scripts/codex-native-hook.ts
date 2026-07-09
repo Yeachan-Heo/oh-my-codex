@@ -3395,6 +3395,8 @@ const PROTECTED_PLANNING_STATE_FILE_NAMES = new Set([
   "ralplan-state.json",
   "skill-active-state.json",
 ]);
+const RUNTIME_SESSION_ID_SEGMENT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
 
 const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
   "Write",
@@ -3485,6 +3487,33 @@ function isProtectedPlanningStatePath(relativePath: string): boolean {
   const fileName = relativePath.split("/").pop() ?? "";
   return PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
 }
+function isAllowedAuthoritativeRuntimePlanningStatePath(cwd: string, rawPath: string): boolean {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
+
+  let targetPath: string;
+  let baseStateDir: string;
+  try {
+    targetPath = resolve(cwd, trimmed);
+    baseStateDir = resolve(getBaseStateDir(cwd));
+  } catch {
+    return false;
+  }
+
+  const localStateDir = resolve(cwd, ".omx", "state");
+  if (baseStateDir === localStateDir) return false;
+
+  const relativeToBase = relative(baseStateDir, targetPath).replace(/\\/g, "/");
+  if (!relativeToBase || relativeToBase.startsWith("..") || relativeToBase.startsWith("/")) return false;
+
+  const segments = relativeToBase.split("/");
+  if (segments.length !== 3 || segments[0] !== "sessions") return false;
+  const sessionId = segments[1] ?? "";
+  const fileName = segments[2] ?? "";
+  return RUNTIME_SESSION_ID_SEGMENT_PATTERN.test(sessionId)
+    && PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
+}
+
 
 function isPlanningTmpRelativePath(relativePath: string): boolean {
   return relativePath === ".omx/tmp" || relativePath.startsWith(".omx/tmp/");
@@ -3505,8 +3534,8 @@ function isAllowedPlanningArtifactPath(
   allowedPrefixes: readonly string[],
 ): boolean {
   const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
-  if (!relativePath) return false;
-  if (isProtectedPlanningStatePath(relativePath)) return false;
+  if (!relativePath) return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
+  if (isProtectedPlanningStatePath(relativePath)) return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
   if (isPlanningTmpRelativePath(relativePath)) {
     return allowedPrefixes.includes(".omx/tmp") && isAllowedPlanningTmpScratchPath(relativePath);
   }
