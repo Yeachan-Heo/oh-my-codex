@@ -1404,9 +1404,13 @@ async function resolveSetupInstallMode(
 		return { installMode: persisted.installMode, source: "persisted" };
 	}
 
-	if (scope !== "user") return null;
-
 	const discoveredPluginCacheDir = await discoverOmxPluginCacheDir();
+	if (scope !== "user") {
+		return discoveredPluginCacheDir
+			? { installMode: "plugin", source: "default" }
+			: null;
+	}
+
 	const defaultMode =
 		persistedReviewDecision === "review" && persisted?.installMode
 			? persisted.installMode

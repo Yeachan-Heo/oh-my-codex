@@ -126,7 +126,7 @@ describe("notify setup scope", () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-project-no-notify-"));
 		try {
 			await withTempCwd(wd, async () => {
-				await setup({ scope: "project" });
+				await setup({ scope: "project", installMode: "legacy" });
 			});
 			const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
 			assert.doesNotMatch(config, /^notify\s*=/m);
@@ -145,7 +145,7 @@ describe("notify setup scope", () => {
 				'notify = ["node", "/tmp/notify-hook.js"]\napproval_policy = "never"\n',
 			);
 			await withTempCwd(wd, async () => {
-				await setup({ scope: "project" });
+				await setup({ scope: "project", installMode: "legacy" });
 			});
 			const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
 			assert.match(config, /^notify = \["node", "\/tmp\/notify-hook\.js"\]$/m);
@@ -1183,6 +1183,34 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("defaults project setup to plugin mode when an installed oh-my-codex plugin cache is discovered", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const pluginDir = join(
+						codexHomeDir,
+						"plugins",
+						"cache",
+						"oh-my-codex-local",
+						"oh-my-codex",
+					);
+					await mkdir(join(pluginDir, ".codex-plugin"), { recursive: true });
+					await writeFile(
+						join(pluginDir, ".codex-plugin", "plugin.json"),
+						JSON.stringify({ name: "oh-my-codex", version: "local" }),
+					);
+
+					await setup({ scope: "project" });
+
+					await assertProjectPluginModeArtifacts(wd);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("invalidates stale plugin discovery caches so updated plugin skills refresh", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
@@ -1368,13 +1396,15 @@ describe("omx setup install mode behavior", () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		let promptCalls = 0;
 		try {
-			await withTempCwd(wd, async () => {
-				await setup({
-					scope: "project",
-					installModePrompt: async () => {
-						promptCalls += 1;
-						return "plugin";
-					},
+			await withIsolatedUserHome(wd, async () => {
+				await withTempCwd(wd, async () => {
+					await setup({
+						scope: "project",
+						installModePrompt: async () => {
+							promptCalls += 1;
+							return "plugin";
+						},
+					});
 				});
 			});
 
@@ -1388,7 +1418,7 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
-	it("does not reuse stale user install mode for project-scoped setup", async () => {
+	it("defaults project setup to plugin mode after user plugin setup installs plugin cache", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
 			await withIsolatedUserHome(wd, async () => {
@@ -1400,10 +1430,15 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "project", mcpMode: "none" });
+					assert.deepEqual(persisted, {
+						scope: "project",
+						installMode: "plugin",
+						mcpMode: "none",
+					});
+					assert.equal(existsSync(join(wd, ".codex", "hooks.json")), false);
 					assert.equal(
 						existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
-						true,
+						false,
 					);
 
 					await setup({ scope: "project" });
@@ -1411,14 +1446,18 @@ describe("omx setup install mode behavior", () => {
 					const repeatedPersisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(repeatedPersisted, { scope: "project", mcpMode: "none" });
+					assert.deepEqual(repeatedPersisted, {
+						scope: "project",
+						installMode: "plugin",
+						mcpMode: "none",
+					});
 					assert.equal(
 						existsSync(join(wd, ".codex", "agents", "planner.toml")),
 						true,
 					);
 					assert.equal(
 						existsSync(join(wd, ".codex", "prompts", "executor.md")),
-						true,
+						false,
 					);
 				});
 			});
