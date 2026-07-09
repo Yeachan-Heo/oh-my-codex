@@ -18,6 +18,7 @@ import {
 import {
   isTrustedSubagentThread,
   readSubagentSessionSummary,
+  readSubagentSessionLedger,
   readSubagentTrackingState,
   recordSubagentTurnForSession,
 } from "../subagents/tracker.js";
@@ -1797,6 +1798,101 @@ async function ensureOmxLocalIgnoreEntry(cwd: string): Promise<{ changed: boolea
   return { changed: true, excludePath };
 }
 
+function readSessionStartSource(payload: CodexHookPayload | undefined): string {
+  return safeString(payload?.source ?? payload?.session_start_source ?? payload?.sessionStartSource).trim().toLowerCase();
+}
+
+function shouldBuildSubagentReopenContext(options: {
+  hookEventName?: CodexHookEventName | null;
+  payload?: CodexHookPayload;
+}): boolean {
+  if (options.hookEventName !== "SessionStart") return false;
+  const source = readSessionStartSource(options.payload);
+  return source === "startup" || source === "resume";
+}
+
+function formatSubagentLedgerMetadata(entry: {
+  role?: string;
+  laneId?: string;
+  scope?: string;
+  status?: string;
+  lastHandoffSummary?: string;
+  resumeFailureReason?: string;
+}): string {
+  const metadata = [
+    entry.role ? `role: ${entry.role}` : null,
+    entry.laneId ? `lane: ${entry.laneId}` : null,
+    entry.scope ? `scope: ${entry.scope}` : null,
+    entry.status ? `status: ${entry.status}` : null,
+    entry.lastHandoffSummary ? `handoff: ${entry.lastHandoffSummary.slice(0, 120)}` : null,
+    entry.resumeFailureReason ? `last failure: ${entry.resumeFailureReason.slice(0, 120)}` : null,
+  ].filter((item): item is string => Boolean(item));
+  return metadata.length > 0 ? ` (${metadata.join("; ")})` : "";
+}
+
+async function buildPersistedSubagentReopenContext(
+  cwd: string,
+  sessionId: string,
+  options: {
+    hookEventName?: CodexHookEventName | null;
+    payload?: CodexHookPayload;
+  },
+): Promise<string | null> {
+  if (!shouldBuildSubagentReopenContext(options)) return null;
+
+  const ledger = await readSubagentSessionLedger(cwd, sessionId).catch(() => null);
+  if (!ledger || ledger.savedSubagents.length === 0) return null;
+
+  const source = readSessionStartSource(options.payload);
+  const reopenTargets = ledger.resumeTargets.filter((entry) => entry.status !== "unavailable");
+  const unavailableTargets = ledger.unavailableSubagents;
+  const failedTargets = ledger.savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
+  const nowIso = new Date().toISOString();
+
+  await Promise.all(reopenTargets.map((entry) => recordSubagentTurnForSession(cwd, {
+    sessionId,
+    threadId: entry.threadId,
+    kind: "subagent",
+    role: entry.role,
+    laneId: entry.laneId,
+    scope: entry.scope,
+    agentNickname: entry.agentNickname,
+    status: entry.status,
+    resumeRequestedAt: nowIso,
+    preserveCompletionEvidence: true,
+  }).catch(() => null)));
+
+  const lines = [
+    "[Persisted subagent reopen]",
+    `- SessionStart source: ${source}; saved subagent ids found: ${ledger.savedSubagents.length}.`,
+  ];
+
+  if (reopenTargets.length > 0) {
+    lines.push("- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:");
+    for (const entry of reopenTargets.slice(0, 12)) {
+      lines.push(`  - resume_agent(${JSON.stringify(entry.agentId)})${formatSubagentLedgerMetadata(entry)}`);
+    }
+    if (reopenTargets.length > 12) {
+      lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`);
+    }
+  } else {
+    lines.push("- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.");
+  }
+
+  lines.push("- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.");
+  lines.push("- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.");
+
+  const warningEntries = [...new Map([...unavailableTargets, ...failedTargets].map((entry) => [entry.agentId, entry])).values()];
+  if (warningEntries.length > 0) {
+    lines.push("- Reopen warnings:");
+    for (const entry of warningEntries.slice(0, 8)) {
+      lines.push(`  - ${entry.agentId}${formatSubagentLedgerMetadata(entry)}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 async function buildSessionStartContext(
   cwd: string,
   sessionId: string,
@@ -1904,6 +2000,14 @@ async function buildSessionStartContext(
   const subagentSummary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
   if (subagentSummary && subagentSummary.activeSubagentThreadIds.length > 0) {
     sections.push(`[Subagents]\n- active subagent threads: ${subagentSummary.activeSubagentThreadIds.length}`);
+  }
+
+  const persistedSubagentReopenContext = await buildPersistedSubagentReopenContext(cwd, sessionId, {
+    hookEventName: options.hookEventName,
+    payload: options.payload,
+  });
+  if (persistedSubagentReopenContext) {
+    sections.push(persistedSubagentReopenContext);
   }
 
   return sections.length > 0 ? sections.join("\n\n") : null;

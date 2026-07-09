@@ -1819,6 +1819,193 @@ PY`,
     }
   });
 
+  it("adds resume-by-id instructions for persisted subagents on SessionStart resume", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-reopen-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-reopen-session";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: "codex-leader-reopen", pid: process.pid });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: "codex-leader-reopen",
+            updated_at: "2026-07-09T00:00:00.000Z",
+            threads: {
+              "codex-leader-reopen": {
+                thread_id: "codex-leader-reopen",
+                kind: "leader",
+                first_seen_at: "2026-07-09T00:00:00.000Z",
+                last_seen_at: "2026-07-09T00:00:00.000Z",
+                turn_count: 1,
+              },
+              "thread-architect-reopen": {
+                thread_id: "thread-architect-reopen",
+                kind: "subagent",
+                first_seen_at: "2026-07-09T00:01:00.000Z",
+                last_seen_at: "2026-07-09T00:01:00.000Z",
+                turn_count: 2,
+                role: "architect",
+                lane_id: "plan-review",
+                scope: "SessionStart reopen",
+                status: "available",
+                last_handoff_summary: "reviewed the restart plan",
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "codex-leader-reopen",
+          source: "resume",
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /\[Persisted subagent reopen\]/);
+      assert.match(additionalContext, /resume_agent\("thread-architect-reopen"\)/);
+      assert.match(additionalContext, /role: architect; lane: plan-review; scope: SessionStart reopen; status: available/);
+      assert.match(additionalContext, /saved subagent ids found: 1/);
+
+      const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8")) as {
+        sessions?: Record<string, { threads?: Record<string, { resume_requested_at?: string }> }>;
+      };
+      assert.match(
+        tracking.sessions?.[sessionId]?.threads?.["thread-architect-reopen"]?.resume_requested_at ?? "",
+        /^\d{4}-\d{2}-\d{2}T/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not suggest duplicate same-role subagent spawns when reopen ids exist", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-no-duplicates-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-reuse-session";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: "codex-leader-reuse", pid: process.pid });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: "codex-leader-reuse",
+            updated_at: "2026-07-09T00:00:00.000Z",
+            threads: {
+              "codex-leader-reuse": {
+                thread_id: "codex-leader-reuse",
+                kind: "leader",
+                first_seen_at: "2026-07-09T00:00:00.000Z",
+                last_seen_at: "2026-07-09T00:00:00.000Z",
+                turn_count: 1,
+              },
+              "thread-critic-reuse": {
+                thread_id: "thread-critic-reuse",
+                kind: "subagent",
+                first_seen_at: "2026-07-09T00:01:00.000Z",
+                last_seen_at: "2026-07-09T00:01:00.000Z",
+                turn_count: 1,
+                role: "critic",
+                lane_id: "risk-review",
+                status: "closed",
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "codex-leader-reuse",
+          source: "startup",
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /resume_agent\("thread-critic-reuse"\)/);
+      assert.match(additionalContext, /avoid duplicate same-type subagent spawns/);
+      assert.match(additionalContext, /do not spawn a new agent solely because reopen failed/);
+      assert.doesNotMatch(additionalContext, /spawn.*critic.*replacement/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces clear warnings for unavailable persisted subagents without spawning replacements", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-warning-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-warning-session";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: "codex-leader-warning", pid: process.pid });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: "codex-leader-warning",
+            updated_at: "2026-07-09T00:00:00.000Z",
+            threads: {
+              "codex-leader-warning": {
+                thread_id: "codex-leader-warning",
+                kind: "leader",
+                first_seen_at: "2026-07-09T00:00:00.000Z",
+                last_seen_at: "2026-07-09T00:00:00.000Z",
+                turn_count: 1,
+              },
+              "thread-executor-unavailable": {
+                thread_id: "thread-executor-unavailable",
+                kind: "subagent",
+                first_seen_at: "2026-07-09T00:01:00.000Z",
+                last_seen_at: "2026-07-09T00:01:00.000Z",
+                turn_count: 1,
+                role: "executor",
+                lane_id: "implementation",
+                status: "unavailable",
+                resume_failed_at: "2026-07-09T00:02:00.000Z",
+                resume_failure_reason: "Codex reported missing thread id",
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "codex-leader-warning",
+          source: "resume",
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /No compatible saved subagent id is currently marked reopenable/);
+      assert.match(additionalContext, /Reopen warnings:/);
+      assert.match(additionalContext, /thread-executor-unavailable/);
+      assert.match(additionalContext, /last failure: Codex reported missing thread id/);
+      assert.doesNotMatch(additionalContext, /resume_agent\("thread-executor-unavailable"\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("preserves canonical OMX session scope when native SessionStart arrives with a different id", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-reconcile-"));
     try {
