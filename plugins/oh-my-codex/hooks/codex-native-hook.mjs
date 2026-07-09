@@ -140,20 +140,29 @@ function writePlainCodexNoop(isStop) {
   process.exitCode = 0;
 }
 
-async function readBoundedStdin() {
+async function readBoundedStdin({ drainOversized = false } = {}) {
   const chunks = [];
   let totalBytes = 0;
+  let storedBytes = 0;
+  let oversized = false;
   for await (const rawChunk of process.stdin) {
     const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
     totalBytes += chunk.length;
-    if (totalBytes > MAX_WRAPPER_STDIN_BYTES) {
-      const remaining = MAX_WRAPPER_STDIN_BYTES - Buffer.concat(chunks).length;
+
+    if (oversized) continue;
+
+    const remaining = MAX_WRAPPER_STDIN_BYTES - storedBytes;
+    if (chunk.length > remaining) {
       if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
-      return { input: Buffer.concat(chunks), oversized: true, totalBytes };
+      storedBytes += Math.max(remaining, 0);
+      oversized = true;
+      if (!drainOversized) return { input: Buffer.concat(chunks), oversized: true, totalBytes };
+      continue;
     }
     chunks.push(chunk);
+    storedBytes += chunk.length;
   }
-  return { input: Buffer.concat(chunks), oversized: false, totalBytes };
+  return { input: Buffer.concat(chunks), oversized, totalBytes };
 }
 
 function stopFallbackOutput(stopReason, detail) {
@@ -365,11 +374,12 @@ function parseSingleJsonObjectOutput(raw) {
 }
 
 async function main() {
-  const { input, oversized, totalBytes } = await readBoundedStdin();
+  const launchedByOmx = isOmxLauncherSession();
+  const { input, oversized, totalBytes } = await readBoundedStdin({ drainOversized: !launchedByOmx });
   const isStop = detectStopHookInput(input);
   const isCompact = detectCompactHookInput(input);
 
-  if (!isOmxLauncherSession()) {
+  if (!launchedByOmx) {
     writePlainCodexNoop(isStop);
     return;
   }

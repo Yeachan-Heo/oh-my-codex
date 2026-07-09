@@ -509,6 +509,41 @@ describe('official Codex plugin layout', () => {
       assert.equal(stop.status, 0, stop.stderr || stop.stdout);
       assert.deepEqual(parseSingleJsonStdout(stop.stdout), {});
       await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
+      const oversizedUserPrompt = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'x'.repeat(2 * 1024 * 1024),
+        }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(oversizedUserPrompt.error, undefined, oversizedUserPrompt.error?.message ?? '');
+      assert.equal(oversizedUserPrompt.status, 0, oversizedUserPrompt.stderr || oversizedUserPrompt.stdout);
+      assert.equal(oversizedUserPrompt.stdout, '');
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
+      const oversizedStop = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'Stop',
+          session_id: 'plain-codex-oversized-stop',
+          padding: 'x'.repeat(2 * 1024 * 1024),
+        }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(oversizedStop.error, undefined, oversizedStop.error?.message ?? '');
+      assert.equal(oversizedStop.status, 0, oversizedStop.stderr || oversizedStop.stdout);
+      assert.deepEqual(parseSingleJsonStdout(oversizedStop.stdout), {});
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
     });
   });
 
