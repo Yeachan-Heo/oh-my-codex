@@ -70,6 +70,17 @@ Setup-owned trust state is limited to those generated wrapper identities; user h
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 
 
+## PreToolUse: conductor typed-lane recognition
+
+The Main-root Conductor write guard blocks source, package, git, and substantive
+plan/spec/review edits from the leader while allowing workflow metadata writes.
+Delegated performer lanes are exempt only when the event is a known typed role
+and trusted lane provenance exists. Native Codex events may provide that
+provenance either through `source.subagent.thread_spawn.parent_thread_id` or
+through an existing `.omx/state/subagent-tracking.json` entry whose `thread_id`
+is recorded as `kind:"subagent"`. A bare typed role on the leader event is not
+enough to bypass the guard.
+
 ## Document-refresh warning MVP
 
 The native hook adapter includes an agent-only document-refresh warning MVP for
@@ -160,6 +171,12 @@ The approved explicit terminal stop model adds a canonical lifecycle layer for a
 
 Hook readers should prefer explicit lifecycle metadata over assistant-text heuristics when those signals are available.
 During migration, legacy `blocked_on_user` still suppresses continuation, but `cancelled` should be treated as internal legacy/admin compatibility rather than a canonical user-facing outcome.
+
+For `ralplan`, native `PreToolUse` allows only a standalone terminal
+`omx state write` transport for the current session's complete closeout
+(`active:false`, `current_phase:"complete"`). The state backend remains the
+authority for consensus validation and root/session terminalization, so compound
+Bash commands that add any suffix after the closeout command stay blocked.
 
 There is still no distinct native Codex `ask-user-question` hook today. That means `askuserQuestion` classification remains a runtime/fallback responsibility unless a future native hook surface exposes first-class question-stop metadata.
 

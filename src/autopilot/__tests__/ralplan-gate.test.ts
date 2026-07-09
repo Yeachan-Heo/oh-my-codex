@@ -85,6 +85,41 @@ describe('autopilot ralplan gate', () => {
     assert.equal(evidence.source, 'direct-approval');
   });
 
+  it('rejects missing tracker-backed native evidence by default for autopilot ralplan to ultragoal', () => {
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-default-native-required',
+      nextState: {
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'ultragoal',
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            provenance_kind: 'codex_exec',
+            verdict: 'approve',
+            session_id: 'sess-default-native-required',
+            thread_id: 'exec-architect',
+            completed_at: '2026-06-12T10:02:00.000Z',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            provenance_kind: 'codex_exec',
+            verdict: 'approve',
+            session_id: 'sess-default-native-required',
+            thread_id: 'exec-critic',
+            completed_at: '2026-06-12T10:03:00.000Z',
+          },
+        },
+      },
+    });
+
+    assert.equal(decision.allowed, false);
+    assert.match(decision.reason, /tracker-backed native architect and critic lanes/);
+  });
+
   it('accepts fresh valid consensus before stale invalid consensus', () => {
     const evidence = buildRalplanConsensusGateFromSources([
       {
@@ -640,6 +675,128 @@ describe('autopilot ralplan gate', () => {
       const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, currentState: state });
       assert.equal(decision.allowed, true);
       assert.equal(decision.evidence?.blockedReason, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unsupported native evidence even with tracker-backed native consensus', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-unsupported-veto-'));
+    const sessionId = 'sess-autopilot-unsupported-veto';
+    const trackingPath = subagentTrackingPath(cwd);
+    try {
+      await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(trackingPath, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            updated_at: '2026-06-12T10:03:00.000Z',
+            threads: {
+              'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: '2026-06-12T09:59:00.000Z', last_seen_at: '2026-06-12T09:59:00.000Z', turn_count: 1 },
+              'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: '2026-06-12T10:02:00.000Z', last_seen_at: '2026-06-12T10:02:00.000Z', completed_at: '2026-06-12T10:02:00.000Z', turn_count: 1 },
+              'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: '2026-06-12T10:03:00.000Z', last_seen_at: '2026-06-12T10:03:00.000Z', completed_at: '2026-06-12T10:03:00.000Z', turn_count: 1 },
+            },
+          },
+        },
+      }, null, 2));
+
+      const state = {
+        current_phase: 'ralplan',
+        handoff_artifacts: {
+          ralplan: {
+            native_subagent_support: {
+              status: 'unsupported',
+              reason: 'multi_agent_v1_unavailable',
+              source: 'post_tool_failure',
+            },
+          },
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              thread_id: 'thread-architect',
+              completed_at: '2026-06-12T10:02:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              thread_id: 'thread-critic',
+              completed_at: '2026-06-12T10:03:00.000Z',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, currentState: state });
+      assert.equal(decision.allowed, false);
+      assert.match(decision.reason, /terminalize non-clean/);
+      assert.match(buildAutopilotRalplanUltragoalGateError(decision), /blocked\/cancelled\/failed/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects handoff-root unsupported native evidence even with tracker-backed native consensus', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-ralplan-unsupported-root-veto-'));
+    const sessionId = 'sess-autopilot-unsupported-root-veto';
+    const trackingPath = subagentTrackingPath(cwd);
+    try {
+      await mkdir(join(trackingPath, '..'), { recursive: true });
+      await writeFile(trackingPath, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            updated_at: '2026-06-12T10:03:00.000Z',
+            threads: {
+              'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: '2026-06-12T09:59:00.000Z', last_seen_at: '2026-06-12T09:59:00.000Z', turn_count: 1 },
+              'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: '2026-06-12T10:02:00.000Z', last_seen_at: '2026-06-12T10:02:00.000Z', completed_at: '2026-06-12T10:02:00.000Z', turn_count: 1 },
+              'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: '2026-06-12T10:03:00.000Z', last_seen_at: '2026-06-12T10:03:00.000Z', completed_at: '2026-06-12T10:03:00.000Z', turn_count: 1 },
+            },
+          },
+        },
+      }, null, 2));
+
+      const state = {
+        current_phase: 'ralplan',
+        handoff_artifacts: {
+          native_subagent_support: {
+            status: 'unsupported',
+            reason: 'multi_agent_v1_unavailable',
+            source: 'post_tool_failure',
+          },
+          ralplan_consensus_gate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              thread_id: 'thread-architect',
+              completed_at: '2026-06-12T10:02:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              thread_id: 'thread-critic',
+              completed_at: '2026-06-12T10:03:00.000Z',
+            },
+          },
+        },
+      };
+
+      const decision = canAdvanceAutopilotRalplanToUltragoal({ cwd, sessionId, currentState: state });
+      assert.equal(decision.allowed, false);
+      assert.match(decision.reason, /terminalize non-clean/);
+      assert.match(buildAutopilotRalplanUltragoalGateError(decision), /blocked\/cancelled\/failed/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

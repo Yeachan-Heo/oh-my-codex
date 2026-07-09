@@ -1,4 +1,4 @@
-const AUTOPILOT_CHILD_PHASES = [
+export const AUTOPILOT_CHILD_PHASES = [
   'deep-interview',
   'ralplan',
   'ultragoal',

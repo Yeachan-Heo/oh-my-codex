@@ -927,6 +927,63 @@ export function resolveTeamWorkerCliPlan(
   });
 }
 
+export function resolveTeamWorkerCliForResolvedLaunchArgs(
+  workerIndex: number,
+  workerCount: number,
+  resolvedLaunchArgs: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): TeamWorkerCli {
+  if (!Number.isInteger(workerCount) || workerCount < 1) {
+    throw new Error(`workerCount must be >= 1 (got ${workerCount})`);
+  }
+  if (!Number.isInteger(workerIndex) || workerIndex < 1 || workerIndex > workerCount) {
+    throw new Error(`workerIndex must be within 1..${workerCount} (got ${workerIndex})`);
+  }
+
+  const rawMap = String(env.OMX_TEAM_WORKER_CLI_MAP ?? '').trim();
+  const autoCli = resolveTeamWorkerCli(resolvedLaunchArgs, {
+    ...env,
+    OMX_TEAM_WORKER_CLI: 'auto',
+  });
+  const normalizeEntry = (entry: string): TeamWorkerCli | 'auto' | null => {
+    const normalized = entry.trim().toLowerCase();
+    if (normalized === 'auto' || normalized === 'codex' || normalized === 'claude' || normalized === 'gemini') {
+      return normalized;
+    }
+    return null;
+  };
+  const invalidMapError = () => new Error(
+    `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
+      + `Expected comma-separated values: auto|codex|claude|gemini.`,
+  );
+
+  if (rawMap === '') {
+    return resolveTeamWorkerCli(resolvedLaunchArgs, env);
+  }
+
+  const entries = rawMap.split(',').map((part) => part.trim());
+  if (entries.length === 0 || entries.every((part) => part.length === 0)) {
+    throw invalidMapError();
+  }
+  if (entries.some((part) => part.length === 0)) {
+    throw new Error(
+      `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
+        + `Empty entries are not allowed.`,
+    );
+  }
+  if (entries.length !== 1 && entries.length !== workerCount) {
+    throw new Error(
+      `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} length ${entries.length}; `
+        + `expected 1 or ${workerCount} comma-separated values.`,
+    );
+  }
+
+  const entry = entries.length === 1 ? entries[0] as string : entries[workerIndex - 1];
+  const mode = normalizeEntry(entry);
+  if (!mode) throw invalidMapError();
+  return mode === 'auto' ? autoCli : mode;
+}
+
 function shouldGrantExecutionBypassForRole(workerRole?: string): boolean {
   const normalizedRole = workerRole?.trim().toLowerCase();
   if (!normalizedRole) return true;
@@ -1117,7 +1174,7 @@ export function buildWorkerStartupCommand(
   initialPrompt?: string,
   workerRole?: string,
 ): string {
-  const processSpec = buildWorkerProcessLaunchSpec(
+  const processSpec = buildWorkerStartupProcessLaunchSpec(
     teamName,
     workerIndex,
     launchArgs,
@@ -1137,7 +1194,7 @@ export function buildWorkerStartupCommand(
   }
   const resolvedLeaderNodePath = processSpec.env[OMX_LEADER_NODE_PATH_ENV]?.trim() || resolveLeaderNodePath();
   const leaderNodeDir = /[\\/]/.test(resolvedLeaderNodePath)
-    ? resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, '')
+    ? translatePathForMsys(resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, ''))
     : '';
   if (isNativeWindows()) {
     const powershellPath = resolveNativeWindowsPowerShellPath();
@@ -1165,8 +1222,8 @@ export function buildWorkerStartupCommand(
 
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
   const pathPrefix = leaderNodeDir ? `export PATH=${shellQuoteSingle(leaderNodeDir)}:$PATH; ` : '';
-  const quotedArgs = startupArgs.map(shellQuoteSingle).join(' ');
-  const quotedCommand = shellQuoteSingle(processSpec.command);
+  const quotedArgs = startupArgs.map((arg) => shellQuoteSingle(translatePathForMsys(arg))).join(' ');
+  const quotedCommand = shellQuoteSingle(translatePathForMsys(processSpec.command));
   const cliInvocation = quotedArgs.length > 0 ? `exec ${quotedCommand} ${quotedArgs}` : `exec ${quotedCommand}`;
   // Keep worker tmux panes non-interactive and rc-free by default. PR #2283
   // blocked rc sourcing for detached leader/HUD panes, but team workers still
@@ -1199,12 +1256,12 @@ function buildWorkerStartupScriptContent(
 ): string {
   const resolvedLeaderNodePath = processSpec.env[OMX_LEADER_NODE_PATH_ENV]?.trim() || resolveLeaderNodePath();
   const leaderNodeDir = /[\\/]/.test(resolvedLeaderNodePath)
-    ? resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, '')
+    ? translatePathForMsys(resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, ''))
     : '';
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
   const pathPrefix = leaderNodeDir ? `export PATH=${shellQuoteSingle(leaderNodeDir)}:$PATH\n` : '';
-  const quotedArgs = startupArgs.map(shellQuoteSingle).join(' ');
-  const quotedCommand = shellQuoteSingle(processSpec.command);
+  const quotedArgs = startupArgs.map((arg) => shellQuoteSingle(translatePathForMsys(arg))).join(' ');
+  const quotedCommand = shellQuoteSingle(translatePathForMsys(processSpec.command));
   const cliInvocation = quotedArgs.length > 0 ? `exec ${quotedCommand} ${quotedArgs}` : `exec ${quotedCommand}`;
   const rcPrefix = shouldSourceTeamWorkerShellRc({ ...process.env, ...extraEnv }) && launchSpec.rcFile
     ? `if [ -f ${launchSpec.rcFile} ]; then . ${launchSpec.rcFile}; fi\n`
@@ -1220,7 +1277,7 @@ function buildWorkerStartupScriptContent(
     '#!/bin/sh',
     'set -eu',
     `unset ${OMX_TMUX_HUD_OWNER_ENV} ${OMX_TMUX_HUD_LEADER_PANE_ENV}`,
-    `cd ${shellQuoteSingle(cwd)}`,
+    `cd ${shellQuoteSingle(translatePathForMsys(cwd))}`,
     envExports,
     `exec ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(`${rcPrefix}${pathPrefix}${cliInvocation}`)}`,
     '',
@@ -1237,11 +1294,11 @@ export function writeWorkerStartupScriptCommand(
   initialPrompt?: string,
   workerRole?: string,
 ): string | null {
-  if (process.platform === 'win32') return null;
+  if (process.platform === 'win32' && !isMsysOrGitBash()) return null;
   const stateRoot = extraEnv[OMX_TEAM_STATE_ROOT_ENV]?.trim();
   if (!stateRoot) return null;
 
-  const processSpec = buildWorkerProcessLaunchSpec(
+  const processSpec = buildWorkerStartupProcessLaunchSpec(
     teamName,
     workerIndex,
     launchArgs,
@@ -1264,10 +1321,59 @@ export function writeWorkerStartupScriptCommand(
   mkdirSync(dirname(scriptPath), { recursive: true });
   writeFileSync(scriptPath, buildWorkerStartupScriptContent(processSpec, startupEnv, startupArgs, cwd, extraEnv), 'utf-8');
   chmodSync(scriptPath, 0o700);
-  return `exec /bin/sh ${shellQuoteSingle(scriptPath)}`;
+  return `exec /bin/sh ${shellQuoteSingle(translatePathForMsys(scriptPath))}`;
 }
 
+type WorkerProcessLaunchMode = 'direct-spawn' | 'posix-startup-script';
+
 export function buildWorkerProcessLaunchSpec(
+  teamName: string,
+  workerIndex: number,
+  launchArgs: string[] = [],
+  cwd: string = process.cwd(),
+  extraEnv: Record<string, string> = {},
+  workerCliOverride?: TeamWorkerCli,
+  initialPrompt?: string,
+  workerRole?: string,
+): WorkerProcessLaunchSpec {
+  return buildWorkerProcessLaunchSpecForMode(
+    'direct-spawn',
+    teamName,
+    workerIndex,
+    launchArgs,
+    cwd,
+    extraEnv,
+    workerCliOverride,
+    initialPrompt,
+    workerRole,
+  );
+}
+
+function buildWorkerStartupProcessLaunchSpec(
+  teamName: string,
+  workerIndex: number,
+  launchArgs: string[] = [],
+  cwd: string = process.cwd(),
+  extraEnv: Record<string, string> = {},
+  workerCliOverride?: TeamWorkerCli,
+  initialPrompt?: string,
+  workerRole?: string,
+): WorkerProcessLaunchSpec {
+  return buildWorkerProcessLaunchSpecForMode(
+    'posix-startup-script',
+    teamName,
+    workerIndex,
+    launchArgs,
+    cwd,
+    extraEnv,
+    workerCliOverride,
+    initialPrompt,
+    workerRole,
+  );
+}
+
+function buildWorkerProcessLaunchSpecForMode(
+  mode: WorkerProcessLaunchMode,
   teamName: string,
   workerIndex: number,
   launchArgs: string[] = [],
@@ -1297,9 +1403,11 @@ export function buildWorkerProcessLaunchSpec(
     : undefined;
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
-  const platformSpec = isNativeWindows()
+  const shouldUseNativeWindowsLaunchSpec = process.platform === 'win32'
+    && (mode === 'direct-spawn' || !isMsysOrGitBash(effectiveEnv, process.platform));
+  const platformSpec = shouldUseNativeWindowsLaunchSpec
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
-    : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
+    : { command: resolvedCliPath, args: effectiveCliLaunchArgs, resolvedPath: resolvedCliPath };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;
   const modelProviderOverride = workerCli === 'codex'
     ? extractModelProviderOverrideValue(effectiveCliLaunchArgs)

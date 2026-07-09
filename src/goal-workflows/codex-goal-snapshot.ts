@@ -164,7 +164,7 @@ export function reconcileCodexGoalSnapshot(
     const diagnostic = effectiveSnapshot.unavailableReason === 'db_schema_context_error'
       ? ' Codex goal state is unavailable due to a DB/schema/context error; this is distinct from a normal missing or incomplete goal.'
       : '';
-    const message = `Codex goal snapshot is absent or reports no active goal; call get_goal and pass its JSON with --codex-goal-json.${diagnostic}${detail}`;
+    const message = `Codex goal snapshot is absent or reports no active goal/null; call get_goal and pass its JSON with --codex-goal-json. If get_goal reports no active goal/null while OMX still has in-progress workflow state, call create_goal with the intended workflow objective before checkpointing; do not mark complete from OMX state alone.${diagnostic}${detail}`;
     if (options.requireSnapshot) errors.push(message);
     else warnings.push(message);
     return { ok: errors.length === 0, snapshot: effectiveSnapshot, warnings, errors };

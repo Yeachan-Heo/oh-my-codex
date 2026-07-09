@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -314,6 +314,67 @@ printf 'fake-codex:%s\n' "$*"
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('keeps direct madmax worktree launches bound to the boxed run root', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-worktree-root-'));
+    try {
+      const repo = await createGitRepo(wd);
+      const runs = join(wd, 'runs');
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeExecutable(
+        join(fakeBin, 'codex'),
+        `#!/bin/sh
+printf 'fake-codex-pwd:%s\n' "$PWD"
+printf 'fake-codex-omx-root:%s\n' "$OMX_ROOT"
+printf 'fake-codex-box:%s\n' "$OMXBOX_ACTIVE"
+printf 'fake-codex-source:%s\n' "$OMX_SOURCE_CWD"
+printf 'fake-codex-context:%s\n' "$OMX_MADMAX_DETACHED_CONTEXT"
+printf 'fake-codex:%s\n' "$*"
+`,
+      );
+      await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+
+      const result = runOmx(repo, ['--direct', '--madmax', '--worktree', '--version'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_RUNS_DIR: runs,
+        OMX_ROOT: '',
+        OMX_STATE_ROOT: '',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const worktreePath = join(dirname(repo), `${basename(repo)}.omx-worktrees`, 'launch-detached');
+      const normalizedStdout = normalizeDarwinTmpPath(result.stdout);
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(
+        normalizedStdout,
+        new RegExp(`fake-codex-pwd:${escapeRegExp(normalizeDarwinTmpPath(worktreePath))}`),
+      );
+      const rootMatch = normalizedStdout.match(/fake-codex-omx-root:(.*)/);
+      assert.ok(rootMatch, normalizedStdout);
+      const boxedRoot = rootMatch[1];
+      assert.match(boxedRoot, new RegExp(`^${escapeRegExp(normalizeDarwinTmpPath(runs))}/run-`));
+      assert.notEqual(boxedRoot, normalizeDarwinTmpPath(repo));
+      assert.notEqual(boxedRoot, normalizeDarwinTmpPath(worktreePath));
+      assert.match(normalizedStdout, /fake-codex-box:1/);
+      assert.match(
+        normalizedStdout,
+        new RegExp(`fake-codex-source:${escapeRegExp(normalizeDarwinTmpPath(repo))}`),
+      );
+      assert.match(normalizedStdout, /fake-codex-context:[0-9a-f]{32}/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Hermes MCP tmux bridge launch', () => {
@@ -484,6 +545,95 @@ exit 0
       assert.match(activeRecords, /"tmux_session_name"/);
       assert.match(activeRecords, /"session_id"/);
       assert.match(activeRecords, /"tmux_pane_id": "%12"/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('records boxed runtime identity for detached madmax worktree launches', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-worktree-detached-'));
+    try {
+      const repo = await createGitRepo(wd);
+      const runs = join(wd, 'runs');
+      const instanceMarker = join(wd, 'active-instance');
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (logPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${logPath}"
+case "$1" in
+  -V)
+    printf 'tmux 3.4\n'
+    exit 0
+    ;;
+  has-session)
+    exit 1
+    ;;
+  new-session)
+    printf '%%77\n'
+    exit 0
+    ;;
+  split-window)
+    printf '%%78\n'
+    exit 0
+    ;;
+  display-message)
+    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\n'
+    elif [ "$2" = '-p' ] && [ "$5" = '#{session_name}' ]; then
+      printf 'detached-session\n'
+    elif [ "$2" = '-p' ] && [ "$5" = '#{session_attached}' ]; then
+      printf '1\n'
+    else
+      printf '0\n'
+    fi
+    exit 0
+    ;;
+  show-options)
+    if [ "$5" = '@omx_instance_id' ] && [ -f "${instanceMarker}" ]; then
+      cat "${instanceMarker}"
+      exit 0
+    fi
+    printf 'off\n'
+    exit 0
+    ;;
+  set-option)
+    if [ "$4" = '@omx_instance_id' ]; then
+      printf '%s\n' "$5" > "${instanceMarker}"
+    fi
+    exit 0
+    ;;
+  set-hook|attach-session|kill-session|run-shell|resize-pane)
+    exit 0
+    ;;
+esac
+exit 0
+`,
+      );
+
+      const result = runOmx(repo, ['--madmax', '--worktree', '--tmux'], {
+        ...env,
+        OMX_RUNS_DIR: runs,
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+
+      const activeFiles = await readdir(join(runs, 'active-detached'));
+      assert.equal(activeFiles.length, 1);
+      const activeRecord = JSON.parse(await readFile(join(runs, 'active-detached', activeFiles[0]), 'utf-8'));
+      const worktreePath = join(dirname(repo), `${basename(repo)}.omx-worktrees`, 'launch-detached');
+      assert.match(activeRecord.run_dir, new RegExp(`^${escapeRegExp(normalizeDarwinTmpPath(runs))}/run-`));
+      assert.equal(normalizeDarwinTmpPath(activeRecord.source_cwd), normalizeDarwinTmpPath(repo));
+      assert.equal(normalizeDarwinTmpPath(activeRecord.worktree_cwd), normalizeDarwinTmpPath(worktreePath));
+      assert.equal(activeRecord.session_id.startsWith('omx-'), true);
+      assert.equal(activeRecord.tmux_pane_id, '%77');
+
+      const tmuxLog = normalizeDarwinTmpPath(await readFile(tmuxLogPath, 'utf-8'));
+      assert.match(tmuxLog, new RegExp(`-e OMX_ROOT=${escapeRegExp(normalizeDarwinTmpPath(activeRecord.run_dir))}`));
+      assert.match(tmuxLog, /-e OMXBOX_ACTIVE=1/);
+      assert.match(tmuxLog, new RegExp(`-e OMX_SOURCE_CWD=${escapeRegExp(normalizeDarwinTmpPath(repo))}`));
+      assert.match(tmuxLog, new RegExp(`-e OMX_MADMAX_DETACHED_CONTEXT=${escapeRegExp(activeRecord.context_key)}`));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

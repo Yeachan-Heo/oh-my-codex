@@ -141,7 +141,7 @@ These overrides do not change built-in defaults in source. They are user/project
 For a named role, effective model precedence is:
 
 1. `.omx-config.json` `agentModels[role]`
-2. Built-in `exactModel` pins, such as planner/architect/researcher `gpt-5.4-mini`
+2. Built-in `exactModel` pins, such as planner/architect `gpt-5.5` or researcher `gpt-5.4-mini`
 3. Special role logic, such as `executor` using the main/frontier lane
 4. `modelClass` routing: `fast` uses spark/low-complexity, `frontier` uses main/frontier, and `standard` uses the standard lane
 
@@ -216,7 +216,7 @@ Examples:
 
 | Role/category | Examples | Model class behavior |
 | --- | --- | --- |
-| Exact mini planning/research | `planner`, `architect`, `researcher` | Uses the exact `gpt-5.4-mini` pin before model-class routing unless `agentModels[role]` is set; planner/architect keep `frontier-orchestrator` posture and high reasoning, while ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
+| Exact planning/research pins | `planner`, `architect`, `researcher` | Uses the built-in `exactModel` pin before model-class routing unless `agentModels[role]` is set; planner uses exact `gpt-5.5` with medium reasoning, architect uses exact `gpt-5.5` with xhigh reasoning, and researcher stays on exact `gpt-5.4-mini`. Ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
 | Frontier orchestration | `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback. |
 | Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
@@ -287,7 +287,7 @@ This keeps standard agents inheriting the frontier model by omitting `OMX_DEFAUL
     "explore": "gpt-5.5"
   },
   "agentReasoning": {
-    "planner": "high",
+    "planner": "medium",
     "architect": "xhigh",
     "researcher": "high",
     "explore": "medium",

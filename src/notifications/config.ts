@@ -244,6 +244,58 @@ function mergeEnvIntoFileConfig(
   return merged;
 }
 
+function applyDiscordMentionFallback<
+  T extends DiscordNotificationConfig | DiscordBotNotificationConfig,
+>(platformConfig: T | undefined, envMention: string): T | undefined {
+  if (!platformConfig || platformConfig.mention !== undefined) return platformConfig;
+  return { ...platformConfig, mention: envMention };
+}
+
+function applyEnvDiscordMention(config: FullNotificationConfig): FullNotificationConfig {
+  const envMention = validateMention(process.env.OMX_DISCORD_MENTION);
+  if (!envMention) return config;
+
+  let patched: FullNotificationConfig | undefined;
+  const ensurePatched = (): FullNotificationConfig => {
+    patched = patched ?? { ...config };
+    return patched;
+  };
+
+  const discordBot = applyDiscordMentionFallback(config["discord-bot"], envMention);
+  if (discordBot !== config["discord-bot"]) {
+    ensurePatched()["discord-bot"] = discordBot;
+  }
+
+  const discord = applyDiscordMentionFallback(config.discord, envMention);
+  if (discord !== config.discord) {
+    ensurePatched().discord = discord;
+  }
+
+  if (config.events) {
+    for (const [event, eventConfig] of Object.entries(config.events)) {
+      const eventDiscordBot = applyDiscordMentionFallback(
+        eventConfig["discord-bot"],
+        envMention,
+      );
+      const eventDiscord = applyDiscordMentionFallback(eventConfig.discord, envMention);
+      if (
+        eventDiscordBot !== eventConfig["discord-bot"]
+        || eventDiscord !== eventConfig.discord
+      ) {
+        const nextConfig = ensurePatched();
+        nextConfig.events = nextConfig.events ?? { ...config.events };
+        nextConfig.events[event as NotificationEvent] = {
+          ...eventConfig,
+          "discord-bot": eventDiscordBot,
+          discord: eventDiscord,
+        };
+      }
+    }
+  }
+
+  return patched ?? config;
+}
+
 /**
  * Resolve a named profile from the notifications block.
  *
@@ -388,7 +440,9 @@ export function getNotificationConfig(
         const merged = envConfig
           ? mergeEnvIntoFileConfig(profileConfig, envConfig)
           : profileConfig;
-        return applyHookConfigIfPresent(normalizeCustomTransportGate(merged));
+        return applyHookConfigIfPresent(
+          normalizeCustomTransportGate(applyEnvDiscordMention(merged)),
+        );
       }
 
       // Fall back to flat config (backward compatible)
@@ -396,23 +450,12 @@ export function getNotificationConfig(
         return null;
       }
       const envConfig = buildConfigFromEnv();
-      if (envConfig) {
-        return applyHookConfigIfPresent(
-          normalizeCustomTransportGate(mergeEnvIntoFileConfig(notifications, envConfig)),
-        );
-      }
-      const envMention = validateMention(process.env.OMX_DISCORD_MENTION);
-      if (envMention) {
-        const patched = { ...notifications };
-        if (patched["discord-bot"] && patched["discord-bot"].mention === undefined) {
-          patched["discord-bot"] = { ...patched["discord-bot"], mention: envMention };
-        }
-        if (patched.discord && patched.discord.mention === undefined) {
-          patched.discord = { ...patched.discord, mention: envMention };
-        }
-        return applyHookConfigIfPresent(normalizeCustomTransportGate(patched));
-      }
-      return applyHookConfigIfPresent(normalizeCustomTransportGate(notifications));
+      const merged = envConfig
+        ? mergeEnvIntoFileConfig(notifications, envConfig)
+        : notifications;
+      return applyHookConfigIfPresent(
+        normalizeCustomTransportGate(applyEnvDiscordMention(merged)),
+      );
     }
   }
 
@@ -532,6 +575,30 @@ export function isEventEnabled(
   );
 }
 
+export function getEffectiveNotificationPlatformConfig<T>(
+  platform: NotificationPlatform,
+  config: FullNotificationConfig,
+  event: NotificationEvent,
+): T | undefined {
+  const topLevel = config[platform as keyof FullNotificationConfig] as
+    | T
+    | undefined;
+  const eventConfig = config.events?.[event];
+  const eventPlatform = eventConfig?.[platform as keyof EventNotificationConfig];
+
+  if (
+    eventPlatform &&
+    typeof eventPlatform === "object" &&
+    "enabled" in eventPlatform
+  ) {
+    return topLevel
+      ? ({ ...topLevel, ...eventPlatform } as T)
+      : (eventPlatform as T);
+  }
+
+  return topLevel;
+}
+
 export function getEnabledPlatforms(
   config: FullNotificationConfig,
   event: NotificationEvent,
@@ -595,17 +662,13 @@ function getEnabledReplyPlatformConfig<T extends { enabled: boolean }>(
   }
 
   for (const event of REPLY_PLATFORM_EVENTS) {
-    const eventConfig = config.events?.[event];
-    const eventPlatform =
-      eventConfig?.[platform as keyof EventNotificationConfig];
-
-    if (
-      eventPlatform &&
-      typeof eventPlatform === "object" &&
-      "enabled" in eventPlatform &&
-      (eventPlatform as { enabled: boolean }).enabled
-    ) {
-      return eventPlatform as T;
+    const eventPlatform = getEffectiveNotificationPlatformConfig<T>(
+      platform,
+      config,
+      event,
+    );
+    if (eventPlatform?.enabled) {
+      return eventPlatform;
     }
   }
 

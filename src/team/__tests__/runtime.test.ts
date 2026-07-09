@@ -36,6 +36,7 @@ import {
   sendWorkerMessage,
   applyCreatedInteractiveSessionToConfig,
   resolveWorkerLaunchArgsFromEnv,
+  resolveTeamWorkerCliForResolvedLaunchArgs,
   shouldPrekillInteractiveShutdownProcessTrees,
   waitForWorkerStartupEvidence,
   waitForClaudeStartupEvidence,
@@ -44,7 +45,11 @@ import {
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   type TeamRuntime,
 } from '../runtime.js';
-import { resolveAgentReasoningEffort, resolveTeamLowComplexityDefaultModel } from '../model-contract.js';
+import {
+  resolveAgentReasoningEffort,
+  resolveTeamLowComplexityDefaultModel,
+  TEAM_WORKER_INHERITED_MODEL_ENV,
+} from '../model-contract.js';
 import { readTeamEvents } from '../state/events.js';
 import { sanitizeTeamName } from '../tmux-session.js';
 import { buildInternalTeamName, resolveTeamIdentityScope } from '../team-identity.js';
@@ -608,6 +613,71 @@ describe('runtime', () => {
     });
   });
 
+  it('resolveWorkerLaunchArgsFromEnv keeps planner on exact gpt-5.5 medium when inherited leader is mini', () => {
+    withIsolatedDefaultModelEnv(() => {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        {
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini',
+          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'gpt-5.4-mini',
+        },
+        'planner',
+        undefined,
+        resolveAgentReasoningEffort('planner'),
+        'codex',
+      );
+      assert.deepEqual(args, [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-c',
+        'model_reasoning_effort="medium"',
+        '--model',
+        'gpt-5.5',
+      ]);
+    });
+  });
+
+  it('resolveTeamWorkerCliForResolvedLaunchArgs derives auto CLI from exact-model resolved launch args', () => {
+    withIsolatedDefaultModelEnv(() => {
+      const resolvedLaunchArgs = resolveWorkerLaunchArgsFromEnv(
+        {
+          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'claude-sonnet-4-6',
+        },
+        'planner',
+        'claude-sonnet-4-6',
+        resolveAgentReasoningEffort('planner'),
+        'codex',
+      );
+      const workerCli = resolveTeamWorkerCliForResolvedLaunchArgs(
+        1,
+        1,
+        resolvedLaunchArgs,
+        { OMX_TEAM_WORKER_CLI_MAP: 'auto' },
+      );
+      assert.equal(workerCli, 'codex');
+    });
+  });
+
+  it('resolveWorkerLaunchArgsFromEnv honors inherited leader model from the dedicated env path', () => {
+    withIsolatedDefaultModelEnv(() => {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        {
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini',
+          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'gpt-5.4-mini',
+        },
+        'planner',
+        undefined,
+        resolveAgentReasoningEffort('planner'),
+        'codex',
+      );
+      assert.deepEqual(args, [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-c',
+        'model_reasoning_effort="medium"',
+        '--model',
+        'gpt-5.5',
+      ]);
+    });
+  });
+
   it('resolveWorkerLaunchArgsFromEnv treats *-low aliases as low complexity', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
@@ -624,6 +694,19 @@ describe('runtime', () => {
     assert.deepEqual(
       resolveWorkerLaunchArgsFromEnv({ OMX_TEAM_WORKER_LAUNCH_ARGS: '--model=gpt-5.3' }, 'explore'),
       ['--model', 'gpt-5.3'],
+    );
+  });
+
+  it('resolveWorkerLaunchArgsFromEnv preserves explicit env model before planner exact model', () => {
+    assert.deepEqual(
+      resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--model explicit-worker-model' },
+        'planner',
+        'gpt-5.4-mini',
+        'high',
+        'codex',
+      ),
+      ['-c', 'model_reasoning_effort="high"', '--model', 'explicit-worker-model'],
     );
   });
 

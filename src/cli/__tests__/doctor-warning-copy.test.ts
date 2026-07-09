@@ -622,6 +622,12 @@ command = "node"
 					`Skills: plugin marketplace oh-my-codex-local is registered, but installed Codex plugin cache manifest version 0\\.0\\.0-stale does not match packaged version ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
 				),
 			);
+			assert.match(
+				res.stdout,
+				new RegExp(
+					`Plugin versions: expected cache directory .*${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not materialized with packaged plugin manifest version ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; run "omx setup --plugin --force" to refresh the plugin cache`,
+				),
+			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
@@ -658,6 +664,10 @@ command = "node"
 			assert.match(
 				res.stdout,
 				/Skills: plugin marketplace oh-my-codex-local is registered, but no installed Codex plugin cache was found; run "omx setup --plugin --force" so \/skills can discover OMX plugin skills/,
+			);
+			assert.match(
+				res.stdout,
+				/Plugin versions: expected cache directory .* is not materialized with packaged plugin manifest version .*; run "omx setup --plugin --force" to refresh the plugin cache/,
 			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });

@@ -286,6 +286,191 @@ describe('ralplan consensus gate state roots', () => {
     }
   });
 
+  it('accepts ordered native reviews when runtime tracker lags but workspace tracker has completion evidence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-runtime-lag-'));
+    const boxedRoot = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-runtime-root-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const previousOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const sessionId = 'sess-runtime-lag-consensus';
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      process.env.OMX_STATE_ROOT = boxedRoot;
+      const runtimeStateDir = getBaseStateDir(cwd);
+      const runtimeSessionDir = join(runtimeStateDir, 'sessions', sessionId);
+      const workspaceStateDir = join(cwd, '.omx', 'state');
+      const workspaceSessionDir = join(workspaceStateDir, 'sessions', sessionId);
+      await mkdir(runtimeSessionDir, { recursive: true });
+      await mkdir(workspaceSessionDir, { recursive: true });
+      await writeFile(join(runtimeStateDir, 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        native_session_id: 'thread-leader',
+        cwd,
+      }, null, 2));
+      const laggingTracker = {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            updated_at: '2026-07-07T04:31:00.000Z',
+            threads: {
+              'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: '2026-07-07T04:29:00.000Z', last_seen_at: '2026-07-07T04:29:00.000Z', turn_count: 1 },
+              'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: '2026-07-07T04:30:00.000Z', last_seen_at: '2026-07-07T04:30:00.000Z', turn_count: 1 },
+              'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: '2026-07-07T04:31:00.000Z', last_seen_at: '2026-07-07T04:31:00.000Z', turn_count: 1 },
+            },
+          },
+        },
+      };
+      const completedTracker = {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            updated_at: '2026-07-07T04:33:00.000Z',
+            threads: {
+              'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: '2026-07-07T04:29:00.000Z', last_seen_at: '2026-07-07T04:29:00.000Z', turn_count: 1 },
+              'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: '2026-07-07T04:30:00.000Z', last_seen_at: '2026-07-07T04:30:00.000Z', completed_at: '2026-07-07T04:30:00.000Z', turn_count: 1 },
+              'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: '2026-07-07T04:31:00.000Z', last_seen_at: '2026-07-07T04:31:00.000Z', completed_at: '2026-07-07T04:31:00.000Z', turn_count: 1 },
+            },
+          },
+        },
+      };
+      await writeFile(subagentTrackingPath(cwd), JSON.stringify(laggingTracker, null, 2));
+      await writeFile(join(workspaceStateDir, 'subagent-tracking.json'), JSON.stringify(completedTracker, null, 2));
+      await writeFile(join(runtimeSessionDir, 'ralplan-state.json'), JSON.stringify({
+        active: false,
+        current_phase: 'complete',
+        planning_complete: true,
+        latest_plan_path: '.omx/plans/prd-clickstack-otel-consumer-20260707T043000Z.md',
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            verdict: 'approve',
+            session_id: sessionId,
+            thread_id: 'thread-architect',
+            tracker_path: '.omx/state/subagent-tracking.json',
+            completed_at: '2026-07-07T04:30:00.000Z',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            verdict: 'approve',
+            session_id: sessionId,
+            thread_id: 'thread-critic',
+            tracker_path: '.omx/state/subagent-tracking.json',
+            completed_at: '2026-07-07T04:31:00.000Z',
+          },
+        },
+      }, null, 2));
+
+      const gate = buildRalplanConsensusGateForCwd(cwd, {
+        sessionId,
+        requireNativeSubagents: true,
+      });
+
+      assert.equal(gate.complete, true);
+      assert.equal(gate.blockedReason, null);
+    } finally {
+      if (typeof previousOmxRoot === 'string') process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof previousOmxStateRoot === 'string') process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      else delete process.env.OMX_STATE_ROOT;
+      if (typeof previousOmxTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousOmxTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(boxedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects runtime tracker lag when workspace tracker also lacks completion evidence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-runtime-lag-incomplete-'));
+    const boxedRoot = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-runtime-incomplete-root-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const previousOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const sessionId = 'sess-runtime-lag-incomplete-consensus';
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      process.env.OMX_STATE_ROOT = boxedRoot;
+      const runtimeStateDir = getBaseStateDir(cwd);
+      const runtimeSessionDir = join(runtimeStateDir, 'sessions', sessionId);
+      const workspaceStateDir = join(cwd, '.omx', 'state');
+      await mkdir(runtimeSessionDir, { recursive: true });
+      await mkdir(workspaceStateDir, { recursive: true });
+      await writeFile(join(runtimeStateDir, 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        native_session_id: 'thread-leader',
+        cwd,
+      }, null, 2));
+      const incompleteTracker = {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: 'thread-leader',
+            updated_at: '2026-07-07T04:31:00.000Z',
+            threads: {
+              'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: '2026-07-07T04:29:00.000Z', last_seen_at: '2026-07-07T04:29:00.000Z', turn_count: 1 },
+              'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: '2026-07-07T04:30:00.000Z', last_seen_at: '2026-07-07T04:30:00.000Z', turn_count: 1 },
+              'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: '2026-07-07T04:31:00.000Z', last_seen_at: '2026-07-07T04:31:00.000Z', turn_count: 1 },
+            },
+          },
+        },
+      };
+      await writeFile(subagentTrackingPath(cwd), JSON.stringify(incompleteTracker, null, 2));
+      await writeFile(join(workspaceStateDir, 'subagent-tracking.json'), JSON.stringify(incompleteTracker, null, 2));
+      await writeFile(join(runtimeSessionDir, 'ralplan-state.json'), JSON.stringify({
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: {
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            verdict: 'approve',
+            session_id: sessionId,
+            thread_id: 'thread-architect',
+            tracker_path: '.omx/state/subagent-tracking.json',
+            completed_at: '2026-07-07T04:30:00.000Z',
+          },
+          ralplan_critic_review: {
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            verdict: 'approve',
+            session_id: sessionId,
+            thread_id: 'thread-critic',
+            tracker_path: '.omx/state/subagent-tracking.json',
+            completed_at: '2026-07-07T04:31:00.000Z',
+          },
+        },
+      }, null, 2));
+
+      const gate = buildRalplanConsensusGateForCwd(cwd, {
+        sessionId,
+        requireNativeSubagents: true,
+      });
+
+      assert.equal(gate.complete, false);
+      assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /thread-architect is not completed/);
+    } finally {
+      if (typeof previousOmxRoot === 'string') process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof previousOmxStateRoot === 'string') process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      else delete process.env.OMX_STATE_ROOT;
+      if (typeof previousOmxTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousOmxTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(boxedRoot, { recursive: true, force: true });
+    }
+  });
+
   it('accepts session-scoped tracker-backed reviews without an explicit sessionId option', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-discovered-session-'));
     const boxedRoot = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-discovered-root-'));

@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, unlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
-import { omxStateDir } from '../utils/paths.js';
+import { getBaseStateDir } from '../mcp/state-paths.js';
 import { isTerminalRunOutcome, normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import {
   assertWorkflowTransitionAllowed,
@@ -16,6 +16,7 @@ export const CANONICAL_WORKFLOW_SKILLS = [
   'autopilot',
   'autoresearch',
   'team',
+  'ultragoal',
   'ralph',
   'ultrawork',
   'ultraqa',
@@ -166,7 +167,7 @@ function sanitizeWriterBaseForSession(
   return inherited;
 }
 
-function isTerminalSkillActivePhase(phase: unknown): boolean {
+export function isTerminalSkillActivePhase(phase: unknown): boolean {
   const normalized = safeString(phase).trim().toLowerCase();
   if (!normalized) return false;
   if (normalized === 'cleared') return true;
@@ -175,7 +176,7 @@ function isTerminalSkillActivePhase(phase: unknown): boolean {
   return Boolean(normalizeTerminalLifecycleOutcome(normalized).outcome);
 }
 
-function isTerminalSkillActiveState(state: SkillActiveStateLike): boolean {
+export function isTerminalSkillActiveState(state: SkillActiveStateLike): boolean {
   if (state.active === false) return true;
   if (isTerminalSkillActivePhase(state.phase)) return true;
   if (safeString(state.completed_at).trim().length > 0) return true;
@@ -185,7 +186,7 @@ function isTerminalSkillActiveState(state: SkillActiveStateLike): boolean {
   return Boolean(lifecycleOutcome);
 }
 
-function clearTerminalSkillActiveMarkers<T extends SkillActiveStateLike>(state: T): T {
+export function clearTerminalSkillActiveMarkers<T extends SkillActiveStateLike>(state: T): T {
   const next = { ...state };
   if (isTerminalSkillActivePhase(next.phase)) delete next.phase;
   delete next.completed_at;
@@ -193,6 +194,7 @@ function clearTerminalSkillActiveMarkers<T extends SkillActiveStateLike>(state: 
   delete next.run_outcome;
   delete next.lifecycle_outcome;
   delete next.terminal_outcome;
+  delete next.terminal_reason;
   return next;
 }
 
@@ -257,7 +259,7 @@ export function getSkillActiveStatePaths(cwd: string, sessionId?: string): {
   rootPath: string;
   sessionPath?: string;
 } {
-  return getSkillActiveStatePathsForStateDir(omxStateDir(cwd), sessionId);
+  return getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd), sessionId);
 }
 
 export function getSkillActiveStatePathsForStateDir(stateDir: string, sessionId?: string): {
@@ -356,7 +358,7 @@ export function tracksCanonicalWorkflowSkill(mode: string): mode is CanonicalWor
 export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkillStateOptions): Promise<void> {
   const {
     cwd,
-    baseStateDir = omxStateDir(cwd),
+    baseStateDir = getBaseStateDir(cwd),
     mode,
     active,
     currentPhase,

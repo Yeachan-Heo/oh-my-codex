@@ -52,6 +52,18 @@ describe('codex goal snapshot reconciliation', () => {
     assert.match(required.errors.join('\n'), /call get_goal/);
   });
 
+  it('treats get_goal null as no active goal without permitting completion', () => {
+    const required = reconcileCodexGoalSnapshot(
+      parseCodexGoalSnapshot({ goal: null }),
+      { expectedObjective: 'Ship', requireSnapshot: true, requireComplete: true },
+    );
+
+    assert.equal(required.ok, false);
+    assert.match(required.errors.join('\n'), /no active goal\/null/);
+    assert.match(required.errors.join('\n'), /call create_goal/);
+    assert.match(required.errors.join('\n'), /do not mark complete from OMX state alone/);
+  });
+
   it('keeps required reconciliation strict when get_goal is unavailable', () => {
     const result = reconcileCodexGoalSnapshot(
       parseCodexGoalSnapshot({ error: 'SqliteError: no such table: thread_goals' }),

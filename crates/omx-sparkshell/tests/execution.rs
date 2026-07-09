@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,12 +14,18 @@ fn sparkshell_bin() -> &'static str {
 }
 
 fn unique_temp_dir(name: &str) -> PathBuf {
+    // Tests run as parallel threads inside a single process, so the process id
+    // is shared and a coarse clock can hand two threads the same nanos value.
+    // A per-process monotonic counter guarantees each call gets a distinct path
+    // (and thus a distinct OMX_TEAM_STATE_ROOT) with no cross-test collisions.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = env::temp_dir().join(format!(
-        "omx-sparkshell-{name}-{nanos}-{}",
+        "omx-sparkshell-{name}-{nanos}-{}-{seq}",
         std::process::id()
     ));
     fs::create_dir_all(&path).expect("temp dir");

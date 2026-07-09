@@ -21,7 +21,10 @@ import type {
   NotificationEvent,
 } from "./types.js";
 
-import { parseMentionAllowedMentions } from "./config.js";
+import {
+  getEffectiveNotificationPlatformConfig,
+  parseMentionAllowedMentions,
+} from "./config.js";
 
 const SEND_TIMEOUT_MS = 10_000;
 const DISPATCH_TIMEOUT_MS = 15_000;
@@ -382,25 +385,6 @@ export async function sendWebhook(
   }
 }
 
-function getEffectivePlatformConfig<T>(
-  platform: NotificationPlatform,
-  config: FullNotificationConfig,
-  event: NotificationEvent,
-): T | undefined {
-  const eventConfig = config.events?.[event];
-  const eventPlatform = eventConfig?.[platform as keyof typeof eventConfig];
-
-  if (
-    eventPlatform &&
-    typeof eventPlatform === "object" &&
-    "enabled" in eventPlatform
-  ) {
-    return eventPlatform as T;
-  }
-
-  return config[platform as keyof FullNotificationConfig] as T | undefined;
-}
-
 export async function dispatchNotifications(
   config: FullNotificationConfig,
   event: NotificationEvent,
@@ -408,7 +392,7 @@ export async function dispatchNotifications(
 ): Promise<DispatchResult> {
   const promises: Promise<NotificationResult>[] = [];
 
-  const discordConfig = getEffectivePlatformConfig<DiscordNotificationConfig>(
+  const discordConfig = getEffectiveNotificationPlatformConfig<DiscordNotificationConfig>(
     "discord",
     config,
     event,
@@ -417,7 +401,7 @@ export async function dispatchNotifications(
     promises.push(sendDiscord(discordConfig, payload));
   }
 
-  const telegramConfig = getEffectivePlatformConfig<TelegramNotificationConfig>(
+  const telegramConfig = getEffectiveNotificationPlatformConfig<TelegramNotificationConfig>(
     "telegram",
     config,
     event,
@@ -426,7 +410,7 @@ export async function dispatchNotifications(
     promises.push(sendTelegram(telegramConfig, payload));
   }
 
-  const slackConfig = getEffectivePlatformConfig<SlackNotificationConfig>(
+  const slackConfig = getEffectiveNotificationPlatformConfig<SlackNotificationConfig>(
     "slack",
     config,
     event,
@@ -435,7 +419,7 @@ export async function dispatchNotifications(
     promises.push(sendSlack(slackConfig, payload));
   }
 
-  const webhookConfig = getEffectivePlatformConfig<WebhookNotificationConfig>(
+  const webhookConfig = getEffectiveNotificationPlatformConfig<WebhookNotificationConfig>(
     "webhook",
     config,
     event,
@@ -445,7 +429,7 @@ export async function dispatchNotifications(
   }
 
   const discordBotConfig =
-    getEffectivePlatformConfig<DiscordBotNotificationConfig>(
+    getEffectiveNotificationPlatformConfig<DiscordBotNotificationConfig>(
       "discord-bot",
       config,
       event,

@@ -299,10 +299,15 @@ Inside an Ultragoal story, use `$team` only when that story benefits from coordi
 | `$team "..."` | coordinated parallel execution when the work is big enough |
 | `/skills` | browsing installed skills and supporting helpers |
 | `/goal ...` | durable objective/checkpoint structure for tasks that must reconcile progress across turns |
+| `omx mission <file>` | sequential prompt/checklist batch runs through `omx exec`, with `.omx/missions/<slug>/summary.json` and `ledger.jsonl` operator artifacts |
 
 ## Advanced / operator surfaces
 
 These are useful, but they are not the main onboarding path.
+
+### Mission queue runner
+
+Use `omx mission` when you have a short checklist of OmX/Codex prompts that should run one after another instead of opening a separate shell command for each prompt. Start with `omx mission plan ./mission.md` or `omx mission ./mission.md --dry-run` to validate parsing and inspect the durable summary, then run `omx mission run ./mission.md -- --model gpt-5` when the prompts are ready. Interrupted runs can be inspected with `omx mission status ./mission.md`, continued with `omx mission resume ./mission.md`, operator-blocked with `omx mission mark ./mission.md --task task-002 --status blocked`, and repaired task-by-task with `omx mission rerun ./mission.md --task task-002`. See [`docs/mission.md`](./docs/mission.md) for input format, status output, and artifact details.
 
 ### Team runtime
 

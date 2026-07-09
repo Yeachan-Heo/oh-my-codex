@@ -4,9 +4,18 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildRalphAppendInstructions } from '../ralph.js';
+import {
+  LEADER_CONDUCTOR_BLOCK,
+  LEADER_CONDUCTOR_GOLDEN_RULE,
+  LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
+} from '../../leader/contract.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ralphSkill = readFileSync(join(__dirname, '../../../skills/ralph/SKILL.md'), 'utf-8');
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 describe('ralph goal mode integration contract', () => {
   it('uses agent_type-based native subagent examples instead of legacy delegate role syntax', () => {
@@ -42,6 +51,10 @@ describe('ralph goal mode integration contract', () => {
     });
 
     assert.match(instructions, /Goal mode guidance/i);
+    assert.match(instructions, /Conductor philosophy:/i);
+    assert.match(instructions, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+    assert.match(instructions, new RegExp(escapeRegExp(LEADER_CONDUCTOR_GOLDEN_RULE)));
+    assert.match(instructions, new RegExp(escapeRegExp(LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE)));
     assert.match(instructions, /get_goal/i);
     assert.match(instructions, /create_goal/i);
     assert.match(instructions, /update_goal\(\{status: "complete"\}\)/i);

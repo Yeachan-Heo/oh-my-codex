@@ -288,4 +288,108 @@ process.on('SIGTERM', () => process.exit(0));
       await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
+
+  it('scaleUp recomputes worker CLI from exact-role-resolved launch args instead of inherited non-Codex model routing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-identity-scale-exact-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-identity-scale-exact-bin-'));
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        [
+          '#!/bin/sh',
+          'set -eu',
+          `printf '%s\n' "$*" >> "${tmuxLogPath}"`,
+          'case "${1:-}" in',
+          '  -V)',
+          '    echo "tmux 3.2a"',
+          '    ;;',
+          '  split-window)',
+          '    echo "%31"',
+          '    ;;',
+          '  list-panes)',
+          '    echo "42424"',
+          '    ;;',
+          '  send-keys)',
+          '    ;;',
+          '  capture-pane)',
+          '    echo ""',
+          '    ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await mkdir(join(cwd, '.omx', 'state', 'team', 'exact-role-cli'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'state', 'team', 'exact-role-cli', 'worker-agents.md'), '# Base worker instructions\n');
+
+      await initTeamState('exact-role-cli', 'task', 'executor', 1, cwd);
+      await createTask('exact-role-cli', {
+        subject: 'architecture follow-up',
+        description: 'exact-role scale-up regression',
+        status: 'pending',
+        owner: 'worker-3',
+        role: 'architect',
+      }, cwd);
+
+      const config = await readTeamConfig('exact-role-cli', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-exact-role-cli';
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      config.next_worker_index = 3;
+      await saveTeamConfig(config, cwd);
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'exact-role-cli', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        'exact-role-cli',
+        1,
+        'executor',
+        [{ subject: 'architecture follow-up', description: 'exact-role scale-up regression', owner: 'worker-3', role: 'architect' }],
+        cwd,
+        {
+          OMX_TEAM_SCALING_ENABLED: '1',
+          OMX_TEAM_SKIP_READY_WAIT: '1',
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen',
+          OMX_TEAM_WORKER_INHERITED_MODEL: 'claude-sonnet-4-6',
+        },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const workerIdentity = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'team', 'exact-role-cli', 'workers', 'worker-3', 'identity.json'), 'utf-8')) as { worker_cli?: string; role?: string };
+      assert.equal(workerIdentity.role, 'architect');
+      assert.equal(workerIdentity.worker_cli, 'codex');
+
+      const startupScript = await readFile(join(cwd, '.omx', 'state', 'team', 'exact-role-cli', 'runtime', 'worker-3-startup.sh'), 'utf-8');
+      assert.match(startupScript, /codex/);
+      assert.doesNotMatch(startupScript, /\bclaude\b/);
+      assert.doesNotMatch(startupScript, /\bgemini\b/);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /worker-3-startup\.sh/);
+      assert.doesNotMatch(tmuxLog, /\bclaude\b/);
+      assert.doesNotMatch(tmuxLog, /\bgemini\b/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
 });

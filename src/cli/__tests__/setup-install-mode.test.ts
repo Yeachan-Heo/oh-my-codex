@@ -603,6 +603,32 @@ async function seedStalePluginDiscoveryCache(codexHomeDir: string): Promise<stri
 	return artifactPath;
 }
 
+async function seedOldVersionedPluginDiscoveryCache(codexHomeDir: string): Promise<string> {
+	const artifactPath = join(
+		codexHomeDir,
+		"plugins",
+		"cache",
+		"oh-my-codex-local",
+		"oh-my-codex",
+		"0.0.0",
+	);
+	await mkdir(dirname(artifactPath), { recursive: true });
+	await cp(join(packageRoot, "plugins", "oh-my-codex"), artifactPath, {
+		recursive: true,
+	});
+	await writeFile(
+		join(artifactPath, ".codex-plugin", "plugin.json"),
+		JSON.stringify(
+			{ name: "oh-my-codex", version: "0.0.0", skills: "./skills/", hooks: "./hooks/hooks.json" },
+			null,
+			2,
+		) + "\n",
+	);
+	await mkdir(join(artifactPath, "skills", "old-only"), { recursive: true });
+	await writeFile(join(artifactPath, "skills", "old-only", "SKILL.md"), "# old\n");
+	return artifactPath;
+}
+
 
 async function seedSameVersionPluginCacheWithStaleHooks(codexHomeDir: string): Promise<string> {
 	const cacheDir = await packagedPluginCacheDir(codexHomeDir);
@@ -1188,6 +1214,33 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("invalidates old versioned plugin cache dirs while materializing the current cache", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const oldCacheDir = await seedOldVersionedPluginDiscoveryCache(codexHomeDir);
+
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin" });
+					});
+
+					const currentCacheDir = await packagedPluginCacheDir(codexHomeDir);
+					assert.equal(existsSync(oldCacheDir), false);
+					assert.equal(existsSync(join(currentCacheDir, ".codex-plugin", "plugin.json")), true);
+					assert.equal(existsSync(join(currentCacheDir, "hooks", "hooks.json")), true);
+					assert.equal(existsSync(join(currentCacheDir, "hooks", "codex-native-hook.mjs")), true);
+					assert.equal(existsSync(join(currentCacheDir, "hooks", "omx-command.json")), true);
+					assert.equal(existsSync(join(currentCacheDir, "skills", "ask", "SKILL.md")), true);
+					assert.match(output, /Invalidated 1 stale Codex plugin discovery cache entry/);
+					assert.match(output, /Installed local Codex plugin cache/);
+					assert.doesNotMatch(output, /Retained .* old versioned Codex plugin cache/);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 	it("invalidates same-version plugin caches when hook file contents drift", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

@@ -290,7 +290,7 @@ describe('cli/ultragoal', () => {
       const status = await capture(() => ultragoalCommand(['status']));
       const output = status.stdout.join('\n');
       assert.match(output, /ultragoal aggregate product: complete/);
-      assert.match(output, /microgoal ledger bookkeeping \(progress-only\): 0\/2 complete, 1 pending, 1 in progress/);
+      assert.match(output, /microgoal ledger bookkeeping \(progress-only\): 1\/2 complete, 1 pending, 0 in progress/);
     });
   });
 
@@ -579,6 +579,31 @@ describe('cli/ultragoal', () => {
       assert.equal(unavailable.exitCode, 1);
       assert.match(unavailable.stderr.join('\n'), /DB\/schema\/context error/);
       assert.match(unavailable.stderr.join('\n'), /strict completion reconciliation can be proven/);
+    });
+  });
+
+  it('rejects null get_goal snapshots for completion without mutating OMX progress', async () => {
+    await withCwd(async (cwd) => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+
+      const rejected = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-first-milestone',
+        '--status', 'complete',
+        '--evidence', 'tests passed',
+        '--codex-goal-json', '{"goal":null}',
+        '--json',
+      ]));
+
+      assert.equal(rejected.exitCode, 1);
+      assert.match(rejected.stderr.join('\n'), /no active goal\/null/);
+      assert.match(rejected.stderr.join('\n'), /call create_goal/);
+      assert.match(rejected.stderr.join('\n'), /do not mark complete from OMX state alone/);
+
+      const plan = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { activeGoalId?: string; goals: Array<{ status: string }> };
+      assert.equal(plan.activeGoalId, 'G001-first-milestone');
+      assert.equal(plan.goals[0].status, 'in_progress');
     });
   });
 

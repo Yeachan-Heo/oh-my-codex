@@ -50,6 +50,7 @@ import {
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
+  captureMadmaxWorktreeRuntimeContext,
   persistProjectLaunchRuntimeAuthState,
   persistProjectLaunchRuntimeProjectTrustState,
   cleanupRuntimeCodexHome,
@@ -126,22 +127,150 @@ afterEach(() => {
 });
 
 describe("madmax state isolation", () => {
-  it("auto-isolates only madmax launch and exec invocations", () => {
+  it("auto-isolates madmax launch and exec invocations without boxing worktree-only launches", () => {
     assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], {}), true);
     assert.equal(shouldAutoIsolateMadmaxLaunch("exec", ["--madmax-spark"], {}), true);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--worktree"], {}), false);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["-wfeature"], {}), false);
     assert.equal(shouldAutoIsolateMadmaxLaunch("team", ["--madmax"], {}), false);
     assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--yolo"], {}), false);
+  });
+
+  it("does not let stale inherited madmax env suppress top-level isolation", () => {
     assert.equal(
-      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_ROOT: "/already/boxed" }),
-      false,
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_ROOT: "/already/boxed" }, "/repo"),
+      true,
     );
     assert.equal(
-      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMXBOX_ACTIVE: "1" }),
-      false,
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMXBOX_ACTIVE: "1" }, "/repo"),
+      true,
     );
     assert.equal(
-      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_NO_BOX: "1" }),
+      shouldAutoIsolateMadmaxLaunch(
+        "launch",
+        ["--madmax"],
+        { OMX_STATE_ROOT: "/already/boxed-state" },
+        "/repo",
+      ),
+      true,
+    );
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch(
+        "launch",
+        ["--worktree"],
+        {
+          OMXBOX_ACTIVE: "1",
+          OMX_ROOT: "/old/root",
+          OMX_MADMAX_DETACHED_CONTEXT: "old-context",
+        },
+        "/repo",
+      ),
       false,
+    );
+  });
+
+  it("preserves active boxed detached context reuse when only the context is inherited", () => {
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch(
+        "launch",
+        ["--madmax", "--tmux"],
+        {
+          OMXBOX_ACTIVE: "1",
+          OMX_MADMAX_DETACHED_CONTEXT: "boxed-context-under-test",
+        },
+        "/repo",
+      ),
+      false,
+    );
+  });
+
+  it("preserves matching detached madmax child context reuse", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-madmax-source-"));
+    const runs = await mkdtemp(join(tmpdir(), "omx-madmax-runs-"));
+    try {
+      const env: NodeJS.ProcessEnv = { OMX_RUNS_DIR: runs };
+      const runDir = createMadmaxIsolatedRoot(wd, ["--madmax", "--high"], env);
+      env.OMX_ROOT = runDir;
+      env.OMXBOX_ACTIVE = "1";
+
+      assert.equal(
+        shouldAutoIsolateMadmaxLaunch("launch", ["--madmax", "--high"], env, wd),
+        false,
+      );
+      assert.equal(
+        shouldAutoIsolateMadmaxLaunch("launch", ["--madmax", "--xhigh"], env, wd),
+        true,
+        "changed launch semantics must not reuse an inherited boxed root",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runs, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves explicit no-box behavior", () => {
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_NO_BOX: "1" }, "/repo"),
+      false,
+    );
+  });
+
+  it("captures madmax worktree context from parsed worktree state, not remaining args", () => {
+    const sourceCwd = "/repo/source";
+    const worktreeCwd = "/repo/.worktrees/session";
+    const runDir = "/runs/run-issue-3043";
+    const context = captureMadmaxWorktreeRuntimeContext({
+      originalLaunchArgs: ["--madmax", "--worktree", "--version"],
+      worktreeEnabled: true,
+      sourceCwd,
+      worktreeCwd,
+      env: {
+        OMX_ROOT: runDir,
+        OMXBOX_ACTIVE: "1",
+        OMX_SOURCE_CWD: sourceCwd,
+        OMX_MADMAX_DETACHED_CONTEXT: "ctx-3043",
+      },
+    });
+
+    assert.deepEqual(context, {
+      omxRoot: runDir,
+      sourceCwd,
+      worktreeCwd,
+      madmaxDetachedContext: "ctx-3043",
+      boxedActive: true,
+    });
+  });
+
+  it("does not capture ordinary worktree or unboxed madmax launches", () => {
+    assert.equal(
+      captureMadmaxWorktreeRuntimeContext({
+        originalLaunchArgs: ["--worktree"],
+        worktreeEnabled: true,
+        sourceCwd: "/repo/source",
+        worktreeCwd: "/repo/.worktrees/session",
+        env: { OMX_ROOT: "/runs/run", OMXBOX_ACTIVE: "1" },
+      }),
+      undefined,
+    );
+    assert.equal(
+      captureMadmaxWorktreeRuntimeContext({
+        originalLaunchArgs: ["--madmax", "--worktree"],
+        worktreeEnabled: true,
+        sourceCwd: "/repo/source",
+        worktreeCwd: "/repo/.worktrees/session",
+        env: { OMX_ROOT: "/runs/run" },
+      }),
+      undefined,
+    );
+    assert.equal(
+      captureMadmaxWorktreeRuntimeContext({
+        originalLaunchArgs: ["--madmax", "--worktree"],
+        worktreeEnabled: false,
+        sourceCwd: "/repo/source",
+        worktreeCwd: "/repo/.worktrees/session",
+        env: { OMX_ROOT: "/runs/run", OMXBOX_ACTIVE: "1" },
+      }),
+      undefined,
     );
   });
 
@@ -3182,6 +3311,34 @@ describe("detached tmux new-session sequencing", () => {
     ]);
   });
 
+  it("buildDetachedSessionBootstrapSteps forwards inherited leader model separately from worker launch args", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'env' 'OMX_SESSION_ID=sess-detached-managed' 'codex' '--model' 'gpt-5.4-mini'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      "--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini",
+      "/tmp/project/.codex",
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      undefined,
+      process.env,
+      undefined,
+      undefined,
+      "gpt-5.4-mini",
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(
+      newSession!.args.includes("-e") &&
+        newSession!.args.some((arg) => arg === "OMX_TEAM_WORKER_INHERITED_MODEL=gpt-5.4-mini"),
+      true,
+    );
+  });
+
   it("buildDetachedSessionBootstrapSteps forwards CODEX_HOME override to detached tmux session", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
@@ -3681,10 +3838,10 @@ exit 0
 
   it("runCodex builds inside-tmux HUD command through explicit runtime-root resolver", async () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
-    assert.match(source, /const hudRuntimeRoot = resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
+    assert.match(source, /const hudRuntimeRoot: HudRuntimeRootForLaunch = runtimeContext\s*\? \{ omxRoot: runtimeContext\.omxRoot, rootSource: 'omx-root-env' \}\s*: resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
     assert.match(
       source,
-      /const hudEnvArgs = Object\.entries\(buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
+      /const hudRuntimeEnv = \{\s*\.\.\.buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env,\s*\.\.\.runtimeEnvOverlay,\s*\};\s*const hudEnvArgs = Object\.entries\(hudRuntimeEnv\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
     );
     assert.match(source, /if \(env\.OMX_TEAM_STATE_ROOT\?\.trim\(\)\) return 'team-env';\s*if \(env\.OMX_ROOT\?\.trim\(\) \|\| omxRootOverride\) return 'omx-root-env';\s*if \(env\.OMX_STATE_ROOT\?\.trim\(\)\) return 'omx-state-root-env';/);
     assert.match(
@@ -3697,7 +3854,7 @@ exit 0
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride,\s*\}\)/,
+      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride,\s*baseEnv: runtimeHookEnv,\s*\}\)/,
     );
     assert.match(
       source,

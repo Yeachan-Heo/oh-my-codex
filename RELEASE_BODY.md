@@ -1,37 +1,27 @@
-# oh-my-codex 0.18.16
+# oh-my-codex 0.19.1
 
-> Release status: published. Publication proof is recorded in `docs/qa/release-readiness-0.18.16.md`, including dev/main CI, tag workflow, GitHub release, native asset, and npm `latest` evidence.
-
-`0.18.16` is a patch release after `0.18.15` focused on local-session diagnostics, stale HUD/Ralph guard cleanup, and safer doctor artifact ownership warnings. It preserves the existing CLI/package contract while tightening developer-facing failure reporting and stale-state behavior from the current `origin/dev` delta.
+`0.19.1` is a patch release after `0.19.0` focused on Ultragoal/Ralplan terminal-state reliability, direct Team state roots, mission queue execution, and dependency hygiene.
 
 ## Highlights
 
-- **Local session friction reporting is available** — `omx session friction` can surface local run/session friction signals so resume and debugging workflows have more actionable history.
-- **Stale HUD and Ralph continuation state is guarded** — HUD review status and Ralph Stop continuation handling avoid carrying stale review/stop signals across later workflow phases.
-- **Doctor artifact ownership diagnostics are safer** — `omx doctor` detects root-owned repository artifacts more clearly without over-warning on normal local files.
+- Repair Ultragoal conductor provenance and task-scoped aggregate completion state (#3074, #3072).
+- Handle invalid mission summary JSON without breaking release/runtime flows (#3070).
+- Fix Ralplan terminalization tracker lag and terminal Stop cache loops (#3068, #3058).
+- Fix state roots for direct Team state directory usage (#3062).
+- Add the mission queue runner MVP (#3063).
+- Refresh dev dependencies: @types/node 26.1.0 and @biomejs/biome 2.5.2 (#3065, #3066).
+- Avoid stale catalog counts in the contributing guide (#3069).
 
-## Fixes and compatibility notes
+## Compatibility
 
-- The release remains a patch release: package layout, CLI entrypoint, plugin manifest shape, and Cargo workspace package contract are unchanged.
-- Root/package/plugin/Cargo metadata are bumped to `0.18.16`.
-- Session-search help and tests cover the local friction report surface.
-- Native Stop hook coverage guards against stale Ralph stop continuations.
+No breaking CLI, package, plugin-layout, native asset, or configuration changes are intended.
 
-## Merged PR inventory
+## Validation
 
-- [#2970](https://github.com/Yeachan-Heo/oh-my-codex/pull/2970) — Add local session friction report.
-- [#2972](https://github.com/Yeachan-Heo/oh-my-codex/pull/2972) — Fix HUD stale review status.
-- [#2973](https://github.com/Yeachan-Heo/oh-my-codex/pull/2973) — Fix root-owned artifact warning in omx doctor.
-- [#2975](https://github.com/Yeachan-Heo/oh-my-codex/pull/2975) — Guard stale Ralph stop continuations.
-
-## Validation evidence
-
-Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.16.md`.
-
-Release-prep gates include version sync for `v0.18.16`, build, native-agent verification, plugin mirror/bundle checks, catalog docs check, targeted regression tests for doctor/session-search/HUD/native-hook/session friction, `npm pack --dry-run`, and `git diff --check`. Branch CI, dev/main promotion, tag-triggered release workflow, GitHub release proof, and npm publication proof are recorded in the readiness evidence.
+Release validation is based on the green dev CI for `59a9cb80`, local build/package checks before tagging, main promotion CI, and the tag-triggered GitHub release workflow.
 
 ## Contributors
 
-Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo) and [@iqdoctor](https://github.com/iqdoctor) for contributing to this release.
+Thanks to the contributors who made this release possible.
 
-**Full Changelog**: [`v0.18.15...v0.18.16`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.15...v0.18.16)
+**Full Changelog**: [`v0.19.0...v0.19.1`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.19.0...v0.19.1)

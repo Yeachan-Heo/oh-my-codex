@@ -238,4 +238,23 @@ describe('dispatchNotifications', () => {
     assert.ok(result.results.length > 0);
     assert.equal(result.results[0].platform, 'discord');
   });
+
+  it('merges event-level platform config with top-level platform defaults', async () => {
+    const config: FullNotificationConfig = {
+      enabled: true,
+      discord: { enabled: true, webhookUrl: 'invalid-url' },
+      events: {
+        'session-end': {
+          enabled: true,
+          discord: { enabled: true } as DiscordNotificationConfig,
+        },
+      },
+    };
+
+    const result = await dispatchNotifications(config, 'session-end', basePayload);
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].platform, 'discord');
+    assert.equal(result.results[0].error, 'Invalid webhook URL');
+  });
 });

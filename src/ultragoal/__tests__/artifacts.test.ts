@@ -20,6 +20,7 @@ import {
   type UltragoalPlan,
   type UltragoalSteeringProposal,
 } from '../artifacts.js';
+import { LEADER_CONDUCTOR_BLOCK, buildUnsupportedNativeSubagentGuidance } from '../../leader/contract.js';
 import { steeringFixtures, type SteeringFixtureProposal } from './steering-fixtures.js';
 
 async function withTempRepo<T>(run: (cwd: string) => Promise<T>): Promise<T> {
@@ -52,6 +53,10 @@ function cleanQualityGate(): object {
     },
 
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function writeFixturePlan(cwd: string, plan: UltragoalPlan): Promise<void> {
@@ -280,6 +285,7 @@ describe('ultragoal artifacts', () => {
       assert.match(instruction, /Complete the durable ultragoal plan/);
       assert.match(instruction, /including later accepted\/appended stories/);
       assert.match(instruction, /\.omx\/ultragoal\/ledger\.jsonl/);
+      assert.match(instruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
       assert.match(instruction, /Complete first milestone/);
       assert.match(instruction, /does not call \/goal clear/);
       assert.match(instruction, /manually run \/goal clear/);
@@ -301,6 +307,7 @@ describe('ultragoal artifacts', () => {
       assert.match(aggregateInstruction, /independentReview evidence from both code-reviewer and architect subagents/);
       assert.match(aggregateInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
       assert.match(aggregateInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
+      assert.match(aggregateInstruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
 
       await createUltragoalPlan(cwd, {
         brief: 'brief',
@@ -314,6 +321,20 @@ describe('ultragoal artifacts', () => {
       assert.match(perStoryInstruction, /independentReview evidence from both code-reviewer and architect subagents/);
       assert.match(perStoryInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
       assert.match(perStoryInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
+      assert.match(perStoryInstruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+
+      const nativeSubagentSupport = {
+        status: 'unsupported' as const,
+        reason: 'native_subagents_unsupported' as const,
+        source: 'persisted_support_blocker' as const,
+        evidenceSummary: 'native subagents are disabled in this runtime',
+      };
+      const unsupportedInstruction = buildCodexGoalInstruction(perStory.goal!, perStory.plan, { nativeSubagentSupport });
+      assert.doesNotMatch(unsupportedInstruction, /Conductor mode contract:/);
+      assert.match(unsupportedInstruction, new RegExp(escapeRegExp(buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport))));
+      assert.match(unsupportedInstruction, /record-review-blockers/);
+      assert.match(unsupportedInstruction, /non-clean blocker/);
+      assert.match(unsupportedInstruction, /Native independent review unavailable/);
     });
   });
 
@@ -401,8 +422,11 @@ describe('ultragoal artifacts', () => {
       });
 
       assert.equal(reconciled.goals.length, 136);
-      assert.equal(reconciled.goals.filter((goal) => goal.status === 'complete').length, 0);
-      assert.equal(reconciled.goals[0]?.status, 'in_progress');
+      assert.equal(reconciled.goals.filter((candidate) => candidate.status === 'complete').length, 1);
+      assert.equal(reconciled.goals[0]?.status, 'complete');
+      assert.equal(reconciled.goals[0]?.completedAt, '2026-05-04T10:04:00.000Z');
+      assert.match(reconciled.goals[0]?.evidence ?? '', /planned work done/);
+      assert.equal(reconciled.goals[0]?.failureReason, undefined);
       assert.equal(reconciled.activeGoalId, undefined);
       assert.equal(reconciled.aggregateCompletion?.status, 'complete');
       assert.match(reconciled.aggregateCompletion?.evidence ?? '', /planned work done/);
@@ -413,9 +437,9 @@ describe('ultragoal artifacts', () => {
       assert.equal(next.done, true);
 
       const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
-      assert.match(ledger, /microgoal ledger progress remains independent/);
+      assert.match(ledger, /checkpointed active microgoal row was reconciled to complete/);
       assert.equal((ledger.match(/"event":"aggregate_completed"/g) ?? []).length, 1);
-      assert.equal((ledger.match(/"event":"goal_completed"/g) ?? []).length, 0);
+      assert.equal((ledger.match(/"event":"goal_completed"/g) ?? []).length, 1);
     });
   });
 
@@ -437,6 +461,17 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'Actual planned work done for .omx/ultragoal/goals.json G001-first; validation complete; reviews clean.',
           codexGoal: { goal: { objective: 'Unrelated completed task', status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /objective mismatch/,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
+          evidence: 'Actual planned work done for .omx/ultragoal/goals.json G001-first; validation complete; reviews clean.',
+          codexGoal: { goal: { objective: 'Audit .omx/ultragoal/goals.json for a different unrelated task', status: 'complete' } },
           qualityGate: cleanQualityGate(),
         }),
         /objective mismatch/,
@@ -995,6 +1030,30 @@ describe('ultragoal artifacts', () => {
               recommendation: 'APPROVE',
               architectStatus: 'CLEAR',
               evidence: 'same execution lane self-reviewed and approved without spawning review subagents',
+            },
+          },
+        }),
+        /independent review unavailable|self-approving/i,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            codeReview: {
+              recommendation: 'APPROVE',
+              architectStatus: 'CLEAR',
+              evidence: 'native independent review unavailable',
+            },
+            nativeSubagentSupport: {
+              status: 'unsupported',
+              reason: 'native_subagents_unsupported',
+              source: 'persisted_support_blocker',
+              evidenceSummary: 'native subagents are disabled in this runtime',
             },
           },
         }),
