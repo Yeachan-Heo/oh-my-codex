@@ -192,6 +192,7 @@ import {
 } from "../notifications/temp-contract.js";
 import { execInjectCommand } from "../exec/followup.js";
 import { imagegenCommand } from "../imagegen/continuation.js";
+import { capabilitiesCommand } from "./capabilities.js";
 
 export function resolveNotifyFallbackWatcherScript(pkgRoot = getPackageRoot()): string {
   return resolveDistScript(pkgRoot, "notify-fallback-watcher.js");
@@ -242,6 +243,8 @@ Usage:
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search and summarize local session history (--codex-home <path> escape hatch)
   omx url       Passive URL reader (read <url> --json)
+  omx capabilities
+                Lock/check deterministic configured tool, skill, agent, and observation surfaces
   omx agents-init [path]
                 Bootstrap lightweight AGENTS.md files for a repo/subtree
   omx agents    Manage Codex native agent TOML files
@@ -384,6 +387,7 @@ type CliCommand =
   | "launch"
   | "exec"
   | "mission"
+  | "capabilities"
   | "imagegen"
   | "setup"
   | "update"
@@ -437,6 +441,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "agents-init",
   "deepinit",
   "exec",
+  "capabilities",
   "mission",
   "imagegen",
   "hooks",
@@ -2586,6 +2591,7 @@ export async function main(args: string[]): Promise<void> {
     "exec",
     "mission",
     "imagegen",
+    "capabilities",
     "setup",
     "update",
     "list",
@@ -2719,6 +2725,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "api":
         await apiCommand(args.slice(1));
+        break;
+      case "capabilities":
+        await capabilitiesCommand(args.slice(1));
         break;
       case "exec":
         if (launchArgs[0] === "inject") {
