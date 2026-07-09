@@ -6028,6 +6028,55 @@ function isPackageManagerCommandWord(word: string): boolean {
   return base === "npm" || base === "pnpm" || base === "yarn" || base === "npx" || base === "pnpx";
 }
 
+function isStructuredUltragoalSteeringShellCommand(command: string): boolean {
+  const segments = splitShellCommandSegments(stripHeredocBodiesForCommandScan(command));
+  let sawStructuredSteer = false;
+
+  for (const segment of segments) {
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    let inForHeader = false;
+
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (inForHeader) {
+        if (word === "do") {
+          inForHeader = false;
+          commandStart = true;
+        }
+        continue;
+      }
+      if (isShellGroupingSyntaxWord(word)) continue;
+      if (commandStart && isEnvironmentAssignmentWord(word)) continue;
+      if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) {
+        if (word === "for") inForHeader = true;
+        continue;
+      }
+      if (commandStart && word.startsWith("-")) continue;
+      if (!commandStart) continue;
+
+      const commandName = commandNameFromShellWord(word);
+      if (commandName === "read" || commandName === "true" || commandName === ":") {
+        commandStart = false;
+        continue;
+      }
+      if (commandName === "omx" && words[index + 1] === "ultragoal" && words[index + 2] === "steer") {
+        sawStructuredSteer = true;
+        commandStart = false;
+        continue;
+      }
+      return false;
+    }
+  }
+
+  return sawStructuredSteer;
+}
+
 function hasDynamicNestedShellExecution(command: string): boolean {
   const commands = splitShellCommandSegments(stripHeredocBodiesForCommandScan(command));
   for (const segment of commands) {
@@ -6050,12 +6099,12 @@ function hasDynamicNestedShellExecution(command: string): boolean {
         if (commandStringIndex === null && (hasUnquotedShellStdinFlowAroundShellWord(words, index) || segment.includes("<<"))) return true;
         if (commandStringIndex !== null) {
           const nestedCommand = words[commandStringIndex] ?? "";
-          if (isDynamicNestedCommandString(nestedCommand)) return true;
+          if (isDynamicNestedCommandString(nestedCommand) && !isStructuredUltragoalSteeringShellCommand(nestedCommand)) return true;
         }
       }
       if (word === "eval") {
         const nestedCommand = words.slice(index + 1).join(" ");
-        if (isDynamicNestedCommandString(nestedCommand)) return true;
+        if (isDynamicNestedCommandString(nestedCommand) && !isStructuredUltragoalSteeringShellCommand(nestedCommand)) return true;
       }
     }
   }
