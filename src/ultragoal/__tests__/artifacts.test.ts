@@ -173,6 +173,49 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('does not atomize RALPLAN review and consensus sections into pseudo-goals', async () => {
+    await withTempRepo(async (cwd) => {
+      const brief = [
+        '# Approved RALPLAN handoff',
+        '',
+        'Review artifact:',
+        '- G104 verdict: APPROVE after evidence review',
+        '- Review artifact: .gjc/plans/ralplan/run/review.md',
+        '- Critic review: verification is concrete',
+        '',
+        'Consensus status:',
+        '- Planner consensus: approved',
+        '- Architect review: CLEAR',
+        '- Implementation notes remain advisory until converted to compact goals',
+        '',
+        'Verification checklist:',
+        '- Run targeted tests',
+        '- Run build checks',
+      ].join('\n');
+
+      const plan = await createUltragoalPlan(cwd, { brief });
+
+      assert.equal(plan.goals.length, 1);
+      assert.equal(plan.goals[0]?.title, '# Approved RALPLAN handoff');
+      assert.doesNotMatch(plan.goals[0]?.id ?? '', /g104|verdict|review-artifact|consensus-status/);
+    });
+  });
+
+  it('fails closed for broad implicit plan-like markdown without compact stories', async () => {
+    await withTempRepo(async (cwd) => {
+      const broadBrief = [
+        '# RALPLAN approved handoff',
+        'Consensus status: approved for execution.',
+        ...Array.from({ length: 21 }, (_, index) => `- Review or handoff detail ${index + 1}`),
+      ].join('\n');
+
+      await assert.rejects(
+        () => createUltragoalPlan(cwd, { brief: broadBrief }),
+        /Refusing to derive 21 implicit ultragoal goals.*--goal "Title::Objective".*### Stories\/### Goals/s,
+      );
+    });
+  });
+
   it('keeps later sibling stories after an indented plain-label note', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {
