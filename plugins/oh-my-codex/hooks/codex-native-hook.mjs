@@ -326,9 +326,7 @@ function hasActiveAutopilotStateForOversizedStop(input) {
 }
 
 
-function parseSingleJsonObjectOutput(raw) {
-  const text = String(raw ?? '').trim();
-  if (!text) return null;
+function parseJsonObjectCandidate(text) {
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
@@ -336,6 +334,25 @@ function parseSingleJsonObjectOutput(raw) {
   } catch {
     return null;
   }
+}
+
+function isJsonObjectFragmentLine(text) {
+  return text.startsWith('{') || text.endsWith('}') || /^"[^"]+"\s*:/.test(text);
+}
+
+function parseSingleJsonObjectOutput(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const direct = parseJsonObjectCandidate(text);
+  if (direct) return direct;
+
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines.at(-1);
+  if (!lastLine || !lastLine.startsWith('{') || !lastLine.endsWith('}')) return null;
+  for (const line of lines.slice(0, -1)) {
+    if (parseJsonObjectCandidate(line) || isJsonObjectFragmentLine(line)) return null;
+  }
+  return parseJsonObjectCandidate(lastLine);
 }
 
 async function main() {
