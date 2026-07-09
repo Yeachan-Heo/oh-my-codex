@@ -109,6 +109,9 @@ For `omx sparkshell`, the documented helper-specific environment keys are:
 
 `models` maps mode names to explicit model overrides. Values must be non-empty strings.
 
+Known Codex/OpenAI-compatible model aliases include the built-in `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`, plus the GPT-5.6 aliases `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.6-sol`. Model override fields remain non-empty strings so provider-specific model names stay backward-compatible; the known-alias list is used for display and contract tests, not as a closed allow-list.
+
+
 Supported model-routing keys:
 
 | Key shape | Purpose |
@@ -150,6 +153,8 @@ For a named role, effective model precedence is:
 ### `agentReasoning`
 
 `agentReasoning` is the supported per-agent reasoning override map. Keys are agent names and values must be one of `low`, `medium`, `high`, or `xhigh`.
+
+`xhigh` is the canonical highest reasoning effort token accepted by Codex/OMX. Reported names such as `max` or `ultra` are ambiguous and are not accepted aliases; use `xhigh` instead.
 
 ```json
 {

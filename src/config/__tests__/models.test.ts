@@ -7,7 +7,9 @@ import {
   DEFAULT_FRONTIER_MODEL,
   DEFAULT_SPARK_MODEL,
   DEFAULT_TEAM_CHILD_MODEL,
+  GPT_5_6_MODEL_ALIASES,
   getAgentReasoningOverride,
+  isKnownCodexModelAlias,
   getAgentModelOverride,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
@@ -19,6 +21,7 @@ import {
   readAgentReasoningOverrides,
   readAgentModelOverrides,
   readConfiguredEnvOverrides,
+  KNOWN_CODEX_MODEL_ALIASES,
 } from '../models.js';
 
 describe('getModelForMode', () => {
@@ -269,6 +272,21 @@ describe('getModelForMode', () => {
     assert.equal(getAgentReasoningOverride('executor'), undefined);
   });
 
+  it('rejects ambiguous max and ultra reasoning aliases', async () => {
+    await writeConfig({
+      agentReasoning: {
+        architect: 'max',
+        critic: 'ultra',
+        planner: 'xhigh',
+      },
+    });
+
+    assert.deepEqual(readAgentReasoningOverrides(), {
+      planner: 'xhigh',
+    });
+  });
+
+
   it('reads normalized per-agent model overrides from .omx-config.json', async () => {
     await writeConfig({
       agentModels: {
@@ -277,16 +295,30 @@ describe('getModelForMode', () => {
         executor: '',
         researcher: 42,
         'bad role': 'gpt-5',
+        reviewer: ' gpt-5.6-terra ',
       },
     });
 
     assert.deepEqual(readAgentModelOverrides(), {
       architect: 'gpt-5.5',
       critic: 'gpt-5.4',
+      reviewer: 'gpt-5.6-terra',
     });
     assert.equal(getAgentModelOverride('ARCHITECT'), 'gpt-5.5');
     assert.equal(getAgentModelOverride('executor'), undefined);
     assert.equal(getAgentModelOverride('bad role'), undefined);
+  });
+
+  it('lists GPT-5.6 Terra/Luna/Sol as known Codex model aliases', () => {
+    assert.deepEqual([...GPT_5_6_MODEL_ALIASES], [
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-5.6-sol',
+    ]);
+    for (const alias of GPT_5_6_MODEL_ALIASES) {
+      assert.equal(isKnownCodexModelAlias(alias), true);
+      assert.equal(KNOWN_CODEX_MODEL_ALIASES.includes(alias), true);
+    }
   });
 
   it('keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL', async () => {

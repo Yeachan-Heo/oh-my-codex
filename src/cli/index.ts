@@ -90,6 +90,11 @@ import {
   upsertLocalOmxPluginEnablement,
 } from "./plugin-marketplace.js";
 import { escapeTomlString, readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
+import {
+  CANONICAL_REASONING_EFFORTS,
+  isAmbiguousUnsupportedReasoningEffort,
+} from "../config/models.js";
+
 
 export {
   readPersistedSetupPreferences,
@@ -357,10 +362,12 @@ const OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_RALPH_APPEND_INSTRUCTIONS_FILE";
 const OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE";
-const REASONING_MODES = ["low", "medium", "high", "xhigh"] as const;
+const REASONING_MODES = CANONICAL_REASONING_EFFORTS;
 type ReasoningMode = (typeof REASONING_MODES)[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = "Usage: omx reasoning <low|medium|high|xhigh>";
+const AMBIGUOUS_REASONING_MESSAGE = 'Codex/OMX canonical highest reasoning effort is "xhigh"; "max" and "ultra" are not accepted aliases.';
+
 const ALLOWED_SHELLS = new Set([
   "/bin/sh",
   "/bin/bash",
@@ -3027,8 +3034,11 @@ async function reasoningCommand(args: string[]): Promise<void> {
   }
 
   if (!REASONING_MODE_SET.has(mode)) {
+    const guidance = isAmbiguousUnsupportedReasoningEffort(mode)
+      ? `${AMBIGUOUS_REASONING_MESSAGE}\n`
+      : "";
     throw new Error(
-      `Invalid reasoning mode "${mode}". Expected one of: ${REASONING_MODES.join(", ")}.\n${REASONING_USAGE}`,
+      `${guidance}Invalid reasoning mode "${mode}". Expected one of: ${REASONING_MODES.join(", ")}.\n${REASONING_USAGE}`,
     );
   }
 
@@ -3440,6 +3450,10 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
     if (arg === XHIGH_REASONING_FLAG) {
       reasoningMode = "xhigh";
       continue;
+    }
+
+    if (arg === "--max" || arg === "--ultra") {
+      throw new Error(AMBIGUOUS_REASONING_MESSAGE);
     }
 
     if (arg === SPARK_FLAG) {

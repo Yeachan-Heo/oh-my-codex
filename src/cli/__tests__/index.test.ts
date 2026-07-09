@@ -589,6 +589,17 @@ describe("normalizeCodexLaunchArgs", () => {
     ]);
   });
 
+  it("rejects ambiguous max and ultra reasoning shorthands", () => {
+    assert.throws(
+      () => normalizeCodexLaunchArgs(["--max"]),
+      /canonical highest reasoning effort is "xhigh".*"max" and "ultra" are not accepted aliases/,
+    );
+    assert.throws(
+      () => normalizeCodexLaunchArgs(["--ultra"]),
+      /canonical highest reasoning effort is "xhigh".*"max" and "ultra" are not accepted aliases/,
+    );
+  });
+
   it("maps --xhigh --madmax to codex-native flags only", () => {
     assert.deepEqual(normalizeCodexLaunchArgs(["--xhigh", "--madmax"]), [
       "--dangerously-bypass-approvals-and-sandbox",
