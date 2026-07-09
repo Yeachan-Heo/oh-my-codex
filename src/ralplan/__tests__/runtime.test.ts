@@ -178,6 +178,142 @@ describe('ralplan runtime', () => {
     }
   });
 
+  it('records planning-only terminal state when consensus approves without a selected execution lane', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-planning-only-'));
+    try {
+      const result = await runRalplanConsensus({
+        async draft() {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-planning-only.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-planning-only.md'), '# tests\n');
+          return { summary: 'draft', planPath: prdPath };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'approve', summary: 'critic ok' };
+        },
+      }, { task: 'planning only approval', cwd, maxIterations: 1 });
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.executionHandoffStarted, false);
+      const finalState = await readModeState('ralplan', cwd);
+      const ralplanHandoff = (finalState?.handoff_artifacts as { ralplan?: Record<string, unknown> } | undefined)?.ralplan;
+      assert.equal(finalState?.selected_execution_lane, 'none');
+      assert.equal(ralplanHandoff?.execution_handoff_status, 'planning_only_terminal');
+      assert.equal(ralplanHandoff?.planning_only_terminal, true);
+      assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('starts the selected execution handoff only after Critic approval completes consensus', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-execution-handoff-'));
+    try {
+      const result = await runRalplanConsensus({
+        async draft() {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-handoff.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-handoff.md'), '# tests\n');
+          return { summary: 'draft', planPath: prdPath };
+        },
+        async architectReview() {
+          assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
+          return { verdict: 'approve', summary: 'critic ok' };
+        },
+      }, { task: 'approval starts ultragoal', cwd, maxIterations: 1, selectedExecutionLane: 'ultragoal' });
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.executionHandoffStarted, true);
+      const ultragoalState = JSON.parse(await readFile(getStatePath('ultragoal', cwd), 'utf-8')) as Record<string, unknown>;
+      assert.equal(ultragoalState.active, true);
+      assert.equal(ultragoalState.current_phase, 'starting');
+      const finalState = await readModeState('ralplan', cwd);
+      const ralplanHandoff = (finalState?.handoff_artifacts as { ralplan?: Record<string, unknown> } | undefined)?.ralplan;
+      assert.equal(ralplanHandoff?.selected_execution_lane, 'ultragoal');
+      assert.equal(ralplanHandoff?.execution_handoff_status, 'started');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('passes and enforces reusable Architect lane on re-review iterations', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-architect-reuse-'));
+    try {
+      const architectThreads: Array<string | undefined> = [];
+      const result = await runRalplanConsensus({
+        async draft(ctx) {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-reuse.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-reuse.md'), '# tests\n');
+          return { summary: `draft-${ctx.iteration}`, planPath: prdPath };
+        },
+        async architectReview(ctx) {
+          architectThreads.push(ctx.reusableRoleLanes.architect?.thread_id);
+          return {
+            verdict: 'approve',
+            summary: `architect-${ctx.iteration}`,
+            agent_role: 'architect',
+            thread_id: ctx.reusableRoleLanes.architect?.thread_id ?? 'thread-architect',
+          };
+        },
+        async criticReview(ctx) {
+          return { verdict: ctx.iteration === 1 ? 'iterate' : 'approve', summary: `critic-${ctx.iteration}` };
+        },
+      }, { task: 'reuse architect lane', cwd, maxIterations: 3 });
+
+      assert.equal(result.status, 'completed');
+      assert.deepEqual(architectThreads, [undefined, 'thread-architect']);
+      assert.deepEqual(result.architectReviews.map((review) => review.thread_id), ['thread-architect', 'thread-architect']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a re-review Architect pass spawns a fresh lane without a new-lane reason', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-architect-reuse-deny-'));
+    try {
+      const result = await runRalplanConsensus({
+        async draft(ctx) {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-reuse-deny.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-reuse-deny.md'), '# tests\n');
+          return { summary: `draft-${ctx.iteration}`, planPath: prdPath };
+        },
+        async architectReview(ctx) {
+          return {
+            verdict: 'approve',
+            summary: `architect-${ctx.iteration}`,
+            agent_role: 'architect',
+            thread_id: ctx.iteration === 1 ? 'thread-architect-1' : 'thread-architect-2',
+          };
+        },
+        async criticReview(ctx) {
+          return { verdict: ctx.iteration === 1 ? 'iterate' : 'approve', summary: `critic-${ctx.iteration}` };
+        },
+      }, { task: 'reject fresh architect lane', cwd, maxIterations: 3 });
+
+      assert.equal(result.status, 'failed');
+      assert.match(result.error || '', /ralplan_architect_lane_reuse_required/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('fails Autopilot-required consensus when approvals lack native subagent provenance', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-native-required-missing-'));
     const sessionId = 'sess-ralplan-native-required-missing';
