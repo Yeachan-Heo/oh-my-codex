@@ -4,6 +4,11 @@ import {
   withParentReturnToRalplanContext,
   type RalplanConsensusGateEvidence,
 } from '../ralplan/consensus-gate.js';
+import {
+  buildUnsupportedNativeSubagentGuidance,
+  isUnsupportedNativeSubagentEvidenceForScope,
+  type NativeSubagentSupportEvidence,
+} from '../leader/contract.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -18,6 +23,7 @@ export interface AutopilotRalplanUltragoalGateDecision {
   allowed: boolean;
   reason: string;
   evidence?: RalplanConsensusGateEvidence;
+  unsupportedNativeSubagentGuidance?: string;
 }
 
 function safeObject(value: unknown): JsonObject | null {
@@ -36,6 +42,31 @@ function handoffArtifacts(state: JsonObject | null | undefined): JsonObject | nu
 
 function ralplanHandoff(state: JsonObject | null | undefined): JsonObject | null {
   return safeObject(handoffArtifacts(state)?.ralplan);
+}
+function unsupportedNativeSubagentEvidence(
+  state: JsonObject | null | undefined,
+  input: Pick<AutopilotRalplanUltragoalGateInput, 'cwd' | 'sessionId'>,
+): NativeSubagentSupportEvidence | null {
+  const nested = nestedState(state);
+  const handoffRalplan = ralplanHandoff(state);
+  const nestedHandoffRalplan = ralplanHandoff(nested);
+  for (const candidate of [
+    state?.native_subagent_support,
+    nested?.native_subagent_support,
+    handoffArtifacts(state)?.native_subagent_support,
+    handoffArtifacts(nested)?.native_subagent_support,
+    handoffRalplan?.native_subagent_support,
+    nestedHandoffRalplan?.native_subagent_support,
+  ]) {
+    if (isUnsupportedNativeSubagentEvidenceForScope(candidate, input)) return candidate as NativeSubagentSupportEvidence;
+  }
+  return null;
+}
+
+function unsupportedNativeSubagentGuidance(input: AutopilotRalplanUltragoalGateInput): string | null {
+  const evidence = unsupportedNativeSubagentEvidence(input.nextState, input)
+    ?? unsupportedNativeSubagentEvidence(input.currentState, input);
+  return evidence ? buildUnsupportedNativeSubagentGuidance(evidence) : null;
 }
 
 function sourcesForState(label: string, state: JsonObject | null | undefined): Array<{ source: string; value: unknown }> {
@@ -73,6 +104,14 @@ export function canAdvanceAutopilotRalplanToUltragoal(
     sessionId: input.sessionId,
     requireNativeSubagents: true,
   };
+  const unsupportedGuidance = unsupportedNativeSubagentGuidance(input) ?? undefined;
+  if (unsupportedGuidance) {
+    return {
+      allowed: false,
+      reason: 'native subagent support is unavailable; ralplan must terminalize non-clean instead of handing off to ultragoal',
+      unsupportedNativeSubagentGuidance: unsupportedGuidance,
+    };
+  }
   const nextStateEvidence = buildRalplanConsensusGateFromSources(
     sourcesForState('next-autopilot-state', input.nextState),
     options,
@@ -87,12 +126,14 @@ export function canAdvanceAutopilotRalplanToUltragoal(
       allowed: true,
       reason: 'tracker-backed native ralplan architect and critic consensus evidence',
       evidence,
+      unsupportedNativeSubagentGuidance: unsupportedGuidance,
     };
   }
   return {
     allowed: false,
     reason: ralplanConsensusBlockedReason(evidence),
     evidence,
+    unsupportedNativeSubagentGuidance: unsupportedGuidance,
   };
 }
 
@@ -118,8 +159,10 @@ export function buildAutopilotRalplanUltragoalGateError(
       `    session_id: ${review.session_id ?? 'missing'} session_found=${review.session_found ? 'yes' : 'no'}`,
       review.problem ? `    problem: ${review.problem}` : null,
     ].filter((line): line is string => Boolean(line)).join('\n');
+    const guidance = decision.unsupportedNativeSubagentGuidance;
     return [
       `Cannot transition ralplan -> ultragoal: ${decision.reason}.`,
+      guidance ? `Unsupported native recovery: ${guidance}` : null,
       '',
       'Expected:',
       ...diagnostic.expected_schema.map((line) => `  ${line}`),
@@ -137,10 +180,11 @@ export function buildAutopilotRalplanUltragoalGateError(
       '',
       'Docs:',
       `  ${diagnostic.docs}`,
-    ].join('\n');
+    ].filter((line): line is string => line !== null).join('\n');
   }
   const details = decision.evidence?.blockedDetails?.length
     ? ` Details: ${decision.evidence.blockedDetails.join('; ')}.`
     : '';
-  return `Cannot transition ralplan -> ultragoal: ${decision.reason}.${details}`;
+  const guidance = decision.unsupportedNativeSubagentGuidance;
+  return `Cannot transition ralplan -> ultragoal: ${decision.reason}.${details}${guidance ? ` ${guidance}` : ''}`;
 }

@@ -94,9 +94,14 @@ import {
   CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES,
   LEADER_CONDUCTOR_BLOCK,
   LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
+  NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
   actionKindForConductorArtifact,
   authorizeConductorAction,
+  buildUnsupportedNativeSubagentGuidance,
   classifyConductorArtifactKind,
+  isUnsupportedNativeSubagentEvidence,
+  resolveNativeSubagentSupportStatus,
+  type NativeSubagentUnsupportedReason,
 } from "../leader/contract.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
@@ -2111,12 +2116,23 @@ function buildSkillStateCliInstruction(mode: string, statePath: string): string 
 
 function buildAutopilotPromptActivationNote(
   skillState?: SkillActiveState | null,
-  options: { markedQuestionAnswer?: boolean; cwd?: string } = {},
+  options: { markedQuestionAnswer?: boolean; cwd?: string; payload?: CodexHookPayload; sessionId?: string } = {},
 ): string | null {
   if (skillState?.initialized_mode !== "autopilot") return null;
   const teamHandoff = readTeamModeConfig(options.cwd).enabled
     ? " (+ $team if needed)"
     : "";
+  const stateDir = getBaseStateDir(options.cwd);
+  const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
+    payload: options.payload,
+    persistedSupportBlocker: readJsonSyncIfExists(nativeSubagentSupportBlockerPath(stateDir)),
+    persistedCapacityBlocker: readJsonSyncIfExists(nativeSubagentCapacityBlockerPath(stateDir)),
+    cwd: options.cwd,
+    sessionId: options.sessionId,
+  });
+  const conductorGuidance = nativeSubagentSupport.status === "unsupported"
+    ? buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)
+    : `${LEADER_CONDUCTOR_BLOCK} ${LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE}`;
   return [
     `Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal${teamHandoff} -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).`,
     "Start/resume at current_phase=deep-interview unless the task is clear and bounded; if deep-interview is intentionally skipped, persist and state an explicit deep_interview_gate.skip_reason before moving to ralplan.",
@@ -2128,8 +2144,7 @@ function buildAutopilotPromptActivationNote(
     "The ralplan phase is not complete until Planner output has been reviewed sequentially by Architect and then Critic; do not hand off to Ultragoal or implementation until the ralplan state/artifact records both ralplan_architect_review and ralplan_critic_review with approval or an explicit blocker.",
     "Do not silently fall back to ordinary $plan/ralplan-only handling; keep autopilot-state.json, skill-active-state.json, HUD/statusline, and Codex goal-mode handoff guidance visible while the workflow is active.",
     "When Codex goal tools are available, call get_goal/create_goal only from the active thread handoff and treat the active goal as the completion contract until code-review and ultraqa are clean.",
-    LEADER_CONDUCTOR_BLOCK,
-    LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
+    conductorGuidance,
   ].filter(Boolean).join(" ");
 }
 
@@ -2161,7 +2176,7 @@ function buildAdditionalContextMessage(
       : null;
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
     const markedQuestionAnswer = /^\s*\[omx question answered\]/i.test(prompt);
-    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer, cwd });
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer, cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
     return [
       `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
       promptPriorityMessage,
@@ -2187,7 +2202,7 @@ function buildAdditionalContextMessage(
       ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
       : null;
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
-    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true, cwd });
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true, cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
     return [
       `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
       promptPriorityMessage,
@@ -2220,7 +2235,7 @@ function buildAdditionalContextMessage(
   const ultragoalPromptActivationNote = match.skill === "ultragoal"
     ? "Ultragoal protocol: use `omx ultragoal create-goals` / `complete-goals` / `checkpoint` for `.omx/ultragoal` artifacts, then use Codex goal model tools only from the active agent handoff (`get_goal`, `create_goal`, `update_goal`) and never overwrite a different active Codex goal. Ultragoal does not call `/goal clear`; for multiple sequential ultragoal runs in one Codex session/thread, manually clear the completed Codex goal in the UI before creating the next aggregate goal."
     : null;
-  const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { cwd });
+  const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
   const combinedTransitionMessage = (() => {
     if (!skillState?.transition_message) return null;
     if (matches.length <= 1 || activeSkills.length <= 1) return skillState.transition_message;
@@ -3094,6 +3109,18 @@ function nativeSubagentCapacityBlockerPath(stateDir: string): string {
   return join(stateDir, NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE);
 }
 
+function nativeSubagentSupportBlockerPath(stateDir: string): string {
+  return join(stateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE);
+}
+
+function readJsonSyncIfExists(path: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function stringifyUnknown(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === undefined || value === null) return "";
@@ -3119,6 +3146,45 @@ function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
   if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
   const toolName = safeString(payload.tool_name).trim();
   return !toolName || /(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName);
+}
+
+function nativeSubagentFailureReason(payload: CodexHookPayload): NativeSubagentUnsupportedReason | null {
+  const evidence = payloadEvidenceText(payload);
+  const toolName = safeString(payload.tool_name).trim();
+  if (toolName && !/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)) return null;
+  if (/\bagent thread limit reached\b/i.test(evidence)) return null;
+  if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) return "native_subagents_unsupported";
+  if (/\bmulti_agent_v1\b/i.test(evidence) && /\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
+  if (/\b(?:unknown tool|tool not found|not enabled|disabled|unavailable|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
+  return null;
+}
+
+function summarizeNativeSubagentSupportFailure(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return (normalized || "native subagent support unavailable").slice(0, 500);
+}
+
+async function recordNativeSubagentSupportBlocker(
+  cwd: string,
+  stateDir: string,
+  payload: CodexHookPayload,
+): Promise<void> {
+  const reason = nativeSubagentFailureReason(payload);
+  if (!reason) return;
+  const nowIso = new Date().toISOString();
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(nativeSubagentSupportBlockerPath(stateDir), JSON.stringify({
+    schema_version: 1,
+    status: "unsupported",
+    reason,
+    ...(readPayloadSessionId(payload) ? { session_id: readPayloadSessionId(payload) } : {}),
+    ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
+    ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
+    ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
+    evidence: summarizeNativeSubagentSupportFailure(payloadEvidenceText(payload)),
+    observed_at: nowIso,
+    cwd,
+  }, null, 2));
 }
 
 function summarizeCapacityFailure(text: string): string {
@@ -7865,6 +7931,14 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 ): Promise<Record<string, unknown> | null> {
   const activeState = await readActiveMainRootConductorStateForPreToolUse(payload, cwd, stateDir, resolvedSessionId);
   if (!activeState) return null;
+  const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
+    payload,
+    persistedSupportBlocker: await readJsonIfExists(nativeSubagentSupportBlockerPath(stateDir)),
+    persistedCapacityBlocker: await readJsonIfExists(nativeSubagentCapacityBlockerPath(stateDir)),
+    cwd,
+    sessionId: resolvedSessionId || readPayloadSessionId(payload),
+  });
+
 
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
@@ -7891,6 +7965,9 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 
   if (!blocked) return null;
 
+  const unsupportedNativeGuidance = isUnsupportedNativeSubagentEvidence(nativeSubagentSupport)
+    ? ` ${buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)} Treat the active conductor workflow as blocked/cancelled for native delegation recovery; do not call multi_agent_v1.close_agent.`
+    : "";
   return {
     decision: "block",
     reason: `Main-root Conductor mode is active (${activeState.mode} phase: ${formatPhase(activeState.phase, "active")}); direct plan/code writes are blocked and must be delegated; ${blockedDetail}.`,
@@ -7900,7 +7977,8 @@ export async function buildConductorPreToolUseWriteGuardOutput(
         `${LEADER_CONDUCTOR_GOLDEN_RULE} `
         + "Use specialized agents for source edits and plan/spec authorship. "
         + `Main-root Conductor may write only orchestration metadata/transport/ledger artifacts under ${CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES.join(", ")}; path location alone is not authorization for substantive deliverables. `
-        + "Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
+        + unsupportedNativeGuidance
+        + " Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
     },
   };
 }
@@ -9643,6 +9721,7 @@ export async function dispatchCodexNativeHook(
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
     await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
+    await recordNativeSubagentSupportBlocker(cwd, stateDir, payload).catch(() => {});
     if (detectMcpTransportFailure(payload)) {
       await markTeamTransportFailure(cwd, payload);
     }

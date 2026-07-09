@@ -16,7 +16,7 @@ import { createUltraqaStage, buildUltraqaInstruction } from '../stages/ultraqa.j
 import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
 import { packageRoot } from '../../utils/paths.js';
 import { subagentTrackingPath } from '../../subagents/tracker.js';
-import { LEADER_CONDUCTOR_BLOCK } from '../../leader/contract.js';
+import { LEADER_CONDUCTOR_BLOCK, buildUnsupportedNativeSubagentGuidance } from '../../leader/contract.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1938,6 +1938,35 @@ describe('Default Autopilot Ultragoal Stage Adapters', () => {
     assert.match(artifacts.team_condition as string, /Launch \$team only inside an active Ultragoal story/);
     assert.match(buildUltragoalInstruction('execute me'), /^\$ultragoal /);
     assert.match(buildUltragoalInstruction('execute me'), new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+    assert.doesNotMatch(buildUltragoalInstruction('execute me'), /Native subagent support is unavailable/);
+    assert.match(buildUltragoalInstruction('execute me', {
+      nativeSubagentSupport: { status: 'unknown', source: 'default_unknown' },
+    }), new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+    assert.match(buildUltragoalInstruction('execute me', {
+      nativeSubagentSupport: { status: 'supported', source: 'hook_payload_capability' },
+    }), new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+  });
+
+  it('emits unsupported native subagent guidance for explicit unsupported ultragoal evidence', async () => {
+    const nativeSubagentSupport = {
+      status: 'unsupported' as const,
+      reason: 'multi_agent_v1_unavailable' as const,
+      source: 'hook_payload_capability' as const,
+      evidenceSummary: 'multi_agent_v1 is absent',
+    };
+    const instruction = buildUltragoalInstruction('execute me', { nativeSubagentSupport });
+    assert.doesNotMatch(instruction, /Conductor mode contract:/);
+    assert.match(instruction, new RegExp(escapeRegExp(buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport))));
+
+    const stage = createUltragoalStage();
+    const result = await stage.run(makeCtx({ artifacts: { ralplan: { native_subagent_support: nativeSubagentSupport } } }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+    assert.doesNotMatch(artifacts.instruction as string, /Conductor mode contract:/);
+    assert.match(artifacts.instruction as string, /multi_agent_v1_unavailable/);
+
+    const forged = await stage.run(makeCtx({ artifacts: { ralplan: { native_subagent_support: { status: 'unsupported', reason: 'multi_agent_v1_unavailable' } } } }));
+    const forgedArtifacts = forged.artifacts as Record<string, unknown>;
+    assert.match(forgedArtifacts.instruction as string, /Conductor mode contract:/);
   });
 
   it('creates an ultraqa gate that fails closed without evidence and can record clean skips', async () => {

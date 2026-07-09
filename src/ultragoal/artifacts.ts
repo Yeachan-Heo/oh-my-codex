@@ -7,7 +7,11 @@ import {
   parseCodexGoalSnapshot,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
-import { LEADER_CONDUCTOR_BLOCK } from '../leader/contract.js';
+import {
+  LEADER_CONDUCTOR_BLOCK,
+  buildUnsupportedNativeSubagentGuidance,
+  type NativeSubagentSupportEvidence,
+} from '../leader/contract.js';
 
 export const ULTRAGOAL_DIR = '.omx/ultragoal';
 export const ULTRAGOAL_BRIEF = 'brief.md';
@@ -244,6 +248,10 @@ export interface AddUltragoalGoalOptions {
 export interface RecordFinalReviewBlockersOptions extends AddUltragoalGoalOptions {
   goalId: string;
   codexGoal?: unknown;
+}
+
+export interface CodexGoalInstructionOptions {
+  nativeSubagentSupport?: NativeSubagentSupportEvidence;
 }
 
 export interface UltragoalQualityGate {
@@ -1877,19 +1885,31 @@ export async function recordFinalReviewBlockers(cwd: string, options: RecordFina
   });
 }
 
-export function buildCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan): string {
-  if (codexGoalMode(plan) === 'aggregate') return buildAggregateCodexGoalInstruction(goal, plan);
-  return buildPerStoryCodexGoalInstruction(goal, plan);
+function codexGoalConductorGuidance(options: CodexGoalInstructionOptions): string {
+  if (options.nativeSubagentSupport?.status !== 'unsupported') return LEADER_CONDUCTOR_BLOCK;
+  return [
+    buildUnsupportedNativeSubagentGuidance(options.nativeSubagentSupport),
+    'Native independent review unavailable: do not treat final review as clean, do not call update_goal for clean completion, and use omx ultragoal record-review-blockers to create a non-clean blocker for the missing native independent review.',
+  ].join('\n');
 }
 
-function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan): string {
+export function buildCodexGoalInstruction(
+  goal: UltragoalItem,
+  plan: UltragoalPlan,
+  options: CodexGoalInstructionOptions = {},
+): string {
+  if (codexGoalMode(plan) === 'aggregate') return buildAggregateCodexGoalInstruction(goal, plan, options);
+  return buildPerStoryCodexGoalInstruction(goal, plan, options);
+}
+
+function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan, options: CodexGoalInstructionOptions): string {
   const createPayload = {
     objective: goal.objective,
     ...(goal.tokenBudget ? { token_budget: goal.tokenBudget } : {}),
   };
   const finalStory = isFinalRunCompletionCandidate(plan, goal);
   return [
-    LEADER_CONDUCTOR_BLOCK,
+    codexGoalConductorGuidance(options),
     '',
     'Ultragoal active-goal handoff',
     `Plan: ${plan.goalsPath}`,
@@ -1938,13 +1958,13 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
   ].filter((line): line is string => line !== null).join('\n');
 }
 
-function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan): string {
+function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan, options: CodexGoalInstructionOptions): string {
   const objective = plan.codexObjective ?? aggregateCodexObjective(plan.goals);
   const finalStory = isFinalRunCompletionCandidate(plan, goal);
   const createPayload = { objective };
   const checkpointStatus = finalStory ? 'complete' : 'active';
   return [
-    LEADER_CONDUCTOR_BLOCK,
+    codexGoalConductorGuidance(options),
     '',
     'Ultragoal aggregate-goal handoff',
     `Plan: ${plan.goalsPath}`,

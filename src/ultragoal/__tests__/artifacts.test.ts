@@ -20,7 +20,7 @@ import {
   type UltragoalPlan,
   type UltragoalSteeringProposal,
 } from '../artifacts.js';
-import { LEADER_CONDUCTOR_BLOCK } from '../../leader/contract.js';
+import { LEADER_CONDUCTOR_BLOCK, buildUnsupportedNativeSubagentGuidance } from '../../leader/contract.js';
 import { steeringFixtures, type SteeringFixtureProposal } from './steering-fixtures.js';
 
 async function withTempRepo<T>(run: (cwd: string) => Promise<T>): Promise<T> {
@@ -322,6 +322,19 @@ describe('ultragoal artifacts', () => {
       assert.match(perStoryInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
       assert.match(perStoryInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
       assert.match(perStoryInstruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+
+      const nativeSubagentSupport = {
+        status: 'unsupported' as const,
+        reason: 'native_subagents_unsupported' as const,
+        source: 'persisted_support_blocker' as const,
+        evidenceSummary: 'native subagents are disabled in this runtime',
+      };
+      const unsupportedInstruction = buildCodexGoalInstruction(perStory.goal!, perStory.plan, { nativeSubagentSupport });
+      assert.doesNotMatch(unsupportedInstruction, /Conductor mode contract:/);
+      assert.match(unsupportedInstruction, new RegExp(escapeRegExp(buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport))));
+      assert.match(unsupportedInstruction, /record-review-blockers/);
+      assert.match(unsupportedInstruction, /non-clean blocker/);
+      assert.match(unsupportedInstruction, /Native independent review unavailable/);
     });
   });
 
@@ -1017,6 +1030,30 @@ describe('ultragoal artifacts', () => {
               recommendation: 'APPROVE',
               architectStatus: 'CLEAR',
               evidence: 'same execution lane self-reviewed and approved without spawning review subagents',
+            },
+          },
+        }),
+        /independent review unavailable|self-approving/i,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            codeReview: {
+              recommendation: 'APPROVE',
+              architectStatus: 'CLEAR',
+              evidence: 'native independent review unavailable',
+            },
+            nativeSubagentSupport: {
+              status: 'unsupported',
+              reason: 'native_subagents_unsupported',
+              source: 'persisted_support_blocker',
+              evidenceSummary: 'native subagents are disabled in this runtime',
             },
           },
         }),
