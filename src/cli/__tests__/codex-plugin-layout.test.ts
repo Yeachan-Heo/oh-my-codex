@@ -642,6 +642,36 @@ printf 'trailing runtime noise\n'
     });
   });
 
+  it('rejects Stop child JSON when an earlier JSON decision is followed by noise and final JSON', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'json-noise-json.cmd' : 'json-noise-json.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {"decision":"block","stopReason":"first_json"}\r\necho trailing runtime noise\r\necho {"decision":"block","stopReason":"second_json"}\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{"decision":"block","stopReason":"first_json"}\n'
+printf 'trailing runtime noise\n'
+printf '{"decision":"block","stopReason":"second_json"}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-json-noise-json-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /first_json/);
+      assert.doesNotMatch(result.stdout, /second_json/);
+      assert.doesNotMatch(result.stdout, /trailing runtime noise/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_invalid_stdout');
+    });
+  });
+
   it('replaces oversized Stop child stdout with fallback Stop JSON', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const commandPath = join(cacheRoot, process.platform === 'win32' ? 'oversized-stop-stdout.cmd' : 'oversized-stop-stdout.sh');

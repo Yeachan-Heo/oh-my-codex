@@ -336,6 +336,11 @@ function parseJsonObjectCandidate(text) {
   }
 }
 
+function isJsonObjectLookingLine(text) {
+  return text.startsWith('{') && text.endsWith('}');
+}
+
+
 function parseSingleJsonObjectOutput(raw) {
   const text = String(raw ?? '').trim();
   if (!text) return null;
@@ -344,7 +349,10 @@ function parseSingleJsonObjectOutput(raw) {
 
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const lastLine = lines.at(-1);
-  if (!lastLine || !lastLine.startsWith('{') || !lastLine.endsWith('}')) return null;
+  if (!lastLine || !isJsonObjectLookingLine(lastLine)) return null;
+  for (const line of lines.slice(0, -1)) {
+    if (parseJsonObjectCandidate(line) || isJsonObjectLookingLine(line)) return null;
+  }
   return parseJsonObjectCandidate(lastLine);
 }
 
