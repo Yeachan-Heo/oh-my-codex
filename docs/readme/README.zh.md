@@ -75,7 +75,7 @@ omx doctor --team  # Team/swarm 诊断
 omx team ...       # 启动/状态/恢复/关闭 tmux 团队 worker
 omx status         # 显示活动模式
 omx cancel         # 取消活动执行模式
-omx reasoning <mode> # low|medium|high|xhigh
+omx reasoning <mode> # low|medium|high|xhigh|max|ultra
 omx tmux-hook ...  # init|status|validate|test
 omx hooks ...      # init|status|validate|test（插件扩展工作流）
 omx hud ...        # --watch|--json|--preset

@@ -76,7 +76,7 @@ omx ask ...          # 詢問本地供應商顧問（claude|gemini），結果�
 omx team ...         # 啟動/狀態/恢復/關閉團隊工作進程（預設為互動式 tmux）
 omx status           # 顯示目前活動模式
 omx cancel           # 取消活動中的執行模式
-omx reasoning <mode> # low|medium|high|xhigh
+omx reasoning <mode> # low|medium|high|xhigh|max|ultra
 omx tmux-hook ...    # init|status|validate|test
 omx hooks ...        # init|status|validate|test（插件擴充工作流程）
 omx hud ...          # --watch|--json|--preset

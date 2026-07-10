@@ -74,7 +74,7 @@ omx doctor --team  # Diagnostics Team/Swarm
 omx team ...       # Démarrer/statut/reprendre/arrêter les workers d'équipe tmux
 omx status         # Afficher les modes actifs
 omx cancel         # Annuler les modes d'exécution actifs
-omx reasoning <mode> # low|medium|high|xhigh
+omx reasoning <mode> # low|medium|high|xhigh|max|ultra
 omx tmux-hook ...  # init|status|validate|test
 omx hooks ...      # init|status|validate|test (workflow d'extension de plugins)
 omx hud ...        # --watch|--json|--preset

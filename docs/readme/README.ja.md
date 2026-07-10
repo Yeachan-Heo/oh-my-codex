@@ -75,7 +75,7 @@ omx doctor --team  # Team/swarm診断
 omx team ...       # tmuxチームワーカーの開始/ステータス/再開/シャットダウン
 omx status         # アクティブなモードを表示
 omx cancel         # アクティブな実行モードをキャンセル
-omx reasoning <mode> # low|medium|high|xhigh
+omx reasoning <mode> # low|medium|high|xhigh|max|ultra
 omx tmux-hook ...  # init|status|validate|test
 omx hooks ...      # init|status|validate|test（プラグイン拡張ワークフロー）
 omx hud ...        # --watch|--json|--preset

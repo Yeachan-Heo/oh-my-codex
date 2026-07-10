@@ -349,6 +349,26 @@ describe('team model contract', () => {
 });
 
 describe('resolveTeamWorkerLaunchArgs - teammate reasoning allocation', () => {
+  it('preserves GPT-5.6 max and ultra reasoning in worker diagnostics', () => {
+    const maxArgs = resolveTeamWorkerLaunchArgs({
+      fallbackModel: 'gpt-5.6-sol',
+      preferredReasoning: 'max',
+    });
+    assert.deepEqual(maxArgs, [
+      '-c',
+      'model_reasoning_effort="max"',
+      '--model',
+      'gpt-5.6-sol',
+    ]);
+
+    const ultraDiagnostics = resolveTeamWorkerLaunchDiagnostics({
+      existingRaw: '-c model_reasoning_effort="ultra"',
+      fallbackModel: 'gpt-5.6-sol',
+    });
+    assert.equal(ultraDiagnostics.actualReasoning, 'ultra');
+    assert.equal(ultraDiagnostics.reasoningSource, 'explicit');
+  });
+
   it('injects preferred reasoning when explicit reasoning is absent', () => {
     const result = resolveTeamWorkerLaunchArgs({
       fallbackModel: expectedLowComplexityModel(),

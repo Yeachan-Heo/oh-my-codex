@@ -38,11 +38,12 @@ export interface OmxConfigEnv {
   [key: string]: string | undefined;
 }
 
-export const CANONICAL_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export const CANONICAL_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ConfiguredAgentReasoningEffort = (typeof CANONICAL_REASONING_EFFORTS)[number];
 
-export const AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS = ['max', 'ultra'] as const;
-export type AmbiguousUnsupportedReasoningEffort = (typeof AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS)[number];
+export function isConfiguredAgentReasoningEffort(value: string): value is ConfiguredAgentReasoningEffort {
+  return (CANONICAL_REASONING_EFFORTS as readonly string[]).includes(value);
+}
 
 
 interface OmxConfigFile {
@@ -118,14 +119,10 @@ function normalizeConfiguredValue(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function isAmbiguousUnsupportedReasoningEffort(value: string): value is AmbiguousUnsupportedReasoningEffort {
-  return (AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS as readonly string[]).includes(value.toLowerCase());
-}
-
 function normalizeAgentReasoningEffort(value: unknown): ConfiguredAgentReasoningEffort | undefined {
   const normalized = normalizeConfiguredValue(value)?.toLowerCase();
-  if (normalized && (CANONICAL_REASONING_EFFORTS as readonly string[]).includes(normalized)) {
-    return normalized as ConfiguredAgentReasoningEffort;
+  if (normalized && isConfiguredAgentReasoningEffort(normalized)) {
+    return normalized;
   }
   return undefined;
 }

@@ -26,7 +26,7 @@ Current code recognizes these top-level `.omx-config.json` keys:
 | Top-level key | Supported shape | Primary use |
 | --- | --- | --- |
 | `agentModels` | Object mapping agent names to non-empty model strings | Optional per-agent model overrides for generated native agent TOML, AGENTS.md model tables, and role-based worker/Ralph fallback routing. |
-| `agentReasoning` | Object mapping agent names to `low`, `medium`, `high`, or `xhigh` | Optional per-agent reasoning overrides for generated native agent TOML and role-based worker/Ralph staffing guidance. |
+| `agentReasoning` | Object mapping agent names to `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` | Optional per-agent reasoning overrides for generated native agent TOML and role-based worker/Ralph staffing guidance. |
 | `env` | Object of non-empty string values | Fallback environment values for model routing and helper launch paths. Model-related supported keys are listed below. |
 | `models` | Object of non-empty string values | Mode defaults and low-complexity model aliases. Supported model-routing keys are listed below. |
 | `notifications` | Object | Notification transports, profiles, templates, cooldowns, replies, and OpenClaw/custom aliases. See the notification summary below and the OpenClaw guide for full examples. |
@@ -152,9 +152,9 @@ For a named role, effective model precedence is:
 
 ### `agentReasoning`
 
-`agentReasoning` is the supported per-agent reasoning override map. Keys are agent names and values must be one of `low`, `medium`, `high`, or `xhigh`.
+`agentReasoning` is the supported per-agent reasoning override map. Keys are agent names and values must be one of `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`.
 
-`xhigh` is the canonical highest reasoning effort token accepted by Codex/OMX. Reported names such as `max` or `ultra` are ambiguous and are not accepted aliases; use `xhigh` instead.
+Codex/OMX accepts `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` reasoning effort tokens. Model support is authoritative: GPT-5.6 Sol and Terra currently advertise both `max` and `ultra`, while GPT-5.6 Luna advertises `max` but not `ultra`.
 
 ```json
 {
@@ -243,8 +243,8 @@ Use `omx team status <team-name> --model-inspect` when you need inspect hints fo
 Supported reasoning-effort surfaces are:
 
 - Active Codex `config.toml` root key: `model_reasoning_effort = "medium"`.
-- `omx reasoning <low|medium|high|xhigh>`, which edits the active Codex `config.toml`.
-- `omx --high` and `omx --xhigh`, which pass `-c model_reasoning_effort="high|xhigh"` to Codex launch.
+- `omx reasoning <low|medium|high|xhigh|max|ultra>`, which edits the active Codex `config.toml`.
+- `omx --high`, `omx --xhigh`, `omx --max`, and `omx --ultra`, which pass the matching `model_reasoning_effort` value to Codex launch.
 - Generated native agent TOML files, where OMX writes each role's built-in `reasoningEffort` metadata.
 - `.omx-config.json` `agentReasoning`, which overrides selected role defaults for generated native agent TOML and role-based team/Ralph reasoning allocation without changing built-in defaults.
 - Team worker launch args, for example:

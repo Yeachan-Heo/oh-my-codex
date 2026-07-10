@@ -31,7 +31,7 @@ Usage:
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
-  omx reasoning Show or set model reasoning effort (low|medium|high|xhigh)
+  omx reasoning Show or set model reasoning effort (low|medium|high|xhigh|max|ultra)
 
 Options:
   --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
@@ -39,6 +39,10 @@ Options:
                 (shorthand for: -c model_reasoning_effort="high")
   --xhigh       Launch Codex with xhigh reasoning effort
                 (shorthand for: -c model_reasoning_effort="xhigh")
+  --max         Launch Codex with max reasoning effort
+                (shorthand for: -c model_reasoning_effort="max")
+  --ultra       Launch Codex with ultra reasoning effort
+                (shorthand for: -c model_reasoning_effort="ultra")
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
   --spark       Use the Codex spark model (~1.3x faster) for team workers only

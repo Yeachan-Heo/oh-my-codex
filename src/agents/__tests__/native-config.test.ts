@@ -111,7 +111,7 @@ describe("agents/native-config", () => {
     try {
       await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
         agentReasoning: {
-          architect: "xhigh",
+          architect: "ultra",
         },
       }));
       const agent: AgentDefinition = {
@@ -127,7 +127,7 @@ describe("agents/native-config", () => {
 
       const toml = generateAgentToml(agent, "Architect prompt", { codexHomeOverride: codexHome });
 
-      assert.match(toml, /model_reasoning_effort = "xhigh"/);
+      assert.match(toml, /model_reasoning_effort = "ultra"/);
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -395,7 +395,7 @@ describe("agents/native-config", () => {
       await mkdir(codexHome, { recursive: true });
       await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
         agentReasoning: {
-          architect: "xhigh",
+          architect: "ultra",
         },
       }));
       await writeFile(join(promptsDir, "architect.md"), "architect prompt");
@@ -406,7 +406,7 @@ describe("agents/native-config", () => {
       });
 
       const architectToml = await readFile(join(outDir, "architect.toml"), "utf8");
-      assert.match(architectToml, /model_reasoning_effort = "xhigh"/);
+      assert.match(architectToml, /model_reasoning_effort = "ultra"/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

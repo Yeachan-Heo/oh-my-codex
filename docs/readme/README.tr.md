@@ -74,7 +74,7 @@ omx doctor --team  # Team/swarm tanılamaları
 omx team ...       # tmux takım çalışanlarını başlat/durum/devam et/kapat
 omx status         # Aktif modları göster
 omx cancel         # Aktif çalışma modlarını iptal et
-omx reasoning <mode> # low|medium|high|xhigh
+omx reasoning <mode> # low|medium|high|xhigh|max|ultra
 omx tmux-hook ...  # init|status|validate|test
 omx hooks ...      # init|status|validate|test (eklenti uzantı iş akışı)
 omx hud ...        # --watch|--json|--preset

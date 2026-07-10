@@ -323,6 +323,28 @@ describe("madmax state isolation", () => {
         buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh", "--high"], runDir),
         "last reasoning shorthand wins, so reversed reasoning order is a distinct context",
       );
+      assert.notEqual(
+        buildMadmaxDetachedLaunchContextKey(
+          wd,
+          ["--madmax", "--ultra", "-c", 'model_reasoning_effort="low"'],
+          runDir,
+        ),
+        buildMadmaxDetachedLaunchContextKey(
+          wd,
+          ["--madmax", "-c", 'model_reasoning_effort="low"', "--ultra"],
+          runDir,
+        ),
+        "last explicit or shorthand reasoning override determines the detached context",
+      );
+      assert.equal(
+        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--ultra"], runDir),
+        buildMadmaxDetachedLaunchContextKey(
+          wd,
+          ["--madmax", "--config=model_reasoning_effort='ultra'"],
+          runDir,
+        ),
+        "equivalent shorthand and explicit reasoning overrides share a detached context",
+      );
       const otherWd = await mkdtemp(join(tmpdir(), "omx-madmax-other-source-"));
       try {
         assert.notEqual(
@@ -589,14 +611,32 @@ describe("normalizeCodexLaunchArgs", () => {
     ]);
   });
 
-  it("rejects ambiguous max and ultra reasoning shorthands", () => {
-    assert.throws(
-      () => normalizeCodexLaunchArgs(["--max"]),
-      /canonical highest reasoning effort is "xhigh".*"max" and "ultra" are not accepted aliases/,
+  it("maps GPT-5.6 max and ultra reasoning shorthands", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--max"]), [
+      "-c",
+      'model_reasoning_effort="max"',
+    ]);
+    assert.deepEqual(normalizeCodexLaunchArgs(["--ultra"]), [
+      "-c",
+      'model_reasoning_effort="ultra"',
+    ]);
+  });
+
+  it("uses the last explicit or shorthand reasoning override without duplicates", () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs([
+        "--ultra",
+        "-c",
+        'model_reasoning_effort="low"',
+      ]),
+      ["-c", 'model_reasoning_effort="low"'],
     );
-    assert.throws(
-      () => normalizeCodexLaunchArgs(["--ultra"]),
-      /canonical highest reasoning effort is "xhigh".*"max" and "ultra" are not accepted aliases/,
+    assert.deepEqual(
+      normalizeCodexLaunchArgs([
+        "--config=model_reasoning_effort=low",
+        "--max",
+      ]),
+      ["-c", 'model_reasoning_effort="max"'],
     );
   });
 
@@ -699,6 +739,20 @@ describe("normalizeCodexLaunchArgs", () => {
       "--",
       "--direct",
       "--yolo",
+    ]);
+  });
+
+  it("preserves literal reasoning shorthands after -- in leader codex args", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--", "--max", "--ultra"]), [
+      "--",
+      "--max",
+      "--ultra",
+    ]);
+    assert.deepEqual(normalizeCodexLaunchArgs(["--max", "--", "prompt"]), [
+      "-c",
+      'model_reasoning_effort="max"',
+      "--",
+      "prompt",
     ]);
   });
 });

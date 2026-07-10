@@ -6,6 +6,8 @@ import {
   getMainDefaultModel,
   getSparkDefaultModel,
   getStandardDefaultModel,
+  isConfiguredAgentReasoningEffort,
+  type ConfiguredAgentReasoningEffort,
 } from '../config/models.js';
 
 const MADMAX_FLAG = '--madmax';
@@ -24,7 +26,7 @@ const LOW_COMPLEXITY_AGENT_TYPES = new Set([
 
 // Canonical default only; effective low-complexity resolution flows through resolveTeamLowComplexityDefaultModel().
 export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = DEFAULT_SPARK_MODEL;
-export type TeamReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export type TeamReasoningEffort = ConfiguredAgentReasoningEffort;
 
 export interface ParsedTeamWorkerLaunchArgs {
   passthrough: string[];
@@ -93,10 +95,7 @@ function normalizeOptionalModel(model?: string | null): string | undefined {
 function normalizeOptionalReasoning(reasoning?: TeamReasoningEffort | string | null): TeamReasoningEffort | undefined {
   if (typeof reasoning !== 'string') return undefined;
   const normalized = reasoning.trim().toLowerCase();
-  if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh') {
-    return normalized;
-  }
-  return undefined;
+  return isConfiguredAgentReasoningEffort(normalized) ? normalized : undefined;
 }
 
 function extractReasoningEffort(value: string | null): TeamReasoningEffort | undefined {

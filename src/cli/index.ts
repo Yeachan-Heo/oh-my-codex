@@ -60,6 +60,8 @@ import {
   CODEX_BYPASS_FLAG,
   HIGH_REASONING_FLAG,
   XHIGH_REASONING_FLAG,
+  MAX_REASONING_FLAG,
+  ULTRA_REASONING_FLAG,
   SPARK_FLAG,
   MADMAX_SPARK_FLAG,
   CONFIG_FLAG,
@@ -90,10 +92,7 @@ import {
   upsertLocalOmxPluginEnablement,
 } from "./plugin-marketplace.js";
 import { escapeTomlString, readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
-import {
-  CANONICAL_REASONING_EFFORTS,
-  isAmbiguousUnsupportedReasoningEffort,
-} from "../config/models.js";
+import { CANONICAL_REASONING_EFFORTS } from "../config/models.js";
 
 
 export {
@@ -288,7 +287,7 @@ Usage:
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
-  omx reasoning Show or set model reasoning effort (low|medium|high|xhigh)
+  omx reasoning Show or set model reasoning effort (low|medium|high|xhigh|max|ultra)
 
 Options:
   --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
@@ -296,6 +295,10 @@ Options:
                 (shorthand for: -c model_reasoning_effort="high")
   --xhigh       Launch Codex with xhigh reasoning effort
                 (shorthand for: -c model_reasoning_effort="xhigh")
+  --max         Launch Codex with max reasoning effort
+                (shorthand for: -c model_reasoning_effort="max")
+  --ultra       Launch Codex with ultra reasoning effort
+                (shorthand for: -c model_reasoning_effort="ultra")
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
   --spark       Use the Codex spark model (~1.3x faster) for team workers only
@@ -363,10 +366,8 @@ const OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV =
 const OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE";
 const REASONING_MODES = CANONICAL_REASONING_EFFORTS;
-type ReasoningMode = (typeof REASONING_MODES)[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
-const REASONING_USAGE = "Usage: omx reasoning <low|medium|high|xhigh>";
-const AMBIGUOUS_REASONING_MESSAGE = 'Codex/OMX canonical highest reasoning effort is "xhigh"; "max" and "ultra" are not accepted aliases.';
+const REASONING_USAGE = "Usage: omx reasoning <low|medium|high|xhigh|max|ultra>";
 
 const ALLOWED_SHELLS = new Set([
   "/bin/sh",
@@ -2288,13 +2289,22 @@ function canonicalizeLaunchCwd(cwd: string): string {
   }
 }
 
+function extractReasoningConfigValue(value: string): string | null {
+  const match = new RegExp(`^${REASONING_KEY}\\s*=\\s*(.*)$`).exec(value.trim());
+  if (!match) return null;
+  const raw = match[1]?.trim() ?? "";
+  const quoted = /^(?:"([^"]*)"|'([^']*)')$/.exec(raw);
+  return quoted?.[1] ?? quoted?.[2] ?? raw;
+}
+
 function normalizeMadmaxDetachedLaunchArgv(argv: readonly string[]): string[] {
   const passthrough: string[] = [];
   const semanticFlags = new Set<string>();
-  let reasoningFlag: string | null = null;
+  let reasoningValue: string | undefined;
   let afterEndOfOptions = false;
 
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
     if (afterEndOfOptions) {
       passthrough.push(arg);
       continue;
@@ -2314,8 +2324,38 @@ function normalizeMadmaxDetachedLaunchArgv(argv: readonly string[]): string[] {
       semanticFlags.add(arg);
       continue;
     }
-    if (arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) {
-      reasoningFlag = arg;
+    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
+      const value = argv[index + 1];
+      if (typeof value === "string") {
+        const explicitReasoning = extractReasoningConfigValue(value);
+        if (explicitReasoning !== null) {
+          reasoningValue = explicitReasoning;
+        } else {
+          passthrough.push(arg, value);
+        }
+        index++;
+      } else {
+        passthrough.push(arg);
+      }
+      continue;
+    }
+    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
+      const value = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
+      const explicitReasoning = extractReasoningConfigValue(value);
+      if (explicitReasoning !== null) {
+        reasoningValue = explicitReasoning;
+      } else {
+        passthrough.push(arg);
+      }
+      continue;
+    }
+    if (
+      arg === HIGH_REASONING_FLAG ||
+      arg === XHIGH_REASONING_FLAG ||
+      arg === MAX_REASONING_FLAG ||
+      arg === ULTRA_REASONING_FLAG
+    ) {
+      reasoningValue = arg.slice(2);
       continue;
     }
     passthrough.push(arg);
@@ -2323,7 +2363,9 @@ function normalizeMadmaxDetachedLaunchArgv(argv: readonly string[]): string[] {
 
   return [
     ...Array.from(semanticFlags).sort(),
-    ...(reasoningFlag ? [reasoningFlag] : []),
+    ...(reasoningValue !== undefined
+      ? [CONFIG_FLAG, `${REASONING_KEY}=${JSON.stringify(reasoningValue)}`]
+      : []),
     ...passthrough,
   ];
 }
@@ -3034,11 +3076,8 @@ async function reasoningCommand(args: string[]): Promise<void> {
   }
 
   if (!REASONING_MODE_SET.has(mode)) {
-    const guidance = isAmbiguousUnsupportedReasoningEffort(mode)
-      ? `${AMBIGUOUS_REASONING_MESSAGE}\n`
-      : "";
     throw new Error(
-      `${guidance}Invalid reasoning mode "${mode}". Expected one of: ${REASONING_MODES.join(", ")}.\n${REASONING_USAGE}`,
+      `Invalid reasoning mode "${mode}". Expected one of: ${REASONING_MODES.join(", ")}.\n${REASONING_USAGE}`,
     );
   }
 
@@ -3419,15 +3458,52 @@ export async function execWithOverlay(args: string[]): Promise<void> {
   }
 }
 
+function isReasoningConfigOverride(value: string): boolean {
+  return new RegExp(`^${REASONING_KEY}\\s*=`).test(value.trim());
+}
+
 export function normalizeCodexLaunchArgs(args: string[]): string[] {
   const parsed = parseWorktreeMode(args);
   const launchPolicyParsed = splitLeaderLaunchPolicyArgs(parsed.remainingArgs);
   const normalized: string[] = [];
   let wantsBypass = false;
   let hasBypass = false;
-  let reasoningMode: ReasoningMode | null = null;
+  let reasoningOverride: string | null = null;
+  let trailingLiteralArgs: string[] = [];
 
-  for (const arg of launchPolicyParsed.remainingArgs) {
+  for (let index = 0; index < launchPolicyParsed.remainingArgs.length; index++) {
+    const arg = launchPolicyParsed.remainingArgs[index];
+
+    if (arg === "--") {
+      trailingLiteralArgs = launchPolicyParsed.remainingArgs.slice(index);
+      break;
+    }
+
+    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
+      const value = launchPolicyParsed.remainingArgs[index + 1];
+      if (typeof value === "string") {
+        if (isReasoningConfigOverride(value)) {
+          reasoningOverride = value;
+        } else {
+          normalized.push(arg, value);
+        }
+        index++;
+      } else {
+        normalized.push(arg);
+      }
+      continue;
+    }
+
+    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
+      const value = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
+      if (isReasoningConfigOverride(value)) {
+        reasoningOverride = value;
+      } else {
+        normalized.push(arg);
+      }
+      continue;
+    }
+
     if (arg === MADMAX_FLAG) {
       wantsBypass = true;
       continue;
@@ -3443,17 +3519,23 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
     }
 
     if (arg === HIGH_REASONING_FLAG) {
-      reasoningMode = "high";
+      reasoningOverride = `${REASONING_KEY}="high"`;
       continue;
     }
 
     if (arg === XHIGH_REASONING_FLAG) {
-      reasoningMode = "xhigh";
+      reasoningOverride = `${REASONING_KEY}="xhigh"`;
       continue;
     }
 
-    if (arg === "--max" || arg === "--ultra") {
-      throw new Error(AMBIGUOUS_REASONING_MESSAGE);
+    if (arg === MAX_REASONING_FLAG) {
+      reasoningOverride = `${REASONING_KEY}="max"`;
+      continue;
+    }
+
+    if (arg === ULTRA_REASONING_FLAG) {
+      reasoningOverride = `${REASONING_KEY}="ultra"`;
+      continue;
     }
 
     if (arg === SPARK_FLAG) {
@@ -3474,9 +3556,11 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
     normalized.push(CODEX_BYPASS_FLAG);
   }
 
-  if (reasoningMode) {
-    normalized.push(CONFIG_FLAG, `${REASONING_KEY}="${reasoningMode}"`);
+  if (reasoningOverride) {
+    normalized.push(CONFIG_FLAG, reasoningOverride);
   }
+
+  normalized.push(...trailingLiteralArgs);
 
   return normalized;
 }

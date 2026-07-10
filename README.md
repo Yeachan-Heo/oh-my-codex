@@ -161,7 +161,7 @@ checkout, which is the safer default when using `--madmax`. Replace
 `--madmax` is OMX shorthand for Codex
 `--dangerously-bypass-approvals-and-sandbox`. It removes the normal approval and
 sandbox guardrails, so only use it in trusted repositories and environments.
-`--high` and `--xhigh` are shorthand for `-c model_reasoning_effort="high|xhigh"`; a normal strong session is `omx --madmax --xhigh` (or `omx --worktree=feat/task --madmax --xhigh` from a git project).
+`--high`, `--xhigh`, `--max`, and `--ultra` are shorthand for their matching `-c model_reasoning_effort="..."` values. Reasoning effort availability depends on the selected model; a normal strong session is `omx --madmax --xhigh` (or `omx --worktree=feat/task --madmax --xhigh` from a git project).
 
 When you use `--madmax` from a git repository, prefer a worktree launch instead
 of running directly in the current checkout. For repeatable or concurrent work,

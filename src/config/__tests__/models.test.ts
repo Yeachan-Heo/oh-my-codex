@@ -272,7 +272,7 @@ describe('getModelForMode', () => {
     assert.equal(getAgentReasoningOverride('executor'), undefined);
   });
 
-  it('rejects ambiguous max and ultra reasoning aliases', async () => {
+  it('accepts GPT-5.6 max and ultra reasoning efforts', async () => {
     await writeConfig({
       agentReasoning: {
         architect: 'max',
@@ -282,6 +282,8 @@ describe('getModelForMode', () => {
     });
 
     assert.deepEqual(readAgentReasoningOverrides(), {
+      architect: 'max',
+      critic: 'ultra',
       planner: 'xhigh',
     });
   });
