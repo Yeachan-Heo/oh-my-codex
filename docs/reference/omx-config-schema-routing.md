@@ -279,38 +279,109 @@ This keeps orchestration on the frontier default, routes standard workers to a c
 }
 ```
 
-### Max-quality starter
+### GPT-5.6 balanced role starter
 
-This keeps standard agents inheriting the frontier model by omitting `OMX_DEFAULT_STANDARD_MODEL`, keeps a fast spark lane for default low-complexity routing, and explicitly promotes selected exact-pinned/generated roles to a max-quality model with matching reasoning overrides.
+This opt-in starter uses GPT-5.6 Sol for judgment-heavy roles and GPT-5.6 Luna for high-volume or bounded work. It keeps `analyst` and `planner` on Sol with medium reasoning, raises `executor` and `team-executor` to Luna with xhigh reasoning, and reserves Sol xhigh for `architect` and `scholastic`. The listed role overrides are explicit so those generated native agents do not retain the built-in GPT-5.5 planner/architect pins or the GPT-5.4-mini researcher pin.
+
+GPT-5.6 availability can vary by Codex profile. Confirm that the selected profile can use the Sol and Luna aliases before applying this starter. OMX accepts `xhigh` as its highest per-role reasoning value; do not replace it with the benchmark-only `max` label.
+
+> **Known compatibility limitation:** [issue #3106](https://github.com/Yeachan-Heo/oh-my-codex/issues/3106) reports that Sol and Terra dispatches can fail with HTTP 400 when an OMX-seeded Codex home enables the legacy multi-agent v1 schema. `omx doctor` may still report a healthy installation. Until that issue is resolved, smoke-test Sol from the exact `CODEX_HOME` that will launch OMX; if it fails, use Luna-only routing or a separate minimal Codex home for Sol. This preset is not safe to adopt solely on the basis of a passing doctor result.
+
+The same copy-ready configuration is available as [`gpt-5.6-balanced.omx-config.json`](./gpt-5.6-balanced.omx-config.json).
 
 ```json
 {
   "agentModels": {
-    "planner": "gpt-5.5",
-    "architect": "gpt-5.5",
-    "researcher": "gpt-5.5",
-    "explore": "gpt-5.5"
+    "explore": "gpt-5.6-luna",
+    "analyst": "gpt-5.6-sol",
+    "planner": "gpt-5.6-sol",
+    "architect": "gpt-5.6-sol",
+    "debugger": "gpt-5.6-sol",
+    "executor": "gpt-5.6-luna",
+    "team-executor": "gpt-5.6-luna",
+    "verifier": "gpt-5.6-sol",
+    "code-reviewer": "gpt-5.6-sol",
+    "dependency-expert": "gpt-5.6-sol",
+    "test-engineer": "gpt-5.6-sol",
+    "designer": "gpt-5.6-sol",
+    "writer": "gpt-5.6-sol",
+    "git-master": "gpt-5.6-sol",
+    "code-simplifier": "gpt-5.6-sol",
+    "researcher": "gpt-5.6-luna",
+    "prometheus-strict-metis": "gpt-5.6-sol",
+    "prometheus-strict-momus": "gpt-5.6-sol",
+    "prometheus-strict-oracle": "gpt-5.6-sol",
+    "critic": "gpt-5.6-sol",
+    "scholastic": "gpt-5.6-sol",
+    "vision": "gpt-5.6-luna"
   },
   "agentReasoning": {
+    "explore": "low",
+    "analyst": "medium",
     "planner": "medium",
     "architect": "xhigh",
+    "debugger": "high",
+    "executor": "xhigh",
+    "team-executor": "xhigh",
+    "verifier": "high",
+    "code-reviewer": "high",
+    "dependency-expert": "high",
+    "test-engineer": "medium",
+    "designer": "high",
+    "writer": "medium",
+    "git-master": "medium",
+    "code-simplifier": "high",
     "researcher": "high",
-    "explore": "medium",
-    "critic": "xhigh"
+    "prometheus-strict-metis": "high",
+    "prometheus-strict-momus": "high",
+    "prometheus-strict-oracle": "high",
+    "critic": "high",
+    "scholastic": "xhigh",
+    "vision": "low"
   },
   "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.5",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.3-codex-spark"
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
   },
   "models": {
-    "default": "gpt-5.5",
-    "team": "gpt-5.5",
-    "autopilot": "gpt-5.5",
-    "ralph": "gpt-5.5",
-    "team_low_complexity": "gpt-5.3-codex-spark"
+    "default": "gpt-5.6-sol",
+    "team": "gpt-5.6-sol",
+    "autopilot": "gpt-5.6-sol",
+    "ralph": "gpt-5.6-sol",
+    "team_low_complexity": "gpt-5.6-luna"
   }
 }
 ```
+
+#### Benchmark rationale and GPT-5.5 comparison
+
+The starter is based on Artificial Analysis Intelligence Index v4.1 and Coding Agent Index results published on July 9, 2026. The numbers below are directional benchmark evidence, not guarantees of role-specific success. Intelligence cost is the benchmark's approximate average API cost per Intelligence Index task as plotted in the cited chart; it is not a projected OMX bill. The table covers roles explicitly tuned by this starter; roles omitted from the table inherit the configured model lane and their built-in reasoning defaults.
+
+| Role group | GPT-5.5 baseline | GPT-5.6 starter | Intelligence change | Intelligence task cost change |
+| --- | --- | --- | ---: | ---: |
+| `analyst`, `planner`, `test-engineer` | GPT-5.5 medium: 51 / ~$0.34 | Sol medium: 54 / ~$0.31 | +3 | ~-9% |
+| `architect` | GPT-5.5 xhigh: 55 / ~$0.86 | Sol xhigh: 58 / ~$0.68 | +3 | ~-21% |
+| `debugger`, `verifier`, `code-reviewer`, `dependency-expert`, `designer`, `code-simplifier`, Prometheus Strict panel, `critic` | GPT-5.5 high: 53 / ~$0.61 | Sol high: 56 / ~$0.45 | +3 | ~-26% |
+| `writer`, `git-master` | GPT-5.5 high: 53 / ~$0.61 | Sol medium: 54 / ~$0.31 | +1 | ~-49% |
+| `executor`, `team-executor` | GPT-5.5 medium: 51 / ~$0.34 | Luna xhigh: 49 / ~$0.14 | -2 | ~-59% |
+| `scholastic` | GPT-5.5 high: 53 / ~$0.61 | Sol xhigh: 58 / ~$0.68 | +5 | ~+11% |
+| `vision` | GPT-5.5 low: 43 / ~$0.19 | Luna low: 33 / ~$0.04 | -10 | ~-79% |
+| `explore` | Built-in GPT-5.3 Codex Spark low | Luna low: 33 / ~$0.04 | Not directly comparable | Not directly comparable |
+| `researcher` | Built-in GPT-5.4 mini high | Luna high: 46 / ~$0.09 | Not directly comparable | Not directly comparable |
+
+At the highest efforts reported in the article, GPT-5.5 xhigh scores 55 on Intelligence at $0.86 per task and 76 on the Coding Agent Index at $5.07 per task. GPT-5.6 Sol max scores 59 / $1.04 and 80 / $7.08; Terra max scores 55 / $0.55 and 77 / $2.76; Luna max scores 51 / $0.21 and 75 / $1.57. Sol and GPT-5.5 have the same published token prices of $5 per million input tokens and $30 per million output tokens, while Terra is half that price and Luna is one fifth.
+
+The general Intelligence effort curve places Luna and Sol, but not Terra, on the cost-performance Pareto frontier. Terra remains a reasonable private bake-off candidate for coding because its max-effort Coding Agent result is two points above Luna, but the article does not publish the corresponding high/xhigh coding comparison. This starter therefore avoids inferring a Terra role default from max-only data that OMX cannot express per role.
+
+Sources:
+
+- [Artificial Analysis: GPT-5.6 benchmarks across Intelligence, Speed and Cost](https://artificialanalysis.ai/articles/gpt-5-6-has-landed)
+- [Intelligence versus cost by reasoning effort](https://cdn.sanity.io/images/6vfeftx9/articles/5b9d20f2489ad000ea4135f99f08feb6fd4ff33a-4640x2656.png)
+- [Coding Agent benchmark and cost breakdown](https://cdn.sanity.io/images/6vfeftx9/articles/9d0d05b81e0209c0b0e719e2ea6e673c61c2e38d-4640x3648.png)
+- [OpenAI GPT-5.5 model pricing](https://developers.openai.com/api/docs/models/gpt-5.5)
+- [OpenAI GPT-5.6 Sol model pricing](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- [OpenAI GPT-5.6 Terra model pricing](https://developers.openai.com/api/docs/models/gpt-5.6-terra)
+- [OpenAI GPT-5.6 Luna model pricing](https://developers.openai.com/api/docs/models/gpt-5.6-luna)
 
 ## Verifying the effective config
 
