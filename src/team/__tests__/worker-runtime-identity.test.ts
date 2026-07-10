@@ -162,9 +162,9 @@ process.on('SIGTERM', () => process.exit(0));
       const worker1Joined = worker1Args!.join(' ');
       const worker2Joined = worker2Args!.join(' ');
       assert.match(worker1Joined, /model_reasoning_effort="low"/);
-      assert.match(worker1Joined, /--model gpt-5\.3-codex-spark/);
+      assert.match(worker1Joined, /--model gpt-5\.6-luna/);
       assert.match(worker2Joined, /model_reasoning_effort="low"/);
-      assert.match(worker2Joined, /--model gpt-5\.3-codex-spark/);
+      assert.match(worker2Joined, /--model gpt-5\.6-luna/);
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -279,7 +279,7 @@ process.on('SIGTERM', () => process.exit(0));
         join(cwd, '.omx', 'state', 'team', 'low-role-scale', 'runtime', 'worker-2-startup.sh'),
         'utf-8',
       );
-      assert.match(startupScript, /gpt-5\.3-codex-spark/);
+      assert.match(startupScript, /gpt-5\.6-luna/);
       assert.match(startupScript, /model_reasoning_effort.*low/);
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;

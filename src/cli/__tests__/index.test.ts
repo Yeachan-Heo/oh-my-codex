@@ -2365,7 +2365,7 @@ describe("project launch scope helpers", () => {
         join(wd, ".omx", "setup-scope.json"),
         JSON.stringify({ scope: "project" }),
       );
-      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
       await writeFile(join(projectCodexHome, "state_5.sqlite"), "state db placeholder");
       await writeFile(join(projectCodexHome, "state_5.sqlite-wal"), "state db wal placeholder");
       await writeFile(join(projectCodexHome, "logs_2.sqlite-shm"), "logs db shm placeholder");
@@ -2489,7 +2489,7 @@ describe("project launch scope helpers", () => {
         JSON.stringify({ scope: "project" }),
       );
       const originalConfig = [
-        'model = "gpt-5.5"',
+        'model = "gpt-5.6-sol"',
         "",
         "[tui]",
         'status_line = ["model-with-reasoning", "git-branch"]',
@@ -2525,7 +2525,7 @@ describe("project launch scope helpers", () => {
 
       await writeFile(
         join(runtimeCodexHome, "config.toml"),
-        `${originalConfig}\n[tui.model_availability_nux]\n"gpt-5.5" = 1\n`,
+        `${originalConfig}\n[tui.model_availability_nux]\n"gpt-5.6-sol" = 1\n`,
       );
 
       assert.equal(await readFile(configPath, "utf-8"), originalConfig);
@@ -2550,13 +2550,13 @@ describe("project launch scope helpers", () => {
         join(wd, ".omx", "setup-scope.json"),
         JSON.stringify({ scope: "project" }),
       );
-      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
 
       const prepared = await prepareCodexHomeForLaunch(wd, "session-auth", {});
       const runtimeCodexHome = runtimeCodexHomePath(wd, "session-auth");
       const opaqueAuthState = JSON.stringify({ token: "opaque-test-token" });
       await writeFile(join(runtimeCodexHome, "auth.json"), opaqueAuthState);
-      await writeFile(join(runtimeCodexHome, "config.toml"), 'model = "gpt-5.5"\n[tui.model_availability_nux]\n"gpt-5.5" = 1\n');
+      await writeFile(join(runtimeCodexHome, "config.toml"), 'model = "gpt-5.6-sol"\n[tui.model_availability_nux]\n"gpt-5.6-sol" = 1\n');
 
       await persistProjectLaunchRuntimeAuthState(
         prepared.runtimeCodexHomeForCleanup,
@@ -2564,7 +2564,7 @@ describe("project launch scope helpers", () => {
       );
 
       assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), opaqueAuthState);
-      assert.equal(await readFile(join(projectCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.5"\n');
+      assert.equal(await readFile(join(projectCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.6-sol"\n');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -2581,7 +2581,7 @@ describe("project launch scope helpers", () => {
         JSON.stringify({ scope: "project" }),
       );
       const originalProjectConfig = [
-        'model = "gpt-5.5"',
+        'model = "gpt-5.6-sol"',
         "",
         "[features]",
         "hooks = true",
@@ -2618,7 +2618,7 @@ describe("project launch scope helpers", () => {
           'trust_level = "trusted"',
           "",
           "[tui.model_availability_nux]",
-          '"gpt-5.5" = 1',
+          '"gpt-5.6-sol" = 1',
           "",
         ].join("\n"),
       );
@@ -2718,7 +2718,7 @@ describe("project launch scope helpers", () => {
       await writeFile(
         projectConfigPath,
         [
-          'model = "gpt-5.5"',
+          'model = "gpt-5.6-sol"',
           "",
           "[features]",
           "hooks = true",
@@ -2832,7 +2832,7 @@ describe("project launch scope helpers", () => {
         join(source, ".omx", "setup-scope.json"),
         JSON.stringify({ scope: "project" }),
       );
-      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
 
       const prepared = await prepareCodexHomeForLaunch(source, "session-boxed", {});
       const runtimeCodexHome = runtimeCodexHomePath(source, "session-boxed");
@@ -2843,7 +2843,7 @@ describe("project launch scope helpers", () => {
       );
       assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
       assert.equal(prepared.runtimeCodexHomeForCleanup, runtimeCodexHome);
-      assert.equal(await readFile(join(runtimeCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.5"\n');
+      assert.equal(await readFile(join(runtimeCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.6-sol"\n');
     } finally {
       if (typeof prevOmxRoot === "string") process.env.OMX_ROOT = prevOmxRoot;
       else delete process.env.OMX_ROOT;
@@ -2883,7 +2883,7 @@ describe("project launch scope helpers", () => {
         join(wd, ".omx", "setup-scope.json"),
         JSON.stringify({ scope: "project" }),
       );
-      await writeFile(join(wd, ".codex", "config.toml"), 'model = "gpt-5.5"\n');
+      await writeFile(join(wd, ".codex", "config.toml"), 'model = "gpt-5.6-sol"\n');
 
       const prepared = await prepareCodexHomeForLaunch(wd, "session-explicit-sqlite", {
         [CODEX_SQLITE_HOME_ENV]: "/tmp/explicit-sqlite-home",
@@ -3367,9 +3367,9 @@ describe("detached tmux new-session sequencing", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
       "/tmp/project",
-      "'env' 'OMX_SESSION_ID=sess-detached-managed' 'codex' '--model' 'gpt-5.4-mini'",
+      "'env' 'OMX_SESSION_ID=sess-detached-managed' 'codex' '--model' 'gpt-5.6-terra'",
       "'node' '/tmp/omx.js' 'hud' '--watch'",
-      "--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini",
+      "--dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra",
       "/tmp/project/.codex",
       null,
       false,
@@ -3380,13 +3380,13 @@ describe("detached tmux new-session sequencing", () => {
       process.env,
       undefined,
       undefined,
-      "gpt-5.4-mini",
+      "gpt-5.6-terra",
     );
     const newSession = steps.find((step) => step.name === "new-session");
     assert.ok(newSession);
     assert.equal(
       newSession!.args.includes("-e") &&
-        newSession!.args.some((arg) => arg === "OMX_TEAM_WORKER_INHERITED_MODEL=gpt-5.4-mini"),
+        newSession!.args.some((arg) => arg === "OMX_TEAM_WORKER_INHERITED_MODEL=gpt-5.6-terra"),
       true,
     );
   });
@@ -5579,8 +5579,8 @@ describe("team worker launch arg inheritance helpers", () => {
 
   it("collectInheritableTeamWorkerArgs supports --model=<value> syntax", () => {
     assert.deepEqual(
-      collectInheritableTeamWorkerArgs(["--model=gpt-5.3-codex"]),
-      ["--model", "gpt-5.3-codex"],
+      collectInheritableTeamWorkerArgs(["--model=gpt-5.6-terra"]),
+      ["--model", "gpt-5.6-terra"],
     );
   });
 
@@ -5593,9 +5593,9 @@ describe("team worker launch arg inheritance helpers", () => {
         "-c",
         'model_provider="cheapRouter"',
         "--model",
-        "gpt-5.5",
+        "gpt-5.6-sol",
       ]),
-      ["-c", 'model_provider="cheapRouter"', "--model", "gpt-5.5"],
+      ["-c", 'model_provider="cheapRouter"', "--model", "gpt-5.6-sol"],
     );
   });
 
@@ -5635,10 +5635,10 @@ describe("team worker launch arg inheritance helpers", () => {
     assert.equal(
       resolveTeamWorkerLaunchArgsEnv(
         "--no-alt-screen",
-        ["--model=gpt-5.3-codex"],
+        ["--model=gpt-5.6-terra"],
         true,
       ),
-      "--no-alt-screen --model gpt-5.3-codex",
+      "--no-alt-screen --model gpt-5.6-terra",
     );
   });
 

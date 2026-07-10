@@ -139,9 +139,9 @@ describe('getModelForMode', () => {
   });
 
   it('uses OMX_DEFAULT_FRONTIER_MODEL when config does not provide a value', () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.4-mini';
-    assert.equal(getMainDefaultModel(), 'gpt-5.4-mini');
-    assert.equal(getModelForMode('team'), 'gpt-5.4-mini');
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-terra';
+    assert.equal(getMainDefaultModel(), 'gpt-5.6-terra');
+    assert.equal(getModelForMode('team'), 'gpt-5.6-terra');
   });
 
   it('uses .omx-config.json env.OMX_DEFAULT_FRONTIER_MODEL when shell env is absent', async () => {
@@ -159,9 +159,9 @@ describe('getModelForMode', () => {
   });
 
   it('uses OMX_DEFAULT_STANDARD_MODEL when configured in shell env', () => {
-    process.env.OMX_DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini-tuned';
-    assert.equal(getEnvConfiguredStandardDefaultModel(), 'gpt-5.4-mini-tuned');
-    assert.equal(getStandardDefaultModel(), 'gpt-5.4-mini-tuned');
+    process.env.OMX_DEFAULT_STANDARD_MODEL = 'gpt-5.6-terra-tuned';
+    assert.equal(getEnvConfiguredStandardDefaultModel(), 'gpt-5.6-terra-tuned');
+    assert.equal(getStandardDefaultModel(), 'gpt-5.6-terra-tuned');
   });
 
   it('uses .omx-config.json env.OMX_DEFAULT_STANDARD_MODEL when shell env is absent', async () => {
@@ -177,23 +177,23 @@ describe('getModelForMode', () => {
   });
 
   it('keeps explicit config default ahead of OMX_DEFAULT_FRONTIER_MODEL', async () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.4-mini';
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-terra';
     await writeConfig({ models: { default: 'o4-mini' } });
     assert.equal(getModelForMode('team'), 'o4-mini');
   });
 
   it('keeps explicit mode config ahead of OMX_DEFAULT_FRONTIER_MODEL', async () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.4-mini';
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-terra';
     await writeConfig({ models: { team: 'gpt-4.1', default: 'o4-mini' } });
     assert.equal(getModelForMode('team'), 'gpt-4.1');
   });
 
 
 
-  it('defaults team child model to standard mini independent of frontier defaults', () => {
+  it('defaults team child model to the standard lane independent of frontier defaults', () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-expensive';
-    assert.equal(DEFAULT_TEAM_CHILD_MODEL, 'gpt-5.4-mini');
-    assert.equal(getTeamChildModel(), 'gpt-5.4-mini');
+    assert.equal(DEFAULT_TEAM_CHILD_MODEL, 'gpt-5.6-terra');
+    assert.equal(getTeamChildModel(), 'gpt-5.6-terra');
   });
 
   it('uses OMX_TEAM_CHILD_MODEL shell override for team child model', () => {
@@ -213,10 +213,10 @@ describe('getModelForMode', () => {
   });
 
   it('uses OMX_DEFAULT_SPARK_MODEL when low-complexity config is absent', async () => {
-    process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark-fast';
+    process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.6-luna-fast';
     await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getSparkDefaultModel(), 'gpt-5.3-codex-spark-fast');
-    assert.equal(getTeamLowComplexityModel(), 'gpt-5.3-codex-spark-fast');
+    assert.equal(getSparkDefaultModel(), 'gpt-5.6-luna-fast');
+    assert.equal(getTeamLowComplexityModel(), 'gpt-5.6-luna-fast');
   });
 
   it('uses .omx-config.json env.OMX_DEFAULT_SPARK_MODEL when shell env is absent', async () => {
@@ -225,10 +225,10 @@ describe('getModelForMode', () => {
   });
 
   it('falls back to legacy OMX_SPARK_MODEL when canonical spark env is absent', async () => {
-    process.env.OMX_SPARK_MODEL = 'gpt-5.3-codex-spark-fast';
+    process.env.OMX_SPARK_MODEL = 'gpt-5.6-luna-fast';
     await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getSparkDefaultModel(), 'gpt-5.3-codex-spark-fast');
-    assert.equal(getTeamLowComplexityModel(), 'gpt-5.3-codex-spark-fast');
+    assert.equal(getSparkDefaultModel(), 'gpt-5.6-luna-fast');
+    assert.equal(getTeamLowComplexityModel(), 'gpt-5.6-luna-fast');
   });
 
   it('prefers OMX_DEFAULT_SPARK_MODEL over legacy OMX_SPARK_MODEL', () => {
@@ -290,8 +290,8 @@ describe('getModelForMode', () => {
   it('reads normalized per-agent model overrides from .omx-config.json', async () => {
     await writeConfig({
       agentModels: {
-        Architect: ' gpt-5.5 ',
-        critic: 'gpt-5.4',
+        Architect: ' gpt-5.6-sol ',
+        critic: 'gpt-5.5',
         executor: '',
         researcher: 42,
         'bad role': 'gpt-5',
@@ -300,11 +300,11 @@ describe('getModelForMode', () => {
     });
 
     assert.deepEqual(readAgentModelOverrides(), {
-      architect: 'gpt-5.5',
-      critic: 'gpt-5.4',
+      architect: 'gpt-5.6-sol',
+      critic: 'gpt-5.5',
       reviewer: 'gpt-5.6-terra',
     });
-    assert.equal(getAgentModelOverride('ARCHITECT'), 'gpt-5.5');
+    assert.equal(getAgentModelOverride('ARCHITECT'), 'gpt-5.6-sol');
     assert.equal(getAgentModelOverride('executor'), undefined);
     assert.equal(getAgentModelOverride('bad role'), undefined);
   });
@@ -323,15 +323,15 @@ describe('getModelForMode', () => {
 
   it('keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL', async () => {
     // Intentional legacy model fixture: explicit user config must outrank current spark defaults.
-    process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark-fast';
+    process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.6-luna-fast';
     await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
     assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
   });
 
   it('inherits the main default for standard agents when no standard override is configured', async () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.5-custom';
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-sol-custom';
     await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getStandardDefaultModel(), 'gpt-5.5-custom');
+    assert.equal(getStandardDefaultModel(), 'gpt-5.6-sol-custom');
   });
 
   it('returns canonical spark fallback when not configured', async () => {

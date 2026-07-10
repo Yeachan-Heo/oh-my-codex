@@ -1,61 +1,10 @@
 {
   "agentModels": {
-    "explore": "gpt-5.6-luna",
-    "analyst": "gpt-5.6-sol",
-    "planner": "gpt-5.6-sol",
-    "architect": "gpt-5.6-sol",
-    "debugger": "gpt-5.6-sol",
     "executor": "gpt-5.6-luna",
-    "team-executor": "gpt-5.6-luna",
-    "verifier": "gpt-5.6-sol",
-    "code-reviewer": "gpt-5.6-sol",
-    "dependency-expert": "gpt-5.6-sol",
-    "test-engineer": "gpt-5.6-sol",
-    "designer": "gpt-5.6-sol",
-    "writer": "gpt-5.6-sol",
-    "git-master": "gpt-5.6-sol",
-    "code-simplifier": "gpt-5.6-sol",
-    "researcher": "gpt-5.6-luna",
-    "prometheus-strict-metis": "gpt-5.6-sol",
-    "prometheus-strict-momus": "gpt-5.6-sol",
-    "prometheus-strict-oracle": "gpt-5.6-sol",
-    "critic": "gpt-5.6-sol",
-    "scholastic": "gpt-5.6-sol",
-    "vision": "gpt-5.6-luna"
+    "team-executor": "gpt-5.6-luna"
   },
   "agentReasoning": {
-    "explore": "low",
-    "analyst": "medium",
-    "planner": "medium",
-    "architect": "xhigh",
-    "debugger": "high",
     "executor": "xhigh",
-    "team-executor": "xhigh",
-    "verifier": "high",
-    "code-reviewer": "high",
-    "dependency-expert": "high",
-    "test-engineer": "medium",
-    "designer": "high",
-    "writer": "medium",
-    "git-master": "medium",
-    "code-simplifier": "high",
-    "researcher": "high",
-    "prometheus-strict-metis": "high",
-    "prometheus-strict-momus": "high",
-    "prometheus-strict-oracle": "high",
-    "critic": "high",
-    "scholastic": "xhigh",
-    "vision": "low"
-  },
-  "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
-  },
-  "models": {
-    "default": "gpt-5.6-sol",
-    "team": "gpt-5.6-sol",
-    "autopilot": "gpt-5.6-sol",
-    "ralph": "gpt-5.6-sol",
-    "team_low_complexity": "gpt-5.6-luna"
+    "team-executor": "xhigh"
   }
 }

@@ -14,7 +14,7 @@ Resolved setup scope: user
   [OK] Lore commit guard: disabled by default
   [!!] Prompts: prompts directory not found
   [!!] Skills: skills directory not found
-  [!!] Spark routing: lanes: frontier=`gpt-5.5`, standard=`gpt-5.5`, spark=`gpt-5.3-codex-spark` (source: built-in default); Spark lane issue(s): explore.toml is missing under <CODEX_HOME>/agents (run `omx setup --force`)
+  [!!] Spark routing: lanes: frontier=`gpt-5.6-sol`, standard=`gpt-5.6-sol`, spark=`gpt-5.6-luna` (source: built-in default); Spark lane issue(s): explore.toml is missing under <CODEX_HOME>/agents (run `omx setup --force`)
   [OK] Legacy skill roots: no ~/.agents/skills overlap detected
   [!!] AGENTS.md: not found in <CODEX_HOME>/AGENTS.md (run omx setup --scope user)
   [!!] State dir: <REPO_STATE_DIR> (not created yet)

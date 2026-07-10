@@ -27,7 +27,7 @@ function applyPluginModeConfig(content: string, packageRoot: string): string {
 describe("plugin marketplace config upserts", () => {
 	it("keeps repeated plugin-mode setup config updates idempotent", () => {
 		const packageRoot = "/tmp/oh-my-codex";
-		const first = applyPluginModeConfig('model = "gpt-5.5"\n', packageRoot);
+		const first = applyPluginModeConfig('model = "gpt-5.6-sol"\n', packageRoot);
 		const second = applyPluginModeConfig(first, packageRoot);
 
 		assert.equal(second, first);
@@ -61,7 +61,7 @@ describe("plugin marketplace config upserts", () => {
 	it("normalizes legacy local plugin scalar before emitting plugin table", () => {
 		const repaired = upsertLocalOmxPluginEnablement(
 			[
-				'model = "gpt-5.5"',
+				'model = "gpt-5.6-sol"',
 				'',
 				'[plugins]',
 				`"${OMX_LOCAL_PLUGIN_CONFIG_KEY}" = true`,
@@ -85,7 +85,7 @@ describe("plugin marketplace config upserts", () => {
 	it("dedupes existing local marketplace and plugin MCP blocks without removing unrelated config", () => {
 		const packageRoot = "/tmp/oh-my-codex-new";
 		const duplicated = [
-			'model = "gpt-5.5"',
+			'model = "gpt-5.6-sol"',
 			'',
 			'[mcp_servers.user_tool]',
 			'command = "user-tool"',

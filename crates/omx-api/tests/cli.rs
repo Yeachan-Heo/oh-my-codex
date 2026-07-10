@@ -207,7 +207,7 @@ fn binary_real_private_responses_json_uses_fake_upstream_e2e() {
     let (response, upstream_raw) = real_private_once_request(
         "/v1/responses",
         serde_json::json!({
-            "model": "gpt-5.3-codex",
+            "model": "gpt-5.6-terra",
             "input": "hello from integration",
             "reasoning": {"effort": "low"},
             "instructions": "Use fake upstream."
@@ -236,7 +236,7 @@ fn binary_real_private_responses_json_uses_fake_upstream_e2e() {
         .nth(1)
         .expect("upstream body");
     let forwarded_json: Value = serde_json::from_str(forwarded_body).expect("upstream JSON");
-    assert_eq!(forwarded_json["model"], "gpt-5.3-codex");
+    assert_eq!(forwarded_json["model"], "gpt-5.6-terra");
     assert_eq!(forwarded_json["stream"], true);
     assert_eq!(
         forwarded_json["reasoning"],
@@ -255,7 +255,7 @@ fn binary_real_private_responses_sse_uses_fake_upstream_e2e() {
     let (response, upstream_raw) = real_private_once_request(
         "/v1/responses",
         serde_json::json!({
-            "model": "gpt-5.3-codex",
+            "model": "gpt-5.6-terra",
             "input": "stream please",
             "stream": true
         }),
@@ -292,7 +292,7 @@ fn binary_real_private_chat_sse_uses_chat_chunk_shape_with_fake_upstream_e2e() {
     let (response, upstream_raw) = real_private_once_request(
         "/v1/chat/completions",
         serde_json::json!({
-            "model": "gpt-5.3-codex",
+            "model": "gpt-5.6-terra",
             "messages": [{"role": "user", "content": "chat through upstream"}],
             "stream": true
         }),

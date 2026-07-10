@@ -22,8 +22,8 @@ import {
 import { getRootModelName } from "../config/generator.js";
 import { codexAgentsDir } from "../utils/paths.js";
 
-export const EXACT_GPT_5_4_MINI_MODEL = "gpt-5.4-mini";
-export const EXACT_RESEARCHER_MODEL = EXACT_GPT_5_4_MINI_MODEL;
+export const EXACT_GPT_5_6_TERRA_MODEL = "gpt-5.6-terra";
+export const EXACT_RESEARCHER_MODEL = EXACT_GPT_5_6_TERRA_MODEL;
 
 const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
   "frontier-orchestrator": [
@@ -229,9 +229,11 @@ export function composeRoleInstructions(
     );
   }
 
-  const exactModel = metadata?.exactModel
-    ?? (resolvedModel?.trim() === EXACT_GPT_5_4_MINI_MODEL ? EXACT_GPT_5_4_MINI_MODEL : undefined);
-  if (exactModel && resolvedModel?.trim() === exactModel) {
+  const normalizedResolvedModel = resolvedModel?.trim();
+  const exactModel = normalizedResolvedModel === EXACT_GPT_5_6_TERRA_MODEL
+    ? EXACT_GPT_5_6_TERRA_MODEL
+    : metadata?.exactModel;
+  if (exactModel && normalizedResolvedModel === exactModel) {
     parts.push("", buildExactModelOverlay(exactModel));
   }
 

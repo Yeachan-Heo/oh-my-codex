@@ -48,7 +48,7 @@ describe('omx resume', () => {
       await mkdir(join(wd, '.omx'), { recursive: true });
       await mkdir(dirname(rolloutPath), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(join(projectCodexHome, 'state_5.sqlite'), 'state db placeholder');
       await writeFile(join(projectCodexHome, 'state_5.sqlite-wal'), 'state db wal placeholder');
       await writeFile(rolloutPath, '{"type":"session_meta","payload":{"id":"session-2712"}}\n');
@@ -99,7 +99,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/03/rollout-session-2712.jsonl" ]; then ech
       await mkdir(join(wd, '.omx'), { recursive: true });
       await mkdir(projectCodexHome, { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
 
       await writeFile(fakeCodexPath, `#!/bin/sh
 mkdir -p "$CODEX_HOME/sessions/2026/06/16"
@@ -150,7 +150,7 @@ printf 'fake-codex:%s\n' "$*"
       await mkdir(projectCodexHome, { recursive: true });
       await mkdir(dirname(runtimeRolloutPath), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(runtimeRolloutPath, '{"type":"session_meta","payload":{"id":"runtime-session"}}\n');
 
       await writeFile(fakeCodexPath, `#!/bin/sh
@@ -198,7 +198,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-runtime-session.jsonl" ]; then 
       await mkdir(previousRuntimeCodexHome, { recursive: true });
       await mkdir(duplicateRuntimeCodexHome, { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(projectRolloutPath, '{"type":"session_meta","payload":{"id":"project-session"}}\n');
       await writeFile(join(projectCodexHome, 'history.jsonl'), '{"session_id":"project-session"}\n');
       await writeFile(join(projectCodexHome, 'session_index.jsonl'), '{"id":"project-session"}\n');
@@ -258,7 +258,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/18/rollout-project-session.jsonl" ]; then 
       await mkdir(projectCodexHome, { recursive: true });
       await mkdir(dirname(runtimeRolloutPath), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(join(projectCodexHome, 'history.jsonl'), '{"session_id":"project-session"}\n');
       await writeFile(join(projectCodexHome, 'session_index.jsonl'), '{"id":"project-session"}\n');
       await writeFile(runtimeRolloutPath, '{"type":"session_meta","payload":{"id":"runtime-session"}}\n');
@@ -593,7 +593,7 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
       await mkdir(dirname(newerRolloutPath), { recursive: true });
       await mkdir(previousRuntimeCodexHome, { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(oldRolloutPath, '{"type":"session_meta","payload":{"id":"old-a"}}\n');
       await writeFile(newerRolloutPath, '{"type":"session_meta","payload":{"id":"old-b"}}\n');
       await utimes(oldRolloutPath, oldMtime, oldMtime);

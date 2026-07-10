@@ -18,6 +18,8 @@ import {
 } from "./goal-workflow.js";
 import { normalizeTeamTaskCoordinationPlanForRender } from "./coordination-protocol.js";
 import { renderCodeGraphInstructions, type WorktreeToolContext } from "../utils/worktree-tool-context.js";
+import { getTeamChildModel } from "../config/models.js";
+
 
 const TEAM_OVERLAY_START = "<!-- OMX:TEAM:WORKER:START -->";
 const TEAM_OVERLAY_END = "<!-- OMX:TEAM:WORKER:END -->";
@@ -746,7 +748,7 @@ function renderDelegationContract(task: TeamTask): string {
 
   const threshold = plan.spawn_before_serial_search_threshold ?? 3;
   const maxParallel = plan.max_parallel_subtasks ?? 2;
-  const childModel = plan.child_model ?? "gpt-5.4-mini";
+  const childModel = plan.child_model ?? getTeamChildModel();
   const candidates = (plan.subtask_candidates ?? [])
     .map((candidate) => `- ${candidate}`)
     .join("\n");

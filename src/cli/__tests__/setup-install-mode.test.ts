@@ -1511,7 +1511,7 @@ describe("omx setup install mode behavior", () => {
 					await writeFile(
 						configPath,
 						[
-							'model = "gpt-5.5"',
+							'model = "gpt-5.6-sol"',
 							"",
 							"[marketplaces.other]",
 							'source_type = "local"',
@@ -1772,7 +1772,7 @@ describe("omx setup install mode behavior", () => {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
 					const configPath = join(codexHomeDir, "config.toml");
-					await writeFile(configPath, 'model = "gpt-5.5"\n');
+					await writeFile(configPath, 'model = "gpt-5.6-sol"\n');
 
 					const output = await captureConsoleOutput(async () => {
 						await setup({ scope: "user", installMode: "plugin", dryRun: true });
@@ -1784,7 +1784,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.equal(
 						await readFile(configPath, "utf-8"),
-						'model = "gpt-5.5"\n',
+						'model = "gpt-5.6-sol"\n',
 					);
 				});
 			});
@@ -2424,7 +2424,7 @@ describe("omx setup install mode behavior", () => {
 					await writeFile(
 						configPath,
 						[
-							'model = "gpt-5.5"',
+							'model = "gpt-5.6-sol"',
 							"",
 							`[hooks.state."${hooksPath}:post_compact:0:0"]`,
 							'trusted_hash = "sha256:user"',

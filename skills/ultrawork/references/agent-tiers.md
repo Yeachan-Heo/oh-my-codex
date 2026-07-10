@@ -47,8 +47,8 @@ Use role to choose responsibility, tier to choose depth, and posture to choose o
   - Prioritizes intent classification, delegation, verification, and architectural judgment.
   - Typical roles: `planner`, `analyst`, `architect`, `critic`, `code-reviewer`.
   - Ralplan keeps `planner` and `architect` in this posture; `planner`
-    uses exact `gpt-5.5` with medium reasoning, `architect` uses exact
-    `gpt-5.5` with xhigh reasoning, and the `critic` consensus gate stays
+    uses exact `gpt-5.6-sol` with medium reasoning, `architect` uses exact
+    `gpt-5.6-sol` with xhigh reasoning, and the `critic` consensus gate stays
     on the frontier lane.
 
 - `deep-worker`:

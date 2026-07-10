@@ -18,7 +18,7 @@
  *     "architect": "xhigh"
  *   },
  *   "agentModels": {
- *     "architect": "gpt-5.5"
+ *     "architect": "gpt-5.6-sol"
  *   }
  * }
  *
@@ -99,16 +99,11 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
   return null;
 }
 
-export const DEFAULT_FRONTIER_MODEL = 'gpt-5.5';
-export const DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini';
-export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
-export const GPT_5_6_MODEL_ALIASES = ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol'] as const;
-export const KNOWN_CODEX_MODEL_ALIASES = [
-  DEFAULT_FRONTIER_MODEL,
-  DEFAULT_STANDARD_MODEL,
-  DEFAULT_SPARK_MODEL,
-  ...GPT_5_6_MODEL_ALIASES,
-] as const;
+export const DEFAULT_FRONTIER_MODEL = 'gpt-5.6-sol';
+export const DEFAULT_STANDARD_MODEL = 'gpt-5.6-terra';
+export const DEFAULT_SPARK_MODEL = 'gpt-5.6-luna';
+export const GPT_5_6_MODEL_ALIASES = [DEFAULT_STANDARD_MODEL, DEFAULT_SPARK_MODEL, DEFAULT_FRONTIER_MODEL] as const;
+export const KNOWN_CODEX_MODEL_ALIASES = GPT_5_6_MODEL_ALIASES;
 export type KnownCodexModelAlias = (typeof KNOWN_CODEX_MODEL_ALIASES)[number];
 
 export function isKnownCodexModelAlias(model: string): model is KnownCodexModelAlias {
@@ -156,6 +151,11 @@ function readTeamLowComplexityOverride(codexHomeOverride?: string): string | und
     if (value) return value;
   }
   return undefined;
+}
+
+/** Configured `models.team_low_complexity` (or alias-key) override, if any. */
+export function getConfiguredTeamLowComplexityModel(codexHomeOverride?: string): string | undefined {
+  return readTeamLowComplexityOverride(codexHomeOverride);
 }
 
 export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.ProcessEnv {

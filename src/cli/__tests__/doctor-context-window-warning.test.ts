@@ -50,10 +50,10 @@ function assertNoUnsupportedLimitClaim(stdout: string): void {
 }
 
 describe('omx doctor model context recommendation warning', () => {
-  it('warns when gpt-5.5 model_context_window exceeds the OMX setup recommendation', async () => {
+  it('warns when gpt-5.6-sol model_context_window exceeds the OMX setup recommendation', async () => {
     await withConfig(
       `
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_context_window = 1000000
 model_auto_compact_token_limit = 200000
 `,
@@ -73,10 +73,10 @@ model_auto_compact_token_limit = 200000
     );
   });
 
-  it('warns when gpt-5.5 model_auto_compact_token_limit exceeds the OMX setup recommendation', async () => {
+  it('warns when gpt-5.6-sol model_auto_compact_token_limit exceeds the OMX setup recommendation', async () => {
     await withConfig(
       `
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_context_window = 250000
 model_auto_compact_token_limit = 900000
 `,
@@ -96,10 +96,10 @@ model_auto_compact_token_limit = 900000
     );
   });
 
-  it('warns with both oversized gpt-5.5 context settings in the same message', async () => {
+  it('warns with both oversized gpt-5.6-sol context settings in the same message', async () => {
     await withConfig(
       `
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_context_window = 1000000
 model_auto_compact_token_limit = 900000
 `,
@@ -115,10 +115,10 @@ model_auto_compact_token_limit = 900000
     );
   });
 
-  it('does not warn when gpt-5.5 context settings match the OMX setup recommendation', async () => {
+  it('does not warn when gpt-5.6-sol context settings match the OMX setup recommendation', async () => {
     await withConfig(
       `
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_context_window = 250000
 model_auto_compact_token_limit = 200000
 `,
@@ -132,7 +132,7 @@ model_auto_compact_token_limit = 200000
     );
   });
 
-  it('does not apply the gpt-5.5 recommendation warning to other models', async () => {
+  it('does not apply the gpt-5.6-sol recommendation warning to other models', async () => {
     await withConfig(
       `
 model = "o3"

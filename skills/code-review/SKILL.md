@@ -15,7 +15,7 @@ This skill activates when:
 - After implementing a major feature
 - User wants quality assessment
 
-## GPT-5.5 Guidance Alignment
+## GPT-5.6 Guidance Alignment
 
 - Default to outcome-first progress and completion reporting: state the target result, evidence, validation status, and stop condition before adding process detail.
 - Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints.

@@ -2465,7 +2465,7 @@ mod tests {
         let request = build_codex_native_request(
             "/backend-api/codex",
             &json!({
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-terra",
                 "input": "summarize this",
                 "reasoning": {"effort": "low"},
                 "instructions": "Follow the sparkshell summary contract."
@@ -2507,7 +2507,7 @@ mod tests {
             .iter()
             .any(|(name, _)| name == CODEX_INSTALLATION_ID_HEADER));
 
-        assert_eq!(request.body["model"], "gpt-5.3-codex");
+        assert_eq!(request.body["model"], "gpt-5.6-terra");
         assert_eq!(request.body["tools"], json!([]));
         assert_eq!(request.body["tool_choice"], "auto");
         assert_eq!(request.body["parallel_tool_calls"], false);
@@ -2597,7 +2597,7 @@ mod tests {
             format!("http://127.0.0.1:{}/backend-api/codex", addr.port()),
         );
         let text = real_private_text(&json!({
-            "model": "gpt-5.3-codex",
+            "model": "gpt-5.6-terra",
             "input": "ping",
             "reasoning": {"effort": "low"},
             "instructions": "Summarize via sparkshell."

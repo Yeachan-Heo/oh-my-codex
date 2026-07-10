@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+
+## [0.20.0] - 2026-07-10
+
+Minor release migrating the entire model contract to OpenAI's GPT-5.6 generation (publicly released 2026-07-09).
+
+### Changed
+
+- **Model contract migrated to GPT-5.6 (Sol/Terra/Luna)** — frontier default `gpt-5.5` -> `gpt-5.6-sol`, standard `gpt-5.4-mini` -> `gpt-5.6-terra`, spark `gpt-5.3-codex-spark` -> `gpt-5.6-luna` across runtime defaults, agent definitions, Rust crates (sparkshell/explore/api), docs, prompts, skills, templates, plugin mirror, and test fixtures.
+- **Role allocation on the new lanes** — planner/architect pinned to exact `gpt-5.6-sol` (medium/xhigh reasoning), researcher pinned to exact `gpt-5.6-terra`; standard worker/review roles use `gpt-5.6-terra`; fast/low-complexity roles and team low-complexity workers use `gpt-5.6-luna`.
+- **Exact-model composition seam retargeted** — `EXACT_GPT_5_4_MINI_MODEL` renamed to `EXACT_GPT_5_6_TERRA_MODEL`; guidance keys off the trimmed final resolved model with exact case-sensitive equality and now takes precedence over role `exactModel` pins.
+- **Setup legacy upgrade set widened** — setup offers prompt-gated upgrades from both `gpt-5.3-codex` and `gpt-5.5` to `gpt-5.6-sol`; declined and non-interactive runs preserve the existing model.
+- **Autopilot cheap-lane classifier** — canonical `gpt-5.6-terra` and `gpt-5.6-luna` are classified as cheap ahead of the generic heuristic, so Terra mains route heavy planning to the dedicated planner.
+
+### Fixed
+
+- **Team delegation child-model fallback** resolves through `getTeamChildModel()` (honors `OMX_TEAM_CHILD_MODEL`) instead of a hardcoded seam constant.
+- **Doctor Spark source labeling** reports `.omx-config.json env` and `.omx-config.json models.team_low_complexity` accurately instead of misattributing sources.
+
 ## [0.19.1] - 2026-07-08
 
 Patch release after `0.19.0` focused on Ultragoal/Ralplan terminal-state reliability, direct Team state roots, mission queue execution, and dependency hygiene.

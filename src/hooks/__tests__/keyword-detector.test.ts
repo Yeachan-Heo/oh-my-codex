@@ -671,7 +671,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
   it('writes skill-active-state.json with deep-interview phase when autopilot keyword activates', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-'));
     const stateDir = join(cwd, '.omx', 'state');
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-keyword-state-codex-home-'));
+    const previousCodexHome = process.env.CODEX_HOME;
     try {
+      process.env.CODEX_HOME = codexHome;
       await mkdir(stateDir, { recursive: true });
       const result = await recordSkillActivation({
         stateDir,
@@ -767,8 +770,8 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.state.return_to_ralplan_reason, null);
       assert.deepEqual(modeState.state.planning_routing, {
         owner: 'main',
-        mainModel: 'gpt-5.5',
-        plannerModel: 'gpt-5.5',
+        mainModel: 'gpt-5.6-sol',
+        plannerModel: 'gpt-5.6-sol',
         reason: 'main_not_cheap_or_mini',
         explicitPlannerOverride: false,
       });
@@ -776,7 +779,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.match(snapshot, /activation prompt \/ task seed: please run \$autopilot and keep going/);
       assert.match(snapshot, /scope note: this seed captures the Autopilot activation prompt/);
     } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
       await rm(cwd, { recursive: true, force: true });
+      await rm(codexHome, { recursive: true, force: true });
     }
   });
 
@@ -996,7 +1002,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       await mkdir(stateDir, { recursive: true });
       await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
         models: { autopilot: 'o4-mini' },
-        agentModels: { planner: 'gpt-5.5-planner' },
+        agentModels: { planner: 'gpt-5.6-sol-planner' },
       }));
 
       await recordSkillActivation({
@@ -1015,7 +1021,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.deepEqual(modeState.state?.planning_routing, {
         owner: 'planner',
         mainModel: 'o4-mini',
-        plannerModel: 'gpt-5.5-planner',
+        plannerModel: 'gpt-5.6-sol-planner',
         reason: 'explicit_planner_override',
         explicitPlannerOverride: true,
       });

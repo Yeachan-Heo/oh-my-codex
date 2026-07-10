@@ -401,7 +401,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("offers an upgrade from gpt-5.3-codex to gpt-5.5 when accepted", async () => {
+  it("offers an upgrade from gpt-5.3-codex to gpt-5.6-sol when accepted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
@@ -417,14 +417,14 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         modelUpgradePrompt: async (currentModel, targetModel) => {
           promptCalls += 1;
           assert.equal(currentModel, "gpt-5.3-codex");
-          assert.equal(targetModel, "gpt-5.5");
+          assert.equal(targetModel, "gpt-5.6-sol");
           return true;
         },
       });
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.equal(promptCalls, 1);
-      assert.match(config, /^model = "gpt-5\.5"$/m);
+      assert.match(config, /^model = "gpt-5\.6-sol"$/m);
       assert.doesNotMatch(config, /^model = "gpt-5\.3-codex"$/m);
       assert.match(
         config,
@@ -433,6 +433,30 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.match(config, /^model_context_window = 250000$/m);
       assert.match(config, /^model_auto_compact_token_limit = 200000$/m);
       assert.match(config, /^# End oh-my-codex seeded behavioral defaults$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("offers an upgrade from gpt-5.5 to gpt-5.6-sol when accepted", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(join(wd, ".codex", "config.toml"), 'model = "gpt-5.5"\n');
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        modelUpgradePrompt: async (currentModel, targetModel) => {
+          assert.equal(currentModel, "gpt-5.5");
+          assert.equal(targetModel, "gpt-5.6-sol");
+          return true;
+        },
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /^model = "gpt-5\.6-sol"$/m);
+      assert.doesNotMatch(config, /^model = "gpt-5\.5"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -455,7 +479,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.match(config, /^model = "gpt-5\.3-codex"$/m);
-      assert.doesNotMatch(config, /^model = "gpt-5\.5"$/m);
+      assert.doesNotMatch(config, /^model = "gpt-5\.6-sol"$/m);
       assert.doesNotMatch(config, /^model_context_window = 250000$/m);
       assert.doesNotMatch(config, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
@@ -477,7 +501,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.match(config, /^model = "gpt-5\.3-codex"$/m);
-      assert.doesNotMatch(config, /^model = "gpt-5\.5"$/m);
+      assert.doesNotMatch(config, /^model = "gpt-5\.6-sol"$/m);
       assert.doesNotMatch(config, /^model_context_window = 250000$/m);
       assert.doesNotMatch(config, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
@@ -492,7 +516,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await mkdir(join(wd, ".codex"), { recursive: true });
       await writeFile(
         join(wd, ".codex", "config.toml"),
-        ['model = "gpt-5.5"', "", "[tui]", 'theme = "night"', 'status_line = ["git-branch"]', ""].join("\n"),
+        ['model = "gpt-5.6-sol"', "", "[tui]", 'theme = "night"', 'status_line = ["git-branch"]', ""].join("\n"),
       );
 
       const output = await runSetupWithCapturedLogs(wd, {
@@ -595,7 +619,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await writeFile(
         join(wd, ".codex", "config.toml"),
         [
-          'model = "gpt-5.5"',
+          'model = "gpt-5.6-sol"',
           "",
           "[tui]",
           'theme = "night"',

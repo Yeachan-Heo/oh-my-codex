@@ -57,24 +57,24 @@ The model-routing reader supports `env`, `models`, and the per-role override map
 ```json
 {
   "agentModels": {
-    "planner": "gpt-5.5",
-    "architect": "gpt-5.5",
-    "researcher": "gpt-5.5",
-    "explore": "gpt-5.5"
+    "planner": "gpt-5.6-sol",
+    "architect": "gpt-5.6-sol",
+    "researcher": "gpt-5.6-terra",
+    "explore": "gpt-5.6-luna"
   },
   "agentReasoning": {
     "architect": "xhigh",
     "critic": "xhigh"
   },
   "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.5",
-    "OMX_DEFAULT_STANDARD_MODEL": "gpt-5.4-mini",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.3-codex-spark"
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
+    "OMX_DEFAULT_STANDARD_MODEL": "gpt-5.6-terra",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
   },
   "models": {
-    "default": "gpt-5.5",
-    "team": "gpt-5.5",
-    "team_low_complexity": "gpt-5.3-codex-spark"
+    "default": "gpt-5.6-sol",
+    "team": "gpt-5.6-sol",
+    "team_low_complexity": "gpt-5.6-luna"
   }
 }
 ```
@@ -109,7 +109,7 @@ For `omx sparkshell`, the documented helper-specific environment keys are:
 
 `models` maps mode names to explicit model overrides. Values must be non-empty strings.
 
-Known Codex/OpenAI-compatible model aliases include the built-in `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`, plus the GPT-5.6 aliases `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.6-sol`. Model override fields remain non-empty strings so provider-specific model names stay backward-compatible; the known-alias list is used for display and contract tests, not as a closed allow-list.
+The built-in defaults are `gpt-5.6-sol` (frontier), `gpt-5.6-terra` (standard), and `gpt-5.6-luna` (spark); the known-alias list contains exactly these three GPT-5.6 models. Legacy prior-generation names (for example `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`) are not aliases and carry no special routing meaning; like any provider-specific model name, they pass through only as opaque override strings. The known-alias list is used for display and contract tests, not as a closed allow-list.
 
 
 Supported model-routing keys:
@@ -131,10 +131,10 @@ Do not invent per-role maps such as `models.executor`, `models.architect`, or `m
 ```json
 {
   "agentModels": {
-    "architect": "gpt-5.5",
-    "planner": "gpt-5.5",
-    "researcher": "gpt-5.5",
-    "explore": "gpt-5.5"
+    "architect": "gpt-5.6-sol",
+    "planner": "gpt-5.6-sol",
+    "researcher": "gpt-5.6-terra",
+    "explore": "gpt-5.6-luna"
   }
 }
 ```
@@ -144,7 +144,7 @@ These overrides do not change built-in defaults in source. They are user/project
 For a named role, effective model precedence is:
 
 1. `.omx-config.json` `agentModels[role]`
-2. Built-in `exactModel` pins, such as planner/architect `gpt-5.5` or researcher `gpt-5.4-mini`
+2. Built-in `exactModel` pins, such as planner/architect `gpt-5.6-sol` or researcher `gpt-5.6-terra`
 3. Special role logic, such as `executor` using the main/frontier lane
 4. `modelClass` routing: `fast` uses spark/low-complexity, `frontier` uses main/frontier, and `standard` uses the standard lane
 
@@ -178,7 +178,7 @@ The main default resolves in this order:
 1. Shell `OMX_DEFAULT_FRONTIER_MODEL`
 2. `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL`
 3. Active Codex `config.toml` root `model`
-4. Built-in default: `gpt-5.5`
+4. Built-in default: `gpt-5.6-sol`
 
 ### Mode-specific model lookup
 
@@ -188,7 +188,7 @@ When code asks for `getModelForMode(mode)`, the mode model resolves in this orde
 2. `.omx-config.json` `models.default`
 3. Main/frontier default above
 
-Example: with `models.team = "gpt-5.5"` and `models.default = "gpt-5.4-mini"`, `team` uses `gpt-5.5`; a mode without its own key uses `gpt-5.4-mini`.
+Example: with `models.team = "gpt-5.6-sol"` and `models.default = "gpt-5.6-terra"`, `team` uses `gpt-5.6-sol`; a mode without its own key uses `gpt-5.6-terra`.
 
 ### Standard-lane agents
 
@@ -209,7 +209,7 @@ Spark/fast defaults resolve in this order:
 3. `.omx-config.json` `env.OMX_DEFAULT_SPARK_MODEL`
 4. `.omx-config.json` legacy `env.OMX_SPARK_MODEL`
 5. `.omx-config.json` `models.team_low_complexity`, `models.team-low-complexity`, or `models.teamLowComplexity`
-6. Built-in default: `gpt-5.3-codex-spark`
+6. Built-in default: `gpt-5.6-luna`
 
 For team low-complexity helpers, the exact order depends on the call path: `getSparkDefaultModel()` checks spark env/config values before low-complexity aliases, while `getTeamLowComplexityModel()` checks low-complexity aliases before falling back to the spark default.
 
@@ -221,7 +221,7 @@ Examples:
 
 | Role/category | Examples | Model class behavior |
 | --- | --- | --- |
-| Exact planning/research pins | `planner`, `architect`, `researcher` | Uses the built-in `exactModel` pin before model-class routing unless `agentModels[role]` is set; planner uses exact `gpt-5.5` with medium reasoning, architect uses exact `gpt-5.5` with xhigh reasoning, and researcher stays on exact `gpt-5.4-mini`. Ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
+| Exact planning/research pins | `planner`, `architect`, `researcher` | Uses the built-in `exactModel` pin before model-class routing unless `agentModels[role]` is set; planner uses exact `gpt-5.6-sol` with medium reasoning, architect uses exact `gpt-5.6-sol` with xhigh reasoning, and researcher stays on exact `gpt-5.6-terra`. Ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
 | Frontier orchestration | `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback. |
 | Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
@@ -250,7 +250,7 @@ Supported reasoning-effort surfaces are:
 - Team worker launch args, for example:
 
 ```bash
-OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low" --model gpt-5.3-codex-spark' \
+OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low" --model gpt-5.6-luna' \
   omx team 3:explore "map the config surfaces"
 ```
 
@@ -267,111 +267,51 @@ This keeps orchestration on the frontier default, routes standard workers to a c
 ```json
 {
   "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.5",
-    "OMX_DEFAULT_STANDARD_MODEL": "gpt-5.4-mini",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.3-codex-spark"
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
+    "OMX_DEFAULT_STANDARD_MODEL": "gpt-5.6-terra",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
   },
   "models": {
-    "default": "gpt-5.4-mini",
-    "team": "gpt-5.5",
-    "team_low_complexity": "gpt-5.3-codex-spark"
+    "default": "gpt-5.6-terra",
+    "team": "gpt-5.6-sol",
+    "team_low_complexity": "gpt-5.6-luna"
   }
 }
 ```
 
-### GPT-5.6 balanced role starter
+### GPT-5.6 balanced execution override
 
-This opt-in starter uses GPT-5.6 Sol for judgment-heavy roles and GPT-5.6 Luna for high-volume or bounded work. It keeps `analyst` and `planner` on Sol with medium reasoning, raises `executor` and `team-executor` to Luna with xhigh reasoning, and reserves Sol xhigh for `architect` and `scholastic`. The listed role overrides are explicit so those generated native agents do not retain the built-in GPT-5.5 planner/architect pins or the GPT-5.4-mini researcher pin.
+OMX 0.20 already routes `analyst` and `planner` to GPT-5.6 Sol with medium reasoning: `analyst` inherits the frontier default, while `planner` has an exact Sol pin. To apply a more cost-conscious execution balance without adding any Sol pins, this opt-in delta moves only `executor` and `team-executor` to GPT-5.6 Luna with xhigh reasoning. Every other role keeps the built-in GPT-5.6 routing contract.
 
-GPT-5.6 availability can vary by Codex profile. Confirm that the selected profile can use the Sol and Luna aliases before applying this starter. OMX accepts `xhigh` as its highest per-role reasoning value; do not replace it with the benchmark-only `max` label.
+OMX accepts `xhigh` as its highest per-role reasoning value; do not replace it with the benchmark-only `max` label. The same copy-ready delta is available as [`gpt-5.6-balanced.omx-config.json`](./gpt-5.6-balanced.omx-config.json).
 
-> **Known compatibility limitation:** [issue #3106](https://github.com/Yeachan-Heo/oh-my-codex/issues/3106) reports that Sol and Terra dispatches can fail with HTTP 400 when an OMX-seeded Codex home enables the legacy multi-agent v1 schema. `omx doctor` may still report a healthy installation. Until that issue is resolved, smoke-test Sol from the exact `CODEX_HOME` that will launch OMX; if it fails, use Luna-only routing or a separate minimal Codex home for Sol. This preset is not safe to adopt solely on the basis of a passing doctor result.
-
-The same copy-ready configuration is available as [`gpt-5.6-balanced.omx-config.json`](./gpt-5.6-balanced.omx-config.json).
+> **Known compatibility limitation:** [issue #3106](https://github.com/Yeachan-Heo/oh-my-codex/issues/3106) reports that built-in Sol and Terra dispatches can fail with HTTP 400 when an OMX-seeded Codex home enables the legacy multi-agent v1 schema. `omx doctor` may still report a healthy installation. This Luna-only delta does not introduce or repair those built-in routes. Until the issue is resolved, smoke-test the exact `CODEX_HOME` that will launch OMX and use a separate minimal Codex home if Sol or Terra fails.
 
 ```json
 {
   "agentModels": {
-    "explore": "gpt-5.6-luna",
-    "analyst": "gpt-5.6-sol",
-    "planner": "gpt-5.6-sol",
-    "architect": "gpt-5.6-sol",
-    "debugger": "gpt-5.6-sol",
     "executor": "gpt-5.6-luna",
-    "team-executor": "gpt-5.6-luna",
-    "verifier": "gpt-5.6-sol",
-    "code-reviewer": "gpt-5.6-sol",
-    "dependency-expert": "gpt-5.6-sol",
-    "test-engineer": "gpt-5.6-sol",
-    "designer": "gpt-5.6-sol",
-    "writer": "gpt-5.6-sol",
-    "git-master": "gpt-5.6-sol",
-    "code-simplifier": "gpt-5.6-sol",
-    "researcher": "gpt-5.6-luna",
-    "prometheus-strict-metis": "gpt-5.6-sol",
-    "prometheus-strict-momus": "gpt-5.6-sol",
-    "prometheus-strict-oracle": "gpt-5.6-sol",
-    "critic": "gpt-5.6-sol",
-    "scholastic": "gpt-5.6-sol",
-    "vision": "gpt-5.6-luna"
+    "team-executor": "gpt-5.6-luna"
   },
   "agentReasoning": {
-    "explore": "low",
-    "analyst": "medium",
-    "planner": "medium",
-    "architect": "xhigh",
-    "debugger": "high",
     "executor": "xhigh",
-    "team-executor": "xhigh",
-    "verifier": "high",
-    "code-reviewer": "high",
-    "dependency-expert": "high",
-    "test-engineer": "medium",
-    "designer": "high",
-    "writer": "medium",
-    "git-master": "medium",
-    "code-simplifier": "high",
-    "researcher": "high",
-    "prometheus-strict-metis": "high",
-    "prometheus-strict-momus": "high",
-    "prometheus-strict-oracle": "high",
-    "critic": "high",
-    "scholastic": "xhigh",
-    "vision": "low"
-  },
-  "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
-  },
-  "models": {
-    "default": "gpt-5.6-sol",
-    "team": "gpt-5.6-sol",
-    "autopilot": "gpt-5.6-sol",
-    "ralph": "gpt-5.6-sol",
-    "team_low_complexity": "gpt-5.6-luna"
+    "team-executor": "xhigh"
   }
 }
 ```
 
 #### Benchmark rationale and GPT-5.5 comparison
 
-The starter is based on Artificial Analysis Intelligence Index v4.1 and Coding Agent Index results published on July 9, 2026. The numbers below are directional benchmark evidence, not guarantees of role-specific success. Intelligence cost is the benchmark's approximate average API cost per Intelligence Index task as plotted in the cited chart; it is not a projected OMX bill. The table covers roles explicitly tuned by this starter; roles omitted from the table inherit the configured model lane and their built-in reasoning defaults.
+The built-in analyst/planner routes and the execution delta are based on Artificial Analysis Intelligence Index v4.1 and Coding Agent Index results published on July 9, 2026. The numbers below are directional benchmark evidence, not guarantees of role-specific success. Intelligence cost is the benchmark's approximate average API cost per Intelligence Index task as plotted in the cited chart; it is not a projected OMX bill.
 
-| Role group | GPT-5.5 baseline | GPT-5.6 starter | Intelligence change | Intelligence task cost change |
+| Role group | GPT-5.5 baseline | GPT-5.6 routing | Intelligence change | Intelligence task cost change |
 | --- | --- | --- | ---: | ---: |
-| `analyst`, `planner`, `test-engineer` | GPT-5.5 medium: 51 / ~$0.34 | Sol medium: 54 / ~$0.31 | +3 | ~-9% |
-| `architect` | GPT-5.5 xhigh: 55 / ~$0.86 | Sol xhigh: 58 / ~$0.68 | +3 | ~-21% |
-| `debugger`, `verifier`, `code-reviewer`, `dependency-expert`, `designer`, `code-simplifier`, Prometheus Strict panel, `critic` | GPT-5.5 high: 53 / ~$0.61 | Sol high: 56 / ~$0.45 | +3 | ~-26% |
-| `writer`, `git-master` | GPT-5.5 high: 53 / ~$0.61 | Sol medium: 54 / ~$0.31 | +1 | ~-49% |
+| `analyst`, `planner` | GPT-5.5 medium: 51 / ~$0.34 | Sol medium: 54 / ~$0.31 | +3 | ~-9% |
 | `executor`, `team-executor` | GPT-5.5 medium: 51 / ~$0.34 | Luna xhigh: 49 / ~$0.14 | -2 | ~-59% |
-| `scholastic` | GPT-5.5 high: 53 / ~$0.61 | Sol xhigh: 58 / ~$0.68 | +5 | ~+11% |
-| `vision` | GPT-5.5 low: 43 / ~$0.19 | Luna low: 33 / ~$0.04 | -10 | ~-79% |
-| `explore` | Built-in GPT-5.3 Codex Spark low | Luna low: 33 / ~$0.04 | Not directly comparable | Not directly comparable |
-| `researcher` | Built-in GPT-5.4 mini high | Luna high: 46 / ~$0.09 | Not directly comparable | Not directly comparable |
 
 At the highest efforts reported in the article, GPT-5.5 xhigh scores 55 on Intelligence at $0.86 per task and 76 on the Coding Agent Index at $5.07 per task. GPT-5.6 Sol max scores 59 / $1.04 and 80 / $7.08; Terra max scores 55 / $0.55 and 77 / $2.76; Luna max scores 51 / $0.21 and 75 / $1.57. Sol and GPT-5.5 have the same published token prices of $5 per million input tokens and $30 per million output tokens, while Terra is half that price and Luna is one fifth.
 
-The general Intelligence effort curve places Luna and Sol, but not Terra, on the cost-performance Pareto frontier. Terra remains a reasonable private bake-off candidate for coding because its max-effort Coding Agent result is two points above Luna, but the article does not publish the corresponding high/xhigh coding comparison. This starter therefore avoids inferring a Terra role default from max-only data that OMX cannot express per role.
+The general Intelligence effort curve places Luna and Sol, but not Terra, on the cost-performance Pareto frontier. Terra remains a reasonable private bake-off candidate for coding because its max-effort Coding Agent result is two points above Luna, but the article does not publish the corresponding high/xhigh coding comparison. This delta therefore changes only the two execution roles instead of replacing the broader built-in routing contract from max-only data that OMX cannot express per role.
 
 Sources:
 

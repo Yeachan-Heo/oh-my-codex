@@ -66,7 +66,7 @@ describe('agents model table', () => {
 
     assert.deepEqual(context, {
       frontierModel: 'frontier-config',
-      sparkModel: 'gpt-5.3-codex-spark',
+      sparkModel: 'gpt-5.6-luna',
       subagentDefaultModel: 'frontier-config',
     });
   });
@@ -82,8 +82,8 @@ describe('agents model table', () => {
     assert.match(table, /\| Spark \(explorer\/fast\) \| `gpt-spark` \| low \|/);
     assert.match(table, /\| Standard \(subagent default\) \| `gpt-standard` \| high \|/);
     assert.match(table, /\| `explore` \| `gpt-spark` \| low \| Fast codebase search and file\/symbol mapping \(fast-lane, fast\) \|/);
-    assert.match(table, /\| `planner` \| `gpt-5\.5` \| medium \| Task sequencing, execution plans, risk flags \(frontier-orchestrator, frontier\) \|/);
-    assert.match(table, /\| `architect` \| `gpt-5\.5` \| xhigh \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier\) \|/);
+    assert.match(table, /\| `planner` \| `gpt-5\.6-sol` \| medium \| Task sequencing, execution plans, risk flags \(frontier-orchestrator, frontier\) \|/);
+    assert.match(table, /\| `architect` \| `gpt-5\.6-sol` \| xhigh \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier\) \|/);
     assert.doesNotMatch(table, /\| `security-reviewer` \|/);
     assert.doesNotMatch(table, /\| `build-fixer` \|/);
     assert.match(table, /\| `code-reviewer` \| `gpt-frontier` \| high \| Comprehensive review across all concerns \(frontier-orchestrator, frontier\) \|/);
@@ -97,8 +97,8 @@ describe('agents model table', () => {
     try {
       await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
         agentModels: {
-          architect: 'gpt-5.5-architect',
-          explore: 'gpt-5.5-explore',
+          architect: 'gpt-5.6-sol-architect',
+          explore: 'gpt-5.6-sol-explore',
         },
         agentReasoning: {
           architect: 'xhigh',
@@ -112,8 +112,8 @@ describe('agents model table', () => {
         subagentDefaultModel: 'gpt-standard',
       }, undefined, { codexHomeOverride: codexHome });
 
-      assert.match(table, /\| `architect` \| `gpt-5\.5-architect` \| xhigh \|/);
-      assert.match(table, /\| `explore` \| `gpt-5\.5-explore` \| medium \|/);
+      assert.match(table, /\| `architect` \| `gpt-5\.6-sol-architect` \| xhigh \|/);
+      assert.match(table, /\| `explore` \| `gpt-5\.6-sol-explore` \| medium \|/);
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
