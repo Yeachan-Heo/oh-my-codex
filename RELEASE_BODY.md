@@ -19,4 +19,8 @@ No breaking CLI, package, plugin-layout, or configuration changes. Existing expl
 
 Green dev CI, full node + Rust suites, three architect review rounds ending CLEAR/APPROVE, adversarial QA/red-team artifacts.
 
+## Contributors
+
+Thanks to the contributors who made this release possible.
+
 **Full Changelog**: [`v0.19.1...v0.20.0`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.19.1...v0.20.0)
