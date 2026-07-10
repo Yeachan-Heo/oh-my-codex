@@ -3653,8 +3653,14 @@ function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boole
   return isAllowedPlanningArtifactPath(cwd, rawPath, DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES);
 }
 
+function isAllowedRalplanDraftPath(cwd: string, rawPath: string): boolean {
+  const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
+  return relativePath !== null && /^\.omx\/drafts\/[^/]+\.md$/.test(relativePath);
+}
+
 function isAllowedRalplanArtifactPath(cwd: string, rawPath: string): boolean {
-  return isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
+  return isAllowedRalplanDraftPath(cwd, rawPath)
+    || isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
 }
 
 interface RalplanBeadsCommandClassification {
@@ -7025,7 +7031,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
       hookEventName: "PreToolUse",
       additionalContext:
         `${planningModeDescription}. `
-        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, `.omx/tmp/`, required `.omx/state/` files, or tracker metadata under `.beads/`. "
+        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, `.omx/tmp/`, required `.omx/state/` files, Markdown drafts under `.omx/drafts/*.md`, or tracker metadata under `.beads/`. "
         + "Do not edit implementation files or run implementation-focused writes from planning phases. "
         + `To execute, first process an explicit handoff such as ${formatExecutionHandoffList(cwd)}, which must emit terminal planning state before implementation begins.`,
     },

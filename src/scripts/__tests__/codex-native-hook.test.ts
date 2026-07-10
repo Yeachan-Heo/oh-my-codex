@@ -782,6 +782,72 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("allows Ralplan Markdown draft-only apply_patch on the live CLI path while denying mixed targets", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-ralplan-draft-boundary-"));
+    const sessionId = "sess-cli-ralplan-draft-boundary";
+    const stateDir = join(cwd, ".omx", "state");
+    try {
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+
+      for (const [name, target] of [
+        ["relative", ".omx/drafts/issue-3105.md"],
+        ["repository-absolute", join(cwd, ".omx", "drafts", "issue-3105.md")],
+      ] as const) {
+        const result = runNativeHookCliResult({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: `thread-cli-ralplan-draft-${name}`,
+          tool_name: "apply_patch",
+          tool_input: {
+            input: `*** Begin Patch\n*** Add File: ${target}\n+# Draft\n*** End Patch\n`,
+          },
+        }, { cwd });
+
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      }
+
+      const mixedResult = runNativeHookCliResult({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-cli-ralplan-draft-mixed",
+        tool_name: "apply_patch",
+        tool_input: {
+          input: "*** Begin Patch\n*** Add File: .omx/drafts/issue-3105.md\n+# Draft\n*** Add File: src/leak.ts\n+leak\n*** End Patch\n",
+        },
+      }, { cwd });
+
+      assert.equal(mixedResult.status, 0, mixedResult.stderr || mixedResult.stdout);
+      const mixedOutput = parseSingleJsonStdout(mixedResult.stdout);
+      const hookSpecificOutput = mixedOutput.hookSpecificOutput as Record<string, unknown>;
+      assert.deepEqual(Object.keys(mixedOutput).sort(), ["hookSpecificOutput"]);
+      assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(hookSpecificOutput.permissionDecision, "deny");
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /src\/leak\.ts/);
+      assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /implementation\/write tools are blocked/);
+      assert.equal(mixedOutput.decision, undefined);
+      assert.equal(mixedOutput.reason, undefined);
+      assert.equal(mixedOutput.systemMessage, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("preserves team-worker typed subagent PreToolUse exemption without thread spawn provenance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-typed-pretool-exempt-"));
     const sessionId = "sess-team-worker-typed-pretool-exempt";
@@ -10826,11 +10892,30 @@ exit 0
       for (const path of [
         ".omx/context/findings.md",
         ".omx/plans/issue-2863.md",
+        ".omx/drafts/issue-3105.md",
         ".omx/specs/issue-2863.md",
         ".omx/state/required-planning-state.json",
       ]) {
         const writeResult = await preToolUse("Write", `tool-ralplan-write-${path}`, { file_path: path, content: "ok" });
         assert.equal(writeResult.outputJson, null, `Write should be allowed for ${path}`);
+      }
+
+      const allowedDraftEdit = await preToolUse("Edit", "tool-ralplan-draft-edit", {
+        file_path: ".omx/drafts/issue-3105.md",
+        old_string: "old",
+        new_string: "new",
+      });
+      assert.equal(allowedDraftEdit.outputJson, null);
+
+      for (const path of [
+        join(cwd, ".omx", "drafts", "issue-3105.md"),
+        ".omx/drafts/subdir/../issue-3105.md",
+      ]) {
+        const normalizedDraftWrite = await preToolUse("Write", `tool-ralplan-normalized-draft-${path}`, {
+          file_path: path,
+          content: "# Draft",
+        });
+        assert.equal(normalizedDraftWrite.outputJson, null, `normalized draft path should be allowed: ${path}`);
       }
 
       for (const protectedPath of [
@@ -10874,10 +10959,25 @@ exit 0
       });
       assert.equal(allowedPatchUpdate.outputJson, null);
 
+      const allowedDraftPatchAdd = await preToolUse("apply_patch", "tool-ralplan-draft-patch-add", {
+        input: "*** Begin Patch\n*** Add File: .omx/drafts/issue-3105.md\n+# Draft\n*** End Patch\n",
+      });
+      assert.equal(allowedDraftPatchAdd.outputJson, null);
+
+      const allowedDraftPatchUpdate = await preToolUse("ApplyPatch", "tool-ralplan-draft-patch-update", {
+        input: "*** Begin Patch\n*** Update File: .omx/drafts/issue-3105.md\n@@\n-old\n+new\n*** End Patch\n",
+      });
+      assert.equal(allowedDraftPatchUpdate.outputJson, null);
+
       const allowedRedirect = await preToolUse("Bash", "tool-ralplan-redirect-allow", {
         command: "printf '\\nmore\\n' >> .omx/plans/issue-2863.md",
       });
       assert.equal(allowedRedirect.outputJson, null);
+
+      const allowedDraftRedirect = await preToolUse("Bash", "tool-ralplan-draft-redirect-allow", {
+        command: "printf '# Draft\\n' > .omx/drafts/issue-3105.md",
+      });
+      assert.equal(allowedDraftRedirect.outputJson, null);
 
       const allowedTee = await preToolUse("Bash", "tool-ralplan-tee-allow", {
         command: "printf '\\nmore\\n' | tee -a .omx/specs/issue-2863.md",
@@ -10940,6 +11040,41 @@ exit 0
       const editReason = String((blockedEdit.outputJson as { reason?: string } | null)?.reason ?? "");
       assert.match(editReason, /Edit path/);
       assert.match(editReason, /src\/implementation\.ts/);
+      const blockedEditContext = String(
+        (blockedEdit.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)
+          ?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(blockedEditContext, /Markdown drafts under `\.omx\/drafts\/\*\.md`/);
+      for (const allowedCategory of [
+        ".omx/context/",
+        ".omx/plans/",
+        ".omx/specs/",
+        ".omx/tmp/",
+        ".omx/state/",
+        ".beads/",
+      ]) {
+        assert.match(blockedEditContext, new RegExp(allowedCategory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      }
+
+      for (const blockedDraftPath of [
+        ".omx/drafts/issue-3105.MD",
+        ".omx/Drafts/issue-3105.md",
+        ".omx/drafts/issue-3105",
+        ".omx/drafts/run.sh",
+        ".omx/drafts/subdir/issue-3105.md",
+        ".omx/drafts/../../src/leak.ts",
+        "/tmp/issue-3105.md",
+      ]) {
+        const blockedDraft = await preToolUse("Write", `tool-ralplan-draft-block-${blockedDraftPath}`, {
+          file_path: blockedDraftPath,
+          content: "bad",
+        });
+        assert.equal(
+          (blockedDraft.outputJson as { decision?: string } | null)?.decision,
+          "block",
+          `draft path should be blocked: ${blockedDraftPath}`,
+        );
+      }
 
       const blockedMixedPatch = await preToolUse("apply_patch", "tool-ralplan-patch-mixed", {
         input: "*** Begin Patch\n*** Add File: .omx/plans/ok.md\n+ok\n*** Add File: src/leak.ts\n+leak\n*** End Patch\n",
@@ -10948,6 +11083,18 @@ exit 0
       const mixedReason = String((blockedMixedPatch.outputJson as { reason?: string } | null)?.reason ?? "");
       assert.match(mixedReason, /apply_patch target/);
       assert.match(mixedReason, /src\/leak\.ts/);
+
+      const blockedMixedDraftPatch = await preToolUse("apply_patch", "tool-ralplan-draft-patch-mixed", {
+        input: "*** Begin Patch\n*** Add File: .omx/drafts/issue-3105.md\n+ok\n*** Add File: src/leak.ts\n+leak\n*** End Patch\n",
+      });
+      assert.equal((blockedMixedDraftPatch.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedMixedDraftPatch.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/leak\.ts/);
+
+      const blockedMixedDraftBash = await preToolUse("Bash", "tool-ralplan-draft-bash-mixed", {
+        command: "printf '# Draft\\n' > .omx/drafts/issue-3105.md; printf 'bad\\n' > src/leak.ts",
+      });
+      assert.equal((blockedMixedDraftBash.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedMixedDraftBash.outputJson as { reason?: string } | null)?.reason ?? ""), /src\/leak\.ts/);
 
       const blockedUnparseablePatch = await preToolUse("apply_patch", "tool-ralplan-patch-unparseable", {
         input: "not a recognizable patch",
@@ -10962,6 +11109,12 @@ exit 0
       const unresolvedReason = String((blockedUnresolvedRedirect.outputJson as { reason?: string } | null)?.reason ?? "");
       assert.match(unresolvedReason, /unresolved Bash write target/);
       assert.match(unresolvedReason, /\$PLAN_PATH/);
+
+      const blockedUnresolvedDraftRedirect = await preToolUse("Bash", "tool-ralplan-draft-redirect-unresolved", {
+        command: "cat > \"$DRAFT_PATH\" <<'EOF'\ncontent\nEOF",
+      });
+      assert.equal((blockedUnresolvedDraftRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((blockedUnresolvedDraftRedirect.outputJson as { reason?: string } | null)?.reason ?? ""), /\$DRAFT_PATH/);
 
       const blockedTraversal = await preToolUse("Write", "tool-ralplan-traversal-block", {
         file_path: ".omx/plans/../../src/leak.ts",
@@ -21247,6 +21400,21 @@ PY`,
 
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal(result.outputJson, null);
+
+      const allowedDraftPatch = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: nativeSessionId,
+          thread_id: "thread-ralplan-native-map-draft-artifact",
+          tool_name: "apply_patch",
+          tool_input: {
+            input: `*** Begin Patch\n*** Add File: ${join(cwd, ".omx", "drafts", "issue-3105.md")}\n+# Draft\n*** End Patch\n`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedDraftPatch.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -21365,6 +21533,21 @@ PY`,
         cwd: ownerCwd,
       });
 
+      const allowedForeignDraft = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "019e-ralplan-live-root-unresolved-current",
+          thread_id: "thread-ralplan-live-root-conflict",
+          tool_name: "apply_patch",
+          tool_input: {
+            input: `*** Begin Patch\n*** Add File: ${join(cwd, ".omx", "drafts", "issue-3105.md")}\n+# Draft\n*** End Patch\n`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedForeignDraft.outputJson, null);
+
       const result = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -21458,6 +21641,21 @@ PY`,
 
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal(result.outputJson, null);
+
+      const allowedDraftPatch = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: nativeSessionId,
+          thread_id: "thread-ralplan-live-root-owner-draft-pass",
+          tool_name: "apply_patch",
+          tool_input: {
+            input: `*** Begin Patch\n*** Add File: ${join(cwd, ".omx", "drafts", "live-root-owner.md")}\n+# Draft\n*** End Patch\n`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal(allowedDraftPatch.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
