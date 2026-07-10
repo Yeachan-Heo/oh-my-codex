@@ -121,11 +121,12 @@ export function addGeneratedAgentsMarker(content: string): string {
   const autonomyDirectiveEnd = content.indexOf(AUTONOMY_DIRECTIVE_END_MARKER)
   if (autonomyDirectiveEnd >= 0) {
     const insertAt = autonomyDirectiveEnd + AUTONOMY_DIRECTIVE_END_MARKER.length
-    const hasImmediateNewline = content[insertAt] === '\n'
-    const insertionPoint = hasImmediateNewline ? insertAt + 1 : insertAt
+    const lineEnding = content.startsWith('\r\n', insertAt) ? '\r\n' : '\n'
+    const hasImmediateNewline = content.startsWith(lineEnding, insertAt)
+    const insertionPoint = hasImmediateNewline ? insertAt + lineEnding.length : insertAt
     return (
       content.slice(0, insertionPoint) +
-      `${OMX_GENERATED_AGENTS_MARKER}\n` +
+      `${OMX_GENERATED_AGENTS_MARKER}${lineEnding}` +
       content.slice(insertionPoint)
     )
   }

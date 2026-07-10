@@ -33,6 +33,28 @@ describe('agents-md helpers', () => {
     );
   });
 
+  it('preserves CRLF line endings when inserting the generated marker', () => {
+    const content = [
+      '<!-- AUTONOMY DIRECTIVE - DO NOT REMOVE -->',
+      'directive body',
+      '<!-- END AUTONOMY DIRECTIVE -->',
+      '# Workspace instructions',
+    ].join('\r\n');
+
+    const result = addGeneratedAgentsMarker(content);
+
+    assert.equal(
+      result,
+      [
+        '<!-- AUTONOMY DIRECTIVE - DO NOT REMOVE -->',
+        'directive body',
+        '<!-- END AUTONOMY DIRECTIVE -->',
+        OMX_GENERATED_AGENTS_MARKER,
+        '# Workspace instructions',
+      ].join('\r\n'),
+    );
+  });
+
   it('does not duplicate an existing generated marker', () => {
     const content = `header\n${OMX_GENERATED_AGENTS_MARKER}\nbody\n`;
     assert.equal(addGeneratedAgentsMarker(content), content);
