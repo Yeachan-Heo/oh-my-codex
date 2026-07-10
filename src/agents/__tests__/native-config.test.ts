@@ -41,7 +41,7 @@ const isolatedCodexHome = join(
 beforeEach(() => {
   process.env.CODEX_HOME = isolatedCodexHome;
   delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
-  process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+  process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-terra";
   delete process.env.OMX_DEFAULT_SPARK_MODEL;
   delete process.env.OMX_SPARK_MODEL;
 });
@@ -91,7 +91,7 @@ describe("agents/native-config", () => {
     const toml = generateAgentToml(agent, prompt);
 
     assert.match(toml, /# oh-my-codex agent: executor/);
-    assert.match(toml, /model = "gpt-5\.5"/);
+    assert.match(toml, /model = "gpt-5\.6-sol"/);
     assert.match(toml, /model_reasoning_effort = "medium"/);
     assert.ok(!toml.includes("title: demo"));
     assert.ok(toml.includes("Instruction line"));
@@ -138,7 +138,7 @@ describe("agents/native-config", () => {
     try {
       await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
         agentModels: {
-          architect: "gpt-5.5",
+          architect: "gpt-5.6-sol",
         },
         agentReasoning: {
           architect: "xhigh",
@@ -149,28 +149,59 @@ describe("agents/native-config", () => {
         codexHomeOverride: codexHome,
       });
 
-      assert.match(toml, /model = "gpt-5\.5"/);
+      assert.match(toml, /model = "gpt-5\.6-sol"/);
       assert.match(toml, /model_reasoning_effort = "xhigh"/);
-      assert.match(toml, /resolved_model: gpt-5\.5/);
-      assert.doesNotMatch(toml, /model = "gpt-5\.4-mini"/);
-      assert.doesNotMatch(toml, /exact gpt-5\.4-mini model/);
-      assert.doesNotMatch(toml, /resolved_model: gpt-5\.4-mini/);
+      assert.match(toml, /resolved_model: gpt-5\.6-sol/);
+      assert.doesNotMatch(toml, /model = "gpt-5\.6-terra"/);
+      assert.doesNotMatch(toml, /exact gpt-5\.6-terra model/);
+      assert.doesNotMatch(toml, /resolved_model: gpt-5\.6-terra/);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("applies Terra guidance when agentModels resolves exact-Sol roles to gpt-5.6-terra", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-terra-override-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentModels: {
+          planner: "gpt-5.6-terra",
+          architect: "gpt-5.6-terra",
+        },
+      }));
+
+      for (const role of ["planner", "architect"] as const) {
+        const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, {
+          codexHomeOverride: codexHome,
+        });
+        assert.match(toml, /model = "gpt-5\.6-terra"/);
+        assert.match(toml, /exact gpt-5\.6-terra model/);
+      }
+
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentModels: { planner: "gpt-5.6-terra-tuned" },
+      }));
+      const tunedToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt", {
+        codexHomeOverride: codexHome,
+      });
+      assert.match(tunedToml, /model = "gpt-5\.6-terra-tuned"/);
+      assert.doesNotMatch(tunedToml, /exact gpt-5\.6-terra model/);
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
   });
 
 
-  it("pins planner and architect to exact gpt-5.5 while keeping researcher on exact mini", () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.5";
-    process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.5";
+  it("pins planner and architect to exact gpt-5.6-sol while keeping researcher on exact Terra", () => {
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-sol";
+    process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-sol";
 
     for (const role of ["planner", "architect"] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
-      assert.match(toml, /model = "gpt-5\.5"/, `${role} should use exact gpt-5.5`);
-      assert.match(toml, /exact gpt-5\.5 model/, `${role} should receive exact-gpt-5.5 guidance`);
+      assert.match(toml, /model = "gpt-5\.6-sol"/, `${role} should use exact gpt-5.6-sol`);
+      assert.match(toml, /exact gpt-5\.6-sol model/, `${role} should receive exact-gpt-5.6-sol guidance`);
       assert.match(toml, /strict execution order: inspect -> plan -> act -> verify/, `${role} should receive the exact-model guardrail`);
-      assert.match(toml, /resolved_model: gpt-5\.5/, `${role} should record exact gpt-5.5 metadata`);
+      assert.match(toml, /resolved_model: gpt-5\.6-sol/, `${role} should record exact gpt-5.6-sol metadata`);
     }
 
     const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt");
@@ -180,9 +211,9 @@ describe("agents/native-config", () => {
     assert.match(architectToml, /model_reasoning_effort = "xhigh"/);
 
     const researcherToml = generateAgentToml(AGENT_DEFINITIONS.researcher, "researcher prompt");
-    assert.match(researcherToml, /model = "gpt-5\.4-mini"/, "researcher should keep exact mini");
-    assert.match(researcherToml, /exact gpt-5\.4-mini model/, "researcher should receive exact-mini guidance");
-    assert.match(researcherToml, /resolved_model: gpt-5\.4-mini/, "researcher should record exact mini metadata");
+    assert.match(researcherToml, /model = "gpt-5\.6-terra"/, "researcher should keep exact Terra");
+    assert.match(researcherToml, /exact gpt-5\.6-terra model/, "researcher should receive exact-Terra guidance");
+    assert.match(researcherToml, /resolved_model: gpt-5.6-terra/, "researcher should record exact Terra metadata");
     assert.match(researcherToml, /model_reasoning_effort = "high"/);
 
     for (const role of [
@@ -194,12 +225,12 @@ describe("agents/native-config", () => {
       "prometheus-strict-oracle",
     ] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
-      assert.match(toml, /model = "gpt-5\.5"/, `${role} should stay on configured/root gpt-5.5`);
-      assert.doesNotMatch(toml, /model = "gpt-5\.4-mini"/, `${role} must not inherit exact-mini pins`);
+      assert.match(toml, /model = "gpt-5\.6-sol"/, `${role} should stay on configured/root gpt-5.6-sol`);
+      assert.doesNotMatch(toml, /model = "gpt-5\.6-terra"/, `${role} must not inherit exact-Terra pins`);
     }
   });
 
-  it("applies exact-model mini guidance only for resolved gpt-5.4-mini standard roles", () => {
+  it("applies exact-model Terra guidance only for resolved gpt-5.6-terra standard roles", () => {
     const agent: AgentDefinition = {
       name: "debugger",
       description: "Root-cause analysis",
@@ -213,20 +244,20 @@ describe("agents/native-config", () => {
 
     const prompt = "Instruction line";
     const exactMiniToml = generateAgentToml(agent, prompt, {
-      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4-mini" } as NodeJS.ProcessEnv,
+      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.6-terra" } as NodeJS.ProcessEnv,
     });
     const frontierToml = generateAgentToml(agent, prompt, {
-      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.5" } as NodeJS.ProcessEnv,
+      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.6-sol" } as NodeJS.ProcessEnv,
     });
     const tunedToml = generateAgentToml(agent, prompt, {
-      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4-mini-tuned" } as NodeJS.ProcessEnv,
+      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.6-terra-tuned" } as NodeJS.ProcessEnv,
     });
 
-    assert.match(exactMiniToml, /exact gpt-5\.4-mini model/);
+    assert.match(exactMiniToml, /exact gpt-5\.6-terra model/);
     assert.match(exactMiniToml, /strict execution order: inspect -> plan -> act -> verify/);
-    assert.match(exactMiniToml, /resolved_model: gpt-5\.4-mini/);
-    assert.doesNotMatch(frontierToml, /exact gpt-5\.4-mini model/);
-    assert.doesNotMatch(tunedToml, /exact gpt-5\.4-mini model/);
+    assert.match(exactMiniToml, /resolved_model: gpt-5\.6-terra/);
+    assert.doesNotMatch(frontierToml, /exact gpt-5\.6-terra model/);
+    assert.doesNotMatch(tunedToml, /exact gpt-5\.6-terra model/);
   });
 
   it("adds a leaf guard after delegation guidance in generated native agent instructions", () => {
@@ -303,12 +334,12 @@ describe("agents/native-config", () => {
     const writerInstructions = composeRoleInstructionsForRole(
       "writer",
       "writer prompt",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     );
     const unknownInstructions = composeRoleInstructionsForRole(
       "does-not-exist",
       "plain prompt",
-      "gpt-5.5",
+      "gpt-5.6-sol",
     );
 
     assert.doesNotMatch(writerInstructions, /<native_subagent_leaf_guard>/);
@@ -340,7 +371,7 @@ describe("agents/native-config", () => {
         join(outDir, "executor.toml"),
         "utf8",
       );
-      assert.match(executorToml, /model = "gpt-5\.5"/);
+      assert.match(executorToml, /model = "gpt-5\.6-sol"/);
       assert.match(executorToml, /model_reasoning_effort = "medium"/);
 
       const skipped = await installNativeAgentConfigs(root, {
@@ -394,7 +425,7 @@ describe("agents/native-config", () => {
       await mkdir(promptsDir, { recursive: true });
       await mkdir(codexHome, { recursive: true });
       await writeFile(join(codexHome, "config.toml"), [
-        'model = "gpt-5.5"',
+        'model = "gpt-5.6-sol"',
         'model_provider = "cheapRouter"',
         '',
         '[model_providers.cheapRouter]',
@@ -411,12 +442,12 @@ describe("agents/native-config", () => {
         catalogManifest: manifestWithAgents(["executor"]),
       });
       const executorToml = await readFile(join(outDir, "executor.toml"), "utf8");
-      assert.match(executorToml, /model = "gpt-5\.5"/);
+      assert.match(executorToml, /model = "gpt-5\.6-sol"/);
       assert.match(executorToml, /model_provider = "cheapRouter"/);
     } finally {
       if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
       else delete process.env.CODEX_HOME;
-      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-terra";
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -434,11 +465,11 @@ describe("agents/native-config", () => {
       await mkdir(codexHome, { recursive: true });
       await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
         env: {
-          OMX_DEFAULT_SPARK_MODEL: "gpt-5.4-mini",
+          OMX_DEFAULT_SPARK_MODEL: "gpt-5.6-luna",
         },
       }));
       await writeFile(join(codexHome, "config.toml"), [
-        'model = "gpt-5.5"',
+        'model = "gpt-5.6-sol"',
         'model_provider = "OpenAI"',
         '',
       ].join('\n'));
@@ -449,7 +480,7 @@ describe("agents/native-config", () => {
         catalogManifest: manifestWithAgents(["explore"]),
       });
       const exploreToml = await readFile(join(outDir, "explore.toml"), "utf8");
-      assert.match(exploreToml, /model = "gpt-5\.4-mini"/);
+      assert.match(exploreToml, /model = "gpt-5\.6-luna"/);
       assert.doesNotMatch(exploreToml, /model_provider = /);
     } finally {
       if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
@@ -479,11 +510,11 @@ describe("agents/native-config", () => {
       });
       const debuggerToml = await readFile(join(outDir, "debugger.toml"), "utf8");
       assert.match(debuggerToml, /model = "gpt-5\.2"/);
-      assert.doesNotMatch(debuggerToml, /model = "gpt-5\.4-mini"/);
+      assert.doesNotMatch(debuggerToml, /model = "gpt-5\.6-terra"/);
     } finally {
       if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
       else delete process.env.CODEX_HOME;
-      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-terra";
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -496,7 +527,7 @@ describe("agents/native-config", () => {
     const previousCodexHome = process.env.CODEX_HOME;
 
     try {
-      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-terra";
       process.env.CODEX_HOME = codexHome;
       await mkdir(promptsDir, { recursive: true });
       await mkdir(codexHome, { recursive: true });
@@ -508,12 +539,12 @@ describe("agents/native-config", () => {
         catalogManifest: manifestWithAgents(["debugger"]),
       });
       const debuggerToml = await readFile(join(outDir, "debugger.toml"), "utf8");
-      assert.match(debuggerToml, /model = "gpt-5\.4-mini"/);
+      assert.match(debuggerToml, /model = "gpt-5\.6-terra"/);
       assert.doesNotMatch(debuggerToml, /model = "gpt-5\.2"/);
     } finally {
       if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
       else delete process.env.CODEX_HOME;
-      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-terra";
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -542,7 +573,7 @@ describe("agents/native-config", () => {
     } finally {
       if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
       else delete process.env.CODEX_HOME;
-      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-terra";
       await rm(root, { recursive: true, force: true });
     }
   });

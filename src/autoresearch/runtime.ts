@@ -8,6 +8,7 @@ import {
   type AutoresearchKeepPolicy,
   type AutoresearchMissionContract,
 } from './contracts.js';
+import { renderCodeGraphInstructions, resolveWorktreeToolContext, type WorktreeToolContext } from '../utils/worktree-tool-context.js';
 
 export type AutoresearchCandidateStatus = 'candidate' | 'noop' | 'abort' | 'interrupted';
 export type AutoresearchDecisionStatus = 'baseline' | 'keep' | 'discard' | 'ambiguous' | 'noop' | 'abort' | 'interrupted' | 'error';
@@ -644,6 +645,7 @@ export function buildAutoresearchInstructions(
     keepPolicy: AutoresearchKeepPolicy;
     previousIterationOutcome?: string | null;
     recentLedgerSummary?: AutoresearchInstructionLedgerSummary[];
+    toolContext?: WorktreeToolContext;
   },
 ): string {
   return [
@@ -661,6 +663,7 @@ export function buildAutoresearchInstructions(
     `Results file: ${context.resultsFile}`,
     `Candidate artifact: ${context.candidateFile}`,
     `Keep policy: ${context.keepPolicy}`,
+    ...(context.toolContext && renderCodeGraphInstructions(context.toolContext) ? ['', renderCodeGraphInstructions(context.toolContext)] : []),
     '',
     'Iteration state snapshot:',
     '```json',
@@ -776,6 +779,12 @@ async function writeInstructionsFile(contract: AutoresearchMissionContract, mani
       keepPolicy: manifest.keep_policy,
       previousIterationOutcome: instructionContext.previousIterationOutcome,
       recentLedgerSummary: instructionContext.recentLedgerSummary,
+      toolContext: resolveWorktreeToolContext({
+        cwd: manifest.worktree_path,
+        scope: 'autoresearch',
+        repoRoot: manifest.repo_root,
+        worktreeRoot: manifest.worktree_path,
+      }),
     })}\n`,
     'utf-8',
   );

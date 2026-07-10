@@ -596,7 +596,7 @@ describe('runtime', () => {
         { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
         'executor',
       );
-      assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.5']);
+      assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.6-sol']);
     });
   });
 
@@ -609,16 +609,16 @@ describe('runtime', () => {
         resolveAgentReasoningEffort('executor'),
         'codex',
       );
-      assert.deepEqual(args, ['--no-alt-screen', '-c', 'model_reasoning_effort="medium"', '--model', 'gpt-5.5']);
+      assert.deepEqual(args, ['--no-alt-screen', '-c', 'model_reasoning_effort="medium"', '--model', 'gpt-5.6-sol']);
     });
   });
 
-  it('resolveWorkerLaunchArgsFromEnv keeps planner on exact gpt-5.5 medium when inherited leader is mini', () => {
+  it('resolveWorkerLaunchArgsFromEnv keeps planner on exact gpt-5.6-sol medium when inherited leader is mini', () => {
     withIsolatedDefaultModelEnv(() => {
       const args = resolveWorkerLaunchArgsFromEnv(
         {
-          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini',
-          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'gpt-5.4-mini',
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra',
+          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'gpt-5.6-terra',
         },
         'planner',
         undefined,
@@ -630,7 +630,7 @@ describe('runtime', () => {
         '-c',
         'model_reasoning_effort="medium"',
         '--model',
-        'gpt-5.5',
+        'gpt-5.6-sol',
       ]);
     });
   });
@@ -660,8 +660,8 @@ describe('runtime', () => {
     withIsolatedDefaultModelEnv(() => {
       const args = resolveWorkerLaunchArgsFromEnv(
         {
-          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini',
-          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'gpt-5.4-mini',
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.6-terra',
+          [TEAM_WORKER_INHERITED_MODEL_ENV]: 'gpt-5.6-terra',
         },
         'planner',
         undefined,
@@ -673,7 +673,7 @@ describe('runtime', () => {
         '-c',
         'model_reasoning_effort="medium"',
         '--model',
-        'gpt-5.5',
+        'gpt-5.6-sol',
       ]);
     });
   });
@@ -692,8 +692,8 @@ describe('runtime', () => {
       ['--model', 'gpt-5'],
     );
     assert.deepEqual(
-      resolveWorkerLaunchArgsFromEnv({ OMX_TEAM_WORKER_LAUNCH_ARGS: '--model=gpt-5.3' }, 'explore'),
-      ['--model', 'gpt-5.3'],
+      resolveWorkerLaunchArgsFromEnv({ OMX_TEAM_WORKER_LAUNCH_ARGS: '--model=gpt-5.5' }, 'explore'),
+      ['--model', 'gpt-5.5'],
     );
   });
 
@@ -702,7 +702,7 @@ describe('runtime', () => {
       resolveWorkerLaunchArgsFromEnv(
         { OMX_TEAM_WORKER_LAUNCH_ARGS: '--model explicit-worker-model' },
         'planner',
-        'gpt-5.4-mini',
+        'gpt-5.6-terra',
         'high',
         'codex',
       ),
@@ -755,8 +755,8 @@ describe('runtime', () => {
           'high',
           'codex',
         );
-        assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'gpt-5.5']);
-        assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.5']);
+        assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'gpt-5.6-sol']);
+        assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.6-sol']);
       });
     } finally {
       console.log = originalLog;
@@ -881,7 +881,7 @@ describe('runtime', () => {
         'low',
         'gemini',
       );
-      assert.deepEqual(codexArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.5']);
+      assert.deepEqual(codexArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.6-sol']);
       assert.deepEqual(claudeArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'claude-3-7-sonnet']);
       assert.deepEqual(geminiArgs, ['-c', 'model_reasoning_effort="low"', '--model', 'gemini-2.0-pro']);
     } finally {
@@ -3702,7 +3702,7 @@ sleep 5
     delete process.env.TMUX;
     process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
     process.env.OMX_TEAM_WORKER_CLI = 'gemini';
-    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--model gpt-5.3-codex-spark';
+    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--model gpt-5.6-luna';
     process.env.OMX_GEMINI_ARGV_CAPTURE_PATH = capturePath;
 
     let runtime: TeamRuntime | null = null;
@@ -3787,7 +3787,7 @@ process.exit(0);
     delete process.env.TMUX;
     process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
     process.env.OMX_TEAM_WORKER_CLI = 'codex';
-    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--model gpt-5.3-codex-spark -c model_reasoning_effort="low"';
+    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--model gpt-5.6-luna -c model_reasoning_effort="low"';
     try {
       await assert.rejects(
         () => withoutTeamWorkerEnv(() =>
@@ -3905,11 +3905,11 @@ process.on('SIGTERM', () => process.exit(0));
       const worker2Instructions = await readFile(join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-2', 'AGENTS.md'), 'utf-8');
       assert.match(worker1Instructions, /You are operating as the \*\*test-engineer\*\* role/);
       assert.match(worker1Instructions, /Test Engineer/);
-      assert.doesNotMatch(worker1Instructions, /exact gpt-5\.4-mini model/);
+      assert.doesNotMatch(worker1Instructions, /exact gpt-5\.6-terra model/);
       assert.match(worker2Instructions, /You are operating as the \*\*writer\*\* role/);
       assert.match(worker2Instructions, /You are Writer\./);
-      assert.doesNotMatch(worker2Instructions, /exact gpt-5\.4-mini model/);
-      assert.match(worker2Instructions, /resolved_model: gpt-5\.5/);
+      assert.doesNotMatch(worker2Instructions, /exact gpt-5\.6-terra model/);
+      assert.match(worker2Instructions, /resolved_model: gpt-5\.6-sol/);
 
       let worker1Args: string[] | null = null;
       let worker2Args: string[] | null = null;
@@ -3930,10 +3930,10 @@ process.on('SIGTERM', () => process.exit(0));
       const worker2Joined = worker2Args!.join(' ');
       assert.match(worker1Joined, /model_reasoning_effort="medium"/);
       assert.match(worker1Joined, /model_instructions_file=.*worker-1\/AGENTS\.md/);
-      assert.match(worker1Joined, /--model gpt-5\.5/);
+      assert.match(worker1Joined, /--model gpt-5\.6-sol/);
       assert.match(worker2Joined, /model_reasoning_effort="xhigh"/);
       assert.match(worker2Joined, /model_instructions_file=.*worker-2\/AGENTS\.md/);
-      assert.match(worker2Joined, /--model gpt-5\.5/);
+      assert.match(worker2Joined, /--model gpt-5\.6-sol/);
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -3957,7 +3957,7 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('startTeam does not apply mini guidance for exact-match negatives like gpt-5.4-mini-tuned', async () => {
+  it('startTeam does not apply mini guidance for exact-match negatives like gpt-5.6-terra-tuned', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-mini-tuned-'));
     const binDir = join(cwd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
@@ -4000,7 +4000,7 @@ process.on('SIGTERM', () => process.exit(0));
     process.env.OMX_TEAM_WORKER_CLI = 'codex';
     process.env.OMX_ARGV_CAPTURE_DIR = captureDir;
     delete process.env.OMX_DEFAULT_STANDARD_MODEL;
-    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--model gpt-5.4-mini-tuned';
+    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--model gpt-5.6-terra-tuned';
 
     let runtime: TeamRuntime | null = null;
     try {
@@ -4020,9 +4020,9 @@ process.on('SIGTERM', () => process.exit(0));
       const workerInstructions = await readFile(join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'AGENTS.md'), 'utf-8');
       assert.match(workerInstructions, /You are operating as the \*\*writer\*\* role/);
       assert.match(workerInstructions, /You are Writer\./);
-      assert.doesNotMatch(workerInstructions, /exact gpt-5\.4-mini model/);
+      assert.doesNotMatch(workerInstructions, /exact gpt-5\.6-terra model/);
       assert.doesNotMatch(workerInstructions, /strict execution order: inspect -> plan -> act -> verify/);
-      assert.match(workerInstructions, /resolved_model: gpt-5\.4-mini-tuned/);
+      assert.match(workerInstructions, /resolved_model: gpt-5\.6-terra-tuned/);
 
       let workerArgs: string[] | null = null;
       for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -4036,7 +4036,7 @@ process.on('SIGTERM', () => process.exit(0));
 
       assert.ok(workerArgs, 'worker argv capture file should be written');
       const workerJoined = workerArgs!.join(' ');
-      assert.match(workerJoined, /--model gpt-5\.4-mini-tuned/);
+      assert.match(workerJoined, /--model gpt-5\.6-terra-tuned/);
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -8068,7 +8068,7 @@ esac
 
       const task = await readTask(runtime.teamName, '1', cwd);
       assert.equal(task?.delegation?.mode, 'auto');
-      assert.equal(task?.delegation?.child_model, 'gpt-5.4-mini');
+      assert.equal(task?.delegation?.child_model, 'gpt-5.6-terra');
       assert.equal(task?.delegation?.required_parallel_probe, true);
       assert.equal(task?.coordination?.mode, 'coordinated');
       assert.ok(task?.coordination?.activation_reasons.includes('cross_boundary_or_handoff_language'));
@@ -8734,7 +8734,7 @@ esac
 
       const reread = await readTask('team-assign-delegation', task.id, cwd);
       assert.equal(reread?.delegation?.mode, 'auto');
-      assert.equal(reread?.delegation?.child_model, 'gpt-5.4-mini');
+      assert.equal(reread?.delegation?.child_model, 'gpt-5.6-terra');
       assert.equal(reread?.coordination?.mode, 'coordinated');
       assert.ok(reread?.coordination?.activation_reasons.includes('shared_file_scope'));
       assert.equal(reread?.coordination?.activation_reasons.includes('stale_snapshot_before_assignment'), false);

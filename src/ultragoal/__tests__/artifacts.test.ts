@@ -20,7 +20,7 @@ import {
   type UltragoalPlan,
   type UltragoalSteeringProposal,
 } from '../artifacts.js';
-import { LEADER_CONDUCTOR_BLOCK } from '../../leader/contract.js';
+import { LEADER_CONDUCTOR_BLOCK, buildUnsupportedNativeSubagentGuidance } from '../../leader/contract.js';
 import { steeringFixtures, type SteeringFixtureProposal } from './steering-fixtures.js';
 
 async function withTempRepo<T>(run: (cwd: string) => Promise<T>): Promise<T> {
@@ -173,6 +173,49 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('does not atomize RALPLAN review and consensus sections into pseudo-goals', async () => {
+    await withTempRepo(async (cwd) => {
+      const brief = [
+        '# Approved RALPLAN handoff',
+        '',
+        'Review artifact:',
+        '- G104 verdict: APPROVE after evidence review',
+        '- Review artifact: .gjc/plans/ralplan/run/review.md',
+        '- Critic review: verification is concrete',
+        '',
+        'Consensus status:',
+        '- Planner consensus: approved',
+        '- Architect review: CLEAR',
+        '- Implementation notes remain advisory until converted to compact goals',
+        '',
+        'Verification checklist:',
+        '- Run targeted tests',
+        '- Run build checks',
+      ].join('\n');
+
+      const plan = await createUltragoalPlan(cwd, { brief });
+
+      assert.equal(plan.goals.length, 1);
+      assert.equal(plan.goals[0]?.title, '# Approved RALPLAN handoff');
+      assert.doesNotMatch(plan.goals[0]?.id ?? '', /g104|verdict|review-artifact|consensus-status/);
+    });
+  });
+
+  it('fails closed for broad implicit plan-like markdown without compact stories', async () => {
+    await withTempRepo(async (cwd) => {
+      const broadBrief = [
+        '# RALPLAN approved handoff',
+        'Consensus status: approved for execution.',
+        ...Array.from({ length: 21 }, (_, index) => `- Review or handoff detail ${index + 1}`),
+      ].join('\n');
+
+      await assert.rejects(
+        () => createUltragoalPlan(cwd, { brief: broadBrief }),
+        /Refusing to derive 21 implicit ultragoal goals.*--goal "Title::Objective".*### Stories\/### Goals/s,
+      );
+    });
+  });
+
   it('keeps later sibling stories after an indented plain-label note', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {
@@ -322,6 +365,19 @@ describe('ultragoal artifacts', () => {
       assert.match(perStoryInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
       assert.match(perStoryInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
       assert.match(perStoryInstruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+
+      const nativeSubagentSupport = {
+        status: 'unsupported' as const,
+        reason: 'native_subagents_unsupported' as const,
+        source: 'persisted_support_blocker' as const,
+        evidenceSummary: 'native subagents are disabled in this runtime',
+      };
+      const unsupportedInstruction = buildCodexGoalInstruction(perStory.goal!, perStory.plan, { nativeSubagentSupport });
+      assert.doesNotMatch(unsupportedInstruction, /Conductor mode contract:/);
+      assert.match(unsupportedInstruction, new RegExp(escapeRegExp(buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport))));
+      assert.match(unsupportedInstruction, /record-review-blockers/);
+      assert.match(unsupportedInstruction, /non-clean blocker/);
+      assert.match(unsupportedInstruction, /Native independent review unavailable/);
     });
   });
 
@@ -1017,6 +1073,30 @@ describe('ultragoal artifacts', () => {
               recommendation: 'APPROVE',
               architectStatus: 'CLEAR',
               evidence: 'same execution lane self-reviewed and approved without spawning review subagents',
+            },
+          },
+        }),
+        /independent review unavailable|self-approving/i,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            codeReview: {
+              recommendation: 'APPROVE',
+              architectStatus: 'CLEAR',
+              evidence: 'native independent review unavailable',
+            },
+            nativeSubagentSupport: {
+              status: 'unsupported',
+              reason: 'native_subagents_unsupported',
+              source: 'persisted_support_blocker',
+              evidenceSummary: 'native subagents are disabled in this runtime',
             },
           },
         }),

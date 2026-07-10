@@ -101,12 +101,12 @@ describe('agents/definitions', () => {
     }
   });
 
-  it('pins ralplan thesis and antithesis to exact gpt-5.5 with role-specific reasoning', () => {
-    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-5.5');
+  it('pins ralplan thesis and antithesis to exact gpt-5.6-sol with role-specific reasoning', () => {
+    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-5.6-sol');
     assert.equal(AGENT_DEFINITIONS.planner.reasoningEffort, 'medium');
     assert.equal(AGENT_DEFINITIONS.planner.modelClass, 'frontier');
 
-    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-5.5');
+    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-5.6-sol');
     assert.equal(AGENT_DEFINITIONS.architect.reasoningEffort, 'xhigh');
     assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
 

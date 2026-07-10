@@ -18,6 +18,7 @@ import {
   syncCanonicalSkillStateForMode,
 } from './skill-active.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
+import { normalizeTerminalWorkflowState } from './terminal-normalization.js';
 import { clearDeepInterviewQuestionObligation } from '../question/deep-interview.js';
 import {
   buildAutopilotDeepInterviewRalplanGateError,
@@ -155,7 +156,8 @@ async function completeSourceModeState(
       }
     }
     delete nextCandidate.run_outcome;
-    const nextState = applyRunOutcomeContract(nextCandidate, { nowIso }).state as TransitionStateLike;
+    const runOutcomeState = applyRunOutcomeContract(nextCandidate, { nowIso }).state as TransitionStateLike;
+    const nextState = normalizeTerminalWorkflowState(runOutcomeState, { mode: sourceMode, nowIso }).state as TransitionStateLike;
 
     await mkdir(dirname(candidatePath), { recursive: true });
     await writeFile(candidatePath, JSON.stringify(nextState, null, 2));

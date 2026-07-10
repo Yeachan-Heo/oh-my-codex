@@ -30,7 +30,7 @@ $ralplan --interactive "task description"
 
 ## Behavior
 
-## GPT-5.5 Guidance Alignment
+## GPT-5.6 Guidance Alignment
 
 Use the shared workflow guidance pattern: outcome-first framing, concise visible updates for multi-step planning, local overrides for the active workflow branch, evidence-backed planning and validation expectations, explicit stop rules, right-sized implementation/PRD shape, and automatic continuation for safe reversible steps. Ask only for material, destructive, credentialed, external-production, or preference-dependent branches.
 

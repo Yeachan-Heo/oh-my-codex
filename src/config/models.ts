@@ -18,7 +18,7 @@
  *     "architect": "xhigh"
  *   },
  *   "agentModels": {
- *     "architect": "gpt-5.5"
+ *     "architect": "gpt-5.6-sol"
  *   }
  * }
  *
@@ -38,7 +38,12 @@ export interface OmxConfigEnv {
   [key: string]: string | undefined;
 }
 
-export type ConfiguredAgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export const CANONICAL_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export type ConfiguredAgentReasoningEffort = (typeof CANONICAL_REASONING_EFFORTS)[number];
+
+export const AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS = ['max', 'ultra'] as const;
+export type AmbiguousUnsupportedReasoningEffort = (typeof AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS)[number];
+
 
 interface OmxConfigFile {
   agentReasoning?: Record<string, unknown>;
@@ -94,9 +99,17 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
   return null;
 }
 
-export const DEFAULT_FRONTIER_MODEL = 'gpt-5.5';
-export const DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini';
-export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
+export const DEFAULT_FRONTIER_MODEL = 'gpt-5.6-sol';
+export const DEFAULT_STANDARD_MODEL = 'gpt-5.6-terra';
+export const DEFAULT_SPARK_MODEL = 'gpt-5.6-luna';
+export const GPT_5_6_MODEL_ALIASES = [DEFAULT_STANDARD_MODEL, DEFAULT_SPARK_MODEL, DEFAULT_FRONTIER_MODEL] as const;
+export const KNOWN_CODEX_MODEL_ALIASES = GPT_5_6_MODEL_ALIASES;
+export type KnownCodexModelAlias = (typeof KNOWN_CODEX_MODEL_ALIASES)[number];
+
+export function isKnownCodexModelAlias(model: string): model is KnownCodexModelAlias {
+  return (KNOWN_CODEX_MODEL_ALIASES as readonly string[]).includes(model);
+}
+
 export const DEFAULT_TEAM_CHILD_MODEL = DEFAULT_STANDARD_MODEL;
 
 function normalizeConfiguredValue(value: unknown): string | undefined {
@@ -105,15 +118,14 @@ function normalizeConfiguredValue(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+export function isAmbiguousUnsupportedReasoningEffort(value: string): value is AmbiguousUnsupportedReasoningEffort {
+  return (AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS as readonly string[]).includes(value.toLowerCase());
+}
+
 function normalizeAgentReasoningEffort(value: unknown): ConfiguredAgentReasoningEffort | undefined {
   const normalized = normalizeConfiguredValue(value)?.toLowerCase();
-  if (
-    normalized === 'low' ||
-    normalized === 'medium' ||
-    normalized === 'high' ||
-    normalized === 'xhigh'
-  ) {
-    return normalized;
+  if (normalized && (CANONICAL_REASONING_EFFORTS as readonly string[]).includes(normalized)) {
+    return normalized as ConfiguredAgentReasoningEffort;
   }
   return undefined;
 }
@@ -139,6 +151,11 @@ function readTeamLowComplexityOverride(codexHomeOverride?: string): string | und
     if (value) return value;
   }
   return undefined;
+}
+
+/** Configured `models.team_low_complexity` (or alias-key) override, if any. */
+export function getConfiguredTeamLowComplexityModel(codexHomeOverride?: string): string | undefined {
+  return readTeamLowComplexityOverride(codexHomeOverride);
 }
 
 export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.ProcessEnv {

@@ -237,6 +237,8 @@ async function assertPluginHookLaunchesPostCompactFromCache(): Promise<void> {
         OMX_ROOT: join(cacheRoot, '.omx-root'),
         OMX_SESSION_ID: 'omx-plugin-hook-postcompact-smoke',
         OMX_SOURCE_CWD: cacheRoot,
+        OMX_ENTRY_PATH: omxBin,
+        OMX_CODEX_LAUNCH_ID: 'omx-plugin-hook-postcompact-smoke-launch',
         OMX_STARTUP_CWD: cacheRoot,
       },
     });
@@ -292,6 +294,8 @@ async function assertPluginHookDelegatesPostCompactToPinnedCommand(): Promise<vo
         OMX_ROOT: join(cacheRoot, '.omx-root'),
         OMX_SESSION_ID: 'omx-plugin-hook-postcompact-delegate',
         OMX_SOURCE_CWD: cacheRoot,
+        OMX_ENTRY_PATH: omxBin,
+        OMX_CODEX_LAUNCH_ID: 'omx-plugin-hook-postcompact-delegate-launch',
         OMX_STARTUP_CWD: cacheRoot,
       },
     });
@@ -353,10 +357,25 @@ async function withPluginCacheCopy<T>(run: (cachePluginRoot: string, cacheRoot: 
 
 function pluginHookEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  for (const key of ['OMX_TEAM_STATE_ROOT', 'OMX_ROOT', 'OMX_STATE_ROOT', 'OMX_SESSION_ID', 'CODEX_SESSION_ID']) {
+  for (const key of [
+    'OMX_TEAM_STATE_ROOT',
+    'OMX_ROOT',
+    'OMX_STATE_ROOT',
+    'OMX_SESSION_ID',
+    'CODEX_SESSION_ID',
+    'OMX_ENTRY_PATH',
+    'OMX_CODEX_LAUNCH_ID',
+    'OMX_STARTUP_CWD',
+  ]) {
     delete env[key];
   }
-  return { ...env, ...overrides };
+  return {
+    ...env,
+    OMX_ENTRY_PATH: omxBin,
+    OMX_CODEX_LAUNCH_ID: 'omx-plugin-layout-launch',
+    OMX_STARTUP_CWD: root,
+    ...overrides,
+  };
 }
 
 function runPluginNativeHook(
@@ -456,6 +475,133 @@ describe('official Codex plugin layout', () => {
     assert.match(launcher, /return \{ \.\.\.options, windowsHide: true \};/);
     assert.match(launcher, /return \{ \.\.\.options, shell: true, windowsHide: true \};/);
     assert.doesNotMatch(launcher, /shell:\s*process\.platform === 'win32'/);
+  });
+
+  it('no-ops plugin hooks when Codex was not launched through omx', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const calledPath = join(cacheRoot, 'called.txt');
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'record-called.cmd' : 'record-called.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, `@echo off\r\necho called > "${calledPath}"\r\necho {}\r\n`, 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh\necho called > "${calledPath}"\nprintf '{}\\n'\n`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const userPrompt = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: '$ralplan smoke' }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_CODEX_LAUNCH_ID: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(userPrompt.status, 0, userPrompt.stderr || userPrompt.stdout);
+      assert.equal(userPrompt.stdout, '');
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
+      const stop = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'plain-codex-stop' }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_CODEX_LAUNCH_ID: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(stop.status, 0, stop.stderr || stop.stdout);
+      assert.deepEqual(parseSingleJsonStdout(stop.stdout), {});
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
+      const oversizedUserPrompt = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'x'.repeat(2 * 1024 * 1024),
+        }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_CODEX_LAUNCH_ID: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(oversizedUserPrompt.error, undefined, oversizedUserPrompt.error?.message ?? '');
+      assert.equal(oversizedUserPrompt.status, 0, oversizedUserPrompt.stderr || oversizedUserPrompt.stdout);
+      assert.equal(oversizedUserPrompt.stdout, '');
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
+      const oversizedStop = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'Stop',
+          session_id: 'plain-codex-oversized-stop',
+          padding: 'x'.repeat(2 * 1024 * 1024),
+        }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_CODEX_LAUNCH_ID: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(oversizedStop.error, undefined, oversizedStop.error?.message ?? '');
+      assert.equal(oversizedStop.status, 0, oversizedStop.stderr || oversizedStop.stdout);
+      assert.deepEqual(parseSingleJsonStdout(oversizedStop.stdout), {});
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+    });
+  });
+
+  it('no-ops plugin hooks for nested plain Codex sessions that inherit omx launch env', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const calledPath = join(cacheRoot, 'called.txt');
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'record-inherited-called.cmd' : 'record-inherited-called.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, `@echo off\r\necho %* > "${calledPath}"\r\necho {}\r\n`, 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh\necho "$@" > "${calledPath}"\nprintf '{}\\n'\n`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const inheritedEnv = {
+        OMX_ROOT: join(cacheRoot, '.omx-root'),
+        OMX_ENTRY_PATH: omxBin,
+        OMX_CODEX_LAUNCH_ID: 'inherited-launch-token',
+        OMX_NATIVE_HOOK_COMMAND: commandPath,
+      };
+      const owner = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'UserPromptSubmit',
+          session_id: 'owner-codex-session',
+          session_pid: 111,
+          prompt: '$ralplan smoke',
+        }),
+        inheritedEnv,
+      );
+
+      assert.equal(owner.status, 0, owner.stderr || owner.stdout);
+      assert.equal((await readFile(calledPath, 'utf-8')).trim(), 'codex-native-hook');
+      await rm(calledPath, { force: true });
+
+      const nestedPlainCodex = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'UserPromptSubmit',
+          session_id: 'nested-plain-codex-session',
+          session_pid: 222,
+          prompt: '$ralplan nested',
+        }),
+        inheritedEnv,
+      );
+
+      assert.equal(nestedPlainCodex.status, 0, nestedPlainCodex.stderr || nestedPlainCodex.stdout);
+      assert.equal(nestedPlainCodex.stdout, '');
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+    });
   });
 
   it('emits Stop JSON when the plugin hook pinned launcher is invalid', async () => {
@@ -583,6 +729,155 @@ exit 7
     });
   });
 
+  it('preserves valid pretty-printed Stop child JSON', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'pretty-valid-json.cmd' : 'pretty-valid-json.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {\r\necho   "decision": "block",\r\necho   "stopReason": "pretty_child_json"\r\necho }\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{\n'
+printf '  "decision": "block",\n'
+printf '  "stopReason": "pretty_child_json"\n'
+printf '}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-pretty-valid-json-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'pretty_child_json');
+      assert.doesNotMatch(result.stdout, /plugin_stop_hook_launcher_invalid_stdout/);
+    });
+  });
+
+  it('preserves valid Stop child JSON when stdout includes prior launcher noise', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'noisy-valid-json.cmd' : 'noisy-valid-json.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho runtime notice before json\r\necho {"decision":"block","stopReason":"autopilot_ultragoal"}\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf 'runtime notice before json\n'
+printf '{"decision":"block","stopReason":"autopilot_ultragoal"}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'Stop',
+          session_id: 'omx-1783508412223-c32f1l',
+          cwd: cacheRoot,
+        }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /runtime notice before json/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'autopilot_ultragoal');
+      assert.doesNotMatch(result.stdout, /plugin_stop_hook_launcher_invalid_stdout/);
+    });
+  });
+
+  it('rejects Stop child JSON when later stdout noise follows it', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'valid-json-trailing-noise.cmd' : 'valid-json-trailing-noise.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {"decision":"block","stopReason":"child_valid_json"}\r\necho trailing runtime noise\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{"decision":"block","stopReason":"child_valid_json"}\n'
+printf 'trailing runtime noise\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-trailing-noise-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /trailing runtime noise/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_invalid_stdout');
+    });
+  });
+
+  it('rejects Stop child JSON when an earlier JSON decision is followed by noise and final JSON', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'json-noise-json.cmd' : 'json-noise-json.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {"decision":"block","stopReason":"first_json"}\r\necho trailing runtime noise\r\necho {"decision":"block","stopReason":"second_json"}\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{"decision":"block","stopReason":"first_json"}\n'
+printf 'trailing runtime noise\n'
+printf '{"decision":"block","stopReason":"second_json"}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-json-noise-json-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /first_json/);
+      assert.doesNotMatch(result.stdout, /second_json/);
+      assert.doesNotMatch(result.stdout, /trailing runtime noise/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_invalid_stdout');
+    });
+  });
+
+  it('rejects pretty Stop child JSON followed by final JSON log noise', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const commandPath = join(cacheRoot, process.platform === 'win32' ? 'pretty-json-final-log.cmd' : 'pretty-json-final-log.sh');
+      if (process.platform === 'win32') {
+        await writeFile(commandPath, '@echo off\r\necho {\r\necho   "decision": "block",\r\necho   "stopReason": "real_block"\r\necho }\r\necho {"level":"info"}\r\nexit /b 0\r\n', 'utf-8');
+      } else {
+        await writeFile(commandPath, `#!/bin/sh
+printf '{\n'
+printf '  "decision": "block",\n'
+printf '  "stopReason": "real_block"\n'
+printf '}\n'
+printf '{"level":"info"}\n'
+`, 'utf-8');
+        await chmod(commandPath, 0o755);
+      }
+
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-plugin-pretty-json-final-log-stop' }),
+        { OMX_NATIVE_HOOK_COMMAND: commandPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /real_block/);
+      assert.doesNotMatch(result.stdout, /level/);
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, 'block');
+      assert.equal(output.stopReason, 'plugin_stop_hook_launcher_invalid_stdout');
+    });
+  });
+
   it('replaces oversized Stop child stdout with fallback Stop JSON', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const commandPath = join(cacheRoot, process.platform === 'win32' ? 'oversized-stop-stdout.cmd' : 'oversized-stop-stdout.sh');
@@ -613,7 +908,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     await withPluginCacheCopy(async (cachePluginRoot) => {
       await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
 
-      const result = runPluginNativeHook(cachePluginRoot, '{"hook_event_name":"Stop",');
+      const result = runPluginNativeHook(cachePluginRoot, '{"hook_event_name":"Stop","session_id":"sess-plugin-malformed-stop",');
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
@@ -626,7 +921,7 @@ head -c 1100000 /dev/zero | tr '\0' x
     await withPluginCacheCopy(async (cachePluginRoot) => {
       await writeFile(join(cachePluginRoot, 'hooks', 'omx-command.json'), '{"command":', 'utf-8');
 
-      const result = runPluginNativeHook(cachePluginRoot, '{"name":"Stop",');
+      const result = runPluginNativeHook(cachePluginRoot, '{"name":"Stop","session_id":"sess-plugin-malformed-name-stop",');
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const output = parseSingleJsonStdout(result.stdout);
@@ -671,6 +966,7 @@ head -c 1100000 /dev/zero | tr '\0' x
 
       const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
         hook_event_name: 'UserPromptSubmit',
+        session_id: 'sess-plugin-invalid-launcher-user-prompt',
         prompt: 'hello',
       }));
 
@@ -713,6 +1009,7 @@ head -c 1100000 /dev/zero | tr '\0' x
 
       const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
         hook_event_name: 'PreToolUse',
+        session_id: 'sess-plugin-nested-stop-text',
         tool_input: { name: 'Stop' },
       }));
 
@@ -728,7 +1025,7 @@ head -c 1100000 /dev/zero | tr '\0' x
 
       const result = runPluginNativeHook(
         cachePluginRoot,
-        '{"hook_event_name":"PreToolUse","tool_input":{"name":"Stop"},',
+        '{"hook_event_name":"PreToolUse","session_id":"sess-plugin-malformed-non-stop","tool_input":{"name":"Stop"},',
       );
 
       assert.equal(result.status, 1);
@@ -887,7 +1184,10 @@ head -c 1100000 /dev/zero | tr '\0' x
 
   it('fails oversized non-Stop plugin stdin without Stop JSON', async () => {
     await withPluginCacheCopy(async (cachePluginRoot) => {
-      const result = runPluginNativeHook(cachePluginRoot, 'x'.repeat(1024 * 1024 + 1));
+      const result = runPluginNativeHook(
+        cachePluginRoot,
+        `{"hook_event_name":"UserPromptSubmit","session_id":"sess-plugin-oversized-non-stop","padding":"${'x'.repeat(1024 * 1024 + 1)}`,
+      );
 
       assert.equal(result.status, 1);
       assert.equal(result.stdout, '');

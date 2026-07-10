@@ -1554,9 +1554,9 @@ mod tests {
                 "--instructions-file",
                 "/tmp/explore-agents.md",
                 "--model-spark",
-                "gpt-5.3-codex-spark",
+                "gpt-5.6-luna",
                 "--model-fallback",
-                "gpt-5.5",
+                "gpt-5.6-sol",
             ]
             .into_iter()
             .map(OsString::from),
@@ -1567,8 +1567,8 @@ mod tests {
         assert_eq!(args.prompt, "find auth");
         assert_eq!(args.prompt_file, Path::new("/tmp/explore.md"));
         assert_eq!(args.instructions_file, Path::new("/tmp/explore-agents.md"));
-        assert_eq!(args.spark_model, "gpt-5.3-codex-spark");
-        assert_eq!(args.fallback_model, "gpt-5.5");
+        assert_eq!(args.spark_model, "gpt-5.6-luna");
+        assert_eq!(args.fallback_model, "gpt-5.6-sol");
     }
 
     #[test]

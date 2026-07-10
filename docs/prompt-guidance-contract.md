@@ -1,10 +1,10 @@
-# GPT-5.5 Prompt Guidance Contract
+# GPT-5.6 Prompt Guidance Contract
 
 Status: contributor-facing contract for OMX prompt and orchestration surfaces.
 
 ## Purpose
 
-This document explains the active **behavioral prompt contract** for OMX after Issue [#2007](https://github.com/Yeachan-Heo/oh-my-codex/issues/2007): align prompt and instruction surfaces with OpenAI's official [GPT-5.5 prompt guidance](https://developers.openai.com/api/docs/guides/prompt-guidance) while preserving OMX product contracts.
+This document explains the active **behavioral prompt contract** for OMX after Issue [#2007](https://github.com/Yeachan-Heo/oh-my-codex/issues/2007): align prompt and instruction surfaces with OpenAI's official [GPT-5.6 prompt guidance](https://developers.openai.com/api/docs/guides/prompt-guidance) while preserving OMX product contracts.
 
 Use it when you edit any of these surfaces:
 
@@ -18,7 +18,7 @@ Use it when you edit any of these surfaces:
 
 The current prompt sources in this repository live in **`prompts/*.md`** and **`skills/*/SKILL.md`**, then get installed to `~/.codex/prompts/`, `~/.codex/skills/`, and native agent wrappers. Treat the source markdown body as canonical; launcher-specific TOML or runtime wrappers should preserve the same behavior.
 
-The GPT-5.5 contract is distributed across:
+The GPT-5.6 contract is distributed across:
 
 - orchestration surfaces: `templates/AGENTS.md` and any tracked project-root `AGENTS.md`
 - shared fragments: `docs/prompt-guidance-fragments/*`
@@ -29,7 +29,7 @@ The GPT-5.5 contract is distributed across:
 
 ## Workflow skill guidance dedupe
 
-Workflow skills may use a compact reference to the shared workflow guidance pattern instead of repeating every GPT-5.5 bullet. That pattern must preserve: outcome-first framing, concise visible updates for multi-step work, scoped task-update overrides, evidence-backed validation, and explicit stop/escalation rules. Workflow-specific invariants such as state transitions, gates, cleanup, cancellation, and verification commands remain explicit in the owning skill.
+Workflow skills may use a compact reference to the shared workflow guidance pattern instead of repeating every GPT-5.6 bullet. That pattern must preserve: outcome-first framing, concise visible updates for multi-step work, scoped task-update overrides, evidence-backed validation, and explicit stop/escalation rules. Workflow-specific invariants such as state transitions, gates, cleanup, cancellation, and verification commands remain explicit in the owning skill.
 
 ### UltraQA adversarial e2e invariant
 
@@ -37,16 +37,14 @@ Workflow skills may use a compact reference to the shared workflow guidance patt
 
 ## Exact-model mini adaptation seam
 
-OMX also has a narrow **instruction-composition seam** for subagents/workers whose **final resolved model** is exactly `gpt-5.4-mini`.
-That seam is part of prompt delivery, but it is intentionally narrower than the general GPT-5.5 behavioral contract described below.
+OMX also has a narrow **instruction-composition seam** for subagents/workers whose **final resolved model** is exactly `gpt-5.6-terra`.
+That seam is part of prompt delivery, but it is intentionally narrower than the general GPT-5.6 behavioral contract described below.
 
 Contributor rules for that seam:
 
 - Key mini-specific instruction adaptation off the **final resolved model string**, not off role name, lane, or default tier membership.
-- Role-level `exactModel` pins may route selected agents to `gpt-5.4-mini`, but
-  the mini-specific instruction seam still keys off the final resolved model
-  string after that routing decision.
-- Use **exact string equality** for `gpt-5.4-mini`; do not widen behavior to `gpt-5.5`, `gpt-5.4-mini-tuned`, or other variants.
+- Role-level `exactModel` pins may route selected agents to `gpt-5.6-terra`, but the mini-specific instruction seam still keys off the final resolved model string after that routing decision.
+- Trim the final resolved model string, then compare it with exact, case-sensitive equality to `gpt-5.6-terra`; do not widen behavior to `gpt-5.6-sol`, `gpt-5.6-terra-tuned`, case variants, or other variants.
 - Keep one shared **inner role-instruction composition helper** as the source of truth for model-gated prompt adaptation.
 - Keep `src/team/worker-bootstrap.ts` limited to **outer AGENTS/runtime wrapping**. It should wrap already-composed instructions, not own model-specific adaptation logic.
 - Keep `src/team/role-router.ts` as a raw role-prompt loader unless a minimal plumbing change is unavoidable.
@@ -68,7 +66,7 @@ This contract is about **how OMX prompts should behave**. It is not the same thi
 
 If you are changing prompt prose, use this document first. If you are changing routing metadata or native config overlays, use the routing docs/tests first.
 
-## The 5 core GPT-5.5 patterns OMX should enforce
+## The 5 core GPT-5.6 patterns OMX should enforce
 
 ### 1. Outcome-first, success-criteria-led prompts
 
@@ -123,7 +121,7 @@ Scenario examples for `continue`, `make a PR`, and `merge if CI green` reinforce
 
 ### 5. Evidence budgets, validation, and explicit stop rules
 
-GPT-5.5 guidance favors enough retrieval/validation to answer correctly, then stopping. OMX prompts should continue tool use while correctness depends on repository inspection, official docs, diagnostics, tests, citations, or verification, but avoid extra loops that only improve phrasing or gather nonessential evidence.
+GPT-5.6 guidance favors enough retrieval/validation to answer correctly, then stopping. OMX prompts should continue tool use while correctness depends on repository inspection, official docs, diagnostics, tests, citations, or verification, but avoid extra loops that only improve phrasing or gather nonessential evidence.
 
 For coding work, prompts should ask for concrete validation:
 
@@ -163,7 +161,7 @@ When editing `templates/AGENTS.md`, any tracked root `AGENTS.md`, or other root 
 
 ## Relationship to the guidance schema
 
-`docs/guidance-schema.md` defines the **section layout contract** for AGENTS and worker surfaces. This document defines the **behavioral wording contract** that should appear within those sections after the GPT-5.5 rollout.
+`docs/guidance-schema.md` defines the **section layout contract** for AGENTS and worker surfaces. This document defines the **behavioral wording contract** that should appear within those sections after the GPT-5.6 rollout.
 
 Use both documents together:
 
@@ -172,11 +170,11 @@ Use both documents together:
 
 ## Relationship to posture-aware routing
 
-Posture-aware routing is real, but it is not the same contract as the GPT-5.5 behavior rollout. Keep these separate when editing docs and prompts:
+Posture-aware routing is real, but it is not the same contract as the GPT-5.6 behavior rollout. Keep these separate when editing docs and prompts:
 
 | Topic | Primary sources |
 |---|---|
-| GPT-5.5 prompt behavior contract | `templates/AGENTS.md`, any tracked `AGENTS.md`, canonical XML-tagged role prompt surfaces in `prompts/*.md`, workflow skills in `skills/*/SKILL.md`, `src/config/generator.ts`, `src/hooks/__tests__/prompt-guidance-*.test.ts` |
+| GPT-5.6 prompt behavior contract | `templates/AGENTS.md`, any tracked `AGENTS.md`, canonical XML-tagged role prompt surfaces in `prompts/*.md`, workflow skills in `skills/*/SKILL.md`, `src/config/generator.ts`, `src/hooks/__tests__/prompt-guidance-*.test.ts` |
 | exact-model mini composition seam | `src/agents/native-config.ts`, `src/team/runtime.ts`, `src/team/scaling.ts`, `src/team/worker-bootstrap.ts`, targeted native/runtime/scaling/bootstrap tests |
 | role/tier/posture routing | `README.md:133-179`, `docs/shared/agent-tiers.md`, `src/agents/native-config.ts` |
 
@@ -197,7 +195,7 @@ Before opening a PR that changes prompt text, confirm all of the following:
 1. **Preserve the five core behaviors.** Your change should keep or strengthen outcome-first framing, concise collaboration/preambles, low-risk follow-through, scoped overrides, and evidence-backed validation/stop rules.
 2. **Keep role-specific wording role-specific.** The phrasing can differ by role, but the behavior should stay semantically aligned.
 3. **Update scenario examples when behavior changes.** If you change how prompts handle `continue`, `make a PR`, or `merge if CI green`, update the prompt examples and related tests.
-4. **Keep the mini-only seam exact and centralized.** If you touch mini adaptation, gate it on the final resolved model with exact `gpt-5.4-mini` equality, keep the shared inner helper as the source of truth, and keep `worker-bootstrap.ts` wrapper-only.
+4. **Keep the mini-only seam exact and centralized.** If you touch mini adaptation, gate it on the final resolved model with exact `gpt-5.6-terra` equality, keep the shared inner helper as the source of truth, and keep `worker-bootstrap.ts` wrapper-only.
 5. **Do not confuse routing metadata with prompt behavior.** Posture/tier updates belong in routing docs/tests unless they also change prompt prose.
 6. **Update regression coverage when the contract changes.** Start with `src/hooks/__tests__/prompt-guidance-contract.test.ts`, `prompt-guidance-wave-two.test.ts`, `prompt-guidance-scenarios.test.ts`, `prompt-guidance-catalog.test.ts`, `skill-guidance-contract.test.ts`, and `prompt-guidance-fragments.test.ts`; add native/runtime/scaling/bootstrap coverage when the mini-only seam changes.
 
@@ -217,7 +215,7 @@ node --test \
   dist/hooks/__tests__/explicit-terminal-stop-docs-contract.test.js
 ```
 
-If you touch the exact-model `gpt-5.4-mini` composition seam, also run:
+If you touch the exact-model `gpt-5.6-terra` composition seam, also run:
 
 ```bash
 node --test \
@@ -236,6 +234,6 @@ npm test
 ## References
 
 - Implementation issue: [#2007](https://github.com/Yeachan-Heo/oh-my-codex/issues/2007)
-- Official source: [OpenAI GPT-5.5 prompt guidance](https://developers.openai.com/api/docs/guides/prompt-guidance)
+- Official source: [OpenAI GPT-5.6 prompt guidance](https://developers.openai.com/api/docs/guides/prompt-guidance)
 - Prior rollout history: [#608](https://github.com/Yeachan-Heo/oh-my-codex/issues/608), [#611](https://github.com/Yeachan-Heo/oh-my-codex/pull/611), [#612](https://github.com/Yeachan-Heo/oh-my-codex/pull/612)
 - Guidance schema: `docs/guidance-schema.md`

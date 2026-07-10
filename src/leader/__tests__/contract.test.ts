@@ -10,6 +10,12 @@ import {
   actionKindForConductorArtifact,
   authorizeConductorAction,
   classifyConductorArtifactKind,
+  LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK,
+  NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
+  buildUnsupportedNativeSubagentGuidance,
+  isUnsupportedNativeSubagentEvidence,
+  isUnsupportedNativeSubagentEvidenceForScope,
+  resolveNativeSubagentSupportStatus,
 } from '../contract.js';
 
 describe('leader conductor contract', () => {
@@ -96,5 +102,158 @@ describe('leader conductor contract', () => {
       actionKind: actionKindForConductorArtifact(source),
       artifactKind: source,
     }).allowed, true);
+  });
+
+  it('resolves native subagent support from explicit runtime evidence only', () => {
+    assert.equal(NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE, 'native-subagent-support.json');
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        payload: { omx_runtime_capabilities: { native_subagents: false, multi_agent_v1: false } },
+      }).status,
+      'unsupported',
+    );
+    assert.equal(
+      resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', 'Edit'] } }).reason,
+      'multi_agent_v1_unavailable',
+    );
+    assert.equal(
+      resolveNativeSubagentSupportStatus({ payload: {} }).status,
+      'unknown',
+    );
+    assert.equal(
+      resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', 'multi_agent_v1.spawn_agent'] } }).status,
+      'supported',
+    );
+  });
+
+  it('recognizes scoped unsupported native blocker evidence and renders blocker guidance', () => {
+    const evidence = resolveNativeSubagentSupportStatus({
+      cwd: '/repo',
+      sessionId: 'sess-1',
+      persistedSupportBlocker: {
+        status: 'unsupported',
+        reason: 'multi_agent_v1_unavailable',
+        cwd: '/repo',
+        session_id: 'sess-1',
+        error_summary: 'multi_agent_v1.spawn_agent unavailable',
+      },
+    });
+
+    assert.equal(evidence.status, 'unsupported');
+    assert.equal(evidence.reason, 'multi_agent_v1_unavailable');
+    assert.equal(isUnsupportedNativeSubagentEvidence(evidence), true);
+    assert.match(buildUnsupportedNativeSubagentGuidance(evidence), /blocked\/cancelled\/failed/);
+    assert.match(buildUnsupportedNativeSubagentGuidance(evidence), /Do not call multi_agent_v1\.close_agent/);
+    assert.match(LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK, /permission for Main-root source\/package\/git edits/);
+  });
+
+  it('ignores stale or mismatched unsupported native blocker evidence', () => {
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        cwd: '/repo-a',
+        sessionId: 'sess-1',
+        persistedSupportBlocker: {
+          status: 'unsupported',
+          reason: 'multi_agent_v1_unavailable',
+          cwd: '/repo-b',
+          session_id: 'sess-1',
+        },
+      }).status,
+      'unknown',
+    );
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        nowMs: Date.parse('2026-07-09T00:00:00.000Z'),
+        persistedCapacityBlocker: {
+          reason: 'agent_thread_limit_reached',
+          expires_at: '2026-07-08T00:00:00.000Z',
+        },
+      }).status,
+      'unknown',
+    );
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        nowMs: Date.parse('2026-07-09T00:00:00.000Z'),
+        persistedCapacityBlocker: {
+          reason: 'agent_thread_limit_reached',
+        },
+      }).status,
+      'unknown',
+    );
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        nowMs: Date.parse('2026-07-09T00:00:00.000Z'),
+        persistedSupportBlocker: {
+          status: 'unsupported',
+          reason: 'agent_thread_limit_reached',
+          expires_at: '2026-07-10T00:00:00.000Z',
+        },
+      }).status,
+      'unknown',
+    );
+    const capacityOnlyEvidence = resolveNativeSubagentSupportStatus({
+      nowMs: Date.parse('2026-07-09T00:00:00.000Z'),
+      persistedCapacityBlocker: {
+        reason: 'agent_thread_limit_reached',
+        expires_at: '2026-07-10T00:00:00.000Z',
+      },
+    });
+    assert.equal(capacityOnlyEvidence.status, 'unknown');
+    assert.equal(capacityOnlyEvidence.reason, 'agent_thread_limit_reached');
+    assert.equal(capacityOnlyEvidence.source, 'capacity_blocker');
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        nowMs: Date.parse('2026-07-09T00:00:00.000Z'),
+        payload: { available_tools: ['Read', 'multi_agent_v1.spawn_agent'] },
+        persistedCapacityBlocker: {
+          reason: 'agent_thread_limit_reached',
+          expires_at: '2026-07-10T00:00:00.000Z',
+        },
+      }).status,
+      'supported',
+    );
+    assert.equal(
+      isUnsupportedNativeSubagentEvidence({
+        status: 'unsupported',
+        reason: 'agent_thread_limit_reached',
+        source: 'capacity_blocker',
+        expires_at: '2026-07-10T00:00:00.000Z',
+      }),
+      false,
+    );
+    assert.equal(
+      isUnsupportedNativeSubagentEvidence({
+        status: 'unsupported',
+        reason: 'multi_agent_v1_unavailable',
+      }),
+      false,
+    );
+    assert.equal(
+      isUnsupportedNativeSubagentEvidenceForScope({
+        status: 'unsupported',
+        reason: 'multi_agent_v1_unavailable',
+        source: 'post_tool_failure',
+        session_id: 'sess-1',
+      }),
+      false,
+    );
+    assert.equal(
+      isUnsupportedNativeSubagentEvidenceForScope({
+        status: 'unsupported',
+        reason: 'multi_agent_v1_unavailable',
+        source: 'post_tool_failure',
+        session_id: 'sess-1',
+      }, { sessionId: 'sess-2' }),
+      false,
+    );
+    assert.equal(
+      isUnsupportedNativeSubagentEvidenceForScope({
+        status: 'unsupported',
+        reason: 'multi_agent_v1_unavailable',
+        source: 'post_tool_failure',
+        session_id: 'sess-1',
+      }, { sessionId: 'sess-1' }),
+      true,
+    );
   });
 });

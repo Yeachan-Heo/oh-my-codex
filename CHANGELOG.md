@@ -4,6 +4,39 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+
+## [0.20.0] - 2026-07-10
+
+Minor release migrating the entire model contract to OpenAI's GPT-5.6 generation (publicly released 2026-07-09), plus the accumulated dev-branch fixes and features merged since `0.19.1`.
+
+### Added
+
+- **Capabilities lockfile preflight** — new `omx capabilities lock`/`check` CLI providing a manual capabilities-lockfile preflight (#3087).
+- **GPT-5.6 model aliases** — `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol` recognized as known Codex model aliases (#3104).
+- **Canonical worktree tool context** — shared CodeGraph/worktree tool-context resolution (#3102).
+- **Persisted subagents reopen on SessionStart** (#3099).
+
+### Changed
+
+- **Model contract migrated to GPT-5.6 (Sol/Terra/Luna)** — frontier default `gpt-5.5` -> `gpt-5.6-sol`, standard `gpt-5.4-mini` -> `gpt-5.6-terra`, spark `gpt-5.3-codex-spark` -> `gpt-5.6-luna` across runtime defaults, agent definitions, Rust crates (sparkshell/explore/api), docs, prompts, skills, plugin mirror, and test fixtures.
+- **Role allocation on the new lanes** — planner/architect pinned to exact `gpt-5.6-sol` (medium/xhigh reasoning), researcher pinned to exact `gpt-5.6-terra`; standard worker/review roles use `gpt-5.6-terra`; fast/low-complexity roles and team low-complexity workers use `gpt-5.6-luna`.
+- **Exact-model composition seam retargeted** — `EXACT_GPT_5_4_MINI_MODEL` renamed to `EXACT_GPT_5_6_TERRA_MODEL`; guidance keys off the trimmed final resolved model with exact case-sensitive equality and now takes precedence over role `exactModel` pins.
+- **Setup legacy upgrade set widened** — setup offers prompt-gated upgrades from both `gpt-5.3-codex` and `gpt-5.5` to `gpt-5.6-sol`; declined and non-interactive runs preserve the existing model.
+- **Autopilot cheap-lane classifier** — canonical `gpt-5.6-terra` and `gpt-5.6-luna` are classified as cheap ahead of the generic heuristic, so Terra mains route heavy planning to the dedicated planner.
+- **Project setup defaults to plugin mode with plugin cache** (#3085); plugin hooks are gated to omx-launched sessions (#3086); resume plugin preflight is opt-in (#3088).
+
+### Fixed
+
+- **Team delegation child-model fallback** resolves through `getTeamChildModel()` (honors `OMX_TEAM_CHILD_MODEL`) instead of a hardcoded seam constant.
+- **Doctor Spark source labeling** reports `.omx-config.json env` and `.omx-config.json models.team_low_complexity` accurately instead of misattributing sources.
+- **Conductor deadlock without native subagents prevented** (#3079); resume `--sort updated` preserves transcript mtimes (#3080); plugin Stop hook accepts last-line JSON after launcher noise (#3082).
+- **Deep-interview state hardening** — runtime state allowlist (#3091) and terminal-state normalization (#3092).
+- **Ralplan/Ultragoal handoff fixes** — approval handoff and lane reuse (#3094), ralplan-handoff goal derivation guard (#3097), structured ultragoal steering cleanup (#3100).
+
+### PRs
+
+- #3079, #3080, #3082, #3085, #3086, #3087, #3088, #3091, #3092, #3094, #3097, #3099, #3100, #3102, #3104
+
 ## [0.19.1] - 2026-07-08
 
 Patch release after `0.19.0` focused on Ultragoal/Ralplan terminal-state reliability, direct Team state roots, mission queue execution, and dependency hygiene.

@@ -190,7 +190,7 @@ describe('prometheus-strict clean-room contract', () => {
     for (const marker of ['\\[CONTEXT\\]', '\\[GOAL\\]', '\\[DOWNSTREAM\\]', '\\[REQUEST\\]']) {
       assert.match(metis, new RegExp(marker), `metis research_fan_out must require the ${marker.replace(/\\\[|\\\]/g, '')} prompt section`);
     }
-    assert.match(metis, /gpt-5\.4-mini[\s\S]{0,120}researcher/i, 'metis research_fan_out must document researcher as the exact cheap mini lane');
+    assert.match(metis, /gpt-5\.6-terra[\s\S]{0,120}researcher/i, 'metis research_fan_out must document researcher as the exact cheap mini lane');
     assert.match(metis, /official docs[\s\S]{0,120}release notes\/changelog[\s\S]{0,160}OSS reference implementations[\s\S]{0,120}pitfalls\/migration notes/i, 'metis research_fan_out must split multiple researcher requests by evidence lane');
     assert.match(metis, /Wait for every dispatched agent to complete/i, 'metis research_fan_out must block on agent completion before generating questions');
     assert.match(metis, /Re-run `<spec_prefill>`/i, 'metis research_fan_out must feed results back into spec_prefill');
@@ -324,7 +324,7 @@ ${oracle}`, /Default-absorb prior[\s\S]+Plan-A-vs-Plan-B[\s\S]+scope boundary[\s
     assert.doesNotMatch(metis, /when triggers fire/i, 'metis must not preserve trigger-conditional fan-out wording; non-trivial planning dispatch is default-on');
     assert.doesNotMatch(metis, /simple` intent -> fan-out only when one specific signal is unfamiliar/i, 'simple intent must still run the baseline explore fan-out instead of skipping until unfamiliarity is detected');
     assert.match(metis, /simple` intent -> keep the mandatory baseline at exactly 1 `explore` agent/i, 'simple intent must keep one mandatory explore baseline before user questions');
-    assert.match(readRepoFile(skillPath), /gpt-5\.4-mini[\s\S]{0,160}researcher[\s\S]{0,220}2 explore \+ 4 researcher/i, 'skill must expose exact mini researcher plus wider cheap fan-out');
+    assert.match(readRepoFile(skillPath), /gpt-5\.6-terra[\s\S]{0,160}researcher[\s\S]{0,220}2 explore \+ 4 researcher/i, 'skill must expose exact mini researcher plus wider cheap fan-out');
   });
 
   it('detects user hostility or non-answer responses and exits the interview instead of incrementing the clearance count', () => {

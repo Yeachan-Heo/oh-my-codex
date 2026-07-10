@@ -17,6 +17,9 @@ import {
   type TeamWorkerGoalInstruction,
 } from "./goal-workflow.js";
 import { normalizeTeamTaskCoordinationPlanForRender } from "./coordination-protocol.js";
+import { renderCodeGraphInstructions, type WorktreeToolContext } from "../utils/worktree-tool-context.js";
+import { getTeamChildModel } from "../config/models.js";
+
 
 const TEAM_OVERLAY_START = "<!-- OMX:TEAM:WORKER:START -->";
 const TEAM_OVERLAY_END = "<!-- OMX:TEAM:WORKER:END -->";
@@ -35,6 +38,7 @@ interface WorkerRootAgentsOptions {
   teamStateRoot: string;
   leaderCwd: string;
   worktreePath: string;
+  toolContext?: WorktreeToolContext;
 }
 
 interface WorkerRootAgentsBackup {
@@ -87,6 +91,9 @@ This file is generated for a live OMX team worker run and is disposable.
 - Task directory: ${options.teamStateRoot}/team/${options.teamName}/tasks
 - Worker status path: ${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/status.json
 - Worker identity path: ${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/identity.json
+${options.toolContext ? `
+${renderCodeGraphInstructions(options.toolContext)}
+` : ""}
 
 ## Protocol
 1. Read your inbox at \`${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/inbox.md\`.
@@ -741,7 +748,7 @@ function renderDelegationContract(task: TeamTask): string {
 
   const threshold = plan.spawn_before_serial_search_threshold ?? 3;
   const maxParallel = plan.max_parallel_subtasks ?? 2;
-  const childModel = plan.child_model ?? "gpt-5.4-mini";
+  const childModel = plan.child_model ?? getTeamChildModel();
   const candidates = (plan.subtask_candidates ?? [])
     .map((candidate) => `- ${candidate}`)
     .join("\n");

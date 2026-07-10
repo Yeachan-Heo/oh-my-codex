@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { extname } from 'node:path';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -131,20 +131,82 @@ function detectCompactHookInput(input) {
   }
 }
 
-async function readBoundedStdin() {
+function parseHookPayload(input) {
+  try {
+    const parsed = JSON.parse(input.toString('utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeLaunchId(value) {
+  return String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 128);
+}
+
+function resolveLaunchClaimPath(payload, launchId) {
+  const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
+  const stateRoot = typeof process.env.OMX_ROOT === 'string' && process.env.OMX_ROOT.trim()
+    ? process.env.OMX_ROOT.trim()
+    : join(cwd, '.omx');
+  return join(stateRoot, 'state', 'plugin-hook-launches', `${sanitizeLaunchId(launchId)}.json`);
+}
+
+function hookPayloadSessionId(input, payload) {
+  const parsedSessionId = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
+  if (parsedSessionId) return parsedSessionId;
+  return extractTopLevelStringField(input.toString('utf8'), ['session_id', 'sessionId'])?.trim() ?? '';
+}
+
+function isOmxLauncherSession(input, payload) {
+  const launchId = process.env.OMX_CODEX_LAUNCH_ID?.trim();
+  const entryPath = process.env.OMX_ENTRY_PATH?.trim();
+  const sessionId = hookPayloadSessionId(input, payload);
+  if (!launchId || !entryPath || !sessionId) return false;
+
+  const claimPath = resolveLaunchClaimPath(payload, launchId);
+
+  try {
+    if (existsSync(claimPath)) {
+      const claimed = JSON.parse(readFileSync(claimPath, 'utf8'));
+      return claimed?.sessionId === sessionId;
+    }
+    mkdirSync(dirname(claimPath), { recursive: true });
+    writeFileSync(claimPath, `${JSON.stringify({ sessionId })}\n`, { encoding: 'utf8', mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writePlainCodexNoop(isStop) {
+  if (isStop) process.stdout.write('{}\n');
+  process.exitCode = 0;
+}
+
+async function readBoundedStdin({ drainOversized = false } = {}) {
   const chunks = [];
   let totalBytes = 0;
+  let storedBytes = 0;
+  let oversized = false;
   for await (const rawChunk of process.stdin) {
     const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
     totalBytes += chunk.length;
-    if (totalBytes > MAX_WRAPPER_STDIN_BYTES) {
-      const remaining = MAX_WRAPPER_STDIN_BYTES - Buffer.concat(chunks).length;
+
+    if (oversized) continue;
+
+    const remaining = MAX_WRAPPER_STDIN_BYTES - storedBytes;
+    if (chunk.length > remaining) {
       if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
-      return { input: Buffer.concat(chunks), oversized: true, totalBytes };
+      storedBytes += Math.max(remaining, 0);
+      oversized = true;
+      if (!drainOversized) return { input: Buffer.concat(chunks), oversized: true, totalBytes };
+      continue;
     }
     chunks.push(chunk);
+    storedBytes += chunk.length;
   }
-  return { input: Buffer.concat(chunks), oversized: false, totalBytes };
+  return { input: Buffer.concat(chunks), oversized, totalBytes };
 }
 
 function stopFallbackOutput(stopReason, detail) {
@@ -326,9 +388,7 @@ function hasActiveAutopilotStateForOversizedStop(input) {
 }
 
 
-function parseSingleJsonObjectOutput(raw) {
-  const text = String(raw ?? '').trim();
-  if (!text) return null;
+function parseJsonObjectCandidate(text) {
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
@@ -338,10 +398,36 @@ function parseSingleJsonObjectOutput(raw) {
   }
 }
 
+function isJsonObjectFragmentLine(text) {
+  return text.startsWith('{') || text.endsWith('}') || /^"[^"]+"\s*:/.test(text);
+}
+
+function parseSingleJsonObjectOutput(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const direct = parseJsonObjectCandidate(text);
+  if (direct) return direct;
+
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines.at(-1);
+  if (!lastLine || !lastLine.startsWith('{') || !lastLine.endsWith('}')) return null;
+  for (const line of lines.slice(0, -1)) {
+    if (parseJsonObjectCandidate(line) || isJsonObjectFragmentLine(line)) return null;
+  }
+  return parseJsonObjectCandidate(lastLine);
+}
+
 async function main() {
-  const { input, oversized, totalBytes } = await readBoundedStdin();
+  const { input, oversized, totalBytes } = await readBoundedStdin({ drainOversized: true });
+  const payload = parseHookPayload(input);
+  const launchedByOmx = isOmxLauncherSession(input, payload);
   const isStop = detectStopHookInput(input);
   const isCompact = detectCompactHookInput(input);
+
+  if (!launchedByOmx) {
+    writePlainCodexNoop(isStop);
+    return;
+  }
 
   if (oversized) {
     const message = `plugin hook stdin exceeded ${MAX_WRAPPER_STDIN_BYTES} bytes before launcher delegation; totalBytes>${totalBytes}`;

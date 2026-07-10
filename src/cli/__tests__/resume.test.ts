@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import TOML from '@iarna/toml';
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -48,7 +48,7 @@ describe('omx resume', () => {
       await mkdir(join(wd, '.omx'), { recursive: true });
       await mkdir(dirname(rolloutPath), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(join(projectCodexHome, 'state_5.sqlite'), 'state db placeholder');
       await writeFile(join(projectCodexHome, 'state_5.sqlite-wal'), 'state db wal placeholder');
       await writeFile(rolloutPath, '{"type":"session_meta","payload":{"id":"session-2712"}}\n');
@@ -99,7 +99,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/03/rollout-session-2712.jsonl" ]; then ech
       await mkdir(join(wd, '.omx'), { recursive: true });
       await mkdir(projectCodexHome, { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
 
       await writeFile(fakeCodexPath, `#!/bin/sh
 mkdir -p "$CODEX_HOME/sessions/2026/06/16"
@@ -150,7 +150,7 @@ printf 'fake-codex:%s\n' "$*"
       await mkdir(projectCodexHome, { recursive: true });
       await mkdir(dirname(runtimeRolloutPath), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(runtimeRolloutPath, '{"type":"session_meta","payload":{"id":"runtime-session"}}\n');
 
       await writeFile(fakeCodexPath, `#!/bin/sh
@@ -198,7 +198,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-runtime-session.jsonl" ]; then 
       await mkdir(previousRuntimeCodexHome, { recursive: true });
       await mkdir(duplicateRuntimeCodexHome, { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(projectRolloutPath, '{"type":"session_meta","payload":{"id":"project-session"}}\n');
       await writeFile(join(projectCodexHome, 'history.jsonl'), '{"session_id":"project-session"}\n');
       await writeFile(join(projectCodexHome, 'session_index.jsonl'), '{"id":"project-session"}\n');
@@ -258,7 +258,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/18/rollout-project-session.jsonl" ]; then 
       await mkdir(projectCodexHome, { recursive: true });
       await mkdir(dirname(runtimeRolloutPath), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.5"\n');
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(join(projectCodexHome, 'history.jsonl'), '{"session_id":"project-session"}\n');
       await writeFile(join(projectCodexHome, 'session_index.jsonl'), '{"id":"project-session"}\n');
       await writeFile(runtimeRolloutPath, '{"type":"session_meta","payload":{"id":"runtime-session"}}\n');
@@ -573,6 +573,60 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
     }
   });
 
+  it('preserves transcript mtimes while materializing runtime history for updated sort', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-updated-sort-mtime-'));
+    try {
+      const home = join(wd, 'home');
+      const projectCodexHome = join(wd, '.codex');
+      const previousRuntimeCodexHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const oldRolloutPath = join(projectCodexHome, 'sessions', '2024', '01', '02', 'rollout-old-a.jsonl');
+      const newerRolloutPath = join(projectCodexHome, 'sessions', '2024', '03', '04', 'rollout-old-b.jsonl');
+      const oldMtime = new Date('2024-01-02T03:04:05Z');
+      const newerMtime = new Date('2024-03-04T05:06:07Z');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(dirname(oldRolloutPath), { recursive: true });
+      await mkdir(dirname(newerRolloutPath), { recursive: true });
+      await mkdir(previousRuntimeCodexHome, { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
+      await writeFile(oldRolloutPath, '{"type":"session_meta","payload":{"id":"old-a"}}\n');
+      await writeFile(newerRolloutPath, '{"type":"session_meta","payload":{"id":"old-b"}}\n');
+      await utimes(oldRolloutPath, oldMtime, oldMtime);
+      await utimes(newerRolloutPath, newerMtime, newerMtime);
+      await symlink(join(projectCodexHome, 'sessions'), join(previousRuntimeCodexHome, 'sessions'), 'dir');
+
+      await writeFile(fakeCodexPath, `#!/bin/sh
+printf 'fake-codex:%s\\n' "$*"
+find "$CODEX_HOME/sessions" -type f -name '*.jsonl' -exec stat -c '%y %n' {} \\; | sort
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume', '--sort', 'updated'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume --sort updated\b/);
+      assert.match(result.stdout, /2024-01-02 03:04:05\.\d+ .*rollout-old-a\.jsonl/);
+      assert.match(result.stdout, /2024-03-04 05:06:07\.\d+ .*rollout-old-b\.jsonl/);
+      assert.equal((await stat(oldRolloutPath)).mtime.toISOString(), oldMtime.toISOString());
+      assert.equal((await stat(newerRolloutPath)).mtime.toISOString(), newerMtime.toISOString());
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('forwards --last to codex resume through the normal launch wrapper', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-cli-'));
     try {
@@ -743,6 +797,48 @@ if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex/${stal
         new Set(await readdir(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex'))),
         new Set([packageJson.version, staleVersion]),
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not bootstrap plugin mode during clean legacy resume', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-clean-legacy-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(fakeCodexPath, `#!/bin/sh
+set -eu
+selected_codex_home="\${CODEX_HOME:-$HOME/.codex}"
+printf 'fake-codex:%s\n' "$*"
+if [ -f "$selected_codex_home/config.toml" ]; then echo config-created=yes; else echo config-created=no; fi
+if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex" ]; then echo plugin-cache-created=yes; else echo plugin-cache-created=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['resume', 'legacy-session'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_LAUNCH_POLICY: 'direct',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume legacy-session\b/);
+      assert.match(result.stdout, /config-created=no/);
+      assert.match(result.stdout, /plugin-cache-created=no/);
+      await assert.rejects(readFile(join(codexHome, 'config.toml'), 'utf-8'), /ENOENT/);
+      await assert.rejects(readFile(join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex'), 'utf-8'), /ENOENT/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

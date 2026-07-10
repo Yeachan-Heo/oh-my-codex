@@ -126,6 +126,34 @@ describe("worker bootstrap", () => {
     assert.doesNotMatch(overlay, /tasks\/\{id\}\.json/);
   });
 
+  it("includes concise CodeGraph guidance for shared leader indexes", () => {
+    const content = generateWorkerRootAgentsContent({
+      teamName: "alpha",
+      workerName: "worker-1",
+      workerRole: "executor",
+      rolePromptContent: "execute",
+      teamStateRoot: "/repo/.omx/state",
+      leaderCwd: "/repo",
+      worktreePath: "/repo/.omx/team/alpha/worktrees/worker-1",
+      toolContext: {
+        repoRoot: "/repo",
+        worktreeRoot: "/repo/.omx/team/alpha/worktrees/worker-1",
+        gitCommonDir: "/repo/.git",
+        worktreeScope: "team",
+        codeGraphMode: "shared",
+        codeGraphProjectPath: "/repo",
+        codeGraphDbPath: "/repo/.codegraph/codegraph.db",
+        codeGraphSource: "leader-shared",
+        requestedCodeGraphMode: "auto",
+      },
+    });
+
+    assert.match(content, /## CodeGraph/);
+    assert.match(content, /shared leader index/);
+    assert.match(content, /not branch-accurate for worktree-only changes/);
+    assert.match(content, /does not install CodeGraph, auto-index worktrees, or copy\/symlink/);
+  });
+
   it("applyWorkerOverlay appends to existing AGENTS.md content", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-worker-bootstrap-"));
     try {
@@ -828,7 +856,7 @@ describe("worker bootstrap", () => {
         required_parallel_probe: true,
         spawn_before_serial_search_threshold: 3,
         child_model_policy: "standard",
-        child_model: "gpt-5.4-mini",
+        child_model: "gpt-5.6-terra",
         subtask_candidates: ["Map runtime assignment flow", "Inspect bootstrap tests"],
         child_report_format: "bullets",
         skip_allowed_reason_required: true,
@@ -841,13 +869,34 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /Task 7/);
     assert.match(inbox, /before doing more than 3 serial repo-search\/read commands/i);
     assert.match(inbox, /spawn up to 3 Codex native subagents/i);
-    assert.match(inbox, /gpt-5\.4-mini/);
+    assert.match(inbox, /gpt-5\.6-terra/);
     assert.match(inbox, /Map runtime assignment flow/);
     assert.match(inbox, /Subagent evidence reporting fields/);
     assert.match(inbox, /Delegation compliance evidence \(required for completion\)/);
     assert.match(inbox, /Subagent spawn evidence:/);
     assert.match(inbox, /Subagent skip reason:/);
     assert.match(inbox, /missing_delegation_compliance_evidence/);
+  });
+
+  it("generateInitialInbox resolves missing child_model through OMX_TEAM_CHILD_MODEL", () => {
+    const previousChildModel = process.env.OMX_TEAM_CHILD_MODEL;
+    process.env.OMX_TEAM_CHILD_MODEL = "team-child-override";
+    try {
+      const tasks: TeamTask[] = [{
+        id: "12",
+        subject: "Delegate bounded research",
+        description: "Inspect independent implementation options",
+        status: "pending",
+        created_at: new Date(0).toISOString(),
+        delegation: { mode: "auto" },
+      }];
+
+      const inbox = generateInitialInbox("worker-1", "team-delegation", "executor", tasks);
+      assert.match(inbox, /Subagent model: team-child-override/);
+    } finally {
+      if (typeof previousChildModel === "string") process.env.OMX_TEAM_CHILD_MODEL = previousChildModel;
+      else delete process.env.OMX_TEAM_CHILD_MODEL;
+    }
   });
 
   it("generateInitialInbox keeps mode none tasks quiet about delegation contract", () => {
@@ -863,7 +912,7 @@ describe("worker bootstrap", () => {
     const inbox = generateInitialInbox("worker-1", "team-narrow", "executor", tasks);
 
     assert.doesNotMatch(inbox, /Native Subagent Delegation Contract/);
-    assert.doesNotMatch(inbox, /gpt-5\.4-mini/);
+    assert.doesNotMatch(inbox, /gpt-5\.6-terra/);
   });
 
   it("generateTaskAssignmentInbox includes task ID and description", () => {
@@ -933,7 +982,7 @@ describe("worker bootstrap", () => {
           required_parallel_probe: true,
           spawn_before_serial_search_threshold: 3,
           child_model_policy: "standard",
-          child_model: "gpt-5.4-mini",
+          child_model: "gpt-5.6-terra",
           subtask_candidates: ["Search parser references", "Review parser tests"],
           child_report_format: "bullets",
           skip_allowed_reason_required: true,
@@ -943,7 +992,7 @@ describe("worker bootstrap", () => {
 
     assert.match(inbox, /Native Subagent Delegation Contract/);
     assert.match(inbox, /spawn up to 3 Codex native subagents/i);
-    assert.match(inbox, /gpt-5\.4-mini/);
+    assert.match(inbox, /gpt-5\.6-terra/);
     assert.match(inbox, /Search parser references/);
     assert.match(inbox, /Subagent spawn evidence:/);
     assert.match(inbox, /Subagent skip reason:/);
@@ -1230,7 +1279,7 @@ describe("worker bootstrap", () => {
       assert.match(content, /<!-- OMX:TEAM:ROLE:START -->/);
       assert.match(content, /\*\*writer\*\* role/);
       assert.match(content, /<identity>Writer role prompt<\/identity>/);
-      assert.doesNotMatch(content, /exact gpt-5\.4-mini model/);
+      assert.doesNotMatch(content, /exact gpt-5\.6-terra model/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1248,7 +1297,7 @@ describe("worker bootstrap", () => {
       const composedRoleInstructions = composeRoleInstructionsForRole(
         "writer",
         "---\ndescription: demo\n---\n\n<identity>You are Writer.</identity>",
-        "gpt-5.4-mini",
+        "gpt-5.6-terra",
       );
       const outPath = await writeWorkerRoleInstructionsFile(
         "mini-role-team",
@@ -1261,10 +1310,10 @@ describe("worker bootstrap", () => {
 
       const content = await readFile(outPath, "utf8");
       assert.match(content, /<identity>You are Writer\.<\/identity>/);
-      assert.match(content, /exact gpt-5\.4-mini model/);
+      assert.match(content, /exact gpt-5\.6-terra model/);
       assert.match(content, /strict execution order: inspect -> plan -> act -> verify/);
       assert.equal((content.match(/<exact_model_guidance>/g) || []).length, 1);
-      assert.equal((content.match(/resolved_model: gpt-5\.4-mini/g) || []).length, 1);
+      assert.equal((content.match(/resolved_model: gpt-5\.6-terra/g) || []).length, 1);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

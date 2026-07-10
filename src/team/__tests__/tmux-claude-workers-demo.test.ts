@@ -115,7 +115,7 @@ describe('tmux claude workers demo', () => {
     });
 
     it('codex worker preserves launch args', () => {
-      const launchArgs = ['--model', 'gpt-5.3-codex', '--json'];
+      const launchArgs = ['--model', 'gpt-5.6-terra', '--json'];
 
       const spec = buildWorkerProcessLaunchSpec(
         'demo-team',
@@ -128,14 +128,14 @@ describe('tmux claude workers demo', () => {
 
       assert.equal(spec.workerCli, 'codex');
       assert.ok(spec.args.includes('--model'));
-      assert.ok(spec.args.includes('gpt-5.3-codex'));
+      assert.ok(spec.args.includes('gpt-5.6-terra'));
       assert.ok(spec.args.includes('--json'));
     });
   });
 
   describe('translateWorkerLaunchArgsForCli', () => {
     it('returns codex args unchanged', () => {
-      const args = ['--model', 'gpt-5.3-codex', '--json'];
+      const args = ['--model', 'gpt-5.6-terra', '--json'];
       const result = translateWorkerLaunchArgsForCli('codex', args);
       assert.deepEqual(result, args);
     });
@@ -162,7 +162,7 @@ describe('tmux claude workers demo', () => {
       const workerCount = 6;
       const teamName = 'tmux-claude-workers-demo';
       const cwd = '/home/bellman/Workspace/oh-my-codex';
-      const launchArgs = ['--model', 'gpt-5.3-codex-spark', '-c', 'model_reasoning_effort="low"'];
+      const launchArgs = ['--model', 'gpt-5.6-luna', '-c', 'model_reasoning_effort="low"'];
 
       // Build CLI map like demo script does
       const pivot = Math.floor((workerCount + 1) / 2);
@@ -223,7 +223,7 @@ describe('tmux claude workers demo', () => {
 
     it('handles auto-resolved codex from launch args', () => {
       // When launch args contain 'codex' in model name and no CLI_MAP is set
-      const plan = resolveTeamWorkerCliPlan(2, ['--model', 'gpt-5.3-codex'], {});
+      const plan = resolveTeamWorkerCliPlan(2, ['--model', 'gpt-5.6-terra'], {});
 
       // Both should resolve to codex because model name contains 'codex' but not 'claude'
       assert.deepEqual(plan, ['codex', 'codex']);

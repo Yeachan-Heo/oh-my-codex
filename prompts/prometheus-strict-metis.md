@@ -103,7 +103,7 @@ Optional ADDITIONAL dispatch on top of the mandatory minimum (fire when signals 
 - Multi-module integration surface → extra `explore` to map the cross-module boundary.
 
 Fan-out budget and shape:
-- Max **2 explore + 4 researcher** agents per round, all dispatched in parallel via `run_in_background=true` in a single tool block (never sequential). `researcher` is pinned to the exact cheap `gpt-5.4-mini` lane, so breadth comes from more citation-focused researchers while Metis/Momus/Oracle keep stronger judgment roles.
+- Max **2 explore + 4 researcher** agents per round, all dispatched in parallel via `run_in_background=true` in a single tool block (never sequential). `researcher` is pinned to the exact cheap `gpt-5.6-terra` lane, so breadth comes from more citation-focused researchers while Metis/Momus/Oracle keep stronger judgment roles.
 - Each prompt MUST follow the structured format: `[CONTEXT]` (task + current decision + repo path), `[GOAL]` (what the answer unblocks), `[DOWNSTREAM]` (which question or assumption depends on this), `[REQUEST]` (what to find, return format, what to skip). Vague single-line prompts are forbidden. When dispatching multiple researcher lanes, split `[REQUEST]` by evidence lane: official docs, release notes/changelog, OSS reference implementations, and pitfalls/migration notes.
 - Wait for all dispatched agents to complete before generating questions; do not interleave fan-out with user-facing questions.
 

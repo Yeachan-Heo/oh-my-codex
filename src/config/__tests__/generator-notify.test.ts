@@ -17,7 +17,7 @@ describe('config generator', () => {
       const notifyIdx = toml.indexOf('notify =');
       const reasoningIdx = toml.indexOf('model_reasoning_effort =');
       const devInstrIdx = toml.indexOf('developer_instructions =');
-      const modelIdx = toml.indexOf('model = "gpt-5.5"');
+      const modelIdx = toml.indexOf('model = "gpt-5.6-sol"');
       const seededStartIdx = toml.indexOf(
         '# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)',
       );
@@ -69,14 +69,14 @@ describe('config generator', () => {
     }
   });
 
-  it('seeds gpt-5.5 model and context defaults for fresh configs', async () => {
+  it('seeds gpt-5.6-sol model and context defaults for fresh configs', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model = "gpt-5\.5"$/m);
+      assert.match(toml, /^model = "gpt-5\.6-sol"$/m);
       assert.match(
         toml,
         /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
@@ -96,7 +96,7 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model = "gpt-5\.5"$/m);
+      assert.match(toml, /^model = "gpt-5\.6-sol"$/m);
       assert.match(
         toml,
         /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
@@ -105,7 +105,7 @@ describe('config generator', () => {
       assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
       assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
 
-      const modelIdx = toml.indexOf('model = "gpt-5.5"');
+      const modelIdx = toml.indexOf('model = "gpt-5.6-sol"');
       const featuresIdx = toml.indexOf('[features]');
       assert.ok(modelIdx >= 0 && modelIdx < featuresIdx, 'seeded model must come before [features]');
     } finally {
@@ -194,19 +194,19 @@ describe('config generator', () => {
     }
   });
 
-  it('seeds only the missing gpt-5.5 context key while preserving an existing partner value', async () => {
+  it('seeds only the missing gpt-5.6-sol context key while preserving an existing partner value', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
       await writeFile(
         configPath,
-        ['model = "gpt-5.5"', 'model_context_window = 640000', ''].join('\n'),
+        ['model = "gpt-5.6-sol"', 'model_context_window = 640000', ''].join('\n'),
       );
 
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model = "gpt-5\.5"$/m);
+      assert.match(toml, /^model = "gpt-5\.6-sol"$/m);
       assert.match(toml, /^model_context_window = 640000$/m);
       assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
@@ -214,7 +214,7 @@ describe('config generator', () => {
     }
   });
 
-  it('does not seed 250k context keys for non-gpt-5.5 models', async () => {
+  it('does not seed 250k context keys for non-gpt-5.6-sol models', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');

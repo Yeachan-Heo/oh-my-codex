@@ -42,7 +42,7 @@ OMX already has `$plan`, `$ralplan`, and `$deep-interview`. Prometheus Strict ex
 - Ask high-leverage questions as a batched round when the answers materially change scope, safety, or validation. Reserve one-at-a-time questioning only for dependent question chains where the next question depends on the previous answer.
 - If a safe assumption is available, state it and continue.
 - Use repository reads when needed to make paths, tests, and handoff commands concrete.
-- During Metis planning, run pre-question research fan-out for every non-trivial intent unless the task is trivial, the cited spec is self-contained, or cached evidence already covers the same surface; use `explore` for repo facts and the exact cheap `gpt-5.4-mini` `researcher` lane for external docs / OSS references before asking the user. Prometheus Strict may fan out up to `2 explore + 4 researcher` agents per round so breadth comes from more citation-focused mini researchers while Metis/Momus/Oracle keep stronger judgment roles.
+- During Metis planning, run pre-question research fan-out for every non-trivial intent unless the task is trivial, the cited spec is self-contained, or cached evidence already covers the same surface; use `explore` for repo facts and the exact cheap `gpt-5.6-terra` `researcher` lane for external docs / OSS references before asking the user. Prometheus Strict may fan out up to `2 explore + 4 researcher` agents per round so breadth comes from more citation-focused mini researchers while Metis/Momus/Oracle keep stronger judgment roles.
 - Recommend `$team` only when Oracle identifies independent, bounded, verifiable lanes.
 
 ### Structured Question Surface
@@ -93,7 +93,7 @@ If the prompt contains destructive, credential-gated, external-production, or ma
 
 Use `prometheus-strict-metis` as the interview voice. When native subagents are available, invoke the dedicated agent; otherwise run the same role in-context without editing files.
 
-Metis discovers success criteria, non-goals, evidence versus assumptions, required artifacts, likely execution lanes, and missing decisions. Before the first user-facing question batch, Metis must actively fan out repo/external research per intent: `explore` maps local surfaces and exact `gpt-5.4-mini` `researcher` lanes gather official/upstream or OSS-reference evidence. Research-heavy intents use more cheap researchers rather than downgrading Metis/Momus/Oracle judgment.
+Metis discovers success criteria, non-goals, evidence versus assumptions, required artifacts, likely execution lanes, and missing decisions. Before the first user-facing question batch, Metis must actively fan out repo/external research per intent: `explore` maps local surfaces and exact `gpt-5.6-terra` `researcher` lanes gather official/upstream or OSS-reference evidence. Research-heavy intents use more cheap researchers rather than downgrading Metis/Momus/Oracle judgment.
 
 Run the interview as a bounded loop:
 
@@ -148,7 +148,7 @@ $team <N>:executor "execute the approved Ultragoal story in parallel lanes"  # o
 
 <Tool_Usage>
 - Use read-only repository inspection to verify referenced files, commands, and existing conventions.
-- Treat Metis research fan-out as part of planning, not execution: dispatch `explore` / exact `gpt-5.4-mini` `researcher` evidence-gathering before question generation for non-trivial intents, then re-prefill and ask only surviving CRITICAL gaps.
+- Treat Metis research fan-out as part of planning, not execution: dispatch `explore` / exact `gpt-5.6-terra` `researcher` evidence-gathering before question generation for non-trivial intents, then re-prefill and ask only surviving CRITICAL gaps.
 - Use `prometheus-strict-metis`, `prometheus-strict-momus`, and `prometheus-strict-oracle` sequentially; do not fan out implementation work from this skill.
 - Use `$ultragoal` only as the recommended execution handoff after the plan is ready.
 - Use `$team` only when parallel lanes are independent and verifiable.

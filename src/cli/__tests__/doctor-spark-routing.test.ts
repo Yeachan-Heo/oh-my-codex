@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 
 import { checkSparkRouting } from '../doctor.js';
 
-const SPARK_DEFAULT = 'gpt-5.3-codex-spark';
+const SPARK_DEFAULT = 'gpt-5.6-luna';
 
 const SPARK_ENV_KEYS = [
   'OMX_DEFAULT_SPARK_MODEL',
@@ -66,6 +66,26 @@ describe('checkSparkRouting', () => {
     assert.match(result.message, /spark=/);
   });
 
+  it('reports .omx-config.json as the source for its Spark env override', () => {
+    writeFileSync(join(workDir, '.omx-config.json'), JSON.stringify({
+      env: { OMX_DEFAULT_SPARK_MODEL: 'spark-from-omx-config' },
+    }));
+    writeExploreToml('name = "explore"\nmodel = "spark-from-omx-config"\n');
+
+    const result = checkSparkRouting(makePaths(workDir));
+    assert.match(result.message, /source: \.omx-config\.json env/);
+  });
+
+  it('reports models.team_low_complexity as the source for a low-complexity Spark override', () => {
+    writeFileSync(join(workDir, '.omx-config.json'), JSON.stringify({
+      models: { team_low_complexity: 'custom-spark' },
+    }));
+    writeExploreToml('name = "explore"\nmodel = "custom-spark"\n');
+
+    const result = checkSparkRouting(makePaths(workDir));
+    assert.match(result.message, /source: \.omx-config\.json models\.team_low_complexity/);
+  });
+
   it('warns when the Spark-lane agent toml is missing', () => {
     const result = checkSparkRouting(makePaths(workDir));
     assert.equal(result.status, 'warn');
@@ -74,26 +94,26 @@ describe('checkSparkRouting', () => {
   });
 
   it('warns when the installed model diverges from the resolved Spark model', () => {
-    writeExploreToml(`name = "explore"\nmodel = "gpt-5.4-mini"\n`);
+    writeExploreToml(`name = "explore"\nmodel = "gpt-5.6-terra"\n`);
     const result = checkSparkRouting(makePaths(workDir));
     assert.equal(result.status, 'warn');
-    assert.match(result.message, /gpt-5\.4-mini/);
+    assert.match(result.message, /gpt-5\.6-terra/);
     assert.match(result.message, /stale install/);
   });
 
   it('passes and reports intentional explore model override instead of stale spark guidance', () => {
     writeFileSync(join(workDir, '.omx-config.json'), JSON.stringify({
       agentModels: {
-        explore: 'gpt-5.5-explore',
+        explore: 'gpt-5.6-sol-explore',
       },
     }));
-    writeExploreToml('name = "explore"\nmodel = "gpt-5.5-explore"\n');
+    writeExploreToml('name = "explore"\nmodel = "gpt-5.6-sol-explore"\n');
 
     const result = checkSparkRouting(makePaths(workDir));
 
     assert.equal(result.status, 'pass');
     assert.match(result.message, /agentModels override/);
-    assert.match(result.message, /gpt-5\.5-explore/);
+    assert.match(result.message, /gpt-5\.6-sol-explore/);
     assert.doesNotMatch(result.message, /stale install/);
   });
 

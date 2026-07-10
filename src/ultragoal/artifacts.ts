@@ -7,7 +7,11 @@ import {
   parseCodexGoalSnapshot,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
-import { LEADER_CONDUCTOR_BLOCK } from '../leader/contract.js';
+import {
+  LEADER_CONDUCTOR_BLOCK,
+  buildUnsupportedNativeSubagentGuidance,
+  type NativeSubagentSupportEvidence,
+} from '../leader/contract.js';
 
 export const ULTRAGOAL_DIR = '.omx/ultragoal';
 export const ULTRAGOAL_BRIEF = 'brief.md';
@@ -246,6 +250,10 @@ export interface RecordFinalReviewBlockersOptions extends AddUltragoalGoalOption
   codexGoal?: unknown;
 }
 
+export interface CodexGoalInstructionOptions {
+  nativeSubagentSupport?: NativeSubagentSupportEvidence;
+}
+
 export interface UltragoalQualityGate {
   aiSlopCleaner: {
     status: 'passed';
@@ -337,8 +345,14 @@ function normalizeIndentedAtxStorySectionLabel(value: string): string | undefine
   return sectionLooksStory(atx) ? atx : undefined;
 }
 
+const MAX_IMPLICIT_MARKDOWN_GOALS = 20;
+
+function sectionLooksPlanReview(section: string | undefined): boolean {
+  return /^(?:review(?:\s+artifact)?|review\s+findings?|findings?|verdict|status|consensus(?:\s+status)?|decision\s+log|approval(?:\s+status)?|implementation\s+notes?|handoff|context|background|summary|scope)$/.test(section ?? '');
+}
+
 function sectionLooksNonStory(section: string | undefined): boolean {
-  return /^(?:acceptance\s+criteria|verification(?:\s+checklist)?|validation(?:\s+checklist)?|checklist|evidence|constraints?|risks?|immediate\s+next\s+actions?|next\s+actions?|follow-?ups?|notes?)$/.test(section ?? '');
+  return /^(?:acceptance\s+criteria|verification(?:\s+checklist)?|validation(?:\s+checklist)?|checklist|evidence|constraints?|risks?|immediate\s+next\s+actions?|next\s+actions?|follow-?ups?|notes?)$/.test(section ?? '') || sectionLooksPlanReview(section);
 }
 
 function sectionLooksStory(section: string | undefined): boolean {
@@ -397,6 +411,25 @@ function topLevelStoryItems(items: readonly MarkdownListItem[]): MarkdownListIte
   const candidates = storySectionItems.length > 0 ? storySectionItems : storyItems;
   const minIndent = Math.min(...candidates.map((item) => item.indent));
   return candidates.filter((item) => item.indent === minIndent);
+}
+
+function hasExplicitStorySection(items: readonly MarkdownListItem[]): boolean {
+  return items.some((item) => sectionLooksStory(item.section));
+}
+
+function briefLooksPlanLikeHandoff(lines: readonly string[]): boolean {
+  return lines.some((line) => {
+    const label = normalizeSectionLabel(line);
+    if (sectionLooksPlanReview(label)) return true;
+    return /\b(?:RALPLAN|G\d{3,}\s+(?:verdict|review|status)|review\s+artifact|consensus\s+status|planner\s+consensus|critic\s+review|architect\s+review)\b/i.test(line);
+  });
+}
+
+function assertSafeImplicitMarkdownGoalCount(brief: string, parsedItems: readonly MarkdownListItem[], parentItems: readonly MarkdownListItem[]): void {
+  if (hasExplicitStorySection(parsedItems)) return;
+  if (parentItems.length <= MAX_IMPLICIT_MARKDOWN_GOALS) return;
+  const sourceKind = briefLooksPlanLikeHandoff(brief.split(/\r?\n/)) ? 'plan/review handoff markdown' : 'broad markdown';
+  throw new UltragoalError(`Refusing to derive ${parentItems.length} implicit ultragoal goals from ${sourceKind}. Pass compact executable stories with repeated --goal "Title::Objective" entries, or rewrite the brief with an explicit ### Stories/### Goals section containing no more than ${MAX_IMPLICIT_MARKDOWN_GOALS} parent stories.`);
 }
 
 function normalizeObjective(value: string): string {
@@ -725,6 +758,7 @@ export function deriveGoalCandidates(brief: string): Array<{ title: string; obje
   const lines = brief.split(/\r?\n/);
   const parsedItems = parseMarkdownListItems(lines);
   const parentItems = topLevelStoryItems(parsedItems);
+  assertSafeImplicitMarkdownGoalCount(brief, parsedItems, parentItems);
   const listGoals = parentItems
     .map((item, index) => selectedItemObjective(item, lines, parentItems[index + 1]?.lineIndex))
     .filter((objective, index, all) => all.findIndex((candidate) => candidate === objective) === index);
@@ -1877,19 +1911,31 @@ export async function recordFinalReviewBlockers(cwd: string, options: RecordFina
   });
 }
 
-export function buildCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan): string {
-  if (codexGoalMode(plan) === 'aggregate') return buildAggregateCodexGoalInstruction(goal, plan);
-  return buildPerStoryCodexGoalInstruction(goal, plan);
+function codexGoalConductorGuidance(options: CodexGoalInstructionOptions): string {
+  if (options.nativeSubagentSupport?.status !== 'unsupported') return LEADER_CONDUCTOR_BLOCK;
+  return [
+    buildUnsupportedNativeSubagentGuidance(options.nativeSubagentSupport),
+    'Native independent review unavailable: do not treat final review as clean, do not call update_goal for clean completion, and use omx ultragoal record-review-blockers to create a non-clean blocker for the missing native independent review.',
+  ].join('\n');
 }
 
-function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan): string {
+export function buildCodexGoalInstruction(
+  goal: UltragoalItem,
+  plan: UltragoalPlan,
+  options: CodexGoalInstructionOptions = {},
+): string {
+  if (codexGoalMode(plan) === 'aggregate') return buildAggregateCodexGoalInstruction(goal, plan, options);
+  return buildPerStoryCodexGoalInstruction(goal, plan, options);
+}
+
+function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan, options: CodexGoalInstructionOptions): string {
   const createPayload = {
     objective: goal.objective,
     ...(goal.tokenBudget ? { token_budget: goal.tokenBudget } : {}),
   };
   const finalStory = isFinalRunCompletionCandidate(plan, goal);
   return [
-    LEADER_CONDUCTOR_BLOCK,
+    codexGoalConductorGuidance(options),
     '',
     'Ultragoal active-goal handoff',
     `Plan: ${plan.goalsPath}`,
@@ -1938,13 +1984,13 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
   ].filter((line): line is string => line !== null).join('\n');
 }
 
-function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan): string {
+function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan, options: CodexGoalInstructionOptions): string {
   const objective = plan.codexObjective ?? aggregateCodexObjective(plan.goals);
   const finalStory = isFinalRunCompletionCandidate(plan, goal);
   const createPayload = { objective };
   const checkpointStatus = finalStory ? 'complete' : 'active';
   return [
-    LEADER_CONDUCTOR_BLOCK,
+    codexGoalConductorGuidance(options),
     '',
     'Ultragoal aggregate-goal handoff',
     `Plan: ${plan.goalsPath}`,

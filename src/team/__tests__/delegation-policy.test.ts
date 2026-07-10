@@ -32,7 +32,7 @@ describe('synthesizeDelegationPlan', () => {
     else delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
   });
 
-  it('auto-delegates broad investigation tasks to gpt-5.4-mini child agents', () => {
+  it('auto-delegates broad investigation tasks to gpt-5.6-terra child agents', () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-expensive';
     const plan = synthesizeDelegationPlan(task({
       subject: 'Investigate flaky runtime behavior',
@@ -45,7 +45,7 @@ describe('synthesizeDelegationPlan', () => {
     assert.equal(plan.required_parallel_probe, true);
     assert.equal(plan.spawn_before_serial_search_threshold, 3);
     assert.equal(plan.child_model_policy, 'standard');
-    assert.equal(plan.child_model, 'gpt-5.4-mini');
+    assert.equal(plan.child_model, 'gpt-5.6-terra');
     assert.equal(plan.child_report_format, 'bullets');
     assert.equal(plan.skip_allowed_reason_required, true);
     assert.ok((plan.subtask_candidates ?? []).some((candidate) => /debug|root-cause/i.test(candidate)));

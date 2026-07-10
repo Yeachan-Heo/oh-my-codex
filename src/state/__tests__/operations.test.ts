@@ -659,6 +659,61 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('normalizes terminal deep-interview snapshots by releasing stale locks', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-di-terminal-normalize-'));
+    try {
+      const completedAt = '2026-07-09T00:00:00.000Z';
+      const writeResponse = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'deep-interview',
+        active: false,
+        current_phase: 'cancelled',
+        completed_at: completedAt,
+        input_lock: {
+          active: true,
+          owner: 'question-round',
+        },
+        approval_lock: {
+          status: 'pending',
+          reviewer: 'user',
+        },
+        question_enforcement: {
+          obligation_id: 'obligation-stale',
+          source: 'omx-question',
+          status: 'pending',
+          lifecycle_outcome: 'askuserQuestion',
+          requested_at: '2026-07-08T23:59:00.000Z',
+        },
+      });
+
+      assert.equal(writeResponse.isError, undefined);
+
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'deep-interview',
+      });
+      const readBody = readResponse.payload as Record<string, unknown>;
+      const inputLock = readBody.input_lock as Record<string, unknown>;
+      const approvalLock = readBody.approval_lock as Record<string, unknown>;
+      const questionEnforcement = readBody.question_enforcement as Record<string, unknown>;
+
+      assert.equal(readBody.active, false);
+      assert.equal(readBody.current_phase, 'cancelled');
+      assert.equal(readBody.completed_at, completedAt);
+      assert.equal(readBody.run_outcome, 'cancelled');
+      assert.equal(inputLock.active, false);
+      assert.equal(inputLock.status, 'released');
+      assert.equal(inputLock.released_at, completedAt);
+      assert.equal(approvalLock.active, false);
+      assert.equal(approvalLock.status, 'released');
+      assert.equal(inputLock.release_reason, 'terminal_state_normalization');
+      assert.equal(questionEnforcement.status, 'cleared');
+      assert.equal(questionEnforcement.clear_reason, 'abort');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('writes and reads autoresearch state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autoresearch-'));
     try {
@@ -1212,6 +1267,299 @@ describe('state operations directory initialization', () => {
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(sessionRalplan.active, true);
       assert.equal(sessionRalplan.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows ralplan unsupported native non-clean recovery without tracker-backed consensus', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-unsupported-recovery-'));
+    try {
+      const sessionId = 'sess-ralplan-unsupported-recovery';
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'blocked',
+        native_subagent_support: {
+          status: 'unsupported',
+          reason: 'multi_agent_v1_unavailable',
+          source: 'post_tool_failure',
+        },
+      });
+
+      assert.equal(response.isError, undefined);
+      const state = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.active, false);
+      assert.equal(state.current_phase, 'blocked');
+      assert.equal(state.ralplan_consensus_gate, undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ralplan clean complete without tracker-backed native consensus after unsupported recovery support', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-clean-still-strict-'));
+    try {
+      const sessionId = 'sess-ralplan-clean-still-strict';
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+        native_subagent_support: {
+          status: 'unsupported',
+          reason: 'multi_agent_v1_unavailable',
+          source: 'post_tool_failure',
+        },
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'complete',
+        status: 'complete',
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /Cannot complete ralplan cleanly while native subagent support is unavailable/);
+      const state = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.active, true);
+      assert.equal(state.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ralplan clean complete with unsupported evidence even when native consensus is valid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-clean-unsupported-valid-consensus-deny-'));
+    try {
+      const sessionId = 'sess-ralplan-clean-unsupported-valid-consensus-deny';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'complete',
+        status: 'complete',
+        native_subagent_support: {
+          status: 'unsupported',
+          reason: 'multi_agent_v1_unavailable',
+          source: 'post_tool_failure',
+        },
+        ralplan_consensus_gate: ralplanConsensusGate(sessionId, 'native_subagent'),
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /Cannot complete ralplan cleanly while native subagent support is unavailable/);
+      const state = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.active, true);
+      assert.equal(state.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ralplan clean complete with handoff-artifact unsupported evidence', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-clean-handoff-unsupported-deny-'));
+    try {
+      const sessionId = 'sess-ralplan-clean-handoff-unsupported-deny';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'complete',
+        status: 'complete',
+        handoff_artifacts: {
+          ralplan: {
+            native_subagent_support: {
+              status: 'unsupported',
+              reason: 'multi_agent_v1_unavailable',
+              source: 'post_tool_failure',
+            },
+          },
+        },
+        ralplan_consensus_gate: ralplanConsensusGate(sessionId, 'native_subagent'),
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /Cannot complete ralplan cleanly while native subagent support is unavailable/);
+      const state = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.active, true);
+      assert.equal(state.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ralplan clean complete with nested handoff-artifact unsupported evidence', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-clean-nested-handoff-unsupported-deny-'));
+    try {
+      const sessionId = 'sess-ralplan-clean-nested-handoff-unsupported-deny';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'complete',
+        status: 'complete',
+        state: {
+          handoff_artifacts: {
+            ralplan: {
+              native_subagent_support: {
+                status: 'unsupported',
+                reason: 'multi_agent_v1_unavailable',
+                source: 'post_tool_failure',
+              },
+            },
+          },
+        },
+        ralplan_consensus_gate: ralplanConsensusGate(sessionId, 'native_subagent'),
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /Cannot complete ralplan cleanly while native subagent support is unavailable/);
+      const state = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.active, true);
+      assert.equal(state.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ralplan clean complete with handoff-root unsupported evidence', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-clean-handoff-root-unsupported-deny-'));
+    try {
+      const sessionId = 'sess-ralplan-clean-handoff-root-unsupported-deny';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: false,
+        current_phase: 'complete',
+        status: 'complete',
+        handoff_artifacts: {
+          native_subagent_support: {
+            status: 'unsupported',
+            reason: 'multi_agent_v1_unavailable',
+            source: 'post_tool_failure',
+          },
+          ralplan_consensus_gate: ralplanConsensusGate(sessionId, 'native_subagent'),
+        },
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /Cannot complete ralplan cleanly while native subagent support is unavailable/);
+      const state = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.active, true);
+      assert.equal(state.current_phase, 'planning');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ralplan clean status alias with unsupported evidence even when native consensus is valid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-status-alias-unsupported-deny-'));
+    try {
+      const sessionId = 'sess-ralplan-status-alias-unsupported-deny';
+      await writeNativeSubagentTracking(wd, sessionId);
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }, null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+      }, null, 2));
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'ralplan',
+        active: false,
+        status: 'complete',
+        native_subagent_support: {
+          status: 'unsupported',
+          reason: 'multi_agent_v1_unavailable',
+          source: 'post_tool_failure',
+        },
+        ralplan_consensus_gate: ralplanConsensusGate(sessionId, 'native_subagent'),
+      });
+
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /Cannot complete ralplan cleanly while native subagent support is unavailable/);
+      const state = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.active, true);
+      assert.equal(state.current_phase, 'planning');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -3753,6 +4101,42 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('allows Autopilot ralplan unsupported native non-clean recovery', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-unsupported-recovery-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-unsupported-recovery';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'ralplan',
+        }, null, 2));
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: false,
+          current_phase: 'blocked',
+          native_subagent_support: {
+            status: 'unsupported',
+            reason: 'multi_agent_v1_unavailable',
+            source: 'post_tool_failure',
+          },
+        });
+
+        assert.equal(response.isError, undefined);
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'blocked');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('denies Autopilot ralplan to ultragoal self-write with codex_exec consensus evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-native-deny-'));
     try {
@@ -3791,6 +4175,95 @@ describe('state operations directory initialization', () => {
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies Autopilot ralplan to ultragoal when unsupported native evidence is present', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-unsupported-ultragoal-deny-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-unsupported-ultragoal-deny';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'ralplan',
+          native_subagent_support: {
+            status: 'unsupported',
+            reason: 'native_subagents_unsupported',
+            source: 'post_tool_failure',
+          },
+        }, null, 2));
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ultragoal',
+          native_subagent_support: {
+            status: 'unsupported',
+            reason: 'native_subagents_unsupported',
+            source: 'post_tool_failure',
+          },
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /Cannot transition ralplan -> ultragoal/i);
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies Autopilot ralplan to ultragoal with unsupported evidence even when native consensus is valid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-unsupported-valid-consensus-deny-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-unsupported-valid-consensus-deny';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeNativeSubagentTracking(wd, sessionId);
+        await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'ralplan',
+          native_subagent_support: {
+            status: 'unsupported',
+            reason: 'multi_agent_v1_unavailable',
+            source: 'post_tool_failure',
+          },
+          state: {
+            handoff_artifacts: {
+              ralplan: {
+                plan_path: '.omx/plans/prd.md',
+                test_spec_path: '.omx/plans/test-spec.md',
+              },
+              ralplan_consensus_gate: ralplanConsensusGate(sessionId, 'native_subagent'),
+            },
+          },
+        }, null, 2));
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ultragoal',
+        });
+
+        assert.equal(response.isError, true);
+        const error = String((response.payload as { error?: string }).error || '');
+        assert.match(error, /terminalize non-clean/);
+        assert.match(error, /blocked\/cancelled\/failed/);
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
         assert.equal(state.current_phase, 'ralplan');
       });
     } finally {

@@ -1,0 +1,1767 @@
+{
+  "kind": "omx_capabilities_lock",
+  "surfaces": {
+    "agents": {
+      "digest": "63c9b3d021698b2bee26e78f3cbf4e554b6f91a773863b18746a37245c87f96b",
+      "files": [
+        {
+          "digest": "df4f90d10549e66ce33e9fad097ecd9ea8fcf08e7a6d7085550c8c95b5336d77",
+          "path": "prompts/analyst.md"
+        },
+        {
+          "digest": "9b3aab70cd1b990ab07b291a4e385af2c96d12050988eeb3a996822d2d15808f",
+          "path": "prompts/api-reviewer.md"
+        },
+        {
+          "digest": "1d1f53da3cd02bcd914dcc21804ffc81402ca7df08676f832a40999bd72a15bc",
+          "path": "prompts/architect.md"
+        },
+        {
+          "digest": "0a7f080af951632f77326cf0b1c83ea8c21d2cc62edb3f4c7cf73d9110e5012c",
+          "path": "prompts/build-fixer.md"
+        },
+        {
+          "digest": "3c29d7060d852aae2a57402e9527fa865b9464cb62ca2bcba7e193106c8d9b73",
+          "path": "prompts/code-reviewer.md"
+        },
+        {
+          "digest": "168e8424fd87342c0bc8338c415a888b993ed899ff7450d642162fcbaf45709f",
+          "path": "prompts/code-simplifier.md"
+        },
+        {
+          "digest": "454e42760521e97ca7559b2d5da8dcff997ea54a369dd9a4b64b1f3460149a95",
+          "path": "prompts/critic.md"
+        },
+        {
+          "digest": "9760e4089f99616c8963975ba4b7d75347c132cbcb62241e2b1927acba981dad",
+          "path": "prompts/debugger.md"
+        },
+        {
+          "digest": "643bc342ffe08e540b0df5c4c936396cc9624cd0b0bef4f3986224c9b06b3cdd",
+          "path": "prompts/dependency-expert.md"
+        },
+        {
+          "digest": "5c4da738867658fd8daf8af50c3208024fdef2bca5ebb40b74b2dfd131478167",
+          "path": "prompts/designer.md"
+        },
+        {
+          "digest": "d74f32aac5824828c36abffa896d2bd2f3a54ee90f04971b8a724fb58bbf51a4",
+          "path": "prompts/executor.md"
+        },
+        {
+          "digest": "5dd14215213fe6356b304b228328f9316a4c9747550f67585c77588b543fd117",
+          "path": "prompts/explore-harness.md"
+        },
+        {
+          "digest": "38101af5220cc3f8ea01f9637bb3ef92092882dc9a2084193e26b84dc5883910",
+          "path": "prompts/explore.md"
+        },
+        {
+          "digest": "8d4d0871382892ce72d72af7b14f923a0e20af6ffbcd7e48dc43fb15cd54c431",
+          "path": "prompts/git-master.md"
+        },
+        {
+          "digest": "6ba3dfee85712504c46f548f442a6a1c53c2914ea8bcfb63ddf77f06b2c69199",
+          "path": "prompts/information-architect.md"
+        },
+        {
+          "digest": "52f8211ee26375e2ae51b97f0719e8d600170dca28177faf60b9d19157e86dd6",
+          "path": "prompts/performance-reviewer.md"
+        },
+        {
+          "digest": "a6312eb91dc046f1c2c29568733cb3c06a925d90641b9a5ab54a0a717bc60902",
+          "path": "prompts/planner.md"
+        },
+        {
+          "digest": "40b39fd90f117a719f2bb2e655df2a9d563c145809b484de3d5a0891bcc2f675",
+          "path": "prompts/product-analyst.md"
+        },
+        {
+          "digest": "5be0afcd4497fa33a90474a2e7d3b7e71a3dcf36db9a2755172d31f3125633ec",
+          "path": "prompts/product-manager.md"
+        },
+        {
+          "digest": "a904daac293ca33f91291442b41a147d2ac2f314ad182cea457ccb97173ef3fe",
+          "path": "prompts/prometheus-strict-metis.md"
+        },
+        {
+          "digest": "3202c0c36c2e759833ee7af4ce9c8620471f80249ba1e0da74beb65e354295e5",
+          "path": "prompts/prometheus-strict-momus.md"
+        },
+        {
+          "digest": "745f2d4563e4f0eeeefbee3ab53dc3daa9ecdea57d749cda7ccdef33e57ee4de",
+          "path": "prompts/prometheus-strict-oracle.md"
+        },
+        {
+          "digest": "5e8a183c3c4ab7bae3b83f70a50f10aa6025a6654f25958ae02fd28fde3d3c23",
+          "path": "prompts/qa-tester.md"
+        },
+        {
+          "digest": "fe3da1a9b85601cb51883bca7158947b17ef2dd19c07d77fe14e2d91dad21f79",
+          "path": "prompts/quality-reviewer.md"
+        },
+        {
+          "digest": "9297e99746cd939187b5b1c627d212b0844e0bd8bcd1aadea1c18dd580b9ba86",
+          "path": "prompts/quality-strategist.md"
+        },
+        {
+          "digest": "34ae0143e3f071caf3bf55e027fe14cc713725229ef385409dfa1c3285921d2b",
+          "path": "prompts/researcher.md"
+        },
+        {
+          "digest": "cc54ccec7352e0616c56009c6ffc9b207f5dfd335fb0b02d445cb3e0d04ba856",
+          "path": "prompts/scholastic.md"
+        },
+        {
+          "digest": "9cf46f8a1c21ef3383be79bfd0430d7ba0ff97120c46011f74d811e6d1d67c9d",
+          "path": "prompts/security-reviewer.md"
+        },
+        {
+          "digest": "def762b90530acbe1c5e8bbc9e4bfc60c8740a3a558dada1afcd5d416b01a4cd",
+          "path": "prompts/sisyphus-lite.md"
+        },
+        {
+          "digest": "8dc0ea45e9edcc294487fa3f6c4988069b58692eee094329b1b454707a1e8b97",
+          "path": "prompts/style-reviewer.md"
+        },
+        {
+          "digest": "0e13c0e5a755881756476bc48ba5f38c6e02506d8db4d96cf543c96343336b62",
+          "path": "prompts/team-executor.md"
+        },
+        {
+          "digest": "86dd2852fd5364cec32882409d1837bab239468754e360a84fd8325eb93c7d2a",
+          "path": "prompts/team-orchestrator.md"
+        },
+        {
+          "digest": "14744da0ded006eec494e2069eaeb2a51f69fbc474fd3a8b1e701e3a9edaf80f",
+          "path": "prompts/test-engineer.md"
+        },
+        {
+          "digest": "783b77204a4e7b0c24414dee76c25ee2d1457e4350672123b70f4acf6d02108f",
+          "path": "prompts/ux-researcher.md"
+        },
+        {
+          "digest": "393a231e8651f230fe4d7906624118bae68d35f88eacd77f2b14962797430cef",
+          "path": "prompts/verifier.md"
+        },
+        {
+          "digest": "357ce4f1c9b4b88bcd82ebde3b69f29899ddc4d4bf45398491c982cfec0e2bfb",
+          "path": "prompts/vision.md"
+        },
+        {
+          "digest": "20a40dd88fc1d8dbe3f088c50919598340336339ce9975dd9956eb604c3b4cac",
+          "path": "prompts/writer.md"
+        },
+        {
+          "digest": "8f7865f21bb0d29df135382c7c140b4f9f95f4ca56cc27ac3ea30ffcb248e805",
+          "path": "templates/model-instructions/explore-lightweight-AGENTS.md"
+        },
+        {
+          "digest": "6705b79aa4059cdf1e7df415b4cd5eb401282e07e64072d531d81e57f0716be2",
+          "path": "templates/model-instructions/sparkshell-lightweight-AGENTS.md"
+        }
+      ]
+    },
+    "configured_tools": {
+      "digest": "4fa5a7b8baf12ed3b3454e5f31909d7596bc65601f323f5032cd5a7db310183e",
+      "disabled_first_party_servers": [],
+      "external_servers": [],
+      "tools": [
+        {
+          "description": "Replace code patterns using AST matching. Use meta-variables in both pattern and replacement. IMPORTANT: dryRun=true (default) only previews changes. Set dryRun=false to apply.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "dryRun": {
+                "description": "Preview only (default: true)",
+                "type": "boolean"
+              },
+              "language": {
+                "enum": [
+                  "javascript",
+                  "typescript",
+                  "tsx",
+                  "python",
+                  "ruby",
+                  "go",
+                  "rust",
+                  "java",
+                  "kotlin",
+                  "swift",
+                  "c",
+                  "cpp",
+                  "csharp",
+                  "html",
+                  "css",
+                  "json",
+                  "yaml"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "pattern": {
+                "description": "Pattern to match",
+                "type": "string"
+              },
+              "replacement": {
+                "description": "Replacement pattern (use same meta-variables)",
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern",
+              "replacement",
+              "language"
+            ],
+            "type": "object"
+          },
+          "name": "ast_grep_replace",
+          "server": "code_intel"
+        },
+        {
+          "description": "Search for code patterns using AST matching. Uses meta-variables: $NAME (single node), $$$ARGS (multiple nodes). Example: \"function $NAME($$$ARGS)\" finds all function declarations.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "context": {
+                "type": "integer"
+              },
+              "language": {
+                "enum": [
+                  "javascript",
+                  "typescript",
+                  "tsx",
+                  "python",
+                  "ruby",
+                  "go",
+                  "rust",
+                  "java",
+                  "kotlin",
+                  "swift",
+                  "c",
+                  "cpp",
+                  "csharp",
+                  "html",
+                  "css",
+                  "json",
+                  "yaml"
+                ],
+                "type": "string"
+              },
+              "maxResults": {
+                "type": "integer"
+              },
+              "path": {
+                "description": "Directory or file to search in",
+                "type": "string"
+              },
+              "pattern": {
+                "description": "AST pattern with meta-variables ($VAR, $$$VARS)",
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern",
+              "language"
+            ],
+            "type": "object"
+          },
+          "name": "ast_grep_search",
+          "server": "code_intel"
+        },
+        {
+          "description": "Get diagnostics (errors, warnings) for a file. Uses tsc --noEmit for TypeScript projects.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "file": {
+                "description": "Path to the source file",
+                "type": "string"
+              },
+              "severity": {
+                "enum": [
+                  "error",
+                  "warning",
+                  "info",
+                  "hint"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "type": "object"
+          },
+          "name": "lsp_diagnostics",
+          "server": "code_intel"
+        },
+        {
+          "description": "Run project-level diagnostics on a directory using tsc --noEmit. Returns all errors across the project.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "directory": {
+                "description": "Project directory to check",
+                "type": "string"
+              },
+              "strategy": {
+                "description": "Diagnostic strategy (default: auto)",
+                "enum": [
+                  "tsc",
+                  "auto"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "directory"
+            ],
+            "type": "object"
+          },
+          "name": "lsp_diagnostics_directory",
+          "server": "code_intel"
+        },
+        {
+          "description": "Get a hierarchical outline of all symbols in a file (functions, classes, variables, etc.).",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "file": {
+                "description": "Path to the source file",
+                "type": "string"
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "type": "object"
+          },
+          "name": "lsp_document_symbols",
+          "server": "code_intel"
+        },
+        {
+          "description": "Find all references to a symbol across the codebase using grep-based search.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "character": {
+                "description": "Character position (0-indexed)",
+                "type": "integer"
+              },
+              "file": {
+                "description": "Path to the source file",
+                "type": "string"
+              },
+              "includeDeclaration": {
+                "type": "boolean"
+              },
+              "line": {
+                "description": "Line number (1-indexed)",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file",
+              "line",
+              "character"
+            ],
+            "type": "object"
+          },
+          "name": "lsp_find_references",
+          "server": "code_intel"
+        },
+        {
+          "description": "Get type information and documentation at a specific position in a file (regex-based approximation).",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "character": {
+                "description": "Character position (0-indexed)",
+                "type": "integer"
+              },
+              "file": {
+                "description": "Path to the source file",
+                "type": "string"
+              },
+              "line": {
+                "description": "Line number (1-indexed)",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file",
+              "line",
+              "character"
+            ],
+            "type": "object"
+          },
+          "name": "lsp_hover",
+          "server": "code_intel"
+        },
+        {
+          "description": "List available diagnostic backends and their installation status.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "lsp_servers",
+          "server": "code_intel"
+        },
+        {
+          "description": "Search for symbols (functions, classes, etc.) across the workspace by name.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "file": {
+                "description": "Any file in the workspace (used to determine project root)",
+                "type": "string"
+              },
+              "query": {
+                "description": "Symbol name or pattern to search",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query",
+              "file"
+            ],
+            "type": "object"
+          },
+          "name": "lsp_workspace_symbols",
+          "server": "code_intel"
+        },
+        {
+          "description": "List known safe result artifact files under .omx plans/specs/goals/context/reports.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "limit": {
+                "type": "number"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "hermes_list_artifacts",
+          "server": "hermes"
+        },
+        {
+          "description": "Read structured question lifecycle events for coordinator bridge correlation.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "limit": {
+                "type": "number"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "hermes_list_question_events",
+          "server": "hermes"
+        },
+        {
+          "description": "List bounded structured question records without reading terminal UI.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "limit": {
+                "type": "number"
+              },
+              "session_id": {
+                "description": "OMX session_id (A-Z, a-z, 0-9, _, -)",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "open",
+                  "pending",
+                  "prompting",
+                  "answered",
+                  "aborted",
+                  "error"
+                ],
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "hermes_list_questions",
+          "server": "hermes"
+        },
+        {
+          "description": "List known OMX session state for a bounded worktree without reading terminal UI.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "hermes_list_sessions",
+          "server": "hermes"
+        },
+        {
+          "description": "Read one safe .omx result artifact by relative path with byte truncation.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "max_bytes": {
+                "type": "number"
+              },
+              "path": {
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "name": "hermes_read_artifact",
+          "server": "hermes"
+        },
+        {
+          "description": "Read selected session/mode status JSON from OMX state files.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "session_id": {
+                "description": "OMX session_id (A-Z, a-z, 0-9, _, -)",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "hermes_read_status",
+          "server": "hermes"
+        },
+        {
+          "description": "Read the bounded OMX session history log tail, not tmux scrollback.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "lines": {
+                "type": "number"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "hermes_read_tail",
+          "server": "hermes"
+        },
+        {
+          "description": "Write a small final/blocker status report for Hermes without owning merge policy.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "allow_mutation": {
+                "description": "Must be true for mutating operations; read tools ignore it.",
+                "type": "boolean"
+              },
+              "blocker": {
+                "type": "string"
+              },
+              "pr_url": {
+                "type": "string"
+              },
+              "session_id": {
+                "description": "OMX session_id (A-Z, a-z, 0-9, _, -)",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "running",
+                  "blocked",
+                  "failed",
+                  "complete"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "allow_mutation"
+            ],
+            "type": "object"
+          },
+          "name": "hermes_report_status",
+          "server": "hermes"
+        },
+        {
+          "description": "Queue one explicit prompt for a selected OMX exec session via the audited follow-up queue.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "allow_mutation": {
+                "description": "Must be true for mutating operations; read tools ignore it.",
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "session_id": {
+                "description": "OMX session_id (A-Z, a-z, 0-9, _, -)",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "prompt",
+              "allow_mutation"
+            ],
+            "type": "object"
+          },
+          "name": "hermes_send_prompt",
+          "server": "hermes"
+        },
+        {
+          "description": "Start a new isolated OMX tmux session in disposable worktree mode for one bounded prompt.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "allow_mutation": {
+                "description": "Must be true for mutating operations; read tools ignore it.",
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              },
+              "worktreeName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "workingDirectory",
+              "prompt",
+              "allow_mutation"
+            ],
+            "type": "object"
+          },
+          "name": "hermes_start_session",
+          "server": "hermes"
+        },
+        {
+          "description": "Submit a bounded structured answer by question id; never proxies arbitrary terminal input.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "allow_mutation": {
+                "description": "Must be true for mutating operations; read tools ignore it.",
+                "type": "boolean"
+              },
+              "answer": {
+                "type": "object"
+              },
+              "answers": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "question_id": {
+                "type": "string"
+              },
+              "session_id": {
+                "description": "OMX session_id (A-Z, a-z, 0-9, _, -)",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Bounded OMX project/worktree directory",
+                "type": "string"
+              }
+            },
+            "required": [
+              "question_id",
+              "allow_mutation"
+            ],
+            "type": "object"
+          },
+          "name": "hermes_submit_question_answer",
+          "server": "hermes"
+        },
+        {
+          "description": "Prune Working Memory entries older than N days (default: 7).",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "daysOld": {
+                "description": "Prune entries older than this many days (default: 7)",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "notepad_prune",
+          "server": "memory"
+        },
+        {
+          "description": "Read notepad content. Can read full or a specific section (priority, working, manual).",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "section": {
+                "enum": [
+                  "all",
+                  "priority",
+                  "working",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "notepad_read",
+          "server": "memory"
+        },
+        {
+          "description": "Get statistics about the notepad (size, entry count, oldest entry).",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "notepad_stats",
+          "server": "memory"
+        },
+        {
+          "description": "Add entry to Manual section. Never auto-pruned.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "content": {
+                "description": "Manual entry content",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "notepad_write_manual",
+          "server": "memory"
+        },
+        {
+          "description": "Write to Priority Context section. Replaces existing. Keep under 500 chars.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "content": {
+                "description": "Priority content (under 500 chars)",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "notepad_write_priority",
+          "server": "memory"
+        },
+        {
+          "description": "Add timestamped entry to Working Memory section.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "content": {
+                "description": "Working memory entry",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "notepad_write_working",
+          "server": "memory"
+        },
+        {
+          "description": "Add a persistent directive to project memory.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "context": {
+                "type": "string"
+              },
+              "directive": {
+                "description": "The directive text",
+                "type": "string"
+              },
+              "priority": {
+                "enum": [
+                  "high",
+                  "normal"
+                ],
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "directive"
+            ],
+            "type": "object"
+          },
+          "name": "project_memory_add_directive",
+          "server": "memory"
+        },
+        {
+          "description": "Add a categorized note to project memory.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "category": {
+                "description": "Note category (build, test, deploy, env, architecture)",
+                "type": "string"
+              },
+              "content": {
+                "description": "Note content",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "category",
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "project_memory_add_note",
+          "server": "memory"
+        },
+        {
+          "description": "Read project memory. Can read full memory or a specific section.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "section": {
+                "enum": [
+                  "all",
+                  "techStack",
+                  "build",
+                  "conventions",
+                  "structure",
+                  "notes",
+                  "directives"
+                ],
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "project_memory_read",
+          "server": "memory"
+        },
+        {
+          "description": "Write/update project memory. Can replace entirely or merge.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "memory": {
+                "description": "Memory object to write",
+                "type": "object"
+              },
+              "merge": {
+                "description": "Merge with existing (true) or replace (false)",
+                "type": "boolean"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "memory"
+            ],
+            "type": "object"
+          },
+          "name": "project_memory_write",
+          "server": "memory"
+        },
+        {
+          "description": "Clear/delete state for a specific mode.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "all_sessions": {
+                "description": "Clear matching mode in global and all session scopes",
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "autopilot",
+                  "autoresearch",
+                  "team",
+                  "ralph",
+                  "ultrawork",
+                  "ultraqa",
+                  "ralplan",
+                  "deep-interview",
+                  "skill-active"
+                ],
+                "type": "string"
+              },
+              "session_id": {
+                "description": "Optional session scope ID",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "name": "state_clear",
+          "server": "state"
+        },
+        {
+          "description": "Get detailed status for a specific mode or all modes.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "autopilot",
+                  "autoresearch",
+                  "team",
+                  "ralph",
+                  "ultrawork",
+                  "ultraqa",
+                  "ralplan",
+                  "deep-interview",
+                  "skill-active"
+                ],
+                "type": "string"
+              },
+              "session_id": {
+                "description": "Optional session scope ID",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "state_get_status",
+          "server": "state"
+        },
+        {
+          "description": "List all currently active modes.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "session_id": {
+                "description": "Optional session scope ID",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "state_list_active",
+          "server": "state"
+        },
+        {
+          "description": "Read state for a specific mode. Returns JSON state data or indicates no state exists.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "mode": {
+                "description": "The mode to read state for",
+                "enum": [
+                  "autopilot",
+                  "autoresearch",
+                  "team",
+                  "ralph",
+                  "ultrawork",
+                  "ultraqa",
+                  "ralplan",
+                  "deep-interview",
+                  "skill-active"
+                ],
+                "type": "string"
+              },
+              "session_id": {
+                "description": "Optional session scope ID",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "description": "Working directory override",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "name": "state_read",
+          "server": "state"
+        },
+        {
+          "description": "Write/update state for a specific mode. Creates directories if needed.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "completed_at": {
+                "type": "string"
+              },
+              "current_phase": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "iteration": {
+                "type": "number"
+              },
+              "lifecycle_outcome": {
+                "enum": [
+                  "finished",
+                  "blocked",
+                  "failed",
+                  "userinterlude",
+                  "askuserQuestion"
+                ],
+                "type": "string"
+              },
+              "max_iterations": {
+                "type": "number"
+              },
+              "mode": {
+                "enum": [
+                  "autopilot",
+                  "autoresearch",
+                  "team",
+                  "ralph",
+                  "ultrawork",
+                  "ultraqa",
+                  "ralplan",
+                  "deep-interview",
+                  "skill-active"
+                ],
+                "type": "string"
+              },
+              "run_outcome": {
+                "enum": [
+                  "continue",
+                  "finish",
+                  "blocked_on_user",
+                  "failed",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "session_id": {
+                "description": "Optional session scope ID",
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "state": {
+                "description": "Additional custom fields",
+                "type": "object"
+              },
+              "task_description": {
+                "type": "string"
+              },
+              "terminal_outcome": {
+                "description": "Legacy alias for lifecycle_outcome; canonical writes should prefer lifecycle_outcome.",
+                "enum": [
+                  "finished",
+                  "blocked",
+                  "failed",
+                  "userinterlude",
+                  "askuserQuestion"
+                ],
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "name": "state_write",
+          "server": "state"
+        },
+        {
+          "description": "Show aggregate statistics for agent flow trace. Includes turn counts, mode usage, token consumption, and timing.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "trace_summary",
+          "server": "trace"
+        },
+        {
+          "description": "Show chronological agent flow trace timeline. Displays turns, mode transitions, and agent activity in time order.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "filter": {
+                "description": "Filter: all (default), turns (agent turns only), modes (mode transitions only)",
+                "enum": [
+                  "all",
+                  "turns",
+                  "modes"
+                ],
+                "type": "string"
+              },
+              "last": {
+                "description": "Show only the last N entries",
+                "type": "number"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "trace_timeline",
+          "server": "trace"
+        },
+        {
+          "description": "Quick-add a single wiki page. Rejects overwrites; use wiki_ingest to merge.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "category": {
+                "enum": [
+                  "architecture",
+                  "decision",
+                  "pattern",
+                  "debugging",
+                  "environment",
+                  "session-log",
+                  "reference",
+                  "convention"
+                ],
+                "type": "string"
+              },
+              "content": {
+                "maxLength": 50000,
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "maxLength": 50,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              "title": {
+                "maxLength": 200,
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "wiki_add",
+          "server": "wiki"
+        },
+        {
+          "description": "Delete a wiki page and update the index.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "page": {
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "page"
+            ],
+            "type": "object"
+          },
+          "name": "wiki_delete",
+          "server": "wiki"
+        },
+        {
+          "description": "Process knowledge into wiki pages. Creates new pages or merges into existing ones.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "category": {
+                "enum": [
+                  "architecture",
+                  "decision",
+                  "pattern",
+                  "debugging",
+                  "environment",
+                  "session-log",
+                  "reference",
+                  "convention"
+                ],
+                "type": "string"
+              },
+              "confidence": {
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ],
+                "type": "string"
+              },
+              "content": {
+                "maxLength": 50000,
+                "type": "string"
+              },
+              "sources": {
+                "items": {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                "maxItems": 10,
+                "type": "array"
+              },
+              "tags": {
+                "items": {
+                  "maxLength": 50,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              "title": {
+                "maxLength": 200,
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "content",
+              "tags",
+              "category"
+            ],
+            "type": "object"
+          },
+          "name": "wiki_ingest",
+          "server": "wiki"
+        },
+        {
+          "description": "Run health checks on the wiki.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "wiki_lint",
+          "server": "wiki"
+        },
+        {
+          "description": "List wiki pages and return the index when present.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "wiki_list",
+          "server": "wiki"
+        },
+        {
+          "description": "Search wiki pages by keywords and tags. Returns raw matches for synthesis.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "category": {
+                "enum": [
+                  "architecture",
+                  "decision",
+                  "pattern",
+                  "debugging",
+                  "environment",
+                  "session-log",
+                  "reference",
+                  "convention"
+                ],
+                "type": "string"
+              },
+              "limit": {
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "query": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "name": "wiki_query",
+          "server": "wiki"
+        },
+        {
+          "description": "Read a specific wiki page.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "page": {
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "page"
+            ],
+            "type": "object"
+          },
+          "name": "wiki_read",
+          "server": "wiki"
+        },
+        {
+          "description": "Rebuild the wiki index and refresh derived metadata surfaces.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "wiki_refresh",
+          "server": "wiki"
+        }
+      ]
+    },
+    "fixtures": {
+      "digest": "88d95e3b00265771de6c023c16df6da41dc90d4b6f6c1b82cab72dd889bcbfae",
+      "fixtures": [
+        {
+          "allowed_tools": [
+            "ast_grep_replace",
+            "ast_grep_search",
+            "hermes_list_artifacts",
+            "hermes_list_question_events",
+            "hermes_list_questions",
+            "hermes_list_sessions",
+            "hermes_read_artifact",
+            "hermes_read_status",
+            "hermes_read_tail",
+            "hermes_report_status",
+            "hermes_send_prompt",
+            "hermes_start_session",
+            "hermes_submit_question_answer",
+            "lsp_diagnostics",
+            "lsp_diagnostics_directory",
+            "lsp_document_symbols",
+            "lsp_find_references",
+            "lsp_hover",
+            "lsp_servers",
+            "lsp_workspace_symbols",
+            "notepad_prune",
+            "notepad_read",
+            "notepad_stats",
+            "notepad_write_manual",
+            "notepad_write_priority",
+            "notepad_write_working",
+            "project_memory_add_directive",
+            "project_memory_add_note",
+            "project_memory_read",
+            "project_memory_write",
+            "state_clear",
+            "state_get_status",
+            "state_list_active",
+            "state_read",
+            "state_write",
+            "trace_summary",
+            "trace_timeline",
+            "wiki_add",
+            "wiki_delete",
+            "wiki_ingest",
+            "wiki_lint",
+            "wiki_list",
+            "wiki_query",
+            "wiki_read",
+            "wiki_refresh"
+          ],
+          "expected_tool": "project_memory_write",
+          "id": "project-memory-write-required-arg",
+          "prompt_id": "missing-required-arg",
+          "required": true
+        },
+        {
+          "allowed_tools": [
+            "ast_grep_replace",
+            "ast_grep_search",
+            "hermes_list_artifacts",
+            "hermes_list_question_events",
+            "hermes_list_questions",
+            "hermes_list_sessions",
+            "hermes_read_artifact",
+            "hermes_read_status",
+            "hermes_read_tail",
+            "hermes_report_status",
+            "hermes_send_prompt",
+            "hermes_start_session",
+            "hermes_submit_question_answer",
+            "lsp_diagnostics",
+            "lsp_diagnostics_directory",
+            "lsp_document_symbols",
+            "lsp_find_references",
+            "lsp_hover",
+            "lsp_servers",
+            "lsp_workspace_symbols",
+            "notepad_prune",
+            "notepad_read",
+            "notepad_stats",
+            "notepad_write_manual",
+            "notepad_write_priority",
+            "notepad_write_working",
+            "project_memory_add_directive",
+            "project_memory_add_note",
+            "project_memory_read",
+            "project_memory_write",
+            "state_clear",
+            "state_get_status",
+            "state_list_active",
+            "state_read",
+            "state_write",
+            "trace_summary",
+            "trace_timeline",
+            "wiki_add",
+            "wiki_delete",
+            "wiki_ingest",
+            "wiki_lint",
+            "wiki_list",
+            "wiki_query",
+            "wiki_read",
+            "wiki_refresh"
+          ],
+          "expected_tool": "project_memory_read",
+          "id": "project-memory-read-known-tool",
+          "prompt_id": "known-tool-success",
+          "required": true
+        },
+        {
+          "allowed_tools": [],
+          "id": "tool-restraint-no-call",
+          "no_tool_calls": true,
+          "prompt_id": "tool-restraint",
+          "required": true
+        }
+      ]
+    },
+    "skills": {
+      "digest": "0e59dbf0f181393ea4fd5b5a10afe938d56b31585ba1952dbcd9d4b028f3fd62",
+      "files": [
+        {
+          "digest": "3b34b200e4797cf0b31a2840ee745565a84bcd59fd0537b41825fa5951087a8c",
+          "path": "skills/ai-slop-cleaner/SKILL.md"
+        },
+        {
+          "digest": "3f64b3f5b888a75e9d6d043b3b87b6961cc780a997ee22f44d77dbb1716dcae5",
+          "path": "skills/analyze/SKILL.md"
+        },
+        {
+          "digest": "496e7a4dedcb55860b38e126d270e08f331d4f695e2dc22fb0249b6104517d0e",
+          "path": "skills/ask-claude/SKILL.md"
+        },
+        {
+          "digest": "04f4dbf8f289f2be15cb986b5aed5b46a7974e5f4655eacbc38696ee3a7f1082",
+          "path": "skills/ask-gemini/SKILL.md"
+        },
+        {
+          "digest": "5301bee75b021060a7021bb27782c904e4bebff1217e158a3107285e649c65ed",
+          "path": "skills/ask/SKILL.md"
+        },
+        {
+          "digest": "55f05e82682133fd7c42f524d69d54ff73b1f1e9d4e65333bead4fa146410197",
+          "path": "skills/autopilot/SKILL.md"
+        },
+        {
+          "digest": "6ca757600cd96cb2c1fe3fe9dac83dbec9a65aa98f12a05abe49e03bb9b3ae6d",
+          "path": "skills/autoresearch-goal/SKILL.md"
+        },
+        {
+          "digest": "5620155f31222fc0b2b76fce133aa7a77ca7d6e89607c65495f9efbb48d53eb2",
+          "path": "skills/autoresearch/SKILL.md"
+        },
+        {
+          "digest": "3d5904298db7125184742e86d075eb331954586e45d2647c09249a3dac38e010",
+          "path": "skills/best-practice-research/SKILL.md"
+        },
+        {
+          "digest": "aafbdee5a0c1df78850f1db9ee078f818d63cc442371ca822ec0df2d52c34e40",
+          "path": "skills/build-fix/SKILL.md"
+        },
+        {
+          "digest": "9dc56f2817d218c696c7de198dc21b7666e8c37d8a78373cc1b04869586ba96b",
+          "path": "skills/cancel/SKILL.md"
+        },
+        {
+          "digest": "529e730550f911b935ebb2f15085e8e148fbd70c85dce93a9b3b6b4f4e8299d7",
+          "path": "skills/code-review/SKILL.md"
+        },
+        {
+          "digest": "c6aa441dda9be9389e8069c8d6e6817f9f4183beaf7cabec22ca4dc793a02d1e",
+          "path": "skills/configure-notifications/SKILL.md"
+        },
+        {
+          "digest": "9979d0d4aef4e917af9559ce952f51530c525263d545c01f4780372078523bb0",
+          "path": "skills/deep-interview/SKILL.md"
+        },
+        {
+          "digest": "2dc38ba1be7baacb09edf09df30d394d7ec24428cc6055ecef23ebb0b7b92fd9",
+          "path": "skills/deepsearch/SKILL.md"
+        },
+        {
+          "digest": "793d9fb7ce9fbcb238ee27c96d31dc2c0edf4d77cdaf28d023138a4197b1f956",
+          "path": "skills/design/SKILL.md"
+        },
+        {
+          "digest": "75acd48ed891b72a5c6be5ecd6606343961830f064e933a6a1650a9f2cef7bdd",
+          "path": "skills/doctor/SKILL.md"
+        },
+        {
+          "digest": "0fab8ea1c8cb5696578ef3b350b45f72177a8074563b5750cc29564bd28613c3",
+          "path": "skills/ecomode/SKILL.md"
+        },
+        {
+          "digest": "70e692291e8f1c58bdf8a42cc1809d9f8d987a900e9b816fb2f51d34869111d0",
+          "path": "skills/frontend-ui-ux/SKILL.md"
+        },
+        {
+          "digest": "d917dbd61c1476133a6fa2e5c3ff3fbd4d56a458fea71aa0594c16b8d998f2b7",
+          "path": "skills/git-master/SKILL.md"
+        },
+        {
+          "digest": "84fda285c398f5a496ce221e931f8395a8864fc592fbf4cb5ef7322f8c5a8785",
+          "path": "skills/help/SKILL.md"
+        },
+        {
+          "digest": "d5c30b632149f1fc06e9945872e3eb02a5efeb93ba66bf512ecae558d1e3b4ea",
+          "path": "skills/hud/SKILL.md"
+        },
+        {
+          "digest": "4c842f56d349dd03ce1d69fff55c0389cd4158f3c802620b936967b41677c687",
+          "path": "skills/note/SKILL.md"
+        },
+        {
+          "digest": "30e994b5217c7ede52b88c65bfc53797a627c8404b7959bd5797888b49beba4a",
+          "path": "skills/omx-setup/SKILL.md"
+        },
+        {
+          "digest": "5adac796c4d807e4d30506a67dd9f39fc8812a0675536140e4566771e4806dfd",
+          "path": "skills/performance-goal/SKILL.md"
+        },
+        {
+          "digest": "f23018b67d7ea59bfca4e5321bfd0c5584f34d547598334fba625869fbdd7a37",
+          "path": "skills/pipeline/SKILL.md"
+        },
+        {
+          "digest": "24ddfa88be1efd06baf8fd93373be6d19ade207a6d2c37822d8dcc08835770ac",
+          "path": "skills/plan/SKILL.md"
+        },
+        {
+          "digest": "43b2639c4dc2ac3853fc141927270ab6c6cb1d791b52934f0eb1a437e57d6b81",
+          "path": "skills/prometheus-strict/SKILL.md"
+        },
+        {
+          "digest": "b81b0739c103e044c97ad808739a83c252d92f486084202374fec69eeb8a194e",
+          "path": "skills/ralph-init/SKILL.md"
+        },
+        {
+          "digest": "fd631c8fd4011af487c5521b2f29c9c31d0f9f90480be294811b9c9ae8da2b6c",
+          "path": "skills/ralph/SKILL.md"
+        },
+        {
+          "digest": "510b639a0e79c611f9f46c4739db2b2ba7873dfc5e41656c506acf3db5fd9467",
+          "path": "skills/ralplan/SKILL.md"
+        },
+        {
+          "digest": "6099f7c30780c96c0bea1a339319e6324eeddabe84003a6d928ccc877bc4d0ec",
+          "path": "skills/review/SKILL.md"
+        },
+        {
+          "digest": "007ac9f94b8d246f64a5c0360408f5682ae43d5468c4415ca9c2f6623e82321c",
+          "path": "skills/security-review/SKILL.md"
+        },
+        {
+          "digest": "b459ca43f1cefbf9a367a39dd0b76283408cdef8cf52ad1890d806359d5bb9bb",
+          "path": "skills/skill/SKILL.md"
+        },
+        {
+          "digest": "9806ce3dff32a149edc61bc62ee20ecadc1cce6fdc9f997f3abc5ec4cc1633d4",
+          "path": "skills/swarm/SKILL.md"
+        },
+        {
+          "digest": "b94bc25930af9f996be7f892b161b53ef9f8cf951784d31806548f5ad45e142c",
+          "path": "skills/tdd/SKILL.md"
+        },
+        {
+          "digest": "2163d2df462e21a9c5734dfbd764044195814937866cfe037b5a860a2f803397",
+          "path": "skills/team/SKILL.md"
+        },
+        {
+          "digest": "c39af0c40fddb921bff9f6e34bc8c85f736265c2935e664709de7b33e2ea94bb",
+          "path": "skills/trace/SKILL.md"
+        },
+        {
+          "digest": "c6d8d253dd0f3041c0c671838a346218a03c1479169777ede02734dffe8d3c73",
+          "path": "skills/ultragoal/SKILL.md"
+        },
+        {
+          "digest": "7c5296ae3961274d26a2c3ed05636c63f745250f37c25017cf854e0151cff7b2",
+          "path": "skills/ultraqa/SKILL.md"
+        },
+        {
+          "digest": "b363978ba2db76b700f51472f963388f686d19e8b8def976b5d7b9b64bfa1b13",
+          "path": "skills/ultrawork/SKILL.md"
+        },
+        {
+          "digest": "ed55aee5968859d4655679f6e7a7dfee1a2a2e9313fdb2c71a2e90824f79f6d7",
+          "path": "skills/visual-ralph/SKILL.md"
+        },
+        {
+          "digest": "abeaa514ff016d8e84db48aa58e278bcf1f62848147d556114e60e4039399c3f",
+          "path": "skills/visual-verdict/SKILL.md"
+        },
+        {
+          "digest": "b4baf27613f89cea1096845f66398e206f88b4eb82252b2c4b4cd8bcd5551f28",
+          "path": "skills/web-clone/SKILL.md"
+        },
+        {
+          "digest": "94c4715d92451a6ae4281bc1690564a659ad68cb58b0938004a49b1079a14241",
+          "path": "skills/wiki/SKILL.md"
+        },
+        {
+          "digest": "d0d46a07b7675ac854d993be56565bc96d0f3c8c0776ec38a58955df3003fe51",
+          "path": "skills/worker/SKILL.md"
+        }
+      ]
+    }
+  },
+  "version": 1
+}

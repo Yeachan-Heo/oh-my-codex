@@ -18,6 +18,7 @@ import {
 import {
   isTrustedSubagentThread,
   readSubagentSessionSummary,
+  readSubagentSessionLedger,
   readSubagentTrackingState,
   recordSubagentTurnForSession,
 } from "../subagents/tracker.js";
@@ -94,9 +95,14 @@ import {
   CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES,
   LEADER_CONDUCTOR_BLOCK,
   LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
+  NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
   actionKindForConductorArtifact,
   authorizeConductorAction,
+  buildUnsupportedNativeSubagentGuidance,
   classifyConductorArtifactKind,
+  isUnsupportedNativeSubagentEvidence,
+  resolveNativeSubagentSupportStatus,
+  type NativeSubagentUnsupportedReason,
 } from "../leader/contract.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
@@ -1792,6 +1798,101 @@ async function ensureOmxLocalIgnoreEntry(cwd: string): Promise<{ changed: boolea
   return { changed: true, excludePath };
 }
 
+function readSessionStartSource(payload: CodexHookPayload | undefined): string {
+  return safeString(payload?.source ?? payload?.session_start_source ?? payload?.sessionStartSource).trim().toLowerCase();
+}
+
+function shouldBuildSubagentReopenContext(options: {
+  hookEventName?: CodexHookEventName | null;
+  payload?: CodexHookPayload;
+}): boolean {
+  if (options.hookEventName !== "SessionStart") return false;
+  const source = readSessionStartSource(options.payload);
+  return source === "startup" || source === "resume";
+}
+
+function formatSubagentLedgerMetadata(entry: {
+  role?: string;
+  laneId?: string;
+  scope?: string;
+  status?: string;
+  lastHandoffSummary?: string;
+  resumeFailureReason?: string;
+}): string {
+  const metadata = [
+    entry.role ? `role: ${entry.role}` : null,
+    entry.laneId ? `lane: ${entry.laneId}` : null,
+    entry.scope ? `scope: ${entry.scope}` : null,
+    entry.status ? `status: ${entry.status}` : null,
+    entry.lastHandoffSummary ? `handoff: ${entry.lastHandoffSummary.slice(0, 120)}` : null,
+    entry.resumeFailureReason ? `last failure: ${entry.resumeFailureReason.slice(0, 120)}` : null,
+  ].filter((item): item is string => Boolean(item));
+  return metadata.length > 0 ? ` (${metadata.join("; ")})` : "";
+}
+
+async function buildPersistedSubagentReopenContext(
+  cwd: string,
+  sessionId: string,
+  options: {
+    hookEventName?: CodexHookEventName | null;
+    payload?: CodexHookPayload;
+  },
+): Promise<string | null> {
+  if (!shouldBuildSubagentReopenContext(options)) return null;
+
+  const ledger = await readSubagentSessionLedger(cwd, sessionId).catch(() => null);
+  if (!ledger || ledger.savedSubagents.length === 0) return null;
+
+  const source = readSessionStartSource(options.payload);
+  const reopenTargets = ledger.resumeTargets.filter((entry) => entry.status !== "unavailable");
+  const unavailableTargets = ledger.unavailableSubagents;
+  const failedTargets = ledger.savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
+  const nowIso = new Date().toISOString();
+
+  await Promise.all(reopenTargets.map((entry) => recordSubagentTurnForSession(cwd, {
+    sessionId,
+    threadId: entry.threadId,
+    kind: "subagent",
+    role: entry.role,
+    laneId: entry.laneId,
+    scope: entry.scope,
+    agentNickname: entry.agentNickname,
+    status: entry.status,
+    resumeRequestedAt: nowIso,
+    preserveCompletionEvidence: true,
+  }).catch(() => null)));
+
+  const lines = [
+    "[Persisted subagent reopen]",
+    `- SessionStart source: ${source}; saved subagent ids found: ${ledger.savedSubagents.length}.`,
+  ];
+
+  if (reopenTargets.length > 0) {
+    lines.push("- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:");
+    for (const entry of reopenTargets.slice(0, 12)) {
+      lines.push(`  - resume_agent(${JSON.stringify(entry.agentId)})${formatSubagentLedgerMetadata(entry)}`);
+    }
+    if (reopenTargets.length > 12) {
+      lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`);
+    }
+  } else {
+    lines.push("- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.");
+  }
+
+  lines.push("- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.");
+  lines.push("- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.");
+
+  const warningEntries = [...new Map([...unavailableTargets, ...failedTargets].map((entry) => [entry.agentId, entry])).values()];
+  if (warningEntries.length > 0) {
+    lines.push("- Reopen warnings:");
+    for (const entry of warningEntries.slice(0, 8)) {
+      lines.push(`  - ${entry.agentId}${formatSubagentLedgerMetadata(entry)}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 async function buildSessionStartContext(
   cwd: string,
   sessionId: string,
@@ -1899,6 +2000,14 @@ async function buildSessionStartContext(
   const subagentSummary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
   if (subagentSummary && subagentSummary.activeSubagentThreadIds.length > 0) {
     sections.push(`[Subagents]\n- active subagent threads: ${subagentSummary.activeSubagentThreadIds.length}`);
+  }
+
+  const persistedSubagentReopenContext = await buildPersistedSubagentReopenContext(cwd, sessionId, {
+    hookEventName: options.hookEventName,
+    payload: options.payload,
+  });
+  if (persistedSubagentReopenContext) {
+    sections.push(persistedSubagentReopenContext);
   }
 
   return sections.length > 0 ? sections.join("\n\n") : null;
@@ -2111,12 +2220,23 @@ function buildSkillStateCliInstruction(mode: string, statePath: string): string 
 
 function buildAutopilotPromptActivationNote(
   skillState?: SkillActiveState | null,
-  options: { markedQuestionAnswer?: boolean; cwd?: string } = {},
+  options: { markedQuestionAnswer?: boolean; cwd?: string; payload?: CodexHookPayload; sessionId?: string } = {},
 ): string | null {
   if (skillState?.initialized_mode !== "autopilot") return null;
   const teamHandoff = readTeamModeConfig(options.cwd).enabled
     ? " (+ $team if needed)"
     : "";
+  const stateDir = getBaseStateDir(options.cwd);
+  const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
+    payload: options.payload,
+    persistedSupportBlocker: readJsonSyncIfExists(nativeSubagentSupportBlockerPath(stateDir)),
+    persistedCapacityBlocker: readJsonSyncIfExists(nativeSubagentCapacityBlockerPath(stateDir)),
+    cwd: options.cwd,
+    sessionId: options.sessionId,
+  });
+  const conductorGuidance = nativeSubagentSupport.status === "unsupported"
+    ? buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)
+    : `${LEADER_CONDUCTOR_BLOCK} ${LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE}`;
   return [
     `Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal${teamHandoff} -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).`,
     "Start/resume at current_phase=deep-interview unless the task is clear and bounded; if deep-interview is intentionally skipped, persist and state an explicit deep_interview_gate.skip_reason before moving to ralplan.",
@@ -2128,8 +2248,7 @@ function buildAutopilotPromptActivationNote(
     "The ralplan phase is not complete until Planner output has been reviewed sequentially by Architect and then Critic; do not hand off to Ultragoal or implementation until the ralplan state/artifact records both ralplan_architect_review and ralplan_critic_review with approval or an explicit blocker.",
     "Do not silently fall back to ordinary $plan/ralplan-only handling; keep autopilot-state.json, skill-active-state.json, HUD/statusline, and Codex goal-mode handoff guidance visible while the workflow is active.",
     "When Codex goal tools are available, call get_goal/create_goal only from the active thread handoff and treat the active goal as the completion contract until code-review and ultraqa are clean.",
-    LEADER_CONDUCTOR_BLOCK,
-    LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
+    conductorGuidance,
   ].filter(Boolean).join(" ");
 }
 
@@ -2161,7 +2280,7 @@ function buildAdditionalContextMessage(
       : null;
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
     const markedQuestionAnswer = /^\s*\[omx question answered\]/i.test(prompt);
-    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer, cwd });
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer, cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
     return [
       `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
       promptPriorityMessage,
@@ -2187,7 +2306,7 @@ function buildAdditionalContextMessage(
       ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
       : null;
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
-    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true, cwd });
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true, cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
     return [
       `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
       promptPriorityMessage,
@@ -2220,7 +2339,7 @@ function buildAdditionalContextMessage(
   const ultragoalPromptActivationNote = match.skill === "ultragoal"
     ? "Ultragoal protocol: use `omx ultragoal create-goals` / `complete-goals` / `checkpoint` for `.omx/ultragoal` artifacts, then use Codex goal model tools only from the active agent handoff (`get_goal`, `create_goal`, `update_goal`) and never overwrite a different active Codex goal. Ultragoal does not call `/goal clear`; for multiple sequential ultragoal runs in one Codex session/thread, manually clear the completed Codex goal in the UI before creating the next aggregate goal."
     : null;
-  const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { cwd });
+  const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
   const combinedTransitionMessage = (() => {
     if (!skillState?.transition_message) return null;
     if (matches.length <= 1 || activeSkills.length <= 1) return skillState.transition_message;
@@ -3094,6 +3213,18 @@ function nativeSubagentCapacityBlockerPath(stateDir: string): string {
   return join(stateDir, NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE);
 }
 
+function nativeSubagentSupportBlockerPath(stateDir: string): string {
+  return join(stateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE);
+}
+
+function readJsonSyncIfExists(path: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function stringifyUnknown(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === undefined || value === null) return "";
@@ -3119,6 +3250,45 @@ function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
   if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
   const toolName = safeString(payload.tool_name).trim();
   return !toolName || /(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName);
+}
+
+function nativeSubagentFailureReason(payload: CodexHookPayload): NativeSubagentUnsupportedReason | null {
+  const evidence = payloadEvidenceText(payload);
+  const toolName = safeString(payload.tool_name).trim();
+  if (toolName && !/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)) return null;
+  if (/\bagent thread limit reached\b/i.test(evidence)) return null;
+  if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) return "native_subagents_unsupported";
+  if (/\bmulti_agent_v1\b/i.test(evidence) && /\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
+  if (/\b(?:unknown tool|tool not found|not enabled|disabled|unavailable|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
+  return null;
+}
+
+function summarizeNativeSubagentSupportFailure(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return (normalized || "native subagent support unavailable").slice(0, 500);
+}
+
+async function recordNativeSubagentSupportBlocker(
+  cwd: string,
+  stateDir: string,
+  payload: CodexHookPayload,
+): Promise<void> {
+  const reason = nativeSubagentFailureReason(payload);
+  if (!reason) return;
+  const nowIso = new Date().toISOString();
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(nativeSubagentSupportBlockerPath(stateDir), JSON.stringify({
+    schema_version: 1,
+    status: "unsupported",
+    reason,
+    ...(readPayloadSessionId(payload) ? { session_id: readPayloadSessionId(payload) } : {}),
+    ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
+    ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
+    ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
+    evidence: summarizeNativeSubagentSupportFailure(payloadEvidenceText(payload)),
+    observed_at: nowIso,
+    cwd,
+  }, null, 2));
 }
 
 function summarizeCapacityFailure(text: string): string {
@@ -3329,6 +3499,8 @@ const PROTECTED_PLANNING_STATE_FILE_NAMES = new Set([
   "ralplan-state.json",
   "skill-active-state.json",
 ]);
+const RUNTIME_SESSION_ID_SEGMENT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
 
 const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
   "Write",
@@ -3419,6 +3591,33 @@ function isProtectedPlanningStatePath(relativePath: string): boolean {
   const fileName = relativePath.split("/").pop() ?? "";
   return PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
 }
+function isAllowedAuthoritativeRuntimePlanningStatePath(cwd: string, rawPath: string): boolean {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
+
+  let targetPath: string;
+  let baseStateDir: string;
+  try {
+    targetPath = resolve(cwd, trimmed);
+    baseStateDir = resolve(getBaseStateDir(cwd));
+  } catch {
+    return false;
+  }
+
+  const localStateDir = resolve(cwd, ".omx", "state");
+  if (baseStateDir === localStateDir) return false;
+
+  const relativeToBase = relative(baseStateDir, targetPath).replace(/\\/g, "/");
+  if (!relativeToBase || relativeToBase.startsWith("..") || relativeToBase.startsWith("/")) return false;
+
+  const segments = relativeToBase.split("/");
+  if (segments.length !== 3 || segments[0] !== "sessions") return false;
+  const sessionId = segments[1] ?? "";
+  const fileName = segments[2] ?? "";
+  return RUNTIME_SESSION_ID_SEGMENT_PATTERN.test(sessionId)
+    && PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
+}
+
 
 function isPlanningTmpRelativePath(relativePath: string): boolean {
   return relativePath === ".omx/tmp" || relativePath.startsWith(".omx/tmp/");
@@ -3439,8 +3638,8 @@ function isAllowedPlanningArtifactPath(
   allowedPrefixes: readonly string[],
 ): boolean {
   const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
-  if (!relativePath) return false;
-  if (isProtectedPlanningStatePath(relativePath)) return false;
+  if (!relativePath) return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
+  if (isProtectedPlanningStatePath(relativePath)) return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
   if (isPlanningTmpRelativePath(relativePath)) {
     return allowedPrefixes.includes(".omx/tmp") && isAllowedPlanningTmpScratchPath(relativePath);
   }
@@ -5829,6 +6028,55 @@ function isPackageManagerCommandWord(word: string): boolean {
   return base === "npm" || base === "pnpm" || base === "yarn" || base === "npx" || base === "pnpx";
 }
 
+function isStructuredUltragoalSteeringShellCommand(command: string): boolean {
+  const segments = splitShellCommandSegments(stripHeredocBodiesForCommandScan(command));
+  let sawStructuredSteer = false;
+
+  for (const segment of segments) {
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    let inForHeader = false;
+
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (inForHeader) {
+        if (word === "do") {
+          inForHeader = false;
+          commandStart = true;
+        }
+        continue;
+      }
+      if (isShellGroupingSyntaxWord(word)) continue;
+      if (commandStart && isEnvironmentAssignmentWord(word)) continue;
+      if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) {
+        if (word === "for") inForHeader = true;
+        continue;
+      }
+      if (commandStart && word.startsWith("-")) continue;
+      if (!commandStart) continue;
+
+      const commandName = commandNameFromShellWord(word);
+      if (commandName === "read" || commandName === "true" || commandName === ":") {
+        commandStart = false;
+        continue;
+      }
+      if (commandName === "omx" && words[index + 1] === "ultragoal" && words[index + 2] === "steer") {
+        sawStructuredSteer = true;
+        commandStart = false;
+        continue;
+      }
+      return false;
+    }
+  }
+
+  return sawStructuredSteer;
+}
+
 function hasDynamicNestedShellExecution(command: string): boolean {
   const commands = splitShellCommandSegments(stripHeredocBodiesForCommandScan(command));
   for (const segment of commands) {
@@ -5851,12 +6099,12 @@ function hasDynamicNestedShellExecution(command: string): boolean {
         if (commandStringIndex === null && (hasUnquotedShellStdinFlowAroundShellWord(words, index) || segment.includes("<<"))) return true;
         if (commandStringIndex !== null) {
           const nestedCommand = words[commandStringIndex] ?? "";
-          if (isDynamicNestedCommandString(nestedCommand)) return true;
+          if (isDynamicNestedCommandString(nestedCommand) && !isStructuredUltragoalSteeringShellCommand(nestedCommand)) return true;
         }
       }
       if (word === "eval") {
         const nestedCommand = words.slice(index + 1).join(" ");
-        if (isDynamicNestedCommandString(nestedCommand)) return true;
+        if (isDynamicNestedCommandString(nestedCommand) && !isStructuredUltragoalSteeringShellCommand(nestedCommand)) return true;
       }
     }
   }
@@ -7865,6 +8113,14 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 ): Promise<Record<string, unknown> | null> {
   const activeState = await readActiveMainRootConductorStateForPreToolUse(payload, cwd, stateDir, resolvedSessionId);
   if (!activeState) return null;
+  const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
+    payload,
+    persistedSupportBlocker: await readJsonIfExists(nativeSubagentSupportBlockerPath(stateDir)),
+    persistedCapacityBlocker: await readJsonIfExists(nativeSubagentCapacityBlockerPath(stateDir)),
+    cwd,
+    sessionId: resolvedSessionId || readPayloadSessionId(payload),
+  });
+
 
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
@@ -7891,6 +8147,9 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 
   if (!blocked) return null;
 
+  const unsupportedNativeGuidance = isUnsupportedNativeSubagentEvidence(nativeSubagentSupport)
+    ? ` ${buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)} Treat the active conductor workflow as blocked/cancelled for native delegation recovery; do not call multi_agent_v1.close_agent.`
+    : "";
   return {
     decision: "block",
     reason: `Main-root Conductor mode is active (${activeState.mode} phase: ${formatPhase(activeState.phase, "active")}); direct plan/code writes are blocked and must be delegated; ${blockedDetail}.`,
@@ -7900,7 +8159,8 @@ export async function buildConductorPreToolUseWriteGuardOutput(
         `${LEADER_CONDUCTOR_GOLDEN_RULE} `
         + "Use specialized agents for source edits and plan/spec authorship. "
         + `Main-root Conductor may write only orchestration metadata/transport/ledger artifacts under ${CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES.join(", ")}; path location alone is not authorization for substantive deliverables. `
-        + "Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
+        + unsupportedNativeGuidance
+        + " Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
     },
   };
 }
@@ -9643,6 +9903,7 @@ export async function dispatchCodexNativeHook(
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
     await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
+    await recordNativeSubagentSupportBlocker(cwd, stateDir, payload).catch(() => {});
     if (detectMcpTransportFailure(payload)) {
       await markTeamTransportFailure(cwd, payload);
     }

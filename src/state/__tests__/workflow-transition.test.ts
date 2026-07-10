@@ -252,6 +252,14 @@ describe('workflow transition rules', () => {
             status: 'complete',
             rationale: 'Requirements have been clarified and handed to ralplan.',
           },
+          input_lock: {
+            active: true,
+            owner: 'handoff-question',
+          },
+          approval_lock: {
+            status: 'pending',
+            reviewer: 'user',
+          },
         }, null, 2),
         'utf-8',
       );
@@ -288,6 +296,12 @@ describe('workflow transition rules', () => {
       const boxedMode = JSON.parse(await readFile(boxedModePath, 'utf-8')) as Record<string, unknown>;
       assert.equal(boxedMode.active, false);
       assert.equal(boxedMode.current_phase, 'completed');
+      const boxedInputLock = boxedMode.input_lock as Record<string, unknown>;
+      const boxedApprovalLock = boxedMode.approval_lock as Record<string, unknown>;
+      assert.equal(boxedInputLock.active, false);
+      assert.equal(boxedInputLock.status, 'released');
+      assert.equal(boxedApprovalLock.active, false);
+      assert.equal(boxedApprovalLock.status, 'released');
 
       const boxedSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(boxedSkill.active, false);

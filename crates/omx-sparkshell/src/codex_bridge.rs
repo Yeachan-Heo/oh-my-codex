@@ -9,8 +9,8 @@ use std::time::Duration;
 
 pub const DEFAULT_SUMMARY_TIMEOUT_MS: u64 = 60_000;
 pub const DEFAULT_API_BASE_URL: &str = "http://127.0.0.1:14510";
-pub const DEFAULT_SPARK_MODEL: &str = "gpt-5.3-codex-spark";
-pub const DEFAULT_STANDARD_MODEL: &str = "gpt-5.4-mini";
+pub const DEFAULT_SPARK_MODEL: &str = "gpt-5.6-luna";
+pub const DEFAULT_STANDARD_MODEL: &str = "gpt-5.6-terra";
 
 pub fn resolve_model() -> String {
     env::var("OMX_SPARKSHELL_MODEL")
