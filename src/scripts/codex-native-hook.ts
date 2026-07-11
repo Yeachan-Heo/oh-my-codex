@@ -7216,14 +7216,32 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
   sessionId: string,
 ): Promise<boolean> {
   if (hasTeamWorkerEnvironment()) return true;
-  if (!isTypedAgentRolePayload(payload)) return false;
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
   const session = trackingState?.sessions?.[sessionId];
   if (!session) return false;
 
   const payloadThreadId = readPayloadThreadId(payload);
+  const leaderThreadId = safeString(session.leader_thread_id).trim();
+  // The Main-root Conductor (the session leader thread) is never a delegated
+  // executor. Protect it ahead of every trust path below, even when tracker or
+  // payload provenance is (possibly corruptly) attached to the leader thread.
+  if (payloadThreadId && leaderThreadId && payloadThreadId === leaderThreadId) return false;
+
+  // Tracker-backed provenance: the payload's own thread is a recorded, non-leader
+  // subagent for this session. This is the non-spoofable trust anchor that lets
+  // native collaboration.spawn_agent children and their descendants edit even when
+  // they carry no recognized typed agent role (#3116). subagent-tracking.json is
+  // derived from child SessionStart transcript metadata, not the live tool-call
+  // payload, so a delegated executor is recognized regardless of its role label.
   if (payloadThreadId && isTrustedSubagentThread(session, payloadThreadId)) return true;
 
+  // Runtime-attached spawn provenance: trust a genuine spawned subagent turn whose
+  // declared parent maps to this session's leader or a tracked thread. parentThreadId
+  // comes from the runtime-set source.subagent.thread_spawn (not agent-controlled tool
+  // arguments); an absent parent is rejected, the leader self-guard above blocks the
+  // main root, and cross-session parents fail because they are not in this session's
+  // tracked threads (#3116). Recognized typed roles and untyped collaboration children
+  // are trusted through the same provenance check.
   const source = safeObject(payload.source);
   const subagent = safeObject(source.subagent);
   const threadSpawn = safeObject(subagent.thread_spawn);
@@ -7234,8 +7252,6 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
       ?? threadSpawn.leaderThreadId,
   ).trim();
   if (!parentThreadId) return false;
-  const leaderThreadId = safeString(session.leader_thread_id).trim();
-  if (payloadThreadId && leaderThreadId && payloadThreadId === leaderThreadId) return false;
   return leaderThreadId === parentThreadId || parentThreadId in session.threads;
 }
 
