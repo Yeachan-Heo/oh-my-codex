@@ -22659,6 +22659,73 @@ PY`,
     }
   });
 
+  it("does not borrow leader anchors from a foreign root session.json when evaluating another session (#3117 P3)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3117-cross-session-anchor-"));
+    process.env.OMX_ROOT = cwd;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const foreignSessionId = "sess-3117-p3-foreign-A";
+      const foreignLeaderThreadId = "thread-3117-p3-A-leader";
+      const sessionId = "sess-3117-p3-checked-B";
+      const leaderThreadId = "thread-3117-p3-B-leader";
+      const childThreadId = "thread-3117-p3-B-child";
+      const sessionPath = join(stateDir, "session.json");
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+      // Evaluated session B has a corrupt tracker: no leader_thread_id, leader mislabeled kind:"subagent".
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "subagent", mode: "collaboration-child" },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", mode: "collaboration-child" },
+            },
+          },
+        },
+      });
+
+      const dispatchThread = async (threadId: string) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          tool_name: "apply_patch",
+          tool_input: { file_path: "src/feature.ts" },
+        },
+        { cwd },
+      );
+
+      // Root session.json owns a DIFFERENT session A: its native/owner ids must not
+      // anchor session B, so B's mislabeled leader stays blocked (fail closed).
+      await writeJson(sessionPath, { session_id: foreignSessionId, native_session_id: foreignLeaderThreadId });
+      const foreignLeader = await dispatchThread(leaderThreadId);
+      assert.equal(foreignLeader.outputJson?.decision, "block");
+      assert.match(String(foreignLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      const foreignChild = await dispatchThread(childThreadId);
+      assert.equal(foreignChild.outputJson?.decision, "block");
+
+      // Control: when the root session.json owns the evaluated session B, its
+      // native_session_id anchors the leader (blocked) while a genuine child is trusted.
+      await writeJson(sessionPath, { session_id: sessionId, native_session_id: leaderThreadId });
+      const ownedLeader = await dispatchThread(leaderThreadId);
+      assert.equal(ownedLeader.outputJson?.decision, "block");
+      assert.match(String(ownedLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      const ownedChild = await dispatchThread(childThreadId);
+      assert.equal(ownedChild.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks conductor writes when thread_spawn provenance is attached to the leader thread", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-thread-spawn-leader-"));
     const originalOmxRoot = process.env.OMX_ROOT;

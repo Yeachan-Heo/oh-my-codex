@@ -7224,21 +7224,26 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
 
   const payloadThreadId = readPayloadThreadId(payload);
 
-  // Resolve the Main-root leader identity from BOTH the tracker's leader_thread_id and
-  // the canonical session's runtime identity (session.json native/owner ids). The
-  // tracker alone is insufficient: it can omit leader_thread_id or corruptly label the
-  // leader kind:"subagent", so leader identity is anchored to runtime-set session
-  // evidence that the agent does not control (#3117 P2).
+  // Resolve the Main-root leader identity from the tracker's leader_thread_id plus the
+  // canonical session's runtime identity (session.json native/owner ids). The tracker
+  // alone is insufficient: it can omit leader_thread_id or corruptly label the leader
+  // kind:"subagent", so leader identity is anchored to runtime-set session evidence the
+  // agent does not control (#3117 P2). The session.json anchors are only folded in when
+  // that root session pointer provably maps to the sessionId under evaluation; a
+  // stale/foreign session.json (a session-replacement state this hook handles elsewhere)
+  // must not supply another session's leader anchors here (#3117 P3).
   const sessionState = await readRootSessionStateFromStateDir(stateDir).catch(() => null);
   const trackerLeaderThreadId = safeString(session.leader_thread_id).trim();
   const leaderIdentityAnchors = new Set<string>();
-  for (const anchor of [
-    trackerLeaderThreadId,
-    safeString(sessionState?.native_session_id).trim(),
-    safeString(sessionState?.owner_codex_session_id).trim(),
-    safeString(sessionState?.owner_omx_session_id).trim(),
-  ]) {
-    if (anchor) leaderIdentityAnchors.add(anchor);
+  if (trackerLeaderThreadId) leaderIdentityAnchors.add(trackerLeaderThreadId);
+  if (sessionState && sessionId && payloadMatchesSessionPointer(sessionId, sessionState)) {
+    for (const anchor of [
+      safeString(sessionState.native_session_id).trim(),
+      safeString(sessionState.owner_codex_session_id).trim(),
+      safeString(sessionState.owner_omx_session_id).trim(),
+    ]) {
+      if (anchor) leaderIdentityAnchors.add(anchor);
+    }
   }
 
   // Leader self-guard: the Main-root Conductor is never a delegated executor. Block it
