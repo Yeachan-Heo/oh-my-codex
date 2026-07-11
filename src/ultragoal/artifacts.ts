@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   formatCodexGoalReconciliation,
   buildCompletedCodexGoalRemediation,
@@ -580,10 +581,132 @@ function unresolvedReviewBlockedGoals(plan: UltragoalPlan): UltragoalItem[] {
   return plan.goals.filter((candidate) => candidate.status === 'review_blocked' && !isReviewBlockedResolved(candidate, plan));
 }
 
-function isDesignatedReviewBlockerResolver(goal: UltragoalItem, parent: UltragoalItem | undefined): boolean {
-  return parent?.status === 'review_blocked'
-    && goal.resolvesReviewBlockedGoalId === parent.id
-    && parent.reviewBlockerResolution?.resolverGoalId === goal.id;
+interface ReviewBlockerAncestorLink {
+  resolver: UltragoalItem;
+  parent: UltragoalItem;
+  alreadyResolved: boolean;
+}
+
+function collectReviewBlockerAncestorChain(
+  plan: UltragoalPlan,
+  completedResolver: UltragoalItem,
+): ReviewBlockerAncestorLink[] {
+  const chain: ReviewBlockerAncestorLink[] = [];
+  const visited = new Set<string>([completedResolver.id]);
+  let resolver = completedResolver;
+
+  while (true) {
+    const parentId = resolver.resolvesReviewBlockedGoalId;
+    const claimedParents = plan.goals.filter(
+      (candidate) => candidate.reviewBlockerResolution?.resolverGoalId === resolver.id,
+    );
+
+    if (!parentId) {
+      if (claimedParents.length > 0) {
+        throw new UltragoalError(
+          `Invalid designated resolver link: ${resolver.id} is claimed by ${claimedParents.map((candidate) => candidate.id).join(', ')} but does not name a review-blocked parent.`,
+        );
+      }
+      break;
+    }
+    if (visited.has(parentId)) {
+      throw new UltragoalError(`Review blocker resolver cycle detected at ${parentId}.`);
+    }
+    visited.add(parentId);
+
+    const parent = plan.goals.find((candidate) => candidate.id === parentId);
+    if (!parent) {
+      throw new UltragoalError(`Missing review-blocked parent: ${parentId}.`);
+    }
+    if (claimedParents.length !== 1 || claimedParents[0]?.id !== parentId) {
+      const claims = claimedParents.length > 0
+        ? claimedParents.map((candidate) => candidate.id).join(', ')
+        : 'none';
+      throw new UltragoalError(
+        `Invalid designated resolver link: ${resolver.id} points to ${parentId}, but reverse claims are ${claims}.`,
+      );
+    }
+
+    const resolution = parent.reviewBlockerResolution;
+    const pending = parent.status === 'review_blocked'
+      && resolution?.resolverGoalId === resolver.id
+      && resolution.status === 'pending';
+    const alreadyResolved = parent.status === 'complete'
+      && resolution?.resolverGoalId === resolver.id
+      && resolution.status === 'complete'
+      && Boolean(parent.completedAt)
+      && Boolean(resolution.resolvedAt)
+      && Boolean(resolution.evidence);
+    if (!pending && !alreadyResolved) {
+      throw new UltragoalError(
+        `Invalid designated resolver provenance: ${resolver.id} -> ${parentId}; expected a review_blocked/pending or complete/complete matching link.`,
+      );
+    }
+
+    chain.push({ resolver, parent, alreadyResolved });
+    resolver = parent;
+  }
+
+  return chain;
+}
+
+function validateReviewBlockerResolverGraph(plan: UltragoalPlan): void {
+  const goalIds = new Set<string>();
+  for (const goal of plan.goals) {
+    if (goalIds.has(goal.id)) {
+      throw new UltragoalError(`Duplicate ultragoal id in review blocker resolver graph: ${goal.id}.`);
+    }
+    goalIds.add(goal.id);
+  }
+
+  for (const parent of plan.goals) {
+    const resolverId = parent.reviewBlockerResolution?.resolverGoalId;
+    if (!resolverId) continue;
+    const resolver = plan.goals.find((candidate) => candidate.id === resolverId);
+    if (!resolver) {
+      throw new UltragoalError(`Missing designated review-blocker resolver: ${resolverId} for ${parent.id}.`);
+    }
+    if (resolver.resolvesReviewBlockedGoalId !== parent.id) {
+      throw new UltragoalError(
+        `Invalid designated resolver link: ${parent.id} claims ${resolverId}, but that resolver points to ${resolver.resolvesReviewBlockedGoalId ?? 'none'}.`,
+      );
+    }
+  }
+
+  for (const resolver of plan.goals) {
+    if (resolver.resolvesReviewBlockedGoalId) collectReviewBlockerAncestorChain(plan, resolver);
+  }
+}
+
+function resolveReviewBlockerAncestors(
+  plan: UltragoalPlan,
+  completedResolver: UltragoalItem,
+  evidence: string | undefined,
+  now: string,
+): UltragoalItem[] {
+  const resolved: UltragoalItem[] = [];
+  for (const link of collectReviewBlockerAncestorChain(plan, completedResolver)) {
+    if (link.alreadyResolved) {
+      if (link.parent.reviewBlockerResolution?.evidence !== evidence) {
+        throw new UltragoalError(
+          `Conflicting completed resolver evidence for ${link.resolver.id} -> ${link.parent.id}.`,
+        );
+      }
+      continue;
+    }
+    link.parent.status = 'complete';
+    link.parent.completedAt = now;
+    link.parent.updatedAt = now;
+    link.parent.reviewBlockerResolution = {
+      resolverGoalId: link.resolver.id,
+      status: 'complete',
+      resolvedAt: now,
+      evidence,
+    };
+    clearGoalBlockerFields(link.parent);
+    resolved.push(link.parent);
+  }
+  return resolved;
 }
 
 function canUseCleanFinalResolverPathForReviewBlockedParent(
@@ -592,11 +715,16 @@ function canUseCleanFinalResolverPathForReviewBlockedParent(
   finalRunCheckpoint: boolean,
   allowActiveFinalCodexGoal: boolean | undefined,
 ): boolean {
+  const pendingAncestorIds = new Set(
+    collectReviewBlockerAncestorChain(plan, goal)
+      .filter((link) => !link.alreadyResolved)
+      .map((link) => link.parent.id),
+  );
   const unresolvedReviewBlocked = unresolvedReviewBlockedGoals(plan);
-  if (unresolvedReviewBlocked.length !== 1) return false;
+  if (pendingAncestorIds.size === 0 || unresolvedReviewBlocked.length !== pendingAncestorIds.size) return false;
   return finalRunCheckpoint
     && !allowActiveFinalCodexGoal
-    && isDesignatedReviewBlockerResolver(goal, unresolvedReviewBlocked[0]);
+    && unresolvedReviewBlocked.every((candidate) => pendingAncestorIds.has(candidate.id));
 }
 
 async function canReconcileCompletedTaskScopedAggregateSnapshot(
@@ -718,14 +846,13 @@ function isCompletionBlocking(goal: UltragoalItem, plan: UltragoalPlan): boolean
   return !isResolvedStatus(goal.status);
 }
 
-function isCompletionBlockingForFinalCandidate(candidate: UltragoalItem, finalCandidate: UltragoalItem, plan: UltragoalPlan): boolean {
-  if (candidate.id === finalCandidate.id) return false;
-  if (candidate.status === 'review_blocked' && candidate.reviewBlockerResolution?.resolverGoalId === finalCandidate.id) return false;
+function isCompletionBlockingForFinalCandidate(candidate: UltragoalItem, completionCandidateIds: ReadonlySet<string>, plan: UltragoalPlan): boolean {
+  if (completionCandidateIds.has(candidate.id)) return false;
   if (candidate.steeringStatus === 'superseded') {
     const replacements = candidate.supersededBy ?? [];
     if (replacements.length === 0) return true;
     return !replacements.every((id) => {
-      if (id === finalCandidate.id) return true;
+      if (completionCandidateIds.has(id)) return true;
       const replacement = plan.goals.find((goal) => goal.id === id);
       return replacement !== undefined && isResolvedStatus(replacement.status);
     });
@@ -738,7 +865,12 @@ function isScheduleEligible(goal: UltragoalItem): boolean {
 }
 
 export function isFinalRunCompletionCandidate(plan: UltragoalPlan, goal: UltragoalItem): boolean {
-  return plan.goals.every((candidate) => !isCompletionBlockingForFinalCandidate(candidate, goal, plan));
+  validateReviewBlockerResolverGraph(plan);
+  const completionCandidateIds = new Set([
+    goal.id,
+    ...collectReviewBlockerAncestorChain(plan, goal).map((link) => link.parent.id),
+  ]);
+  return plan.goals.every((candidate) => !isCompletionBlockingForFinalCandidate(candidate, completionCandidateIds, plan));
 }
 
 export function isUltragoalDone(plan: UltragoalPlan): boolean {
@@ -831,6 +963,38 @@ async function appendLedger(cwd: string, entry: UltragoalLedgerEntry): Promise<v
   await mkdir(ultragoalDir(cwd), { recursive: true });
   const path = ultragoalLedgerPath(cwd);
   await appendFile(path, `${JSON.stringify(entry)}\n`);
+}
+
+async function appendLedgerOnce(cwd: string, entry: UltragoalLedgerEntry): Promise<void> {
+  if (!entry.idempotencyKey) {
+    await appendLedger(cwd, entry);
+    return;
+  }
+  let existing: UltragoalLedgerEntry[] = [];
+  try {
+    const raw = await readFile(ultragoalLedgerPath(cwd), 'utf-8');
+    existing = raw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as UltragoalLedgerEntry);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new UltragoalError(`Cannot reconcile idempotent ultragoal ledger entry ${entry.idempotencyKey}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const normalizedEntry = JSON.parse(JSON.stringify(entry)) as UltragoalLedgerEntry;
+  const keyedMatches = existing.filter((candidate) => candidate.idempotencyKey === entry.idempotencyKey);
+  for (const candidate of keyedMatches) {
+    if (!isDeepStrictEqual(candidate, normalizedEntry)) {
+      throw new UltragoalError(`Conflicting ultragoal ledger entry for idempotency key ${entry.idempotencyKey}.`);
+    }
+  }
+  if (keyedMatches.length > 0) return;
+
+  const { idempotencyKey: _entryKey, ...entryPayload } = normalizedEntry;
+  const legacyDuplicate = existing.some((candidate) => {
+    if (candidate.idempotencyKey) return false;
+    const { idempotencyKey: _candidateKey, ...candidatePayload } = candidate;
+    return isDeepStrictEqual(candidatePayload, entryPayload);
+  });
+  if (!legacyDuplicate) await appendLedger(cwd, entry);
 }
 
 export async function readUltragoalPlan(cwd: string): Promise<UltragoalPlan> {
@@ -1572,6 +1736,112 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
   const goal = plan.goals.find((candidate) => candidate.id === options.goalId);
   if (!goal) throw new UltragoalError(`Unknown ultragoal id: ${options.goalId}`);
   const now = iso(options.now);
+  if (options.status === 'complete') validateReviewBlockerResolverGraph(plan);
+  const resolverChain = options.status === 'complete'
+    ? collectReviewBlockerAncestorChain(plan, goal)
+    : [];
+  if (options.status === 'complete' && goal.status === 'complete') {
+    if (goal.evidence !== options.evidence) {
+      throw new UltragoalError(`Conflicting completed checkpoint evidence for ${goal.id}.`);
+    }
+    const resolverChainComplete = resolverChain.every((link) => link.alreadyResolved);
+    const aggregateSatisfied = resolverChain.length === 0
+      || codexGoalMode(plan) !== 'aggregate'
+      || plan.aggregateCompletion?.status === 'complete';
+    if (resolverChainComplete && aggregateSatisfied) {
+      for (const link of resolverChain) {
+        if (link.parent.reviewBlockerResolution?.evidence !== options.evidence) {
+          throw new UltragoalError(
+            `Conflicting completed resolver evidence for ${link.resolver.id} -> ${link.parent.id}.`,
+          );
+        }
+      }
+      if (plan.aggregateCompletion && plan.aggregateCompletion.evidence !== options.evidence) {
+        throw new UltragoalError(`Conflicting aggregate completion evidence for ${goal.id}.`);
+      }
+      if (plan.aggregateCompletion && !isDeepStrictEqual(plan.aggregateCompletion.codexGoal, options.codexGoal)) {
+        throw new UltragoalError(`Conflicting aggregate Codex goal snapshot for ${goal.id}.`);
+      }
+      if (!plan.aggregateCompletion) {
+        const aggregateMode = codexGoalMode(plan) === 'aggregate';
+        const finalRunCheckpoint = isFinalRunCompletionCandidate(plan, goal);
+        const replayReconciliation = reconcileCodexGoalSnapshot(
+          options.codexGoal === undefined ? null : parseCodexGoalSnapshot(options.codexGoal),
+          {
+            expectedObjective: expectedCodexObjective(plan, goal),
+            acceptedObjectives: aggregateMode ? compatibleCodexObjectives(plan) : undefined,
+            allowedStatuses: aggregateMode
+              ? (finalRunCheckpoint && !options.allowActiveFinalCodexGoal ? ['complete'] : ['active'])
+              : ['complete'],
+            requireSnapshot: true,
+            requireComplete: !aggregateMode || (finalRunCheckpoint && !options.allowActiveFinalCodexGoal),
+          },
+        );
+        if (!replayReconciliation.ok) {
+          throw new UltragoalError(`Completed checkpoint replay rejected: ${formatCodexGoalReconciliation(replayReconciliation)}`);
+        }
+      }
+      const replayCodexGoal = plan.aggregateCompletion?.codexGoal ?? options.codexGoal;
+      const replayNeedsQualityGate = resolverChain.length > 0
+        || plan.aggregateCompletion?.status === 'complete'
+        || (isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal);
+      const requiredArchitectureInvariants = replayNeedsQualityGate
+        ? await collectRequiredArchitectureInvariants(cwd)
+        : [];
+      const qualityGate = replayNeedsQualityGate
+        ? validateQualityGate(options.qualityGate, requiredArchitectureInvariants)
+        : undefined;
+      const replaySnapshot = parseCodexGoalSnapshot(replayCodexGoal);
+      const taskScopedAggregateReplay = resolverChain.length === 0
+        && plan.aggregateCompletion?.status === 'complete'
+        && replaySnapshot.available
+        && replaySnapshot.status === 'complete'
+        && Boolean(replaySnapshot.objective)
+        && normalizeObjective(replaySnapshot.objective ?? '') !== normalizeObjective(expectedCodexObjective(plan, goal));
+      await appendLedgerOnce(cwd, {
+        ts: goal.completedAt ?? now,
+        event: 'goal_completed',
+        goalId: goal.id,
+        status: goal.status,
+        evidence: options.evidence,
+        codexGoal: replayCodexGoal,
+        qualityGate,
+        idempotencyKey: `checkpoint:${goal.id}:goal_completed`,
+        message: taskScopedAggregateReplay
+          ? 'Active repo-native microgoal completed while reconciling a completed task-scoped aggregate Codex goal snapshot.'
+          : undefined,
+      });
+      for (const link of resolverChain) {
+        await appendLedgerOnce(cwd, {
+          ts: link.parent.reviewBlockerResolution?.resolvedAt ?? link.parent.completedAt ?? now,
+          event: 'goal_completed',
+          goalId: link.parent.id,
+          status: link.parent.status,
+          evidence: options.evidence,
+          codexGoal: replayCodexGoal,
+          qualityGate,
+          idempotencyKey: `checkpoint:${goal.id}:resolved:${link.parent.id}`,
+          message: `Review-blocked final story resolved by ${link.resolver.id} through resolver chain; original failed review remains in prior final_review_failed/goal_review_blocked ledger entries.`,
+        });
+      }
+      if (plan.aggregateCompletion?.status === 'complete') {
+        await appendLedgerOnce(cwd, {
+          ts: plan.aggregateCompletion.completedAt,
+          event: 'aggregate_completed',
+          goalId: goal.id,
+          status: goal.status,
+          evidence: options.evidence,
+          codexGoal: replayCodexGoal,
+          qualityGate,
+          idempotencyKey: `checkpoint:${goal.id}:aggregate_completed`,
+          message: taskScopedAggregateReplay
+            ? 'Aggregate ultragoal plan completed via task-scoped Codex goal snapshot; checkpointed active microgoal row was reconciled to complete.'
+            : 'Aggregate ultragoal plan completed with a clean final quality gate.',
+        });
+      }
+      return plan;
+    }
+  }
   if (options.status === 'blocked') {
     if (goal.status !== 'in_progress') {
       throw new UltragoalError(`Cannot record a blocked checkpoint for ${goal.id} while it is ${goal.status}; start or resume the ultragoal before recording a non-terminal blocker.`);
@@ -1686,12 +1956,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
         throw new UltragoalError(`${formatCodexGoalReconciliation(reconciliation)}${taskScopedRequirement}${remediation}`);
       }
     }
-    const designatedReviewBlockerResolver = goal.resolvesReviewBlockedGoalId
-      ? isDesignatedReviewBlockerResolver(
-        goal,
-        plan.goals.find((candidate) => candidate.id === goal.resolvesReviewBlockedGoalId),
-      )
-      : false;
+    const designatedReviewBlockerResolver = resolverChain.length > 0;
     if (aggregateMode && finalRunCheckpoint && !options.allowActiveFinalCodexGoal && designatedReviewBlockerResolver) {
       normalFinalAggregateCompletion = {
         status: 'complete',
@@ -1720,7 +1985,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     if (plan.activeGoalId === goal.id) delete plan.activeGoalId;
     plan.updatedAt = now;
     await writePlan(cwd, plan);
-    await appendLedger(cwd, {
+    await appendLedgerOnce(cwd, {
       ts: now,
       event: 'goal_completed',
       goalId: goal.id,
@@ -1728,9 +1993,10 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       evidence: options.evidence,
       codexGoal: options.codexGoal,
       qualityGate,
+      idempotencyKey: `checkpoint:${goal.id}:goal_completed`,
       message: 'Active repo-native microgoal completed while reconciling a completed task-scoped aggregate Codex goal snapshot.',
     });
-    await appendLedger(cwd, {
+    await appendLedgerOnce(cwd, {
       ts: now,
       event: 'aggregate_completed',
       goalId: goal.id,
@@ -1738,6 +2004,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       evidence: options.evidence,
       codexGoal: options.codexGoal,
       qualityGate,
+      idempotencyKey: `checkpoint:${goal.id}:aggregate_completed`,
       message: 'Aggregate ultragoal plan completed via task-scoped Codex goal snapshot; checkpointed active microgoal row was reconciled to complete.',
     });
     return plan;
@@ -1751,21 +2018,10 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     goal.failedAt = undefined;
     clearGoalBlockerFields(goal);
     if (normalFinalAggregateCompletion) plan.aggregateCompletion = normalFinalAggregateCompletion;
-    const resolvedParent = goal.resolvesReviewBlockedGoalId
-      ? plan.goals.find((candidate) => candidate.id === goal.resolvesReviewBlockedGoalId)
-      : undefined;
-    if (resolvedParent?.status === 'review_blocked' && resolvedParent.reviewBlockerResolution?.resolverGoalId === goal.id && qualityGate) {
-      resolvedParent.status = 'complete';
-      resolvedParent.completedAt = now;
-      resolvedParent.updatedAt = now;
-      resolvedParent.reviewBlockerResolution = {
-        resolverGoalId: goal.id,
-        status: 'complete',
-        resolvedAt: now,
-        evidence: options.evidence,
-      };
-      clearGoalBlockerFields(resolvedParent);
+    if (resolverChain.length > 0 && !qualityGate) {
+      throw new UltragoalError('Review-blocker resolver chain completion requires a clean final quality gate.');
     }
+    if (qualityGate) resolveReviewBlockerAncestors(plan, goal, options.evidence, now);
     if (plan.activeGoalId === goal.id) delete plan.activeGoalId;
   } else {
     const blocker = classifyExternalAuthorizationBlocker(options.evidence);
@@ -1787,7 +2043,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
   plan.updatedAt = now;
   await writePlan(cwd, plan);
   const blockerEvent = goal.status === 'needs_user_decision';
-  await appendLedger(cwd, {
+  await appendLedgerOnce(cwd, {
     ts: now,
     event: options.status === 'complete' ? 'goal_completed' : blockerEvent ? 'goal_needs_user_decision' : 'goal_failed',
     goalId: goal.id,
@@ -1798,27 +2054,28 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     blockerSignature: goal.blockerSignature,
     blockerOccurrenceCount: goal.blockerOccurrenceCount,
     requiredExternalDecision: goal.requiredExternalDecision,
+    idempotencyKey: options.status === 'complete' ? `checkpoint:${goal.id}:goal_completed` : undefined,
     message: blockerEvent
       ? `Blocked on repeated external authorization. Required decision: ${goal.requiredExternalDecision}.`
       : undefined,
   });
-  if (options.status === 'complete' && goal.resolvesReviewBlockedGoalId) {
-    const resolvedParent = plan.goals.find((candidate) => candidate.id === goal.resolvesReviewBlockedGoalId);
-    if (resolvedParent?.reviewBlockerResolution?.status === 'complete' && resolvedParent.reviewBlockerResolution.resolverGoalId === goal.id) {
-      await appendLedger(cwd, {
+  if (options.status === 'complete') {
+    for (const link of resolverChain) {
+      await appendLedgerOnce(cwd, {
         ts: now,
         event: 'goal_completed',
-        goalId: resolvedParent.id,
-        status: resolvedParent.status,
+        goalId: link.parent.id,
+        status: link.parent.status,
         evidence: options.evidence,
         codexGoal: options.codexGoal,
         qualityGate,
-        message: `Review-blocked final story resolved by ${goal.id}; original failed review remains in prior final_review_failed/goal_review_blocked ledger entries.`,
+        idempotencyKey: `checkpoint:${goal.id}:resolved:${link.parent.id}`,
+        message: `Review-blocked final story resolved by ${link.resolver.id} through resolver chain; original failed review remains in prior final_review_failed/goal_review_blocked ledger entries.`,
       });
     }
   }
   if (normalFinalAggregateCompletion) {
-    await appendLedger(cwd, {
+    await appendLedgerOnce(cwd, {
       ts: now,
       event: 'aggregate_completed',
       goalId: goal.id,
@@ -1826,6 +2083,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       evidence: options.evidence,
       codexGoal: options.codexGoal,
       qualityGate,
+      idempotencyKey: `checkpoint:${goal.id}:aggregate_completed`,
       message: 'Aggregate ultragoal plan completed with a clean final quality gate.',
     });
   }
