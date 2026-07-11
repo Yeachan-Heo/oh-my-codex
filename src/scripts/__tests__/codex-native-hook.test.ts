@@ -22541,6 +22541,124 @@ PY`,
     }
   });
 
+  it("blocks a corrupt kind:subagent leader that omits leader_thread_id via native session identity while still trusting a real non-leader child (#3117 P2)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3117-corrupt-leader-no-lead-"));
+    process.env.OMX_ROOT = cwd;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-3117-corrupt-leader-no-lead";
+      const leaderThreadId = "thread-3117-corrupt-leader-no-lead-leader";
+      const childThreadId = "thread-3117-corrupt-leader-no-lead-child";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      // native_session_id anchors the leader identity even though the tracker omits
+      // leader_thread_id and corruptly labels the leader kind:"subagent".
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "subagent", mode: "collaboration-child" },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", mode: "collaboration-child" },
+            },
+          },
+        },
+      });
+
+      // Untyped leader payload must stay blocked: leader identity is anchored to
+      // native_session_id, not the corrupt tracker kind.
+      const untypedLeader = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: leaderThreadId,
+          tool_name: "apply_patch",
+          tool_input: { file_path: "src/feature.ts" },
+        },
+        { cwd },
+      );
+      assert.equal(untypedLeader.outputJson?.decision, "block");
+      assert.match(String(untypedLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+
+      // Control: a genuine non-leader child stays trusted (P1 preserved).
+      const untypedChild = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          tool_name: "apply_patch",
+          tool_input: { file_path: "src/feature.ts" },
+        },
+        { cwd },
+      );
+      assert.equal(untypedChild.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for untyped provenance when no authoritative leader anchor exists (#3117 P2)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3117-no-leader-anchor-"));
+    process.env.OMX_ROOT = cwd;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-3117-no-leader-anchor";
+      const leaderThreadId = "thread-3117-no-leader-anchor-leader";
+      const childThreadId = "thread-3117-no-leader-anchor-child";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      // No native_session_id / owner ids and no tracker leader_thread_id: the leader is
+      // unidentifiable, so untyped provenance must not be inferred from kind:"subagent".
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "subagent", mode: "collaboration-child" },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", mode: "collaboration-child" },
+            },
+          },
+        },
+      });
+
+      for (const threadId of [leaderThreadId, childThreadId]) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: threadId,
+            tool_name: "apply_patch",
+            tool_input: { file_path: "src/feature.ts" },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson?.decision, "block", threadId);
+        assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks conductor writes when thread_spawn provenance is attached to the leader thread", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-thread-spawn-leader-"));
     const originalOmxRoot = process.env.OMX_ROOT;
