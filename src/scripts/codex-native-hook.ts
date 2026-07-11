@@ -7214,6 +7214,7 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
   payload: CodexHookPayload,
   cwd: string,
   sessionId: string,
+  options: { allowUntypedProvenance?: boolean } = {},
 ): Promise<boolean> {
   if (hasTeamWorkerEnvironment()) return true;
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
@@ -7227,12 +7228,20 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
   // payload provenance is (possibly corruptly) attached to the leader thread.
   if (payloadThreadId && leaderThreadId && payloadThreadId === leaderThreadId) return false;
 
+  // Planning boundary guards (ralplan, deep-interview) still require a recognized
+  // typed agent role, so an untyped collaboration.spawn_agent child cannot write
+  // before an execution handoff/approval. Only the Main-root Conductor/Ralph
+  // executing guard opts into untyped tracker/runtime provenance (#3116, #3117).
+  if (options.allowUntypedProvenance !== true && !isTypedAgentRolePayload(payload)) {
+    return false;
+  }
+
   // Tracker-backed provenance: the payload's own thread is a recorded, non-leader
   // subagent for this session. This is the non-spoofable trust anchor that lets
-  // native collaboration.spawn_agent children and their descendants edit even when
-  // they carry no recognized typed agent role (#3116). subagent-tracking.json is
-  // derived from child SessionStart transcript metadata, not the live tool-call
-  // payload, so a delegated executor is recognized regardless of its role label.
+  // native collaboration.spawn_agent children and their descendants edit under the
+  // Conductor guard even when they carry no recognized typed agent role (#3116).
+  // subagent-tracking.json is derived from child SessionStart transcript metadata,
+  // not the live tool-call payload.
   if (payloadThreadId && isTrustedSubagentThread(session, payloadThreadId)) return true;
 
   // Runtime-attached spawn provenance: trust a genuine spawned subagent turn whose
@@ -7240,8 +7249,7 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
   // comes from the runtime-set source.subagent.thread_spawn (not agent-controlled tool
   // arguments); an absent parent is rejected, the leader self-guard above blocks the
   // main root, and cross-session parents fail because they are not in this session's
-  // tracked threads (#3116). Recognized typed roles and untyped collaboration children
-  // are trusted through the same provenance check.
+  // tracked threads (#3116).
   const source = safeObject(payload.source);
   const subagent = safeObject(source.subagent);
   const threadSpawn = safeObject(subagent.thread_spawn);
@@ -7281,7 +7289,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
   }
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
-  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, sessionId)) return null;
+  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, sessionId, { allowUntypedProvenance: true })) return null;
 
   const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
   if (!canonicalState) return null;
