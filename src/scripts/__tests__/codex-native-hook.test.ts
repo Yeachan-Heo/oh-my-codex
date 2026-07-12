@@ -848,52 +848,81 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("preserves team-worker typed subagent PreToolUse exemption without thread spawn provenance", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-typed-pretool-exempt-"));
-    const sessionId = "sess-team-worker-typed-pretool-exempt";
+  it("allows proven non-root Team workers only after canonical Main-root exclusion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-pretool-identity-"));
+    const sessionId = "sess-team-worker-pretool-identity";
+    const leaderThreadId = "thread-team-worker-pretool-identity-leader";
+    const workerThreadId = "thread-team-worker-pretool-identity-worker";
     const stateDir = join(cwd, ".omx", "state");
-    const basePayload = {
+    const workerPayload = {
       hook_event_name: "PreToolUse",
       cwd,
       session_id: sessionId,
-      thread_id: "thread-team-worker-typed-pretool-exempt",
-      agent_role: "executor",
+      thread_id: workerThreadId,
       tool_name: "Edit",
-      tool_use_id: "tool-team-worker-typed-pretool-exempt",
+      tool_use_id: "tool-team-worker-pretool-identity",
       tool_input: { file_path: "src/runtime.ts", old_string: "a", new_string: "b" },
     };
     try {
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
-      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
-        active: true,
-        skill: "ralplan",
-        phase: "planning",
+      await writeJson(join(stateDir, "session.json"), {
         session_id: sessionId,
-        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+        native_session_id: leaderThreadId,
       });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+
+      const unmarkedWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
+      assert.equal(unmarkedWorker.outputJson?.decision, "block");
+      assert.match(String(unmarkedWorker.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+
+      for (const teamWorkerEnv of ["OMX_TEAM_INTERNAL_WORKER", "OMX_TEAM_WORKER"] as const) {
+        process.env[teamWorkerEnv] = "team-worker-pretool-identity/worker-1";
+        const provenWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
+        assert.equal(provenWorker.outputJson, null, teamWorkerEnv);
+
+        const rootWithWorkerEnvironment = await dispatchCodexNativeHook({
+          ...workerPayload,
+          thread_id: leaderThreadId,
+          agent_role: "executor",
+          source: { subagent: { thread_spawn: { parent_thread_id: leaderThreadId } } },
+        }, { cwd });
+        assert.equal(rootWithWorkerEnvironment.outputJson?.decision, "block", teamWorkerEnv);
+        assert.match(String(rootWithWorkerEnvironment.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+        delete process.env[teamWorkerEnv];
+      }
+
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      process.env.OMX_TEAM_INTERNAL_WORKER = "team-worker-pretool-identity/worker-1";
+      const unanchoredWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
+      assert.equal(unanchoredWorker.outputJson?.decision, "block");
+      assert.match(String(unanchoredWorker.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: leaderThreadId,
+      });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralplan", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
         active: true,
         mode: "ralplan",
-        current_phase: "critic-review",
+        current_phase: "planning",
         session_id: sessionId,
       });
-
-      const nonTeamWorkerTypedSubagent = await dispatchCodexNativeHook(basePayload, { cwd });
-      assert.equal(
-        (nonTeamWorkerTypedSubagent.outputJson as { decision?: string } | null)?.decision,
-        "block",
-        "typed/native subagent PreToolUse without trusted thread_spawn provenance must remain protected outside team workers",
-      );
-
-      process.env.OMX_TEAM_INTERNAL_WORKER = "typed-pretool-exempt/worker-1";
-      process.env.OMX_TEAM_WORKER = "typed-pretool-exempt/worker-1";
-
-      const teamWorkerTypedSubagent = await dispatchCodexNativeHook(basePayload, { cwd });
-      assert.equal(
-        teamWorkerTypedSubagent.outputJson,
-        null,
-        "team workers must bypass typed-subagent thread_spawn provenance requirements before planning guards block implementation tools",
-      );
+      const teamPlanningWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
+      assert.equal(teamPlanningWorker.outputJson, null);
+      const teamPlanningRoot = await dispatchCodexNativeHook({
+        ...workerPayload,
+        thread_id: leaderThreadId,
+        agent_role: "executor",
+        source: { subagent: { thread_spawn: { parent_thread_id: leaderThreadId } } },
+      }, { cwd });
+      assert.equal(teamPlanningRoot.outputJson?.decision, "block");
+      assert.match(String(teamPlanningRoot.outputJson?.reason ?? ""), /Ralplan is active \(phase: planning\)/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -11645,7 +11674,7 @@ PY`,
     }
   });
 
-  it("allows typed agent-role implementation writes under active ralplan when trusted provenance is present", async () => {
+  it("blocks trusted typed agent-role implementation writes under active ralplan while preserving planning artifacts", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-trusted-typed-agent-role-ralplan-"));
     const originalOmxRoot = process.env.OMX_ROOT;
     const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
@@ -11722,7 +11751,24 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(allowedImplementationEdit.outputJson, null);
+      assert.equal(allowedImplementationEdit.outputJson?.decision, "block");
+      assert.match(String(allowedImplementationEdit.outputJson?.reason ?? ""), /Autopilot planning is active \(phase: ralplan\)/);
+
+      const allowedPlanningArtifactWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_role: "executor",
+          source: { subagent: { thread_spawn: { parent_thread_id: leaderThreadId } } },
+          tool_name: "Write",
+          tool_use_id: "tool-trusted-typed-executor-ralplan-plan",
+          tool_input: { file_path: ".omx/plans/issue-3127.md", content: "# Planning artifact\n" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedPlanningArtifactWrite.outputJson, null);
     } finally {
       if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
       else process.env.OMX_ROOT = originalOmxRoot;
@@ -11814,7 +11860,7 @@ PY`,
     }
   });
 
-  it("keeps untyped collaboration child implementation writes blocked under active ralplan planning while typed trusted agents pass (#3116)", async () => {
+  it("keeps typed and untyped collaboration child implementation writes blocked under active ralplan planning (#3116)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3116-ralplan-untyped-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -11877,7 +11923,7 @@ PY`,
       );
       assert.equal(untypedChild.outputJson?.decision, "block");
 
-      // A typed trusted agent retains its existing planning exemption.
+      // Typed role labels do not bypass the ralplan planning guard.
       const typedChild = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -11893,13 +11939,13 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(typedChild.outputJson, null);
+      assert.equal(typedChild.outputJson?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("keeps untyped collaboration child implementation writes blocked under active deep-interview planning while typed trusted agents pass (#3116)", async () => {
+  it("keeps typed and untyped collaboration child implementation writes blocked under active deep-interview planning (#3116)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3116-di-untyped-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -11961,7 +12007,7 @@ PY`,
       );
       assert.equal(untypedChild.outputJson?.decision, "block");
 
-      // A typed trusted agent retains its existing planning exemption.
+      // Typed role labels do not bypass the deep-interview planning guard.
       const typedChild = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -11977,7 +12023,22 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(typedChild.outputJson, null);
+      assert.equal(typedChild.outputJson?.decision, "block");
+
+      const allowedInterviewArtifactWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_role: "executor",
+          source: { subagent: { thread_spawn: { parent_thread_id: leaderThreadId } } },
+          tool_name: "Write",
+          tool_input: { file_path: ".omx/interviews/issue-3127.md", content: "# Interview artifact\n" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedInterviewArtifactWrite.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -22480,7 +22541,7 @@ PY`,
     }
   });
 
-  it("allows conductor writes from tracked typed native subagents", async () => {
+  it("requires owner confirmation for typed child source, unowned, and conductor-metadata mutations", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-tracked-subagent-"));
     const originalOmxRoot = process.env.OMX_ROOT;
     const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
@@ -22496,11 +22557,11 @@ PY`,
       const nowIso = new Date().toISOString();
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
-      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
         mode: "ultragoal",
-        current_phase: "planning",
+        current_phase: "executing",
         session_id: sessionId,
       });
       await writeJson(join(stateDir, "subagent-tracking.json"), {
@@ -22538,7 +22599,80 @@ PY`,
         { cwd },
       );
 
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(result.outputJson?.reason ?? ""), /Main-root/);
+      assert.match(
+        String((result.outputJson?.hookSpecificOutput as { additionalContext?: unknown } | undefined)?.additionalContext ?? ""),
+        /OWNER_CONFIRMATION_REQUIRED/,
+      );
+
+      const unownedWriter = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_role: "writer",
+          tool_name: "Write",
+          tool_input: { file_path: "unowned/issue-3127.txt", content: "unowned\n" },
+        },
+        { cwd },
+      );
+      assert.equal(unownedWriter.outputJson?.decision, "block");
+      assert.match(String(unownedWriter.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(unownedWriter.outputJson?.reason ?? ""), /Main-root/);
+
+      const metadataWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_role: "executor",
+          tool_name: "Write",
+          tool_input: { file_path: ".omx/state/conductor-child.json", content: "{}\n" },
+        },
+        { cwd },
+      );
+      assert.equal(metadataWrite.outputJson?.decision, "block");
+      assert.match(String(metadataWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(metadataWrite.outputJson?.reason ?? ""), /Main-root/);
+
+      for (const command of [
+        "printf '{}' > .omx/state/conductor-child.json",
+        "touch .omx/handoffs/run-1/conductor-child.json",
+      ]) {
+        const metadataBash = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: childThreadId,
+            agent_role: "executor",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(metadataBash.outputJson?.decision, "block", command);
+        assert.match(String(metadataBash.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, command);
+        assert.doesNotMatch(String(metadataBash.outputJson?.reason ?? ""), /Main-root/, command);
+      }
+
+      const readOnlyBash = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_role: "executor",
+          tool_name: "Bash",
+          tool_input: { command: "git status --short" },
+        },
+        { cwd },
+      );
+      assert.equal(readOnlyBash.outputJson, null);
     } finally {
       if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
       else process.env.OMX_ROOT = originalOmxRoot;
@@ -22550,7 +22684,116 @@ PY`,
     }
   });
 
-  it("allows conductor writes from tracked typed native subagents when PreToolUse omits thread_spawn source", async () => {
+  it("uses hook-native agent_id as child provenance without borrowing Team or legacy identity", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-agent-id-"));
+    const originalTeamWorker = process.env.OMX_TEAM_WORKER;
+    const originalInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
+    const originalOmxRoot = process.env.OMX_ROOT;
+    const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const originalOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+
+    try {
+      process.env.OMX_ROOT = cwd;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-conductor-hook-native-agent-id";
+      const leaderThreadId = "thread-conductor-hook-native-agent-id-leader";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+
+      const dispatchWrite = (identity: Record<string, unknown>) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          ...identity,
+          tool_name: "Write",
+          tool_input: { file_path: "src/hook-native-agent-id.ts", content: "export {};\n" },
+        },
+        { cwd },
+      );
+
+      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_WORKER = "hook-native-agent-id/worker";
+      // Codex 0.142.5 supplies agent_id without thread_id or source for spawned children.
+      const writerAgentId = await dispatchWrite({ agent_id: "agent-hook-native-writer", agent_role: "writer" });
+      assert.equal(writerAgentId.outputJson?.decision, "block");
+      assert.match(String(writerAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(writerAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
+
+      // An identity conflict must not borrow the Team-worker environment either.
+      const conflictingIdentity = await dispatchWrite({
+        agent_id: "agent-hook-native-conflict",
+        thread_id: "thread-hook-native-conflict",
+        agent_role: "executor",
+      });
+      assert.equal(conflictingIdentity.outputJson?.decision, "block");
+      assert.match(String(conflictingIdentity.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
+      assert.doesNotMatch(String(conflictingIdentity.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED|Main-root/);
+
+      if (originalTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
+      else process.env.OMX_TEAM_WORKER = originalTeamWorker;
+      if (originalInternalTeamWorker === undefined) delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      else process.env.OMX_TEAM_INTERNAL_WORKER = originalInternalTeamWorker;
+
+      const executorAgentId = await dispatchWrite({ agent_id: "agent-hook-native-executor", agent_role: "executor" });
+      assert.equal(executorAgentId.outputJson?.decision, "block");
+      assert.match(String(executorAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(executorAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
+
+      const genericAgentId = await dispatchWrite({ agent_id: "agent-hook-native-default", agent_type: "default" });
+      assert.equal(genericAgentId.outputJson?.decision, "block");
+      assert.match(String(genericAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(genericAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
+
+      const unofficialCamelCaseAgentId = await dispatchWrite({ agentId: "agent-hook-native-camel-case", agent_role: "executor" });
+      assert.equal(unofficialCamelCaseAgentId.outputJson?.decision, "block");
+      assert.match(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      assert.doesNotMatch(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+
+      const agentTypeOnly = await dispatchWrite({ agent_type: "writer" });
+      assert.equal(agentTypeOnly.outputJson?.decision, "block");
+      assert.match(String(agentTypeOnly.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      assert.doesNotMatch(String(agentTypeOnly.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+
+      const leaderAgentId = await dispatchWrite({ agent_id: leaderThreadId, agent_role: "executor" });
+      assert.equal(leaderAgentId.outputJson?.decision, "block");
+      assert.match(String(leaderAgentId.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      assert.doesNotMatch(String(leaderAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: "sess-conductor-hook-native-agent-id-foreign",
+        native_session_id: "thread-conductor-hook-native-agent-id-foreign-leader",
+      });
+      const foreignRootPointer = await dispatchWrite({ agent_id: "agent-hook-native-foreign-root", agent_role: "writer" });
+      assert.equal(foreignRootPointer.outputJson?.decision, "block");
+      assert.match(String(foreignRootPointer.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      assert.doesNotMatch(String(foreignRootPointer.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+    } finally {
+      if (originalTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
+      else process.env.OMX_TEAM_WORKER = originalTeamWorker;
+      if (originalInternalTeamWorker === undefined) delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      else process.env.OMX_TEAM_INTERNAL_WORKER = originalInternalTeamWorker;
+      if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = originalOmxRoot;
+      if (originalOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
+      if (originalOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = originalOmxTeamStateRoot;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("requires owner confirmation for tracked typed native subagent writes without thread_spawn source", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-tracked-subagent-no-source-"));
     const originalOmxRoot = process.env.OMX_ROOT;
     const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
@@ -22601,7 +22844,9 @@ PY`,
         { cwd },
       );
 
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(result.outputJson?.reason ?? ""), /Main-root/);
     } finally {
       if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
       else process.env.OMX_ROOT = originalOmxRoot;
@@ -22675,7 +22920,7 @@ PY`,
     }
   });
 
-  it("blocks a corrupt kind:subagent leader that omits leader_thread_id via native session identity while still trusting a real non-leader child (#3117 P2)", async () => {
+  it("blocks a corrupt kind:subagent leader while requiring owner confirmation for a real non-leader child (#3117 P2)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3117-corrupt-leader-no-lead-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -22723,7 +22968,7 @@ PY`,
       assert.equal(untypedLeader.outputJson?.decision, "block");
       assert.match(String(untypedLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
 
-      // Control: a genuine non-leader child stays trusted (P1 preserved).
+      // A genuine non-leader child is identified separately but still lacks write authority.
       const untypedChild = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -22735,7 +22980,9 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(untypedChild.outputJson, null);
+      assert.equal(untypedChild.outputJson?.decision, "block");
+      assert.match(String(untypedChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(untypedChild.outputJson?.reason ?? ""), /Main-root/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -22846,15 +23093,18 @@ PY`,
       assert.match(String(foreignLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
       const foreignChild = await dispatchThread(childThreadId);
       assert.equal(foreignChild.outputJson?.decision, "block");
+      assert.match(String(foreignChild.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
 
-      // Control: when the root session.json owns the evaluated session B, its
-      // native_session_id anchors the leader (blocked) while a genuine child is trusted.
+      // Once a genuine native_session_id leader thread anchor exists, the leader remains
+      // blocked and a real child receives an owner-confirmation denial.
       await writeJson(sessionPath, { session_id: sessionId, native_session_id: leaderThreadId });
       const ownedLeader = await dispatchThread(leaderThreadId);
       assert.equal(ownedLeader.outputJson?.decision, "block");
       assert.match(String(ownedLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
       const ownedChild = await dispatchThread(childThreadId);
-      assert.equal(ownedChild.outputJson, null);
+      assert.equal(ownedChild.outputJson?.decision, "block");
+      assert.match(String(ownedChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(ownedChild.outputJson?.reason ?? ""), /Main-root/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -22919,14 +23169,16 @@ PY`,
       const ownerOnlyUntracked = await dispatchThread(untrackedThreadId);
       assert.equal(ownerOnlyUntracked.outputJson?.decision, "block");
 
-      // Control: once a genuine native_session_id leader thread anchor exists for this
-      // session, the leader is blocked via that anchor while a real child is trusted.
+      // Once a genuine native_session_id leader thread anchor exists, the leader remains
+      // blocked and a real child receives an owner-confirmation denial.
       await writeJson(sessionPath, { session_id: sessionId, native_session_id: leaderThreadId });
       const anchoredLeader = await dispatchThread(leaderThreadId);
       assert.equal(anchoredLeader.outputJson?.decision, "block");
       assert.match(String(anchoredLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
       const anchoredChild = await dispatchThread(childThreadId);
-      assert.equal(anchoredChild.outputJson, null);
+      assert.equal(anchoredChild.outputJson?.decision, "block");
+      assert.match(String(anchoredChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(anchoredChild.outputJson?.reason ?? ""), /Main-root/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -23051,7 +23303,7 @@ PY`,
     }
   });
 
-  it("allows apply_patch from an untyped collaboration.spawn_agent child tracked as a subagent during active Ralph (#3116)", async () => {
+  it("requires owner confirmation for a tracked generic collaboration.spawn_agent child during active Ralph (#3116)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3116-trusted-child-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -23084,7 +23336,7 @@ PY`,
         },
       });
 
-      // Untyped role (not in the typed-agent catalog) must not defeat tracker-backed trust.
+      // Generic native-child provenance identifies the child but does not grant write authority.
       const result = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -23107,13 +23359,15 @@ PY`,
         { cwd },
       );
 
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(result.outputJson?.reason ?? ""), /Main-root/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("allows apply_patch from untyped collaboration descendants via tracked thread and tracked parent chain (#3116)", async () => {
+  it("requires owner confirmation for tracked and runtime-proven collaboration descendants (#3116)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3116-descendant-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -23149,7 +23403,7 @@ PY`,
         },
       });
 
-      // (a) A descendant whose own thread is tracked as a subagent is trusted directly.
+      // A tracked descendant has same-session provenance but no assigned write authority.
       const trackedDescendant = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -23161,9 +23415,11 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(trackedDescendant.outputJson, null);
+      assert.equal(trackedDescendant.outputJson?.decision, "block");
+      assert.match(String(trackedDescendant.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(trackedDescendant.outputJson?.reason ?? ""), /Main-root/);
 
-      // (b) A not-yet-tracked descendant is trusted when its runtime spawn parent is a tracked thread.
+      // A runtime-proven descendant has same-session provenance but no assigned write authority.
       const chainedDescendant = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -23184,13 +23440,15 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(chainedDescendant.outputJson, null);
+      assert.equal(chainedDescendant.outputJson?.decision, "block");
+      assert.match(String(chainedDescendant.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(chainedDescendant.outputJson?.reason ?? ""), /Main-root/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("resolves the session-pinned Ralph state so collaboration children edit while the leader stays blocked (#3116)", async () => {
+  it("resolves session-pinned Ralph state so child provenance receives owner confirmation while the leader stays blocked (#3116)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3116-pinned-state-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -23225,7 +23483,7 @@ PY`,
         },
       });
 
-      // Payload carries the native session id, which must map to the canonical session.
+      // A payload carrying the native session id maps to the canonical session and remains a child.
       const childEdit = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -23237,7 +23495,9 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(childEdit.outputJson, null);
+      assert.equal(childEdit.outputJson?.decision, "block");
+      assert.match(String(childEdit.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(childEdit.outputJson?.reason ?? ""), /Main-root/);
 
       const leaderEdit = await dispatchCodexNativeHook(
         {
@@ -23277,7 +23537,7 @@ PY`,
     }
   });
 
-  it("trusts the native collaboration.spawn_agent child surface via runtime spawn provenance during active Ralph (#3116)", async () => {
+  it("requires owner confirmation for a runtime-proven native collaboration child during active Ralph (#3116)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3116-collab-surface-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -23310,7 +23570,7 @@ PY`,
         },
       });
 
-      // No typed agent_role at all: a raw collaboration.spawn_agent child payload shape.
+      // No typed agent_role: raw runtime child provenance still does not grant write authority.
       const result = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -23332,7 +23592,9 @@ PY`,
         { cwd },
       );
 
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(result.outputJson?.reason ?? ""), /Main-root/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -23404,6 +23666,7 @@ PY`,
         { cwd },
       );
       assert.equal(noProvenance.outputJson?.decision, "block");
+      assert.match(String(noProvenance.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
 
       // (c) Spawn provenance attached to the leader thread cannot promote the main root.
       const leaderSelfSpawn = await dispatchCodexNativeHook(
@@ -23424,6 +23687,7 @@ PY`,
         { cwd },
       );
       assert.equal(leaderSelfSpawn.outputJson?.decision, "block");
+      assert.match(String(leaderSelfSpawn.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

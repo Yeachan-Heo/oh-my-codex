@@ -3141,6 +3141,11 @@ function readPayloadThreadId(payload: CodexHookPayload): string {
   return safeString(payload.owner_codex_thread_id ?? payload.thread_id ?? payload.threadId).trim();
 }
 
+function readPayloadAgentId(payload: CodexHookPayload): string {
+  return safeString(payload.agent_id).trim();
+}
+
+
 function readPayloadAgentRole(payload: CodexHookPayload): string {
   const directRole = safeString(
     payload.agent_role
@@ -7049,10 +7054,10 @@ async function buildRalplanPreToolUseBoundaryOutput(
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
+  if ((await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId)) === "team-worker") return null;
 
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
@@ -7117,10 +7122,10 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
   const threadId = readPayloadThreadId(payload);
   const activeState = await readActiveDeepInterviewStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
+  if ((await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId)) === "team-worker") return null;
 
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
@@ -7285,70 +7290,67 @@ interface ActiveConductorState {
   phase: string;
 }
 
-async function hasTrustedTypedSubagentProvenanceForPreToolUse(
+type PreToolUseWriteActor = "main-root" | "native-child" | "provenance-conflict" | "team-worker";
+
+async function resolvePreToolUseWriteActor(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
   sessionId: string,
-  options: { allowUntypedProvenance?: boolean } = {},
-): Promise<boolean> {
-  if (hasTeamWorkerEnvironment()) return true;
+): Promise<PreToolUseWriteActor> {
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
   const session = trackingState?.sessions?.[sessionId];
-  if (!session) return false;
-
   const payloadThreadId = readPayloadThreadId(payload);
+  const payloadAgentId = readPayloadAgentId(payload);
 
-  // Resolve the Main-root leader THREAD identity from the tracker's leader_thread_id
-  // plus the canonical session's native_session_id (the leader's native thread). Only
-  // genuine leader-thread identifiers may anchor the leader: owner_*_session_id are
-  // session-level ids, not thread anchors, so they must NOT populate this set — their
-  // mere presence would make it non-empty and suppress the fail-closed guard below
-  // without ever excluding the leader thread (#3117 P4). The native_session_id anchor is
-  // honored only when the root session pointer provably maps to the sessionId under
-  // evaluation, so a stale/foreign session.json cannot supply another session's leader
-  // anchor (#3117 P3); the tracker alone is insufficient because it can omit
-  // leader_thread_id or corruptly label the leader kind:"subagent" (#3117 P2).
+  // Resolve Main-root identity before considering team or native-child exemptions.
+  // Only genuine leader thread identifiers can anchor the leader: owner_*_session_id
+  // values are session ids, not thread anchors (#3117 P4). The native session id is
+  // usable only when the root pointer maps to the evaluated session (#3117 P3).
   const sessionState = await readRootSessionStateFromStateDir(stateDir).catch(() => null);
-  const trackerLeaderThreadId = safeString(session.leader_thread_id).trim();
   const leaderIdentityAnchors = new Set<string>();
+  const trackerLeaderThreadId = safeString(session?.leader_thread_id).trim();
   if (trackerLeaderThreadId) leaderIdentityAnchors.add(trackerLeaderThreadId);
   if (sessionState && sessionId && payloadMatchesSessionPointer(sessionId, sessionState)) {
     const nativeSessionId = safeString(sessionState.native_session_id).trim();
     if (nativeSessionId) leaderIdentityAnchors.add(nativeSessionId);
   }
 
-  // Leader self-guard: the Main-root Conductor is never a delegated executor. Block it
-  // ahead of every trust path, even when tracker or payload provenance is (possibly
-  // corruptly) attached to the leader thread.
-  if (payloadThreadId && leaderIdentityAnchors.has(payloadThreadId)) return false;
-
-  // Fail closed: without an authoritative leader anchor we cannot affirm the payload is
-  // a non-leader delegated performer rather than a mislabeled leader, so we refuse trust
-  // instead of inferring it from a corrupt tracker kind:"subagent" alone (#3117 P2).
-  if (leaderIdentityAnchors.size === 0) return false;
-
-  // Planning boundary guards (ralplan, deep-interview) still require a recognized typed
-  // agent role, so an untyped collaboration.spawn_agent child cannot write before an
-  // execution handoff/approval. Only the Main-root Conductor/Ralph executing guard opts
-  // into untyped tracker/runtime provenance (#3116, #3117).
-  if (options.allowUntypedProvenance !== true && !isTypedAgentRolePayload(payload)) {
-    return false;
+  // Fail closed before every exemption. A leader remains Main-root even when a
+  // corrupt tracker, hook-native agent id, runtime spawn metadata, or Team worker
+  // environment says otherwise.
+  if (
+    leaderIdentityAnchors.size === 0
+    || leaderIdentityAnchors.has(payloadAgentId)
+    || leaderIdentityAnchors.has(payloadThreadId)
+  ) {
+    return "main-root";
   }
 
-  // Tracker-backed provenance: the payload's own thread is a recorded, non-leader
-  // subagent for this session — the non-spoofable anchor that lets native
-  // collaboration.spawn_agent children/descendants edit under the Conductor guard even
-  // without a recognized typed role (#3116). subagent-tracking.json is derived from
-  // child SessionStart transcript metadata, not the live tool-call payload.
-  if (payloadThreadId && isTrustedSubagentThread(session, payloadThreadId)) return true;
+  // Conflicting hook identity cannot be assigned to a worker or a native child.
+  if (payloadAgentId && payloadThreadId && payloadAgentId !== payloadThreadId) {
+    return "provenance-conflict";
+  }
 
-  // Runtime-attached spawn provenance: trust a genuine spawned subagent turn whose
-  // declared parent maps to this session's leader or a tracked thread. parentThreadId
-  // comes from the runtime-set source.subagent.thread_spawn (not agent-controlled tool
-  // arguments); an absent parent is rejected, the leader self-guard above blocks the
-  // main root, and cross-session parents fail because they are not in this session's
-  // tracked threads (#3116).
+  const payloadIdentity = payloadAgentId || payloadThreadId;
+  if (!payloadIdentity) return "main-root";
+
+  // Hook-native agent_id is direct Codex child provenance in the active, anchored
+  // session. It establishes origin only, never write authority, and outranks Team
+  // environment variables so a native child cannot borrow worker authority.
+  if (payloadAgentId) return "native-child";
+
+  // Team continues to use its existing worker environment after Main-root exclusion.
+  // Without a leader anchor, that environment cannot prove the payload is non-root.
+  if (hasTeamWorkerEnvironment()) return "team-worker";
+  if (!session) return "main-root";
+
+  // Tracker-backed provenance identifies a recorded non-leader child or descendant.
+  if (isTrustedSubagentThread(session, payloadIdentity)) return "native-child";
+
+  // Runtime-attached spawn provenance identifies a new child when its parent is the
+  // canonical leader or an already tracked same-session thread. It establishes child
+  // provenance only; it is not write authority.
   const source = safeObject(payload.source);
   const subagent = safeObject(source.subagent);
   const threadSpawn = safeObject(subagent.thread_spawn);
@@ -7358,8 +7360,10 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
       ?? threadSpawn.leader_thread_id
       ?? threadSpawn.leaderThreadId,
   ).trim();
-  if (!parentThreadId) return false;
-  return leaderIdentityAnchors.has(parentThreadId) || parentThreadId in session.threads;
+  if (!parentThreadId) return "main-root";
+  return leaderIdentityAnchors.has(parentThreadId) || parentThreadId in session.threads
+    ? "native-child"
+    : "main-root";
 }
 
 function isActiveConductorModeState(state: Record<string, unknown> | null, mode: string, sessionId: string): boolean {
@@ -7371,7 +7375,7 @@ function isActiveConductorModeState(state: Record<string, unknown> | null, mode:
   return isNonTerminalPhase(state.current_phase ?? state.currentPhase);
 }
 
-async function readActiveMainRootConductorStateForPreToolUse(
+async function readActiveConductorStateForPreToolUse(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
@@ -7388,7 +7392,6 @@ async function readActiveMainRootConductorStateForPreToolUse(
   }
   const threadId = readPayloadThreadId(payload);
   if (!sessionId) return null;
-  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId, { allowUntypedProvenance: true })) return null;
 
   const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
   if (!canonicalState) return null;
@@ -7432,7 +7435,7 @@ async function readActiveMainRootConductorStateForPreToolUse(
     }
   }
 
-  if (hasActiveSkill("team") && !hasTeamWorkerEnvironment()) {
+  if (hasActiveSkill("team")) {
     const teamStateForStop = await readTeamModeStateForStop(cwd, stateDir, sessionId, threadId);
     const state = teamStateForStop?.state ?? null;
     if (isActiveConductorModeState(state, "team", sessionId)) {
@@ -8237,8 +8240,23 @@ export async function buildConductorPreToolUseWriteGuardOutput(
   stateDir: string,
   resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-  const activeState = await readActiveMainRootConductorStateForPreToolUse(payload, cwd, stateDir, resolvedSessionId);
+  const activeState = await readActiveConductorStateForPreToolUse(payload, cwd, stateDir, resolvedSessionId);
   if (!activeState) return null;
+  const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
+  const writeActor = await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId);
+  if (writeActor === "provenance-conflict") {
+    return {
+      decision: "block",
+      reason:
+        `PROVENANCE_DENIED: Conductor mode is active (${activeState.mode} phase: ${formatPhase(activeState.phase, "active")}); `
+        + "hook-native agent_id conflicts with the legacy thread identity. Do not perform this tool call until the hook reports one canonical identity.",
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        additionalContext:
+          "PROVENANCE_DENIED: Conflicting hook-native agent_id and legacy thread identity cannot establish Main-root, native-child, or Team-worker authority.",
+      },
+    };
+  }
   const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
     payload,
     persistedSupportBlocker: await readJsonIfExists(nativeSubagentSupportBlockerPath(stateDir)),
@@ -8253,11 +8271,14 @@ export async function buildConductorPreToolUseWriteGuardOutput(
   const pathCandidates = readPreToolUsePathCandidates(payload);
   let blocked = false;
   let blockedDetail = "Main-root Conductor write is not delegated";
+  let nativeChildMutationAttempt = false;
 
   if (toolName === "Bash") {
     blocked = !isAllowedConductorBashWrite(cwd, command);
+    nativeChildMutationAttempt = commandHasDeepInterviewWriteIntent(command);
     if (blocked) blockedDetail = buildConductorBashBlockedDetail(cwd, command);
   } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+    nativeChildMutationAttempt = true;
     const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
     if (toolPathCandidates.length === 0) {
       blocked = true;
@@ -8271,7 +8292,27 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     }
   }
 
-  if (!blocked) return null;
+  if (writeActor === "team-worker") return null;
+  if (!blocked && (writeActor !== "native-child" || !nativeChildMutationAttempt)) return null;
+  if (!blocked && nativeChildMutationAttempt && writeActor === "native-child") {
+    blockedDetail = toolName === "Bash"
+      ? "Bash mutation is not authorized by native-child provenance"
+      : `${toolName} mutation is not authorized by native-child provenance`;
+  }
+  if (writeActor === "native-child") {
+    return {
+      decision: "block",
+      reason:
+        `OWNER_CONFIRMATION_REQUIRED: Conductor mode is active (${activeState.mode} phase: ${formatPhase(activeState.phase, "active")}); `
+        + `native child/descendant provenance establishes same-session origin, not assigned write authority; ${blockedDetail}.`,
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        additionalContext:
+          "OWNER_CONFIRMATION_REQUIRED: Native child/descendant provenance establishes only session membership, not assigned write authority. "
+          + "Do not perform source, package, git, or other substantive writes; return control to the owning Conductor for explicit confirmation.",
+      },
+    };
+  }
 
   const unsupportedNativeGuidance = isUnsupportedNativeSubagentEvidence(nativeSubagentSupport)
     ? ` ${buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)} Treat the active conductor workflow as blocked/cancelled for native delegation recovery; do not call multi_agent_v1.close_agent.`
@@ -8286,7 +8327,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
         + "Use specialized agents for source edits and plan/spec authorship. "
         + `Main-root Conductor may write only orchestration metadata/transport/ledger artifacts under ${CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES.join(", ")}; path location alone is not authorization for substantive deliverables. `
         + unsupportedNativeGuidance
-        + " Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
+        + " Autopilot rework and proven non-root Team worker lanes are exempt from this guard.",
     },
   };
 }
