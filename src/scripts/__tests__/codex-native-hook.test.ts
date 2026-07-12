@@ -22726,6 +22726,78 @@ PY`,
     }
   });
 
+  it("fails closed when session.json carries only owner session ids without a leader thread anchor (#3117 P4)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3117-owner-only-anchor-"));
+    process.env.OMX_ROOT = cwd;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-3117-p4-owner-only";
+      const leaderThreadId = "thread-3117-p4-leader";
+      const childThreadId = "thread-3117-p4-child";
+      const untrackedThreadId = "thread-3117-p4-untracked";
+      const sessionPath = join(stateDir, "session.json");
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+      // Corrupt tracker for the evaluated session: no leader_thread_id, leader mislabeled kind:"subagent".
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "subagent", mode: "collaboration-child" },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", mode: "collaboration-child" },
+            },
+          },
+        },
+      });
+
+      const dispatchThread = async (threadId: string) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          tool_name: "apply_patch",
+          tool_input: { file_path: "src/feature.ts" },
+        },
+        { cwd },
+      );
+
+      // session.json maps to the evaluated session via owner ids but has NO
+      // native_session_id: owner session ids are not leader thread anchors, so trust
+      // must fail closed rather than treat their presence as an anchor (#3117 P4).
+      await writeJson(sessionPath, {
+        session_id: sessionId,
+        owner_omx_session_id: "owner-omx-3117-p4",
+        owner_codex_session_id: "owner-codex-3117-p4",
+      });
+      const ownerOnlyLeader = await dispatchThread(leaderThreadId);
+      assert.equal(ownerOnlyLeader.outputJson?.decision, "block");
+      assert.match(String(ownerOnlyLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      // Control: an untracked thread also stays blocked under the same state.
+      const ownerOnlyUntracked = await dispatchThread(untrackedThreadId);
+      assert.equal(ownerOnlyUntracked.outputJson?.decision, "block");
+
+      // Control: once a genuine native_session_id leader thread anchor exists for this
+      // session, the leader is blocked via that anchor while a real child is trusted.
+      await writeJson(sessionPath, { session_id: sessionId, native_session_id: leaderThreadId });
+      const anchoredLeader = await dispatchThread(leaderThreadId);
+      assert.equal(anchoredLeader.outputJson?.decision, "block");
+      assert.match(String(anchoredLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      const anchoredChild = await dispatchThread(childThreadId);
+      assert.equal(anchoredChild.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks conductor writes when thread_spawn provenance is attached to the leader thread", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-thread-spawn-leader-"));
     const originalOmxRoot = process.env.OMX_ROOT;

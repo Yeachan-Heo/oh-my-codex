@@ -7224,26 +7224,23 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
 
   const payloadThreadId = readPayloadThreadId(payload);
 
-  // Resolve the Main-root leader identity from the tracker's leader_thread_id plus the
-  // canonical session's runtime identity (session.json native/owner ids). The tracker
-  // alone is insufficient: it can omit leader_thread_id or corruptly label the leader
-  // kind:"subagent", so leader identity is anchored to runtime-set session evidence the
-  // agent does not control (#3117 P2). The session.json anchors are only folded in when
-  // that root session pointer provably maps to the sessionId under evaluation; a
-  // stale/foreign session.json (a session-replacement state this hook handles elsewhere)
-  // must not supply another session's leader anchors here (#3117 P3).
+  // Resolve the Main-root leader THREAD identity from the tracker's leader_thread_id
+  // plus the canonical session's native_session_id (the leader's native thread). Only
+  // genuine leader-thread identifiers may anchor the leader: owner_*_session_id are
+  // session-level ids, not thread anchors, so they must NOT populate this set — their
+  // mere presence would make it non-empty and suppress the fail-closed guard below
+  // without ever excluding the leader thread (#3117 P4). The native_session_id anchor is
+  // honored only when the root session pointer provably maps to the sessionId under
+  // evaluation, so a stale/foreign session.json cannot supply another session's leader
+  // anchor (#3117 P3); the tracker alone is insufficient because it can omit
+  // leader_thread_id or corruptly label the leader kind:"subagent" (#3117 P2).
   const sessionState = await readRootSessionStateFromStateDir(stateDir).catch(() => null);
   const trackerLeaderThreadId = safeString(session.leader_thread_id).trim();
   const leaderIdentityAnchors = new Set<string>();
   if (trackerLeaderThreadId) leaderIdentityAnchors.add(trackerLeaderThreadId);
   if (sessionState && sessionId && payloadMatchesSessionPointer(sessionId, sessionState)) {
-    for (const anchor of [
-      safeString(sessionState.native_session_id).trim(),
-      safeString(sessionState.owner_codex_session_id).trim(),
-      safeString(sessionState.owner_omx_session_id).trim(),
-    ]) {
-      if (anchor) leaderIdentityAnchors.add(anchor);
-    }
+    const nativeSessionId = safeString(sessionState.native_session_id).trim();
+    if (nativeSessionId) leaderIdentityAnchors.add(nativeSessionId);
   }
 
   // Leader self-guard: the Main-root Conductor is never a delegated executor. Block it
