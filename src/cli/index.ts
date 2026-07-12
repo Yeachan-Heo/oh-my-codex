@@ -183,8 +183,10 @@ import {
   parseTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchArgs,
   resolveTeamLowComplexityDefaultModel,
+  serializeTeamWorkerLaunchArgs,
   TEAM_WORKER_INHERITED_MODEL_ENV,
 } from "../team/model-contract.js";
+
 import {
   parseWorktreeMode,
   planWorktreeTarget,
@@ -3684,7 +3686,7 @@ export function resolveTeamWorkerLaunchArgsEnv(
     fallbackModel: defaultModel,
   });
   if (normalized.length === 0) return null;
-  return normalized.join(" ");
+  return serializeTeamWorkerLaunchArgs(normalized);
 }
 
 export { readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
