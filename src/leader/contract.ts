@@ -174,16 +174,31 @@ function reasonFromCapabilityRecord(record: Record<string, unknown> | null): Nat
   return nativeSubagents === false ? 'native_subagents_unsupported' : 'multi_agent_v1_unavailable';
 }
 
+const NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN = /(?:^|\.)spawn_agent$/;
+
+// Recognizes native delegation spawn tools across terminology drift: bare
+// `spawn_agent`, and namespaced forms such as `multi_agent_v1.spawn_agent` and
+// the current Codex App `collaboration.spawn_agent`, plus the legacy `task`
+// alias. The suffix anchor keeps `respawn_agent`/`spawn_agentx` from matching.
+function isNativeSubagentSpawnToolName(name: string): boolean {
+  return NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN.test(name) || name === 'task';
+}
+
 function availableToolsEvidence(payload: Record<string, unknown> | null): NativeSubagentSupportEvidence | null {
   const tools = supportArray(payload?.available_tools ?? payload?.availableTools ?? payload?.tools);
   if (!tools) return null;
   const names = tools.map((tool) => typeof tool === 'string'
     ? tool
     : supportString(supportRecord(tool)?.name ?? supportRecord(tool)?.tool_name ?? supportRecord(tool)?.toolName)).filter(Boolean);
-  const hasNativeSubagentTool = names.some((name) => /(?:^|\.)spawn_agent$/.test(name) || /multi_agent_v1\.spawn_agent/.test(name) || name === 'task');
-  return hasNativeSubagentTool
-    ? { status: 'supported', source: 'hook_payload_available_tools', evidenceSummary: names.join(', ') }
-    : { status: 'unsupported', reason: 'multi_agent_v1_unavailable', source: 'hook_payload_available_tools', evidenceSummary: names.join(', ') };
+  const hasNativeSubagentTool = names.some(isNativeSubagentSpawnToolName);
+  if (hasNativeSubagentTool) {
+    return { status: 'supported', source: 'hook_payload_available_tools', evidenceSummary: names.join(', ') };
+  }
+  // A present-but-incomplete tool inventory is NOT explicit negative evidence:
+  // collaboration/deferred tools can be absent from this hook payload while a
+  // spawn surface remains callable. Report `unknown` (with observed-name
+  // provenance) rather than persisting an `unsupported` false negative.
+  return { status: 'unknown', source: 'hook_payload_available_tools', evidenceSummary: names.join(', ') };
 }
 
 export function resolveNativeSubagentSupportStatus(input: NativeSubagentCapabilityInput): NativeSubagentSupportEvidence {
@@ -211,10 +226,15 @@ export function resolveNativeSubagentSupportStatus(input: NativeSubagentCapabili
   }
 
   const toolEvidence = availableToolsEvidence(payload);
-  if (toolEvidence) return toolEvidence;
+  if (toolEvidence?.status === 'supported') return toolEvidence;
 
+  // A capacity blocker means delegation exists but is temporarily exhausted, so
+  // it outranks an incomplete tool inventory. Only fall back to the inventory's
+  // `unknown` (with provenance) when no stronger evidence applies.
   const capacityBlockerEvidence = supportEvidenceFromBlocker(input.persistedCapacityBlocker, 'capacity_blocker', input);
   if (capacityBlockerEvidence) return capacityBlockerEvidence;
+
+  if (toolEvidence) return toolEvidence;
 
   return { status: 'unknown', source: 'default_unknown' };
 }

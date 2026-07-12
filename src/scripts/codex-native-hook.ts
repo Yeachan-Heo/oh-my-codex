@@ -3877,9 +3877,72 @@ function resolveCommandRedirectTarget(target: string, assignments: Map<string, s
   return resolved !== undefined ? resolved : target;
 }
 
+// Masks redirect metacharacters (`<`/`>`) that appear INSIDE shell quotes so a
+// quoted regex/source value (e.g. `gh issue create --body '...>{1,2}...'` or
+// `omx state write --input '{"reason":"a>b"}'`) is not misread as a redirect
+// write target. Escaped quotes at the top level (`\'`, `\"`) are literal
+// characters and must NOT open a span, and `$'...'` ANSI-C quoting processes
+// backslash escapes (so `\'` does not close it) — otherwise a genuine `>`
+// redirect could be masked behind a false span and its write missed. Only
+// characters inside a real quoted span are masked; unquoted redirect operators
+// survive intact. Unterminated/ambiguous quoting fails closed: the original
+// command is returned unmasked so genuine redirects stay visible to the scan.
+function maskQuotedRedirectMetacharsForCommandScan(command: string): string {
+  let masked = "";
+  // null = unquoted; "'" = single quotes (no escapes); '"' = double quotes
+  // (backslash escapes); "$'" = ANSI-C $'...' (backslash escapes, incl. \').
+  let quote: "'" | "\"" | "$'" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (quote === null) {
+      // A backslash escapes the next character at the top level, so an escaped
+      // quote is a literal char and must not open a quoted span.
+      if (char === "\\") {
+        masked += char;
+        const next = command[index + 1];
+        if (next !== undefined) {
+          masked += next;
+          index += 1;
+        }
+        continue;
+      }
+      if (char === "$" && command[index + 1] === "'") {
+        quote = "$'";
+        masked += "$'";
+        index += 1;
+        continue;
+      }
+      if (char === "'" || char === "\"") quote = char;
+      masked += char;
+      continue;
+    }
+    if ((quote === "\"" || quote === "$'") && char === "\\") {
+      // Escapes inside double/ANSI-C spans keep the backslash and its escaped
+      // char (masking a redirect metachar so quoted data cannot be a false
+      // target); the escaped char never closes the span.
+      masked += char;
+      const next = command[index + 1];
+      if (next !== undefined) {
+        masked += next === "<" || next === ">" ? "_" : next;
+        index += 1;
+      }
+      continue;
+    }
+    const closesSpan = quote === "$'" ? char === "'" : char === quote;
+    if (closesSpan) {
+      quote = null;
+      masked += char;
+      continue;
+    }
+    masked += char === "<" || char === ">" ? "_" : char;
+  }
+  if (quote !== null) return command;
+  return masked;
+}
+
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
-  const commandOutsideHeredocBodies = stripHeredocBodiesForCommandScan(command);
+  const commandOutsideHeredocBodies = maskQuotedRedirectMetacharsForCommandScan(stripHeredocBodiesForCommandScan(command));
   for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
     if (candidate && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
@@ -3977,7 +4040,7 @@ function findGitSubcommandIndex(words: string[], startIndex: number): number | n
 }
 
 
-function commandHasDeepInterviewWriteIntent(command: string): boolean {
+function commandHasDeepInterviewWriteIntent(command: string, depth = 0): boolean {
   return commandInvokesApplyPatch(command)
     || extractDeepInterviewCommandRedirectTargets(command).length > 0
     || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
@@ -3988,7 +4051,19 @@ function commandHasDeepInterviewWriteIntent(command: string): boolean {
     || extractConductorBashMutations(command).length > 0
     || extractConductorInterpreterWrites(command).length > 0
     || commandHasDestructiveGitSubcommand(command)
-    || commandHasPackageInstallIntent(command);
+    || commandHasPackageInstallIntent(command)
+    // Recurse into wrapped shells (`bash -lc "cat > f"`, `eval`, `env`) and
+    // command substitutions so a real redirect INSIDE a nested command string
+    // is still classified as write intent. This is required because quoted
+    // redirect metacharacters are now masked at the outer scan (#3119): the
+    // mask removes false positives from quoted DATA values while nested-command
+    // recursion re-detects genuine redirects, preserving fail-closed blocking.
+    // The depth guard mirrors evaluateConductorBashWrite's nesting bound;
+    // extractors return strict substrings, so recursion always terminates.
+    || (depth < CONDUCTOR_BASH_MAX_NESTING_DEPTH && (
+      extractNestedShellCommandStringsForStateScan(command).some((nested) => commandHasDeepInterviewWriteIntent(nested, depth + 1))
+      || extractNestedCommandSubstitutionStringsForStateScan(command).some((nested) => commandHasDeepInterviewWriteIntent(nested, depth + 1))
+    ));
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {

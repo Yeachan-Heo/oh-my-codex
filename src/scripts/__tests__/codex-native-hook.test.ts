@@ -22276,6 +22276,140 @@ PY`,
     }
   });
 
+  it("keeps the Conductor unblocked: quoted redirect/source text is not a write target and terminal blocked-state writes survive genuinely unsupported native delegation (#3119)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-3119-quote-deadlock-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-conductor-3119-quote-deadlock";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+      // Native delegation is genuinely unsupported (explicit negative evidence).
+      await writeJson(join(stateDir, "native-subagent-support.json"), {
+        schema_version: 1,
+        status: "unsupported",
+        reason: "multi_agent_v1_unavailable",
+        session_id: sessionId,
+        evidence: "unknown tool: multi_agent_v1.spawn_agent",
+        observed_at: new Date().toISOString(),
+        cwd,
+      });
+
+      const dispatch = (command: string) =>
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-conductor-3119-quote-deadlock",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+
+      // Deadlock prevention (defect B): the Conductor must still terminalize its
+      // own workflow state even when delegation is genuinely unsupported, even
+      // when the JSON payload contains a `>` character.
+      const terminalBlockedWrite = await dispatch(
+        "omx state write --mode ultragoal --input '{\"active\":true,\"current_phase\":\"blocked\",\"reason\":\"native delegation unavailable -> terminalized\"}' --json",
+      );
+      assert.notEqual((terminalBlockedWrite.outputJson as { decision?: string } | null)?.decision, "block");
+
+      // Defect C: quoted regex/source text with redirect metacharacters is not a
+      // write target, so issue creation is not falsely blocked.
+      const issueCreate = await dispatch(
+        "gh issue create --title x --body 'Guard misparsed regex /[^>]+>{1,2}/ as a redirect target'",
+      );
+      assert.notEqual((issueCreate.outputJson as { decision?: string } | null)?.decision, "block");
+
+      // Fail-closed preserved: a REAL unquoted redirect to a non-metadata path is
+      // still blocked.
+      const realRedirect = await dispatch("printf pwn > src/runtime.ts");
+      assert.equal((realRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(
+        String((realRedirect.outputJson as { reason?: string } | null)?.reason ?? ""),
+        /not workflow state\/ledger\/mailbox\/handoff metadata/,
+      );
+
+      // A real unquoted redirect to allowed workflow metadata still passes.
+      const metadataRedirect = await dispatch("printf blocked > .omx/state/conductor.log");
+      assert.notEqual((metadataRedirect.outputJson as { decision?: string } | null)?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fail-closed: escaped-quote and ANSI-C quoted redirects to source stay blocked while legit quoted data and nested shells behave (#3119)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-3119-escaped-quote-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-conductor-3119-escaped-quote";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+
+      const dispatch = (command: string) =>
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-conductor-3119-escaped-quote",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+
+      // A top-level escaped quote (\' \") is a LITERAL char in bash, not a quote
+      // opener, and $'...' is ANSI-C quoting. None of these may hide the real
+      // `>` redirect \u2014 all of these genuinely write src/runtime.ts and MUST block.
+      const mustBlock = [
+        "printf pwn > src/runtime.ts",                        // plain control
+        "printf pwn \\' > src/runtime.ts \\'",                // escaped single quote
+        "printf pwn \\\" > src/runtime.ts \\\"",              // escaped double quote
+        "printf pwn $'\\'' > src/runtime.ts $'\\''",          // ANSI-C escaped quote
+        "bash -c 'printf pwn > src/runtime.ts'",             // nested shell redirect
+      ];
+      for (const command of mustBlock) {
+        const result = await dispatch(command);
+        assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
+        assert.match(
+          String((result.outputJson as { reason?: string } | null)?.reason ?? ""),
+          /not workflow state\/ledger\/mailbox\/handoff metadata/,
+          command,
+        );
+      }
+
+      // Legitimate quoted DATA metacharacters (single quotes, double quotes,
+      // ANSI-C) are not redirects and must not be falsely blocked.
+      const mustNotBlock = [
+        "gh issue create --title x --body 'a > b regex /[^>]+>{1,2}/'",
+        "echo \"value > threshold\"",
+        "printf $'a>b'",
+      ];
+      for (const command of mustNotBlock) {
+        const result = await dispatch(command);
+        assert.notEqual((result.outputJson as { decision?: string } | null)?.decision, "block", command);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks Main-root ralplan writes even when payload has only a typed agent_role", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-agent-role-main-"));
     try {

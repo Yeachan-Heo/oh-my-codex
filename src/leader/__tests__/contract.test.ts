@@ -112,10 +112,14 @@ describe('leader conductor contract', () => {
       }).status,
       'unsupported',
     );
-    assert.equal(
-      resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', 'Edit'] } }).reason,
-      'multi_agent_v1_unavailable',
-    );
+    // #3119: a present-but-incomplete tool inventory is NOT explicit negative
+    // evidence. It must resolve to `unknown` (never `unsupported`), and carry
+    // observed-name provenance for diagnosis.
+    const incompleteInventory = resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', 'Edit'] } });
+    assert.equal(incompleteInventory.status, 'unknown');
+    assert.equal(incompleteInventory.reason, undefined);
+    assert.equal(incompleteInventory.source, 'hook_payload_available_tools');
+    assert.equal(incompleteInventory.evidenceSummary, 'Read, Edit');
     assert.equal(
       resolveNativeSubagentSupportStatus({ payload: {} }).status,
       'unknown',
@@ -123,6 +127,59 @@ describe('leader conductor contract', () => {
     assert.equal(
       resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', 'multi_agent_v1.spawn_agent'] } }).status,
       'supported',
+    );
+  });
+
+  it('recognizes namespaced collaboration spawn tools and rejects near-miss names (#3119)', () => {
+    // Terminology drift: the current Codex App surface exposes delegation as
+    // `collaboration.spawn_agent`. Presence of any namespaced spawn tool (or the
+    // legacy `task` alias) is native delegation support.
+    for (const toolName of ['collaboration.spawn_agent', 'spawn_agent', 'multi_agent_v1.spawn_agent', 'task']) {
+      assert.equal(
+        resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', toolName] } }).status,
+        'supported',
+        toolName,
+      );
+    }
+    // Object-form tool descriptors are recognized by name.
+    assert.equal(
+      resolveNativeSubagentSupportStatus({ payload: { available_tools: [{ name: 'collaboration.spawn_agent' }] } }).status,
+      'supported',
+    );
+    // Companion collaboration tools without a spawn tool are not, by themselves,
+    // proof of support: absence of a spawn surface stays `unknown`, not `unsupported`.
+    const companionsOnly = resolveNativeSubagentSupportStatus({
+      payload: { available_tools: ['collaboration.followup_task', 'collaboration.wait_agent'] },
+    });
+    assert.equal(companionsOnly.status, 'unknown');
+    assert.equal(companionsOnly.reason, undefined);
+    // Near-miss names must NOT be treated as spawn tools.
+    for (const toolName of ['respawn_agent', 'spawn_agentx', 'agent', 'spawn_agent_helper']) {
+      assert.equal(
+        resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', toolName] } }).status,
+        'unknown',
+        toolName,
+      );
+    }
+    // A live delegation surface outranks an incomplete inventory: a spawn tool
+    // present alongside a future capacity blocker still resolves `supported`.
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        nowMs: Date.parse('2026-07-11T00:00:00.000Z'),
+        payload: { available_tools: ['collaboration.spawn_agent'] },
+        persistedCapacityBlocker: { reason: 'agent_thread_limit_reached', expires_at: '2026-07-12T00:00:00.000Z' },
+      }).status,
+      'supported',
+    );
+    // But an incomplete inventory alongside a live capacity blocker keeps the
+    // stronger capacity evidence (delegation exists, temporarily exhausted).
+    assert.equal(
+      resolveNativeSubagentSupportStatus({
+        nowMs: Date.parse('2026-07-11T00:00:00.000Z'),
+        payload: { available_tools: ['Read', 'Edit'] },
+        persistedCapacityBlocker: { reason: 'agent_thread_limit_reached', expires_at: '2026-07-12T00:00:00.000Z' },
+      }).reason,
+      'agent_thread_limit_reached',
     );
   });
 
