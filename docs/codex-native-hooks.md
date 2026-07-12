@@ -88,9 +88,9 @@ including Node `fs` write, remove, rename, copy, link, permission, and timestamp
 operations. The hook inspects actual `node`/`nodejs` eval operands, including attached
 short-option forms and structurally resolved wrapper chains such as `xargs`, resolves
 explicit CommonJS or ESM `fs` bindings and property calls, and treats Node
-`child_process` loaders as mutation-capable. Shell-parameter, command-substitution, or
-backtick eval source, computed or unsupported loader/`fs` access, malformed source,
-and unresolved mutation targets fail closed. For statically
+`child_process` loaders as mutation-capable. Shell-parameter, command-substitution,
+backtick eval source, computed/unsupported/reflected internal loaders, unsupported `fs`
+access, malformed source, and unresolved mutation targets fail closed. For statically
 inspectable source, string/comment/regular-expression text does not become mutation
 authority through broad raw-command matching.
 

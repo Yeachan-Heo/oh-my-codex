@@ -388,6 +388,10 @@ function smokeInstalledNativeHookDist(prefixDir: string): void {
       ['node attached short eval', `node -e"require('fs').rmSync('src/attached-eval.ts')"`],
       ['node xargs wrapper mutation', `printf x | xargs node -e "require('fs').rmSync('src/xargs-bypass.ts')"`],
       ['node child-process mutation', `node -e "require('child_process').execFileSync('rm',['-f','src/child-process-bypass.ts'])"`],
+      ['node internal module loader', `node -e "module.constructor._load('fs').rmSync('src/internal-loader-bypass.ts')"`],
+      ['node prototype module loader', `node -e "module.__proto__.constructor._load('fs').rmSync('src/prototype-loader-bypass.ts')"`],
+      ['node computed prototype loader', `node -e "Object['getPrototypeOf'](module)['constructor']['_load']('fs')['rmSync']('src/prototype-computed-bypass.ts')"`],
+      ['node optional computed prototype loader', `node -e "Object?.['getPrototypeOf'](module)?.['constructor']?.['_load']('fs')?.['rmSync']('src/optional-prototype-bypass.ts',{force:true})"`],
     ] as const) {
       for (const actor of ['main-root', 'native-child'] as const) {
         requireActorDeny(actor, probe, runActorProbe(actor, probe, 'Bash', { command }));

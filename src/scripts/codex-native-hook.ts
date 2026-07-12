@@ -7750,6 +7750,9 @@ const NODE_FS_READ_ONLY_METHODS = new Set([
 ]);
 const NODE_FS_MODULE_NAMES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
 const NODE_MUTATION_CAPABLE_MODULE_NAMES = new Set(["child_process", "node:child_process"]);
+const NODE_REFLECTED_LOADER_MEMBER_NAMES = new Set([
+  "require", "getBuiltinModule", "constructor", "__proto__", "_load", "binding", "dlopen", "getPrototypeOf",
+]);
 
 function isNodeFsModuleName(moduleName: string | null): boolean {
   return moduleName !== null && NODE_FS_MODULE_NAMES.has(moduleName);
@@ -8079,6 +8082,7 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
     if (/\\u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})/.test(mask)) pushAmbiguous();
     if (/\b(?:eval|Function)\b/.test(mask)) pushAmbiguous();
     if (/\bcreateRequire\s*\(/.test(mask)) pushAmbiguous();
+    if (/\b(?:__proto__|_load)\b|\b(?:Object\s*\.\s*getPrototypeOf|Reflect\s*\.\s*get)\b|\bmodule\s*\.\s*constructor\b|\bModule\s*\.\s*_load\b|\b(?:globalThis\s*\.\s*)?process\s*\.\s*(?:binding|dlopen)\b/.test(mask)) pushAmbiguous();
     for (const match of mask.matchAll(/\brequire\b/g)) {
       const afterRequire = (match.index ?? 0) + safeString(match[0]).length;
       if (!/^\s*\(/.test(mask.slice(afterRequire))) pushAmbiguous();
@@ -8086,6 +8090,17 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
     for (const match of mask.matchAll(/\bgetBuiltinModule\b/g)) {
       const afterLoader = (match.index ?? 0) + safeString(match[0]).length;
       if (!/^\s*\(/.test(mask.slice(afterLoader))) pushAmbiguous();
+    }
+    for (const match of mask.matchAll(/\[/g)) {
+      const openIndex = match.index ?? 0;
+      if (!/[A-Za-z0-9_$)\]]\s*(?:\?\.)?\s*$/.test(mask.slice(0, openIndex))) continue;
+      const closeIndex = findMatchingJavaScriptDelimiter(mask, openIndex, "[", "]");
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        continue;
+      }
+      const computedMember = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
+      if (computedMember === null || NODE_REFLECTED_LOADER_MEMBER_NAMES.has(computedMember)) pushAmbiguous();
     }
     for (const match of mask.matchAll(/\b(?:module|(?:globalThis\s*\.\s*)?process(?:\s*\.\s*mainModule)?)\s*\[/g)) {
       const openIndex = (match.index ?? 0) + match[0].lastIndexOf("[");
@@ -8095,7 +8110,7 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
         continue;
       }
       const computedMember = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
-      if (computedMember === null || ["require", "getBuiltinModule"].includes(computedMember)) pushAmbiguous();
+      if (computedMember === null || NODE_REFLECTED_LOADER_MEMBER_NAMES.has(computedMember)) pushAmbiguous();
     }
 
     const fsBindings = new Set<string>();
