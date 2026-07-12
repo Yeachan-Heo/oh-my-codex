@@ -12219,6 +12219,54 @@ PY`,
     }
   });
 
+  it("ignores support-looking text outside explicit spawn_agent failures", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-support-success-output-"));
+    try {
+      const cases: Array<{ tool_name: string; tool_response: unknown }> = [
+        {
+          tool_name: "multi_agent_v1wait_agent",
+          tool_response: {
+            status: "completed",
+            output: "The worker reported that another feature was unavailable and unsupported.",
+          },
+        },
+        {
+          tool_name: "multi_agent_v1.wait_agent",
+          tool_response: { error: "unknown tool: multi_agent_v1.spawn_agent is unavailable" },
+        },
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: {
+            status: "completed",
+            output: "The prompt quoted: native subagents unsupported.",
+          },
+        },
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: {
+            status: "completed",
+            error: null,
+            output: "The prompt quoted: unknown tool.",
+          },
+        },
+      ];
+
+      for (const testCase of cases) {
+        await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PostToolUse",
+            cwd,
+            ...testCase,
+          },
+          { cwd },
+        );
+        assert.equal(existsSync(join(cwd, ".omx", "state", "native-subagent-support.json")), false);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks close_agent cleanup after recent native subagent capacity exhaustion", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-block-"));
     try {

@@ -3242,6 +3242,42 @@ function payloadEvidenceText(payload: CodexHookPayload): string {
   ].filter(Boolean).join("\n");
 }
 
+function hasExplicitErrorValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== false && stringifyUnknown(value).trim() !== "";
+}
+
+function isExplicitFailureRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return hasExplicitErrorValue(record.error)
+    || record.is_error === true
+    || record.isError === true
+    || record.success === false
+    || record.ok === false
+    || /^(?:error|failed|failure)$/i.test(safeString(record.status).trim());
+}
+
+function payloadFailureEvidenceText(payload: CodexHookPayload): string {
+  const evidence: unknown[] = [];
+  if (hasExplicitErrorValue(payload.error)) evidence.push(payload.error);
+
+  if (isExplicitFailureRecord(payload)) {
+    evidence.push(payload.message, payload.tool_response, payload.response);
+  }
+
+  for (const candidate of [payload.tool_response, payload.response]) {
+    if (isExplicitFailureRecord(candidate)) evidence.push(candidate);
+  }
+
+  return evidence.map(stringifyUnknown).filter(Boolean).join("\n");
+}
+
+function isNativeSubagentSpawnTool(payload: CodexHookPayload): boolean {
+  const toolName = safeString(payload.tool_name).trim();
+  if (!toolName) return false;
+  return toolName.toLowerCase().replace(/[^a-z0-9]+/g, "").endsWith("spawnagent");
+}
+
 function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
   const evidence = payloadEvidenceText(payload);
   if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
@@ -3250,9 +3286,9 @@ function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
 }
 
 function nativeSubagentFailureReason(payload: CodexHookPayload): NativeSubagentUnsupportedReason | null {
-  const evidence = payloadEvidenceText(payload);
-  const toolName = safeString(payload.tool_name).trim();
-  if (toolName && !/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)) return null;
+  if (!isNativeSubagentSpawnTool(payload)) return null;
+  const evidence = payloadFailureEvidenceText(payload);
+  if (!evidence) return null;
   if (/\bagent thread limit reached\b/i.test(evidence)) return null;
   if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) return "native_subagents_unsupported";
   if (/\bmulti_agent_v1\b/i.test(evidence) && /\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
