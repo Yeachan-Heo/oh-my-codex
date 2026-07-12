@@ -1,9 +1,10 @@
 import {
+  mkdirSync,
   mkdtempSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
-import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -189,6 +190,30 @@ export function buildNativeHookSmokePayload(
   }
 }
 
+function parseNativeHookSmokeOutput(probe: string, stdout: string): Record<string, unknown> {
+  validateHookStdout(probe, stdout);
+  if (!stdout.trim()) throw new Error(`native hook ${probe} emitted no JSON stdout`);
+  const parsed = JSON.parse(stdout) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`native hook ${probe} emitted a non-object JSON result`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function requireNativeHookPermissionDeny(probe: string, output: Record<string, unknown>, reason: RegExp): void {
+  const hookSpecificOutput = output.hookSpecificOutput;
+  if (!hookSpecificOutput || typeof hookSpecificOutput !== 'object' || Array.isArray(hookSpecificOutput)) {
+    throw new Error(`native hook ${probe} did not emit hookSpecificOutput`);
+  }
+  const hookOutput = hookSpecificOutput as Record<string, unknown>;
+  if (hookOutput.permissionDecision !== 'deny') {
+    throw new Error(`native hook ${probe} did not deny permission`);
+  }
+  if (!reason.test(String(hookOutput.permissionDecisionReason ?? ''))) {
+    throw new Error(`native hook ${probe} denial did not match ${reason.source}`);
+  }
+}
+
 function smokeInstalledNativeHookDist(prefixDir: string): void {
   const globalNodeModules = resolveGlobalNodeModules(prefixDir);
   const packageRoot = join(globalNodeModules, 'oh-my-codex');
@@ -211,6 +236,156 @@ function smokeInstalledNativeHookDist(prefixDir: string): void {
       });
       validateHookStdout(eventName, result.stdout as string);
     }
+
+    const hookRoot = join(smokeCwd, '.omx-packed-hook-root');
+    const stateDir = join(hookRoot, '.omx', 'state');
+    const sessionId = 'packed-install-option-c';
+    const leaderAgentId = 'agent-packed-install-leader';
+    const teamName = 'packed-option-c';
+    mkdirSync(join(stateDir, 'sessions', sessionId), { recursive: true });
+    mkdirSync(join(stateDir, 'team', teamName, 'workers', 'worker-1'), { recursive: true });
+    writeFileSync(
+      join(stateDir, 'session.json'),
+      JSON.stringify({ session_id: sessionId, native_session_id: leaderAgentId }),
+    );
+    writeFileSync(
+      join(stateDir, 'sessions', sessionId, 'skill-active-state.json'),
+      JSON.stringify({
+        active: true,
+        skill: 'ultragoal',
+        phase: 'executing',
+        session_id: sessionId,
+        active_skills: [{ skill: 'ultragoal', phase: 'executing', active: true, session_id: sessionId }],
+      }),
+    );
+    writeFileSync(
+      join(stateDir, 'sessions', sessionId, 'ultragoal-state.json'),
+      JSON.stringify({ active: true, mode: 'ultragoal', current_phase: 'executing', session_id: sessionId }),
+    );
+    writeFileSync(
+      join(stateDir, 'team', teamName, 'config.json'),
+      JSON.stringify({
+        name: teamName,
+        leader_pane_id: '%packed-leader',
+        workers: [{ name: 'worker-1', pane_id: '%packed-worker' }],
+      }),
+    );
+    writeFileSync(
+      join(stateDir, 'team', teamName, 'workers', 'worker-1', 'identity.json'),
+      JSON.stringify({ name: 'worker-1', pane_id: '%packed-worker' }),
+    );
+
+    const invokeAuthorizationProbe = (payload: Record<string, unknown>, env: NodeJS.ProcessEnv) => run(
+      process.execPath,
+      [realpathSync(hookScript)],
+      { cwd: smokeCwd, env, input: JSON.stringify(payload) },
+    );
+    const hookEnv = {
+      ...process.env,
+      OMX_NATIVE_HOOK_DOCTOR_SMOKE: '1',
+      OMX_ROOT: hookRoot,
+      OMX_SOURCE_CWD: smokeCwd,
+      OMX_STARTUP_CWD: smokeCwd,
+    };
+    const officialTeamRootPayload = {
+      hook_event_name: 'PreToolUse',
+      cwd: smokeCwd,
+      session_id: sessionId,
+      tool_name: 'Edit',
+      tool_use_id: 'packed-install-team-root',
+      tool_input: { file_path: 'src/packed-team-worker.ts', old_string: 'a', new_string: 'b' },
+    };
+    const teamEnv: NodeJS.ProcessEnv = {
+      ...hookEnv,
+      OMX_TEAM_WORKER: `${teamName}/worker-1`,
+      OMX_TEAM_STATE_ROOT: stateDir,
+      TMUX_PANE: '%packed-worker',
+    };
+    delete teamEnv.OMX_TEAM_INTERNAL_WORKER;
+    const teamOutput = parseNativeHookSmokeOutput(
+      'PreToolUse official Team root',
+      String(invokeAuthorizationProbe(officialTeamRootPayload, teamEnv).stdout),
+    );
+    if (Object.keys(teamOutput).length !== 0) {
+      throw new Error('native hook official Team root did not preserve the validated Team-worker exemption');
+    }
+
+    const leaderOutput = parseNativeHookSmokeOutput(
+      'PreToolUse leader with Team environment',
+      String(invokeAuthorizationProbe({
+        ...officialTeamRootPayload,
+        session_id: leaderAgentId,
+        tool_use_id: 'packed-install-team-leader',
+      }, teamEnv).stdout),
+    );
+    requireNativeHookPermissionDeny('PreToolUse leader with Team environment', leaderOutput, /Main-root Conductor mode is active/);
+
+    const childEnv = {
+      ...hookEnv,
+      OMX_TEAM_WORKER: '',
+      OMX_TEAM_INTERNAL_WORKER: '',
+      OMX_TEAM_STATE_ROOT: '',
+    };
+    for (const [probe, toolName, toolInput] of [
+      [
+        'filesystem write',
+        'mcp__filesystem__write_file',
+        { path: 'src/packed-mcp-write.ts', content: 'export const escaped = true;\n' },
+      ],
+      [
+        'state write',
+        'mcp__omx_state__state_write',
+        { mode: 'ultragoal', active: true, current_phase: 'executing' },
+      ],
+    ] as const) {
+      const output = parseNativeHookSmokeOutput(
+        `PreToolUse native child ${probe}`,
+        String(invokeAuthorizationProbe({
+          hook_event_name: 'PreToolUse',
+          cwd: smokeCwd,
+          session_id: sessionId,
+          agent_id: 'agent-packed-install-child',
+          tool_name: toolName,
+          tool_use_id: `packed-install-child-${probe.replace(/\s+/g, '-')}`,
+          tool_input: toolInput,
+        }, childEnv).stdout),
+      );
+      requireNativeHookPermissionDeny(`PreToolUse native child ${probe}`, output, /OWNER_CONFIRMATION_REQUIRED/);
+    }
+
+    const childReadOutput = parseNativeHookSmokeOutput(
+      'PreToolUse native child read-only',
+      String(invokeAuthorizationProbe({
+        hook_event_name: 'PreToolUse',
+        cwd: smokeCwd,
+        session_id: sessionId,
+        agent_id: 'agent-packed-install-child',
+        tool_name: 'Read',
+        tool_use_id: 'packed-install-child-read-only',
+        tool_input: { file_path: 'src/packed-read-only.ts' },
+      }, childEnv).stdout),
+    );
+    if (Object.keys(childReadOutput).length !== 0) {
+      throw new Error('native hook blocked a positively classified native-child read-only operation');
+    }
+
+    const unknownChildOutput = parseNativeHookSmokeOutput(
+      'PreToolUse native child unknown transport',
+      String(invokeAuthorizationProbe({
+        hook_event_name: 'PreToolUse',
+        cwd: smokeCwd,
+        session_id: sessionId,
+        agent_id: 'agent-packed-install-child',
+        tool_name: 'mcp__example__future_mutation',
+        tool_use_id: 'packed-install-child-unknown',
+        tool_input: { target: 'src/packed-unknown.ts' },
+      }, childEnv).stdout),
+    );
+    requireNativeHookPermissionDeny(
+      'PreToolUse native child unknown transport',
+      unknownChildOutput,
+      /OWNER_CONFIRMATION_REQUIRED/,
+    );
   } finally {
     rmSync(smokeCwd, { recursive: true, force: true });
   }

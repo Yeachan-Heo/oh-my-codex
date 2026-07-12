@@ -70,28 +70,31 @@ Setup-owned trust state is limited to those generated wrapper identities; user h
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 
 
-## PreToolUse: conductor typed-lane recognition
+## PreToolUse: conductor and native-child write boundary
 
 The Main-root Conductor write guard blocks source, package, git, and substantive
-plan/spec/review edits from the leader while allowing workflow metadata writes.
-Trust for delegated performer lanes is scoped by guard:
+plan/spec/review edits from the leader while allowing only explicitly authorized
+workflow metadata writes.
 
-- Planning boundary guards (`ralplan`, `deep-interview`) exempt a delegated lane
-  only when the event is a known typed role (catalog-bounded or an installed
-  `*.toml` role) **and** trusted lane provenance exists. This keeps untyped
-  `collaboration.spawn_agent` children from writing source before an execution
-  handoff/approval.
-- The Main-root Conductor / Ralph executing guard additionally trusts a delegated
-  lane on trusted provenance alone, regardless of role label, so native
-  `collaboration.spawn_agent` children and descendants can perform bounded writes
-  during execution (#3116).
+`agent_id` is the only hook-native child identity. `agent_type`, typed roles,
+prompt labels, and unofficial identity aliases are not identity or write
+authority. A leader anchor is always resolved first, so a leader payload remains
+Main-root even when Team environment variables are present. A native child with a
+non-leader `agent_id` is recognized as same-session provenance only; any mutation
+through Bash, built-in patch tools, filesystem MCP, OMX state MCP, or an
+unrecognized transport is denied with `OWNER_CONFIRMATION_REQUIRED`.
 
-Native Codex events may provide that provenance either through
-`source.subagent.thread_spawn.parent_thread_id` or through an existing
-`.omx/state/subagent-tracking.json` entry whose `thread_id` is recorded as
-`kind:"subagent"`. The session leader thread is never trusted through either
-path, so a bare typed role on the leader event — or provenance attached to the
-leader thread — is not enough to bypass the guard.
+Official Team worker roots may omit both `agent_id` and legacy `thread_id`.
+After Main-root exclusion, OMX preserves their established exemption only when
+the Team environment agrees with the durable worker identity, Team config, and
+current worker pane recorded under the strictly resolved Team state root. A
+leader native-session match wins before this check, and a payload with any named
+unknown or foreign identity cannot borrow the Team exemption.
+
+Planning boundaries (`ralplan`, `deep-interview`) remain fail-closed for mutation
+transports: only their documented planning artifact paths and non-deactivating
+state operations are allowed. No assignment-backed grant, prompt-derived scope,
+or child-write allowance exists in this Option C implementation.
 
 ## Document-refresh warning MVP
 

@@ -22,7 +22,11 @@ import {
   readSubagentTrackingState,
   recordSubagentTurnForSession,
 } from "../subagents/tracker.js";
-import { resolveCanonicalTeamStateRoot, resolveWorkerNotifyTeamStateRootPath } from "../team/state-root.js";
+import {
+  resolveCanonicalTeamStateRoot,
+  resolveWorkerNotifyTeamStateRootPath,
+  resolveWorkerTeamStateRootPath,
+} from "../team/state-root.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
 import {
   appendToLog,
@@ -2433,10 +2437,43 @@ function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: s
   };
 }
 
-function hasTeamWorkerEnvironment(): boolean {
-  return parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
-    !== null
-    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER)) !== null;
+function readTeamWorkerEnvironment(): { teamName: string; workerName: string } | null {
+  const internalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER));
+  const externalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
+  if (
+    internalWorker
+    && externalWorker
+    && (internalWorker.teamName !== externalWorker.teamName || internalWorker.workerName !== externalWorker.workerName)
+  ) {
+    return null;
+  }
+  return internalWorker ?? externalWorker;
+}
+
+async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> {
+  const workerContext = readTeamWorkerEnvironment();
+  if (!workerContext) return false;
+
+  const currentPaneId = safeString(process.env.TMUX_PANE).trim();
+  if (!currentPaneId) return false;
+  const stateRoot = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
+  if (!stateRoot) return false;
+
+  const teamRoot = join(stateRoot, "team", workerContext.teamName);
+  const identity = await readJsonIfExists(join(teamRoot, "workers", workerContext.workerName, "identity.json"));
+  const teamState = await readJsonIfExists(join(teamRoot, "manifest.v2.json"))
+    ?? await readJsonIfExists(join(teamRoot, "config.json"));
+  if (!identity || !teamState) return false;
+  if (safeString(identity.name).trim() !== workerContext.workerName) return false;
+  if (safeString(identity.pane_id).trim() !== currentPaneId) return false;
+  if (safeString(teamState.name).trim() !== workerContext.teamName) return false;
+  if (safeString(teamState.leader_pane_id).trim() === currentPaneId) return false;
+
+  const workers = Array.isArray(teamState.workers) ? teamState.workers : [];
+  const worker = workers
+    .map((candidate) => safeObject(candidate))
+    .find((candidate) => safeString(candidate.name).trim() === workerContext.workerName);
+  return Boolean(worker && safeString(worker.pane_id).trim() === currentPaneId);
 }
 
 async function resolveTeamStateDirForWorkerContext(
@@ -2456,9 +2493,7 @@ async function resolveTeamStateDirForWorkerContext(
 }
 
 async function isConfirmedTeamWorkerPromptSubmitPane(cwd: string): Promise<boolean> {
-  const workerContext =
-    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
-    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
+  const workerContext = readTeamWorkerEnvironment();
   if (!workerContext) return false;
 
   const currentPaneId = safeString(process.env.TMUX_PANE).trim();
@@ -3513,7 +3548,6 @@ const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
   "ApplyPatch",
 ]);
 
-const DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES = PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES;
 
 const RALPLAN_EXECUTION_HANDOFF_SKILLS = new Set([
   // Autopilot is intentionally excluded: it supervises planning phases such as
@@ -3810,8 +3844,13 @@ function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
     input.path,
     input.target_path,
     input.targetPath,
+    input.source_path,
+    input.sourcePath,
+    input.destination_path,
+    input.destinationPath,
+    ...(Array.isArray(input.paths) ? input.paths : []),
   ];
-  return candidates.map((candidate) => safeString(candidate).trim()).filter(Boolean);
+  return [...new Set(candidates.map((candidate) => safeString(candidate).trim()).filter(Boolean))];
 }
 
 const APPLY_PATCH_TOOL_NAMES = new Set(["apply_patch", "ApplyPatch"]);
@@ -4069,6 +4108,74 @@ function commandHasDeepInterviewWriteIntent(command: string, depth = 0): boolean
       extractNestedShellCommandStringsForStateScan(command).some((nested) => commandHasDeepInterviewWriteIntent(nested, depth + 1))
       || extractNestedCommandSubstitutionStringsForStateScan(command).some((nested) => commandHasDeepInterviewWriteIntent(nested, depth + 1))
     ));
+}
+
+type PreToolUseMutationTransport = "read-only" | "bash" | "path" | "state" | "orchestration" | "unknown";
+
+const READ_ONLY_PRETOOLUSE_TOOL_NAMES = new Set([
+  "Read",
+  "Glob",
+  "Grep",
+  "Search",
+  "WebFetch",
+  "WebSearch",
+]);
+const READ_ONLY_PRETOOLUSE_MCP_TOOL_NAMES = new Set([
+  "mcp__filesystem__read_file",
+  "mcp__filesystem__read_text_file",
+  "mcp__filesystem__read_media_file",
+  "mcp__filesystem__read_multiple_files",
+  "mcp__filesystem__list_directory",
+  "mcp__filesystem__directory_tree",
+  "mcp__filesystem__search_files",
+  "mcp__filesystem__get_file_info",
+  "mcp__filesystem__list_allowed_directories",
+  "mcp__omx_state__state_read",
+  "mcp__omx_state__state_list_active",
+  "mcp__omx_state__state_get_status",
+]);
+const OMX_STATE_MUTATION_TOOL_NAMES = new Set([
+  "mcp__omx_state__state_write",
+  "mcp__omx_state__state_clear",
+]);
+const CONDUCTOR_ORCHESTRATION_TOOL_NAMES = new Set([
+  "Task",
+  "task",
+  "spawn_agent",
+  "close_agent",
+  "collaboration.spawn_agent",
+  "collaboration.close_agent",
+  "multi_agent_v1.spawn_agent",
+  "multi_agent_v1.close_agent",
+]);
+
+function classifyPreToolUseMutationTransport(
+  payload: CodexHookPayload,
+  toolName: string,
+): PreToolUseMutationTransport {
+  if (toolName === "Bash") {
+    return commandHasDeepInterviewWriteIntent(readPreToolUseCommand(payload)) ? "bash" : "read-only";
+  }
+  if (OMX_STATE_MUTATION_TOOL_NAMES.has(toolName)) return "state";
+  if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) return "path";
+  if (READ_ONLY_PRETOOLUSE_TOOL_NAMES.has(toolName) || READ_ONLY_PRETOOLUSE_MCP_TOOL_NAMES.has(toolName)) {
+    return "read-only";
+  }
+  if (
+    CONDUCTOR_ORCHESTRATION_TOOL_NAMES.has(toolName)
+    || toolName.startsWith("collaboration.")
+    || toolName.startsWith("multi_agent_v1.")
+    || toolName.startsWith("mcp__omx_team__")
+    || toolName.startsWith("mcp__omx_ultragoal__")
+  ) {
+    return "orchestration";
+  }
+  if (toolName.startsWith("mcp__filesystem__")) return "path";
+
+  // A hook cannot infer that an unfamiliar transport is read-only. Keeping this
+  // distinct from known path/state transports lets each guard reject it rather
+  // than accidentally treating a new mutation API as a no-op.
+  return "unknown";
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
@@ -7062,6 +7169,8 @@ async function buildRalplanPreToolUseBoundaryOutput(
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
+  const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
+
   let blocked = false;
   let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
@@ -7071,15 +7180,15 @@ async function buildRalplanPreToolUseBoundaryOutput(
       blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
     }
   } else if (
-    toolName === "mcp__omx_state__state_clear"
-    || (
-      toolName === "mcp__omx_state__state_write"
-      && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
+    mutationTransport === "state"
+    && (
+      toolName === "mcp__omx_state__state_clear"
+      || isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
     )
   ) {
     blocked = true;
     blockedDetail = `${toolName} would deactivate protected planning state`;
-  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+  } else if (mutationTransport === "path") {
     const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
     if (toolPathCandidates.length === 0) {
       blocked = true;
@@ -7091,7 +7200,11 @@ async function buildRalplanPreToolUseBoundaryOutput(
         blockedDetail = describeImplementationToolBlock(toolName, blockedPath, toolPathCandidates.length);
       }
     }
+  } else if (mutationTransport === "unknown") {
+    blocked = true;
+    blockedDetail = `${toolName || "unknown tool"} is not a recognized read-only or explicitly authorized planning mutation transport`;
   }
+
 
   if (!blocked) return null;
 
@@ -7130,6 +7243,8 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
+  const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
+
   let blocked = false;
   let blockedDetail = "implementation/write tools are blocked until an explicit handoff workflow is activated";
 
@@ -7139,15 +7254,15 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
       blockedDetail = buildDeepInterviewBashBlockedDetail(cwd, command);
     }
   } else if (
-    toolName === "mcp__omx_state__state_clear"
-    || (
-      toolName === "mcp__omx_state__state_write"
-      && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
+    mutationTransport === "state"
+    && (
+      toolName === "mcp__omx_state__state_clear"
+      || isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
     )
   ) {
     blocked = true;
     blockedDetail = `${toolName} would deactivate protected deep-interview planning state`;
-  } else if (DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+  } else if (mutationTransport === "path") {
     const candidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
     blocked = candidates.length === 0
       || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
@@ -7155,6 +7270,9 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
       const blockedPath = candidates.find((candidate) => !isAllowedDeepInterviewArtifactPath(cwd, candidate));
       blockedDetail = describeImplementationToolBlock(toolName, blockedPath, candidates.length);
     }
+  } else if (mutationTransport === "unknown") {
+    blocked = true;
+    blockedDetail = `${toolName || "unknown tool"} is not a recognized read-only or explicitly authorized planning mutation transport`;
   }
 
   if (!blocked) return null;
@@ -7176,7 +7294,9 @@ function blocksDeepInterviewImplementationWrite(payload: CodexHookPayload, cwd: 
   if (toolName === "Bash") {
     return !isAllowedDeepInterviewBashWrite(cwd, readPreToolUseCommand(payload));
   }
-  if (!DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) return false;
+  const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
+  if (mutationTransport === "unknown") return true;
+  if (mutationTransport !== "path") return false;
   const candidates = collectImplementationToolPathCandidates(
     payload,
     toolName,
@@ -7185,6 +7305,7 @@ function blocksDeepInterviewImplementationWrite(payload: CodexHookPayload, cwd: 
   return candidates.length === 0
     || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
 }
+
 
 // Shared builder for the "live root session pointer owned by another session"
 // fail-closed block. Deep-interview and ralplan/autopilot only differ in the
@@ -7259,20 +7380,21 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
   if (!ralplanState) return null;
 
   const toolName = safeString(payload.tool_name).trim();
+  const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
   let blocked = false;
   if (toolName === "Bash") {
     const command = readPreToolUseCommand(payload);
     blocked = commandEndsPlanningPhase(cwd, command)
       || !isAllowedRalplanBashWrite(cwd, command, ralplanState, rootSessionId);
   } else if (
-    toolName === "mcp__omx_state__state_clear"
-    || (
-      toolName === "mcp__omx_state__state_write"
-      && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
+    mutationTransport === "state"
+    && (
+      toolName === "mcp__omx_state__state_clear"
+      || isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
     )
   ) {
     blocked = true;
-  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+  } else if (mutationTransport === "path") {
     const toolPathCandidates = collectImplementationToolPathCandidates(
       payload,
       toolName,
@@ -7280,6 +7402,8 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
     );
     blocked = toolPathCandidates.length === 0
       || toolPathCandidates.some((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+  } else if (mutationTransport === "unknown") {
+    blocked = true;
   }
 
   return blocked ? buildRalplanRootPointerConflictBlock(ralplanState) : null;
@@ -7311,9 +7435,10 @@ async function resolvePreToolUseWriteActor(
   const leaderIdentityAnchors = new Set<string>();
   const trackerLeaderThreadId = safeString(session?.leader_thread_id).trim();
   if (trackerLeaderThreadId) leaderIdentityAnchors.add(trackerLeaderThreadId);
+  let leaderNativeSessionId = "";
   if (sessionState && sessionId && payloadMatchesSessionPointer(sessionId, sessionState)) {
-    const nativeSessionId = safeString(sessionState.native_session_id).trim();
-    if (nativeSessionId) leaderIdentityAnchors.add(nativeSessionId);
+    leaderNativeSessionId = safeString(sessionState.native_session_id).trim();
+    if (leaderNativeSessionId) leaderIdentityAnchors.add(leaderNativeSessionId);
   }
 
   // Fail closed before every exemption. A leader remains Main-root even when a
@@ -7321,6 +7446,12 @@ async function resolvePreToolUseWriteActor(
   // environment says otherwise.
   if (
     leaderIdentityAnchors.size === 0
+    || (
+      !payloadAgentId
+      && !payloadThreadId
+      && leaderNativeSessionId !== ""
+      && readPayloadSessionId(payload) === leaderNativeSessionId
+    )
     || leaderIdentityAnchors.has(payloadAgentId)
     || leaderIdentityAnchors.has(payloadThreadId)
   ) {
@@ -7332,38 +7463,37 @@ async function resolvePreToolUseWriteActor(
     return "provenance-conflict";
   }
 
-  const payloadIdentity = payloadAgentId || payloadThreadId;
-  if (!payloadIdentity) return "main-root";
-
   // Hook-native agent_id is direct Codex child provenance in the active, anchored
   // session. It establishes origin only, never write authority, and outranks Team
   // environment variables so a native child cannot borrow worker authority.
   if (payloadAgentId) return "native-child";
 
-  // Team continues to use its existing worker environment after Main-root exclusion.
-  // Without a leader anchor, that environment cannot prove the payload is non-root.
-  if (hasTeamWorkerEnvironment()) return "team-worker";
-  if (!session) return "main-root";
+  if (payloadThreadId) {
+    // Tracker-backed provenance identifies a recorded non-leader child or descendant.
+    if (session && isTrustedSubagentThread(session, payloadThreadId)) return "native-child";
 
-  // Tracker-backed provenance identifies a recorded non-leader child or descendant.
-  if (isTrustedSubagentThread(session, payloadIdentity)) return "native-child";
+    // Runtime-attached spawn provenance identifies a new child when its parent is the
+    // canonical leader or an already tracked same-session thread. It establishes child
+    // provenance only; it is not write authority.
+    const source = safeObject(payload.source);
+    const subagent = safeObject(source.subagent);
+    const threadSpawn = safeObject(subagent.thread_spawn);
+    const parentThreadId = safeString(
+      threadSpawn.parent_thread_id
+        ?? threadSpawn.parentThreadId
+        ?? threadSpawn.leader_thread_id
+        ?? threadSpawn.leaderThreadId,
+    ).trim();
+    if (!parentThreadId) return "main-root";
+    return leaderIdentityAnchors.has(parentThreadId) || (session ? parentThreadId in session.threads : false)
+      ? "native-child"
+      : "main-root";
+  }
 
-  // Runtime-attached spawn provenance identifies a new child when its parent is the
-  // canonical leader or an already tracked same-session thread. It establishes child
-  // provenance only; it is not write authority.
-  const source = safeObject(payload.source);
-  const subagent = safeObject(source.subagent);
-  const threadSpawn = safeObject(subagent.thread_spawn);
-  const parentThreadId = safeString(
-    threadSpawn.parent_thread_id
-      ?? threadSpawn.parentThreadId
-      ?? threadSpawn.leader_thread_id
-      ?? threadSpawn.leaderThreadId,
-  ).trim();
-  if (!parentThreadId) return "main-root";
-  return leaderIdentityAnchors.has(parentThreadId) || parentThreadId in session.threads
-    ? "native-child"
-    : "main-root";
+  // Official Team worker roots do not carry a hook-native identity. They may use the
+  // Team exemption only after leader exclusion and existing state-root validation.
+  // A named identity that is unknown or foreign must never borrow this exemption.
+  return (await hasAuthoritativeTeamWorkerContext(cwd)) ? "team-worker" : "main-root";
 }
 
 function isActiveConductorModeState(state: Record<string, unknown> | null, mode: string, sessionId: string): boolean {
@@ -8269,15 +8399,21 @@ export async function buildConductorPreToolUseWriteGuardOutput(
   const toolName = safeString(payload.tool_name).trim();
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
+  const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
+
   let blocked = false;
   let blockedDetail = "Main-root Conductor write is not delegated";
   let nativeChildMutationAttempt = false;
 
   if (toolName === "Bash") {
     blocked = !isAllowedConductorBashWrite(cwd, command);
-    nativeChildMutationAttempt = commandHasDeepInterviewWriteIntent(command);
+    nativeChildMutationAttempt = mutationTransport === "bash";
     if (blocked) blockedDetail = buildConductorBashBlockedDetail(cwd, command);
-  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+  } else if (mutationTransport === "state") {
+    nativeChildMutationAttempt = true;
+  } else if (mutationTransport === "orchestration") {
+    nativeChildMutationAttempt = true;
+  } else if (mutationTransport === "path") {
     nativeChildMutationAttempt = true;
     const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
     if (toolPathCandidates.length === 0) {
@@ -8290,6 +8426,10 @@ export async function buildConductorPreToolUseWriteGuardOutput(
         blockedDetail = describeConductorBlockedWrite(toolName, blockedPath, toolPathCandidates.length);
       }
     }
+  } else if (mutationTransport === "unknown") {
+    nativeChildMutationAttempt = true;
+    blocked = true;
+    blockedDetail = `${toolName || "unknown tool"} is not a recognized read-only or explicitly authorized Conductor mutation transport`;
   }
 
   if (writeActor === "team-worker") return null;

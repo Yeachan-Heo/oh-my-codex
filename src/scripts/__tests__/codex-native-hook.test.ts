@@ -10,9 +10,12 @@ import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import { DOCUMENT_REFRESH_EXEMPTION_PREFIX } from "../../document-refresh/enforcer.js";
 import {
   initTeamState,
+  readTeamConfig,
   readTeamLeaderAttention,
   readTeamPhase,
+  saveTeamConfig,
   writeTeamLeaderAttention,
+  writeWorkerIdentity,
 } from "../../team/state.js";
 import {
   dispatchCodexNativeHook,
@@ -852,18 +855,26 @@ describe("codex native hook dispatch", () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-pretool-identity-"));
     const sessionId = "sess-team-worker-pretool-identity";
     const leaderThreadId = "thread-team-worker-pretool-identity-leader";
-    const workerThreadId = "thread-team-worker-pretool-identity-worker";
+    const teamName = "team-worker-pretool-identity";
     const stateDir = join(cwd, ".omx", "state");
     const workerPayload = {
       hook_event_name: "PreToolUse",
       cwd,
       session_id: sessionId,
-      thread_id: workerThreadId,
       tool_name: "Edit",
       tool_use_id: "tool-team-worker-pretool-identity",
       tool_input: { file_path: "src/runtime.ts", old_string: "a", new_string: "b" },
     };
     try {
+      await initTeamState(teamName, "native PreToolUse actor identity", "executor", 1, cwd);
+      const teamConfig = await readTeamConfig(teamName, cwd);
+      assert.ok(teamConfig);
+      teamConfig.leader_pane_id = "%leader";
+      teamConfig.workers[0] = { ...teamConfig.workers[0]!, pane_id: "%worker" };
+      await saveTeamConfig(teamConfig, cwd);
+      await writeWorkerIdentity(teamName, "worker-1", teamConfig.workers[0]!, cwd);
+      process.env.TMUX_PANE = "%worker";
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
       await writeJson(join(stateDir, "session.json"), {
         session_id: sessionId,
         native_session_id: leaderThreadId,
@@ -881,23 +892,30 @@ describe("codex native hook dispatch", () => {
       assert.match(String(unmarkedWorker.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
 
       for (const teamWorkerEnv of ["OMX_TEAM_INTERNAL_WORKER", "OMX_TEAM_WORKER"] as const) {
-        process.env[teamWorkerEnv] = "team-worker-pretool-identity/worker-1";
+        process.env[teamWorkerEnv] = `${teamName}/worker-1`;
         const provenWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
         assert.equal(provenWorker.outputJson, null, teamWorkerEnv);
 
         const rootWithWorkerEnvironment = await dispatchCodexNativeHook({
           ...workerPayload,
-          thread_id: leaderThreadId,
+          agent_id: leaderThreadId,
           agent_role: "executor",
-          source: { subagent: { thread_spawn: { parent_thread_id: leaderThreadId } } },
         }, { cwd });
         assert.equal(rootWithWorkerEnvironment.outputJson?.decision, "block", teamWorkerEnv);
         assert.match(String(rootWithWorkerEnvironment.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+
+        const identitylessRootWithWorkerEnvironment = await dispatchCodexNativeHook({
+          ...workerPayload,
+          session_id: leaderThreadId,
+          tool_use_id: "tool-team-worker-pretool-identity-root-session",
+        }, { cwd });
+        assert.equal(identitylessRootWithWorkerEnvironment.outputJson?.decision, "block", teamWorkerEnv);
+        assert.match(String(identitylessRootWithWorkerEnvironment.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
         delete process.env[teamWorkerEnv];
       }
 
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
-      process.env.OMX_TEAM_INTERNAL_WORKER = "team-worker-pretool-identity/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
       const unanchoredWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
       assert.equal(unanchoredWorker.outputJson?.decision, "block");
       assert.match(String(unanchoredWorker.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
@@ -917,12 +935,135 @@ describe("codex native hook dispatch", () => {
       assert.equal(teamPlanningWorker.outputJson, null);
       const teamPlanningRoot = await dispatchCodexNativeHook({
         ...workerPayload,
-        thread_id: leaderThreadId,
+        agent_id: leaderThreadId,
         agent_role: "executor",
-        source: { subagent: { thread_spawn: { parent_thread_id: leaderThreadId } } },
       }, { cwd });
       assert.equal(teamPlanningRoot.outputJson?.decision, "block");
       assert.match(String(teamPlanningRoot.outputJson?.reason ?? ""), /Ralplan is active \(phase: planning\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("replays official Team-root and native-child mutation payloads through compiled stdin/output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-issue-3127-review-"));
+    const stateDir = join(cwd, ".omx", "state");
+    const sessionId = "sess-cli-issue-3127-review";
+    const leaderAgentId = "agent-cli-issue-3127-leader";
+    const teamName = "cli-issue-3127";
+    try {
+      await initTeamState(teamName, "compiled hook actor identity", "executor", 1, cwd);
+      const teamConfig = await readTeamConfig(teamName, cwd);
+      assert.ok(teamConfig);
+      teamConfig.leader_pane_id = "%leader";
+      teamConfig.workers[0] = { ...teamConfig.workers[0]!, pane_id: "%worker" };
+      await saveTeamConfig(teamConfig, cwd);
+      await writeWorkerIdentity(teamName, "worker-1", teamConfig.workers[0]!, cwd);
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: leaderAgentId,
+      });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+
+      const officialRootPayload = {
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        tool_name: "Edit",
+        tool_use_id: "tool-cli-issue-3127-team-root",
+        tool_input: { file_path: "src/team-worker.ts", old_string: "a", new_string: "b" },
+      };
+      const teamEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        OMX_ROOT: cwd,
+        OMX_TEAM_WORKER: `${teamName}/worker-1`,
+        OMX_TEAM_STATE_ROOT: stateDir,
+        TMUX_PANE: "%worker",
+      };
+      delete teamEnv.OMX_TEAM_INTERNAL_WORKER;
+      const teamWorkerResult = runNativeHookCliResult(officialRootPayload, { cwd, env: teamEnv });
+      assert.equal(teamWorkerResult.status, 0, teamWorkerResult.stderr || teamWorkerResult.stdout);
+      assert.deepEqual(parseSingleJsonStdout(teamWorkerResult.stdout), {});
+
+      const leaderWithWorkerEnv = runNativeHookCliResult({
+        ...officialRootPayload,
+        session_id: leaderAgentId,
+        tool_use_id: "tool-cli-issue-3127-team-leader",
+      }, { cwd, env: teamEnv });
+      assert.equal(leaderWithWorkerEnv.status, 0, leaderWithWorkerEnv.stderr || leaderWithWorkerEnv.stdout);
+      const leaderOutput = parseSingleJsonStdout(leaderWithWorkerEnv.stdout);
+      const leaderHookOutput = leaderOutput.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(leaderHookOutput.permissionDecision, "deny");
+      assert.match(String(leaderHookOutput.permissionDecisionReason ?? ""), /Main-root Conductor mode is active/);
+
+      const childEnv = {
+        ...process.env,
+        OMX_ROOT: cwd,
+        OMX_TEAM_STATE_ROOT: "",
+        OMX_TEAM_WORKER: "",
+        OMX_TEAM_INTERNAL_WORKER: "",
+      };
+      for (const [name, toolName, toolInput] of [
+        [
+          "filesystem-write",
+          "mcp__filesystem__write_file",
+          { path: "src/mcp-write.ts", content: "export const escaped = true;\n" },
+        ],
+        [
+          "state-write",
+          "mcp__omx_state__state_write",
+          { mode: "ultragoal", active: true, current_phase: "executing" },
+        ],
+      ] as const) {
+        const childResult = runNativeHookCliResult({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          agent_id: "agent-cli-issue-3127-child",
+          tool_name: toolName,
+          tool_use_id: `tool-cli-issue-3127-${name}`,
+          tool_input: toolInput,
+        }, { cwd, env: childEnv });
+        assert.equal(childResult.status, 0, `${name}: ${childResult.stderr || childResult.stdout}`);
+        const output = parseSingleJsonStdout(childResult.stdout);
+        assert.deepEqual(Object.keys(output), ["hookSpecificOutput"], name);
+        const hookOutput = output.hookSpecificOutput as Record<string, unknown>;
+        assert.equal(hookOutput.permissionDecision, "deny", name);
+        assert.match(String(hookOutput.permissionDecisionReason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, name);
+      }
+
+      const readOnlyChildResult = runNativeHookCliResult({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        agent_id: "agent-cli-issue-3127-child",
+        tool_name: "Read",
+        tool_use_id: "tool-cli-issue-3127-read-only",
+        tool_input: { file_path: "src/read-only.ts" },
+      }, { cwd, env: childEnv });
+      assert.equal(readOnlyChildResult.status, 0, readOnlyChildResult.stderr || readOnlyChildResult.stdout);
+      assert.deepEqual(parseSingleJsonStdout(readOnlyChildResult.stdout), {});
+
+      const unknownChildResult = runNativeHookCliResult({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        agent_id: "agent-cli-issue-3127-child",
+        tool_name: "mcp__example__future_mutation",
+        tool_use_id: "tool-cli-issue-3127-unknown",
+        tool_input: { target: "src/unknown.ts" },
+      }, { cwd, env: childEnv });
+      assert.equal(unknownChildResult.status, 0, unknownChildResult.stderr || unknownChildResult.stdout);
+      const unknownOutput = parseSingleJsonStdout(unknownChildResult.stdout);
+      const unknownHookOutput = unknownOutput.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(unknownHookOutput.permissionDecision, "deny");
+      assert.match(String(unknownHookOutput.permissionDecisionReason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
