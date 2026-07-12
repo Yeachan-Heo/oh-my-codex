@@ -326,66 +326,125 @@ function smokeInstalledNativeHookDist(prefixDir: string): void {
       OMX_TEAM_INTERNAL_WORKER: '',
       OMX_TEAM_STATE_ROOT: '',
     };
-    for (const [probe, toolName, toolInput] of [
-      [
-        'filesystem write',
-        'mcp__filesystem__write_file',
-        { path: 'src/packed-mcp-write.ts', content: 'export const escaped = true;\n' },
-      ],
-      [
-        'state write',
-        'mcp__omx_state__state_write',
-        { mode: 'ultragoal', active: true, current_phase: 'executing' },
-      ],
-    ] as const) {
-      const output = parseNativeHookSmokeOutput(
-        `PreToolUse native child ${probe}`,
-        String(invokeAuthorizationProbe({
-          hook_event_name: 'PreToolUse',
-          cwd: smokeCwd,
-          session_id: sessionId,
-          agent_id: 'agent-packed-install-child',
-          tool_name: toolName,
-          tool_use_id: `packed-install-child-${probe.replace(/\s+/g, '-')}`,
-          tool_input: toolInput,
-        }, childEnv).stdout),
-      );
-      requireNativeHookPermissionDeny(`PreToolUse native child ${probe}`, output, /OWNER_CONFIRMATION_REQUIRED/);
-    }
-
-    const childReadOutput = parseNativeHookSmokeOutput(
-      'PreToolUse native child read-only',
+    const runActorProbe = (
+      actor: 'main-root' | 'native-child',
+      probe: string,
+      toolName: string,
+      toolInput: Record<string, unknown>,
+    ): Record<string, unknown> => parseNativeHookSmokeOutput(
+      `PreToolUse ${actor} ${probe}`,
       String(invokeAuthorizationProbe({
         hook_event_name: 'PreToolUse',
         cwd: smokeCwd,
-        session_id: sessionId,
-        agent_id: 'agent-packed-install-child',
-        tool_name: 'Read',
-        tool_use_id: 'packed-install-child-read-only',
-        tool_input: { file_path: 'src/packed-read-only.ts' },
+        session_id: actor === 'main-root' ? leaderAgentId : sessionId,
+        ...(actor === 'native-child' ? { agent_id: 'agent-packed-install-child' } : {}),
+        tool_name: toolName,
+        tool_use_id: `packed-install-${actor}-${probe.replace(/\W+/g, '-')}`,
+        tool_input: toolInput,
       }, childEnv).stdout),
     );
+    const requireActorDeny = (
+      actor: 'main-root' | 'native-child',
+      probe: string,
+      output: Record<string, unknown>,
+    ): void => requireNativeHookPermissionDeny(
+      `PreToolUse ${actor} ${probe}`,
+      output,
+      actor === 'native-child' ? /OWNER_CONFIRMATION_REQUIRED/ : /Main-root Conductor mode is active/,
+    );
+
+    for (const [probe, toolName, toolInput] of [
+      ['filesystem write', 'mcp__filesystem__write_file', { path: 'src/packed-mcp-write.ts', content: 'escaped' }],
+      ['state write', 'mcp__omx_state__state_write', { mode: 'ultragoal', active: true }],
+    ] as const) {
+      requireActorDeny('native-child', probe, runActorProbe('native-child', probe, toolName, toolInput));
+    }
+
+    for (const [probe, command] of [
+      ['node fs.rmSync', `node -e "require('fs').rmSync('src/victim.ts')"`],
+      ['node fs.renameSync', `node -e "require('fs').renameSync('src/a.ts','src/b.ts')"`],
+      ['node template interpolation', "node -e '" + '`${require("fs").rmSync("src/template.ts")}`' + "'"],
+      ['node computed mutation', `node -e "const fs=require('fs');const op='rmSync';fs[op]('src/computed.ts')"`],
+      ['node ESM rename', `node --input-type=module -e "import fs from 'node:fs';fs.renameSync('src/esm-a.ts','src/esm-b.ts')"`],
+      ['nodejs fs.rmSync', `nodejs -e "require('fs').rmSync('src/nodejs.ts')"`],
+      ['node.exe fs.rmSync', `node.exe -e "require('fs').rmSync('src/node-exe.ts')"`],
+      ['node getBuiltinModule', `node -e "process.getBuiltinModule('fs').rmSync('src/builtin.ts')"`],
+      ['node optional mutation', `node -e "const fs=require('fs');fs?.rmSync('src/optional.ts')"`],
+      ['node aliased fs object', `node -e "const fs=require('fs');const alias=fs;alias.rmSync('src/alias.ts')"`],
+      ['node dynamic eval source', `PAYLOAD="require('fs').rmSync('src/env.ts')"; node -e "$PAYLOAD"`],
+      ['node concatenated eval source', `A="require('fs')."; B="rmSync('src/concat.ts')"; node -e "$A$B"`],
+      ['node backtick eval source', `node -e "\`cat payload.js\`"`],
+      ['node command-substitution eval source', `node -e "$(cat payload.js)"`],
+      ['node combined print eval', `node -pe "require('fs').rmSync('src/combined.ts')"`],
+      ['node aliased require', `node -e "const req=require;const fs=req('fs');fs.rmSync('src/aliased-require.ts')"`],
+      ['node object-escaped fs', `node -e "const h={fs:require('fs')};h.fs.rmSync('src/object-escape.ts')"`],
+      ['node computed require alias', `node -e "const req=module['require'];const fs=req('fs');fs.rmSync('src/computed-require.ts')"`],
+      ['node computed builtin loader', `node -e "const fs=process['getBuiltinModule']('fs');fs.rmSync('src/computed-builtin.ts')"`],
+      ['node postfix division mutation', `node -e "let x=1;x++ / require('fs').rmSync('src/postfix-division.ts') / 1"`],
+      ['node string division mutation', `node -e "'value' / require('fs').rmSync('src/string-division.ts') / 1"`],
+      ['node unicode-escaped loader', `node -e 'requ\\u0069re("fs").rmSync("src/unicode-escape.ts")'`],
+      ['node parenthesized eval', `node -e "(eval)('require(\\"fs\\").rmSync(\\"src/eval-bypass.ts\\")')"`],
+      ['node concatenated computed loader', `node -e "const fs=module['requ'+'ire']('fs');fs.rmSync('src/computed-loader.ts')"`],
+      ['node attached short eval', `node -e"require('fs').rmSync('src/attached-eval.ts')"`],
+      ['node xargs wrapper mutation', `printf x | xargs node -e "require('fs').rmSync('src/xargs-bypass.ts')"`],
+      ['node child-process mutation', `node -e "require('child_process').execFileSync('rm',['-f','src/child-process-bypass.ts'])"`],
+    ] as const) {
+      for (const actor of ['main-root', 'native-child'] as const) {
+        requireActorDeny(actor, probe, runActorProbe(actor, probe, 'Bash', { command }));
+      }
+    }
+
+    for (const [probe, command] of [
+      ['node fs readFileSync', `node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
+      ['node write mutation text', `node -e 'console.log("require(\\"fs\\").writeFileSync(\\"src/victim.ts\\", \\"x\\")")'`],
+      ['node ESM fs readFileSync', `node --input-type=module -e "import fs from 'node:fs';fs.readFileSync('src/victim.ts','utf8')"`],
+      ['node fs openSync read-only', `node -e "require('fs').openSync('src/victim.ts','r')"`],
+      ['node regex mutation text', `node -e 'console.log(/require\\("fs"\\)\\.rmSync\\("src\\/victim.ts"\\)/.test("x"))'`],
+      ['node static unrelated computed member', `node -e "console.log(module['filename'])"`],
+      ['node attached short read', `node -e"require('fs').readFileSync('src/victim.ts','utf8')"`],
+      ['node xargs wrapper read', `printf x | xargs node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
+      ['node read-only path module', `node -e "console.log(require('path').join('src','victim.ts'))"`],
+    ] as const) {
+      for (const actor of ['main-root', 'native-child'] as const) {
+        const output = runActorProbe(actor, probe, 'Bash', { command });
+        if (Object.keys(output).length !== 0) {
+          throw new Error(`native hook blocked semantic Node read-only operation: ${actor} ${probe}`);
+        }
+      }
+    }
+
+    for (const actor of ['main-root', 'native-child'] as const) {
+      requireActorDeny(actor, 'unknown transport', runActorProbe(actor, 'unknown transport', 'mcp__example__future_mutation', {
+        target: 'src/packed-unknown.ts',
+      }));
+    }
+    for (const [probe, toolName] of [
+      ['wiki ingest', 'mcp__omx_wiki__wiki_ingest'],
+      ['project memory write', 'mcp__omx_memory__project_memory_write'],
+    ] as const) {
+      for (const actor of ['main-root', 'native-child'] as const) {
+        requireActorDeny(actor, probe, runActorProbe(actor, probe, toolName, { content: 'mutation' }));
+      }
+    }
+    for (const [probe, toolName, toolInput] of [
+      ['trace summary', 'mcp__omx_trace__trace_summary', { workingDirectory: smokeCwd }],
+      ['LSP diagnostics', 'mcp__omx_code_intel__lsp_diagnostics', { file: 'src/runtime.ts' }],
+      ['wiki query', 'mcp__omx_wiki__wiki_query', { query: 'native hook', workingDirectory: smokeCwd }],
+      ['project memory read', 'mcp__omx_memory__project_memory_read', { workingDirectory: smokeCwd }],
+      ['notepad stats', 'mcp__omx_memory__notepad_stats', { workingDirectory: smokeCwd }],
+    ] as const) {
+      for (const actor of ['main-root', 'native-child'] as const) {
+        const output = runActorProbe(actor, probe, toolName, toolInput);
+        if (Object.keys(output).length !== 0) {
+          throw new Error(`native hook blocked audited read-only MCP operation: ${actor} ${probe}`);
+        }
+      }
+    }
+
+    const childReadOutput = runActorProbe('native-child', 'read-only', 'Read', { file_path: 'src/packed-read-only.ts' });
     if (Object.keys(childReadOutput).length !== 0) {
       throw new Error('native hook blocked a positively classified native-child read-only operation');
     }
-
-    const unknownChildOutput = parseNativeHookSmokeOutput(
-      'PreToolUse native child unknown transport',
-      String(invokeAuthorizationProbe({
-        hook_event_name: 'PreToolUse',
-        cwd: smokeCwd,
-        session_id: sessionId,
-        agent_id: 'agent-packed-install-child',
-        tool_name: 'mcp__example__future_mutation',
-        tool_use_id: 'packed-install-child-unknown',
-        tool_input: { target: 'src/packed-unknown.ts' },
-      }, childEnv).stdout),
-    );
-    requireNativeHookPermissionDeny(
-      'PreToolUse native child unknown transport',
-      unknownChildOutput,
-      /OWNER_CONFIRMATION_REQUIRED/,
-    );
   } finally {
     rmSync(smokeCwd, { recursive: true, force: true });
   }

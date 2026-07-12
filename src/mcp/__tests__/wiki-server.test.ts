@@ -42,6 +42,24 @@ describe('mcp/wiki-server module contract', () => {
     assert.doesNotMatch(src, /server\.connect\(transport\)\.catch\(console\.error\);/);
   });
 
+  it('keeps allowlisted wiki query and lint MCP calls free of durable log writes', async () => {
+    process.env.OMX_WIKI_SERVER_DISABLE_AUTO_START = '1';
+    const { handleWikiToolCall } = await import('../wiki-server.js');
+    const root = await mkdtemp(join(tmpdir(), 'wiki-mcp-read-only-'));
+    try {
+      for (const [name, args] of [
+        ['wiki_query', { query: 'caller supplied text', workingDirectory: root }],
+        ['wiki_lint', { workingDirectory: root }],
+      ] as const) {
+        const response = await handleWikiToolCall({ params: { name, arguments: args } });
+        assert.equal('isError' in response ? response.isError : false, false, name);
+        assert.equal(existsSync(getWikiDir(root)), false, `${name} created durable wiki state`);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('wiki_add writes canonical pages even when the same legacy slug exists', async () => {
     process.env.OMX_WIKI_SERVER_DISABLE_AUTO_START = '1';
     const { handleWikiToolCall } = await import('../wiki-server.js');

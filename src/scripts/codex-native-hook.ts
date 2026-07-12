@@ -4091,7 +4091,7 @@ function commandHasDeepInterviewWriteIntent(command: string, depth = 0): boolean
     || extractConductorEditorWriteTargets(command).length > 0
     || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
     || /\bperl\s+(?:[^\n;&|]*\s)?-[^-\s]*i(?:\b|['"])/.test(command)
-    || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
+    || /\b(?:python3?|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || extractConductorBashMutations(command).length > 0
     || extractConductorInterpreterWrites(command).length > 0
     || commandHasDestructiveGitSubcommand(command)
@@ -4120,20 +4120,56 @@ const READ_ONLY_PRETOOLUSE_TOOL_NAMES = new Set([
   "WebFetch",
   "WebSearch",
 ]);
-const READ_ONLY_PRETOOLUSE_MCP_TOOL_NAMES = new Set([
-  "mcp__filesystem__read_file",
-  "mcp__filesystem__read_text_file",
-  "mcp__filesystem__read_media_file",
-  "mcp__filesystem__read_multiple_files",
-  "mcp__filesystem__list_directory",
-  "mcp__filesystem__directory_tree",
-  "mcp__filesystem__search_files",
-  "mcp__filesystem__get_file_info",
-  "mcp__filesystem__list_allowed_directories",
-  "mcp__omx_state__state_read",
-  "mcp__omx_state__state_list_active",
-  "mcp__omx_state__state_get_status",
-]);
+const READ_ONLY_PRETOOLUSE_MCP_CONTRACT = {
+  filesystem: [
+    "mcp__filesystem__read_file",
+    "mcp__filesystem__read_text_file",
+    "mcp__filesystem__read_media_file",
+    "mcp__filesystem__read_multiple_files",
+    "mcp__filesystem__list_directory",
+    "mcp__filesystem__directory_tree",
+    "mcp__filesystem__search_files",
+    "mcp__filesystem__get_file_info",
+    "mcp__filesystem__list_allowed_directories",
+  ],
+  state: [
+    "mcp__omx_state__state_read",
+    "mcp__omx_state__state_list_active",
+    "mcp__omx_state__state_get_status",
+  ],
+  trace: [
+    "mcp__omx_trace__trace_timeline",
+    "mcp__omx_trace__trace_summary",
+  ],
+  codeIntel: [
+    "mcp__omx_code_intel__lsp_diagnostics",
+    "mcp__omx_code_intel__lsp_diagnostics_directory",
+    "mcp__omx_code_intel__lsp_document_symbols",
+    "mcp__omx_code_intel__lsp_workspace_symbols",
+    "mcp__omx_code_intel__lsp_hover",
+    "mcp__omx_code_intel__lsp_find_references",
+  ],
+  wiki: [
+    "mcp__omx_wiki__wiki_query",
+    "mcp__omx_wiki__wiki_lint",
+    "mcp__omx_wiki__wiki_list",
+    "mcp__omx_wiki__wiki_read",
+  ],
+  memory: [
+    "mcp__omx_memory__project_memory_read",
+    "mcp__omx_memory__notepad_read",
+    "mcp__omx_memory__notepad_stats",
+  ],
+} as const;
+
+// This set is intentionally explicit and auditable. Additions require inspecting
+// the registered handler and proving that the named operation exposes no
+// caller-directed product, workflow-state, durable-memory, or lifecycle mutation
+// authority. Any bounded read telemetry or tool cache side effect must be understood
+// and must not turn caller-supplied targets/content into write authority.
+const READ_ONLY_PRETOOLUSE_MCP_TOOL_NAMES = new Set<string>(
+  Object.values(READ_ONLY_PRETOOLUSE_MCP_CONTRACT).flat(),
+);
 const OMX_STATE_MUTATION_TOOL_NAMES = new Set([
   "mcp__omx_state__state_write",
   "mcp__omx_state__state_clear",
@@ -7693,21 +7729,546 @@ interface ConductorInterpreterWrite {
   unresolved: boolean;
 }
 
+const NODE_FS_SINGLE_TARGET_MUTATION_METHODS = new Set([
+  "appendFile", "appendFileSync", "chmod", "chmodSync", "chown", "chownSync", "createWriteStream",
+  "lchmod", "lchmodSync", "lchown", "lchownSync", "lutimes", "lutimesSync", "mkdir", "mkdirSync",
+  "open", "openSync", "rm", "rmSync", "rmdir", "rmdirSync", "truncate", "truncateSync", "unlink",
+  "unlinkSync", "utimes", "utimesSync", "writeFile", "writeFileSync",
+]);
+const NODE_FS_TWO_TARGET_MUTATION_METHODS = new Set([
+  "copyFile", "copyFileSync", "cp", "cpSync", "link", "linkSync", "rename", "renameSync", "symlink", "symlinkSync",
+]);
+const NODE_FS_MUTATION_METHODS = new Set([
+  ...NODE_FS_SINGLE_TARGET_MUTATION_METHODS,
+  ...NODE_FS_TWO_TARGET_MUTATION_METHODS,
+]);
+const NODE_FS_READ_ONLY_METHODS = new Set([
+  "access", "accessSync", "close", "closeSync", "createReadStream", "exists", "existsSync", "fstat", "fstatSync",
+  "glob", "globSync", "lstat", "lstatSync", "opendir", "opendirSync", "read", "readSync", "readdir",
+  "readdirSync", "readFile", "readFileSync", "readlink", "readlinkSync", "realpath", "realpathSync", "stat",
+  "statSync", "statfs", "statfsSync", "unwatchFile", "watch", "watchFile",
+]);
+const NODE_FS_MODULE_NAMES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
+const NODE_MUTATION_CAPABLE_MODULE_NAMES = new Set(["child_process", "node:child_process"]);
+
+function isNodeFsModuleName(moduleName: string | null): boolean {
+  return moduleName !== null && NODE_FS_MODULE_NAMES.has(moduleName);
+}
+function isNodeMutationCapableModuleName(moduleName: string | null): boolean {
+  return moduleName !== null && NODE_MUTATION_CAPABLE_MODULE_NAMES.has(moduleName);
+}
+
+function isReadOnlyNodeOpenFlags(value: string | null): boolean {
+  return value === "r" || value === "rs" || value === "sr";
+}
+
+function maskJavaScriptStringsAndComments(script: string): { mask: string; valid: boolean } {
+  const chars = [...script];
+  type LexMode = "code" | "single" | "double" | "template" | "regex" | "line-comment" | "block-comment";
+  let mode: LexMode = "code";
+  let regexCharacterClass = false;
+  const templateExpressionDepths: number[] = [];
+  let previousPreviousSignificant = "";
+  let previousSignificant = "";
+  let valid = true;
+
+  const maskAt = (index: number): void => {
+    if (chars[index] !== "\n" && chars[index] !== "\r") chars[index] = " ";
+  };
+
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = script[index] ?? "";
+    const next = script[index + 1] ?? "";
+    if (mode === "line-comment") {
+      if (char === "\n" || char === "\r") mode = "code";
+      else maskAt(index);
+      continue;
+    }
+    if (mode === "block-comment") {
+      maskAt(index);
+      if (char === "*" && next === "/") {
+        maskAt(index + 1);
+        index += 1;
+        mode = "code";
+      }
+      continue;
+    }
+    if (mode === "single" || mode === "double") {
+      maskAt(index);
+      if (char === "\\") {
+        if (index + 1 < chars.length) maskAt(index + 1);
+        index += 1;
+      } else if ((mode === "single" && char === "'") || (mode === "double" && char === '"')) {
+        mode = "code";
+        previousPreviousSignificant = previousSignificant;
+        previousSignificant = "v";
+      }
+      continue;
+    }
+    if (mode === "template") {
+      maskAt(index);
+      if (char === "\\") {
+        if (index + 1 < chars.length) maskAt(index + 1);
+        index += 1;
+      } else if (char === "`") {
+        mode = "code";
+        previousPreviousSignificant = previousSignificant;
+        previousSignificant = "v";
+      } else if (char === "$" && next === "{") {
+        maskAt(index + 1);
+        templateExpressionDepths.push(1);
+        index += 1;
+        mode = "code";
+      }
+      continue;
+    }
+    if (mode === "regex") {
+      maskAt(index);
+      if (char === "\\") {
+        if (index + 1 < chars.length) maskAt(index + 1);
+        index += 1;
+      } else if (char === "[") {
+        regexCharacterClass = true;
+      } else if (char === "]") {
+        regexCharacterClass = false;
+      } else if (char === "/" && !regexCharacterClass) {
+        while (/[A-Za-z]/.test(script[index + 1] ?? "")) {
+          index += 1;
+          maskAt(index);
+        }
+        mode = "code";
+        previousPreviousSignificant = previousSignificant;
+        previousSignificant = "/";
+      }
+      continue;
+    }
+    if (templateExpressionDepths.length > 0) {
+      const depthIndex = templateExpressionDepths.length - 1;
+      if (char === "{") templateExpressionDepths[depthIndex] = (templateExpressionDepths[depthIndex] ?? 0) + 1;
+      else if (char === "}") {
+        const depth = (templateExpressionDepths[depthIndex] ?? 1) - 1;
+        templateExpressionDepths[depthIndex] = depth;
+        if (depth === 0) {
+          templateExpressionDepths.pop();
+          maskAt(index);
+          mode = "template";
+          continue;
+        }
+      }
+    }
+    if (char === "/" && next === "/") {
+      maskAt(index);
+      maskAt(index + 1);
+      index += 1;
+      mode = "line-comment";
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      maskAt(index);
+      maskAt(index + 1);
+      index += 1;
+      mode = "block-comment";
+      continue;
+    }
+    if (char === "'") {
+      maskAt(index);
+      mode = "single";
+      continue;
+    }
+    if (char === '"') {
+      maskAt(index);
+      mode = "double";
+      continue;
+    }
+    if (char === "`") {
+      maskAt(index);
+      mode = "template";
+      continue;
+    }
+    const followsPostfixUpdate = previousPreviousSignificant + previousSignificant === "++"
+      || previousPreviousSignificant + previousSignificant === "--";
+    if (char === "/" && !followsPostfixUpdate && (!previousSignificant || /[({[=,:;!?&|+\-*%^~<>]/.test(previousSignificant))) {
+      maskAt(index);
+      mode = "regex";
+      regexCharacterClass = false;
+      continue;
+    }
+    if (!/\s/.test(char)) {
+      previousPreviousSignificant = previousSignificant;
+      previousSignificant = char;
+    }
+  }
+
+  if (mode !== "code" && mode !== "line-comment") valid = false;
+  if (templateExpressionDepths.length > 0) valid = false;
+  return { mask: chars.join(""), valid };
+}
+
+function parseStaticJavaScriptString(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return null;
+  const quote = trimmed[0];
+  if ((quote !== "'" && quote !== '"') || trimmed[trimmed.length - 1] !== quote) return null;
+  const body = trimmed.slice(1, -1);
+  let decoded = "";
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index] ?? "";
+    if (char === quote) return null;
+    if (char !== "\\") {
+      decoded += char;
+      continue;
+    }
+    index += 1;
+    const escaped = body[index];
+    if (escaped === undefined) return null;
+    if (escaped === "n") decoded += "\n";
+    else if (escaped === "r") decoded += "\r";
+    else if (escaped === "t") decoded += "\t";
+    else if (escaped === "\\" || escaped === "'" || escaped === '"') decoded += escaped;
+    else return null;
+  }
+  return decoded;
+}
+
+function parseStaticJavaScriptStringAt(script: string, startIndex: number): { value: string; endIndex: number } | null {
+  let index = startIndex;
+  while (/\s/.test(script[index] ?? "")) index += 1;
+  const quote = script[index];
+  if (quote !== "'" && quote !== '"') return null;
+  const literalStart = index;
+  index += 1;
+  for (; index < script.length; index += 1) {
+    const char = script[index] ?? "";
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char !== quote) continue;
+    const value = parseStaticJavaScriptString(script.slice(literalStart, index + 1));
+    return value === null ? null : { value, endIndex: index + 1 };
+  }
+  return null;
+}
+
+function findMatchingJavaScriptDelimiter(mask: string, openIndex: number, open: string, close: string): number {
+  let depth = 0;
+  for (let index = openIndex; index < mask.length; index += 1) {
+    const char = mask[index] ?? "";
+    if (char === open) depth += 1;
+    else if (char === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function findMatchingJavaScriptParen(mask: string, openIndex: number): number {
+  return findMatchingJavaScriptDelimiter(mask, openIndex, "(", ")");
+}
+
+function splitJavaScriptCallArguments(script: string, mask: string, openIndex: number, closeIndex: number): string[] {
+  const args: string[] = [];
+  let start = openIndex + 1;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  for (let index = openIndex + 1; index < closeIndex; index += 1) {
+    const char = mask[index] ?? "";
+    if (char === "(") parenDepth += 1;
+    else if (char === ")") parenDepth -= 1;
+    else if (char === "[") bracketDepth += 1;
+    else if (char === "]") bracketDepth -= 1;
+    else if (char === "{") braceDepth += 1;
+    else if (char === "}") braceDepth -= 1;
+    else if (char === "," && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+      args.push(script.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  args.push(script.slice(start, closeIndex).trim());
+  return args;
+}
+
+function extractNodeInlineEvalScripts(command: string): string[] {
+  const scripts: string[] = [];
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (!commandStart) continue;
+      if (isEnvironmentAssignmentWord(word) || CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
+      let commandIndex = index;
+      for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+        const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
+        const operandIndex = findConductorWrapperOperandIndex(commandName, words, commandIndex + 1);
+        if (operandIndex === undefined) break;
+        if (operandIndex === null) {
+          commandIndex = -1;
+          break;
+        }
+        commandIndex = operandIndex;
+      }
+      if (commandIndex >= 0 && ["node", "node.exe", "nodejs", "nodejs.exe"].includes(commandNameFromShellWord(words[commandIndex] ?? ""))) {
+        for (let argIndex = commandIndex + 1; argIndex < words.length; argIndex += 1) {
+          const arg = words[argIndex] ?? "";
+          if (!arg || isShellCommandSeparator(arg)) break;
+          if (arg === "-pe" || arg === "-e" || arg === "--eval") {
+            const script = words[argIndex + 1] ?? "";
+            if (script && !isShellCommandSeparator(script)) scripts.push(script);
+            break;
+          }
+          if (arg === "-p" || arg === "--print") {
+            const nextArg = words[argIndex + 1] ?? "";
+            if (nextArg === "-e" || nextArg === "--eval") continue;
+            if (nextArg && !isShellCommandSeparator(nextArg)) scripts.push(nextArg);
+            break;
+          }
+          const attachedShortPrefix = (["-pe", "-e", "-p"] as const).find(
+            (prefix) => arg.startsWith(prefix) && arg.length > prefix.length,
+          );
+          if (attachedShortPrefix) {
+            scripts.push(arg.slice(attachedShortPrefix.length));
+            break;
+          }
+          const inlinePrefix = (["--eval=", "--print="] as const).find(
+            (prefix) => arg.startsWith(prefix) && arg.length > prefix.length,
+          );
+          if (inlinePrefix) {
+            scripts.push(arg.slice(inlinePrefix.length));
+            break;
+          }
+        }
+      }
+      commandStart = false;
+    }
+  }
+  return scripts;
+}
+
+function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWrite[] {
+  const writes: ConductorInterpreterWrite[] = [];
+  const pushAmbiguous = (): void => {
+    writes.push({ runtime: "node", targets: [], unresolved: true });
+  };
+
+  for (const script of extractNodeInlineEvalScripts(command)) {
+    if (/^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\})?$/.test(script.trim())) {
+      pushAmbiguous();
+      continue;
+    }
+    // The shell tokenizer yields the actual eval operand but intentionally does not
+    // preserve quote provenance. Shell-parameter and backtick syntax inside that
+    // operand is therefore ambiguous: it may be expanded before Node parses source.
+    if (script.includes("`") || script.includes("$(") || /\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-+?=][^}]*)?\}/.test(script)) {
+      pushAmbiguous();
+      continue;
+    }
+    const lexical = maskJavaScriptStringsAndComments(script);
+    const mask = lexical.mask;
+    if (!lexical.valid) {
+      pushAmbiguous();
+      continue;
+    }
+    if (/\\u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})/.test(mask)) pushAmbiguous();
+    if (/\b(?:eval|Function)\b/.test(mask)) pushAmbiguous();
+    if (/\bcreateRequire\s*\(/.test(mask)) pushAmbiguous();
+    for (const match of mask.matchAll(/\brequire\b/g)) {
+      const afterRequire = (match.index ?? 0) + safeString(match[0]).length;
+      if (!/^\s*\(/.test(mask.slice(afterRequire))) pushAmbiguous();
+    }
+    for (const match of mask.matchAll(/\bgetBuiltinModule\b/g)) {
+      const afterLoader = (match.index ?? 0) + safeString(match[0]).length;
+      if (!/^\s*\(/.test(mask.slice(afterLoader))) pushAmbiguous();
+    }
+    for (const match of mask.matchAll(/\b(?:module|(?:globalThis\s*\.\s*)?process(?:\s*\.\s*mainModule)?)\s*\[/g)) {
+      const openIndex = (match.index ?? 0) + match[0].lastIndexOf("[");
+      const closeIndex = findMatchingJavaScriptDelimiter(mask, openIndex, "[", "]");
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        continue;
+      }
+      const computedMember = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
+      if (computedMember === null || ["require", "getBuiltinModule"].includes(computedMember)) pushAmbiguous();
+    }
+
+    const fsBindings = new Set<string>();
+    const directFunctionBindings = new Map<string, string>();
+    const calls = new Map<number, { method: string; openIndex: number }>();
+    const recognizedLoaderCloseIndexes = new Set<number>();
+    const registerDestructuredBindings = (entries: string, separator: ":" | "as"): void => {
+      for (const rawEntry of entries.split(",")) {
+        const entry = rawEntry.trim();
+        const parts = separator === ":" ? entry.split(":") : entry.split(/\s+as\s+/);
+        const methodName = safeString(parts[0]).trim();
+        const localName = safeString(parts[1] ?? methodName).trim();
+        if (!/^[A-Za-z_$][\w$]*$/.test(localName)) {
+          pushAmbiguous();
+          continue;
+        }
+        if (NODE_FS_MUTATION_METHODS.has(methodName)) directFunctionBindings.set(localName, methodName);
+        else if (!NODE_FS_READ_ONLY_METHODS.has(methodName)) pushAmbiguous();
+      }
+    };
+    const loaderPattern = "(?:process\\.mainModule\\.require|module\\.require|require|import|(?:globalThis\\.)?process\\.getBuiltinModule)";
+    const objectBindingPattern = new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:await\\s+)?${loaderPattern}\\s*\\(`, "g");
+    for (const match of mask.matchAll(objectBindingPattern)) {
+      const openIndex = (match.index ?? 0) + match[0].lastIndexOf("(");
+      const closeIndex = findMatchingJavaScriptParen(mask, openIndex);
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        continue;
+      }
+      const moduleName = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
+      if (isNodeFsModuleName(moduleName)) {
+        fsBindings.add(safeString(match[1]));
+        recognizedLoaderCloseIndexes.add(closeIndex);
+      } else if (moduleName === null || isNodeMutationCapableModuleName(moduleName)) pushAmbiguous();
+    }
+    const destructuredPattern = new RegExp(`\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(?:await\\s+)?${loaderPattern}\\s*\\(`, "g");
+    for (const match of mask.matchAll(destructuredPattern)) {
+      const openIndex = (match.index ?? 0) + match[0].lastIndexOf("(");
+      const closeIndex = findMatchingJavaScriptParen(mask, openIndex);
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        continue;
+      }
+      const moduleName = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
+      if (isNodeFsModuleName(moduleName)) {
+        registerDestructuredBindings(safeString(match[1]), ":");
+        recognizedLoaderCloseIndexes.add(closeIndex);
+      } else if (moduleName === null || isNodeMutationCapableModuleName(moduleName)) pushAmbiguous();
+    }
+    for (const match of mask.matchAll(/\bimport\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\b/g)) {
+      const moduleLiteral = parseStaticJavaScriptStringAt(script, (match.index ?? 0) + match[0].length);
+      const moduleName = moduleLiteral?.value ?? null;
+      if (isNodeFsModuleName(moduleName)) fsBindings.add(safeString(match[1]));
+      else if (isNodeMutationCapableModuleName(moduleName)) pushAmbiguous();
+    }
+    for (const match of mask.matchAll(/\bimport\s*\{([^}]*)\}\s*from\b/g)) {
+      const moduleLiteral = parseStaticJavaScriptStringAt(script, (match.index ?? 0) + match[0].length);
+      const moduleName = moduleLiteral?.value ?? null;
+      if (isNodeFsModuleName(moduleName)) registerDestructuredBindings(safeString(match[1]), "as");
+      else if (isNodeMutationCapableModuleName(moduleName)) pushAmbiguous();
+    }
+
+    const registerAccess = (method: string | null, callOpenIndex: number | null): void => {
+      if (method === null) {
+        pushAmbiguous();
+        return;
+      }
+      if (NODE_FS_READ_ONLY_METHODS.has(method)) return;
+      if (!NODE_FS_MUTATION_METHODS.has(method) || callOpenIndex === null) {
+        pushAmbiguous();
+        return;
+      }
+      calls.set(callOpenIndex, { method, openIndex: callOpenIndex });
+    };
+    const inspectAccessTail = (tailStart: number): boolean => {
+      const tail = mask.slice(tailStart);
+      if (/^\s*\?\./.test(tail)) {
+        pushAmbiguous();
+        return true;
+      }
+      const dotMatch = /^\s*(?:\.\s*promises\s*)?\.\s*([A-Za-z_$][\w$]*)(\s*\()?/.exec(tail);
+      if (dotMatch) {
+        const method = safeString(dotMatch[1]);
+        const callOpenIndex = dotMatch[2] ? tailStart + dotMatch[0].lastIndexOf("(") : null;
+        registerAccess(method, callOpenIndex);
+        return true;
+      }
+      const computedMatch = /^\s*(?:\.\s*promises\s*)?\[/.exec(tail);
+      if (!computedMatch) return false;
+      const openIndex = tailStart + computedMatch[0].lastIndexOf("[");
+      const closeIndex = findMatchingJavaScriptDelimiter(mask, openIndex, "[", "]");
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        return true;
+      }
+      const method = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
+      const callMatch = /^\s*\(/.exec(mask.slice(closeIndex + 1));
+      registerAccess(method, callMatch ? closeIndex + 1 + callMatch[0].lastIndexOf("(") : null);
+      return true;
+    };
+    const directLoaderPattern = new RegExp(`\\b${loaderPattern}\\s*\\(`, "g");
+    for (const match of mask.matchAll(directLoaderPattern)) {
+      const openIndex = (match.index ?? 0) + match[0].lastIndexOf("(");
+      const closeIndex = findMatchingJavaScriptParen(mask, openIndex);
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        continue;
+      }
+      const moduleName = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
+      if (isNodeFsModuleName(moduleName)) {
+        const handled = inspectAccessTail(closeIndex + 1);
+        if (!handled && !recognizedLoaderCloseIndexes.has(closeIndex)) pushAmbiguous();
+      }
+      else if (moduleName === null || isNodeMutationCapableModuleName(moduleName)) pushAmbiguous();
+    }
+    for (const binding of fsBindings) {
+      const escaped = binding.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const accessPattern = new RegExp(`\\b${escaped}\\s*(?:\\.\\s*promises\\s*)?(?:\\?\\.|\\.|\\[)`, "g");
+      for (const match of mask.matchAll(accessPattern)) {
+        const accessStart = match.index ?? 0;
+        inspectAccessTail(accessStart + safeString(match[0]).indexOf(binding) + binding.length);
+      }
+      const referencePattern = new RegExp(`\\b${escaped}\\b`, "g");
+      for (const match of mask.matchAll(referencePattern)) {
+        const referenceIndex = match.index ?? 0;
+        const afterBinding = referenceIndex + safeString(match[0]).length;
+        const before = mask.slice(0, referenceIndex);
+        const tail = mask.slice(afterBinding);
+        const isDeclaration = /(?:\bconst|\blet|\bvar)\s+$/.test(before) && /^\s*=/.test(tail);
+        const isStaticImport = /\bimport\s+(?:\*\s+as\s+)?$/.test(before) && /^\s+from\b/.test(tail);
+        if (isDeclaration || isStaticImport || /^\s*(?:\?\.|\.|\[)/.test(tail)) continue;
+        pushAmbiguous();
+      }
+    }
+    for (const [binding, method] of directFunctionBindings) {
+      const escaped = binding.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const referencePattern = new RegExp(`\\b${escaped}\\b`, "g");
+      for (const match of mask.matchAll(referencePattern)) {
+        const afterBinding = (match.index ?? 0) + safeString(match[0]).length;
+        const callMatch = /^\s*\(/.exec(mask.slice(afterBinding));
+        if (!callMatch) continue;
+        const callOpenIndex = afterBinding + callMatch[0].lastIndexOf("(");
+        calls.set(callOpenIndex, { method, openIndex: callOpenIndex });
+      }
+    }
+    for (const { method, openIndex } of calls.values()) {
+      const closeIndex = findMatchingJavaScriptParen(mask, openIndex);
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        continue;
+      }
+      const args = splitJavaScriptCallArguments(script, mask, openIndex, closeIndex);
+      if ((method === "open" || method === "openSync") && isReadOnlyNodeOpenFlags(parseStaticJavaScriptString(args[1] ?? ""))) continue;
+      const targetIndexes = NODE_FS_TWO_TARGET_MUTATION_METHODS.has(method) ? [0, 1] : [0];
+      const targets = targetIndexes.map((index) => parseStaticJavaScriptString(args[index] ?? ""));
+      writes.push({
+        runtime: "node",
+        targets: targets.filter((target): target is string => target !== null && target !== ""),
+        unresolved: targets.some((target) => target === null || target === ""),
+      });
+    }
+  }
+  return writes;
+}
+
+
 function extractConductorInterpreterWrites(command: string): ConductorInterpreterWrite[] {
   const writes: ConductorInterpreterWrite[] = [];
   const scanCommand = normalizeShellLineContinuations(command);
+  writes.push(...extractNodeFsSemanticMutations(command));
   let recognizedPythonOpenWrites = 0;
   let recognizedPythonPathMutations = 0;
   let recognizedPythonShutilMutations = 0;
-
-  for (const match of scanCommand.matchAll(/\bnode\b[\s\S]{0,520}\b(?:appendFileSync|writeFileSync|appendFile|writeFile|createWriteStream)\s*\(\s*(["'])([^"']+)\1/g)) {
-    const target = safeString(match[2]).trim();
-    writes.push({ runtime: "node", targets: target ? [target] : [], unresolved: !target });
-  }
-  if (/\bnode\b[\s\S]{0,520}\b(?:appendFileSync|writeFileSync|appendFile|writeFile|createWriteStream)\s*\(/.test(scanCommand)
-    && !writes.some((write) => write.runtime === "node")) {
-    writes.push({ runtime: "node", targets: [], unresolved: true });
-  }
 
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bopen\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']*[wax+][^"']*)\3/g)) {
     const target = safeString(match[2]).trim();
@@ -7834,6 +8395,8 @@ function findConductorWrapperOperandIndex(commandName: string, words: string[], 
       return findNiceDispatchOperandIndex(words, startIndex);
     case "stdbuf":
       return findStdbufDispatchOperandIndex(words, startIndex);
+    case "xargs":
+      return findXargsDispatchOperandIndex(words, startIndex);
     default:
       return undefined;
   }

@@ -195,12 +195,13 @@ export async function handleWikiToolCall(request: {
           tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
           category: typeof args.category === 'string' ? args.category as WikiCategory : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
+          logQuery: false,
         });
         return text(result);
       }
 
       case 'wiki_lint':
-        return text(lintWiki(root));
+        return text(lintWiki(root, undefined, { logLint: false }));
 
       case 'wiki_add': {
         const title = String(args.title || '');

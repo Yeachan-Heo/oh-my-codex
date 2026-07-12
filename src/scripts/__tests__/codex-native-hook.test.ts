@@ -959,10 +959,7 @@ describe("codex native hook dispatch", () => {
       teamConfig.workers[0] = { ...teamConfig.workers[0]!, pane_id: "%worker" };
       await saveTeamConfig(teamConfig, cwd);
       await writeWorkerIdentity(teamName, "worker-1", teamConfig.workers[0]!, cwd);
-      await writeJson(join(stateDir, "session.json"), {
-        session_id: sessionId,
-        native_session_id: leaderAgentId,
-      });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderAgentId });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -997,8 +994,7 @@ describe("codex native hook dispatch", () => {
         tool_use_id: "tool-cli-issue-3127-team-leader",
       }, { cwd, env: teamEnv });
       assert.equal(leaderWithWorkerEnv.status, 0, leaderWithWorkerEnv.stderr || leaderWithWorkerEnv.stdout);
-      const leaderOutput = parseSingleJsonStdout(leaderWithWorkerEnv.stdout);
-      const leaderHookOutput = leaderOutput.hookSpecificOutput as Record<string, unknown>;
+      const leaderHookOutput = parseSingleJsonStdout(leaderWithWorkerEnv.stdout).hookSpecificOutput as Record<string, unknown>;
       assert.equal(leaderHookOutput.permissionDecision, "deny");
       assert.match(String(leaderHookOutput.permissionDecisionReason ?? ""), /Main-root Conductor mode is active/);
 
@@ -1009,61 +1005,120 @@ describe("codex native hook dispatch", () => {
         OMX_TEAM_WORKER: "",
         OMX_TEAM_INTERNAL_WORKER: "",
       };
-      for (const [name, toolName, toolInput] of [
-        [
-          "filesystem-write",
-          "mcp__filesystem__write_file",
-          { path: "src/mcp-write.ts", content: "export const escaped = true;\n" },
-        ],
-        [
-          "state-write",
-          "mcp__omx_state__state_write",
-          { mode: "ultragoal", active: true, current_phase: "executing" },
-        ],
-      ] as const) {
-        const childResult = runNativeHookCliResult({
+      const runActorProbe = (
+        actor: "main-root" | "native-child",
+        name: string,
+        toolName: string,
+        toolInput: Record<string, unknown>,
+      ): Record<string, unknown> => {
+        const result = runNativeHookCliResult({
           hook_event_name: "PreToolUse",
           cwd,
-          session_id: sessionId,
-          agent_id: "agent-cli-issue-3127-child",
+          session_id: actor === "main-root" ? leaderAgentId : sessionId,
+          ...(actor === "native-child" ? { agent_id: "agent-cli-issue-3127-child" } : {}),
           tool_name: toolName,
-          tool_use_id: `tool-cli-issue-3127-${name}`,
+          tool_use_id: `tool-cli-issue-3127-${actor}-${name}`,
           tool_input: toolInput,
         }, { cwd, env: childEnv });
-        assert.equal(childResult.status, 0, `${name}: ${childResult.stderr || childResult.stdout}`);
-        const output = parseSingleJsonStdout(childResult.stdout);
-        assert.deepEqual(Object.keys(output), ["hookSpecificOutput"], name);
+        assert.equal(result.status, 0, `${actor}/${name}: ${result.stderr || result.stdout}`);
+        return parseSingleJsonStdout(result.stdout);
+      };
+      const requireActorDeny = (actor: "main-root" | "native-child", name: string, output: Record<string, unknown>): void => {
         const hookOutput = output.hookSpecificOutput as Record<string, unknown>;
-        assert.equal(hookOutput.permissionDecision, "deny", name);
-        assert.match(String(hookOutput.permissionDecisionReason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, name);
+        assert.ok(hookOutput, `${actor}/${name}: ${JSON.stringify(output)}`);
+        assert.equal(hookOutput.permissionDecision, "deny", `${actor}/${name}`);
+        assert.match(
+          String(hookOutput.permissionDecisionReason ?? ""),
+          actor === "native-child" ? /OWNER_CONFIRMATION_REQUIRED/ : /Main-root Conductor mode is active/,
+          `${actor}/${name}`,
+        );
+      };
+
+      for (const [name, toolName, toolInput] of [
+        ["filesystem-write", "mcp__filesystem__write_file", { path: "src/mcp-write.ts", content: "escaped" }],
+        ["state-write", "mcp__omx_state__state_write", { mode: "ultragoal", active: true }],
+      ] as const) {
+        const output = runActorProbe("native-child", name, toolName, toolInput);
+        requireActorDeny("native-child", name, output);
       }
 
-      const readOnlyChildResult = runNativeHookCliResult({
-        hook_event_name: "PreToolUse",
-        cwd,
-        session_id: sessionId,
-        agent_id: "agent-cli-issue-3127-child",
-        tool_name: "Read",
-        tool_use_id: "tool-cli-issue-3127-read-only",
-        tool_input: { file_path: "src/read-only.ts" },
-      }, { cwd, env: childEnv });
-      assert.equal(readOnlyChildResult.status, 0, readOnlyChildResult.stderr || readOnlyChildResult.stdout);
-      assert.deepEqual(parseSingleJsonStdout(readOnlyChildResult.stdout), {});
+      for (const [name, command] of [
+        ["node-rm-sync", `node -e "require('fs').rmSync('src/victim.ts')"`],
+        ["node-rename-sync", `node -e "require('fs').renameSync('src/a.ts','src/b.ts')"`],
+        ["node-template-interpolation", "node -e '" + '`${require("fs").rmSync("src/template.ts")}`' + "'"],
+        ["node-computed-mutation", `node -e "const fs=require('fs');const op='rmSync';fs[op]('src/computed.ts')"`],
+        ["node-static-computed-mutation", `node -e "const fs=require('fs');fs['rmSync']('src/computed-static.ts')"`],
+        ["node-esm-rename", `node --input-type=module -e "import fs from 'node:fs';fs.renameSync('src/esm-a.ts','src/esm-b.ts')"`],
+        ["nodejs-rm-sync", `nodejs -e "require('fs').rmSync('src/nodejs.ts')"`],
+        ["node-exe-rm-sync", `node.exe -e "require('fs').rmSync('src/node-exe.ts')"`],
+        ["node-get-builtin-module", `node -e "process.getBuiltinModule('fs').rmSync('src/builtin.ts')"`],
+        ["node-optional-mutation", `node -e "const fs=require('fs');fs?.rmSync('src/optional.ts')"`],
+        ["node-aliased-fs-object", `node -e "const fs=require('fs');const alias=fs;alias.rmSync('src/alias.ts')"`],
+        ["node-dynamic-eval-source", `PAYLOAD="require('fs').rmSync('src/env.ts')"; node -e "$PAYLOAD"`],
+        ["node-concatenated-eval-source", `A="require('fs')."; B="rmSync('src/concat.ts')"; node -e "$A$B"`],
+        ["node-backtick-eval-source", `node -e "\`cat payload.js\`"`],
+        ["node-command-substitution-eval-source", `node -e "$(cat payload.js)"`],
+        ["node-combined-print-eval", `node -pe "require('fs').rmSync('src/combined.ts')"`],
+        ["node-split-print-eval", `node -p -e "require('fs').rmSync('src/split-flags.ts')"`],
+        ["node-aliased-require", `node -e "const req=require;const fs=req('fs');fs.rmSync('src/aliased-require.ts')"`],
+        ["node-object-escaped-fs", `node -e "const h={fs:require('fs')};h.fs.rmSync('src/object-escape.ts')"`],
+        ["node-computed-require-alias", `node -e "const req=module['require'];const fs=req('fs');fs.rmSync('src/computed-require.ts')"`],
+        ["node-computed-builtin-loader", `node -e "const fs=process['getBuiltinModule']('fs');fs.rmSync('src/computed-builtin.ts')"`],
+        ["node-postfix-division-mutation", `node -e "let x=1;x++ / require('fs').rmSync('src/postfix-division.ts') / 1"`],
+        ["node-string-division-mutation", `node -e "'value' / require('fs').rmSync('src/string-division.ts') / 1"`],
+        ["node-unicode-escaped-loader", `node -e 'requ\\u0069re("fs").rmSync("src/unicode-escape.ts")'`],
+        ["node-parenthesized-eval", `node -e "(eval)('require(\\"fs\\").rmSync(\\"src/eval-bypass.ts\\")')"`],
+        ["node-concatenated-computed-loader", `node -e "const fs=module['requ'+'ire']('fs');fs.rmSync('src/computed-loader.ts')"`],
+        ["node-attached-short-eval", `node -e"require('fs').rmSync('src/attached-eval.ts')"`],
+        ["node-xargs-wrapper-mutation", `printf x | xargs node -e "require('fs').rmSync('src/xargs-bypass.ts')"`],
+        ["node-child-process-mutation", `node -e "require('child_process').execFileSync('rm',['-f','src/child-process-bypass.ts'])"`],
+        ["node-dynamic-target", `node -e "const fs=require('fs');fs.rmSync(process.argv[1])" src/dynamic.ts`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
+        }
+      }
 
-      const unknownChildResult = runNativeHookCliResult({
-        hook_event_name: "PreToolUse",
-        cwd,
-        session_id: sessionId,
-        agent_id: "agent-cli-issue-3127-child",
-        tool_name: "mcp__example__future_mutation",
-        tool_use_id: "tool-cli-issue-3127-unknown",
-        tool_input: { target: "src/unknown.ts" },
-      }, { cwd, env: childEnv });
-      assert.equal(unknownChildResult.status, 0, unknownChildResult.stderr || unknownChildResult.stdout);
-      const unknownOutput = parseSingleJsonStdout(unknownChildResult.stdout);
-      const unknownHookOutput = unknownOutput.hookSpecificOutput as Record<string, unknown>;
-      assert.equal(unknownHookOutput.permissionDecision, "deny");
-      assert.match(String(unknownHookOutput.permissionDecisionReason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      for (const [name, command] of [
+        ["node-read-file", `node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
+        ["node-mutation-text", `node -e 'console.log("require(\\"fs\\").rmSync(\\"src/victim.ts\\")")'`],
+        ["node-write-mutation-text", `node -e 'console.log("require(\\"fs\\").writeFileSync(\\"src/victim.ts\\", \\"x\\")")'`],
+        ["node-esm-read-file", `node --input-type=module -e "import fs from 'node:fs';fs.readFileSync('src/victim.ts','utf8')"`],
+        ["node-open-read-only", `node -e "require('fs').openSync('src/victim.ts','r')"`],
+        ["node-regex-mutation-text", `node -e 'console.log(/require\\("fs"\\)\\.rmSync\\("src\\/victim.ts"\\)/.test("x"))'`],
+        ["node-static-unrelated-computed-member", `node -e "console.log(module['filename'])"`],
+        ["node-attached-short-read", `node -e"require('fs').readFileSync('src/victim.ts','utf8')"`],
+        ["node-xargs-wrapper-read", `printf x | xargs node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
+        ["node-read-only-path-module", `node -e "console.log(require('path').join('src','victim.ts'))"`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          assert.deepEqual(runActorProbe(actor, name, "Bash", { command }), {}, `${actor}/${name}`);
+        }
+      }
+
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(actor, "unknown", runActorProbe(actor, "unknown", "mcp__example__future_mutation", { target: "src/unknown.ts" }));
+      }
+      for (const [name, toolName] of [
+        ["wiki-ingest", "mcp__omx_wiki__wiki_ingest"],
+        ["project-memory-write", "mcp__omx_memory__project_memory_write"],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, toolName, { content: "mutation" }));
+        }
+      }
+      for (const [name, toolName, toolInput] of [
+        ["trace-summary", "mcp__omx_trace__trace_summary", { workingDirectory: cwd }],
+        ["lsp-diagnostics", "mcp__omx_code_intel__lsp_diagnostics", { file: "src/runtime.ts" }],
+        ["wiki-query", "mcp__omx_wiki__wiki_query", { query: "native hook", workingDirectory: cwd }],
+        ["project-memory-read", "mcp__omx_memory__project_memory_read", { workingDirectory: cwd }],
+        ["notepad-stats", "mcp__omx_memory__notepad_stats", { workingDirectory: cwd }],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          assert.deepEqual(runActorProbe(actor, name, toolName, toolInput), {}, `${actor}/${name}`);
+        }
+      }
+      assert.deepEqual(runActorProbe("native-child", "read-only", "Read", { file_path: "src/read-only.ts" }), {});
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -82,7 +82,17 @@ authority. A leader anchor is always resolved first, so a leader payload remains
 Main-root even when Team environment variables are present. A native child with a
 non-leader `agent_id` is recognized as same-session provenance only; any mutation
 through Bash, built-in patch tools, filesystem MCP, OMX state MCP, or an
-unrecognized transport is denied with `OWNER_CONFIRMATION_REQUIRED`.
+unrecognized transport is denied with `OWNER_CONFIRMATION_REQUIRED`. Bash
+classification includes semantic mutation APIs inside actual inline runtime code,
+including Node `fs` write, remove, rename, copy, link, permission, and timestamp
+operations. The hook inspects actual `node`/`nodejs` eval operands, including attached
+short-option forms and structurally resolved wrapper chains such as `xargs`, resolves
+explicit CommonJS or ESM `fs` bindings and property calls, and treats Node
+`child_process` loaders as mutation-capable. Shell-parameter, command-substitution, or
+backtick eval source, computed or unsupported loader/`fs` access, malformed source,
+and unresolved mutation targets fail closed. For statically
+inspectable source, string/comment/regular-expression text does not become mutation
+authority through broad raw-command matching.
 
 Official Team worker roots may omit both `agent_id` and legacy `thread_id`.
 After Main-root exclusion, OMX preserves their established exemption only when
@@ -90,6 +100,16 @@ the Team environment agrees with the durable worker identity, Team config, and
 current worker pane recorded under the strictly resolved Team state root. A
 leader native-session match wins before this check, and a payload with any named
 unknown or foreign identity cannot borrow the Team exemption.
+
+Known read-only MCP compatibility tools are governed by an explicit name contract,
+not a read-looking prefix heuristic. The audited contract covers filesystem/state
+reads, trace timeline/summary, code-intelligence diagnostic, symbol, hover, and
+reference queries, wiki query/lint/list/read, and project-memory/notepad read or stats
+operations. MCP wiki query/lint explicitly suppress their normal durable audit-log
+side effect on this read-only transport. Mutating siblings such as
+filesystem writes, state writes, AST replacement, wiki ingest/add/delete, and
+memory/notepad writes are not in that contract. Unknown tool names remain denied
+while the Conductor boundary is active.
 
 Planning boundaries (`ralplan`, `deep-interview`) remain fail-closed for mutation
 transports: only their documented planning artifact paths and non-deactivating
