@@ -589,16 +589,22 @@ describe('runtime', () => {
   it('rejects explicit mixed worker policy before initial team state or workers are created', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-explicit-policy-'));
     const previousLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
     process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--dangerously-bypass-approvals-and-sandbox -a on-request';
     try {
       await assert.rejects(
-        () => startTeam('explicit-policy', 'task', 'executor', 1, [{ subject: 's', description: 'd' }], cwd),
+        () => withEmptyPath(() =>
+          startTeam('explicit-policy', 'task', 'executor', 1, [{ subject: 's', description: 'd' }], cwd),
+        ),
         /Invalid OMX_TEAM_WORKER_LAUNCH_ARGS: bypass cannot be combined with direct approval or sandbox policy/,
       );
       assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', 'explicit-policy')), false);
     } finally {
       if (typeof previousLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = previousLaunchArgs;
       else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
       await rm(cwd, { recursive: true, force: true });
     }
   });

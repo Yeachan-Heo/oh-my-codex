@@ -2557,15 +2557,6 @@ export async function startTeam(
     await assertTeamStartupIsNonDestructive(displayName, leaderCwd, leaderSessionId);
   }
 
-  if (workerLaunchMode === 'interactive') {
-    if (!isTmuxAvailable()) {
-      throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
-    }
-    if (!hasCurrentTmuxClientContext()) {
-      throw new Error('Team mode requires running inside tmux current leader pane');
-    }
-  }
-
   const teamStateRoot = resolveCanonicalTeamStateRoot(leaderCwd);
   const requestedApprovedExecution = normalizeApprovedTeamExecutionBinding(options.approvedExecution);
   const requestedApprovedExecutionOutcome = requestedApprovedExecution
@@ -2640,6 +2631,14 @@ export async function startTeam(
       workerLaunchPolicyPlan.map((workerLaunchPolicy) => workerLaunchPolicy.workerCli),
       launchEnv,
     );
+  }
+  if (workerLaunchMode === 'interactive') {
+    if (!isTmuxAvailable()) {
+      throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
+    }
+    if (!hasCurrentTmuxClientContext()) {
+      throw new Error('Team mode requires running inside tmux current leader pane');
+    }
   }
 
   await detectAndCleanStaleTeam(sanitized, leaderCwd, workerCount, options.confirmStaleCleanup);
