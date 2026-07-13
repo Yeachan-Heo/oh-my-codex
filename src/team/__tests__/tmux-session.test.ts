@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import {
   buildClientAttachedReconcileHookName,
@@ -1115,7 +1116,7 @@ describe('buildWorkerStartupCommand', () => {
     process.env.SHELL = '/bin/bash';
     process.env.OMX_TEAM_WORKER_CLI = 'claude';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
-    process.argv = [...prevArgv, '--madmax'];
+    process.argv = ['node', 'omx', '--madmax'];
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1);
       assert.match(cmd, /exec .*claude/);
@@ -1615,7 +1616,7 @@ describe('buildWorkerStartupCommand', () => {
     process.env.SHELL = '/bin/bash';
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
-    process.argv = [...prevArgv, '--dangerously-bypass-approvals-and-sandbox'];
+    process.argv = ['node', 'omx', '--dangerously-bypass-approvals-and-sandbox'];
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, ['--dangerously-bypass-approvals-and-sandbox']);
       const matches = cmd.match(/--dangerously-bypass-approvals-and-sandbox/g) || [];
@@ -1635,7 +1636,7 @@ describe('buildWorkerStartupCommand', () => {
     process.env.SHELL = '/bin/bash';
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
-    process.argv = [...prevArgv, '--madmax'];
+    process.argv = ['node', 'omx', '--madmax'];
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1);
       const matches = cmd.match(/--dangerously-bypass-approvals-and-sandbox/g) || [];
@@ -1763,6 +1764,36 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('recognizes every model-instructions config spelling before -- and ignores positional suffixes', () => {
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const customOverride = 'model_instructions_file="/tmp/custom.md"';
+    const configForms = [
+      ['-c', customOverride],
+      ['--config', customOverride],
+      [`-c=${customOverride}`],
+      [`--config=${customOverride}`],
+    ];
+    delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    try {
+      for (const launchArgs of configForms) {
+        const spec = buildWorkerProcessLaunchSpec('alpha', 1, launchArgs, '/tmp/project', {}, 'codex', undefined, 'explore');
+        assert.equal(spec.args.filter((arg) => arg.includes('model_instructions_file=')).length, 1);
+        assert.ok(spec.args.some((arg) => arg.includes(customOverride)));
+      }
+
+      for (const launchArgs of configForms) {
+        const spec = buildWorkerProcessLaunchSpec('alpha', 1, ['--', ...launchArgs], '/tmp/project', {}, 'codex', undefined, 'explore');
+        const marker = spec.args.indexOf('--');
+        assert.ok(marker > 0);
+        assert.ok(spec.args.slice(0, marker).some((arg) => arg.includes('model_instructions_file="/tmp/project/AGENTS.md"')));
+        assert.deepEqual(spec.args.slice(marker + 1), launchArgs);
+      }
+    } finally {
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
 
   it('does not synthesize absent first-party OMX MCP server tables for Codex team workers', async () => {
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
@@ -1816,6 +1847,50 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.OMX_TEAM_WORKER_MCP_COMPAT;
       if (typeof prevCodexHome === 'string') process.env.CODEX_HOME = prevCodexHome;
       else delete process.env.CODEX_HOME;
+    }
+  });
+
+  it('recognizes every MCP config spelling before -- and inserts generated overrides before positional suffixes', async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-team-mcp-config-forms-'));
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-team-mcp-home-'));
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const previousCompat = process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+    const enabledOverride = 'mcp_servers.omx_state.enabled=true';
+    const configForms = [
+      ['-c', enabledOverride],
+      ['--config', enabledOverride],
+      [`-c=${enabledOverride}`],
+      [`--config=${enabledOverride}`],
+    ];
+    try {
+      await writeFile(join(codexHome, 'config.toml'), '[mcp_servers.omx_state]\ncommand = "omx"\n');
+      process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+      delete process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+      const startupEnv = { OMX_TEAM_STATE_ROOT: stateRoot, CODEX_HOME: codexHome };
+
+      for (const [index, launchArgs] of configForms.entries()) {
+        writeWorkerStartupScriptCommand('alpha', index + 1, launchArgs, '/tmp/project', startupEnv, 'codex', undefined, 'explore');
+        const script = await readFile(join(stateRoot, 'team', 'alpha', 'runtime', `worker-${index + 1}-startup.sh`), 'utf-8');
+        assert.equal((script.match(/mcp_servers\.omx_state\.enabled=/g) ?? []).length, 1);
+        assert.match(script, /mcp_servers\.omx_state\.enabled=true/);
+        assert.doesNotMatch(script, /mcp_servers\.omx_state\.enabled=false/);
+      }
+
+      for (const [index, launchArgs] of configForms.entries()) {
+        const workerIndex = index + 10;
+        writeWorkerStartupScriptCommand('alpha', workerIndex, ['--', ...launchArgs], '/tmp/project', startupEnv, 'codex', undefined, 'explore');
+        const script = await readFile(join(stateRoot, 'team', 'alpha', 'runtime', `worker-${workerIndex}-startup.sh`), 'utf-8');
+        const generatedIndex = script.indexOf('mcp_servers.omx_state.enabled=false');
+        const positionalIndex = script.indexOf('mcp_servers.omx_state.enabled=true');
+        assert.ok(generatedIndex >= 0 && generatedIndex < positionalIndex);
+      }
+    } finally {
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof previousCompat === 'string') process.env.OMX_TEAM_WORKER_MCP_COMPAT = previousCompat;
+      else delete process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+      await rm(stateRoot, { recursive: true, force: true });
+      await rm(codexHome, { recursive: true, force: true });
     }
   });
 
@@ -2267,6 +2342,8 @@ describe('team worker CLI helpers', () => {
     assert.equal(resolveTeamWorkerCli(['--model', 'gemini-2.0-pro'], {}), 'gemini');
     assert.equal(resolveTeamWorkerCli(['--model', 'gpt-5'], {}), 'codex');
     assert.equal(resolveTeamWorkerCli([], {}), 'codex');
+    assert.equal(resolveTeamWorkerCli(['--', '--model', 'claude-3-7-sonnet'], {}), 'codex');
+    assert.equal(resolveTeamWorkerCli(['--', '--model=gemini-2.0-pro'], {}), 'codex');
   });
 
   it('resolveTeamWorkerCli accepts explicit gemini override', () => {
@@ -2510,6 +2587,309 @@ describe('team worker launch mode helpers', () => {
       assert.deepEqual(spec.args, ['--model', 'gpt-5.6-luna']);
     } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('suppresses ambient madmax and role-default bypass for direct Codex policy', () => {
+    const previousArgv = process.argv;
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.argv = ['node', 'omx', '--madmax'];
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const spec = buildWorkerProcessLaunchSpec(
+        'policy-team',
+        1,
+        ['--ask-for-approval', 'on-request'],
+        '/tmp/workspace',
+        {},
+        'codex',
+        undefined,
+        'executor',
+      );
+      assert.deepEqual(spec.args, ['--ask-for-approval', 'on-request']);
+    } finally {
+      process.argv = previousArgv;
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('preserves no-policy Codex bypass defaults exactly once for execution, absent, and unknown roles', () => {
+    const previousArgv = process.argv;
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.argv = ['node', 'omx'];
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+
+      for (const role of ['executor', undefined, 'unknown-role']) {
+        const spec = buildWorkerProcessLaunchSpec('policy-team', 1, [], '/tmp/workspace', {}, 'codex', undefined, role);
+        assert.equal(spec.args.filter((arg) => arg === '--dangerously-bypass-approvals-and-sandbox').length, 1, String(role));
+      }
+      const readOnlySpec = buildWorkerProcessLaunchSpec('policy-team', 1, [], '/tmp/workspace', {}, 'codex', undefined, 'explore');
+      assert.equal(readOnlySpec.args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
+      const bypassOnlySpec = buildWorkerProcessLaunchSpec('policy-team', 1, ['--madmax'], '/tmp/workspace', {}, 'codex', undefined, 'executor');
+      assert.deepEqual(bypassOnlySpec.args, ['--dangerously-bypass-approvals-and-sandbox']);
+    } finally {
+      process.argv = previousArgv;
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('keeps ambient and role-default bypasses before end-of-options while suffix lookalikes remain positional', () => {
+    const previousArgv = process.argv;
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const positionalSuffix = ['--', '--madmax', '--sandbox', 'workspace-write', 'C:\\workspace\\tail\\'];
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      process.argv = ['node', 'omx', '--', '--madmax'];
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec('policy-team', 1, positionalSuffix, '/tmp/workspace', {}, 'codex', undefined, 'explore').args,
+        positionalSuffix,
+      );
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec('policy-team', 1, positionalSuffix, '/tmp/workspace', {}, 'codex', undefined, 'executor').args,
+        ['--dangerously-bypass-approvals-and-sandbox', ...positionalSuffix],
+      );
+
+      process.argv = ['node', 'omx', '--madmax', '--', '--sandbox', 'workspace-write'];
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec('policy-team', 1, positionalSuffix, '/tmp/workspace', {}, 'codex', undefined, 'explore').args,
+        ['--dangerously-bypass-approvals-and-sandbox', ...positionalSuffix],
+      );
+    } finally {
+      process.argv = previousArgv;
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('fails closed when a mixed final Codex policy reaches the platform boundary', () => {
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      assert.throws(
+        () => buildWorkerProcessLaunchSpec(
+          'policy-team',
+          1,
+          ['--dangerously-bypass-approvals-and-sandbox', '--sandbox', 'workspace-write'],
+          '/tmp/workspace',
+          {},
+          'codex',
+          undefined,
+          'executor',
+        ),
+        /internal_mixed_codex_worker_policy_argv/,
+      );
+    } finally {
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('executes the generated POSIX startup script with canonical config policy and exact positional argv', async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-worker-policy-script-'));
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-worker-policy-codex-home-'));
+    const fakeBin = join(stateRoot, 'bin');
+    const capturePath = join(stateRoot, 'worker-argv.json');
+    const injectionMarkerPath = join(stateRoot, 'injected');
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const previousPath = process.env.PATH;
+    const previousCapture = process.env.OMX_POLICY_ARGV_CAPTURE;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.OMX_POLICY_ARGV_CAPTURE = capturePath;
+    try {
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        join(fakeBin, 'codex'),
+        `#!/usr/bin/env node
+require('fs').writeFileSync(process.env.OMX_POLICY_ARGV_CAPTURE, JSON.stringify(process.argv.slice(2)));
+`,
+      );
+      await chmod(join(fakeBin, 'codex'), 0o755);
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+
+      const positionalSuffix = [
+        'C:\\workspace\\nested\\',
+        '',
+        '--sandbox=read-only',
+        '--madmax',
+        `$(touch ${injectionMarkerPath})`,
+      ];
+      const launchArgs = ['--config', 'sandbox_mode="workspace-write"', '--', ...positionalSuffix];
+      const expectedArgs = ['--sandbox', 'workspace-write', '--', ...positionalSuffix];
+      const workerEnv = { OMX_TEAM_STATE_ROOT: stateRoot, CODEX_HOME: codexHome };
+      const spec = buildWorkerProcessLaunchSpec('policy-team', 1, launchArgs, stateRoot, workerEnv, 'codex', undefined, 'executor');
+      const scriptCommand = writeWorkerStartupScriptCommand(
+        'policy-team',
+        1,
+        launchArgs,
+        stateRoot,
+        workerEnv,
+        'codex',
+        undefined,
+        'executor',
+      );
+      const scriptPath = join(stateRoot, 'team', 'policy-team', 'runtime', 'worker-1-startup.sh');
+      const script = await readFile(scriptPath, 'utf-8');
+      const execution = spawnSync('/bin/sh', [scriptPath], { encoding: 'utf-8' });
+
+      assert.deepEqual(spec.args, expectedArgs);
+      assert.equal(spec.env.CODEX_HOME, codexHome);
+      assert.match(script, new RegExp(escapeRegExp(`export CODEX_HOME='${codexHome}'`)));
+      assert.match(scriptCommand ?? '', /worker-1-startup\.sh/);
+      assert.equal(execution.status, 0, execution.stderr);
+      assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf-8')), expectedArgs);
+      assert.equal(fs.existsSync(injectionMarkerPath), false);
+      assert.doesNotMatch(script, /dangerously-bypass-approvals-and-sandbox/);
+    } finally {
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousCapture === 'string') process.env.OMX_POLICY_ARGV_CAPTURE = previousCapture;
+      else delete process.env.OMX_POLICY_ARGV_CAPTURE;
+      await rm(stateRoot, { recursive: true, force: true });
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it('captures exact native-Windows harness PowerShell wrapper argv for canonical policy and positional suffixes', async () => {
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-worker-policy-win32-'));
+    const capturePath = join(fakeBin, 'powershell-argv.json');
+    const previousPath = process.env.PATH;
+    const previousPathext = process.env.PATHEXT;
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const previousMsystem = process.env.MSYSTEM;
+    const previousOstype = process.env.OSTYPE;
+    const previousWsl = process.env.WSL_DISTRO_NAME;
+    const previousWslInterop = process.env.WSL_INTEROP;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      const codexPs1Path = join(fakeBin, 'codex.ps1');
+      const powershellExePath = join(fakeBin, 'powershell.exe');
+      await writeFile(codexPs1Path, '');
+      await writeFile(
+        powershellExePath,
+        `#!${process.execPath}
+require('fs').writeFileSync(process.env.OMX_POLICY_ARGV_CAPTURE, JSON.stringify(process.argv.slice(2)));
+`,
+      );
+      await chmod(powershellExePath, 0o755);
+      process.env.PATH = fakeBin;
+      process.env.PATHEXT = '.EXE;.PS1';
+      process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+      delete process.env.MSYSTEM;
+      delete process.env.OSTYPE;
+      delete process.env.WSL_DISTRO_NAME;
+      delete process.env.WSL_INTEROP;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+      const positionalSuffix = ['C:\\workspace\\nested\\', '', '--sandbox=read-only', '--madmax'];
+      const expectedWorkerArgs = ['--sandbox', 'workspace-write', '--', ...positionalSuffix];
+      const windowsSpec = buildWorkerProcessLaunchSpec(
+        'policy-team',
+        1,
+        ['--config', 'sandbox_mode="workspace-write"', '--', ...positionalSuffix],
+        'C:\\workspace',
+        {},
+        'codex',
+        undefined,
+        'executor',
+      );
+      const execution = spawnSync(windowsSpec.command, windowsSpec.args, {
+        encoding: 'utf-8',
+        env: { ...process.env, ...windowsSpec.env, OMX_POLICY_ARGV_CAPTURE: capturePath },
+      });
+
+      assert.equal(windowsSpec.command, powershellExePath);
+      assert.equal(execution.status, 0, execution.stderr);
+      assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf-8')), [
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', codexPs1Path, ...expectedWorkerArgs,
+      ]);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousPathext === 'string') process.env.PATHEXT = previousPathext;
+      else delete process.env.PATHEXT;
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof previousMsystem === 'string') process.env.MSYSTEM = previousMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof previousOstype === 'string') process.env.OSTYPE = previousOstype;
+      else delete process.env.OSTYPE;
+      if (typeof previousWsl === 'string') process.env.WSL_DISTRO_NAME = previousWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof previousWslInterop === 'string') process.env.WSL_INTEROP = previousWslInterop;
+      else delete process.env.WSL_INTEROP;
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects Claude and Gemini restrictive policies before permission translation', () => {
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      for (const workerCli of ['claude', 'gemini'] as const) {
+        const incompatibility = new RegExp(`Selected team worker CLI "${workerCli}" is incompatible with an explicit approval or sandbox policy\\.`);
+        assert.throws(
+          () => buildWorkerProcessLaunchSpec(
+            'policy-team', 1, ['--sandbox', 'workspace-write'], '/tmp/workspace', {}, workerCli, 'Read worker inbox', 'executor',
+          ),
+          incompatibility,
+        );
+        assert.throws(
+          () => buildWorkerProcessLaunchSpec(
+            'policy-team', 1, ['--config', 'sandbox_mode="workspace-write"'], '/tmp/workspace', {}, workerCli, 'Read worker inbox', 'executor',
+          ),
+          incompatibility,
+        );
+        const positionalModel = `${workerCli}-positional-model`;
+        const positionalSpec = buildWorkerProcessLaunchSpec(
+          'policy-team',
+          1,
+          ['--config', 'sandbox_mode="workspace-write"', '--', '--model', positionalModel],
+          '/tmp/workspace',
+          {},
+          undefined,
+          undefined,
+          'executor',
+        );
+        assert.equal(positionalSpec.workerCli, 'codex');
+        assert.deepEqual(positionalSpec.args, [
+          '--sandbox', 'workspace-write', '--', '--model', positionalModel,
+        ]);
+      }
+    } finally {
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('preserves Claude and Gemini no-policy and bypass-only permission defaults', () => {
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec('policy-team', 1, [], '/tmp/workspace', {}, 'claude', undefined, 'executor').args,
+        ['--dangerously-skip-permissions'],
+      );
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec('policy-team', 1, ['--madmax'], '/tmp/workspace', {}, 'claude', undefined, 'executor').args,
+        ['--dangerously-skip-permissions'],
+      );
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec('policy-team', 1, [], '/tmp/workspace', {}, 'gemini', 'Read worker inbox', 'executor').args,
+        ['--approval-mode', 'yolo', '-i', 'Read worker inbox'],
+      );
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec('policy-team', 1, ['--madmax'], '/tmp/workspace', {}, 'gemini', 'Read worker inbox', 'executor').args,
+        ['--approval-mode', 'yolo', '-i', 'Read worker inbox'],
+      );
+    } finally {
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
   });
@@ -3462,6 +3842,140 @@ esac
 });
 
 describe('createTeamSession tmux instance tagging', () => {
+  it('rejects incompatible non-Codex and mixed Codex plans before any direct tmux mutation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-direct-policy-preflight-'));
+    const previousTmux = process.env.TMUX;
+    const previousTmuxPane = process.env.TMUX_PANE;
+    const previousBypassInstructions = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-direct-policy-preflight-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    ;;
+  display-message)
+    echo "leader:0 %1"
+    ;;
+  list-panes)
+    printf "%%1\\tnode\\t'codex'\\n"
+    ;;
+  split-window)
+    echo "%2"
+    ;;
+  *)
+    ;;
+esac
+exit 0
+`,
+        async ({ logPath }) => {
+          const fakeBinDir = dirname(logPath);
+          for (const workerCli of ['codex', 'claude', 'gemini']) {
+            const binaryPath = join(fakeBinDir, workerCli);
+            await writeFile(binaryPath, '#!/bin/sh\nexit 0\n');
+            await chmod(binaryPath, 0o755);
+          }
+
+          process.env.TMUX = 'leader-session,stub,0';
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+          const restrictiveArgs = ['--config', 'sandbox_mode="workspace-write"'];
+          const readOnlyPreflightCommands = [
+            '-V',
+            'display-message -p -t %1 #{session_name}:#{window_index} #{pane_id}',
+          ];
+
+
+          for (const workerCli of ['claude', 'gemini'] as const) {
+            for (const scenario of [
+              {
+                name: `direct-${workerCli}-first`,
+                workerCount: 1,
+                workerStartups: [{ workerCli, launchArgs: restrictiveArgs }],
+              },
+              {
+                name: `direct-${workerCli}-later`,
+                workerCount: 2,
+                workerStartups: [
+                  { workerCli: 'codex' as const, launchArgs: restrictiveArgs },
+                  { workerCli, launchArgs: restrictiveArgs },
+                ],
+              },
+            ]) {
+              await writeFile(logPath, '');
+              assert.throws(
+                () => createTeamSession(
+                  scenario.name,
+                  scenario.workerCount,
+                  cwd,
+                  [],
+                  scenario.workerStartups,
+                ),
+                new RegExp(`Selected team worker CLI "${workerCli}" is incompatible with an explicit approval or sandbox policy\\.`),
+              );
+              const tmuxCommands = (await readFile(logPath, 'utf-8')).trim().split('\n');
+              assert.deepEqual(
+                tmuxCommands,
+                readOnlyPreflightCommands,
+
+                `${scenario.name} must reject after read-only availability/context probes and before tagging, HUD cleanup, splits, or process launch`,
+              );
+            }
+          }
+
+          const mixedCodexArgs = [
+            '--dangerously-bypass-approvals-and-sandbox',
+            '--sandbox',
+            'workspace-write',
+          ];
+          for (const scenario of [
+            {
+              name: 'direct-codex-mixed-first',
+              workerCount: 1,
+              workerStartups: [{ workerCli: 'codex' as const, launchArgs: mixedCodexArgs }],
+            },
+            {
+              name: 'direct-codex-mixed-later',
+              workerCount: 2,
+              workerStartups: [
+                { workerCli: 'codex' as const, launchArgs: restrictiveArgs },
+                { workerCli: 'codex' as const, launchArgs: mixedCodexArgs },
+              ],
+            },
+          ]) {
+            await writeFile(logPath, '');
+            assert.throws(
+              () => createTeamSession(
+                scenario.name,
+                scenario.workerCount,
+                cwd,
+                [],
+                scenario.workerStartups,
+              ),
+              /internal_mixed_codex_worker_policy_argv/,
+            );
+            assert.deepEqual(
+              (await readFile(logPath, 'utf-8')).trim().split('\n'),
+              readOnlyPreflightCommands,
+              `${scenario.name} must reject before tagging, HUD cleanup, splits, or process launch`,
+            );
+          }
+        },
+      );
+    } finally {
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof previousBypassInstructions === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypassInstructions;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('redraws the leader pane after team layout changes so wrapped diff hunks repaint with gutters', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-redraw-leader-'));
     const prevTmux = process.env.TMUX;

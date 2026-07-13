@@ -25,7 +25,9 @@ import {
   trustWorkerMiseConfigIfAvailable,
   writeWorkerStartupScriptCommand,
   resolveTeamWorkerCliForResolvedLaunchArgs,
+  assertTeamWorkerCliPolicyCompatibility,
   tagPaneTeamOwner,
+  type TeamWorkerCli,
 } from './tmux-session.js';
 import { execFileSync, spawnSync } from 'child_process';
 import {
@@ -44,6 +46,7 @@ import {
   teamReadDispatchRequest as readDispatchRequest,
   teamTransitionDispatchRequest as transitionDispatchRequest,
   type TeamConfig,
+  type TeamTask,
   type WorkerInfo,
   type WorkerStatus,
 } from './team-ops.js';
@@ -134,6 +137,76 @@ export interface ScaleDownResult {
 export interface ScaleError {
   ok: false;
   error: string;
+}
+
+type ScaleUpTaskInput = {
+  subject: string;
+  description: string;
+  owner?: string;
+  blocked_by?: string[];
+  role?: string;
+};
+
+interface ScaleUpWorkerLaunchPlan {
+  readonly workerIndex: number;
+  readonly workerName: string;
+  readonly runtimeRole: string;
+  readonly workerLaunchArgs: string[];
+  readonly workerCli: TeamWorkerCli;
+  readonly mixedTaskRoles: readonly string[];
+}
+
+function buildScaleUpWorkerLaunchPlans(params: {
+  count: number;
+  nextWorkerIndex: number;
+  agentType: string;
+  existingTasks: readonly Pick<TeamTask, 'owner' | 'role'>[];
+  incomingTasks: readonly ScaleUpTaskInput[];
+  launchEnv: NodeJS.ProcessEnv;
+  codexHomeOverride?: string;
+}): readonly ScaleUpWorkerLaunchPlan[] {
+  const taskAssignments = [...params.existingTasks, ...params.incomingTasks];
+  const plans: ScaleUpWorkerLaunchPlan[] = [];
+
+  for (let offset = 0; offset < params.count; offset += 1) {
+    const workerIndex = params.nextWorkerIndex + offset;
+    const workerName = `worker-${workerIndex}`;
+    const workerTaskRoles = taskAssignments
+      .filter((task) => task.owner === workerName)
+      .map((task) => task.role)
+      .filter((role): role is string => Boolean(role));
+    const uniqueTaskRoles = new Set(workerTaskRoles);
+    const runtimeRole = workerTaskRoles.length > 0 && uniqueTaskRoles.size === 1
+      ? workerTaskRoles[0]!
+      : params.agentType;
+    const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, params.codexHomeOverride)
+      ?? resolveAgentReasoningEffort(params.agentType, params.codexHomeOverride);
+    const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(
+      params.launchEnv,
+      runtimeRole,
+      preferredReasoning,
+      params.codexHomeOverride,
+    );
+    const workerCli = resolveTeamWorkerCliForResolvedLaunchArgs(
+      offset + 1,
+      params.count,
+      workerLaunchArgs,
+      params.launchEnv,
+    );
+    assertTeamWorkerCliPolicyCompatibility(workerCli, workerLaunchArgs);
+    const immutableWorkerLaunchArgs = [...workerLaunchArgs];
+    Object.freeze(immutableWorkerLaunchArgs);
+    plans.push(Object.freeze({
+      workerIndex,
+      workerName,
+      runtimeRole,
+      workerLaunchArgs: immutableWorkerLaunchArgs,
+      workerCli,
+      mixedTaskRoles: Object.freeze([...uniqueTaskRoles]),
+    }));
+  }
+
+  return Object.freeze(plans);
 }
 
 function resolveInstructionStateRoot(worktreePath?: string | null): string | undefined {
@@ -254,7 +327,7 @@ export async function scaleUp(
   teamName: string,
   count: number,
   agentType: string,
-  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; role?: string }>,
+  tasks: ScaleUpTaskInput[],
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ScaleUpResult | ScaleError> {
@@ -291,6 +364,29 @@ export async function scaleUp(
     const launchEnv = codexHomeOverride
       ? { ...env, CODEX_HOME: codexHomeOverride }
       : env;
+    // Build and validate every launch plan before any task, directory, worktree,
+    // pane, process, or config mutation. The plan is the sole source of launch
+    // policy; later task materialization must not alter it.
+    const initialNextIndex = config.next_worker_index ?? (currentCount + 1);
+    let workerLaunchPlans: readonly ScaleUpWorkerLaunchPlan[];
+    try {
+      const existingTasks = await listTasks(sanitized, leaderCwd);
+      workerLaunchPlans = buildScaleUpWorkerLaunchPlans({
+        count,
+        nextWorkerIndex: initialNextIndex,
+        agentType,
+        existingTasks,
+        incomingTasks: tasks,
+        launchEnv,
+        codexHomeOverride,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    let nextIndex = initialNextIndex;
     const sessionName = config.tmux_session;
     const manifest = await readTeamManifestV2(sanitized, leaderCwd);
     const dispatchPolicy = normalizeTeamPolicy(manifest?.policy, {
@@ -324,9 +420,6 @@ export async function scaleUp(
       await saveTeamConfig(config, leaderCwd);
     }
 
-    // Resolve the monotonic worker index counter
-    let nextIndex = config.next_worker_index ?? (currentCount + 1);
-    const initialNextIndex = nextIndex;
     const addedWorkers: WorkerInfo[] = [];
     const createdTaskIds: string[] = [];
 
@@ -383,8 +476,8 @@ export async function scaleUp(
       return { ok: false, error };
     };
 
-    // Persist incoming tasks first so scaling resolves worker roles and inboxes from
-    // canonical task state (stable task ids, owner, role), matching startTeam().
+    // Persist incoming tasks only after launch policy is frozen; the resulting
+    // task listing is used for inbox and task materialization, never launch policy.
     for (const task of tasks) {
       const createdTask = await createStateTask(sanitized, {
         subject: task.subject,
@@ -396,29 +489,26 @@ export async function scaleUp(
       }, leaderCwd);
       createdTaskIds.push(createdTask.id);
     }
-    const persistedTasks = await listTasks(sanitized, leaderCwd);
+    const materializedTasks = await listTasks(sanitized, leaderCwd);
 
-    for (let i = 0; i < count; i++) {
-      const workerIndex = nextIndex;
-      nextIndex++;
-      const workerName = `worker-${workerIndex}`;
+    for (const workerLaunchPlan of workerLaunchPlans) {
+      const {
+        workerIndex,
+        workerName,
+        runtimeRole,
+        workerLaunchArgs,
+        workerCli,
+      } = workerLaunchPlan;
+      nextIndex = workerIndex + 1;
+      if (workerLaunchPlan.mixedTaskRoles.length > 1) {
+        console.log(`[omx:scaling] ${workerName}: mixed task roles [${workerLaunchPlan.mixedTaskRoles.join(', ')}], falling back to ${agentType}`);
+      }
 
       // Create worker directory
       const workerDirPath = join(leaderCwd, '.omx', 'state', 'team', sanitized, 'workers', workerName);
       await mkdir(workerDirPath, { recursive: true });
 
-      // Resolve per-worker role from assigned task roles before launch so reasoning effort can vary by teammate.
-      const workerTaskRoles = persistedTasks.filter(t => t.owner === workerName).map(t => t.role).filter(Boolean) as string[];
-      const uniqueTaskRoles = new Set(workerTaskRoles);
-      const workerRole = workerTaskRoles.length > 0 && uniqueTaskRoles.size === 1
-        ? workerTaskRoles[0]
-        : agentType;
-      const runtimeRole = workerRole;
-      if (uniqueTaskRoles.size > 1) {
-        console.log(`[omx:scaling] ${workerName}: mixed task roles [${[...uniqueTaskRoles].join(', ')}], falling back to ${agentType}`);
-      }
-
-      const worktreeMode = resolveScaleUpWorktreeMode(config);
+      const worktreeMode = effectiveWorktreeMode;
       const workerWorkspaceResult = worktreeMode.enabled
         ? ensureWorktree(planWorktreeTarget({
             cwd: leaderCwd,
@@ -434,10 +524,6 @@ export async function scaleUp(
       // Build startup command and create tmux pane
       const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
         ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, codexHomeOverride)
-        ?? resolveAgentReasoningEffort(agentType, codexHomeOverride);
-      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(launchEnv, runtimeRole, preferredReasoning, codexHomeOverride);
-      const workerCli = resolveTeamWorkerCliForResolvedLaunchArgs(i + 1, count, workerLaunchArgs, launchEnv);
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
         ? composeRoleInstructionsForRole(runtimeRole, rawRolePromptContent, resolvedWorkerModel)
@@ -537,7 +623,7 @@ export async function scaleUp(
       const workerInfo: WorkerInfo = {
         name: workerName,
         index: workerIndex,
-        role: workerRole,
+        role: runtimeRole,
         worker_cli: workerCli,
         assigned_tasks: [],
         pid: panePid ?? undefined,
@@ -564,7 +650,7 @@ export async function scaleUp(
       }
 
       // Get assigned tasks for this worker
-      const workerTasks = persistedTasks.filter(t => t.owner === workerName);
+      const workerTasks = materializedTasks.filter(t => t.owner === workerName);
 
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,

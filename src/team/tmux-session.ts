@@ -22,7 +22,13 @@ import {
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
 import { readActiveProviderEnvOverrides } from '../config/models.js';
-import { extractModelProviderOverrideValue } from './model-contract.js';
+import {
+  classifyTeamWorkerLaunchPolicy,
+  extractModelProviderOverrideValue,
+  normalizeTeamWorkerLaunchArgs,
+  parseTeamWorkerLaunchArgs,
+} from './model-contract.js';
+
 import { sleep, sleepSync } from '../utils/sleep.js';
 import {
   buildPlatformCommandSpec,
@@ -812,22 +818,34 @@ function isModelInstructionsOverride(value: string): boolean {
   return new RegExp(`^${MODEL_INSTRUCTIONS_FILE_KEY}\\s*=`).test(value.trim());
 }
 
-function hasModelInstructionsOverride(args: string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
+function someConfigOverrideBeforeEndOfOptions(
+  args: readonly string[],
+  matches: (value: string) => boolean,
+): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--') break;
+
+    let value: string | undefined;
     if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === 'string' && isModelInstructionsOverride(maybeValue)) {
-        return true;
-      }
+      value = args[index + 1];
+      if (value === '--') break;
+      index += 1;
+    } else if (arg.startsWith(`${CONFIG_FLAG}=`)) {
+      value = arg.slice(`${CONFIG_FLAG}=`.length);
+    } else if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
+      value = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
+    } else {
       continue;
     }
-    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
-      const inlineValue = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
-      if (isModelInstructionsOverride(inlineValue)) return true;
-    }
+
+    if (typeof value === 'string' && matches(value)) return true;
   }
   return false;
+}
+
+function hasModelInstructionsOverride(args: readonly string[]): boolean {
+  return someConfigOverrideBeforeEndOfOptions(args, isModelInstructionsOverride);
 }
 
 function normalizeTeamWorkerCliMode(raw: string | undefined, sourceEnv: string = OMX_TEAM_WORKER_CLI_ENV): TeamWorkerCliMode {
@@ -850,6 +868,7 @@ function extractModelOverride(args: string[]): string | null {
   let model: string | null = null;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === '--') break;
     if (arg === MODEL_FLAG) {
       const maybeValue = args[i + 1];
       if (typeof maybeValue === 'string' && maybeValue.trim() !== '' && !maybeValue.startsWith('-')) {
@@ -992,6 +1011,23 @@ function shouldGrantExecutionBypassForRole(workerRole?: string): boolean {
   return agent.tools === 'execution';
 }
 
+export function assertTeamWorkerCliPolicyCompatibility(workerCli: TeamWorkerCli, launchArgs: string[]): void {
+  const policy = classifyTeamWorkerLaunchPolicy(launchArgs);
+  if ((workerCli === 'claude' || workerCli === 'gemini') && (policy === 'direct-policy' || policy === 'mixed-policy')) {
+    throw new Error(
+      `Selected team worker CLI "${workerCli}" is incompatible with an explicit approval or sandbox policy.`,
+    );
+  }
+}
+
+export function assertTeamWorkerLaunchPolicyInvariant(workerCli: TeamWorkerCli, launchArgs: string[]): void {
+  assertTeamWorkerCliPolicyCompatibility(workerCli, launchArgs);
+  if (workerCli === 'codex' && classifyTeamWorkerLaunchPolicy(launchArgs) === 'mixed-policy') {
+    throw new Error('internal_mixed_codex_worker_policy_argv');
+  }
+}
+
+
 export function translateWorkerLaunchArgsForCli(
   workerCli: TeamWorkerCli,
   args: string[],
@@ -1101,21 +1137,10 @@ export function scrubTeamWorkerHudOwnershipEnv<T extends Record<string, string |
 }
 
 function hasConfigOverride(args: readonly string[], key: string): boolean {
-  const prefix = `${key}=`;
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
-      const value = args[index + 1];
-      if (typeof value === 'string' && value.trim().startsWith(prefix)) return true;
-      index += 1;
-      continue;
-    }
-    if (typeof arg === 'string' && arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
-      const value = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
-      if (value.trim().startsWith(prefix)) return true;
-    }
-  }
-  return false;
+  return someConfigOverrideBeforeEndOfOptions(args, (value) => {
+    const trimmed = value.trim();
+    return trimmed.startsWith(key) && /^\s*=/.test(trimmed.slice(key.length));
+  });
 }
 
 function shouldDisableOmxMcpForTeamWorker(env: NodeJS.ProcessEnv): boolean {
@@ -1148,21 +1173,48 @@ function appendTeamWorkerMcpDisableOverrides(args: string[], env: NodeJS.Process
     if (!codexConfigDeclaresMcpServer(server, env)) continue;
     const key = `mcp_servers.${server}.enabled`;
     if (hasConfigOverride(args, key)) continue;
-    args.push(CONFIG_FLAG, `${key}=false`);
+    const endOfOptionsIndex = args.indexOf('--');
+    args.splice(endOfOptionsIndex < 0 ? args.length : endOfOptionsIndex, 0, CONFIG_FLAG, `${key}=false`);
   }
 }
 
+function insertArgsBeforeEndOfOptions(args: string[], insertedArgs: readonly string[]): string[] {
+  const endOfOptionsIndex = args.indexOf('--');
+  if (endOfOptionsIndex < 0) return [...args, ...insertedArgs];
+  return [...args.slice(0, endOfOptionsIndex), ...insertedArgs, ...args.slice(endOfOptionsIndex)];
+}
+
+function insertCanonicalCodexBypassBeforeEndOfOptions(args: string[]): string[] {
+  const endOfOptionsIndex = args.indexOf('--');
+  const preMarkerArgs = endOfOptionsIndex < 0 ? args : args.slice(0, endOfOptionsIndex);
+  const postMarkerArgs = endOfOptionsIndex < 0 ? [] : args.slice(endOfOptionsIndex);
+  return [
+    ...preMarkerArgs.filter((arg) => arg !== CODEX_BYPASS_FLAG && arg !== MADMAX_FLAG),
+    CODEX_BYPASS_FLAG,
+    ...postMarkerArgs,
+  ];
+}
+
 function resolveWorkerLaunchArgs(extraArgs: string[] = [], cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): string[] {
-  const merged = [...extraArgs];
-  const wantsBypass = process.argv.includes(CODEX_BYPASS_FLAG) || process.argv.includes(MADMAX_FLAG);
-  if (wantsBypass && !merged.includes(CODEX_BYPASS_FLAG)) {
-    merged.push(CODEX_BYPASS_FLAG);
+  let merged = [...extraArgs];
+  const initialPolicy = classifyTeamWorkerLaunchPolicy(merged);
+  if (initialPolicy === 'direct-policy') {
+    merged = normalizeTeamWorkerLaunchArgs(merged);
+  }
+  const policy = classifyTeamWorkerLaunchPolicy(merged);
+  const ambientWantsBypass = parseTeamWorkerLaunchArgs(process.argv, 'ambient process arguments', { directPolicyMode: 'ignore' }).wantsBypass;
+  if (policy === 'none' || policy === 'bypass') {
+    const wantsBypass = ambientWantsBypass || policy === 'bypass';
+    if (wantsBypass) {
+      merged = insertCanonicalCodexBypassBeforeEndOfOptions(merged);
+    }
   }
   if (shouldBypassDefaultSystemPrompt(env) && !hasModelInstructionsOverride(merged)) {
-    merged.push(CONFIG_FLAG, buildModelInstructionsOverride(cwd, env));
+    merged = insertArgsBeforeEndOfOptions(merged, [CONFIG_FLAG, buildModelInstructionsOverride(cwd, env)]);
   }
   return merged;
 }
+
 
 export function buildWorkerStartupCommand(
   teamName: string,
@@ -1386,11 +1438,16 @@ function buildWorkerProcessLaunchSpecForMode(
   const effectiveEnv: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd, effectiveEnv);
   const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, effectiveEnv);
+  assertTeamWorkerLaunchPolicyInvariant(workerCli, fullLaunchArgs);
+
   const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs, initialPrompt, workerRole);
+  const launchPolicy = workerCli === 'codex'
+    ? classifyTeamWorkerLaunchPolicy(cliLaunchArgs)
+    : 'none';
   const effectiveCliLaunchArgs = workerCli === 'codex'
     && shouldGrantExecutionBypassForRole(workerRole)
-    && !cliLaunchArgs.includes(CODEX_BYPASS_FLAG)
-    ? [...cliLaunchArgs, CODEX_BYPASS_FLAG]
+    && launchPolicy === 'none'
+    ? insertCanonicalCodexBypassBeforeEndOfOptions(cliLaunchArgs)
     : cliLaunchArgs;
   const workerCodexHomeOverride = typeof effectiveEnv.CODEX_HOME === 'string'
     ? effectiveEnv.CODEX_HOME.trim()
@@ -1405,6 +1462,7 @@ function buildWorkerProcessLaunchSpecForMode(
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
   const shouldUseNativeWindowsLaunchSpec = process.platform === 'win32'
     && (mode === 'direct-spawn' || !isMsysOrGitBash(effectiveEnv, process.platform));
+
   const platformSpec = shouldUseNativeWindowsLaunchSpec
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
     : { command: resolvedCliPath, args: effectiveCliLaunchArgs, resolvedPath: resolvedCliPath };
@@ -1529,12 +1587,26 @@ export function createTeamSession(
   }
   const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
   const defaultWorkerCliPlan = resolveTeamWorkerCliPlan(workerCount, normalizedWorkerLaunchArgs, process.env);
-  const workerCliPlan = workerStartups.length > 0
-    ? workerStartups.map((startup, index) => startup.workerCli ?? defaultWorkerCliPlan[index]!)
-    : defaultWorkerCliPlan;
+  const workerCliPlan = Array.from(
+    { length: workerCount },
+    (_, index) => workerStartups[index]?.workerCli ?? defaultWorkerCliPlan[index]!,
+  );
   for (const workerCli of new Set(workerCliPlan)) {
     assertTeamWorkerCliBinaryAvailable(workerCli);
   }
+  const workerLaunchPolicyPlan = Array.from({ length: workerCount }, (_, index) => {
+    const startup = workerStartups[index] ?? {};
+    const workerCwd = startup.cwd || cwd;
+    const workerEnv = startup.env || {};
+    const launchArgs = startup.launchArgs || workerLaunchArgs;
+    const effectiveLaunchArgs = resolveWorkerLaunchArgs(
+      launchArgs,
+      workerCwd,
+      { ...process.env, ...workerEnv },
+    );
+    assertTeamWorkerLaunchPolicyInvariant(workerCliPlan[index]!, effectiveLaunchArgs);
+    return Object.freeze([...launchArgs]);
+  });
 
   const safeTeamName = sanitizeTeamName(teamName);
   let registeredResizeHook: { name: string; target: string } | null = null;
@@ -1587,7 +1659,7 @@ export function createTeamSession(
       const workerCwd = startup.cwd || cwd;
       const tmuxWorkerCwd = translatePathForMsys(workerCwd);
       const workerEnv = startup.env || {};
-      const launchArgsForWorker = startup.launchArgs || workerLaunchArgs;
+      const launchArgsForWorker = [...(workerLaunchPolicyPlan[i - 1] ?? workerLaunchArgs)];
       trustWorkerMiseConfigIfAvailable(workerCwd);
       const cmd = writeWorkerStartupScriptCommand(
         safeTeamName,

@@ -13,6 +13,7 @@ import {
   scrubTeamWorkerHudOwnershipEnv,
   resolveTeamWorkerCli,
   resolveTeamWorkerCliForResolvedLaunchArgs,
+  assertTeamWorkerCliPolicyCompatibility,
   type TeamWorkerCli,
   resolveTeamWorkerLaunchMode,
   type TeamSession,
@@ -120,7 +121,6 @@ import { composeRoleInstructionsForRole } from '../agents/native-config.js';
 import { codexPromptsDir } from '../utils/paths.js';
 import { isTerminalPhase, type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
-  resolveTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchDiagnostics,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   TEAM_WORKER_INHERITED_MODEL_ENV,
@@ -1640,10 +1640,13 @@ function resolveInstructionStateRoot(worktreePath?: string | null): string | und
   return worktreePath ? WORKTREE_TRIGGER_STATE_ROOT : undefined;
 }
 
-function assertPromptModeWorkerCliSupported(workerCliPlan: readonly TeamWorkerCli[]): void {
+function assertPromptModeWorkerCliSupported(
+  workerCliPlan: readonly TeamWorkerCli[],
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   if (
     workerCliPlan.some((workerCli) => workerCli === 'codex')
-    && process.env[PROMPT_MODE_CODEX_TEST_ALLOW_ENV] !== '1'
+    && env[PROMPT_MODE_CODEX_TEST_ALLOW_ENV] !== '1'
   ) {
     throw new Error(
       `${PROMPT_MODE_CODEX_UNSUPPORTED_REASON}: Codex prompt workers require a terminal; use interactive team mode or set OMX_TEAM_WORKER_CLI=claude/gemini for prompt-mode teammates.`,
@@ -2404,6 +2407,62 @@ function resolveEffectiveWorkerCliForStartupLog(
   return resolveTeamWorkerCli(resolvedLaunchArgs, env);
 }
 
+interface WorkerLaunchPolicyPlan {
+  readonly workerName: string;
+  readonly workerRole: string;
+  readonly taskRoles: readonly string[];
+  readonly preferredReasoning: TeamReasoningEffort | undefined;
+  readonly workerLaunchArgs: readonly string[];
+  readonly workerCli: TeamWorkerCli;
+}
+
+function buildWorkerLaunchPolicyPlan(params: {
+  workerCount: number;
+  tasks: ReadonlyArray<{ owner?: string; role?: string }>;
+  agentType: string;
+  launchEnv: NodeJS.ProcessEnv;
+  codexHomeOverride?: string;
+}): readonly WorkerLaunchPolicyPlan[] {
+  const plans: WorkerLaunchPolicyPlan[] = [];
+
+  for (let workerIndex = 1; workerIndex <= params.workerCount; workerIndex++) {
+    const workerName = `worker-${workerIndex}`;
+    const taskRoles = params.tasks
+      .filter((task) => task.owner === workerName)
+      .map((task) => task.role)
+      .filter((role): role is string => Boolean(role));
+    const uniqueTaskRoles = [...new Set(taskRoles)];
+    const workerRole = taskRoles.length > 0 && uniqueTaskRoles.length === 1
+      ? taskRoles[0]!
+      : params.agentType;
+    const preferredReasoning = resolveAgentReasoningEffort(workerRole, params.codexHomeOverride)
+      ?? resolveAgentReasoningEffort(params.agentType, params.codexHomeOverride);
+    const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
+      params.launchEnv,
+      workerRole,
+      undefined,
+      preferredReasoning,
+    );
+    const workerCli = resolveTeamWorkerCliForResolvedLaunchArgs(
+      workerIndex,
+      params.workerCount,
+      workerLaunchArgs,
+      params.launchEnv,
+    );
+
+    plans.push(Object.freeze({
+      workerName,
+      workerRole,
+      taskRoles: Object.freeze(uniqueTaskRoles),
+      preferredReasoning,
+      workerLaunchArgs: Object.freeze([...workerLaunchArgs]),
+      workerCli,
+    }));
+  }
+
+  return Object.freeze(plans);
+}
+
 
 async function writeDecompositionArtifacts(
   teamName: string,
@@ -2467,13 +2526,15 @@ export async function startTeam(
     : (typeof process.env.CODEX_HOME === 'string' && process.env.CODEX_HOME.trim() !== ''
         ? process.env.CODEX_HOME.trim()
         : undefined);
-  const launchEnv = codexHomeOverride
-    ? { ...process.env, CODEX_HOME: codexHomeOverride }
-    : process.env;
+  const launchEnv = {
+    ...process.env,
+    ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
+  };
+  const workerLaunchMode = resolveTeamWorkerLaunchMode(launchEnv);
+
   await assertNestedTeamAllowed(leaderCwd);
   const effectiveWorktreeMode = resolveEffectiveTeamWorktreeMode(leaderCwd, options.worktreeMode);
   const displayName = sanitizeTeamName(teamName);
-  const workerLaunchMode = resolveTeamWorkerLaunchMode(launchEnv);
   const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
   const rawIdentityScope = resolveTeamIdentityScope(launchEnv);
   const resolvedLeaderSessionId = await resolveLeaderSessionId(leaderCwd, launchEnv);
@@ -2494,15 +2555,6 @@ export async function startTeam(
   await assertTeamStartupIsNonDestructive(sanitized, leaderCwd, leaderSessionId);
   if (displayName !== sanitized) {
     await assertTeamStartupIsNonDestructive(displayName, leaderCwd, leaderSessionId);
-  }
-
-  if (workerLaunchMode === 'interactive') {
-    if (!isTmuxAvailable()) {
-      throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
-    }
-    if (!hasCurrentTmuxClientContext()) {
-      throw new Error('Team mode requires running inside tmux current leader pane');
-    }
   }
 
   const teamStateRoot = resolveCanonicalTeamStateRoot(leaderCwd);
@@ -2557,11 +2609,41 @@ export async function startTeam(
   for (let i = 1; i <= workerCount; i++) {
     workerWorkspaceByName.set(`worker-${i}`, { cwd: leaderCwd });
   }
+  if (activeWorktreeMode) {
+    assertCleanLeaderWorkspaceForWorkerWorktrees(leaderCwd);
+  }
+
+  const workerLaunchPolicyPlan = buildWorkerLaunchPolicyPlan({
+    workerCount,
+    tasks,
+    agentType,
+    launchEnv,
+    codexHomeOverride,
+  });
+  for (const workerLaunchPolicy of workerLaunchPolicyPlan) {
+    assertTeamWorkerCliPolicyCompatibility(
+      workerLaunchPolicy.workerCli,
+      [...workerLaunchPolicy.workerLaunchArgs],
+    );
+  }
+  if (workerLaunchMode === 'prompt') {
+    assertPromptModeWorkerCliSupported(
+      workerLaunchPolicyPlan.map((workerLaunchPolicy) => workerLaunchPolicy.workerCli),
+      launchEnv,
+    );
+  }
+  if (workerLaunchMode === 'interactive') {
+    if (!isTmuxAvailable()) {
+      throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
+    }
+    if (!hasCurrentTmuxClientContext()) {
+      throw new Error('Team mode requires running inside tmux current leader pane');
+    }
+  }
 
   await detectAndCleanStaleTeam(sanitized, leaderCwd, workerCount, options.confirmStaleCleanup);
 
   if (activeWorktreeMode) {
-    assertCleanLeaderWorkspaceForWorkerWorktrees(leaderCwd);
     for (let i = 1; i <= workerCount; i++) {
       const workerName = `worker-${i}`;
       const planned = planWorktreeTarget({
@@ -2594,10 +2676,6 @@ export async function startTeam(
   const createdWorkerPaneIds: string[] = [];
   let createdLeaderPaneId: string | undefined;
   let config: TeamConfig | null = null;
-  const sharedWorkerLaunchArgs = resolveTeamWorkerLaunchArgs({
-    existingRaw: launchEnv.OMX_TEAM_WORKER_LAUNCH_ARGS,
-    fallbackModel: resolveAgentDefaultModel(agentType, codexHomeOverride),
-  });
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(launchEnv);
   const workerStartupEvidenceTimeoutMs = resolveWorkerStartupEvidenceTimeoutMs(
     launchEnv,
@@ -2735,34 +2813,25 @@ export async function startTeam(
       trigger: string;
       triggerIntent: TeamReminderIntent;
       initialPrompt?: string;
-      workerLaunchArgs: string[];
+      workerLaunchArgs: readonly string[];
       workerCli: TeamWorkerCli;
       toolContext: ReturnType<typeof resolveWorktreeToolContext>;
     }>;
-    const workerCliPlan: TeamWorkerCli[] = [];
 
     for (let i = 1; i <= workerCount; i++) {
-      const workerName = `worker-${i}`;
+      const workerLaunchPolicy = workerLaunchPolicyPlan[i - 1];
+      if (!workerLaunchPolicy) {
+        throw new Error(`missing worker launch policy for worker-${i}`);
+      }
+      const workerName = workerLaunchPolicy.workerName;
       const workerWorkspace = workerWorkspaceByName.get(workerName) ?? { cwd: leaderCwd };
       const workerTasks = allTasks.filter(t => t.owner === workerName);
-      const taskRoles = workerTasks.map(t => t.role).filter(Boolean) as string[];
-      const uniqueTaskRoles = new Set(taskRoles);
-      const workerRole = taskRoles.length > 0 && uniqueTaskRoles.size === 1
-        ? taskRoles[0]
-        : agentType;
-      const runtimeRole = workerRole;
+      const runtimeRole = workerLaunchPolicy.workerRole;
       const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
         ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, codexHomeOverride)
-        ?? resolveAgentReasoningEffort(agentType, codexHomeOverride);
-      const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
-        launchEnv,
-        runtimeRole,
-        undefined,
-        preferredReasoning,
-      );
-      const workerCli = resolveTeamWorkerCliForResolvedLaunchArgs(i, workerCount, workerLaunchArgs, launchEnv);
-      const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
+      const workerLaunchArgs = workerLaunchPolicy.workerLaunchArgs;
+      const workerCli = workerLaunchPolicy.workerCli;
+      const resolvedWorkerModel = parseTeamWorkerLaunchArgs([...workerLaunchArgs]).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
         ? composeRoleInstructionsForRole(runtimeRole, rawRolePromptContent, resolvedWorkerModel)
         : null;
@@ -2812,12 +2881,11 @@ export async function startTeam(
       if (initialPrompt) {
         await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
       }
-      workerCliPlan.push(workerCli);
       workerBootstrapPlans.push({
         workerName,
         workerWorkspace,
         workerTasks,
-        workerRole,
+        workerRole: runtimeRole,
         rolePromptContent,
         instructionsFilePath,
         inbox,
@@ -2828,9 +2896,6 @@ export async function startTeam(
         workerCli,
         toolContext,
       });
-    }
-    if (workerLaunchMode === 'prompt') {
-      assertPromptModeWorkerCliSupported(workerCliPlan);
     }
 
     const workerStartups = workerBootstrapPlans.map((plan) => {
@@ -2855,7 +2920,7 @@ export async function startTeam(
         cwd: plan.workerWorkspace.cwd,
         env,
         initialPrompt: plan.initialPrompt,
-        launchArgs: plan.workerLaunchArgs,
+        launchArgs: [...plan.workerLaunchArgs],
         workerCli: plan.workerCli,
         workerRole: plan.workerRole,
       };
@@ -2935,7 +3000,7 @@ export async function startTeam(
         sanitized,
         workerCount,
         leaderCwd,
-        sharedWorkerLaunchArgs,
+        Array.from(workerLaunchPolicyPlan[0]?.workerLaunchArgs ?? []),
         workerStartups,
         { ownerSessionId: leaderSessionId, teamPaneOwnerId: config.tmux_pane_owner_id },
       );
@@ -2954,16 +3019,19 @@ export async function startTeam(
       config.resize_hook_name = null;
       config.resize_hook_target = null;
       for (let i = 1; i <= workerCount; i++) {
-        const startup = workerStartups[i - 1] || {};
-        const workerName = `worker-${i}`;
+        const startup = workerStartups[i - 1];
+        const workerLaunchPolicy = workerLaunchPolicyPlan[i - 1];
+        if (!startup || !workerLaunchPolicy) {
+          throw new Error(`missing worker launch plan for worker-${i}`);
+        }
         const child = spawnPromptWorker(
           sanitized,
-          workerName,
+          workerLaunchPolicy.workerName,
           i,
-          startup.cwd || leaderCwd,
-          startup.launchArgs || sharedWorkerLaunchArgs,
-          startup.env || {},
-          startup.workerCli || workerCliPlan[i - 1],
+          startup.cwd,
+          startup.launchArgs,
+          startup.env,
+          startup.workerCli,
           startup.initialPrompt,
           startup.workerRole,
         );
@@ -3011,12 +3079,9 @@ export async function startTeam(
       const initialPrompt = bootstrapPlan.initialPrompt;
       const startupStartedAt = performance.now();
 
-      const taskRoles = workerTasks
-        .map((task) => task.role)
-        .filter((role): role is string => Boolean(role));
-      const uniqueTaskRoles = [...new Set(taskRoles)];
-      if (uniqueTaskRoles.length > 1) {
-        console.log(`[omx:team] ${workerName}: mixed task roles [${uniqueTaskRoles.join(', ')}], falling back to ${agentType}`);
+      const taskRoles = workerLaunchPolicyPlan[workerIndex - 1]?.taskRoles ?? [];
+      if (taskRoles.length > 1) {
+        console.log(`[omx:team] ${workerName}: mixed task roles [${taskRoles.join(', ')}], falling back to ${agentType}`);
       }
 
 
@@ -3027,7 +3092,7 @@ export async function startTeam(
           workerName,
           workerIndex,
           paneId,
-          workerCli: workerCliPlan[workerIndex - 1],
+          workerCli: bootstrapPlan.workerCli,
           inbox,
           triggerMessage: trigger,
           intent: triggerIntent,
@@ -3076,7 +3141,7 @@ export async function startTeam(
             workerName,
             workerIndex,
             paneId,
-            workerCli: workerCliPlan[workerIndex - 1],
+            workerCli: bootstrapPlan.workerCli,
             inbox,
             triggerMessage: trigger,
             intent: triggerIntent,

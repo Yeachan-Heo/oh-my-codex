@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'child_process';
 import { mkdtemp, rm, writeFile, readFile, mkdir, chmod, readdir } from 'fs/promises';
-import { join, relative } from 'path';
+import { join, relative, dirname } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
 import { HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
@@ -54,6 +54,7 @@ import { readTeamEvents } from '../state/events.js';
 import { sanitizeTeamName } from '../tmux-session.js';
 import { buildInternalTeamName, resolveTeamIdentityScope } from '../team-identity.js';
 import { writePersistedApprovedTeamExecutionBinding } from '../approved-execution.js';
+import { planWorktreeTarget } from '../worktree.js';
 
 const coverageRun = process.env.NODE_V8_COVERAGE ? true : false;
 const skipSlowLifecycleUnderCoverage = coverageRun
@@ -564,6 +565,453 @@ describe('runtime', () => {
       'explore',
     );
     assert.deepEqual(args, ['--no-alt-screen', '--model', expectedLowComplexityModel()]);
+  });
+
+  it('keeps an explicit direct policy authoritative while preserving inherited model and role reasoning', () => {
+    const args = resolveWorkerLaunchArgsFromEnv(
+      {
+        OMX_TEAM_WORKER_LAUNCH_ARGS: '--sandbox=workspace-write',
+        [TEAM_WORKER_INHERITED_MODEL_ENV]: 'leader-model',
+      },
+      'executor',
+      undefined,
+      'medium',
+      'codex',
+    );
+    assert.deepEqual(args, [
+      '--sandbox', 'workspace-write',
+      '-c', 'model_reasoning_effort="medium"',
+      '--model', 'leader-model',
+    ]);
+
+  });
+
+  it('rejects explicit mixed worker policy before initial team state or workers are created', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-explicit-policy-'));
+    const previousLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
+    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--dangerously-bypass-approvals-and-sandbox -a on-request';
+    try {
+      await assert.rejects(
+        () => withEmptyPath(() =>
+          startTeam('explicit-policy', 'task', 'executor', 1, [{ subject: 's', description: 'd' }], cwd),
+        ),
+        /Invalid OMX_TEAM_WORKER_LAUNCH_ARGS: bypass cannot be combined with direct approval or sandbox policy/,
+      );
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', 'explicit-policy')), false);
+    } finally {
+      if (typeof previousLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = previousLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam launches executor workers with authoritative config policy, positional backslashes, and no bypass', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-direct-policy-start-'));
+    const binDir = join(cwd, 'bin');
+    const capturePath = join(cwd, 'worker-argv.json');
+    const fakeCodexPath = join(binDir, 'codex');
+    let runtime: TeamRuntime | null = null;
+    await mkdir(binDir, { recursive: true });
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `fs.writeFileSync(process.env.OMX_POLICY_ARGV_CAPTURE, JSON.stringify(process.argv.slice(2)));
+process.stdin.resume();
+setTimeout(() => process.exit(0), 5000);
+process.on('SIGTERM', () => process.exit(0));`,
+    );
+
+    try {
+      await withIsolatedDefaultModelEnvAsync(async () => {
+        await withPromptModeCodexEnv(binDir, {
+          OMX_BYPASS_DEFAULT_SYSTEM_PROMPT: '0',
+          OMX_POLICY_ARGV_CAPTURE: capturePath,
+          OMX_TEAM_WORKER_LAUNCH_ARGS: String.raw`--config 'sandbox_mode="workspace-write"' -- 'C:\workspace\nested\' '' '--sandbox=read-only' '--madmax'`,
+        }, async () => {
+          const previousArgv = process.argv;
+          process.argv = ['node', 'omx', '--madmax'];
+          try {
+            runtime = await withoutTeamWorkerEnv(() =>
+              startTeam(
+                'direct-policy-start',
+                'launch executor with a direct sandbox policy',
+                'executor',
+                1,
+                [{ subject: 's', description: 'd', owner: 'worker-1' }],
+                cwd,
+              ));
+          } finally {
+            process.argv = previousArgv;
+          }
+        });
+      });
+
+      const workerArgs = JSON.parse(await waitForFileText(capturePath, (content) => content.length > 0)) as string[];
+      assert.deepEqual(workerArgs, [
+        '--sandbox', 'workspace-write',
+        '-c', 'model_reasoning_effort="medium"',
+        '--model', 'gpt-5.6-sol',
+        '--', 'C:\\workspace\\nested\\', '', '--sandbox=read-only', '--madmax',
+      ]);
+      const startedRuntime = runtime as TeamRuntime | null;
+      assert.ok(startedRuntime);
+      await shutdownTeam(startedRuntime.teamName, cwd, { force: true });
+      runtime = null;
+    } finally {
+      const activeRuntime = runtime as TeamRuntime | null;
+      if (activeRuntime) await shutdownTeam(activeRuntime.teamName, cwd, { force: true }).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects Claude and Gemini restrictive config policy before prompt worker capture and cleans state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-restrictive-noncodex-'));
+    const binDir = join(cwd, 'bin');
+    const previousPath = process.env.PATH;
+    const previousTmux = process.env.TMUX;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const previousLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const previousCapture = process.env.OMX_POLICY_ARGV_CAPTURE;
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    await mkdir(binDir, { recursive: true });
+    try {
+      for (const workerCli of ['claude', 'gemini'] as const) {
+        const capturePath = join(cwd, `${workerCli}-argv.json`);
+        const teamName = `restrictive-${workerCli}`;
+        const teamSessionId = `restrictive-${workerCli}-session`;
+        const internalTeamName = buildInternalTeamName(teamName, resolveTeamIdentityScope({ OMX_SESSION_ID: teamSessionId }));
+        assert.match(internalTeamName, new RegExp(`^${teamName}-[a-f0-9]{8}$`));
+        await writeFile(
+          join(binDir, workerCli),
+          `#!/usr/bin/env node
+require('fs').writeFileSync(process.env.OMX_POLICY_ARGV_CAPTURE, JSON.stringify(process.argv.slice(2)));
+`,
+          { mode: 0o755 },
+        );
+        process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+        delete process.env.TMUX;
+        process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+        process.env.OMX_TEAM_WORKER_CLI = workerCli;
+        process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = `--config 'sandbox_mode="workspace-write"'`;
+        process.env.OMX_SESSION_ID = teamSessionId;
+        process.env.OMX_POLICY_ARGV_CAPTURE = capturePath;
+
+        await assert.rejects(
+          () => withoutTeamWorkerEnv(() =>
+            startTeam(teamName, 'restrictive non-Codex policy', 'executor', 1, [{ subject: 's', description: 'd', owner: 'worker-1' }], cwd)),
+          new RegExp(`Selected team worker CLI "${workerCli}" is incompatible with an explicit approval or sandbox policy\\.`),
+        );
+        assert.equal(existsSync(capturePath), false, `${workerCli} must not be spawned`);
+        assert.equal(
+          existsSync(join(cwd, '.omx', 'state', 'team', internalTeamName)),
+          false,
+          `${workerCli} internal state must be rolled back`,
+        );
+      }
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof previousLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = previousLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof previousCapture === 'string') process.env.OMX_POLICY_ARGV_CAPTURE = previousCapture;
+      else delete process.env.OMX_POLICY_ARGV_CAPTURE;
+      if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects mixed CLI restrictive policy before any prompt worker is spawned', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-mixed-policy-rollback-'));
+    const codexBin = join(cwd, 'codex-bin');
+    const nonCodexBin = join(cwd, 'non-codex-bin');
+    const previousPath = process.env.PATH;
+    const previousTmux = process.env.TMUX;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const previousWorkerCliMap = process.env.OMX_TEAM_WORKER_CLI_MAP;
+    const previousLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const previousAllowNonTty = process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    const previousCodexCapture = process.env.OMX_CODEX_PID_CAPTURE;
+    const previousNonCodexCapture = process.env.OMX_NON_CODEX_CAPTURE;
+    await mkdir(codexBin, { recursive: true });
+    await mkdir(nonCodexBin, { recursive: true });
+    try {
+      await writeFile(
+        join(codexBin, 'codex'),
+        `#!${process.execPath}
+const fs = require('fs');
+fs.writeFileSync(process.env.OMX_CODEX_PID_CAPTURE, String(process.pid));
+setInterval(() => {}, 1000);
+process.on('SIGTERM', () => process.exit(0));
+`,
+        { mode: 0o755 },
+      );
+      for (const workerCli of ['claude', 'gemini'] as const) {
+        await writeFile(
+          join(nonCodexBin, workerCli),
+          `#!${process.execPath}
+require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slice(2).join(' '));
+`,
+          { mode: 0o755 },
+        );
+      }
+
+
+      process.env.PATH = [codexBin, nonCodexBin, previousPath ?? ''].join(':');
+      delete process.env.TMUX;
+      delete process.env.OMX_TEAM_WORKER_CLI;
+      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+      process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--config sandbox_mode="workspace-write"';
+      process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = '1';
+      process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+
+      for (const nonCodexCli of ['claude', 'gemini'] as const) {
+        const teamName = `mixed-${nonCodexCli}-rollback`;
+        const teamSessionId = `mixed-${nonCodexCli}-rollback-session`;
+        const internalTeamName = buildInternalTeamName(teamName, resolveTeamIdentityScope({ OMX_SESSION_ID: teamSessionId }));
+        const codexCapturePath = join(cwd, `${nonCodexCli}-codex.pid`);
+        const nonCodexCapturePath = join(cwd, `${nonCodexCli}-non-codex.argv`);
+        process.env.OMX_SESSION_ID = teamSessionId;
+        process.env.OMX_TEAM_WORKER_CLI_MAP = `codex,${nonCodexCli}`;
+        process.env.OMX_CODEX_PID_CAPTURE = codexCapturePath;
+        process.env.OMX_NON_CODEX_CAPTURE = nonCodexCapturePath;
+
+        await assert.rejects(
+          () => withoutTeamWorkerEnv(() =>
+            startTeam(
+              teamName,
+              'mixed CLI restrictive policy rollback',
+              'executor',
+              2,
+              [
+                { subject: 'codex task', description: 'first worker', owner: 'worker-1' },
+                { subject: 'non-Codex task', description: 'second worker', owner: 'worker-2' },
+              ],
+              cwd,
+            )),
+          new RegExp(`Selected team worker CLI "${nonCodexCli}" is incompatible with an explicit approval or sandbox policy\\.`),
+        );
+
+        assert.equal(existsSync(codexCapturePath), false, 'Codex must not spawn before every worker policy is compatible');
+        assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', internalTeamName)), false);
+        assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', internalTeamName, 'tasks')), false);
+        assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', internalTeamName, 'workers')), false);
+        assert.equal(existsSync(nonCodexCapturePath), false, `${nonCodexCli} must not be spawned`);
+      }
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof previousWorkerCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousWorkerCliMap;
+      else delete process.env.OMX_TEAM_WORKER_CLI_MAP;
+      if (typeof previousLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = previousLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof previousAllowNonTty === 'string') process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = previousAllowNonTty;
+      else delete process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      if (typeof previousCodexCapture === 'string') process.env.OMX_CODEX_PID_CAPTURE = previousCodexCapture;
+      else delete process.env.OMX_CODEX_PID_CAPTURE;
+      if (typeof previousNonCodexCapture === 'string') process.env.OMX_NON_CODEX_CAPTURE = previousNonCodexCapture;
+      else delete process.env.OMX_NON_CODEX_CAPTURE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects restrictive later CLI before provisioning or composing a reused worker worktree', async () => {
+    const repo = await initRepo();
+    const teamName = 'reused-worktree-policy';
+    const teamSessionId = 'reused-worktree-policy-session';
+    const internalTeamName = buildInternalTeamName(teamName, resolveTeamIdentityScope({ OMX_SESSION_ID: teamSessionId }));
+    const worktreeMode = { enabled: true, detached: false, name: 'policy-preflight-reuse' } as const;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const previousWorkerCliMap = process.env.OMX_TEAM_WORKER_CLI_MAP;
+    const previousLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const previousAllowNonTty = process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    let workerWorktreePath: string | null = null;
+    let rejectedWorkerWorktreePath: string | null = null;
+    let rejectedWorkerBranchName: string | null = null;
+
+    try {
+      await writeFile(join(repo, '.gitignore'), '.omx/\n', 'utf-8');
+      execFileSync('git', ['add', '.gitignore'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'ignore team worktrees'], { cwd: repo, stdio: 'ignore' });
+
+      const workerWorktreePlan = planWorktreeTarget({
+        cwd: repo,
+        scope: 'team',
+        mode: worktreeMode,
+        teamName: internalTeamName,
+        workerName: 'worker-1',
+      });
+      if (!workerWorktreePlan.enabled || !workerWorktreePlan.branchName) {
+        throw new Error('expected named reusable worker worktree plan');
+      }
+      workerWorktreePath = workerWorktreePlan.worktreePath;
+      await mkdir(dirname(workerWorktreePath), { recursive: true });
+      execFileSync(
+        'git',
+        ['worktree', 'add', '-b', workerWorktreePlan.branchName, workerWorktreePath, 'HEAD'],
+        { cwd: repo, stdio: 'ignore' },
+      );
+
+      const agentsPath = join(workerWorktreePath, 'AGENTS.md');
+      await writeFile(agentsPath, '# Reused worker instructions\n\nKeep this exact content.\n', 'utf-8');
+      execFileSync('git', ['add', 'AGENTS.md'], { cwd: workerWorktreePath, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'seed reusable worker instructions'], { cwd: workerWorktreePath, stdio: 'ignore' });
+      const agentsBefore = await readFile(agentsPath);
+      const indexBefore = execFileSync('git', ['ls-files', '-v', '--', 'AGENTS.md'], {
+        cwd: workerWorktreePath,
+        encoding: 'utf-8',
+      });
+      const statusBefore = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+        cwd: workerWorktreePath,
+        encoding: 'utf-8',
+      });
+      const rejectedWorkerPlan = planWorktreeTarget({
+        cwd: repo,
+        scope: 'team',
+        mode: worktreeMode,
+        teamName: internalTeamName,
+        workerName: 'worker-2',
+      });
+      if (!rejectedWorkerPlan.enabled || !rejectedWorkerPlan.branchName) {
+        throw new Error('expected named rejected worker worktree plan');
+      }
+      rejectedWorkerWorktreePath = rejectedWorkerPlan.worktreePath;
+      rejectedWorkerBranchName = rejectedWorkerPlan.branchName;
+      const worktreeRegistryBefore = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+        cwd: repo,
+        encoding: 'utf-8',
+      });
+      const sourceStatusBefore = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+        cwd: repo,
+        encoding: 'utf-8',
+      });
+      const rejectedBranchBefore = execFileSync('git', ['branch', '--list', rejectedWorkerBranchName], {
+        cwd: repo,
+        encoding: 'utf-8',
+      });
+      assert.equal(rejectedBranchBefore, '');
+      assert.equal(existsSync(rejectedWorkerWorktreePath), false);
+
+
+      delete process.env.OMX_TEAM_WORKER_CLI;
+      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+      process.env.OMX_TEAM_WORKER_CLI_MAP = 'codex,claude';
+      process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--config sandbox_mode="workspace-write"';
+      process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = '1';
+      process.env.OMX_SESSION_ID = teamSessionId;
+
+      await assert.rejects(
+        () => withoutTeamWorkerEnv(() =>
+          startTeam(
+            teamName,
+            'reject policy before reused worktree mutation',
+            'executor',
+            2,
+            [
+              { subject: 'Codex task', description: 'first worker', owner: 'worker-1' },
+              { subject: 'Claude task', description: 'later worker', owner: 'worker-2' },
+            ],
+            repo,
+            { worktreeMode },
+          )),
+        /Selected team worker CLI "claude" is incompatible with an explicit approval or sandbox policy\./,
+      );
+
+      assert.deepEqual(await readFile(agentsPath), agentsBefore);
+      assert.equal(
+        execFileSync('git', ['ls-files', '-v', '--', 'AGENTS.md'], {
+          cwd: workerWorktreePath,
+          encoding: 'utf-8',
+        }),
+        indexBefore,
+      );
+      assert.equal(
+        execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+          cwd: workerWorktreePath,
+          encoding: 'utf-8',
+        }),
+        statusBefore,
+      );
+      assert.equal(
+        execFileSync('git', ['worktree', 'list', '--porcelain'], {
+          cwd: repo,
+          encoding: 'utf-8',
+        }),
+        worktreeRegistryBefore,
+      );
+      assert.equal(
+        execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+          cwd: repo,
+          encoding: 'utf-8',
+        }),
+        sourceStatusBefore,
+      );
+      assert.equal(
+        execFileSync('git', ['branch', '--list', rejectedWorkerBranchName], {
+          cwd: repo,
+          encoding: 'utf-8',
+        }),
+        rejectedBranchBefore,
+      );
+      assert.equal(existsSync(rejectedWorkerWorktreePath), false);
+
+      assert.equal(existsSync(join(repo, '.omx', 'state', 'current-task-baseline.json')), false);
+      assert.equal(existsSync(join(repo, '.omx', 'state', 'team', internalTeamName)), false);
+    } finally {
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof previousWorkerCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousWorkerCliMap;
+      else delete process.env.OMX_TEAM_WORKER_CLI_MAP;
+      if (typeof previousLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = previousLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof previousAllowNonTty === 'string') process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = previousAllowNonTty;
+      else delete process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+      if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      if (workerWorktreePath && existsSync(workerWorktreePath)) {
+        execFileSync('git', ['worktree', 'remove', '--force', workerWorktreePath], { cwd: repo, stdio: 'ignore' });
+      }
+      if (rejectedWorkerWorktreePath && existsSync(rejectedWorkerWorktreePath)) {
+        execFileSync('git', ['worktree', 'remove', '--force', rejectedWorkerWorktreePath], { cwd: repo, stdio: 'ignore' });
+      }
+      if (rejectedWorkerBranchName) {
+        const rejectedBranch = execFileSync('git', ['branch', '--list', rejectedWorkerBranchName], {
+          cwd: repo,
+          encoding: 'utf-8',
+        });
+        if (rejectedBranch.trim() !== '') {
+          execFileSync('git', ['branch', '-D', rejectedWorkerBranchName], { cwd: repo, stdio: 'ignore' });
+        }
+      }
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it('resolveWorkerLaunchArgsFromEnv reads low-complexity model from config when present', async () => {
