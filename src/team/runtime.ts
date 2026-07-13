@@ -5193,25 +5193,29 @@ async function deliverPendingMailboxMessages(
     //   - notified_at is set in the mailbox file (persisted by markMessageNotified), or
     //   - the message_id exists in previousNotifications from the last snapshot.
     // Both checks use Boolean() so an empty-string value is treated as unnotified.
+    const reminderInFlight = pending.some(
+      (m) => Boolean(m.notified_at || previousNotifications[m.message_id]),
+    );
+    if (reminderInFlight) continue;
+
     const unnotified = pending.filter(
       (m) => !m.notified_at && !previousNotifications[m.message_id],
     );
     if (unnotified.length === 0) continue;
     if (!worker.alive) continue;
 
-    for (const msg of unnotified) {
-      const outcome = await dispatchPendingMailboxMessage({
-        teamName,
-        workerName: worker.name,
-        workerInfo,
-        messageId: msg.message_id,
-        config,
-        dispatchPolicy,
-        cwd,
-      });
-      if (outcome.ok) {
-        nextNotifications[msg.message_id] = new Date().toISOString();
-      }
+    const msg = unnotified[0];
+    const outcome = await dispatchPendingMailboxMessage({
+      teamName,
+      workerName: worker.name,
+      workerInfo,
+      messageId: msg.message_id,
+      config,
+      dispatchPolicy,
+      cwd,
+    });
+    if (outcome.ok && !isCoalescedMailboxReminderOutcome(outcome)) {
+      nextNotifications[msg.message_id] = new Date().toISOString();
     }
   }
 
@@ -5281,12 +5285,11 @@ async function dispatchPendingMailboxMessage(params: {
   );
 
   if (queued.deduped) {
+    const hookReminderInFlight = transportPreference === 'hook_preferred_with_fallback';
     return {
-      ok: true,
-      transport: transportPreference === 'transport_direct'
-        ? 'tmux_send_keys'
-        : (transportPreference === 'prompt_stdin' ? 'prompt_stdin' : 'hook'),
-      reason: 'mailbox_reminder_coalesced',
+      ok: hookReminderInFlight,
+      transport: hookReminderInFlight ? 'hook' : 'none',
+      reason: hookReminderInFlight ? 'mailbox_reminder_coalesced' : 'mailbox_reminder_in_flight',
       request_id: queued.request.request_id,
       message_id: messageId,
     };
@@ -5322,6 +5325,15 @@ async function dispatchPendingMailboxMessage(params: {
     await markDispatchRequestNotified(
       teamName,
       queued.request.request_id,
+      { message_id: messageId, last_reason: outcome.reason },
+      cwd,
+    ).catch(() => null);
+  } else {
+    await transitionDispatchRequest(
+      teamName,
+      queued.request.request_id,
+      'pending',
+      'failed',
       { message_id: messageId, last_reason: outcome.reason },
       cwd,
     ).catch(() => null);

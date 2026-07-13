@@ -1535,6 +1535,21 @@ async function readLegacyMailbox(teamName: string, workerName: string, cwd: stri
   }
 }
 
+async function isMailboxMessageUndelivered(
+  teamName: string,
+  workerName: string,
+  messageId: string,
+  cwd: string,
+): Promise<boolean> {
+  const mailbox = await readMailbox(teamName, workerName, cwd);
+  const current = mailbox.messages.find((message) => message.message_id === messageId);
+  if (current) return !current.delivered_at;
+
+  const legacyMailbox = await readLegacyMailbox(teamName, workerName, cwd);
+  const legacy = legacyMailbox.messages.find((message) => message.message_id === messageId);
+  return Boolean(legacy && !legacy.delivered_at);
+}
+
 async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string): Promise<void> {
   const p = mailboxPath(teamName, mailbox.worker, cwd);
   await writeAtomic(p, JSON.stringify(mailbox, null, 2));
@@ -1641,6 +1656,8 @@ export async function enqueueDispatchRequest(
     withDispatchLock,
     readDispatchRequests,
     writeDispatchRequests,
+    isMailboxMessageUndelivered: async (workerName, messageId) =>
+      await isMailboxMessageUndelivered(teamName, workerName, messageId, cwd),
   });
 }
 

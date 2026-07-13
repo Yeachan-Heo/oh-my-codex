@@ -55,6 +55,7 @@ interface DispatchDeps {
   withDispatchLock: <T>(teamName: string, cwd: string, fn: () => Promise<T>) => Promise<T>;
   readDispatchRequests: (teamName: string, cwd: string) => Promise<TeamDispatchRequest[]>;
   writeDispatchRequests: (teamName: string, requests: TeamDispatchRequest[], cwd: string) => Promise<void>;
+  isMailboxMessageUndelivered?: (workerName: string, messageId: string) => Promise<boolean>;
 }
 
 function isDispatchKind(value: unknown): value is TeamDispatchRequestKind {
@@ -127,15 +128,20 @@ export function normalizeDispatchRequest(
   });
 }
 
-function equivalentPendingDispatch(existing: TeamDispatchRequest, input: TeamDispatchRequestInput): boolean {
-  if (existing.status !== 'pending') return false;
+function equivalentActiveDispatch(existing: TeamDispatchRequest, input: TeamDispatchRequestInput): boolean {
+  const inputTransport = input.transport_preference ?? 'hook_preferred_with_fallback';
+  const coalescibleMailboxReminder = input.kind === 'mailbox'
+    && input.intent === 'pending-mailbox-review'
+    && existing.intent === 'pending-mailbox-review'
+    && inputTransport === 'hook_preferred_with_fallback'
+    && existing.transport_preference === 'hook_preferred_with_fallback';
+  if (existing.status !== 'pending' && !(coalescibleMailboxReminder && existing.status === 'notified')) return false;
   if (existing.kind !== input.kind) return false;
   if (existing.to_worker !== input.to_worker) return false;
 
   if (input.kind === 'mailbox') {
     if (Boolean(input.message_id) && existing.message_id === input.message_id) return true;
-    return input.intent === 'pending-mailbox-review'
-      && existing.intent === 'pending-mailbox-review';
+    return coalescibleMailboxReminder;
   }
 
   if (input.kind === 'inbox' && input.inbox_correlation_key) {
@@ -247,8 +253,40 @@ export async function enqueueDispatchRequest(
 
   const queued = await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
     const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
-    const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
-    if (existing) return { request: existing, deduped: true };
+    let existing: TeamDispatchRequest | undefined;
+    for (const candidate of requests) {
+      if (!equivalentActiveDispatch(candidate, requestInput)) continue;
+      if (candidate.status === 'notified') {
+        const stillUndelivered = candidate.message_id && deps.isMailboxMessageUndelivered
+          ? await deps.isMailboxMessageUndelivered(candidate.to_worker, candidate.message_id).catch(() => false)
+          : false;
+        if (!stillUndelivered) continue;
+      }
+      existing = candidate;
+      break;
+    }
+    if (existing) {
+      const workerIndex = requestInput.worker_index ?? existing.worker_index;
+      const paneId = requestInput.pane_id ?? existing.pane_id;
+      if (
+        workerIndex === existing.worker_index
+        && paneId === existing.pane_id
+        && requestInput.trigger_message === existing.trigger_message
+      ) {
+        return { request: existing, deduped: true };
+      }
+      const refreshed = {
+        ...existing,
+        worker_index: workerIndex,
+        pane_id: paneId,
+        trigger_message: requestInput.trigger_message,
+        updated_at: new Date().toISOString(),
+      };
+      const index = requests.findIndex((request) => request.request_id === existing.request_id);
+      requests[index] = refreshed;
+      await deps.writeDispatchRequests(deps.teamName, requests, deps.cwd);
+      return { request: refreshed, deduped: true };
+    }
 
     const nowIso = new Date().toISOString();
     const request = normalizeDispatchRequest(

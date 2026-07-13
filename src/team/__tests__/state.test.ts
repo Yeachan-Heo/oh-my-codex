@@ -483,6 +483,21 @@ exit 1
 
       const notified = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
       assert.equal(notified?.status, 'notified');
+
+      const coalescedWhileNotified = await enqueueDispatchRequest(
+        'team-dispatch',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          message_id: 'msg-3',
+          trigger_message: 'check mailbox while reminder is in flight',
+          intent: 'pending-mailbox-review',
+        },
+        cwd,
+      );
+      assert.equal(coalescedWhileNotified.deduped, true);
+      assert.equal(coalescedWhileNotified.request.request_id, first.request.request_id);
+
       const notifiedAgain = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
       assert.equal(notifiedAgain?.status, 'notified');
       const delivered = await markDispatchRequestDelivered('team-dispatch', first.request.request_id, {}, cwd);

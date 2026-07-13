@@ -158,6 +158,7 @@ async function readBridgeDispatchRequests(stateDir, teamName) {
         worker_index: typeof metadata.worker_index === 'number' ? metadata.worker_index : undefined,
         pane_id: safeString(metadata.pane_id).trim() || undefined,
         trigger_message: safeString(metadata.trigger_message).trim() || safeString(record.reason).trim() || safeString(record.request_id).trim(),
+        intent: safeString(metadata.intent).trim() || undefined,
         message_id: safeString(metadata.message_id).trim() || undefined,
         inbox_correlation_key: safeString(metadata.inbox_correlation_key).trim() || undefined,
         transport_preference: safeString(metadata.transport_preference).trim() || 'hook_preferred_with_fallback',
@@ -196,6 +197,7 @@ const DEFAULT_DISPATCH_TRIGGER_COOLDOWN_MS = 30 * 1000;
 const DISPATCH_TRIGGER_COOLDOWN_ENV = 'OMX_TEAM_DISPATCH_TRIGGER_COOLDOWN_MS';
 const LEADER_PANE_MISSING_DEFERRED_REASON = 'leader_pane_missing_deferred';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
+const MAILBOX_ALREADY_DELIVERED_REASON = 'mailbox_already_delivered';
 
 async function emitOperationalHookEvent(cwd, eventName, context) {
   try {
@@ -435,6 +437,7 @@ function serializeDispatchRequestRecord(request) {
       worker_index: Number.isFinite(request.worker_index) ? Number(request.worker_index) : undefined,
       pane_id: safeString(request.pane_id).trim() || undefined,
       trigger_message: safeString(request.trigger_message).trim(),
+      intent: safeString(request.intent).trim() || undefined,
       message_id: safeString(request.message_id).trim() || undefined,
       inbox_correlation_key: safeString(request.inbox_correlation_key).trim() || undefined,
       transport_preference: safeString(request.transport_preference).trim() || 'hook_preferred_with_fallback',
@@ -542,22 +545,42 @@ async function finalizeClaimedDispatchRequest({
     const nowIso = new Date().toISOString();
     let mutated = false;
 
-    mutated = reserveDispatchCooldowns({
-      issueCooldownMs,
-      triggerCooldownMs,
-      issueCooldownByIssue,
-      triggerCooldownByKey,
-      issueKey,
-      triggerKey,
-      requestId: request.request_id,
-    }) || mutated;
+    if (result.reason !== MAILBOX_ALREADY_DELIVERED_REASON) {
+      mutated = reserveDispatchCooldowns({
+        issueCooldownMs,
+        triggerCooldownMs,
+        issueCooldownByIssue,
+        triggerCooldownByKey,
+        issueKey,
+        triggerKey,
+        requestId: request.request_id,
+      }) || mutated;
+    }
 
     request.attempt_count = Number.isFinite(request.attempt_count) ? Math.max(0, request.attempt_count + 1) : 1;
     request.updated_at = nowIso;
 
     if (result.ok) {
       const MAX_UNCONFIRMED_ATTEMPTS = 3;
-      if (result.reason === 'tmux_send_keys_unconfirmed' && request.attempt_count < MAX_UNCONFIRMED_ATTEMPTS) {
+      if (result.reason === MAILBOX_ALREADY_DELIVERED_REASON) {
+        request.status = 'delivered';
+        request.notified_at = request.notified_at || nowIso;
+        request.delivered_at = nowIso;
+        request.last_reason = result.reason;
+        runtimeExec({ command: 'MarkNotified', request_id: request.request_id, channel: 'mailbox_state' }, stateDir, teamName);
+        runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, teamName);
+        summary.processed += 1;
+        mutated = true;
+        await appendDispatchLog(logsDir, {
+          type: 'dispatch_suppressed',
+          team: teamName,
+          request_id: request.request_id,
+          worker: request.to_worker,
+          message_id: request.message_id || null,
+          reason: result.reason,
+          ...buildDispatchAttemptEvidence(result),
+        });
+      } else if (result.reason === 'tmux_send_keys_unconfirmed' && request.attempt_count < MAX_UNCONFIRMED_ATTEMPTS) {
         request.last_reason = result.reason;
         summary.skipped += 1;
         mutated = true;
@@ -929,6 +952,50 @@ function shouldSkipRequest(request) {
   return preference !== '' && preference !== 'hook_preferred_with_fallback';
 }
 
+async function mailboxReminderStillNeeded(stateDir, teamName, teamDirPath, request) {
+  if (request.kind !== 'mailbox') return true;
+  const workerName = safeString(request.to_worker).trim();
+  if (!workerName) return true;
+  const mailbox = await readJson(join(teamDirPath, 'mailbox', `${workerName}.json`), null);
+  const legacyMessages = mailbox && Array.isArray(mailbox.messages) ? mailbox.messages : [];
+  const bridgeMailboxPath = join(stateDir, 'mailbox.json');
+  if (existsSync(bridgeMailboxPath)) {
+    try {
+      const bridgeMailbox = JSON.parse(await readFile(bridgeMailboxPath, 'utf8'));
+      if (bridgeMailbox && typeof bridgeMailbox === 'object') {
+        const records = Array.isArray(bridgeMailbox.records) ? bridgeMailbox.records : [];
+        const requestedMessageId = safeString(request.message_id).trim();
+        const hasRequestedMessage = requestedMessageId !== '' && records.some((message) =>
+          safeString(message?.message_id).trim() === requestedMessageId
+          && safeString(message?.to_worker).trim() === workerName);
+        if (hasRequestedMessage) {
+          const bridgeByMessageId = new Map(records
+            .filter((message) => safeString(message?.to_worker).trim() === workerName)
+            .map((message) => [safeString(message?.message_id).trim(), message])
+            .filter(([messageId]) => Boolean(messageId)));
+          const mergedTeamMessages = legacyMessages.map((message) =>
+            bridgeByMessageId.get(safeString(message?.message_id).trim()) ?? message);
+          if (!legacyMessages.some((message) => safeString(message?.message_id).trim() === requestedMessageId)) {
+            mergedTeamMessages.push(bridgeByMessageId.get(requestedMessageId));
+          }
+          return mergedTeamMessages.some((message) =>
+            message && !safeString(message?.delivered_at).trim());
+        }
+      }
+    } catch (error) {
+      recordBridgeFallback({
+        stateDir,
+        team: teamName,
+        operation: 'readBridgeMailboxMessages',
+        fallbackTarget: 'legacy_mailbox',
+        reason: `parse_failed:${bridgeErrorReason(error)}`,
+      });
+    }
+  }
+  if (!mailbox || !Array.isArray(mailbox.messages)) return true;
+  return legacyMessages.some((message) => !safeString(message?.delivered_at).trim());
+}
+
 async function updateMailboxNotified(stateDir, teamName, workerName, messageId) {
   const teamDirPath = join(stateDir, 'team', teamName);
   const mailboxPath = join(teamDirPath, 'mailbox', `${workerName}.json`);
@@ -1021,6 +1088,16 @@ export async function drainPendingTeamDispatch({
         if (!request || typeof request !== 'object') continue;
         if (shouldSkipRequest(request)) {
           skipped += 1;
+          continue;
+        }
+
+        if (!await mailboxReminderStillNeeded(stateDir, teamName, teamDirPath, request)) {
+          const lease = await tryAcquireDispatchRequestLease(teamDirPath, request.request_id);
+          if (!lease) {
+            skipped += 1;
+            continue;
+          }
+          claims.push({ request: { ...request }, lease });
           continue;
         }
 
@@ -1129,7 +1206,14 @@ export async function drainPendingTeamDispatch({
     try {
       for (const claim of claims) {
         try {
-          const result = await injector(claim.request, config, resolve(cwd), stateDir);
+          const reminderNeeded = await mailboxReminderStillNeeded(stateDir, teamName, teamDirPath, claim.request);
+          const result = reminderNeeded
+            ? await injector(claim.request, config, resolve(cwd), stateDir)
+            : {
+                ok: true,
+                reason: MAILBOX_ALREADY_DELIVERED_REASON,
+                tmux_injection_attempted: false,
+              };
           const delta = await finalizeClaimedDispatchRequest({
             claim,
             result,

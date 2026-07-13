@@ -17,6 +17,8 @@ import {
   saveTeamConfig,
   listMailboxMessages,
   listDispatchRequests,
+  enqueueDispatchRequest,
+  sendDirectMessage,
   transitionDispatchRequest,
   updateWorkerHeartbeat,
   writeAtomic,
@@ -9433,6 +9435,46 @@ esac
       assert.ok(
         diskSnap3.mailboxNotifiedByMessageId['msg-unnotified'],
         'notified message must remain in snapshot on third poll (no duplicate notification)',
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('monitorTeam does not mark a coalesced pending reminder as notified', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-coalesced-pending-'));
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-coalesced-pending-bin-',
+          tmuxScript: () => `#!/bin/sh
+if [ "$1" = "list-panes" ]; then
+  echo "0 1234"
+fi
+`,
+        },
+        async () => {
+          await initTeamState('team-coalesced-pending', 'coalesced pending reminder', 'executor', 1, cwd);
+          const message = await sendDirectMessage(
+            'team-coalesced-pending',
+            'leader-fixed',
+            'worker-1',
+            'hello',
+            cwd,
+          );
+          await enqueueDispatchRequest('team-coalesced-pending', {
+            kind: 'mailbox',
+            to_worker: 'worker-1',
+            worker_index: 1,
+            message_id: message.message_id,
+            trigger_message: 'check mailbox',
+            intent: 'pending-mailbox-review',
+          }, cwd);
+
+          await monitorTeam('team-coalesced-pending', cwd);
+          const snapshot = await readMonitorSnapshot('team-coalesced-pending', cwd);
+          assert.equal(snapshot?.mailboxNotifiedByMessageId[message.message_id], undefined);
+        },
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });

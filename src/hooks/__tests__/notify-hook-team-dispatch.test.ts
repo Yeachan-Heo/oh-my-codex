@@ -10,6 +10,7 @@ import {
   readDispatchRequest,
   listMailboxMessages,
   sendDirectMessage,
+  markMessageDelivered,
   readTeamConfig,
   saveTeamConfig,
 } from '../../team/state.js';
@@ -277,6 +278,47 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
+  it('suppresses a stale mailbox reminder after its mailbox has been drained', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-stale-'));
+    try {
+      await initTeamState('alpha-stale', 'task', 'executor', 1, cwd);
+      const msg = await sendDirectMessage('alpha-stale', 'worker-1', 'leader-fixed', 'hello', cwd);
+      const queued = await enqueueDispatchRequest('alpha-stale', {
+        kind: 'mailbox',
+        to_worker: 'leader-fixed',
+        message_id: msg.message_id,
+        trigger_message: 'check mailbox',
+        intent: 'pending-mailbox-review',
+      }, cwd);
+      await markMessageDelivered('alpha-stale', 'leader-fixed', msg.message_id, cwd);
+
+      let injectCount = 0;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => {
+          injectCount += 1;
+          return { ok: true, reason: 'should_not_inject' };
+        },
+      });
+
+      assert.equal(result.processed, 1);
+      assert.equal(injectCount, 0);
+      const request = await readDispatchRequest('alpha-stale', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'delivered');
+      assert.equal(request?.last_reason, 'mailbox_already_delivered');
+      const cooldown = JSON.parse(await readFile(
+        join(cwd, '.omx', 'state', 'team', 'alpha-stale', 'dispatch', 'trigger-cooldown.json'),
+        'utf8',
+      ));
+      assert.deepEqual(cooldown.by_trigger, {});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('leader-fixed dispatch remains pending with leader_pane_missing_deferred when pane missing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     try {
@@ -472,6 +514,7 @@ exit 1
         worker_index: 1,
         message_id: msg.message_id,
         trigger_message: 'check mailbox',
+        intent: 'pending-mailbox-review',
       }, cwd);
 
       const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
@@ -485,6 +528,11 @@ exit 1
       assert.equal(result.processed, 1);
       const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
       assert.equal(request?.status, 'notified');
+      assert.equal(request?.intent, 'pending-mailbox-review');
+
+      const dispatch = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'dispatch.json'), 'utf8'));
+      const record = dispatch.records.find((entry: { request_id?: string }) => entry.request_id === queued.request.request_id);
+      assert.equal(record?.metadata?.intent, 'pending-mailbox-review');
 
       const mailbox = await listMailboxMessages('alpha', 'worker-1', cwd);
       assert.equal(mailbox.length, 1);
