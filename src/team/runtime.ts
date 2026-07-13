@@ -5243,6 +5243,10 @@ function isExistingMailboxNotificationOutcome(outcome: DispatchOutcome): boolean
   return outcome.ok && outcome.reason === 'existing_message_already_notified';
 }
 
+function isCoalescedMailboxReminderOutcome(outcome: DispatchOutcome): boolean {
+  return outcome.ok && outcome.reason === 'mailbox_reminder_coalesced';
+}
+
 async function dispatchPendingMailboxMessage(params: {
   teamName: string;
   workerName: string;
@@ -5275,6 +5279,18 @@ async function dispatchPendingMailboxMessage(params: {
     },
     cwd,
   );
+
+  if (queued.deduped) {
+    return {
+      ok: true,
+      transport: transportPreference === 'transport_direct'
+        ? 'tmux_send_keys'
+        : (transportPreference === 'prompt_stdin' ? 'prompt_stdin' : 'hook'),
+      reason: 'mailbox_reminder_coalesced',
+      request_id: queued.request.request_id,
+      message_id: messageId,
+    };
+  }
 
   if (transportPreference === 'hook_preferred_with_fallback') {
     return await finalizeQueuedMailboxDispatch({
@@ -5358,6 +5374,9 @@ async function finalizeQueuedMailboxDispatch(params: {
   if (isExistingMailboxNotificationOutcome(queuedOutcome)) {
     return queuedOutcome;
   }
+  if (isCoalescedMailboxReminderOutcome(queuedOutcome)) {
+    return queuedOutcome;
+  }
   if (!queuedOutcome.request_id || !messageId) {
     return { ...queuedOutcome, ok: false, reason: 'dispatch_request_missing_id' };
   }
@@ -5417,6 +5436,7 @@ async function sendLeaderMailboxMessage(params: {
 
   if (
     !isExistingMailboxNotificationOutcome(queuedOutcome)
+    && !isCoalescedMailboxReminderOutcome(queuedOutcome)
     && transportPreference === 'hook_preferred_with_fallback'
     && !config.leader_pane_id
   ) {
@@ -5448,6 +5468,7 @@ async function sendLeaderMailboxMessage(params: {
 
   if (
     !isExistingMailboxNotificationOutcome(queuedOutcome)
+    && !isCoalescedMailboxReminderOutcome(queuedOutcome)
     && transportPreference === 'transport_direct'
     && !config.leader_pane_id
   ) {

@@ -133,7 +133,9 @@ function equivalentPendingDispatch(existing: TeamDispatchRequest, input: TeamDis
   if (existing.to_worker !== input.to_worker) return false;
 
   if (input.kind === 'mailbox') {
-    return Boolean(input.message_id) && existing.message_id === input.message_id;
+    if (Boolean(input.message_id) && existing.message_id === input.message_id) return true;
+    return input.intent === 'pending-mailbox-review'
+      && existing.intent === 'pending-mailbox-review';
   }
 
   if (input.kind === 'inbox' && input.inbox_correlation_key) {

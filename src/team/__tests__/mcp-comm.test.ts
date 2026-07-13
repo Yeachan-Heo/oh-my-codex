@@ -174,6 +174,43 @@ describe('mcp-comm', () => {
     }
   });
 
+  it('queueDirectMailboxMessage coalesces different mailbox messages behind one pending reminder', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-coalesce-'));
+    try {
+      await initTeamState('alpha-coalesce', 'task', 'executor', 1, cwd);
+      let notifyCount = 0;
+      const send = async (body: string) => await queueDirectMailboxMessage({
+        teamName: 'alpha-coalesce',
+        fromWorker: 'leader-fixed',
+        toWorker: 'worker-1',
+        toWorkerIndex: 1,
+        body,
+        triggerMessage: 'check mailbox',
+        intent: 'pending-mailbox-review',
+        cwd,
+        transportPreference: 'hook_preferred_with_fallback',
+        fallbackAllowed: true,
+        notify: async () => {
+          notifyCount += 1;
+          return { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' };
+        },
+      });
+
+      const first = await send('first body');
+      const second = await send('second body');
+
+      assert.equal(first.reason, 'queued_for_hook_dispatch');
+      assert.equal(second.ok, true);
+      assert.equal(second.reason, 'mailbox_reminder_coalesced');
+      assert.equal(second.request_id, first.request_id);
+      assert.equal(notifyCount, 1);
+      assert.equal((await listMailboxMessages('alpha-coalesce', 'worker-1', cwd)).length, 2);
+      assert.equal((await listDispatchRequests('alpha-coalesce', cwd, { kind: 'mailbox', to_worker: 'worker-1' })).length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('queueBroadcastMailboxMessage notifies and marks notified per recipient', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-'));
     try {

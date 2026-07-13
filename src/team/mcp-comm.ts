@@ -286,13 +286,30 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
   );
 
   if (queued.deduped) {
-    return {
-      ok: false,
-      transport: 'none',
-      reason: 'duplicate_pending_dispatch_request',
+    const hookReminderInFlight = queued.request.transport_preference === 'hook_preferred_with_fallback';
+    const outcome: DispatchOutcome = {
+      ok: hookReminderInFlight,
+      transport: hookReminderInFlight
+        ? (params.toWorker === 'leader-fixed' ? 'mailbox' : 'hook')
+        : 'none',
+      reason: hookReminderInFlight ? 'mailbox_reminder_coalesced' : 'mailbox_reminder_in_flight',
       request_id: queued.request.request_id,
       message_id: message.message_id,
+      to_worker: params.toWorker,
     };
+    await logDispatchOutcome({
+      cwd: params.cwd,
+      teamName: params.teamName,
+      source: 'team.mcp-comm',
+      requestId: queued.request.request_id,
+      messageId: message.message_id,
+      toWorker: params.toWorker,
+      dispatchKind: 'mailbox',
+      outcome,
+      intent: params.intent,
+      transportPreference: params.transportPreference,
+    });
+    return outcome;
   }
 
   const notifyOutcome = await Promise.resolve(params.notify(
@@ -402,10 +419,11 @@ export async function queueBroadcastMailboxMessage(params: QueueBroadcastParams)
     );
 
     if (queued.deduped) {
+      const hookReminderInFlight = queued.request.transport_preference === 'hook_preferred_with_fallback';
       outcomes.push({
-        ok: false,
-        transport: 'none',
-        reason: 'duplicate_pending_dispatch_request',
+        ok: hookReminderInFlight,
+        transport: hookReminderInFlight ? 'hook' : 'none',
+        reason: hookReminderInFlight ? 'mailbox_reminder_coalesced' : 'mailbox_reminder_in_flight',
         request_id: queued.request.request_id,
         message_id: message.message_id,
         to_worker: recipient.workerName,

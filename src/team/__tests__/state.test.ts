@@ -467,6 +467,20 @@ exit 1
       assert.equal(dup.deduped, true);
       assert.equal(dup.request.request_id, first.request.request_id);
 
+      const coalesced = await enqueueDispatchRequest(
+        'team-dispatch',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          message_id: 'msg-2',
+          trigger_message: 'check mailbox again',
+          intent: 'pending-mailbox-review',
+        },
+        cwd,
+      );
+      assert.equal(coalesced.deduped, true);
+      assert.equal(coalesced.request.request_id, first.request.request_id);
+
       const notified = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
       assert.equal(notified?.status, 'notified');
       const notifiedAgain = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
