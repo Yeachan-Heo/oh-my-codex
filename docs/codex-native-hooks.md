@@ -85,14 +85,17 @@ through Bash, built-in patch tools, filesystem MCP, OMX state MCP, or an
 unrecognized transport is denied with `OWNER_CONFIRMATION_REQUIRED`. Bash
 classification includes semantic mutation APIs inside actual inline runtime code,
 including Node `fs` write, remove, rename, copy, link, permission, and timestamp
-operations. The hook inspects actual `node`/`nodejs` eval operands, including attached
-short-option forms and structurally resolved wrapper chains such as `xargs`, resolves
-explicit CommonJS or ESM `fs` bindings and property calls, and treats Node
-`child_process` loaders as mutation-capable. Shell-parameter, command-substitution,
+operations. The hook inspects actual `node`/`nodejs` eval operands, including ANSI-C
+quoted and attached short-option forms, and structurally resolves arbitrary finite wrapper
+chains such as nested `env` and `xargs`. It resolves explicit CommonJS or ESM `fs`
+bindings, direct and indirect mutation calls, and receiver-scoped reflected loader paths,
+including Function constructors and `process.getBuiltinModule` descriptors. Node
+`child_process` loaders remain mutation-capable. Shell-parameter, command-substitution,
 backtick eval source, computed/unsupported/reflected internal loaders, unsupported `fs`
-access, malformed source, and unresolved mutation targets fail closed. For statically
-inspectable source, string/comment/regular-expression text does not become mutation
-authority through broad raw-command matching.
+access, malformed source, unresolved mutation targets, and execution or sourcing of an
+uninspected script fail closed. For statically inspectable source, ordinary array/dynamic
+object reads and benign reflection do not become mutation authority through broad
+raw-command matching.
 
 Official Team worker roots may omit both `agent_id` and legacy `thread_id`.
 After Main-root exclusion, OMX preserves their established exemption only when

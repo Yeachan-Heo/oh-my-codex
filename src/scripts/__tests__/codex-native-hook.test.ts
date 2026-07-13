@@ -1077,6 +1077,18 @@ describe("codex native hook dispatch", () => {
         ["node-computed-prototype-loader", `node -e "Object['getPrototypeOf'](module)['constructor']['_load']('fs')['rmSync']('src/prototype-computed-bypass.ts')"`],
         ["node-optional-computed-prototype-loader", `node -e "Object?.['getPrototypeOf'](module)?.['constructor']?.['_load']('fs')?.['rmSync']('src/optional-prototype-bypass.ts',{force:true})"`],
         ["node-dynamic-target", `node -e "const fs=require('fs');fs.rmSync(process.argv[1])" src/dynamic.ts`],
+        ["node-function-constructor", `node -e '(()=>{}).constructor("return process.getBuiltinModule(\\"fs\\").rmSync(\\"src/function-dot.ts\\")")()'`],
+        ["node-method-function-constructor", `node -e '({}).toString.constructor("return process.getBuiltinModule(\\"fs\\").rmSync(\\"src/function-method.ts\\")")()'`],
+        ["node-descriptor-builtin", `node -e "Object.getOwnPropertyDescriptor(process,'getBuiltinModule').value('fs').rmSync('src/descriptor.ts')"`],
+        ["node-descriptor-builtin-call", `node -e "Object.getOwnPropertyDescriptor(process,'getBuiltinModule').value.call(process,'fs').rmSync('src/descriptor-call.ts')"`],
+        ["node-destructured-comma-call", `node -e "const {rmSync}=require('fs');(0,rmSync)('src/destructured-comma.ts')"`],
+        ["node-destructured-method-call", `node -e "const {rmSync}=require('fs');rmSync.call(null,'src/destructured-call.ts')"`],
+        ["node-destructured-reflect-apply", `node -e "const {rmSync}=require('fs');Reflect.apply(rmSync,null,['src/destructured-reflect.ts'])"`],
+        ["node-ansi-c-eval-flag", `node $'-e' "require('fs').rmSync('src/ansi-c.ts')"`],
+        ["node-nine-env-wrappers", `${Array.from({ length: 9 }, () => "env").join(" ")} node -e "require('fs').rmSync('src/env-nine.ts')"`],
+        ["omx-state-clear", `omx state clear --input '{"mode":"ultragoal"}' --json`],
+        ["bash-uninspected-script", `bash .omx/state/run.sh`],
+        ["source-uninspected-script", `source .omx/state/run.sh`],
       ] as const) {
         for (const actor of ["main-root", "native-child"] as const) {
           requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
@@ -1094,6 +1106,10 @@ describe("codex native hook dispatch", () => {
         ["node-attached-short-read", `node -e"require('fs').readFileSync('src/victim.ts','utf8')"`],
         ["node-xargs-wrapper-read", `printf x | xargs node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
         ["node-read-only-path-module", `node -e "console.log(require('path').join('src','victim.ts'))"`],
+        ["node-array-index", `node -e "const a=[1];console.log(a[0])"`],
+        ["node-dynamic-object-read", `node -e "const o={x:1};const k='x';console.log(o[k])"`],
+        ["node-object-get-prototype-of", `node -e "console.log(Object.getPrototypeOf({}))"`],
+        ["node-reflect-get", `node -e "console.log(Reflect.get({x:1},'x'))"`],
       ] as const) {
         for (const actor of ["main-root", "native-child"] as const) {
           assert.deepEqual(runActorProbe(actor, name, "Bash", { command }), {}, `${actor}/${name}`);

@@ -392,6 +392,18 @@ function smokeInstalledNativeHookDist(prefixDir: string): void {
       ['node prototype module loader', `node -e "module.__proto__.constructor._load('fs').rmSync('src/prototype-loader-bypass.ts')"`],
       ['node computed prototype loader', `node -e "Object['getPrototypeOf'](module)['constructor']['_load']('fs')['rmSync']('src/prototype-computed-bypass.ts')"`],
       ['node optional computed prototype loader', `node -e "Object?.['getPrototypeOf'](module)?.['constructor']?.['_load']('fs')?.['rmSync']('src/optional-prototype-bypass.ts',{force:true})"`],
+      ['node function constructor', `node -e '(()=>{}).constructor("return process.getBuiltinModule(\\"fs\\").rmSync(\\"src/function-dot.ts\\")")()'`],
+      ['node method function constructor', `node -e '({}).toString.constructor("return process.getBuiltinModule(\\"fs\\").rmSync(\\"src/function-method.ts\\")")()'`],
+      ['node descriptor builtin', `node -e "Object.getOwnPropertyDescriptor(process,'getBuiltinModule').value('fs').rmSync('src/descriptor.ts')"`],
+      ['node descriptor builtin call', `node -e "Object.getOwnPropertyDescriptor(process,'getBuiltinModule').value.call(process,'fs').rmSync('src/descriptor-call.ts')"`],
+      ['node destructured comma call', `node -e "const {rmSync}=require('fs');(0,rmSync)('src/destructured-comma.ts')"`],
+      ['node destructured method call', `node -e "const {rmSync}=require('fs');rmSync.call(null,'src/destructured-call.ts')"`],
+      ['node destructured Reflect.apply', `node -e "const {rmSync}=require('fs');Reflect.apply(rmSync,null,['src/destructured-reflect.ts'])"`],
+      ['node ANSI-C eval flag', `node $'-e' "require('fs').rmSync('src/ansi-c.ts')"`],
+      ['node nine env wrappers', `${Array.from({ length: 9 }, () => 'env').join(' ')} node -e "require('fs').rmSync('src/env-nine.ts')"`],
+      ['omx state clear', `omx state clear --input '{"mode":"ultragoal"}' --json`],
+      ['bash uninspected script', `bash .omx/state/run.sh`],
+      ['source uninspected script', `source .omx/state/run.sh`],
     ] as const) {
       for (const actor of ['main-root', 'native-child'] as const) {
         requireActorDeny(actor, probe, runActorProbe(actor, probe, 'Bash', { command }));
@@ -408,6 +420,10 @@ function smokeInstalledNativeHookDist(prefixDir: string): void {
       ['node attached short read', `node -e"require('fs').readFileSync('src/victim.ts','utf8')"`],
       ['node xargs wrapper read', `printf x | xargs node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
       ['node read-only path module', `node -e "console.log(require('path').join('src','victim.ts'))"`],
+      ['node array index', `node -e "const a=[1];console.log(a[0])"`],
+      ['node dynamic object read', `node -e "const o={x:1};const k='x';console.log(o[k])"`],
+      ['node Object.getPrototypeOf', `node -e "console.log(Object.getPrototypeOf({}))"`],
+      ['node Reflect.get', `node -e "console.log(Reflect.get({x:1},'x'))"`],
     ] as const) {
       for (const actor of ['main-root', 'native-child'] as const) {
         const output = runActorProbe(actor, probe, 'Bash', { command });

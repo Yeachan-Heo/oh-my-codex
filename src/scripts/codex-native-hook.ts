@@ -4082,6 +4082,51 @@ function findGitSubcommandIndex(words: string[], startIndex: number): number | n
   }
   return null;
 }
+function commandExecutesUninspectedScript(command: string): boolean {
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    if (
+      collectOmxStateCommandOperations(segment, "write").length > 0
+      || collectOmxStateCommandOperations(segment, "clear").length > 0
+    ) continue;
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (isShellGroupingSyntaxWord(word)) continue;
+      if (commandStart && (isEnvironmentAssignmentWord(word) || CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word))) continue;
+      if (!commandStart) continue;
+
+      let commandIndex = index;
+      const visitedIndexes = new Set<number>();
+      while (!visitedIndexes.has(commandIndex)) {
+        visitedIndexes.add(commandIndex);
+        const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
+        const operandIndex = findConductorWrapperOperandIndex(commandName, words, commandIndex + 1);
+        if (operandIndex === undefined) break;
+        if (operandIndex === null) return true;
+        commandIndex = operandIndex;
+      }
+
+      const commandWord = words[commandIndex] ?? "";
+      const commandName = commandNameFromShellWord(commandWord);
+      if (commandName === "source" || commandName === ".") {
+        if (firstNonOptionSourceOperand(words, commandIndex)) return true;
+      } else if (isScriptInterpreterCommandWord(commandWord)) {
+        if (firstInterpreterScriptOperands(words, commandIndex).length > 0) return true;
+      } else if (/\.(?:ba|z|k)?sh$|\.(?:[cm]?js|[cm]?ts|py|rb|pl|php|lua)$/i.test(commandWord)) {
+        return true;
+      }
+      commandStart = false;
+    }
+  }
+  return false;
+}
+
 
 
 function commandHasDeepInterviewWriteIntent(command: string, depth = 0): boolean {
@@ -4094,6 +4139,8 @@ function commandHasDeepInterviewWriteIntent(command: string, depth = 0): boolean
     || /\b(?:python3?|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
     || extractConductorBashMutations(command).length > 0
     || extractConductorInterpreterWrites(command).length > 0
+    || collectOmxStateCommandOperations(command, "clear").length > 0
+    || commandExecutesUninspectedScript(command)
     || commandHasDestructiveGitSubcommand(command)
     || commandHasPackageInstallIntent(command)
     // Recurse into wrapped shells (`bash -lc "cat > f"`, `eval`, `env`) and
@@ -4768,7 +4815,7 @@ function firstInterpreterScriptOperands(words: string[], interpreterWordIndex: n
       return operands;
     }
     if (base === "perl" || base === "ruby" || base === "php" || base === "lua") {
-      if (word === "-e" || word.startsWith("-e")) return operands;
+      if (word === "-e" || /^-[A-Za-z]*e/.test(word)) return operands;
       if (word.startsWith("-")) continue;
       operands.push(word);
       return operands;
@@ -5029,7 +5076,7 @@ function tokenizeShellWords(segment: string): string[] {
   segment = normalizeShellLineContinuations(segment);
   const words: string[] = [];
   let current = "";
-  let quote: "'" | "\"" | null = null;
+  let quote: "'" | "\"" | "$'" | null = null;
   for (let index = 0; index < segment.length; index += 1) {
     const char = segment[index];
     if (char === "\\" && quote !== "'") {
@@ -5037,8 +5084,13 @@ function tokenizeShellWords(segment: string): string[] {
       current += segment[index] ?? "";
       continue;
     }
+    if (!quote && char === "$" && segment[index + 1] === "'") {
+      quote = "$'";
+      index += 1;
+      continue;
+    }
     if (char === "'" || char === "\"") {
-      if (quote === char) {
+      if (quote === char || (quote === "$'" && char === "'")) {
         quote = null;
       } else if (!quote) {
         quote = char;
@@ -8008,7 +8060,9 @@ function extractNodeInlineEvalScripts(command: string): string[] {
       if (!commandStart) continue;
       if (isEnvironmentAssignmentWord(word) || CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
       let commandIndex = index;
-      for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+      const visitedWrapperIndexes = new Set<number>();
+      while (!visitedWrapperIndexes.has(commandIndex)) {
+        visitedWrapperIndexes.add(commandIndex);
         const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
         const operandIndex = findConductorWrapperOperandIndex(commandName, words, commandIndex + 1);
         if (operandIndex === undefined) break;
@@ -8081,8 +8135,21 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
     }
     if (/\\u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})/.test(mask)) pushAmbiguous();
     if (/\b(?:eval|Function)\b/.test(mask)) pushAmbiguous();
+    if (/\.\s*constructor\s*\(/.test(mask)) pushAmbiguous();
     if (/\bcreateRequire\s*\(/.test(mask)) pushAmbiguous();
-    if (/\b(?:__proto__|_load)\b|\b(?:Object\s*\.\s*getPrototypeOf|Reflect\s*\.\s*get)\b|\bmodule\s*\.\s*constructor\b|\bModule\s*\.\s*_load\b|\b(?:globalThis\s*\.\s*)?process\s*\.\s*(?:binding|dlopen)\b/.test(mask)) pushAmbiguous();
+    if (/\b(?:__proto__|_load)\b|\bmodule\s*\.\s*constructor\b|\bModule\s*\.\s*_load\b|\b(?:globalThis\s*\.\s*)?process\s*\.\s*(?:binding|dlopen)\b/.test(mask)) pushAmbiguous();
+    for (const match of mask.matchAll(/\bObject\s*\.\s*getOwnPropertyDescriptor\s*\(/g)) {
+      const openIndex = (match.index ?? 0) + match[0].lastIndexOf("(");
+      const closeIndex = findMatchingJavaScriptParen(mask, openIndex);
+      if (closeIndex < 0) {
+        pushAmbiguous();
+        continue;
+      }
+      const args = splitJavaScriptCallArguments(script, mask, openIndex, closeIndex);
+      const receiver = (args[0] ?? "").replace(/\s+/g, "");
+      const property = parseStaticJavaScriptString(args[1] ?? "");
+      if ((receiver === "process" || receiver === "globalThis.process") && property === "getBuiltinModule") pushAmbiguous();
+    }
     for (const match of mask.matchAll(/\brequire\b/g)) {
       const afterRequire = (match.index ?? 0) + safeString(match[0]).length;
       if (!/^\s*\(/.test(mask.slice(afterRequire))) pushAmbiguous();
@@ -8095,12 +8162,9 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
       const openIndex = match.index ?? 0;
       if (!/[A-Za-z0-9_$)\]]\s*(?:\?\.)?\s*$/.test(mask.slice(0, openIndex))) continue;
       const closeIndex = findMatchingJavaScriptDelimiter(mask, openIndex, "[", "]");
-      if (closeIndex < 0) {
-        pushAmbiguous();
-        continue;
-      }
+      if (closeIndex < 0) continue;
       const computedMember = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
-      if (computedMember === null || NODE_REFLECTED_LOADER_MEMBER_NAMES.has(computedMember)) pushAmbiguous();
+      if (computedMember !== null && NODE_REFLECTED_LOADER_MEMBER_NAMES.has(computedMember)) pushAmbiguous();
     }
     for (const match of mask.matchAll(/\b(?:module|(?:globalThis\s*\.\s*)?process(?:\s*\.\s*mainModule)?)\s*\[/g)) {
       const openIndex = (match.index ?? 0) + match[0].lastIndexOf("[");
@@ -8249,11 +8313,22 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
       const escaped = binding.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const referencePattern = new RegExp(`\\b${escaped}\\b`, "g");
       for (const match of mask.matchAll(referencePattern)) {
-        const afterBinding = (match.index ?? 0) + safeString(match[0]).length;
-        const callMatch = /^\s*\(/.exec(mask.slice(afterBinding));
-        if (!callMatch) continue;
-        const callOpenIndex = afterBinding + callMatch[0].lastIndexOf("(");
-        calls.set(callOpenIndex, { method, openIndex: callOpenIndex });
+        const referenceIndex = match.index ?? 0;
+        const afterBinding = referenceIndex + safeString(match[0]).length;
+        const before = mask.slice(0, referenceIndex);
+        const tail = mask.slice(afterBinding);
+        const isDestructuredDeclaration = /(?:\bconst|\blet|\bvar)\s*\{[^{}]*$/.test(before)
+          && /^[^{}]*(?:,|\})/.test(tail);
+        const isStaticImport = /\bimport\s*\{[^{}]*$/.test(before)
+          && /^[^{}]*(?:,|\})/.test(tail);
+        if (isDestructuredDeclaration || isStaticImport) continue;
+        const callMatch = /^\s*\(/.exec(tail);
+        if (callMatch) {
+          const callOpenIndex = afterBinding + callMatch[0].lastIndexOf("(");
+          calls.set(callOpenIndex, { method, openIndex: callOpenIndex });
+          continue;
+        }
+        pushAmbiguous();
       }
     }
     for (const { method, openIndex } of calls.values()) {
@@ -8648,7 +8723,9 @@ function collectConductorXargsMutationTargets(words: string[], commandIndex: num
       continue;
     }
     let commandWordIndex = index;
-    for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+    const visitedWrapperIndexes = new Set<number>();
+    while (!visitedWrapperIndexes.has(commandWordIndex)) {
+      visitedWrapperIndexes.add(commandWordIndex);
       const commandName = commandNameFromShellWord(words[commandWordIndex] ?? "");
       if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName) || CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) return [];
       const wrapperOperandIndex = findConductorWrapperOperandIndex(commandName, words, commandWordIndex + 1);
