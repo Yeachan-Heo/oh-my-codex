@@ -203,17 +203,21 @@ Default-model rule:
 - Use `OMX_DEFAULT_SPARK_MODEL` for spark/low-complexity worker-default guidance.
 
 Thinking-level rule (critical):
-- **No model-name heuristic mapping.**
-- Team runtime must **not** infer `model_reasoning_effort` from model-name substrings (e.g., `spark`, `high-capability`, `mini`).
-- When the leader assigns teammate roles/tasks, OMX allocates **per-worker reasoning effort dynamically** from the resolved worker role and `agentReasoning` overrides (`low`, `medium`, `high`, `xhigh`).
-- Explicit launch args still win: if `OMX_TEAM_WORKER_LAUNCH_ARGS` already includes `-c model_reasoning_effort=...`, that explicit value overrides dynamic allocation for every worker.
+- **No model-name heuristic mapping.** Team runtime must not infer `model_reasoning_effort` from model-name substrings (for example `spark`, `high-capability`, or `mini`).
+- OMX-owned `agentReasoning` accepts exactly `low`, `medium`, `high`, `xhigh`, and `max`; configured values are case-normalized.
+- Without explicit raw reasoning, Team selects the resolved role default or valid `agentReasoning` override for each worker.
+- `max` is passed to Codex unchanged. Its support is capability-dependent on the selected Codex version, model, and provider; preserve authoritative downstream errors.
+- `ultra` is unsupported in OMX-owned `agentReasoning` and is not an alias for configured `max`. Other invalid configured values retain the built-in role-default fallback.
+- Explicit raw `-c model_reasoning_effort=...` is opaque and wins over configured and built-in role defaults, including `ultra` and future values. Preserve the selected raw token exactly.
+- When both sources provide explicit raw reasoning, inherited Team reasoning wins over environment reasoning. Explicit raw reasoning always wins over the role default.
+- Do not downgrade or retry `max` as `xhigh`; built-in role defaults remain unchanged.
 
 Normalization requirements:
-- Parse both `--model <value>` and `--model=<value>`
-- Remove duplicate/conflicting model flags
-- Emit exactly one final canonical flag: `--model <value>`
-- Preserve unrelated args in worker launch config
-- If explicit reasoning exists, preserve canonical `-c model_reasoning_effort="<level>"`; otherwise inject the worker role's default or `agentReasoning`-overridden reasoning level
+- Parse both `--model <value>` and `--model=<value>`.
+- Remove duplicate/conflicting model flags.
+- Emit exactly one final canonical flag: `--model <value>`.
+- Preserve unrelated args in worker launch config.
+- Preserve the selected explicit raw `-c model_reasoning_effort=...` token exactly; otherwise inject the worker role's default or `agentReasoning`-overridden reasoning level.
 
 ## Required Lifecycle (Operator Contract)
 

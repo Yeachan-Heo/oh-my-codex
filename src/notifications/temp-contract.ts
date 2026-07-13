@@ -42,6 +42,10 @@ export function parseNotifyTempContractFromArgs(
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === '--') {
+      passthroughArgs.push(...args.slice(index));
+      break;
+    }
     if (arg === '--notify-temp') {
       cliActivated = true;
       continue;

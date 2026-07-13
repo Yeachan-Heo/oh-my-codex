@@ -18,6 +18,7 @@ import {
   getMainDefaultModel,
   getSparkDefaultModel,
   getStandardDefaultModel,
+  type PerAgentReasoningEffort,
 } from "../config/models.js";
 import { getRootModelName } from "../config/generator.js";
 import { codexAgentsDir } from "../utils/paths.js";
@@ -121,7 +122,7 @@ export interface GeneratedNativeAgentConfig {
   developerInstructions?: string;
   model?: string;
   modelProvider?: string;
-  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  reasoningEffort?: PerAgentReasoningEffort;
 }
 
 interface AgentModelResolutionOptions {

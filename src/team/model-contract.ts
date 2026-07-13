@@ -6,6 +6,7 @@ import {
   getMainDefaultModel,
   getSparkDefaultModel,
   getStandardDefaultModel,
+  type PerAgentReasoningEffort,
 } from '../config/models.js';
 
 const MADMAX_FLAG = '--madmax';
@@ -29,7 +30,7 @@ const LOW_COMPLEXITY_AGENT_TYPES = new Set([
 
 // Canonical default only; effective low-complexity resolution flows through resolveTeamLowComplexityDefaultModel().
 export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = DEFAULT_SPARK_MODEL;
-export type TeamReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export type TeamReasoningEffort = PerAgentReasoningEffort;
 export type TeamWorkerLaunchPolicyKind = 'none' | 'bypass' | 'direct-policy';
 export type TeamWorkerLaunchPolicyClassification = TeamWorkerLaunchPolicyKind | 'mixed-policy';
 
@@ -136,7 +137,7 @@ function normalizeOptionalModel(model?: string | null): string | undefined {
 function normalizeOptionalReasoning(reasoning?: TeamReasoningEffort | string | null): TeamReasoningEffort | undefined {
   if (typeof reasoning !== 'string') return undefined;
   const normalized = reasoning.trim().toLowerCase();
-  if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh') {
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh' || normalized === 'max') {
     return normalized;
   }
   return undefined;
@@ -161,9 +162,8 @@ function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
   const fallbackModel = normalizeOptionalModel(params.fallbackModel);
   const actualParsed = parseTeamWorkerLaunchArgs(params.actualLaunchArgs);
   const requestedDefaultReasoning = normalizeOptionalReasoning(params.preferredReasoning);
-  const explicitReasoning = extractReasoningEffort(
-    params.envParsed.reasoningOverride ?? params.inheritedParsed.reasoningOverride,
-  );
+  const explicitReasoningOverride = params.inheritedParsed.reasoningOverride
+    ?? params.envParsed.reasoningOverride;
   const selectedModel = normalizeOptionalModel(actualParsed.modelOverride);
 
   return {
@@ -180,7 +180,7 @@ function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
           : selectedModel
             ? 'fallback'
             : 'none',
-    reasoningSource: explicitReasoning ? 'explicit' : requestedDefaultReasoning ? 'role-default' : 'none',
+    reasoningSource: explicitReasoningOverride ? 'explicit' : requestedDefaultReasoning ? 'role-default' : 'none',
     inheritedParentModel: Boolean(inheritedModel) && Boolean(selectedModel) && selectedModel === inheritedModel,
     actualLaunchArgs: [...params.actualLaunchArgs],
   };
@@ -190,13 +190,25 @@ function resolveTeamWorkerLaunchDiagnosticsFromParts(params: {
  * Tokenize OMX_TEAM_WORKER_LAUNCH_ARGS without evaluating shell syntax.
  * Quoting and escaping are intentionally limited to this transport grammar.
  */
-export function splitWorkerLaunchArgs(raw: string | undefined): string[] {
+interface WorkerLaunchArgToken {
+  value: string;
+  source: string;
+}
+
+function tokenizeWorkerLaunchArgs(raw: string | undefined): WorkerLaunchArgToken[] {
   if (raw === undefined || raw === '') return [];
 
-  const args: string[] = [];
+  const args: WorkerLaunchArgToken[] = [];
   let token = '';
   let tokenStarted = false;
+  let tokenStart = 0;
   let quote: 'single' | 'double' | null = null;
+
+  const pushToken = (end: number): void => {
+    args.push({ value: token, source: raw.slice(tokenStart, end) });
+    token = '';
+    tokenStarted = false;
+  };
 
   for (let index = 0; index < raw.length; index += 1) {
     const character = raw[index]!;
@@ -219,13 +231,10 @@ export function splitWorkerLaunchArgs(raw: string | undefined): string[] {
     }
 
     if (/\s/u.test(character)) {
-      if (tokenStarted) {
-        args.push(token);
-        token = '';
-        tokenStarted = false;
-      }
+      if (tokenStarted) pushToken(index);
       continue;
     }
+    if (!tokenStarted) tokenStart = index;
     if (character === "'") {
       quote = 'single';
       tokenStarted = true;
@@ -248,8 +257,48 @@ export function splitWorkerLaunchArgs(raw: string | undefined): string[] {
   if (quote !== null) {
     throw teamWorkerLaunchArgsError('OMX_TEAM_WORKER_LAUNCH_ARGS', 'unterminated quote');
   }
-  if (tokenStarted) args.push(token);
+  if (tokenStarted) pushToken(raw.length);
   return args;
+}
+
+function extractExactEnvironmentReasoningOverride(raw: string | undefined): string | null {
+  const tokens = tokenizeWorkerLaunchArgs(raw);
+  let reasoningOverride: string | null = null;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.value === '--') break;
+    if (token.value !== CONFIG_FLAG) continue;
+
+    const configValue = tokens[index + 1];
+    if (!configValue) continue;
+    index += 1;
+    if (!isReasoningOverride(configValue.value)) continue;
+
+    const startsWithGroupingQuote = configValue.source.startsWith('"') || configValue.source.startsWith("'");
+    reasoningOverride = startsWithGroupingQuote ? configValue.value : configValue.source;
+  }
+
+  return reasoningOverride;
+}
+
+function restoreExactEnvironmentReasoningOverride(args: string[], raw: string | undefined): string[] {
+  const exactReasoningOverride = extractExactEnvironmentReasoningOverride(raw);
+  if (exactReasoningOverride === null) return args;
+
+  let reasoningValueIndex: number | null = null;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === '--') break;
+    if (args[index] !== CONFIG_FLAG || !isReasoningOverride(args[index + 1] ?? '')) continue;
+    reasoningValueIndex = index + 1;
+    index += 1;
+  }
+  if (reasoningValueIndex !== null) args[reasoningValueIndex] = exactReasoningOverride;
+  return args;
+}
+
+export function splitWorkerLaunchArgs(raw: string | undefined): string[] {
+  return tokenizeWorkerLaunchArgs(raw).map((token) => token.value);
 }
 
 /** Serialize worker launch arguments for reversible environment transport. */
@@ -503,7 +552,7 @@ export function normalizeTeamWorkerLaunchArgs(
       : null);
   const selectedModelProvider = preferredModelProviderOverride ?? parsed.modelProviderOverride;
   if (selectedModelProvider) normalized.push(CONFIG_FLAG, canonicalizeConfigStringOverride(selectedModelProvider, MODEL_PROVIDER_KEY));
-  if (selectedReasoning) normalized.push(CONFIG_FLAG, canonicalizeConfigStringOverride(selectedReasoning, REASONING_KEY));
+  if (selectedReasoning) normalized.push(CONFIG_FLAG, selectedReasoning);
 
   const selectedModel = normalizeOptionalModel(preferredModel) ?? normalizeOptionalModel(parsed.modelOverride);
   if (selectedModel) normalized.push(MODEL_FLAG, selectedModel);
@@ -531,7 +580,10 @@ function selectTeamWorkerModel(params: {
 }
 
 export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgsOptions): string[] {
-  const envArgs = splitWorkerLaunchArgs(options.existingRaw);
+  const envArgs = restoreExactEnvironmentReasoningOverride(
+    splitWorkerLaunchArgs(options.existingRaw),
+    options.existingRaw,
+  );
   const inheritedArgs = options.inheritedArgs ?? [];
   const envParsed = parseTeamWorkerLaunchArgs(envArgs, 'OMX_TEAM_WORKER_LAUNCH_ARGS');
   if (envParsed.wantsBypass && envParsed.policyKind === 'direct-policy') {
@@ -567,7 +619,10 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
 export function resolveTeamWorkerLaunchDiagnostics(
   options: ResolveTeamWorkerLaunchArgsOptions & { requestedAgentType?: string },
 ): ResolvedTeamWorkerLaunchDiagnostics {
-  const envArgs = splitWorkerLaunchArgs(options.existingRaw);
+  const envArgs = restoreExactEnvironmentReasoningOverride(
+    splitWorkerLaunchArgs(options.existingRaw),
+    options.existingRaw,
+  );
   const inheritedArgs = options.inheritedArgs ?? [];
   const envParsed = parseTeamWorkerLaunchArgs(envArgs, 'OMX_TEAM_WORKER_LAUNCH_ARGS');
   const inheritedParsed = parseTeamWorkerLaunchArgs(inheritedArgs, 'inherited leader worker launch arguments');

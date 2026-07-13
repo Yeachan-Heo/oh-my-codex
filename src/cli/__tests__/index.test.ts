@@ -16,6 +16,10 @@ import {
   buildWindowsPromptCommand,
   buildTmuxSessionName,
   resolveCliInvocation,
+  parseResumeCodexHomeSelection,
+  isResumeCodexLaunch,
+  CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE,
+  isCodexVersionRequest,
   resolveUpdateChannelArg,
   commandOwnsLocalHelp,
   resolveCodexLaunchPolicy,
@@ -92,6 +96,7 @@ import {
   DETACHED_TMUX_HISTORY_LIMIT,
   isExistingTmuxWindowTooCrampedForLaunchHud,
 } from "../index.js";
+import { buildResumeArgsWithPreservedFlags, stripHotswapArg } from "../../auth/hotswap.js";
 import { mergeConfig, repairConfigIfNeeded } from "../../config/generator.js";
 import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
 import { readAllState } from "../../hud/state.js";
@@ -585,6 +590,37 @@ describe("normalizeCodexLaunchArgs", () => {
     ]);
   });
 
+  it("adds reasoning overrides before a literal -- marker", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--xhigh", "--", "--max"]), [
+      "-c",
+      'model_reasoning_effort="xhigh"',
+      "--",
+      "--max",
+    ]);
+  });
+
+  it("adds bypass and reasoning overrides before preserving raw marker suffix args", () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs([
+        "--madmax",
+        "--xhigh",
+        "--",
+        "-c",
+        'model_reasoning_effort="ultra"',
+        "--max",
+      ]),
+      [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        'model_reasoning_effort="xhigh"',
+        "--",
+        "-c",
+        'model_reasoning_effort="ultra"',
+        "--max",
+      ],
+    );
+  });
+
   it("uses the last reasoning shorthand when both are present", () => {
     assert.deepEqual(normalizeCodexLaunchArgs(["--high", "--xhigh"]), [
       "-c",
@@ -592,15 +628,212 @@ describe("normalizeCodexLaunchArgs", () => {
     ]);
   });
 
-  it("rejects ambiguous max and ultra reasoning shorthands", () => {
-    assert.throws(
-      () => normalizeCodexLaunchArgs(["--max"]),
-      /canonical highest reasoning effort is "xhigh".*"max" and "ultra" are not accepted aliases/,
+  it("rejects pre-marker max and ultra reasoning shorthands with approved guidance", () => {
+    const errors = [
+      [
+        "--max",
+        'Unsupported OMX launch shorthand "--max".\nNo --max shorthand exists; use agentReasoning for per-agent "max" or pass -c model_reasoning_effort=... directly to Codex.\nRun "omx help" for usage.',
+      ],
+      [
+        "--ultra",
+        'Unsupported OMX launch shorthand "--ultra".\n"ultra" is not an OMX root or per-agent reasoning value and is not an alias for "max".\nRun "omx help" for usage.',
+      ],
+    ] as const;
+
+    for (const [flag, message] of errors) {
+      assert.throws(() => normalizeCodexLaunchArgs([flag]), { message });
+    }
+  });
+
+  it("preserves literal max and ultra after -- with raw -c arguments", () => {
+    const args = [
+      "-c",
+      "model_reasoning_effort=MAX",
+      "--",
+      "--max",
+      "--ultra",
+      "-c",
+      'model_reasoning_effort="ultra"',
+      "-c",
+      "model_reasoning_effort=future",
+    ];
+    assert.deepEqual(normalizeCodexLaunchArgs(args), args);
+  });
+
+  it("preserves post-marker OMX flags as literal Codex arguments", () => {
+    const args = [
+      "--",
+      "--worktree",
+      "post-marker-branch",
+      "--notify-temp",
+      "--discord",
+      "--custom",
+      "openclaw:ops",
+      "--spark",
+      "resume",
+      "--project",
+      "--codex-home",
+      "/tmp/literal-codex-home",
+      "--version",
+    ];
+    const notifyTempResult = resolveNotifyTempContract(args, {});
+    assert.equal(notifyTempResult.contract.active, false);
+    assert.deepEqual(notifyTempResult.contract.canonicalSelectors, []);
+    assert.deepEqual(notifyTempResult.passthroughArgs, args);
+    assert.equal(resolveWorkerSparkModel(notifyTempResult.passthroughArgs), undefined);
+    assert.equal(isResumeCodexLaunch(args), false);
+    assert.equal(isCodexVersionRequest(args), false);
+    assert.deepEqual(parseResumeCodexHomeSelection(args), {
+      args,
+      explicitCodexHome: undefined,
+      projectOnly: false,
+    });
+    assert.deepEqual(normalizeCodexLaunchArgs(notifyTempResult.passthroughArgs), args);
+  });
+
+  it("parses resume-owned selectors only before the end-of-options marker", () => {
+    assert.deepEqual(
+      parseResumeCodexHomeSelection([
+        "resume",
+        "--codex-home",
+        "/tmp/selected-codex-home",
+        "--project",
+        "--",
+        "--codex-home",
+        "/tmp/literal-codex-home",
+        "--project",
+      ]),
+      {
+        args: [
+          "resume",
+          "--",
+          "--codex-home",
+          "/tmp/literal-codex-home",
+          "--project",
+        ],
+        explicitCodexHome: "/tmp/selected-codex-home",
+        projectOnly: true,
+      },
     );
-    assert.throws(
-      () => normalizeCodexLaunchArgs(["--ultra"]),
-      /canonical highest reasoning effort is "xhigh".*"max" and "ultra" are not accepted aliases/,
+    assert.equal(isResumeCodexLaunch(["resume", "--", "literal"]), true);
+    assert.equal(isCodexVersionRequest(["--version", "--", "literal"]), true);
+  });
+
+  it("removes hotswap only before the end-of-options marker", () => {
+    assert.deepEqual(
+      stripHotswapArg(["--hotswap", "--", "--hotswap", "literal"]),
+      ["--", "--hotswap", "literal"],
     );
+  });
+
+  it("preserves Codex launch authority and the first literal suffix when building quota resume args", () => {
+    assert.deepEqual(
+      buildResumeArgsWithPreservedFlags([
+        "--model", "gpt-review",
+        "--model=gpt-review-fast",
+        "--config", "developer_instructions=enabled",
+        "--config=developer_instructions=overridden",
+        "--add-dir", "src",
+        "--remote", "ws://127.0.0.1:4500",
+        "--remote=ws://127.0.0.1:4501",
+        "--remote-auth-token-env", "CODEX_REMOTE_TOKEN",
+        "--remote-auth-token-env=CODEX_REMOTE_TOKEN_BACKUP",
+        "-i", "one.png",
+        "--image", "two.png",
+        "-i", "three.png,four.png",
+        "--image=five.png,six.png",
+        "-iseven.png,eight.png",
+        "--image=resume", "resume",
+        "--oss",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--model", "gpt-resume",
+        "resume", "old-session",
+        "--last", "--all", "--include-non-interactive",
+        "--", "--hotswap", "--last", "--all", "--include-non-interactive", "--model", "opaque-model", "literal suffix",
+      ], "session-123"),
+      [
+        "resume", "session-123",
+        "--model", "gpt-review",
+        "--model=gpt-review-fast",
+        "--config", "developer_instructions=enabled",
+        "--config=developer_instructions=overridden",
+        "--add-dir", "src",
+        "--remote", "ws://127.0.0.1:4500",
+        "--remote=ws://127.0.0.1:4501",
+        "--remote-auth-token-env", "CODEX_REMOTE_TOKEN",
+        "--remote-auth-token-env=CODEX_REMOTE_TOKEN_BACKUP",
+        "-i", "one.png",
+        "--image", "two.png",
+        "-i", "three.png,four.png",
+        "--image=five.png,six.png",
+        "-iseven.png,eight.png",
+        "--image=resume",
+        "--oss",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--model", "gpt-resume",
+        "--", "--hotswap", "--last", "--all", "--include-non-interactive", "--model", "opaque-model", "literal suffix",
+      ],
+    );
+  });
+
+  it("removes resume selectors only when synthesizing an explicit session", () => {
+    for (const selectors of [
+      ["--last"],
+      ["--all"],
+      ["--include-non-interactive"],
+      ["--last", "--all"],
+      ["--all", "--include-non-interactive"],
+      ["--last", "--all", "--include-non-interactive"],
+    ]) {
+      assert.deepEqual(
+        buildResumeArgsWithPreservedFlags([
+          "resume",
+          ...selectors,
+          "--model", "gpt-review",
+          "--remote", "ws://127.0.0.1:4500",
+          "--", ...selectors, "opaque suffix",
+        ], "session-123"),
+        [
+          "resume", "session-123",
+          "--model", "gpt-review",
+          "--remote", "ws://127.0.0.1:4500",
+          "--", ...selectors, "opaque suffix",
+        ],
+        JSON.stringify(selectors),
+      );
+    }
+  });
+
+  it("treats only split image values as variadic", () => {
+    assert.deepEqual([...CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE], [
+      ["-a", "single"], ["--ask-for-approval", "single"], ["-c", "single"],
+      ["--config", "single"], ["-C", "single"], ["--cd", "single"],
+      ["-i", "variadic"], ["--image", "variadic"], ["-m", "single"],
+      ["--model", "single"], ["-p", "single"], ["--profile", "single"],
+      ["-s", "single"], ["--sandbox", "single"], ["--add-dir", "single"],
+      ["--disable", "single"], ["--enable", "single"], ["--local-provider", "single"],
+      ["--remote", "single"], ["--remote-auth-token-env", "single"],
+    ]);
+    for (const args of [
+      ["--model", "resume"], ["--remote", "resume"],
+      ["--image", "resume"], ["-i", "resume"], ["--image=resume"], ["-iresume"], ["-i=resume"],
+      ["-i", "one.png", "resume"], ["--image", "one.png", "resume"],
+      ["-i", "one.png", "-i", "two.png", "resume"],
+      ["--image", "one.png", "--image", "two.png", "resume"],
+      ["-i", "one.png,two.png", "resume"], ["--image", "one.png,two.png", "resume"],
+      ["exec", "resume"], ["--image", "one.png", "--", "resume"],
+    ]) {
+      assert.equal(isResumeCodexLaunch(args), false, JSON.stringify(args));
+    }
+    for (const args of [
+      ["--model", "gpt-review", "resume"],
+      ["--image=one.png", "resume"], ["-ione.png", "resume"], ["-i=one.png", "resume"],
+      ["--image", "one.png", "--model", "gpt-review", "resume"],
+      ["--image=one.png", "--model=gpt-review", "resume"],
+      ["-ione.png", "--remote", "ws://127.0.0.1:4500", "resume"],
+    ]) {
+      assert.equal(isResumeCodexLaunch(args), true, JSON.stringify(args));
+    }
   });
 
   it("maps --xhigh --madmax to codex-native flags only", () => {
@@ -842,6 +1075,14 @@ describe("resolveNotifyTempContract", () => {
       "custom:my-hook",
     ]);
     assert.equal(parsed.contract.warnings.length >= 1, true);
+  });
+
+  it("does not activate or consume selectors after --", () => {
+    const args = ["--", "--notify-temp", "--discord", "--custom", "openclaw:ops"];
+    const parsed = resolveNotifyTempContract(args, {});
+    assert.equal(parsed.contract.active, false);
+    assert.deepEqual(parsed.contract.selectors, []);
+    assert.deepEqual(parsed.passthroughArgs, args);
   });
 
   it("activates from OMX_NOTIFY_TEMP=1 env parity", () => {
@@ -1735,6 +1976,11 @@ describe("resolveWorkerSparkModel", () => {
     assert.equal(resolveWorkerSparkModel([]), undefined);
   });
 
+  it("returns undefined for spark flags after --", () => {
+    assert.equal(resolveWorkerSparkModel(["--", "--spark"]), undefined);
+    assert.equal(resolveWorkerSparkModel(["--", "--madmax-spark"]), undefined);
+  });
+
   it("reads low-complexity team model from config when codexHomeOverride is provided", async () => {
     // Intentional legacy model fixture: verifies an explicit user override is routed to workers unchanged.
     const codexHome = await mkdtemp(join(tmpdir(), "omx-codex-home-"));
@@ -1987,6 +2233,14 @@ describe("resolveCliInvocation", () => {
     assert.match(HELP, /omx update\s+Install the stable channel now, then refresh setup/);
     assert.match(HELP, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
     assert.match(HELP, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
+  });
+
+  it("advertises only the four supported root reasoning modes", () => {
+    assert.match(HELP, /omx reasoning Show or set model reasoning effort \(low\|medium\|high\|xhigh\)/);
+    assert.match(HELP, /--high\s+Launch Codex with high reasoning effort/);
+    assert.match(HELP, /--xhigh\s+Launch Codex with xhigh reasoning effort/);
+    assert.doesNotMatch(HELP, /--max/);
+    assert.doesNotMatch(HELP, /--ultra/);
   });
 
   it("advertises concise launch policy controls in top-level help", () => {
@@ -5975,6 +6229,36 @@ describe("injectModelInstructionsBypassArgs", () => {
       "gpt-5",
       "-c",
       'model_instructions_file="/tmp/my-project/AGENTS.md"',
+    ]);
+  });
+
+  it("inserts model instructions before the end-of-options marker", () => {
+    const args = injectModelInstructionsBypassArgs(
+      "/tmp/my-project",
+      ["--", "--spark", "literal"],
+      {},
+    );
+    assert.deepEqual(args, [
+      "-c",
+      'model_instructions_file="/tmp/my-project/AGENTS.md"',
+      "--",
+      "--spark",
+      "literal",
+    ]);
+  });
+
+  it("does not treat a post-marker model instructions token as an OMX override", () => {
+    const args = injectModelInstructionsBypassArgs(
+      "/tmp/my-project",
+      ["--", "-c", 'model_instructions_file="/tmp/literal.md"'],
+      {},
+    );
+    assert.deepEqual(args, [
+      "-c",
+      'model_instructions_file="/tmp/my-project/AGENTS.md"',
+      "--",
+      "-c",
+      'model_instructions_file="/tmp/literal.md"',
     ]);
   });
 

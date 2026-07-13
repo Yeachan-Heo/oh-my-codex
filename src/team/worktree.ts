@@ -308,6 +308,10 @@ export function parseWorktreeMode(args: string[]): ParsedWorktreeMode {
     const rawArg = args[i];
     const arg = String(rawArg || '');
 
+    if (arg === '--') {
+      remaining.push(...args.slice(i));
+      break;
+    }
     if (arg === '--worktree' || arg === '-w') {
       // Peek at the next argument: if it looks like a git branch name (not a
       // flag and not a team worker spec like "3:debugger"), consume it as the

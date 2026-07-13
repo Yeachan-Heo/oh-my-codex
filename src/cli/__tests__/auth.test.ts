@@ -200,14 +200,71 @@ exit 2
         { slot: "first", createdAt: "now", updatedAt: "now" },
         { slot: "second", createdAt: "now", updatedAt: "now" }
       ] }, null, 2));
-      await writeFakeCodex(bin, `#!/bin/sh\ncount=0\n[ -f ${JSON.stringify(countFile)} ] && count=$(cat ${JSON.stringify(countFile)})\ncount=$((count+1))\nprintf '%s' "$count" > ${JSON.stringify(countFile)}\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvFile)}\nif [ "$count" -eq 1 ]; then mkdir -p "$CODEX_HOME/sessions/2026/05/24"; printf '{}\\n' > "$CODEX_HOME/sessions/2026/05/24/rollout-session-123.jsonl"; echo 'HTTP 429 quota exceeded access_token=stderr-secret Bearer abc.def' >&2; exit 1; fi\ncase "$*" in *"resume session-123"*--model*"gpt-review"*) exit 0;; *) echo 'missing resume args or model flag' >&2; exit 3;; esac\n`);
-      const env = { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` };
-      const result = runOmx(wd, ["--hotswap", "--direct", "--model", "gpt-review"], env);
+      await writeFakeCodex(bin, `#!/bin/sh
+count=0
+[ -f ${JSON.stringify(countFile)} ] && count=$(cat ${JSON.stringify(countFile)})
+count=$((count+1))
+printf '%s' "$count" > ${JSON.stringify(countFile)}
+"$NODE_BINARY" -e 'require("node:fs").appendFileSync(process.argv[1], JSON.stringify(process.argv.slice(2)) + "\\n")' ${JSON.stringify(argvFile)} "$@"
+if [ "$count" -eq 1 ]; then
+  mkdir -p "$CODEX_HOME/sessions/2026/05/24"
+  printf '{}\\n' > "$CODEX_HOME/sessions/2026/05/24/rollout-session-123.jsonl"
+  echo 'HTTP 429 quota exceeded access_token=stderr-secret Bearer abc.def' >&2
+  exit 1
+fi
+exit 0
+`);
+      const env = { HOME: home, CODEX_HOME: codexHome, NODE_BINARY: process.execPath, PATH: `${bin}:/usr/bin:/bin` };
+      const opaqueSuffix = ["--", "--last", "--all", "--include-non-interactive", "--hotswap", "--model", "opaque-model", "literal suffix"];
+      const result = runOmx(wd, [
+        "--hotswap", "--direct", "resume", "--last", "--all", "--include-non-interactive",
+        "--model", "gpt-review", "--remote", "ws://127.0.0.1:4500", ...opaqueSuffix,
+      ], env);
       assert.equal(result.status, 0, result.stderr + result.stdout);
       assert.match(result.stderr, /HTTP 429 quota exceeded/);
-      const argvLog = await readFile(argvFile, "utf-8");
-      assert.match(argvLog, /resume session-123/);
-      assert.match(argvLog, /--model gpt-review/);
+      const spawnArgv = (await readFile(argvFile, "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      assert.equal(spawnArgv.length, 2);
+      const modelInstructionsPrefix = `model_instructions_file="${join(wd, ".omx", "state", "sessions")}/`;
+      const modelInstructionsSuffix = "/AGENTS.md\"";
+      const modelInstructionsArg = spawnArgv[0][spawnArgv[0].indexOf("-c") + 1];
+      assert.ok(modelInstructionsArg.startsWith(modelInstructionsPrefix), modelInstructionsArg);
+      assert.ok(modelInstructionsArg.endsWith(modelInstructionsSuffix), modelInstructionsArg);
+      const sessionId = modelInstructionsArg.slice(
+        modelInstructionsPrefix.length,
+        -modelInstructionsSuffix.length,
+      );
+      assert.match(sessionId, /^omx-\d+-[a-z0-9]*$/);
+      const expectedModelInstructionsArg = `${modelInstructionsPrefix}${sessionId}${modelInstructionsSuffix}`;
+      assert.deepEqual(spawnArgv[0], [
+        "resume",
+        "--last",
+        "--all",
+        "--include-non-interactive",
+        "--model",
+        "gpt-review",
+        "--remote",
+        "ws://127.0.0.1:4500",
+        "-c",
+        expectedModelInstructionsArg,
+        ...opaqueSuffix,
+      ]);
+      assert.deepEqual(spawnArgv[1], [
+        "resume",
+        "session-123",
+        "--model",
+        "gpt-review",
+        "--remote",
+        "ws://127.0.0.1:4500",
+        "-c",
+        expectedModelInstructionsArg,
+        ...opaqueSuffix,
+      ]);
+      assert.deepEqual(spawnArgv[1].slice(spawnArgv[1].indexOf("--")), opaqueSuffix);
+      assert.ok(spawnArgv[0].indexOf("-c") < spawnArgv[0].indexOf("--"));
+      assert.ok(spawnArgv[1].indexOf("-c") < spawnArgv[1].indexOf("--"));
       assert.equal(await readFile(join(codexHome, "auth.json"), "utf-8"), '{"access_token":"second-secret"}\n');
       assert.doesNotMatch(result.stderr + result.stdout, /first-secret|second-secret|stderr-secret|abc\.def/);
     } finally {

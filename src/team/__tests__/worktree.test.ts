@@ -51,6 +51,13 @@ describe('worktree parser', () => {
     assert.deepEqual(parsed.remainingArgs, ['team', '2:executor', 'task']);
   });
 
+  it('does not parse worktree flags after -- and preserves the suffix', () => {
+    const args = ['--', '--worktree', 'post-marker-branch'];
+    const parsed = parseWorktreeMode(args);
+    assert.deepEqual(parsed.mode, { enabled: false });
+    assert.deepEqual(parsed.remainingArgs, args);
+  });
+
   it('keeps team args flag-free so the CLI can apply automatic default worktrees', () => {
     const parsed = parseWorktreeMode(['ralph', '2:executor', 'task']);
     assert.deepEqual(parsed.mode, { enabled: false });

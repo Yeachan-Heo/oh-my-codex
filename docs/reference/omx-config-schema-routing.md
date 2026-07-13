@@ -26,7 +26,7 @@ Current code recognizes these top-level `.omx-config.json` keys:
 | Top-level key | Supported shape | Primary use |
 | --- | --- | --- |
 | `agentModels` | Object mapping agent names to non-empty model strings | Optional per-agent model overrides for generated native agent TOML, AGENTS.md model tables, and role-based worker/Ralph fallback routing. |
-| `agentReasoning` | Object mapping agent names to `low`, `medium`, `high`, or `xhigh` | Optional per-agent reasoning overrides for generated native agent TOML and role-based worker/Ralph staffing guidance. |
+| `agentReasoning` | Object mapping agent names to `low`, `medium`, `high`, `xhigh`, or `max` | Optional per-agent reasoning overrides for generated native agent TOML and role-based worker/Ralph staffing guidance.
 | `env` | Object of non-empty string values | Fallback environment values for model routing and helper launch paths. Model-related supported keys are listed below. |
 | `models` | Object of non-empty string values | Mode defaults and low-complexity model aliases. Supported model-routing keys are listed below. |
 | `notifications` | Object | Notification transports, profiles, templates, cooldowns, replies, and OpenClaw/custom aliases. See the notification summary below and the OpenClaw guide for full examples. |
@@ -152,20 +152,20 @@ For a named role, effective model precedence is:
 
 ### `agentReasoning`
 
-`agentReasoning` is the supported per-agent reasoning override map. Keys are agent names and values must be one of `low`, `medium`, `high`, or `xhigh`.
+`agentReasoning` is the supported **per-agent** reasoning override map. Keys are normalized agent names; configured string values are trimmed and case-normalized to exactly `low`, `medium`, `high`, `xhigh`, or `max`. This normalization is configuration-only: it does not make `max` a root CLI value or launch shorthand.
 
-`xhigh` is the canonical highest reasoning effort token accepted by Codex/OMX. Reported names such as `max` or `ultra` are ambiguous and are not accepted aliases; use `xhigh` instead.
+`max` is passed unchanged to generated native-agent TOML and Team role defaults. Its availability remains capability-dependent on the installed Codex version, selected model, and provider; OMX does not probe capability, downgrade or retry it as `xhigh`, or hide downstream errors. `ultra` is unsupported on OMX-owned `agentReasoning` surfaces and is not an alias for `max`.
 
 ```json
 {
   "agentReasoning": {
-    "architect": "xhigh",
+    "architect": "MAX",
     "critic": "xhigh"
   }
 }
 ```
 
-These overrides do not change built-in defaults in source. They are user/project configuration that applies when OMX resolves role reasoning for generated native agent TOML and role-based team/Ralph staffing/worker guidance. Rerun `omx setup` after changing this map so setup-managed native agent TOML files are regenerated. Malformed agent names, empty values, and unsupported effort values are ignored.
+These overrides do not change built-in defaults in source. Every built-in `AgentDefinition.reasoningEffort` remains required and one of `low`, `medium`, `high`, or `xhigh`; it is never omitted, `max`, or `ultra`. A valid override affects only that normalized agent key. Malformed agent names, empty/non-string values, `ultra`, and unknown values are ignored, so valid sibling overrides remain effective and an affected role keeps its unchanged built-in fallback. Rerun `omx setup --force` after changing this map so setup-managed native agent TOML files are regenerated.
 
 ## Effective model precedence
 
@@ -240,21 +240,17 @@ Use `omx team status <team-name> --model-inspect` when you need inspect hints fo
 
 `.omx-config.json` is **not** the general place to configure root `model_reasoning_effort`. Do not add arbitrary keys such as `reasoningEffort`, `modelReasoningEffort`, `reasoning`, or undeclared per-role reasoning maps. The supported per-agent override map is exactly `agentReasoning`.
 
-Supported reasoning-effort surfaces are:
+Root and per-agent reasoning vocabularies are deliberately separate:
 
-- Active Codex `config.toml` root key: `model_reasoning_effort = "medium"`.
-- `omx reasoning <low|medium|high|xhigh>`, which edits the active Codex `config.toml`.
-- `omx --high` and `omx --xhigh`, which pass `-c model_reasoning_effort="high|xhigh"` to Codex launch.
-- Generated native agent TOML files, where OMX writes each role's built-in `reasoningEffort` metadata.
-- `.omx-config.json` `agentReasoning`, which overrides selected role defaults for generated native agent TOML and role-based team/Ralph reasoning allocation without changing built-in defaults.
-- Team worker launch args, for example:
+- Root `config.toml` accepts `model_reasoning_effort = "low"`, `"medium"`, `"high"`, or `"xhigh"`.
+- `omx reasoning <low|medium|high|xhigh>` edits that root setting. There is no `omx reasoning max`, `omx --max`, or root `max` shorthand.
+- `omx --high` and `omx --xhigh` pass `-c model_reasoning_effort="high|xhigh"` to Codex launch.
+- `.omx-config.json` `agentReasoning` accepts the five configured per-agent values described above and overrides selected role defaults for generated native agent TOML and role-based Team/Ralph staffing without changing built-in defaults.
+- Generated native agent TOML files otherwise write each role's unchanged built-in `reasoningEffort` metadata.
 
-```bash
-OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low" --model gpt-5.6-luna' \
-  omx team 3:explore "map the config surfaces"
-```
+Team runtime can inject a role-default or `agentReasoning`-overridden value when no explicit reasoning override is present. Explicit raw `-c model_reasoning_effort=...` is opaque Codex passthrough: it wins over configured and built-in role defaults, is forwarded unchanged (including `ultra` or future values), and preserves inherited Team explicit reasoning precedence over environment explicit reasoning. OMX does not validate, normalize, downgrade, retry, or claim provider support for that raw value.
 
-Team runtime can also inject role-default or `agentReasoning`-overridden reasoning for Codex workers when no explicit reasoning override is present. Explicit launch args win.
+The launch parser has one narrow end-of-options rule: literal `--max` and `--ultra` are rejected as OMX shorthands before `--`, but `omx -- --max` and `omx -- --ultra` are passed through unchanged to Codex. This does not make unrelated post-`--` arguments an OMX configuration surface.
 
 ## Starter configs
 
@@ -314,10 +310,10 @@ This keeps standard agents inheriting the frontier model by omitting `OMX_DEFAUL
 
 ## Verifying the effective config
 
-After editing `.omx-config.json` or `config.toml`, run setup/doctor from the same shell and project shape that will launch OMX:
+After editing `.omx-config.json` `agentReasoning` or `config.toml`, regenerate setup-managed native agent TOML from the same shell and project shape that will launch OMX:
 
 ```bash
-omx setup
+omx setup --force
 omx doctor
 ```
 

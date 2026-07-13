@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { parse as parseToml } from "@iarna/toml";
 import { AGENT_DEFINITIONS } from "../definitions.js";
 import type { AgentDefinition } from "../definitions.js";
 import type { CatalogManifest } from "../../catalog/schema.js";
@@ -128,6 +129,35 @@ describe("agents/native-config", () => {
       const toml = generateAgentToml(agent, "Architect prompt", { codexHomeOverride: codexHome });
 
       assert.match(toml, /model_reasoning_effort = "xhigh"/);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("transports normalized per-agent max through exact native TOML and falls back from ultra", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-max-reasoning-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentReasoning: {
+          architect: " MAX ",
+          critic: "ultra",
+        },
+      }));
+
+      const maxToml = generateAgentToml(AGENT_DEFINITIONS.architect, "Architect prompt", {
+        codexHomeOverride: codexHome,
+      });
+      assert.match(maxToml, /model_reasoning_effort = "max"/);
+      assert.equal(
+        (parseToml(maxToml) as { model_reasoning_effort?: unknown }).model_reasoning_effort,
+        "max",
+      );
+
+      const fallbackToml = generateAgentToml(AGENT_DEFINITIONS.critic, "Critic prompt", {
+        codexHomeOverride: codexHome,
+      });
+      assert.match(fallbackToml, /model_reasoning_effort = "high"/);
+      assert.doesNotMatch(fallbackToml, /model_reasoning_effort = "ultra"/);
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }

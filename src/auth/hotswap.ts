@@ -60,7 +60,23 @@ export interface CodexRunResult {
 }
 
 export function stripHotswapArg(args: string[]): string[] {
-  return args.filter((arg) => arg !== "--hotswap");
+  const endOfOptionsIndex = args.indexOf("--");
+  const omxArgs = endOfOptionsIndex === -1 ? args : args.slice(0, endOfOptionsIndex);
+  const suffix = endOfOptionsIndex === -1 ? [] : args.slice(endOfOptionsIndex);
+  return [
+    ...omxArgs.filter((arg) => arg !== "--hotswap"),
+    ...suffix,
+  ];
+}
+
+function stripLeaderLaunchPolicyArgs(args: string[]): string[] {
+  const endOfOptionsIndex = args.indexOf("--");
+  const omxArgs = endOfOptionsIndex === -1 ? args : args.slice(0, endOfOptionsIndex);
+  const suffix = endOfOptionsIndex === -1 ? [] : args.slice(endOfOptionsIndex);
+  return [
+    ...omxArgs.filter((arg) => arg !== "--direct" && arg !== "--tmux"),
+    ...suffix,
+  ];
 }
 
 function isAuthInvalidationError(stderr: string | undefined): boolean {
@@ -102,29 +118,89 @@ async function runCodexDirect(
   });
 }
 
+export type CodexGlobalOptionValueArity = "single" | "variadic";
+
+export const CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE = new Map<string, CodexGlobalOptionValueArity>([
+  ["-a", "single"],
+  ["--ask-for-approval", "single"],
+  ["-c", "single"],
+  ["--config", "single"],
+  ["-C", "single"],
+  ["--cd", "single"],
+  ["-i", "variadic"],
+  ["--image", "variadic"],
+  ["-m", "single"],
+  ["--model", "single"],
+  ["-p", "single"],
+  ["--profile", "single"],
+  ["-s", "single"],
+  ["--sandbox", "single"],
+  ["--add-dir", "single"],
+  ["--disable", "single"],
+  ["--enable", "single"],
+  ["--local-provider", "single"],
+  ["--remote", "single"],
+  ["--remote-auth-token-env", "single"],
+]);
+
+export function resolveCodexGlobalOptionValue(
+  arg: string,
+): { valueArity: CodexGlobalOptionValueArity; attached: boolean } | undefined {
+  const exactArity = CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE.get(arg);
+  if (exactArity) return { valueArity: exactArity, attached: false };
+
+  if (arg.startsWith("--")) {
+    const equalsIndex = arg.indexOf("=");
+    if (equalsIndex > 2) {
+      const inlineArity = CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE.get(arg.slice(0, equalsIndex));
+      if (inlineArity) return { valueArity: inlineArity, attached: true };
+    }
+    return undefined;
+  }
+
+  for (const [option, valueArity] of CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE) {
+    if (option.length === 2 && option.startsWith("-") && arg.startsWith(option) && arg.length > 2) {
+      return { valueArity, attached: true };
+    }
+  }
+  return undefined;
+}
+
+const EXPLICIT_SESSION_RESUME_SELECTORS = new Set([
+  "--last",
+  "--all",
+  "--include-non-interactive",
+]);
+
 export function buildResumeArgsWithPreservedFlags(originalArgs: string[], sessionId: string): string[] {
+  const endOfOptionsIndex = originalArgs.indexOf("--");
+  const prefix = endOfOptionsIndex === -1 ? originalArgs : originalArgs.slice(0, endOfOptionsIndex);
+  const suffix = endOfOptionsIndex === -1 ? [] : originalArgs.slice(endOfOptionsIndex);
   const preserved: string[] = [];
-  for (let index = 0; index < originalArgs.length; index++) {
-    const arg = originalArgs[index];
-    if (arg === "--") break;
-    if (arg === "-c" || arg === "--config" || arg === "--model" || arg === "-m") {
+
+  for (let index = 0; index < prefix.length; index += 1) {
+    const arg = prefix[index];
+    if (EXPLICIT_SESSION_RESUME_SELECTORS.has(arg)) continue;
+    const optionValue = resolveCodexGlobalOptionValue(arg);
+    if (optionValue) {
       preserved.push(arg);
-      const value = originalArgs[index + 1];
-      if (value && !value.startsWith("-")) {
-        preserved.push(value);
+      if (optionValue.attached) continue;
+      if (optionValue.valueArity === "variadic") {
+        while (index + 1 < prefix.length && !prefix[index + 1]!.startsWith("-")) {
+          preserved.push(prefix[index + 1]!);
+          index += 1;
+        }
+      } else if (index + 1 < prefix.length) {
+        preserved.push(prefix[index + 1]!);
         index += 1;
       }
       continue;
     }
-    if (
-      arg.startsWith("--config=") ||
-      arg.startsWith("--model=") ||
-      arg === "--dangerously-bypass-approvals-and-sandbox"
-    ) {
-      preserved.push(arg);
-    }
+
+    if (arg.startsWith("-")) preserved.push(arg);
   }
-  return ["resume", sessionId, ...preserved];
+
+  return ["resume", sessionId, ...preserved, ...suffix];
 }
 
 function codexHomeFromAuthPath(authPath: string): string {
@@ -142,7 +218,9 @@ export async function runAuthHotswap(options: HotswapOptions): Promise<number> {
   const lifecycle = options.lifecycle;
   const rawArgs = stripHotswapArg(options.argv);
   const notifyTempResult = lifecycle.resolveNotifyTempContract(rawArgs, env);
-  const normalizedArgs = lifecycle.normalizeCodexLaunchArgs(notifyTempResult.passthroughArgs.filter((arg) => arg !== "--direct" && arg !== "--tmux"));
+  const normalizedArgs = lifecycle.normalizeCodexLaunchArgs(
+    stripLeaderLaunchPolicyArgs(notifyTempResult.passthroughArgs),
+  );
   const config = await readAuthConfig(cwd, home);
   const slots = await listSlots(home);
   if (slots.length === 0) {

@@ -4,13 +4,18 @@ import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
+  AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS,
+  CANONICAL_REASONING_EFFORTS,
   DEFAULT_FRONTIER_MODEL,
   DEFAULT_SPARK_MODEL,
   DEFAULT_TEAM_CHILD_MODEL,
   GPT_5_6_MODEL_ALIASES,
-  getAgentReasoningOverride,
-  isKnownCodexModelAlias,
+  KNOWN_CODEX_MODEL_ALIASES,
+  PER_AGENT_REASONING_EFFORTS,
+  ROOT_REASONING_EFFORTS,
+  ROOT_UNSUPPORTED_REASONING_EFFORTS,
   getAgentModelOverride,
+  getAgentReasoningOverride,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
   getModelForMode,
@@ -18,10 +23,18 @@ import {
   getStandardDefaultModel,
   getTeamChildModel,
   getTeamLowComplexityModel,
-  readAgentReasoningOverrides,
+  isAmbiguousUnsupportedReasoningEffort,
+  isKnownCodexModelAlias,
+  isUnsupportedRootReasoningEffort,
+  normalizeUnsupportedRootReasoningEffort,
   readAgentModelOverrides,
+  readAgentReasoningOverrides,
   readConfiguredEnvOverrides,
-  KNOWN_CODEX_MODEL_ALIASES,
+  type AmbiguousUnsupportedReasoningEffort,
+  type ConfiguredAgentReasoningEffort,
+  type PerAgentReasoningEffort,
+  type RootReasoningEffort,
+  type RootUnsupportedReasoningEffort,
 } from '../models.js';
 
 describe('getModelForMode', () => {
@@ -272,18 +285,88 @@ describe('getModelForMode', () => {
     assert.equal(getAgentReasoningOverride('executor'), undefined);
   });
 
-  it('rejects ambiguous max and ultra reasoning aliases', async () => {
+  it('accepts normalized per-agent max while omitting unsupported and invalid reasoning values', async () => {
     await writeConfig({
       agentReasoning: {
-        architect: 'max',
+        Architect: 'low',
+        architect: ' MAX ',
         critic: 'ultra',
+        executor: 'invalid',
         planner: 'xhigh',
+        empty: '   ',
+        array: ['max'],
+        object: { effort: 'max' },
+        boolean: true,
+        number: 5,
       },
     });
 
     assert.deepEqual(readAgentReasoningOverrides(), {
+      architect: 'max',
       planner: 'xhigh',
     });
+    assert.equal(getAgentReasoningOverride('ARCHITECT'), 'max');
+    assert.equal(getAgentReasoningOverride('critic'), undefined);
+    assert.equal(getAgentReasoningOverride('executor'), undefined);
+  });
+
+  it('keeps legacy, per-agent, and root reasoning vocabularies distinct', () => {
+    const legacyEffort: ConfiguredAgentReasoningEffort = 'xhigh';
+    const perAgentEffort: PerAgentReasoningEffort = 'max';
+    const rootEffort: RootReasoningEffort = 'xhigh';
+    const rootUnsupportedEffort: RootUnsupportedReasoningEffort = 'max';
+    void legacyEffort;
+    void perAgentEffort;
+    void rootEffort;
+    void rootUnsupportedEffort;
+    const ambiguousUnsupportedEffort: AmbiguousUnsupportedReasoningEffort = 'ultra';
+    void ambiguousUnsupportedEffort;
+
+    // @ts-expect-error Legacy configured reasoning remains four-valued.
+    const legacyMax: ConfiguredAgentReasoningEffort = 'max';
+    // @ts-expect-error Root reasoning remains four-valued.
+    const rootMax: RootReasoningEffort = 'max';
+    // @ts-expect-error Root unsupported tokens exclude unknown values.
+    const rootUnknown: RootUnsupportedReasoningEffort = 'future';
+    void legacyMax;
+    void rootMax;
+    void rootUnknown;
+    // @ts-expect-error Per-agent reasoning excludes ultra.
+    const perAgentUltra: PerAgentReasoningEffort = 'ultra';
+    // @ts-expect-error Legacy unsupported tokens exclude supported values.
+    const ambiguousHigh: AmbiguousUnsupportedReasoningEffort = 'high';
+    void perAgentUltra;
+    void ambiguousHigh;
+
+    assert.deepEqual(CANONICAL_REASONING_EFFORTS, ['low', 'medium', 'high', 'xhigh']);
+    assert.deepEqual(AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS, ['max', 'ultra']);
+    assert.deepEqual(PER_AGENT_REASONING_EFFORTS, ['low', 'medium', 'high', 'xhigh', 'max']);
+    assert.deepEqual(ROOT_REASONING_EFFORTS, ['low', 'medium', 'high', 'xhigh']);
+    assert.deepEqual(ROOT_UNSUPPORTED_REASONING_EFFORTS, ['max', 'ultra']);
+    assert.notStrictEqual(ROOT_REASONING_EFFORTS, CANONICAL_REASONING_EFFORTS);
+
+    assert.equal(isAmbiguousUnsupportedReasoningEffort('MAX'), true);
+    assert.equal(isAmbiguousUnsupportedReasoningEffort(' max '), false);
+
+    const ambiguousCandidate = 'MAX' as string;
+    if (isAmbiguousUnsupportedReasoningEffort(ambiguousCandidate)) {
+      const narrowedAmbiguousCandidate: AmbiguousUnsupportedReasoningEffort = ambiguousCandidate;
+      void narrowedAmbiguousCandidate;
+    }
+    assert.equal(isUnsupportedRootReasoningEffort('MAX'), true);
+    assert.equal(isUnsupportedRootReasoningEffort('ulTRA'), true);
+    assert.equal(isUnsupportedRootReasoningEffort(' ultra '), false);
+    assert.equal(isUnsupportedRootReasoningEffort('xhigh'), false);
+    assert.equal(normalizeUnsupportedRootReasoningEffort(' MAX '), 'max');
+    assert.equal(normalizeUnsupportedRootReasoningEffort(' Ultra '), 'ultra');
+    assert.equal(normalizeUnsupportedRootReasoningEffort('xhigh'), undefined);
+
+    const rootCandidate = 'MAX' as string;
+    if (isUnsupportedRootReasoningEffort(rootCandidate)) {
+      // @ts-expect-error Root classification must not narrow arbitrary strings.
+      const narrowedRootCandidate: RootUnsupportedReasoningEffort = rootCandidate;
+      void narrowedRootCandidate;
+    }
   });
 
 

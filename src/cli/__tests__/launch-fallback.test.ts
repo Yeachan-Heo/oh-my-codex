@@ -297,6 +297,159 @@ exit 42
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('passes literal max and ultra after -- with raw config args to Codex launch unchanged', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-reasoning-passthrough-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const fakeCapturePath = join(wd, 'fake-codex-argv.json');
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        fakeCodexPath,
+        [
+          '#!/bin/sh',
+          `exec "$NODE_BINARY" -e 'require("node:fs").writeFileSync(process.env.OMX_FAKE_CODEX_CAPTURE_PATH, JSON.stringify(process.argv.slice(1)))' -- "$@"`,
+          '',
+        ].join('\n'),
+      );
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(
+        wd,
+        [
+          '--direct',
+          '-c',
+          'model_reasoning_effort=MAX',
+          '--',
+          '--max',
+          '--ultra',
+          '-c',
+          'model_reasoning_effort="ultra"',
+          '-c',
+          'model_reasoning_effort=future',
+          'suffix argument with spaces',
+          '',
+          '--',
+          'after second marker',
+        ],
+        {
+          HOME: home,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          NODE_OPTIONS: '',
+          OMX_AUTO_UPDATE: '0',
+          OMX_NOTIFY_FALLBACK: '0',
+          OMX_HOOK_DERIVED_SIGNALS: '0',
+          NODE_BINARY: process.execPath,
+          OMX_FAKE_CODEX_CAPTURE_PATH: fakeCapturePath,
+          TMUX: '',
+          TMUX_PANE: '',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      const capturedArgv = JSON.parse(await readFile(fakeCapturePath, 'utf-8')) as string[];
+      const firstMarkerIndex = capturedArgv.indexOf('--');
+      assert.equal(firstMarkerIndex, 4);
+      const modelInstructionsArg = capturedArgv[firstMarkerIndex - 1];
+      assert.match(modelInstructionsArg, /^model_instructions_file="[^"\n]+"$/);
+      assert.match(modelInstructionsArg, /\.omx\/state\/sessions\/omx-[^"]+\/AGENTS\.md"$/);
+      assert.equal(capturedArgv.filter((arg) => arg.startsWith('model_instructions_file=')).length, 1);
+      assert.deepEqual(capturedArgv, [
+        '-c',
+        'model_reasoning_effort=MAX',
+        '-c',
+        modelInstructionsArg,
+        '--',
+        '--max',
+        '--ultra',
+        '-c',
+        'model_reasoning_effort="ultra"',
+        '-c',
+        'model_reasoning_effort=future',
+        'suffix argument with spaces',
+        '',
+        '--',
+        'after second marker',
+      ]);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('treats image values as variadic when detecting resume launches', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-image-resume-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCapturePath = join(wd, 'fake-codex.json');
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await mkdir(join(wd, '.codex'), { recursive: true });
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(join(wd, '.codex', 'state_5.sqlite'), 'resume-only-sentinel');
+      await writeExecutable(
+        join(fakeBin, 'codex'),
+        `#!/bin/sh
+exec "$NODE_BINARY" -e 'const fs = require("node:fs"); const path = require("node:path"); fs.writeFileSync(process.env.OMX_FAKE_CODEX_CAPTURE_PATH, JSON.stringify({ argv: process.argv.slice(1), hasResumeSqlite: fs.existsSync(path.join(process.env.CODEX_HOME, "state_5.sqlite")) }))' -- "$@"
+`,
+      );
+
+      const cases: Array<{ args: string[]; resumes: boolean }> = [
+        { args: ['-i', 'resume'], resumes: false },
+        { args: ['--image', 'resume'], resumes: false },
+        { args: ['--image=resume'], resumes: false },
+        { args: ['-iresume'], resumes: false },
+        { args: ['-i=resume'], resumes: false },
+        { args: ['-i', 'screenshot.png', 'resume'], resumes: false },
+        { args: ['--image', 'screenshot.png', 'resume'], resumes: false },
+        { args: ['--image=screenshot.png', 'resume'], resumes: true },
+        { args: ['-iscreenshot.png', 'resume'], resumes: true },
+        { args: ['-i=screenshot.png', 'resume'], resumes: true },
+        { args: ['-i', 'one.png', '-i', 'two.png', 'resume'], resumes: false },
+        { args: ['--image', 'one.png', '--image', 'two.png', 'resume'], resumes: false },
+        { args: ['-i', 'one.png,two.png', 'resume'], resumes: false },
+        { args: ['--image', 'one.png,two.png', 'resume'], resumes: false },
+        { args: ['--image', 'one.png', '--model', 'gpt-review', 'resume'], resumes: true },
+        { args: ['--image=one.png', '--model=gpt-review', 'resume'], resumes: true },
+      ];
+
+      for (const testCase of cases) {
+        const result = runOmx(
+          wd,
+          ['--direct', ...testCase.args],
+          {
+            HOME: home,
+            PATH: `${fakeBin}:/usr/bin:/bin`,
+            NODE_BINARY: process.execPath,
+            OMX_AUTO_UPDATE: '0',
+            OMX_BYPASS_DEFAULT_SYSTEM_PROMPT: '0',
+            OMX_HOOK_DERIVED_SIGNALS: '0',
+            OMX_NOTIFY_FALLBACK: '0',
+            OMX_FAKE_CODEX_CAPTURE_PATH: fakeCapturePath,
+          },
+        );
+
+        if (shouldSkipForSpawnPermissions(result.error)) return;
+        assert.equal(result.status, 0, `${JSON.stringify(testCase.args)}: ${result.error || result.stderr || result.stdout}`);
+        const captured = JSON.parse(await readFile(fakeCapturePath, 'utf-8')) as {
+          argv: string[];
+          hasResumeSqlite: boolean;
+        };
+        assert.deepEqual(captured.argv, testCase.args);
+        assert.equal(captured.hasResumeSqlite, testCase.resumes, JSON.stringify(testCase.args));
+      }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ordinary launch root collision guidance', () => {

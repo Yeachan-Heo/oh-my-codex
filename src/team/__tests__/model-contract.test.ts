@@ -15,7 +15,9 @@ import {
   splitWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   resolveTeamLowComplexityDefaultModel,
+  type TeamReasoningEffort,
 } from '../model-contract.js';
+import type { PerAgentReasoningEffort } from '../../config/models.js';
 
 
 function expectedLowComplexityModel(): string {
@@ -229,17 +231,20 @@ describe('team model contract', () => {
     assert.equal(resolveAgentReasoningEffort('does-not-exist'), undefined);
   });
 
-  it('maps worker roles through configured per-agent reasoning overrides', async () => {
+  it('maps worker roles through configured per-agent reasoning overrides and invalid fallback', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'omx-model-contract-reasoning-'));
     try {
       await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
         agentReasoning: {
-          architect: 'xhigh',
+          architect: 'MAX',
+          critic: 'ultra',
+          explore: 'future',
         },
       }));
 
-      assert.equal(resolveAgentReasoningEffort('architect', codexHome), 'xhigh');
+      assert.equal(resolveAgentReasoningEffort('architect', codexHome), 'max');
       assert.equal(resolveAgentReasoningEffort('critic', codexHome), 'high');
+      assert.equal(resolveAgentReasoningEffort('explore', codexHome), 'low');
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -444,6 +449,134 @@ describe('resolveTeamWorkerLaunchArgs - teammate reasoning allocation', () => {
     assert.equal(matches.length, 1, 'reasoning override should appear exactly once');
   });
 
+  it('preserves exact reasoning tokens while normalizing direct worker policy', () => {
+    const existingRaw = `-a on-request -c 'model_reasoning_effort = "MAX"'`;
+
+    assert.deepEqual(
+      resolveTeamWorkerLaunchArgs({ existingRaw, preferredReasoning: 'low' }),
+      ['--ask-for-approval', 'on-request', '-c', 'model_reasoning_effort = "MAX"'],
+    );
+    assert.deepEqual(
+      resolveTeamWorkerLaunchArgs({
+        existingRaw,
+        inheritedArgs: ['-c', 'model_reasoning_effort=future-tier'],
+        preferredReasoning: 'low',
+      }),
+      ['--ask-for-approval', 'on-request', '-c', 'model_reasoning_effort=future-tier'],
+    );
+  });
+
+  it('keeps TeamReasoningEffort exactly aligned with configured per-agent reasoning', () => {
+    const configuredReasoning: PerAgentReasoningEffort = 'max';
+    const teamReasoning: TeamReasoningEffort = configuredReasoning;
+    const exactConfiguredReasoning: PerAgentReasoningEffort = teamReasoning;
+    assert.equal(exactConfiguredReasoning, 'max');
+
+    // @ts-expect-error Team reasoning excludes unsupported configured ultra.
+    const unsupportedReasoning: TeamReasoningEffort = 'ultra';
+    void unsupportedReasoning;
+  });
+
+  it('applies the full frozen Team reasoning precedence and diagnostics matrix', () => {
+    const cases: Array<{
+      name: string;
+      existingRaw?: string;
+      inheritedArgs?: string[];
+      preferredReasoning?: TeamReasoningEffort;
+      expectedReasoningToken?: string;
+      expectedSource: 'explicit' | 'role-default' | 'none';
+      expectedActual?: TeamReasoningEffort;
+    }> = [
+      {
+        name: 'no explicit or role default',
+        expectedSource: 'none',
+      },
+      {
+        name: 'configured max role default',
+        preferredReasoning: 'max',
+        expectedReasoningToken: 'model_reasoning_effort="max"',
+        expectedSource: 'role-default',
+        expectedActual: 'max',
+      },
+      {
+        name: 'known environment explicit reasoning',
+        existingRaw: '-c model_reasoning_effort=MAX',
+        preferredReasoning: 'max',
+        expectedReasoningToken: 'model_reasoning_effort=MAX',
+        expectedSource: 'explicit',
+        expectedActual: 'max',
+      },
+      {
+        name: 'opaque environment ultra reasoning',
+        existingRaw: "-c model_reasoning_effort='ultra'",
+        preferredReasoning: 'max',
+        expectedReasoningToken: "model_reasoning_effort='ultra'",
+        expectedSource: 'explicit',
+      },
+      {
+        name: 'known inherited explicit reasoning',
+        inheritedArgs: ['-c', 'model_reasoning_effort = "MAX"'],
+        preferredReasoning: 'low',
+        expectedReasoningToken: 'model_reasoning_effort = "MAX"',
+        expectedSource: 'explicit',
+        expectedActual: 'max',
+      },
+      {
+        name: 'opaque inherited future reasoning',
+        inheritedArgs: ['-c', 'model_reasoning_effort=future-tier'],
+        preferredReasoning: 'low',
+        expectedReasoningToken: 'model_reasoning_effort=future-tier',
+        expectedSource: 'explicit',
+      },
+      {
+        name: 'inherited explicit reasoning over environment explicit reasoning',
+        existingRaw: '-c model_reasoning_effort=low',
+        inheritedArgs: ['-c', 'model_reasoning_effort=MAX'],
+        preferredReasoning: 'high',
+        expectedReasoningToken: 'model_reasoning_effort=MAX',
+        expectedSource: 'explicit',
+        expectedActual: 'max',
+      },
+      {
+        name: 'last environment explicit reasoning',
+        existingRaw: '-c model_reasoning_effort=low -c model_reasoning_effort=max',
+        preferredReasoning: 'high',
+        expectedReasoningToken: 'model_reasoning_effort=max',
+        expectedSource: 'explicit',
+        expectedActual: 'max',
+      },
+      {
+        name: 'last inherited explicit reasoning over environment reasoning',
+        existingRaw: '-c model_reasoning_effort=low',
+        inheritedArgs: [
+          '-c',
+          'model_reasoning_effort=high',
+          '-c',
+          'model_reasoning_effort=future-tier',
+        ],
+        preferredReasoning: 'max',
+        expectedReasoningToken: 'model_reasoning_effort=future-tier',
+        expectedSource: 'explicit',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const diagnostics = resolveTeamWorkerLaunchDiagnostics({
+        existingRaw: testCase.existingRaw,
+        inheritedArgs: testCase.inheritedArgs,
+        preferredReasoning: testCase.preferredReasoning,
+      });
+
+      assert.deepEqual(
+        diagnostics.actualLaunchArgs,
+        testCase.expectedReasoningToken ? ['-c', testCase.expectedReasoningToken] : [],
+        testCase.name,
+      );
+      assert.equal(diagnostics.reasoningSource, testCase.expectedSource, testCase.name);
+      assert.equal(diagnostics.actualReasoning, testCase.expectedActual, testCase.name);
+      assert.equal(diagnostics.requestedDefaultReasoning, testCase.preferredReasoning, testCase.name);
+    }
+  });
   it('does not inject thinking when model is explicit but reasoning is omitted', () => {
     const result = resolveTeamWorkerLaunchArgs({
       existingRaw: '--model claude-opus-4',
