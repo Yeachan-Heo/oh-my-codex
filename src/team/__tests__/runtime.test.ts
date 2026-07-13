@@ -19,6 +19,7 @@ import {
   listDispatchRequests,
   enqueueDispatchRequest,
   sendDirectMessage,
+  markMessageDelivered,
   transitionDispatchRequest,
   updateWorkerHeartbeat,
   writeAtomic,
@@ -9449,7 +9450,7 @@ esac
           dirPrefix: 'omx-runtime-coalesced-pending-bin-',
           tmuxScript: () => `#!/bin/sh
 if [ "$1" = "list-panes" ]; then
-  echo "0 1234"
+  echo "0 ${process.pid}"
 fi
 `,
         },
@@ -9474,6 +9475,90 @@ fi
           await monitorTeam('team-coalesced-pending', cwd);
           const snapshot = await readMonitorSnapshot('team-coalesced-pending', cwd);
           assert.equal(snapshot?.mailboxNotifiedByMessageId[message.message_id], undefined);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('monitorTeam makes failed direct mailbox reminders terminal before retrying newer mail', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-direct-reminder-retry-'));
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-direct-reminder-retry-bin-',
+          tmuxScript: () => `#!/bin/sh
+if [ "$1" = "-V" ]; then
+  echo "tmux 3.4"
+  exit 0
+fi
+if [ "$1" = "list-panes" ]; then
+  echo "0 ${process.pid}"
+  exit 0
+fi
+if [ "$1" = "send-keys" ]; then
+  exit 1
+fi
+exit 0
+`,
+        },
+        async () => {
+          await initTeamState('team-direct-reminder-retry', 'direct reminder retry', 'executor', 1, cwd);
+          const manifestPath = join(
+            cwd,
+            '.omx',
+            'state',
+            'team',
+            'team-direct-reminder-retry',
+            'manifest.v2.json',
+          );
+          const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+          manifest.policy = { ...(manifest.policy || {}), dispatch_mode: 'transport_direct' };
+          await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+          const firstMessage = await sendDirectMessage(
+            'team-direct-reminder-retry',
+            'leader-fixed',
+            'worker-1',
+            'first',
+            cwd,
+          );
+          await monitorTeam('team-direct-reminder-retry', cwd);
+
+          const firstRequests = await listDispatchRequests(
+            'team-direct-reminder-retry',
+            cwd,
+            { kind: 'mailbox', to_worker: 'worker-1' },
+          );
+          assert.equal(firstRequests.length, 1);
+          assert.equal(firstRequests[0]?.status, 'failed');
+          assert.match(firstRequests[0]?.last_reason ?? '', /^tmux_send_keys_failed:/);
+
+          await markMessageDelivered(
+            'team-direct-reminder-retry',
+            'worker-1',
+            firstMessage.message_id,
+            cwd,
+          );
+          const secondMessage = await sendDirectMessage(
+            'team-direct-reminder-retry',
+            'leader-fixed',
+            'worker-1',
+            'second',
+            cwd,
+          );
+          await monitorTeam('team-direct-reminder-retry', cwd);
+
+          const requests = await listDispatchRequests(
+            'team-direct-reminder-retry',
+            cwd,
+            { kind: 'mailbox', to_worker: 'worker-1' },
+          );
+          assert.equal(requests.length, 2);
+          assert.notEqual(requests[1]?.request_id, requests[0]?.request_id);
+          assert.equal(requests[1]?.message_id, secondMessage.message_id);
+          assert.equal(requests[1]?.status, 'failed');
         },
       );
     } finally {

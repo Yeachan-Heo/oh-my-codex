@@ -349,7 +349,7 @@ describe('team message delivery end-to-end smoke tests', () => {
     }
   });
 
-  it('worker -> leader: concurrent worker sends preserve every message across mailbox and dispatch seams', async () => {
+  it('worker -> leader: concurrent sends preserve every message behind one leader reminder', async () => {
     const { cwd, cleanup } = await setupTeam('worker-leader-concurrent', 3);
     try {
       await withFakeTmux(cwd, async () => {
@@ -359,11 +359,16 @@ describe('team message delivery end-to-end smoke tests', () => {
           'worker-3': '%12',
         });
 
-        await Promise.all([
+        const results = await Promise.all([
           executeTeamApiOperation('send-message', { team_name: 'worker-leader-concurrent', from_worker: 'worker-1', to_worker: 'leader-fixed', body: 'msg-1' }, cwd),
           executeTeamApiOperation('send-message', { team_name: 'worker-leader-concurrent', from_worker: 'worker-2', to_worker: 'leader-fixed', body: 'msg-2' }, cwd),
           executeTeamApiOperation('send-message', { team_name: 'worker-leader-concurrent', from_worker: 'worker-3', to_worker: 'leader-fixed', body: 'msg-3' }, cwd),
         ]);
+        assert.equal(results.every((result) => result.ok), true);
+        const coalesced = results.filter((result) =>
+          result.ok
+          && (result.data.dispatch as { reason?: string } | undefined)?.reason === 'mailbox_reminder_coalesced');
+        assert.equal(coalesced.length, 2);
 
         const mailbox = await listMailboxMessages('worker-leader-concurrent', 'leader-fixed', cwd);
         const workerMessages = mailbox.filter((message) =>
@@ -371,13 +376,14 @@ describe('team message delivery end-to-end smoke tests', () => {
         assert.equal(workerMessages.length, 3);
         assert.deepEqual(new Set(workerMessages.map((message) => message.body)), new Set(['msg-1', 'msg-2', 'msg-3']));
         assert.equal(new Set(workerMessages.map((message) => message.message_id)).size, 3);
-        assert.equal(workerMessages.filter((message) => message.notified_at).length, 3);
+        assert.equal(workerMessages.filter((message) => message.notified_at).length, 1);
+        assert.equal(mailbox.filter((message) => message.from_worker === 'system').length, 0);
 
         const requests = await listDispatchRequests('worker-leader-concurrent', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
         const workerMessageIds = new Set(workerMessages.map((message) => message.message_id));
         const workerRequests = requests.filter((request) => request.message_id && workerMessageIds.has(request.message_id));
-        assert.equal(workerRequests.length, 3);
-        assert.equal(workerRequests.filter((request) => request.status === 'notified').length, 3);
+        assert.equal(workerRequests.length, 1);
+        assert.equal(workerRequests[0]?.status, 'notified');
       });
     } finally {
       await cleanup();
@@ -402,6 +408,43 @@ describe('team message delivery end-to-end smoke tests', () => {
 
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
         assert.match(tmuxLog, /send-keys -t %10/);
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('leader -> worker: burst sends persist every body behind one worker reminder', async () => {
+    const { cwd, cleanup } = await setupTeam('leader-worker-burst', 1);
+    try {
+      await withFakeTmux(cwd, async (tmuxLogPath) => {
+        await configurePaneIds('leader-worker-burst', cwd, '%95', { 'worker-1': '%10' });
+        const bodies = Array.from({ length: 8 }, (_, index) => `burst-${index + 1}`);
+        const results = await Promise.all(bodies.map((body) => executeTeamApiOperation('send-message', {
+          team_name: 'leader-worker-burst',
+          from_worker: 'leader-fixed',
+          to_worker: 'worker-1',
+          body,
+        }, cwd)));
+
+        assert.equal(results.every((result) => result.ok), true);
+        const coalesced = results.filter((result) =>
+          result.ok
+          && (result.data.dispatch as { reason?: string } | undefined)?.reason === 'mailbox_reminder_coalesced');
+        assert.equal(coalesced.length, bodies.length - 1);
+
+        const mailbox = await listMailboxMessages('leader-worker-burst', 'worker-1', cwd);
+        assert.equal(mailbox.length, bodies.length);
+        assert.deepEqual(new Set(mailbox.map((message) => message.body)), new Set(bodies));
+        assert.equal(new Set(mailbox.map((message) => message.message_id)).size, bodies.length);
+        assert.equal(mailbox.filter((message) => message.notified_at).length, 1);
+
+        const requests = await listDispatchRequests('leader-worker-burst', cwd, { kind: 'mailbox', to_worker: 'worker-1' });
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0]?.status, 'notified');
+
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.equal((tmuxLog.match(/You have 1 new message\(s\)/g) ?? []).length, 1);
       });
     } finally {
       await cleanup();

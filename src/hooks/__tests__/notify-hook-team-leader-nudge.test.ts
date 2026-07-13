@@ -1075,6 +1075,74 @@ describe('notify-hook team leader nudge', () => {
     });
   });
 
+  it('uses bridge delivery state for Team-scoped leader unread attention', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'bridge-leader-delivered';
+      const teamDir = join(stateDir, 'team', teamName);
+      const mailboxDir = join(teamDir, 'mailbox');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const messageId = 'bridge-delivered-leader-message';
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'bridge-leader-delivered:0',
+        leader_pane_id: '%91',
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [{
+          message_id: messageId,
+          from_worker: 'worker-1',
+          to_worker: 'leader-fixed',
+          body: 'already handled',
+          created_at: '2026-02-14T00:00:00.000Z',
+        }],
+      });
+      await writeJson(join(stateDir, 'mailbox.json'), {
+        records: [{
+          message_id: messageId,
+          from_worker: 'worker-1',
+          to_worker: 'leader-fixed',
+          body: 'already handled',
+          created_at: '2026-02-14T00:00:00.000Z',
+          notified_at: '2026-02-14T00:00:30.000Z',
+          delivered_at: '2026-02-14T00:01:00.000Z',
+        }],
+      });
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      await withProcessEnv({ PATH: `${fakeBinDir}:${process.env.PATH || ''}` }, async () => {
+        await maybeNudgeTeamLeader({
+          cwd,
+          stateDir,
+          logsDir,
+          preComputedLeaderStale: false,
+        });
+      });
+
+      if (existsSync(tmuxLogPath)) {
+        assert.doesNotMatch(await readFile(tmuxLogPath, 'utf-8'), /send-keys/);
+      }
+      const attention = JSON.parse(await readFile(join(teamDir, 'leader-attention.json'), 'utf-8'));
+      assert.equal(attention.unread_leader_message_count, 0);
+      assert.equal(attention.leader_attention_pending, false);
+      assert.equal(attention.leader_attention_reason, null);
+    });
+  });
+
   it('suppresses leader mailbox nudge when team state disappears before injection', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
@@ -1696,7 +1764,7 @@ exit 0
 
 
 
-  it('does not re-nudge for the same fresh mailbox message on repeated notify-hook runs', async () => {
+  it('keeps the fresh-mailbox high-water mark when the newest message is delivered', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -1750,9 +1818,89 @@ exit 0
       const second = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_NUDGE_MS: '600000' });
       assert.equal(second.status, 0, `notify-hook failed: ${second.stderr || second.stdout}`);
 
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'same-msg-1',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'please review',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+          {
+            message_id: 'new-msg-2',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'new review',
+            created_at: '2026-02-14T00:01:00.000Z',
+          },
+        ],
+      });
+      const third = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_NUDGE_MS: '600000' });
+      assert.equal(third.status, 0, `notify-hook failed: ${third.stderr || third.stdout}`);
+
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'same-msg-1',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'please review',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+          {
+            message_id: 'new-msg-2',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'new review',
+            created_at: '2026-02-14T00:01:00.000Z',
+            delivered_at: new Date().toISOString(),
+          },
+        ],
+      });
+      const fourth = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_NUDGE_MS: '600000' });
+      assert.equal(fourth.status, 0, `notify-hook failed: ${fourth.stderr || fourth.stdout}`);
+
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'same-msg-1',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'please review',
+            created_at: '2026-02-14T00:00:00.000Z',
+            delivered_at: new Date().toISOString(),
+          },
+          {
+            message_id: 'new-msg-2',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'new review',
+            created_at: '2026-02-14T00:01:00.000Z',
+            delivered_at: new Date().toISOString(),
+          },
+          {
+            message_id: 'delivered-msg-3',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'already read',
+            created_at: '2026-02-14T00:02:00.000Z',
+            delivered_at: new Date().toISOString(),
+          },
+        ],
+      });
+      const fifth = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_NUDGE_MS: '600000' });
+      assert.equal(fifth.status, 0, `notify-hook failed: ${fifth.stderr || fifth.stdout}`);
+
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      const sends = tmuxLog.match(/send-keys -t %97 -l Team fresh-mailbox-bounded: 1 msg\(s\) for leader\./g) || [];
-      assert.equal(sends.length, 1, 'same mailbox message should not trigger repeated non-stale nudges');
+      const sends = tmuxLog.match(/send-keys -t %97 -l Team fresh-mailbox-bounded: [12] msg\(s\) for leader\./g) || [];
+      assert.equal(sends.length, 2, 'delivering the newest message must not reclassify an older covered message as new');
+      assert.doesNotMatch(tmuxLog, /Team fresh-mailbox-bounded: 0 msg\(s\) for leader\./);
+      const nudgeState = JSON.parse(await readFile(join(stateDir, 'team-leader-nudge.json'), 'utf-8'));
+      assert.equal(nudgeState.last_nudged_by_team[teamName]?.last_message_id, 'new-msg-2');
     });
   });
 

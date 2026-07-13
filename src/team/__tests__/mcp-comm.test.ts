@@ -211,6 +211,67 @@ describe('mcp-comm', () => {
     }
   });
 
+  it('does not report an overlapping direct mailbox send as successfully coalesced', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-direct-overlap-'));
+    let releaseFirstNotify: () => void = () => {};
+    try {
+      await initTeamState('alpha-direct-overlap', 'task', 'executor', 1, cwd);
+      let firstNotifyStarted!: () => void;
+      const firstStarted = new Promise<void>((resolve) => {
+        firstNotifyStarted = resolve;
+      });
+      const firstNotifyGate = new Promise<void>((resolve) => {
+        releaseFirstNotify = resolve;
+      });
+
+      const firstPromise = queueDirectMailboxMessage({
+        teamName: 'alpha-direct-overlap',
+        fromWorker: 'leader-fixed',
+        toWorker: 'worker-1',
+        toWorkerIndex: 1,
+        body: 'first body',
+        triggerMessage: 'check mailbox',
+        intent: 'pending-mailbox-review',
+        cwd,
+        transportPreference: 'transport_direct',
+        fallbackAllowed: false,
+        notify: async () => {
+          firstNotifyStarted();
+          await firstNotifyGate;
+          return { ok: false, transport: 'tmux_send_keys', reason: 'first_direct_send_failed' };
+        },
+      });
+      await firstStarted;
+
+      const second = await queueDirectMailboxMessage({
+        teamName: 'alpha-direct-overlap',
+        fromWorker: 'leader-fixed',
+        toWorker: 'worker-1',
+        toWorkerIndex: 1,
+        body: 'second body',
+        triggerMessage: 'check mailbox',
+        intent: 'pending-mailbox-review',
+        cwd,
+        transportPreference: 'transport_direct',
+        fallbackAllowed: false,
+        notify: async () => ({ ok: false, transport: 'tmux_send_keys', reason: 'second_direct_send_failed' }),
+      });
+      releaseFirstNotify();
+      const first = await firstPromise;
+
+      assert.equal(first.ok, false);
+      assert.equal(second.ok, false);
+      assert.equal(second.reason, 'second_direct_send_failed');
+      assert.notEqual(second.request_id, first.request_id);
+      const requests = await listDispatchRequests('alpha-direct-overlap', cwd, { kind: 'mailbox' });
+      assert.equal(requests.length, 2);
+      assert.deepEqual(requests.map((request) => request.status), ['failed', 'failed']);
+    } finally {
+      releaseFirstNotify();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('queueBroadcastMailboxMessage notifies and marks notified per recipient', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-'));
     try {

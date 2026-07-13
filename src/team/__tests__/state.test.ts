@@ -441,12 +441,13 @@ exit 1
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-store-'));
     try {
       await initTeamState('team-dispatch', 't', 'executor', 1, cwd);
+      const firstMessage = await sendDirectMessage('team-dispatch', 'leader-fixed', 'worker-1', 'first message', cwd);
       const first = await enqueueDispatchRequest(
         'team-dispatch',
         {
           kind: 'mailbox',
           to_worker: 'worker-1',
-          message_id: 'msg-1',
+          message_id: firstMessage.message_id,
           trigger_message: 'check mailbox',
           intent: 'pending-mailbox-review',
         },
@@ -459,7 +460,7 @@ exit 1
         {
           kind: 'mailbox',
           to_worker: 'worker-1',
-          message_id: 'msg-1',
+          message_id: firstMessage.message_id,
           trigger_message: 'check mailbox',
         },
         cwd,
@@ -504,8 +505,102 @@ exit 1
       assert.equal(delivered?.status, 'delivered');
       const listed = await listDispatchRequests('team-dispatch', cwd);
       assert.equal(listed.length, 1);
-      assert.equal(listed[0]?.message_id, 'msg-1');
+      assert.equal(listed[0]?.message_id, firstMessage.message_id);
       assert.equal(listed[0]?.intent, 'pending-mailbox-review');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not coalesce behind a notified reminder whose mailbox message was delivered', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-delivered-reminder-'));
+    try {
+      await initTeamState('dispatch-delivered', 't', 'executor', 1, cwd);
+      const firstMessage = await sendDirectMessage(
+        'dispatch-delivered',
+        'leader-fixed',
+        'worker-1',
+        'first message',
+        cwd,
+      );
+      const first = await enqueueDispatchRequest(
+        'dispatch-delivered',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          message_id: firstMessage.message_id,
+          trigger_message: 'check mailbox',
+          intent: 'pending-mailbox-review',
+        },
+        cwd,
+      );
+      await markDispatchRequestNotified('dispatch-delivered', first.request.request_id, {}, cwd);
+      await markMessageDelivered('dispatch-delivered', 'worker-1', firstMessage.message_id, cwd);
+
+      const secondMessage = await sendDirectMessage(
+        'dispatch-delivered',
+        'leader-fixed',
+        'worker-1',
+        'second message',
+        cwd,
+      );
+      const second = await enqueueDispatchRequest(
+        'dispatch-delivered',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          message_id: secondMessage.message_id,
+          trigger_message: 'check mailbox again',
+          intent: 'pending-mailbox-review',
+        },
+        cwd,
+      );
+
+      assert.equal(second.deduped, false);
+      assert.notEqual(second.request.request_id, first.request.request_id);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes the worker target when coalescing mailbox reminders', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-refresh-target-'));
+    try {
+      await initTeamState('dispatch-refresh-target', 't', 'executor', 1, cwd);
+      const first = await enqueueDispatchRequest(
+        'dispatch-refresh-target',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          worker_index: 1,
+          pane_id: '%11',
+          message_id: 'refresh-target-1',
+          trigger_message: 'check mailbox',
+          intent: 'pending-mailbox-review',
+        },
+        cwd,
+      );
+      const second = await enqueueDispatchRequest(
+        'dispatch-refresh-target',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          worker_index: 2,
+          pane_id: '%22',
+          message_id: 'refresh-target-2',
+          trigger_message: 'check mailbox again',
+          intent: 'pending-mailbox-review',
+        },
+        cwd,
+      );
+
+      assert.equal(second.deduped, true);
+      assert.equal(second.request.request_id, first.request.request_id);
+      assert.equal(second.request.worker_index, 2);
+      assert.equal(second.request.pane_id, '%22');
+      const stored = await readDispatchRequest('dispatch-refresh-target', first.request.request_id, cwd);
+      assert.equal(stored?.worker_index, 2);
+      assert.equal(stored?.pane_id, '%22');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

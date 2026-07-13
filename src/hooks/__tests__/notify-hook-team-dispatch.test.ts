@@ -319,6 +319,197 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
+  it('uses Team-scoped bridge mailbox delivery state when suppressing stale reminders', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-bridge-mailbox-'));
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
+      await initTeamState('alpha-bridge-mailbox', 'task', 'executor', 1, cwd);
+      await initTeamState('beta-bridge-mailbox', 'task', 'executor', 1, cwd);
+      const msg = await sendDirectMessage('alpha-bridge-mailbox', 'worker-1', 'worker-1', 'hello', cwd);
+      const otherTeamMsg = await sendDirectMessage('beta-bridge-mailbox', 'leader-fixed', 'worker-1', 'other team', cwd);
+      const queued = await enqueueDispatchRequest('alpha-bridge-mailbox', {
+        kind: 'mailbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        message_id: msg.message_id,
+        trigger_message: 'check mailbox',
+        intent: 'pending-mailbox-review',
+      }, cwd);
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+
+      await writeFile(join(cwd, '.omx', 'state', 'mailbox.json'), JSON.stringify({
+        records: [
+          {
+            message_id: msg.message_id,
+            from_worker: 'worker-1',
+            to_worker: 'worker-1',
+            body: 'hello',
+            created_at: msg.created_at,
+            notified_at: null,
+            delivered_at: new Date().toISOString(),
+          },
+          {
+            message_id: otherTeamMsg.message_id,
+            from_worker: 'leader-fixed',
+            to_worker: 'worker-1',
+            body: 'other team',
+            created_at: otherTeamMsg.created_at,
+            notified_at: null,
+            delivered_at: null,
+          },
+        ],
+      }, null, 2));
+
+      let injectCount = 0;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => {
+          injectCount += 1;
+          return { ok: true, reason: 'should_not_inject' };
+        },
+      });
+
+      assert.equal(result.processed, 1);
+      assert.equal(injectCount, 0);
+      const request = await readDispatchRequest('alpha-bridge-mailbox', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'delivered');
+      assert.equal(request?.last_reason, 'mailbox_already_delivered');
+      const legacyMailbox = JSON.parse(await readFile(
+        join(cwd, '.omx', 'state', 'team', 'alpha-bridge-mailbox', 'mailbox', 'worker-1.json'),
+        'utf8',
+      ));
+      assert.equal(legacyMailbox.messages[0]?.delivered_at, undefined);
+    } finally {
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to legacy mailbox state when the bridge lacks the requested message', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-bridge-mailbox-miss-'));
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
+      await initTeamState('alpha-bridge-mailbox-miss', 'task', 'executor', 1, cwd);
+      const msg = await sendDirectMessage('alpha-bridge-mailbox-miss', 'worker-1', 'worker-1', 'legacy hello', cwd);
+      const queued = await enqueueDispatchRequest('alpha-bridge-mailbox-miss', {
+        kind: 'mailbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        message_id: msg.message_id,
+        trigger_message: 'check mailbox',
+        intent: 'pending-mailbox-review',
+      }, cwd);
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+
+      await writeFile(join(cwd, '.omx', 'state', 'mailbox.json'), JSON.stringify({
+        records: [{
+          message_id: 'unrelated-bridge-message',
+          from_worker: 'worker-1',
+          to_worker: 'worker-1',
+          body: 'already delivered',
+          created_at: msg.created_at,
+          notified_at: null,
+          delivered_at: new Date().toISOString(),
+        }],
+      }, null, 2));
+
+      let injectCount = 0;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => {
+          injectCount += 1;
+          return { ok: true, reason: 'legacy_mailbox_injected' };
+        },
+      });
+
+      assert.equal(result.processed, 1);
+      assert.equal(injectCount, 1);
+      const request = await readDispatchRequest('alpha-bridge-mailbox-miss', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'notified');
+      assert.equal(request?.last_reason, 'legacy_mailbox_injected');
+    } finally {
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a coalesced reminder live for a legacy-only unread Team message', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-mixed-mailbox-'));
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
+      await initTeamState('mixed-mailbox', 'task', 'executor', 1, cwd);
+      const first = await sendDirectMessage('mixed-mailbox', 'leader-fixed', 'worker-1', 'bridge-visible', cwd);
+      const firstRequest = await enqueueDispatchRequest('mixed-mailbox', {
+        kind: 'mailbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        message_id: first.message_id,
+        trigger_message: 'check mailbox',
+        intent: 'pending-mailbox-review',
+      }, cwd);
+      const second = await sendDirectMessage('mixed-mailbox', 'leader-fixed', 'worker-1', 'legacy-only', cwd);
+      const coalesced = await enqueueDispatchRequest('mixed-mailbox', {
+        kind: 'mailbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        message_id: second.message_id,
+        trigger_message: 'check mailbox again',
+        intent: 'pending-mailbox-review',
+      }, cwd);
+      assert.equal(coalesced.deduped, true);
+      assert.equal(coalesced.request.request_id, firstRequest.request.request_id);
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+
+      await writeFile(join(cwd, '.omx', 'state', 'mailbox.json'), JSON.stringify({
+        records: [{
+          message_id: first.message_id,
+          from_worker: 'leader-fixed',
+          to_worker: 'worker-1',
+          body: 'bridge-visible',
+          created_at: first.created_at,
+          notified_at: null,
+          delivered_at: new Date().toISOString(),
+        }],
+      }, null, 2));
+
+      let injectCount = 0;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => {
+          injectCount += 1;
+          return { ok: true, reason: 'coalesced_legacy_message_injected' };
+        },
+      });
+
+      assert.equal(result.processed, 1);
+      assert.equal(injectCount, 1);
+      const request = await readDispatchRequest('mixed-mailbox', firstRequest.request.request_id, cwd);
+      assert.equal(request?.status, 'notified');
+      assert.equal(request?.last_reason, 'coalesced_legacy_message_injected');
+    } finally {
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('leader-fixed dispatch remains pending with leader_pane_missing_deferred when pane missing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     try {
