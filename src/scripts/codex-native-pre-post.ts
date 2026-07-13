@@ -29,6 +29,8 @@ export interface NormalizedPostToolUsePayload {
   isBash: boolean;
   rawToolResponse: unknown;
   parsedToolResponse: Record<string, unknown> | null;
+  rawResponse: unknown;
+  parsedResponse: Record<string, unknown> | null;
   exitCode: number | null;
   stdoutText: string;
   stderrText: string;
@@ -104,6 +106,8 @@ export function normalizePostToolUsePayload(
   const command = readCommand(payload);
   const rawToolResponse = payload.tool_response;
   const parsedToolResponse = tryParseJsonString(rawToolResponse) ?? safeObject(rawToolResponse);
+  const rawResponse = payload.response;
+  const parsedResponse = tryParseJsonString(rawResponse) ?? safeObject(rawResponse);
   const exitCode = safeInteger(parsedToolResponse?.exit_code)
     ?? safeInteger(parsedToolResponse?.exitCode)
     ?? null;
@@ -119,6 +123,8 @@ export function normalizePostToolUsePayload(
     isBash: toolName === "Bash",
     rawToolResponse,
     parsedToolResponse,
+    rawResponse,
+    parsedResponse,
     exitCode,
     stdoutText,
     stderrText,

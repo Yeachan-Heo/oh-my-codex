@@ -12219,6 +12219,158 @@ PY`,
     }
   });
 
+  it("ignores failure-looking prose from successful or non-spawn PostToolUse results", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-success-prose-"));
+    try {
+      const cases: Array<Record<string, unknown>> = [
+        {
+          tool_name: "multi_agent_v1.wait_agent",
+          tool_response: {
+            status: "completed",
+            output: "The worker reported that another feature was unavailable and unsupported.",
+          },
+        },
+        {
+          tool_name: "multi_agent_v1.wait_agent",
+          tool_response: { error: "unknown tool: multi_agent_v1.spawn_agent is unavailable" },
+        },
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: {
+            status: "completed",
+            output: "The prompt quoted: native subagents unsupported; agent thread limit reached.",
+          },
+        },
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: {
+            agent_id: "019f-captured-success",
+            nickname: "Darwin",
+            output: "Historical log: unknown tool; agent thread limit reached.",
+          },
+        },
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: { error: "network unavailable while contacting the provider" },
+        },
+        {
+          tool_name: "respawn_agent",
+          tool_response: "unknown tool: respawn_agent is unavailable",
+        },
+        {
+          tool_name: "spawn_agentx",
+          tool_response: "unknown tool: spawn_agentx is unavailable",
+        },
+      ];
+
+      for (const testCase of cases) {
+        await dispatchCodexNativeHook(
+          { hook_event_name: "PostToolUse", cwd, ...testCase },
+          { cwd },
+        );
+        assert.equal(existsSync(join(cwd, ".omx", "state", "native-subagent-support.json")), false);
+        assert.equal(existsSync(join(cwd, ".omx", "state", "native-subagent-capacity-blocker.json")), false);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts exact spawn aliases and normalized failure response shapes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-failure-shapes-"));
+    try {
+      const cases: Array<Record<string, unknown>> = [
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: JSON.stringify({
+            status: "failed",
+            error: "unknown tool: multi_agent_v1.spawn_agent is unavailable",
+          }),
+        },
+        {
+          tool_name: "collaboration.spawn_agent",
+          response: JSON.stringify({
+            ok: false,
+            error: "tool not found: collaboration.spawn_agent",
+          }),
+        },
+        {
+          tool_name: "task",
+          tool_response: { is_error: true, message: "native subagents unsupported" },
+        },
+        {
+          tool_name: "spawn_agent",
+          tool_response: "unknown tool: spawn_agent is unavailable",
+        },
+        {
+          tool_name: "task",
+          tool_response: "unknown tool: task is unavailable",
+        },
+        {
+          tool_name: "collaboration.spawn_agent",
+          response: "unknown tool: collaboration.spawn_agent is unavailable",
+        },
+      ];
+
+      for (const [index, testCase] of cases.entries()) {
+        const cwd = join(root, `case-${index}`);
+        await mkdir(cwd, { recursive: true });
+        await dispatchCodexNativeHook(
+          { hook_event_name: "PostToolUse", cwd, ...testCase },
+          { cwd },
+        );
+        const blocker = JSON.parse(
+          await readFile(join(cwd, ".omx", "state", "native-subagent-support.json"), "utf-8"),
+        ) as Record<string, unknown>;
+        assert.equal(blocker.status, "unsupported");
+        assert.equal(existsSync(join(cwd, ".omx", "state", "native-subagent-capacity-blocker.json")), false);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clears stale support blockers when an exact spawn proves support", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-support-heal-"));
+    try {
+      const cases: Array<Record<string, unknown>> = [
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: { agent_id: "019f-captured-success", nickname: "Darwin" },
+        },
+        {
+          tool_name: "multi_agent_v1.spawn_agent",
+          tool_response: "collab spawn failed: agent thread limit reached",
+        },
+      ];
+
+      for (const [index, testCase] of cases.entries()) {
+        const cwd = join(root, `case-${index}`);
+        const stateDir = join(cwd, ".omx", "state");
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, "native-subagent-support.json"), JSON.stringify({
+          schema_version: 1,
+          status: "unsupported",
+          reason: "multi_agent_v1_unavailable",
+          cwd,
+        }));
+
+        await dispatchCodexNativeHook(
+          { hook_event_name: "PostToolUse", cwd, ...testCase },
+          { cwd },
+        );
+
+        assert.equal(existsSync(join(stateDir, "native-subagent-support.json")), false);
+        assert.equal(
+          existsSync(join(stateDir, "native-subagent-capacity-blocker.json")),
+          index === 1,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("blocks close_agent cleanup after recent native subagent capacity exhaustion", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-block-"));
     try {

@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "fs";
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from "fs/promises";
 import { extname, isAbsolute, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
 import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
@@ -68,6 +68,7 @@ import {
   commandInvokesApplyPatch,
   detectMcpTransportFailure,
   hasAnyPattern,
+  normalizePostToolUsePayload,
 } from "./codex-native-pre-post.js";
 import { handleTeamWorkerPostToolUseSuccess } from "./notify-hook/team-worker-posttooluse.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "./notify-hook/team-worker-stop.js";
@@ -101,6 +102,7 @@ import {
   buildUnsupportedNativeSubagentGuidance,
   classifyConductorArtifactKind,
   isUnsupportedNativeSubagentEvidence,
+  isNativeSubagentSpawnToolName,
   resolveNativeSubagentSupportStatus,
   type NativeSubagentUnsupportedReason,
 } from "../leader/contract.js";
@@ -3232,32 +3234,113 @@ function stringifyUnknown(value: unknown): string {
   }
 }
 
-function payloadEvidenceText(payload: CodexHookPayload): string {
+interface NativeSubagentToolOutcome {
+  status: "success" | "unsupported" | "capacity" | "other_failure" | "unknown";
+  reason: NativeSubagentUnsupportedReason | null;
+  evidence: string;
+}
+
+function failureEvidenceForRecord(record: Record<string, unknown>): string | null {
+  const status = safeString(record.status).trim();
+  const errorText = stringifyUnknown(record.error).trim();
+  const failed = (
+    (record.error !== undefined && record.error !== null && record.error !== false && errorText !== "")
+    || record.is_error === true
+    || record.isError === true
+    || record.success === false
+    || record.ok === false
+    || /^(?:error|failed|failure|errored)$/i.test(status)
+  );
+  if (!failed) return null;
+  const error = safeObject(record.error);
   return [
-    safeString(payload.tool_name),
-    stringifyUnknown(payload.tool_response),
-    stringifyUnknown(payload.response),
-    stringifyUnknown(payload.error),
-    stringifyUnknown(payload.message),
-  ].filter(Boolean).join("\n");
+    record.error,
+    record.message,
+    record.details,
+    record.reason,
+    record.stderr,
+    record.code,
+    record.error_code,
+    record.errorCode,
+    error.code,
+  ].map(stringifyUnknown).filter(Boolean).join("\n");
 }
 
-function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
-  const evidence = payloadEvidenceText(payload);
-  if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
-  const toolName = safeString(payload.tool_name).trim();
-  return !toolName || /(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName);
+function recordProvesSuccess(record: Record<string, unknown>): boolean {
+  const status = safeString(record.status).trim();
+  return (
+    record.is_error === false
+    || record.isError === false
+    || record.success === true
+    || record.ok === true
+    || /^(?:completed|success|succeeded|ok)$/i.test(status)
+    || Boolean(safeString(record.agent_id ?? record.agentId).trim())
+  );
 }
 
-function nativeSubagentFailureReason(payload: CodexHookPayload): NativeSubagentUnsupportedReason | null {
-  const evidence = payloadEvidenceText(payload);
-  const toolName = safeString(payload.tool_name).trim();
-  if (toolName && !/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)) return null;
-  if (/\bagent thread limit reached\b/i.test(evidence)) return null;
-  if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) return "native_subagents_unsupported";
-  if (/\bmulti_agent_v1\b/i.test(evidence) && /\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
-  if (/\b(?:unknown tool|tool not found|not enabled|disabled|unavailable|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
+function classifySpawnFailureEvidence(evidence: string): NativeSubagentToolOutcome {
+  if (
+    /\bagent thread limit reached\b/i.test(evidence)
+    || /\bagent_thread_limit_reached\b/i.test(evidence)
+  ) {
+    return { status: "capacity", reason: "agent_thread_limit_reached", evidence };
+  }
+  if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) {
+    return { status: "unsupported", reason: "native_subagents_unsupported", evidence };
+  }
+  if (
+    /\b(?:unknown[ _]tool|tool[ _]not[ _]found|not enabled|disabled)\b/i.test(evidence)
+    || /\b(?:multi_agent_v1|spawn_agent)\b.*\b(?:unavailable|unsupported|not found)\b/i.test(evidence)
+  ) {
+    return { status: "unsupported", reason: "multi_agent_v1_unavailable", evidence };
+  }
+  return { status: "other_failure", reason: null, evidence };
+}
+
+function classifyLegacyRawSpawnFailure(text: string): NativeSubagentToolOutcome | null {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const failure = normalized.replace(/^(?:collab\s+)?spawn failed:\s*/i, "");
+  if (/^agent thread limit reached\b/i.test(failure)) {
+    return { status: "capacity", reason: "agent_thread_limit_reached", evidence: text };
+  }
+  if (/^native subagents?\b.*\b(?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(failure)) {
+    return { status: "unsupported", reason: "native_subagents_unsupported", evidence: text };
+  }
+  if (
+    /^(?:unknown tool|tool not found)\s*:?\s*(?:(?:(?:multi_agent_v1|collaboration)[._]{1,2})?spawn_agent|task)\b/i.test(failure)
+    || /^multi_agent_v1(?:[._]{1,2}spawn_agent)?\b.*\b(?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(failure)
+  ) {
+    return { status: "unsupported", reason: "multi_agent_v1_unavailable", evidence: text };
+  }
   return null;
+}
+
+function classifyNativeSubagentToolOutcome(payload: CodexHookPayload): NativeSubagentToolOutcome {
+  const normalized = normalizePostToolUsePayload(payload);
+  if (!isNativeSubagentSpawnToolName(normalized.toolName)) {
+    return { status: "unknown", reason: null, evidence: "" };
+  }
+
+  const records = [
+    safeObject(payload),
+    normalized.parsedToolResponse,
+    normalized.parsedResponse,
+  ].filter((record): record is Record<string, unknown> => Boolean(record));
+  const failureEvidence = records.map(failureEvidenceForRecord).filter(Boolean).join("\n");
+  if (failureEvidence) return classifySpawnFailureEvidence(failureEvidence);
+  if (records.some(recordProvesSuccess)) return { status: "success", reason: null, evidence: "" };
+
+  const rawFailureText = [
+    !normalized.parsedToolResponse ? normalized.rawToolResponse : null,
+    !normalized.parsedResponse ? normalized.rawResponse : null,
+  ].find((value): value is string => typeof value === "string");
+  if (rawFailureText) {
+    const legacyFailure = classifyLegacyRawSpawnFailure(rawFailureText);
+    if (legacyFailure) {
+      return legacyFailure;
+    }
+  }
+  return { status: "unknown", reason: null, evidence: "" };
 }
 
 function summarizeNativeSubagentSupportFailure(text: string): string {
@@ -3269,20 +3352,24 @@ async function recordNativeSubagentSupportBlocker(
   cwd: string,
   stateDir: string,
   payload: CodexHookPayload,
+  outcome: NativeSubagentToolOutcome,
 ): Promise<void> {
-  const reason = nativeSubagentFailureReason(payload);
-  if (!reason) return;
+  if (outcome.status === "success" || outcome.status === "capacity") {
+    await unlink(nativeSubagentSupportBlockerPath(stateDir)).catch(() => {});
+    return;
+  }
+  if (outcome.status !== "unsupported" || !outcome.reason) return;
   const nowIso = new Date().toISOString();
   await mkdir(stateDir, { recursive: true });
   await writeFile(nativeSubagentSupportBlockerPath(stateDir), JSON.stringify({
     schema_version: 1,
     status: "unsupported",
-    reason,
+    reason: outcome.reason,
     ...(readPayloadSessionId(payload) ? { session_id: readPayloadSessionId(payload) } : {}),
     ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
     ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
     ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
-    evidence: summarizeNativeSubagentSupportFailure(payloadEvidenceText(payload)),
+    evidence: summarizeNativeSubagentSupportFailure(outcome.evidence),
     observed_at: nowIso,
     cwd,
   }, null, 2));
@@ -3299,8 +3386,9 @@ async function recordNativeSubagentCapacityBlocker(
   cwd: string,
   stateDir: string,
   payload: CodexHookPayload,
+  outcome: NativeSubagentToolOutcome,
 ): Promise<void> {
-  if (!isNativeSubagentCapacityFailure(payload)) return;
+  if (outcome.status !== "capacity") return;
   const nowMs = Date.now();
   const blocker: NativeSubagentCapacityBlocker = {
     schema_version: 1,
@@ -3309,7 +3397,7 @@ async function recordNativeSubagentCapacityBlocker(
     ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
     ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
     ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
-    error_summary: summarizeCapacityFailure(payloadEvidenceText(payload)),
+    error_summary: summarizeCapacityFailure(outcome.evidence),
     observed_at: new Date(nowMs).toISOString(),
     expires_at: new Date(nowMs + NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS).toISOString(),
   };
@@ -10028,8 +10116,9 @@ export async function dispatchCodexNativeHook(
       ?? buildMalformedPreToolUseBlockTestOutput(payload)
       ?? buildNativePreToolUseOutput(payload);
   } else if (hookEventName === "PostToolUse") {
-    await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
-    await recordNativeSubagentSupportBlocker(cwd, stateDir, payload).catch(() => {});
+    const nativeSubagentOutcome = classifyNativeSubagentToolOutcome(payload);
+    await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload, nativeSubagentOutcome).catch(() => {});
+    await recordNativeSubagentSupportBlocker(cwd, stateDir, payload, nativeSubagentOutcome).catch(() => {});
     if (detectMcpTransportFailure(payload)) {
       await markTeamTransportFailure(cwd, payload);
     }
