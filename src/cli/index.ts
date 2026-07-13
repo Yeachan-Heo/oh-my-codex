@@ -1480,25 +1480,23 @@ export function registerDetachedHudLayoutReconcileHook(options: {
 export const DETACHED_TMUX_HISTORY_LIMIT = 500;
 const TMUX_HOOK_INDEX_MAX = 1_000_000;
 
-function setDetachedTmuxSessionHistoryLimit(
-  sessionName: string,
-  leaderPaneId?: string | null,
-): void {
+function setDetachedTmuxPaneHistoryLimit(leaderPaneId: string): void {
   const boundedHistoryLimit = String(DETACHED_TMUX_HISTORY_LIMIT);
-  try {
-    execTmuxFileSync(
-      ["set-option", "-q", "-t", sessionName, "history-limit", boundedHistoryLimit],
-      { stdio: "ignore" },
-    );
-  } catch (err) {
-    logCliOperationFailure(err);
-  }
-  if (!leaderPaneId) return;
   try {
     execTmuxFileSync(
       ["set-option", "-pq", "-t", leaderPaneId, "history-limit", boundedHistoryLimit],
       { stdio: "ignore" },
     );
+  } catch (err) {
+    logCliOperationFailure(err);
+  }
+}
+
+function restoreDetachedTmuxPaneHistoryLimit(leaderPaneId: string): void {
+  try {
+    execTmuxFileSync(["set-option", "-puq", "-t", leaderPaneId, "history-limit"], {
+      stdio: "ignore",
+    });
   } catch (err) {
     logCliOperationFailure(err);
   }
@@ -1558,16 +1556,24 @@ function buildDetachedHistoryPruneHookCommand(leaderPaneId: string): string {
   // The leader pane can be gone by the time the hook fires (e.g. crashed
   // leader with a lingering session); suppress errors so tmux does not queue
   // "(null):0: can't find pane" for the next attaching client.
-  return `if-shell -F '#{==:#{session_attached},0}' 'run-shell -b "tmux clear-history -t ${leaderPaneId} >/dev/null 2>&1 || true"'`;
+  return `if-shell -F '#{==:#{session_attached},0}' 'run-shell -b "tmux set-option -pq -t ${leaderPaneId} history-limit ${DETACHED_TMUX_HISTORY_LIMIT} >/dev/null 2>&1 || true; tmux clear-history -t ${leaderPaneId} >/dev/null 2>&1 || true"'`;
 }
 
-function buildDetachedHistoryPruneHookSlot(sessionName: string, leaderPaneId: string): string {
-  const key = `${sessionName}:${leaderPaneId}:omx-history-prune`;
+function buildDetachedHistoryRestoreHookCommand(leaderPaneId: string): string {
+  return `set-option -puq -t ${leaderPaneId} history-limit`;
+}
+
+function buildDetachedHistoryHookSlot(
+  eventName: "client-attached" | "client-detached",
+  sessionName: string,
+  leaderPaneId: string,
+): string {
+  const key = `${sessionName}:${leaderPaneId}:omx-history:${eventName}`;
   let hash = 0;
   for (let i = 0; i < key.length; i++) {
     hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
   }
-  return `client-detached[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
+  return `${eventName}[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
 }
 
 function hasErrnoCode(error: unknown, code: string): boolean {
@@ -4428,14 +4434,41 @@ export function buildDetachedSessionFinalizeSteps(
 ): DetachedSessionTmuxStep[] {
   const steps: DetachedSessionTmuxStep[] = [];
   if (!nativeWindows && leaderPaneId) {
+    if (!attachSession) {
+      steps.push({
+        name: "bound-unattached-history",
+        args: [
+          "set-option",
+          "-pq",
+          "-t",
+          leaderPaneId,
+          "history-limit",
+          String(DETACHED_TMUX_HISTORY_LIMIT),
+        ],
+      });
+      steps.push({
+        name: "clear-unattached-history",
+        args: ["clear-history", "-t", leaderPaneId],
+      });
+    }
     steps.push({
       name: "register-detached-history-prune-hook",
       args: [
         "set-hook",
         "-t",
         sessionName,
-        buildDetachedHistoryPruneHookSlot(sessionName, leaderPaneId),
+        buildDetachedHistoryHookSlot("client-detached", sessionName, leaderPaneId),
         buildDetachedHistoryPruneHookCommand(leaderPaneId),
+      ],
+    });
+    steps.push({
+      name: "register-attached-history-restore-hook",
+      args: [
+        "set-hook",
+        "-t",
+        sessionName,
+        buildDetachedHistoryHookSlot("client-attached", sessionName, leaderPaneId),
+        buildDetachedHistoryRestoreHookCommand(leaderPaneId),
       ],
     });
   }
@@ -5361,11 +5394,8 @@ function runCodex(
         isReusableMadmaxDetachedActiveRecord(activeRecord)
       ) {
         cleanupCurrentMadmaxReuseRunRoot(process.env, runsRoot);
-        setDetachedTmuxSessionHistoryLimit(
-          activeRecord.tmux_session_name,
-          activeRecord.tmux_pane_id!,
-        );
         if (!shouldAttachDetachedTmuxSession(process.env)) {
+          setDetachedTmuxPaneHistoryLimit(activeRecord.tmux_pane_id!);
           clearDetachedTmuxSessionHistoryIfUnattached(
             activeRecord.tmux_session_name,
             activeRecord.tmux_pane_id!,
@@ -5375,6 +5405,7 @@ function runCodex(
           );
           return { postLaunchHandledExternally: true };
         }
+        restoreDetachedTmuxPaneHistoryLimit(activeRecord.tmux_pane_id!);
         process.stderr.write(
           `[omx] madmax detached launch already active for this context; attaching ${activeRecord.tmux_session_name} instead of starting a duplicate.\n`,
         );
@@ -5460,7 +5491,6 @@ function runCodex(
             const leaderPaneId = parsePaneIdFromTmuxOutput(output || "");
             if (leaderPaneId) {
               detachedLeaderPaneId = leaderPaneId;
-              setDetachedTmuxSessionHistoryLimit(sessionName, leaderPaneId);
               if (activeRecordPath && contextKey) {
                 writeMadmaxDetachedActiveRecord(activeRecordPath, {
                   version: 1,

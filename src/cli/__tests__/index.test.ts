@@ -5121,14 +5121,20 @@ exit 0
     assert.equal(names.includes("register-resize-hook"), true);
     assert.equal(names.includes("reconcile-hud-resize"), true);
     assert.equal(DETACHED_TMUX_HISTORY_LIMIT, 500);
-    const historyHook = steps.find((step) => step.name === "register-detached-history-prune-hook");
-    assert.ok(historyHook);
-    assert.deepEqual(historyHook.args.slice(0, 3), ["set-hook", "-t", "omx-demo"]);
-    assert.match(historyHook.args[3] || "", /^client-detached\[[0-9]+\]$/);
+    assert.equal(names.includes("bound-unattached-history"), false);
+    const pruneHook = steps.find((step) => step.name === "register-detached-history-prune-hook");
+    assert.ok(pruneHook);
+    assert.deepEqual(pruneHook.args.slice(0, 3), ["set-hook", "-t", "omx-demo"]);
+    assert.match(pruneHook.args[3] || "", /^client-detached\[[0-9]+\]$/);
     assert.equal(
-      historyHook.args[4],
-      `if-shell -F '#{==:#{session_attached},0}' 'run-shell -b "tmux clear-history -t %leader >/dev/null 2>&1 || true"'`,
+      pruneHook.args[4],
+      `if-shell -F '#{==:#{session_attached},0}' 'run-shell -b "tmux set-option -pq -t %leader history-limit 500 >/dev/null 2>&1 || true; tmux clear-history -t %leader >/dev/null 2>&1 || true"'`,
     );
+    const restoreHook = steps.find((step) => step.name === "register-attached-history-restore-hook");
+    assert.ok(restoreHook);
+    assert.deepEqual(restoreHook.args.slice(0, 3), ["set-hook", "-t", "omx-demo"]);
+    assert.match(restoreHook.args[3] || "", /^client-attached\[[0-9]+\]$/);
+    assert.equal(restoreHook.args[4], "set-option -puq -t %leader history-limit");
   });
 
   it("detached history prune hook tolerates a dead leader pane", () => {
@@ -5141,11 +5147,36 @@ exit 0
       true,
       "%leader",
     );
-    const historyHook = steps.find((step) => step.name === "register-detached-history-prune-hook");
-    assert.ok(historyHook);
-    const hookCommand = historyHook.args[4] || "";
+    const pruneHook = steps.find((step) => step.name === "register-detached-history-prune-hook");
+    assert.ok(pruneHook);
+    const hookCommand = pruneHook.args[4] || "";
     assert.match(hookCommand, /run-shell -b/);
+    assert.match(hookCommand, /set-option -pq .* history-limit 500/);
+    assert.match(hookCommand, /clear-history/);
     assert.match(hookCommand, />\/dev\/null 2>&1 \|\| true/);
+  });
+
+  it("bounds history immediately when a detached session will not attach", () => {
+    const steps = buildDetachedSessionFinalizeSteps(
+      "omx-demo",
+      "%12",
+      "3",
+      true,
+      false,
+      false,
+      "%leader",
+    );
+    const boundStep = steps.find((step) => step.name === "bound-unattached-history");
+    assert.deepEqual(boundStep?.args, [
+      "set-option",
+      "-pq",
+      "-t",
+      "%leader",
+      "history-limit",
+      "500",
+    ]);
+    const clearStep = steps.find((step) => step.name === "clear-unattached-history");
+    assert.deepEqual(clearStep?.args, ["clear-history", "-t", "%leader"]);
   });
 
   it("buildDetachedSessionFinalizeSteps skips attach for Hermes MCP bridge launches", () => {

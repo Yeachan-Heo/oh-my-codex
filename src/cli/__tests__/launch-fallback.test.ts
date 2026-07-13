@@ -439,6 +439,11 @@ exit 0
       assert.match(tmuxLog, /tmux:new-session /);
       assert.match(tmuxLog, /tmux:split-window /);
       assert.doesNotMatch(tmuxLog, /tmux:attach-session/);
+      assert.match(
+        tmuxLog,
+        new RegExp(`tmux:set-option -pq -t %12 history-limit ${DETACHED_TMUX_HISTORY_LIMIT}`),
+      );
+      assert.match(tmuxLog, /tmux:clear-history -t %12/);
       assert.doesNotMatch(result.stderr, /failed to attach detached tmux session/);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -905,11 +910,17 @@ exit 0
       assert.doesNotMatch(tmuxLog, /tmux:show-options -gv history-limit/);
       assert.doesNotMatch(tmuxLog, /tmux:set-option -g[q ]+history-limit/);
       assert.match(tmuxLog, /tmux:new-session .* -s /);
-      assert.match(tmuxLog, new RegExp(`tmux:set-option -q -t .* history-limit ${DETACHED_TMUX_HISTORY_LIMIT}`));
-      assert.match(tmuxLog, new RegExp(`tmux:set-option -pq -t %12 history-limit ${DETACHED_TMUX_HISTORY_LIMIT}`));
+      const historyMutationLines = tmuxLog
+        .split('\n')
+        .filter((line) => line.startsWith('tmux:set-option') && line.includes('history-limit'));
+      assert.deepEqual(historyMutationLines, []);
       assert.match(
         tmuxLog,
-        /tmux:set-hook -t .* client-detached\[[0-9]+\] if-shell -F '#\{==:#\{session_attached\},0\}' 'run-shell -b "tmux clear-history -t %12 >\/dev\/null 2>&1 \|\| true"'/,
+        /tmux:set-hook -t .* client-detached\[[0-9]+\].*tmux set-option -pq -t %12 history-limit 500.*tmux clear-history -t %12/,
+      );
+      assert.match(
+        tmuxLog,
+        /tmux:set-hook -t .* client-attached\[[0-9]+\] set-option -puq -t %12 history-limit/,
       );
       assert.match(tmuxLog, new RegExp(`tmux:split-window -v -l ${HUD_TMUX_HEIGHT_LINES} .* -t `));
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
