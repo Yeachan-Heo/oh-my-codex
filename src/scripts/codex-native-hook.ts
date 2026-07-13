@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, statSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
 import { extname, isAbsolute, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
@@ -3987,7 +3987,7 @@ function maskQuotedRedirectMetacharsForCommandScan(command: string): string {
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
   const commandOutsideHeredocBodies = maskQuotedRedirectMetacharsForCommandScan(stripHeredocBodiesForCommandScan(command));
-  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
+  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^>])(?:[0-9]*>{1,2}\|?)\s*(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
     if (candidate && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
   }
@@ -4237,7 +4237,10 @@ function classifyPreToolUseMutationTransport(
   toolName: string,
 ): PreToolUseMutationTransport {
   if (toolName === "Bash") {
-    return commandHasDeepInterviewWriteIntent(readPreToolUseCommand(payload)) ? "bash" : "read-only";
+    const command = readPreToolUseCommand(payload);
+    return commandHasDeepInterviewWriteIntent(command) || collectOmxStateCommandOperations(command, "write").length > 0 || commandHasNestedCliMutationIntent(command) || classifyConductorExecutableRuntime(command) !== null
+      ? "bash"
+      : "read-only";
   }
   if (OMX_STATE_MUTATION_TOOL_NAMES.has(toolName)) return "state";
   if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) return "path";
@@ -4587,7 +4590,8 @@ function findShellFunctionBodyEnd(command: string, openBraceIndex: number, bodyO
 function isShellFunctionInvokedLater(command: string, functionName: string): boolean {
   for (const segment of splitShellCommandSegments(command)) {
     const words = tokenizeShellWords(segment);
-    if (isShellFunctionInvokedFromWords(words, 0, functionName)) return true;
+    const commandStarts = [0, ...words.flatMap((word, index) => isShellCommandSeparator(word) ? [index + 1] : [])];
+    if (commandStarts.some((startIndex) => isShellFunctionInvokedFromWords(words, startIndex, functionName))) return true;
   }
   return false;
 }
@@ -4692,25 +4696,7 @@ function isNodeInterpreterCommandWord(base: string): boolean {
 }
 
 function isPythonRuntimeOptionWithSeparateValue(word: string): boolean {
-  return word === "-B"
-    || word === "-b"
-    || word === "-d"
-    || word === "-E"
-    || word === "-i"
-    || word === "-I"
-    || word === "-O"
-    || word === "-OO"
-    || word === "-P"
-    || word === "-q"
-    || word === "-R"
-    || word === "-s"
-    || word === "-S"
-    || word === "-u"
-    || word === "-v"
-    || word === "-V"
-    || word === "--check-hash-based-pycs"
-    || word === "-W"
-    || word === "-X";
+  return word === "--check-hash-based-pycs" || word === "-W" || word === "-X";
 }
 
 function isScriptInterpreterCommandWord(word: string): boolean {
@@ -5072,6 +5058,32 @@ function hasPriorExecutableCommand(commandPrefix: string): boolean {
   return false;
 }
 
+function decodeAnsiCShellEscape(segment: string, startIndex: number): { value: string; endIndex: number } | null {
+  if (segment[startIndex] !== "\\") return null;
+  const escape = segment[startIndex + 1] ?? "";
+  const decodeDigits = (digits: string, radix: number, endIndex: number) => ({
+    value: String.fromCodePoint(Number.parseInt(digits, radix)),
+    endIndex,
+  });
+  if (escape === "u" || escape === "U") {
+    const width = escape === "u" ? 4 : 8;
+    const digits = segment.slice(startIndex + 2, startIndex + 2 + width);
+    if (!new RegExp(`^[0-9A-Fa-f]{${width}}$`).test(digits)) return null;
+    const codePoint = Number.parseInt(digits, 16);
+    if (codePoint > 0x10ffff) return null;
+    return decodeDigits(digits, 16, startIndex + 1 + width);
+  }
+  if (escape === "x") {
+    const digits = /^([0-9A-Fa-f]{1,2})/.exec(segment.slice(startIndex + 2))?.[1] ?? "";
+    return digits ? decodeDigits(digits, 16, startIndex + 1 + digits.length) : null;
+  }
+  if (/^[0-7]$/.test(escape)) {
+    const digits = /^([0-7]{1,3})/.exec(segment.slice(startIndex + 1))?.[1] ?? "";
+    return digits ? decodeDigits(digits, 8, startIndex + digits.length) : null;
+  }
+  return null;
+}
+
 function tokenizeShellWords(segment: string): string[] {
   segment = normalizeShellLineContinuations(segment);
   const words: string[] = [];
@@ -5079,6 +5091,14 @@ function tokenizeShellWords(segment: string): string[] {
   let quote: "'" | "\"" | "$'" | null = null;
   for (let index = 0; index < segment.length; index += 1) {
     const char = segment[index];
+    if (char === "\\" && quote === "$'") {
+      const ansiEscape = decodeAnsiCShellEscape(segment, index);
+      if (ansiEscape) {
+        current += ansiEscape.value;
+        index = ansiEscape.endIndex;
+        continue;
+      }
+    }
     if (char === "\\" && quote !== "'") {
       index += 1;
       current += segment[index] ?? "";
@@ -5748,70 +5768,22 @@ function findStdbufDispatchOperandIndex(words: string[], startIndex: number): nu
   return null;
 }
 
-function isXargsOptionWithNextValue(option: string): boolean {
-  return option === "-a"
-    || option === "--arg-file"
-    || option === "-d"
-    || option === "--delimiter"
-    || option === "-E"
-    || option === "--eof"
-    || option === "-I"
-    || option === "--replace"
-    || option === "-J"
-    || option === "-L"
-    || option === "--max-lines"
-    || option === "-n"
-    || option === "--max-args"
-    || option === "-P"
-    || option === "--max-procs"
-    || option === "-s"
-    || option === "--max-chars";
-}
-
-function isXargsStandaloneOption(option: string): boolean {
-  return option === "-0"
-    || option === "--null"
-    || option === "-r"
-    || option === "--no-run-if-empty"
-    || option === "-t"
-    || option === "--verbose"
-    || option === "-p"
-    || option === "--interactive"
-    || option === "-x"
-    || option === "--exit"
-    || option === "-o"
-    || option === "--open-tty"
-    || option === "--show-limits";
-}
-
 function findXargsDispatchOperandIndex(words: string[], startIndex: number): number | null {
   for (let index = startIndex; index < words.length; index += 1) {
     const option = words[index] ?? "";
     if (!option || option === "--") continue;
     if (isShellAssignmentWord(option)) continue;
-    if (isXargsOptionWithNextValue(option)) {
-      index += 1;
+    if (option.startsWith("-")) {
+      const optionValueWordCount = conductorXargsOptionValueWordCount(words, index);
+      if (optionValueWordCount === null) return null;
+      index += optionValueWordCount;
       continue;
     }
-    if (
-      option.startsWith("--arg-file=")
-      || option.startsWith("--delimiter=")
-      || option.startsWith("--eof=")
-      || option.startsWith("--replace=")
-      || option.startsWith("--max-lines=")
-      || option.startsWith("--max-args=")
-      || option.startsWith("--max-procs=")
-      || option.startsWith("--max-chars=")
-      || /^-[aAdDEIJLnPs][^-\s]*$/.test(option)
-    ) {
-      continue;
-    }
-    if (isXargsStandaloneOption(option)) continue;
-    if (option.startsWith("-")) continue;
     return index;
   }
   return null;
 }
+
 
 function findCoprocDispatchOperandIndex(words: string[], startIndex: number): number | null {
   const firstIndex = findDispatchWordIndex(words, startIndex);
@@ -6709,25 +6681,66 @@ function containsUnquotedProcessSubstitution(command: string): boolean {
 interface ShellHeredocOpener {
   delimiter: string;
   quoted: boolean;
+  stripLeadingTabs: boolean;
 }
 
-function parseShellHeredocDelimiter(line: string, startIndex: number): ShellHeredocOpener | null {
+function decodeShellHeredocAnsiEscape(line: string, startIndex: number): { value: string; endIndex: number } | null {
+  const decoded = decodeAnsiCShellEscape(line, startIndex);
+  if (decoded) return decoded;
+  const escape = line[startIndex + 1] ?? "";
+  const value = escape === "a" ? "\x07"
+    : escape === "b" ? "\b"
+      : escape === "e" || escape === "E" ? "\x1b"
+        : escape === "f" ? "\f"
+          : escape === "n" ? "\n"
+            : escape === "r" ? "\r"
+              : escape === "t" ? "\t"
+                : escape === "v" ? "\v"
+                  : escape === "\\" || escape === "'" || escape === "\"" || escape === "?" ? escape
+                    : null;
+  return value === null ? null : { value, endIndex: startIndex + 1 };
+}
+
+function parseShellHeredocDelimiter(line: string, startIndex: number): Omit<ShellHeredocOpener, "stripLeadingTabs"> | null {
   let index = startIndex;
   while (/\s/.test(line[index] ?? "")) index += 1;
 
   let delimiter = "";
   let quoted = false;
-  let quote: "'" | "\"" | null = null;
+  let quote: "'" | "\"" | "$'" | "$\"" | null = null;
   for (; index < line.length; index += 1) {
     const char = line[index] ?? "";
+    if (char === "\\" && quote === "$'") {
+      const decoded = decodeShellHeredocAnsiEscape(line, index);
+      if (!decoded) return null;
+      delimiter += decoded.value;
+      index = decoded.endIndex;
+      continue;
+    }
+    if (char === "\\" && (quote === "\"" || quote === "$\"")) {
+      const next = line[index + 1] ?? "";
+      if (next === "$" || next === "`" || next === "\"" || next === "\\") {
+        delimiter += next;
+        index += 1;
+      } else {
+        delimiter += char;
+      }
+      continue;
+    }
     if (char === "\\" && quote !== "'") {
       quoted = true;
       index += 1;
       delimiter += line[index] ?? "";
       continue;
     }
+    if (!quote && char === "$" && (line[index + 1] === "'" || line[index + 1] === "\"")) {
+      quote = line[index + 1] === "'" ? "$'" : "$\"";
+      quoted = true;
+      index += 1;
+      continue;
+    }
     if (char === "'" || char === "\"") {
-      if (quote === char) {
+      if (quote === char || (quote === "$'" && char === "'") || (quote === "$\"" && char === "\"")) {
         quote = null;
       } else if (!quote) {
         quote = char;
@@ -6737,18 +6750,31 @@ function parseShellHeredocDelimiter(line: string, startIndex: number): ShellHere
       }
       continue;
     }
-    if (!quote && (/\s/.test(char) || char === "|" || char === ";" || char === "&" || char === "<" || char === ">")) break;
+    if (!quote && (/\s/.test(char) || char === "|" || char === ";" || char === "&" || char === "<" || char === ">" || char === "(" || char === ")")) break;
     delimiter += char;
   }
 
-  return delimiter ? { delimiter, quoted } : null;
+  return delimiter && !quote && !delimiter.includes("\0") ? { delimiter, quoted } : null;
+}
+
+function isShellCommentStart(line: string, index: number): boolean {
+  if (line[index] !== "#") return false;
+  if (index === 0) return true;
+  return /[\s;|&()<>]/.test(line[index - 1] ?? "");
 }
 
 function extractShellHeredocOpeners(line: string): ShellHeredocOpener[] {
+  if (line.includes("$[") || line.includes("${")) return [];
   const openers: ShellHeredocOpener[] = [];
   let quote: "'" | "\"" | null = null;
+  let arithmeticDepth = 0;
   for (let index = 0; index < line.length - 1; index += 1) {
     const char = line[index] ?? "";
+    if (arithmeticDepth > 0) {
+      if (char === "(") arithmeticDepth += 1;
+      if (char === ")") arithmeticDepth -= 1;
+      continue;
+    }
     if (char === "\\" && quote !== "'") {
       index += 1;
       continue;
@@ -6762,13 +6788,32 @@ function extractShellHeredocOpeners(line: string): ShellHeredocOpener[] {
       continue;
     }
     if (quote) continue;
+    if (isShellCommentStart(line, index)) break;
+    if (char === "$" && line[index + 1] === "(" && line[index + 2] === "(") {
+      arithmeticDepth = 2;
+      index += 2;
+      continue;
+    }
+    if (char === "(" && line[index + 1] === "(") {
+      arithmeticDepth = 2;
+      index += 1;
+      continue;
+    }
     if (char !== "<" || line[index + 1] !== "<" || line[index + 2] === "<") continue;
-    const delimiterStart = line[index + 2] === "-" ? index + 3 : index + 2;
+    const stripLeadingTabs = line[index + 2] === "-";
+    const delimiterStart = stripLeadingTabs ? index + 3 : index + 2;
     const opener = parseShellHeredocDelimiter(line, delimiterStart);
-    if (opener) openers.push(opener);
+    if (opener) openers.push({ ...opener, stripLeadingTabs });
     index = delimiterStart;
   }
   return openers;
+}
+
+function isShellHeredocTerminator(line: string, opener: ShellHeredocOpener): boolean {
+  const rawCandidate = opener.stripLeadingTabs ? line.replace(/^\t+/, "") : line;
+  if (rawCandidate === opener.delimiter) return true;
+  if (!rawCandidate.endsWith("\r")) return false;
+  return rawCandidate.slice(0, -1) === opener.delimiter;
 }
 
 function stripHeredocBodiesForCommandScan(command: string): string {
@@ -6778,16 +6823,33 @@ function stripHeredocBodiesForCommandScan(command: string): string {
     const line = lines[index] ?? "";
     kept.push(line);
     const openers = extractShellHeredocOpeners(line);
-    for (const { delimiter } of openers) {
+    for (const opener of openers) {
       index += 1;
-      while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
+      while (index < lines.length && !isShellHeredocTerminator(lines[index] ?? "", opener)) {
         kept.push("");
         index += 1;
       }
-      if (index < lines.length) kept.push(lines[index] ?? "");
+      if (index < lines.length) kept.push("");
     }
   }
   return kept.join("\n");
+}
+function extractShellHeredocBodies(command: string): string[] {
+  const bodies: string[] = [];
+  const lines = command.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    for (const opener of extractShellHeredocOpeners(line)) {
+      index += 1;
+      const bodyLines: string[] = [];
+      while (index < lines.length && !isShellHeredocTerminator(lines[index] ?? "", opener)) {
+        bodyLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      bodies.push(bodyLines.join("\n"));
+    }
+  }
+  return bodies;
 }
 
 
@@ -6795,14 +6857,14 @@ function hasUnsafeUnquotedHeredocExpansion(command: string): boolean {
   const lines = normalizeShellLineContinuations(command).split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
-    for (const { delimiter, quoted } of extractShellHeredocOpeners(line)) {
+    for (const opener of extractShellHeredocOpeners(line)) {
       index += 1;
       const bodyLines: string[] = [];
-      while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
+      while (index < lines.length && !isShellHeredocTerminator(lines[index] ?? "", opener)) {
         bodyLines.push(lines[index] ?? "");
         index += 1;
       }
-      if (!quoted && isDynamicNestedCommandString(bodyLines.join("\n"))) return true;
+      if (!opener.quoted && isDynamicNestedCommandString(bodyLines.join("\n"))) return true;
     }
   }
   return false;
@@ -7524,17 +7586,21 @@ async function resolvePreToolUseWriteActor(
   const trackerLeaderThreadId = safeString(session?.leader_thread_id).trim();
   if (trackerLeaderThreadId) leaderIdentityAnchors.add(trackerLeaderThreadId);
   let leaderNativeSessionId = "";
-  if (sessionState && sessionId && payloadMatchesSessionPointer(sessionId, sessionState)) {
+  const rootPointerMatchesSession = Boolean(sessionState && sessionId && payloadMatchesSessionPointer(sessionId, sessionState));
+  if (rootPointerMatchesSession && sessionState) {
     leaderNativeSessionId = safeString(sessionState.native_session_id).trim();
     if (leaderNativeSessionId) leaderIdentityAnchors.add(leaderNativeSessionId);
   }
 
   // Fail closed before every exemption. A leader remains Main-root even when a
-  // corrupt tracker, hook-native agent id, runtime spawn metadata, or Team worker
-  // environment says otherwise.
+  // corrupt tracker, runtime spawn metadata, or Team worker environment says
+  // otherwise. A hook-native agent id without a thread id is child provenance
+  // only when the evaluated session owns the root pointer.
+  if (leaderIdentityAnchors.size === 0) {
+    return rootPointerMatchesSession && payloadAgentId && !payloadThreadId ? "native-child" : "main-root";
+  }
   if (
-    leaderIdentityAnchors.size === 0
-    || (
+    (
       !payloadAgentId
       && !payloadThreadId
       && leaderNativeSessionId !== ""
@@ -7546,7 +7612,6 @@ async function resolvePreToolUseWriteActor(
     return "main-root";
   }
 
-  // Conflicting hook identity cannot be assigned to a worker or a native child.
   if (payloadAgentId && payloadThreadId && payloadAgentId !== payloadThreadId) {
     return "provenance-conflict";
   }
@@ -7678,9 +7743,25 @@ function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null 
   return relativePath.replace(/^\.\//, "");
 }
 
+function conductorPathTraversesLink(cwd: string, relativePath: string): boolean {
+  let current = resolve(cwd);
+  for (const segment of relativePath.split("/").filter(Boolean)) {
+    current = join(current, segment);
+    if (!existsSync(current)) continue;
+    try {
+      const entry = lstatSync(current);
+      if (entry.isSymbolicLink() || (!entry.isDirectory() && entry.nlink > 1)) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isAllowedConductorMetadataPath(cwd: string, rawPath: string): boolean {
   const relativePath = normalizeRepoRelativePath(cwd, rawPath);
   if (!relativePath) return false;
+  if (conductorPathTraversesLink(cwd, relativePath)) return false;
   if (isProtectedPlanningStatePath(relativePath)) return false;
   const artifactKind = classifyConductorArtifactKind(relativePath);
   const actionKind = actionKindForConductorArtifact(artifactKind);
@@ -8045,11 +8126,392 @@ function splitJavaScriptCallArguments(script: string, mask: string, openIndex: n
   return args;
 }
 
-function extractNodeInlineEvalScripts(command: string): string[] {
-  const scripts: string[] = [];
+interface ConductorRuntimeExecutionInspection {
+  nodeInlineEvalScripts: string[];
+  pythonSources: string[];
+  uninspectedNodeRuntimeCount: number;
+  uninspectedPythonRuntimeCount: number;
+  uninspectedPackageScriptRuntimeCount: number;
+  uninspectedOtherRuntimeCount: number;
+  uninspectedCommandNames: string[];
+}
+const FAIL_CLOSED_EXECUTABLE_RUNTIME_COMMANDS = new Set([
+  "awk",
+  "bun",
+  "deno",
+  "go",
+  "lua",
+  "npx",
+  "php",
+  "ruby",
+  "tsx",
+]);
+
+
+function isPositivelyClassifiedPerlCommand(words: string[], commandIndex: number): boolean {
+  let inPlace = false;
+  let source = "";
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (word === "-M" || word === "-m" || word.startsWith("-M") || word.startsWith("-m")) return false;
+    if (!word.startsWith("-") || word === "-") continue;
+    if (/^-[^-]*i/.test(word)) inPlace = true;
+    if (word === "-e" || /^-[^-]*e/.test(word)) {
+      source = words[index + 1] ?? "";
+      break;
+    }
+  }
+  if (!source) return false;
+  if (inPlace) {
+    const substitution = /^s(.).+\1.*\1([A-Za-z]*)$/.exec(source.trim());
+    return substitution !== null && !safeString(substitution[2]).includes("e");
+  }
+  return /^print(?:\s+\$_)?\s*;?$/.test(source.trim());
+}
+
+function packageManagerInvokesScriptRuntime(words: string[], commandIndex: number): boolean {
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
+    if (word === "-C" || word === "--prefix" || word === "--dir" || word === "--workspace") {
+      index += 1;
+      continue;
+    }
+    if (word === "--version" || word === "-v") return false;
+    if (word.startsWith("-")) continue;
+    return word !== "list" && word !== "ls" && word !== "view" && word !== "info" && word !== "help";
+  }
+  return false;
+}
+const CONDUCTOR_BASH_EXTERNAL_DISPATCH_WRAPPERS = new Set([
+  "command", "env", "exec", "nice", "nohup", "stdbuf", "sudo", "timeout", "xargs",
+]);
+const CONDUCTOR_BASH_POSITIVELY_CLASSIFIED_COMMANDS = new Set([
+  ":", "[", "basename", "break", "cat", "continue", "cut", "date", "declare", "dirname",
+  "echo", "export", "false", "gjc", "grep", "head", "jq", "local", "ls",
+  "omx", "printenv", "printf", "pwd", "read", "readlink", "readonly", "realpath", "return",
+  "set", "shift", "sleep", "stat", "tail", "test", "tr", "true",
+  "type", "uniq", "unset", "wait", "wc", "which",
+]);
+
+function extractDefinedShellFunctionNames(command: string): Set<string> {
+  const names = new Set<string>();
+  const normalized = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command));
+  for (const match of normalized.matchAll(/(?:^|[;\n])\s*(?:function\s+)?([A-Za-z_][\w]*)\s*(?:\(\s*\))?\s*\{/g)) {
+    const name = safeString(match[1]);
+    if (name) names.add(name);
+  }
+  return names;
+}
+
+function commandConfiguresRuntimeEnvironment(command: string, names: Set<string>, depth = 0): boolean {
   for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
     const words = tokenizeShellWords(segment);
+    for (const word of words) {
+      if (!isEnvironmentAssignmentWord(word)) continue;
+      if (names.has(word.slice(0, word.indexOf("=")))) return true;
+    }
+    const commandIndex = words.findIndex((word) => !isEnvironmentAssignmentWord(word) && !CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word));
+    const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
+    const exportsVariables = commandName === "export"
+      || ((commandName === "declare" || commandName === "typeset") && words.slice(commandIndex + 1).some((word) => /^-[^-]*x/.test(word)));
+    if (exportsVariables && words.slice(commandIndex + 1).some((word) => /[$`]/.test(word))) return true;
+    if (exportsVariables && words.slice(commandIndex + 1).some((word) => names.has(word.split("=", 1)[0] ?? ""))) return true;
+  }
+  const functionBodies = extractInvokedShellFunctionBodiesForStateScan(command);
+  if (functionBodies.length === 0) return false;
+  if (depth >= CONDUCTOR_BASH_MAX_NESTING_DEPTH) return true;
+  return functionBodies.some((body) => commandConfiguresRuntimeEnvironment(body, names, depth + 1));
+}
+function inheritedRuntimeEnvironmentConfigured(names: Set<string>): boolean {
+  return [...names].some((name) => safeString(process.env[name]).trim() !== "");
+}
+
+
+function isPositivelyReadOnlyGitCommand(words: string[], commandIndex: number): boolean {
+  const subcommandIndex = findGitSubcommandIndex(words, commandIndex + 1);
+  if (subcommandIndex === null) return false;
+  const subcommand = words[subcommandIndex] ?? "";
+  if (!new Set(["cat-file", "diff", "log", "ls-files", "ls-tree", "merge-base", "rev-parse", "show", "status"]).has(subcommand)) return false;
+  return words.slice(commandIndex + 1).every((word) => word !== "-c" && word !== "--output" && !word.startsWith("--output=") && word !== "--ext-diff" && word !== "--textconv");
+}
+function ghCommandPath(words: string[], commandIndex: number): [string, string] {
+  const operands: string[] = [];
+  for (let index = commandIndex + 1; index < words.length && operands.length < 2; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (word === "-R" || word === "--repo" || word === "--hostname") {
+      index += 1;
+      continue;
+    }
+    if (!word.startsWith("-")) operands.push(word);
+  }
+  return [operands[0] ?? "", operands[1] ?? ""];
+}
+
+function isPositivelyClassifiedGhCommand(words: string[], commandIndex: number): boolean {
+  const [command, subcommand] = ghCommandPath(words, commandIndex);
+  if (command === "api" || command === "status" || command === "search") return true;
+  const allowed = new Map<string, string[]>([
+    ["issue", ["close", "comment", "create", "delete", "develop", "edit", "list", "reopen", "status", "transfer", "view"]],
+    ["pr", ["checks", "close", "comment", "create", "diff", "edit", "list", "lock", "merge", "ready", "reopen", "review", "status", "unlock", "view"]],
+    ["release", ["create", "delete", "delete-asset", "edit", "list", "upload", "view"]],
+    ["run", ["cancel", "delete", "list", "rerun", "view", "watch"]],
+    ["repo", ["archive", "create", "delete", "edit", "fork", "list", "rename", "set-default", "sync", "unarchive", "view"]],
+    ["gist", ["create", "delete", "edit", "list", "rename", "view"]],
+    ["workflow", ["disable", "enable", "list", "run", "view"]],
+  ]);
+  return allowed.get(command)?.includes(subcommand) === true
+    || (command === "auth" && subcommand === "status")
+    || (command === "config" && subcommand === "get")
+    || (command === "alias" && subcommand === "list")
+    || (command === "extension" && subcommand === "list");
+}
+
+function ghCommandHasMutationIntent(words: string[], commandIndex: number): boolean {
+  const [command, subcommand] = ghCommandPath(words, commandIndex);
+  if (!command) return false;
+  if (command === "api") {
+    let method = "GET";
+    let hasFields = false;
+    for (let index = commandIndex + 1; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (isShellCommandSeparator(word)) break;
+      if (word === "--method" || word === "-X") method = (words[index + 1] ?? "").toUpperCase();
+      else if (word.startsWith("--method=")) method = word.slice("--method=".length).toUpperCase();
+      else if (/^-X.+/.test(word)) method = word.slice(2).toUpperCase();
+      if (word === "-f" || word === "-F" || word === "--field" || word === "--raw-field" || word.startsWith("--field=") || word.startsWith("--raw-field=")) hasFields = true;
+      if (word === "--input" || word.startsWith("--input=")) hasFields = true;
+    }
+    return method !== "GET" || hasFields;
+  }
+  const readOnly = new Map<string, string[]>([
+    ["issue", ["list", "status", "view"]], ["pr", ["checks", "diff", "list", "status", "view"]],
+    ["release", ["list", "view"]], ["run", ["list", "view", "watch"]], ["repo", ["list", "view"]],
+    ["gist", ["list", "view"]], ["workflow", ["list", "view"]],
+    ["auth", ["status"]], ["config", ["get"]], ["alias", ["list"]], ["extension", ["list"]],
+  ]);
+  return !readOnly.get(command)?.includes(subcommand);
+}
+
+interface ShellCliInvocation {
+  commandIndex: number;
+  argumentProducingWrapper: boolean;
+}
+
+function collectShellCliInvocations(words: string[]): ShellCliInvocation[] {
+  const invocations: ShellCliInvocation[] = [];
+  const commandStarts = [0, ...words.flatMap((word, index) => isShellCommandSeparator(word) ? [index + 1] : [])];
+  for (const startIndex of commandStarts) {
+    let commandIndex = skipShellCommandPositionPrefixWords(words, startIndex);
+    let argumentProducingWrapper = false;
+    const visited = new Set<number>();
+    while (commandIndex < words.length && !visited.has(commandIndex)) {
+      visited.add(commandIndex);
+      const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
+      const operandIndex = findConductorWrapperOperandIndex(commandName, words, commandIndex + 1);
+      if (operandIndex === undefined) break;
+      if (operandIndex === null) {
+        commandIndex = -1;
+        break;
+      }
+      if (commandName === "xargs") argumentProducingWrapper = true;
+      commandIndex = operandIndex;
+    }
+    if (commandIndex >= 0 && commandIndex < words.length) invocations.push({ commandIndex, argumentProducingWrapper });
+  }
+  return invocations;
+}
+
+function commandHasGhMutationIntent(command: string): boolean {
+  return splitShellCommandSegments(stripHeredocBodiesForCommandScan(command)).some((segment) => {
+    const words = tokenizeShellWords(segment);
+    return collectShellCliInvocations(words).some(({ commandIndex, argumentProducingWrapper }) => (
+      commandNameFromShellWord(words[commandIndex] ?? "") === "gh"
+      && (argumentProducingWrapper || ghCommandHasMutationIntent(words, commandIndex))
+    ));
+  });
+}
+
+function omxCliInvocationHasMutationIntent(words: string[], commandIndex: number): boolean {
+  const invocationWords = words.slice(commandIndex + 1);
+  const separatorIndex = invocationWords.findIndex(isShellCommandSeparator);
+  const boundedWords = separatorIndex >= 0 ? invocationWords.slice(0, separatorIndex) : invocationWords;
+  if (boundedWords.some((word) => word === "--help" || word === "-h" || word === "--version" || word === "-v")) return false;
+  const operands = boundedWords.filter((word) => word && !word.startsWith("-"));
+  const commandName = operands[0] ?? "";
+  const subcommand = operands[1] ?? "";
+  if (!commandName || ["help", "read", "status", "version"].includes(commandName)) return false;
+  if (commandName === "state" && ["read", "status"].includes(subcommand)) return false;
+  if (["deep-interview", "ralplan", "ralph", "team", "ultragoal"].includes(commandName) && ["read", "status"].includes(subcommand)) return false;
+  return true;
+}
+
+function commandHasOmxCliMutationIntent(command: string): boolean {
+  return splitShellCommandSegments(stripHeredocBodiesForCommandScan(command)).some((segment) => {
+    const words = tokenizeShellWords(segment);
+    return collectShellCliInvocations(words).some(({ commandIndex, argumentProducingWrapper }) => {
+      const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
+      return (commandName === "omx" || commandName === "gjc")
+        && (argumentProducingWrapper || omxCliInvocationHasMutationIntent(words, commandIndex));
+    });
+  });
+}
+
+function commandHasNestedCliMutationIntent(command: string, depth = 0): boolean {
+  const normalizedCommand = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command));
+  if (commandHasGhMutationIntent(normalizedCommand) || commandHasOmxCliMutationIntent(normalizedCommand)) return true;
+  if (depth >= CONDUCTOR_BASH_MAX_NESTING_DEPTH) return false;
+  const nestedCommands = [
+    ...extractInvokedShellFunctionBodiesForStateScan(normalizedCommand),
+    ...extractNestedShellCommandStringsForStateScan(normalizedCommand),
+    ...extractNestedCommandSubstitutionStringsForStateScan(normalizedCommand),
+    ...extractNestedProcessSubstitutionStringsForStateScan(normalizedCommand),
+  ];
+  return nestedCommands.some((nestedCommand) => commandHasNestedCliMutationIntent(nestedCommand, depth + 1));
+}
+
+function isPositivelyClassifiedRgCommand(words: string[], commandIndex: number): boolean {
+  return words.slice(commandIndex + 1).every((word) => word !== "--pre" && !word.startsWith("--pre=") && word !== "--pre-glob" && !word.startsWith("--pre-glob="));
+}
+
+function isPositivelyClassifiedSortCommand(words: string[], commandIndex: number): boolean {
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (word === "-o" || word === "--output" || word.startsWith("--output=") || /^-o.+/.test(word) || word === "-T" || word.startsWith("-T") || word === "--temporary-directory" || word.startsWith("--temporary-directory=") || word === "--compress-program" || word.startsWith("--compress-program=")) return false;
+  }
+  return true;
+}
+
+function sedScriptIsPositivelyReadOnly(script: string): boolean {
+  const normalized = script.trim();
+  const substitution = /^s(.).+\1.*\1([A-Za-z]*)$/.exec(normalized);
+  if (substitution) return !/[ew]/.test(substitution[2] ?? "");
+  return /^[0-9$.,+~\-]*(?:p|P|q|Q|n|N|l|d|=)$/.test(normalized);
+}
+
+function isPositivelyClassifiedSedCommand(words: string[], commandIndex: number): boolean {
+  const scripts: string[] = [];
+  let sawImplicitScript = false;
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (isConductorSedInPlaceOption(word)) continue;
+    if (word === "-f" || word === "--file" || word.startsWith("-f") || word.startsWith("--file=")) return false;
+    if (word === "-e" || word === "--expression") {
+      const script = words[index + 1] ?? "";
+      if (!script) return false;
+      scripts.push(script);
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-e") && word.length > 2) {
+      scripts.push(word.slice(2));
+      continue;
+    }
+    if (word.startsWith("--expression=")) {
+      scripts.push(word.slice("--expression=".length));
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    if (!sawImplicitScript && scripts.length === 0) {
+      scripts.push(word);
+      sawImplicitScript = true;
+    }
+  }
+  return scripts.length > 0 && scripts.every((script) => sedScriptIsPositivelyReadOnly(script));
+}
+
+function commandConfiguresNodeOptions(command: string, depth = 0): boolean {
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    let leadingIndex = 0;
+    while (leadingIndex < words.length && (isEnvironmentAssignmentWord(words[leadingIndex] ?? "") || CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(words[leadingIndex] ?? ""))) {
+      const word = words[leadingIndex] ?? "";
+      if (isEnvironmentAssignmentWord(word) && word.slice(0, word.indexOf("=")) === "NODE_OPTIONS") return true;
+      leadingIndex += 1;
+    }
+    let commandIndex = leadingIndex;
+    const visitedWrapperIndexes = new Set<number>();
+    while (commandIndex >= 0) {
+      if (visitedWrapperIndexes.has(commandIndex)) return true;
+      visitedWrapperIndexes.add(commandIndex);
+      const wrappedIndex = findConductorWrapperOperandIndex(commandNameFromShellWord(words[commandIndex] ?? ""), words, commandIndex + 1);
+      if (wrappedIndex === undefined) break;
+      if (wrappedIndex === null) return true;
+      commandIndex = wrappedIndex;
+    }
+    const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
+    const exportsVariables = commandName === "export"
+      || ((commandName === "declare" || commandName === "typeset") && words.slice(commandIndex + 1).some((word) => /^-[^-]*x/.test(word)));
+    if (!exportsVariables) continue;
+    if (words.slice(commandIndex + 1).some((word) => /[$`]/.test(word))) return true;
+    for (let index = commandIndex + 1; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (word === "NODE_OPTIONS" || (isEnvironmentAssignmentWord(word) && word.slice(0, word.indexOf("=")) === "NODE_OPTIONS")) return true;
+    }
+  }
+  const functionBodies = extractInvokedShellFunctionBodiesForStateScan(command);
+  if (functionBodies.length > 0) {
+    if (depth >= CONDUCTOR_BASH_MAX_NESTING_DEPTH) return true;
+    if (functionBodies.some((body) => commandConfiguresNodeOptions(body, depth + 1))) return true;
+  }
+  return false;
+}
+
+function nodeCommandHasPreloadExecution(words: string[], commandIndex: number): boolean {
+  const preloadPattern = /(?:^|\s)(?:-r|--require|--import|--loader|--experimental-loader)(?:\s|=|$)/;
+  if (preloadPattern.test(safeString(process.env.NODE_OPTIONS))) return true;
+  for (const word of words) {
+    if (!isEnvironmentAssignmentWord(word)) continue;
+    const separator = word.indexOf("=");
+    if (separator < 0 || word.slice(0, separator) !== "NODE_OPTIONS") continue;
+    if (preloadPattern.test(word.slice(separator + 1))) return true;
+  }
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (word === "-r" || word === "--require" || word === "--import" || word === "--loader" || word === "--experimental-loader") return true;
+    if (word === "--env-file" || word.startsWith("--env-file=")) return true;
+    if (/^(?:-r.+|--(?:require|import|loader|experimental-loader)=.+)$/.test(word)) return true;
+  }
+  return false;
+}
+
+function inspectConductorRuntimeExecutions(command: string, cwd?: string): ConductorRuntimeExecutionInspection {
+  const inspection: ConductorRuntimeExecutionInspection = {
+    nodeInlineEvalScripts: [],
+    pythonSources: [],
+    uninspectedNodeRuntimeCount: 0,
+    uninspectedPythonRuntimeCount: 0,
+    uninspectedPackageScriptRuntimeCount: 0,
+    uninspectedOtherRuntimeCount: 0,
+    uninspectedCommandNames: [],
+  };
+  const heredocBodies = extractShellHeredocBodies(command);
+  const commandSetsNodeOptions = commandConfiguresNodeOptions(command);
+  const pythonStartupNames = new Set(["PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONWARNINGS"]);
+  const commandSetsPythonStartup = inheritedRuntimeEnvironmentConfigured(pythonStartupNames) || commandConfiguresRuntimeEnvironment(command, pythonStartupNames) || Boolean(cwd && ["sitecustomize.py", "usercustomize.py"].some((name) => existsSync(join(cwd, name))));
+  const perlStartupNames = new Set(["PERL5LIB", "PERL5OPT"]);
+  const commandSetsPerlStartup = inheritedRuntimeEnvironmentConfigured(perlStartupNames) || commandConfiguresRuntimeEnvironment(command, perlStartupNames);
+  const definedShellFunctionNames = extractDefinedShellFunctionNames(command);
+  const shellStartupNames = new Set(["BASH_ENV", "ENV", "ZDOTDIR"]);
+  const commandSetsShellStartup = inheritedRuntimeEnvironmentConfigured(shellStartupNames) || commandConfiguresRuntimeEnvironment(command, shellStartupNames);
+  const gitHelperNames = new Set(["GIT_EXTERNAL_DIFF"]);
+  const commandSetsGitHelper = inheritedRuntimeEnvironmentConfigured(gitHelperNames) || commandConfiguresRuntimeEnvironment(command, gitHelperNames);
+  let heredocBodyIndex = 0;
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const segmentHeredocCount = segment.split("\n").flatMap((line) => extractShellHeredocOpeners(line)).length;
+    const words = tokenizeShellWords(segment);
+    if (segmentHeredocCount > 0 && words.some((word) => word === "|" || word === "|&")) {
+      inspection.uninspectedOtherRuntimeCount += 1;
+      inspection.uninspectedCommandNames.push("heredoc-pipeline");
+    }
     let commandStart = true;
+    let inForHeader = false;
     for (let index = 0; index < words.length; index += 1) {
       const word = words[index] ?? "";
       if (!word) continue;
@@ -8057,14 +8519,24 @@ function extractNodeInlineEvalScripts(command: string): string[] {
         commandStart = true;
         continue;
       }
+      if (inForHeader) {
+        if (word === "do") inForHeader = false;
+        continue;
+      }
+      if (word === "for") {
+        inForHeader = true;
+        continue;
+      }
       if (!commandStart) continue;
       if (isEnvironmentAssignmentWord(word) || CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
       let commandIndex = index;
+      let usedExternalDispatchWrapper = false;
       const visitedWrapperIndexes = new Set<number>();
       while (!visitedWrapperIndexes.has(commandIndex)) {
         visitedWrapperIndexes.add(commandIndex);
-        const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
-        const operandIndex = findConductorWrapperOperandIndex(commandName, words, commandIndex + 1);
+        const wrappedCommandName = commandNameFromShellWord(words[commandIndex] ?? "");
+        if (CONDUCTOR_BASH_EXTERNAL_DISPATCH_WRAPPERS.has(wrappedCommandName)) usedExternalDispatchWrapper = true;
+        const operandIndex = findConductorWrapperOperandIndex(wrappedCommandName, words, commandIndex + 1);
         if (operandIndex === undefined) break;
         if (operandIndex === null) {
           commandIndex = -1;
@@ -8072,41 +8544,149 @@ function extractNodeInlineEvalScripts(command: string): string[] {
         }
         commandIndex = operandIndex;
       }
-      if (commandIndex >= 0 && ["node", "node.exe", "nodejs", "nodejs.exe"].includes(commandNameFromShellWord(words[commandIndex] ?? ""))) {
+      const commandWord = commandIndex >= 0 ? words[commandIndex] ?? "" : "";
+      const commandName = commandNameFromShellWord(commandWord);
+      const pathOverride = words.slice(index, Math.max(index, commandIndex)).some((candidate) => isEnvironmentAssignmentWord(candidate) && candidate.slice(0, candidate.indexOf("=")) === "PATH");
+      if (commandWord && (/[\\/]/.test(commandWord) || pathOverride)) {
+        inspection.uninspectedOtherRuntimeCount += 1;
+        inspection.uninspectedCommandNames.push(commandName || "path-dispatched-command");
+        commandStart = false;
+        continue;
+      }
+      const invokesDefinedShellFunction = !usedExternalDispatchWrapper && /^[A-Za-z_][\w]*$/.test(commandWord) && definedShellFunctionNames.has(commandWord);
+      if (["node", "node.exe", "nodejs", "nodejs.exe"].includes(commandName)) {
+        if (commandSetsNodeOptions) inspection.uninspectedNodeRuntimeCount += 1;
+        if (nodeCommandHasPreloadExecution(words, commandIndex)) inspection.uninspectedNodeRuntimeCount += 1;
+        let foundInlineEval = false;
         for (let argIndex = commandIndex + 1; argIndex < words.length; argIndex += 1) {
           const arg = words[argIndex] ?? "";
           if (!arg || isShellCommandSeparator(arg)) break;
           if (arg === "-pe" || arg === "-e" || arg === "--eval") {
             const script = words[argIndex + 1] ?? "";
-            if (script && !isShellCommandSeparator(script)) scripts.push(script);
+            if (script && !isShellCommandSeparator(script)) inspection.nodeInlineEvalScripts.push(script);
+            else inspection.uninspectedNodeRuntimeCount += 1;
+            foundInlineEval = true;
             break;
           }
           if (arg === "-p" || arg === "--print") {
             const nextArg = words[argIndex + 1] ?? "";
             if (nextArg === "-e" || nextArg === "--eval") continue;
-            if (nextArg && !isShellCommandSeparator(nextArg)) scripts.push(nextArg);
+            if (nextArg && !isShellCommandSeparator(nextArg)) inspection.nodeInlineEvalScripts.push(nextArg);
+            else inspection.uninspectedNodeRuntimeCount += 1;
+            foundInlineEval = true;
             break;
           }
           const attachedShortPrefix = (["-pe", "-e", "-p"] as const).find(
             (prefix) => arg.startsWith(prefix) && arg.length > prefix.length,
           );
           if (attachedShortPrefix) {
-            scripts.push(arg.slice(attachedShortPrefix.length));
+            inspection.nodeInlineEvalScripts.push(arg.slice(attachedShortPrefix.length));
+            foundInlineEval = true;
             break;
           }
           const inlinePrefix = (["--eval=", "--print="] as const).find(
             (prefix) => arg.startsWith(prefix) && arg.length > prefix.length,
           );
           if (inlinePrefix) {
-            scripts.push(arg.slice(inlinePrefix.length));
+            inspection.nodeInlineEvalScripts.push(arg.slice(inlinePrefix.length));
+            foundInlineEval = true;
             break;
           }
         }
+        if (!foundInlineEval) inspection.uninspectedNodeRuntimeCount += 1;
+      } else if (isPythonInterpreterCommandWord(commandName)) {
+        if (commandSetsPythonStartup) inspection.uninspectedPythonRuntimeCount += 1;
+        let foundSource = false;
+        for (let argIndex = commandIndex + 1; argIndex < words.length; argIndex += 1) {
+          const arg = words[argIndex] ?? "";
+          if (!arg || isShellCommandSeparator(arg)) break;
+          if (arg === "-c") {
+            const source = words[argIndex + 1] ?? "";
+            if (source) inspection.pythonSources.push(source);
+            else inspection.uninspectedPythonRuntimeCount += 1;
+            foundSource = true;
+            break;
+          }
+          if (arg.startsWith("-c") && arg.length > 2) {
+            inspection.pythonSources.push(arg.slice(2));
+            foundSource = true;
+            break;
+          }
+        }
+        if (!foundSource) {
+          const heredocBody = segmentHeredocCount === 1 ? heredocBodies[heredocBodyIndex] : undefined;
+          if (heredocBody !== undefined) {
+            inspection.pythonSources.push(heredocBody);
+          } else {
+            inspection.uninspectedPythonRuntimeCount += 1;
+          }
+        }
+      } else if (commandName === "gh") {
+        if (!isPositivelyClassifiedGhCommand(words, commandIndex)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
+      } else if (commandName === "rg") {
+        if (!isPositivelyClassifiedRgCommand(words, commandIndex)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
+      } else if (commandName === "git") {
+        if (commandSetsGitHelper || !isPositivelyReadOnlyGitCommand(words, commandIndex)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
+      } else if (commandName === "sort") {
+        if (!isPositivelyClassifiedSortCommand(words, commandIndex)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
+      } else if (commandName === "sed") {
+        if (!isPositivelyClassifiedSedCommand(words, commandIndex)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
+      } else if (
+        (commandName === "npm" || commandName === "pnpm" || commandName === "yarn")
+        && packageManagerInvokesScriptRuntime(words, commandIndex)
+      ) {
+        inspection.uninspectedPackageScriptRuntimeCount += 1;
+      } else if (commandName === "perl") {
+        if (commandSetsPerlStartup || !isPositivelyClassifiedPerlCommand(words, commandIndex)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
+      } else if (FAIL_CLOSED_EXECUTABLE_RUNTIME_COMMANDS.has(commandName)) {
+        inspection.uninspectedOtherRuntimeCount += 1;
+        inspection.uninspectedCommandNames.push(commandName);
+      } else if (isNestedShellCommandWord(commandName)) {
+        const nestedIndex = findShellCommandStringArgIndex(words, commandIndex + 1);
+        if (commandSetsShellStartup || (nestedIndex === null && firstInterpreterScriptOperands(words, commandIndex).length === 0)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
+      } else if (
+        commandName
+        && !CONDUCTOR_BASH_POSITIVELY_CLASSIFIED_COMMANDS.has(commandName)
+        && !CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)
+        && !CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)
+        && commandName !== "npm"
+        && commandName !== "pnpm"
+        && commandName !== "yarn"
+        && !invokesDefinedShellFunction
+      ) {
+        inspection.uninspectedOtherRuntimeCount += 1;
+        inspection.uninspectedCommandNames.push(commandName);
       }
       commandStart = false;
     }
+    heredocBodyIndex += segmentHeredocCount;
   }
-  return scripts;
+  return inspection;
+}
+
+function extractNodeInlineEvalScripts(command: string): string[] {
+  return inspectConductorRuntimeExecutions(command).nodeInlineEvalScripts;
 }
 
 function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWrite[] {
@@ -8164,7 +8744,14 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
       const closeIndex = findMatchingJavaScriptDelimiter(mask, openIndex, "[", "]");
       if (closeIndex < 0) continue;
       const computedMember = parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex));
-      if (computedMember !== null && NODE_REFLECTED_LOADER_MEMBER_NAMES.has(computedMember)) pushAmbiguous();
+      const receiver = /([A-Za-z_$][\w$]*)\s*$/.exec(mask.slice(0, openIndex))?.[1] ?? "";
+      const invoked = /^\s*(?:\?\.)?\s*\(/.test(mask.slice(closeIndex + 1));
+      if (
+        computedMember !== null
+        && NODE_REFLECTED_LOADER_MEMBER_NAMES.has(computedMember)
+        && !(receiver === "Object" && computedMember === "getPrototypeOf")
+        && (receiver === "module" || receiver === "process" || receiver === "globalThis" || invoked)
+      ) pushAmbiguous();
     }
     for (const match of mask.matchAll(/\b(?:module|(?:globalThis\s*\.\s*)?process(?:\s*\.\s*mainModule)?)\s*\[/g)) {
       const openIndex = (match.index ?? 0) + match[0].lastIndexOf("[");
@@ -8351,6 +8938,175 @@ function extractNodeFsSemanticMutations(command: string): ConductorInterpreterWr
   return writes;
 }
 
+function isPositivelyReadOnlyNodeInlineEval(script: string): boolean {
+  if (script.includes("`") || script.includes("$(") || /\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-+?=][^}]*)?\}/.test(script)) return false;
+  const lexical = maskJavaScriptStringsAndComments(script);
+  if (!lexical.valid) return false;
+  const mask = lexical.mask;
+  if (/\\u(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})/.test(mask)) return false;
+  if (/\b(?:eval|Function|createRequire|global|globalThis|process|child_process)\b/.test(mask)) return false;
+  if (/\.\s*constructor\b/.test(mask)) return false;
+  if (/\bReflect\s*\.\s*apply\s*\(/.test(mask)) return false;
+  if (/\bimport\s*(["'])/.test(script)) return false;
+
+  for (const match of mask.matchAll(/\bReflect\s*\.\s*get\s*\(/g)) {
+    const openIndex = (match.index ?? 0) + match[0].lastIndexOf("(");
+    const closeIndex = findMatchingJavaScriptParen(mask, openIndex);
+    if (closeIndex < 0 || /^\s*\(/.test(mask.slice(closeIndex + 1))) return false;
+    const args = splitJavaScriptCallArguments(script, mask, openIndex, closeIndex);
+    const receiver = (args[0] ?? "").trim();
+    if (!/^(?:\{|\[)/.test(receiver) || parseStaticJavaScriptString(args[1] ?? "") === null || args.length !== 2) return false;
+  }
+
+  for (const match of script.matchAll(/\b([A-Za-z_$][\w$]*)\s*\[([\s\S]*?)\]\s*\(/g)) {
+    const receiver = safeString(match[1]);
+    const member = parseStaticJavaScriptString(safeString(match[2]));
+    if (receiver !== "Object" || member !== "getPrototypeOf") return false;
+  }
+
+  for (const match of mask.matchAll(/\b([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(/g)) {
+    const targetStart = match.index ?? 0;
+    const target = safeString(match[1]).replace(/\s+/g, "");
+    if (mask[targetStart - 1] === ".") {
+      const before = script.slice(0, targetStart);
+      const fsMethod = target.startsWith("promises.") ? target.slice("promises.".length) : target;
+      const directFsReceiver = /\brequire\s*\(\s*(["'])(?:node:)?fs(?:\/promises)?\1\s*\)\s*(?:\.\s*promises\s*)?\.\s*$/.test(before);
+      const directPathReceiver = /\brequire\s*\(\s*(["'])(?:node:)?path\1\s*\)\s*\.\s*$/.test(before);
+      const directRegexReceiver = /\/(?:\\.|[^/\n])+\/[A-Za-z]*\s*\.\s*$/.test(before);
+      if (directFsReceiver && (NODE_FS_READ_ONLY_METHODS.has(fsMethod) || fsMethod === "open" || fsMethod === "openSync")) continue;
+      if (directPathReceiver && target === "join") continue;
+      if (directRegexReceiver && target === "test") continue;
+      return false;
+    }
+    if (target === "console.log" || target === "console.info" || target === "console.warn" || target === "console.error" || target === "console.dir" || target === "console.table" || target === "Object.getPrototypeOf" || target === "Reflect.get") continue;
+    if (target === "require") {
+      const openIndex = targetStart + match[0].lastIndexOf("(");
+      const closeIndex = findMatchingJavaScriptParen(mask, openIndex);
+      if (closeIndex < 0 || !["fs", "node:fs", "fs/promises", "node:fs/promises", "path", "node:path"].includes(parseStaticJavaScriptString(script.slice(openIndex + 1, closeIndex)) ?? "")) return false;
+      continue;
+    }
+    const memberMatch = /^fs\.([A-Za-z_$][\w$]*)$/.exec(target);
+    if (memberMatch && (NODE_FS_READ_ONLY_METHODS.has(safeString(memberMatch[1])) || memberMatch[1] === "open" || memberMatch[1] === "openSync")) continue;
+    return false;
+  }
+  return true;
+}
+function maskPythonStringsAndComments(source: string): { mask: string; valid: boolean } {
+  const chars = [...source];
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index] ?? "";
+    if (quote !== null) {
+      if (char !== "\n" && char !== "\r") chars[index] = " ";
+      if (char === "\\") {
+        index += 1;
+        if (index < chars.length && chars[index] !== "\n" && chars[index] !== "\r") chars[index] = " ";
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "#") {
+      while (index < source.length && source[index] !== "\n" && source[index] !== "\r") {
+        chars[index] = " ";
+        index += 1;
+      }
+      index -= 1;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      chars[index] = " ";
+      quote = char;
+    }
+  }
+  return { mask: chars.join(""), valid: quote === null };
+}
+
+function isPositivelyModeledPythonSource(source: string): boolean {
+  if (/(?:^|[^A-Za-z0-9_])(?:f|fr|rf)(?=["'])/i.test(source)) return false;
+  for (const match of source.matchAll(/\bfrom\s+([A-Za-z_][\w.]*)\s+import\b/g)) {
+    if (safeString(match[1]) !== "pathlib") return false;
+  }
+  for (const match of source.matchAll(/(?:^|[;\n])\s*import\s+([^;\n]+)/g)) {
+    for (const entry of safeString(match[1]).split(",")) {
+      const moduleName = entry.trim().split(/\s+as\s+/)[0] ?? "";
+      if (moduleName !== "json" && moduleName !== "shutil") return false;
+    }
+  }
+  const lexical = maskPythonStringsAndComments(source);
+  if (!lexical.valid) return false;
+  for (const match of lexical.mask.matchAll(/\bopen\s*\(/g)) {
+    const openIndex = (match.index ?? 0) + match[0].lastIndexOf("(");
+    const closeIndex = findMatchingJavaScriptParen(lexical.mask, openIndex);
+    if (closeIndex < 0) return false;
+    const args = splitJavaScriptCallArguments(source, lexical.mask, openIndex, closeIndex);
+    const rawMode = safeString(args[1]).trim();
+    if (!rawMode) continue;
+    const modeExpression = rawMode.startsWith("mode=") ? rawMode.slice("mode=".length).trim() : rawMode;
+    const mode = parseStaticJavaScriptString(modeExpression);
+    if (mode === null || !/^r[bt]?$/.test(mode)) return false;
+  }
+  const allowedCalls = new Set([
+    "Path",
+    "open",
+    "print",
+    "json.dump",
+    "json.dumps",
+    "json.load",
+    "json.loads",
+    "shutil.copy",
+    "shutil.copy2",
+    "shutil.copyfile",
+    "shutil.copytree",
+    "shutil.move",
+  ]);
+  const allowedMethods = new Set(["mkdir", "write", "write_bytes", "write_text"]);
+  for (const match of lexical.mask.matchAll(/\b([A-Za-z_][\w]*(?:\s*\.\s*[A-Za-z_][\w]*)*)\s*\(/g)) {
+    const index = match.index ?? 0;
+    const name = safeString(match[1]).replace(/\s+/g, "");
+    if (lexical.mask[index - 1] === ".") {
+      if (!allowedMethods.has(name)) return false;
+      continue;
+    }
+    if (!allowedCalls.has(name)) return false;
+  }
+  return true;
+}
+
+
+function classifyConductorExecutableRuntime(command: string, depth = 0, cwd?: string): string | null {
+  const inspection = inspectConductorRuntimeExecutions(command, cwd);
+  if (inspection.uninspectedNodeRuntimeCount > 0) {
+    return "Bash Node runtime execution has no positively classified inline source";
+  }
+  if (inspection.uninspectedPythonRuntimeCount > 0) {
+    return "Bash Python runtime execution has no positively classified source";
+  }
+  if (inspection.pythonSources.some((source) => !isPositivelyModeledPythonSource(source))) {
+    return "Bash Python runtime source is not positively classified as read-only or a modeled write";
+  }
+  if (inspection.uninspectedPackageScriptRuntimeCount > 0) {
+    return "Bash package script runtime execution is not positively classified as read-only";
+  }
+  if (inspection.uninspectedOtherRuntimeCount > 0) {
+    return `Bash executable runtime is not positively classified as read-only: ${inspection.uninspectedCommandNames.join(", ") || "<unknown>"}`;
+  }
+  if (inspection.nodeInlineEvalScripts.some((script) => !isPositivelyReadOnlyNodeInlineEval(script))) {
+    return "Bash Node runtime source is not positively classified as read-only";
+  }
+  if (depth < CONDUCTOR_BASH_MAX_NESTING_DEPTH) {
+    for (const nested of extractNestedShellCommandStringsForStateScan(command)) {
+      const nestedBlockedDetail = classifyConductorExecutableRuntime(nested, depth + 1, cwd);
+      if (nestedBlockedDetail) return nestedBlockedDetail;
+    }
+    for (const nested of extractNestedCommandSubstitutionStringsForStateScan(command)) {
+      const nestedBlockedDetail = classifyConductorExecutableRuntime(nested, depth + 1, cwd);
+      if (nestedBlockedDetail) return nestedBlockedDetail;
+    }
+  }
+  return null;
+}
+
 
 function extractConductorInterpreterWrites(command: string): ConductorInterpreterWrite[] {
   const writes: ConductorInterpreterWrite[] = [];
@@ -8359,25 +9115,36 @@ function extractConductorInterpreterWrites(command: string): ConductorInterprete
   let recognizedPythonOpenWrites = 0;
   let recognizedPythonPathMutations = 0;
   let recognizedPythonShutilMutations = 0;
+  let recognizedPythonOsSingleTargetMutations = 0;
+  const pythonTarget = (value: unknown): { targets: string[]; unresolved: boolean } => {
+    const target = safeString(value).trim();
+    const unresolved = !target || target.includes("\\");
+    return { targets: unresolved ? [] : [target], unresolved };
+  };
 
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bopen\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']*[wax+][^"']*)\3/g)) {
-    const target = safeString(match[2]).trim();
-    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    const target = pythonTarget(match[2]);
+    writes.push({ runtime: "python", ...target });
     recognizedPythonOpenWrites += 1;
   }
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate)\s*\(\s*(["'])([^"']+)\1/g)) {
+    const target = pythonTarget(match[2]);
+    writes.push({ runtime: "python", ...target });
+    recognizedPythonOsSingleTargetMutations += 1;
+  }
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/g)) {
-    const target = safeString(match[2]).trim();
-    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    const target = pythonTarget(match[2]);
+    writes.push({ runtime: "python", ...target });
     recognizedPythonPathMutations += 1;
   }
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*mkdir\s*\(/g)) {
-    const target = safeString(match[2]).trim();
-    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    const target = pythonTarget(match[2]);
+    writes.push({ runtime: "python", ...target });
     recognizedPythonPathMutations += 1;
   }
   for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']+)\3/g)) {
-    const target = safeString(match[4]).trim();
-    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    const target = pythonTarget(match[4]);
+    writes.push({ runtime: "python", ...target });
     recognizedPythonShutilMutations += 1;
   }
   const hasPythonRuntime = /\bpython3?\b/.test(scanCommand);
@@ -8390,10 +9157,14 @@ function extractConductorInterpreterWrites(command: string): ConductorInterprete
   const pythonShutilMutationCalls = hasPythonRuntime
     ? [...scanCommand.matchAll(/\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(/g)].length
     : 0;
+  const pythonOsSingleTargetMutationCalls = hasPythonRuntime
+    ? [...scanCommand.matchAll(/\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs|mkdir|makedirs|chmod|chown|truncate)\s*\(/g)].length
+    : 0;
   if (
     pythonOpenWriteCalls > recognizedPythonOpenWrites
     || pythonPathMutationCalls > recognizedPythonPathMutations
     || pythonShutilMutationCalls > recognizedPythonShutilMutations
+    || pythonOsSingleTargetMutationCalls > recognizedPythonOsSingleTargetMutations
   ) {
     writes.push({ runtime: "python", targets: [], unresolved: true });
   }
@@ -8509,11 +9280,16 @@ function collectConductorDownloaderOutputTargets(
   commandName: string,
   words: string[],
   commandIndex: number,
-): { sawOutputFlag: boolean; targets: string[] } {
+): { sawOutputFlag: boolean; targets: string[]; unresolvedWgetBodyTarget: boolean } {
   const targets: string[] = [];
   const explicitCurlTargets: string[] = [];
   let sawOutputFlag = false;
   let sawCurlRemoteName = false;
+  let sawWgetBodyTarget = false;
+  let sawWgetNoBodyMode = false;
+  let sawUnmodeledWgetOption = false;
+  let wgetOptionsTerminated = false;
+
   const curlOutputDirs: string[] = [];
   const curlShortOptionsWithArgument = new Set("AbcCdDeEFHhKmMoPQrTuwxXyYz");
 
@@ -8539,16 +9315,36 @@ function collectConductorDownloaderOutputTargets(
     const word = words[index] ?? "";
     if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (isEnvironmentAssignmentWord(word)) continue;
-    if (word === "--") continue;
+    if (commandName === "wget" && wgetOptionsTerminated) continue;
+    if (word === "--") {
+      if (commandName === "wget") wgetOptionsTerminated = true;
+      continue;
+    }
+
+    if (commandName === "wget" && word === "--spider") {
+      sawWgetNoBodyMode = true;
+      continue;
+    }
 
     const inlineCurlOutput = commandName === "curl" ? word.match(/^--output=(.+)$/) : null;
-    const inlineWgetOutput = commandName === "wget" ? word.match(/^--(?:output-document|output-file|append-output)=(.+)$/) : null;
+    const inlineWgetBodyOutput = commandName === "wget" ? word.match(/^--output-document=(.+)$/) : null;
+    const inlineWgetLogOutput = commandName === "wget" ? word.match(/^--(?:output-file|append-output)=(.+)$/) : null;
     const inlineWgetDirectoryPrefix = commandName === "wget" ? word.match(/^--directory-prefix=(.+)$/) : null;
     const inlineCurlOutputDir = commandName === "curl" ? word.match(/^--output-dir=(.+)$/) : null;
-    const inlineTarget = inlineCurlOutput?.[1] ?? inlineWgetOutput?.[1] ?? inlineWgetDirectoryPrefix?.[1];
-    if (inlineTarget !== undefined) {
+    if (inlineCurlOutput?.[1] !== undefined) {
       sawOutputFlag = true;
-      pushTarget(inlineTarget);
+      pushTarget(inlineCurlOutput[1]);
+      continue;
+    }
+    if (inlineWgetBodyOutput?.[1] !== undefined || inlineWgetDirectoryPrefix?.[1] !== undefined) {
+      sawOutputFlag = true;
+      sawWgetBodyTarget = true;
+      pushTarget(inlineWgetBodyOutput?.[1] ?? inlineWgetDirectoryPrefix?.[1] ?? "");
+      continue;
+    }
+    if (inlineWgetLogOutput?.[1] !== undefined) {
+      sawOutputFlag = true;
+      pushTarget(inlineWgetLogOutput[1]);
       continue;
     }
     if (inlineCurlOutputDir?.[1] !== undefined) {
@@ -8567,13 +9363,15 @@ function collectConductorDownloaderOutputTargets(
     }
     if (commandName === "wget" && (word.startsWith("-O") || word.startsWith("-o") || word.startsWith("-a")) && word.length > 2) {
       sawOutputFlag = true;
+      if (word.startsWith("-O")) sawWgetBodyTarget = true;
       pushTarget(word.slice(2));
       continue;
     }
 
-    const separateOutputFlag = (commandName === "curl" && (word === "-o" || word === "--output" || word === "--append-output"))
-      || (commandName === "wget" && (word === "-O" || word === "-o" || word === "-a" || word === "--output-document" || word === "--output-file" || word === "--append-output" || word === "-P" || word === "--directory-prefix"));
-    if (!separateOutputFlag) {
+    const curlOutputFlag = commandName === "curl" && (word === "-o" || word === "--output" || word === "--append-output");
+    const wgetBodyOutputFlag = commandName === "wget" && (word === "-O" || word === "--output-document" || word === "-P" || word === "--directory-prefix");
+    const wgetLogOutputFlag = commandName === "wget" && (word === "-o" || word === "-a" || word === "--output-file" || word === "--append-output");
+    if (!curlOutputFlag && !wgetBodyOutputFlag && !wgetLogOutputFlag) {
       if (commandName === "curl" && word === "--output-dir") {
         const nextWord = words[index + 1] ?? "";
         if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
@@ -8581,12 +9379,15 @@ function collectConductorDownloaderOutputTargets(
           index += 1;
         }
       }
+      if (commandName === "wget" && word.startsWith("-")) sawUnmodeledWgetOption = true;
+
       continue;
     }
 
     sawOutputFlag = true;
     const nextWord = words[index + 1] ?? "";
     if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
+      if (wgetBodyOutputFlag) sawWgetBodyTarget = true;
       pushTarget(nextWord);
       index += 1;
     }
@@ -8604,8 +9405,16 @@ function collectConductorDownloaderOutputTargets(
     targets.push(...effectiveTargets);
   }
 
-  return { sawOutputFlag, targets };
+  return {
+    sawOutputFlag,
+    targets,
+    unresolvedWgetBodyTarget: commandName === "wget" && (
+      sawUnmodeledWgetOption
+      || (!sawWgetBodyTarget && !sawWgetNoBodyMode)
+    ),
+  };
 }
+
 
 function isConductorSedInPlaceOption(word: string): boolean {
   return word === "-i" || word === "--in-place" || word.startsWith("-i") || word.startsWith("--in-place=") || /^-[^-]*i/.test(word);
@@ -8683,21 +9492,59 @@ const CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES = new Set([
   "--delimiter",
   "--max-args",
   "--max-chars",
-  "--max-lines",
   "--max-procs",
   "--process-slot-var",
 ]);
+const CONDUCTOR_XARGS_LONG_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES = new Set([
+  "--eof",
+  "--max-lines",
+  "--replace",
+]);
 
-const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES = new Set(["a", "d", "E", "I", "L", "n", "P", "s"]);
+const CONDUCTOR_XARGS_LONG_STANDALONE_OPTIONS = new Set([
+  "--exit",
+  "--help",
+  "--interactive",
+  "--no-run-if-empty",
+  "--null",
+  "--open-tty",
+  "--show-limits",
+  "--verbose",
+  "--version",
+]);
+const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES = new Set(["a", "d", "E", "I", "J", "L", "n", "P", "s"]);
 const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES = new Set(["e", "i", "l"]);
+const CONDUCTOR_XARGS_SHORT_STANDALONE_OPTIONS = new Set(["0", "o", "p", "r", "t", "x"]);
 
-function conductorXargsOptionValueWordCount(words: string[], optionIndex: number): number {
+function resolveConductorXargsLongOption(option: string): "required" | "optional" | "standalone" | null {
+  if (CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES.has(option)) return "required";
+  if (CONDUCTOR_XARGS_LONG_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES.has(option)) return "optional";
+  if (CONDUCTOR_XARGS_LONG_STANDALONE_OPTIONS.has(option)) return "standalone";
+
+  const matches = [
+    ...CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES,
+    ...CONDUCTOR_XARGS_LONG_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES,
+    ...CONDUCTOR_XARGS_LONG_STANDALONE_OPTIONS,
+  ].filter((candidate) => candidate.startsWith(option));
+  if (matches.length !== 1) return null;
+  const match = matches[0] ?? "";
+  if (CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES.has(match)) return "required";
+  if (CONDUCTOR_XARGS_LONG_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES.has(match)) return "optional";
+  return "standalone";
+}
+
+
+function conductorXargsOptionValueWordCount(words: string[], optionIndex: number): number | null {
   const word = words[optionIndex] ?? "";
-  if (!word.startsWith("-") || word === "-") return 0;
+  if (!word.startsWith("-") || word === "-") return null;
 
   if (word.startsWith("--")) {
     const [option, inlineValue] = word.split("=", 2);
-    return CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES.has(option) && inlineValue === undefined ? 1 : 0;
+    const optionKind = resolveConductorXargsLongOption(option);
+    if (optionKind === null) return null;
+    if (optionKind === "standalone") return inlineValue === undefined ? 0 : null;
+    if (optionKind === "optional") return 0;
+    return inlineValue === undefined ? 1 : 0;
   }
 
   const shortOptions = word.slice(1);
@@ -8708,10 +9555,12 @@ function conductorXargsOptionValueWordCount(words: string[], optionIndex: number
       return option === "I" && (words[optionIndex + 1] ?? "") === "{" && (words[optionIndex + 2] ?? "") === "}" ? 2 : 1;
     }
     if (CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES.has(option)) return 0;
+    if (!CONDUCTOR_XARGS_SHORT_STANDALONE_OPTIONS.has(option)) return null;
   }
 
   return 0;
 }
+
 
 function collectConductorXargsMutationTargets(words: string[], commandIndex: number): string[] | null {
   for (let index = commandIndex + 1; index < words.length; index += 1) {
@@ -8719,7 +9568,9 @@ function collectConductorXargsMutationTargets(words: string[], commandIndex: num
     if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
     if (word === "--") continue;
     if (word.startsWith("-")) {
-      index += conductorXargsOptionValueWordCount(words, index);
+      const optionValueWordCount = conductorXargsOptionValueWordCount(words, index);
+      if (optionValueWordCount === null) return [];
+      index += optionValueWordCount;
       continue;
     }
     let commandWordIndex = index;
@@ -8815,6 +9666,7 @@ function collectConductorMutationCommandTargets(commandName: string, words: stri
       ? [...targets, ...targetDirectoryTargets, ...positionalTargets]
       : [...targets, ...targetDirectoryTargets];
   }
+  if (commandName === "ln") return [...targets, ...targetDirectoryTargets, ...positionalTargets];
   if (commandName === "rsync" && rsyncRemovesSourceFiles) return [...targets, ...positionalTargets];
   if (isConductorDestinationOnlyMutationCommand(commandName)) return [...targets, ...positionalTargets.slice(-1)];
   return [...targets, ...positionalTargets];
@@ -8856,11 +9708,16 @@ function extractConductorBashMutations(command: string): ConductorBashMutation[]
       }
       if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)) {
         const downloaderTargets = collectConductorDownloaderOutputTargets(commandName, words, index);
-        if (downloaderTargets.sawOutputFlag) {
-          mutations.push({
-            command: commandName,
-            targets: downloaderTargets.targets,
-          });
+        if (commandName === "wget") {
+          if (downloaderTargets.unresolvedWgetBodyTarget) mutations.push({ command: commandName, targets: [] });
+          if (
+            downloaderTargets.targets.length > 0
+            || (downloaderTargets.sawOutputFlag && !downloaderTargets.unresolvedWgetBodyTarget)
+          ) {
+            mutations.push({ command: commandName, targets: downloaderTargets.targets });
+          }
+        } else if (downloaderTargets.sawOutputFlag) {
+          mutations.push({ command: commandName, targets: downloaderTargets.targets });
         }
       } else if (commandName === "xargs") {
         const xargsTargets = collectConductorXargsMutationTargets(words, index);
@@ -8979,6 +9836,8 @@ function evaluateConductorBashWrite(
       };
     }
   }
+  const runtimeBlockedDetail = classifyConductorExecutableRuntime(commandWithHeredocBodies, 0, cwd);
+  if (runtimeBlockedDetail) return { allowed: false, blockedDetail: runtimeBlockedDetail };
 
   const hasGenericWriteIntent = commandHasDeepInterviewWriteIntent(commandWithHeredocBodies);
   if (!hasGenericWriteIntent) return { allowed: true };

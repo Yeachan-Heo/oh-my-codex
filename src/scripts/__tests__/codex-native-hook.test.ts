@@ -38,6 +38,56 @@ import { createUltragoalPlan, readUltragoalPlan } from "../../ultragoal/artifact
 import { getBaseStateDir } from "../../state/paths.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker-stop.js";
 import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
+const XARGS_WGET_REQUIRED_ARGUMENT_COMMANDS = [
+  ["xargs-short-arg-file", "xargs -a .omx/state/urls wget"],
+  ["xargs-long-arg-file", "xargs --arg-file .omx/state/urls wget"],
+  ["xargs-short-delimiter", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -d , wget`],
+  ["xargs-long-delimiter", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --delimiter , wget`],
+  ["xargs-short-eof", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -E STOP wget`],
+  ["xargs-long-eof", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --eof=STOP wget`],
+  ["xargs-short-replace", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -I X wget X`],
+  ["xargs-long-replace", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --replace=X wget X`],
+  ["xargs-bsd-replace", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -J X wget X`],
+  ["xargs-short-max-lines", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -L 1 wget`],
+  ["xargs-long-max-lines", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --max-lines=1 wget`],
+  ["xargs-short-max-args", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -n 1 wget`],
+  ["xargs-long-max-args", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --max-args 1 wget`],
+  ["xargs-short-max-procs", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -P 1 wget`],
+  ["xargs-long-max-procs", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --max-procs 1 wget`],
+  ["xargs-short-max-chars", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs -s 4096 wget`],
+  ["xargs-long-max-chars", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --max-chars 4096 wget`],
+  ["xargs-process-slot-var", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --process-slot-var SLOT wget`],
+  ["xargs-abbreviated-process-slot-var", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --process-slot-v SLOT wget`],
+] as const;
+
+const WGET_IMPLICIT_BODY_COMMANDS = [
+  ["bare-wget-download", "wget https://example.test/file"],
+  ["wget-short-output-log", "wget -o .omx/state/wget.log https://example.invalid/native-child-write"],
+  ["wget-long-output-log", "wget --output-file=.omx/state/wget.log https://example.invalid/native-child-write"],
+  ["wget-short-append-log", "wget -a .omx/state/wget.log https://example.invalid/native-child-write"],
+  ["wget-long-append-log", "wget --append-output=.omx/state/wget.log https://example.invalid/native-child-write"],
+  ["wget-end-of-options-spider-operand", "wget -- --spider https://example.test/file"],
+  ["wget-short-option-argument-smuggling", "wget -U --spider https://example.test/file"],
+  ["wget-long-option-argument-smuggling", "wget --user-agent --spider https://example.test/file"],
+] as const;
+
+const XARGS_FAIL_CLOSED_OPTION_COMMANDS = [
+  ["xargs-ambiguous-long-option", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --max SLOT wget`],
+  ["xargs-unknown-long-option", `printf '%s\n' 'https://example.invalid/native-child-write' | xargs --future-option SLOT wget`],
+  ["xargs-eof-no-value-mutator", `printf '%s\n' src/victim.ts | xargs --eof rm`],
+  ["xargs-replace-no-value-mutator", `printf '%s\n' src/victim.ts | xargs --replace rm {}`],
+  ["xargs-max-lines-no-value-wget", `printf '%s\n' 'https://example.test/file' | xargs --max-lines wget true`],
+] as const;
+
+const WGET_REVIEW_MUTATION_COMMANDS = [
+  ...WGET_IMPLICIT_BODY_COMMANDS,
+  ...XARGS_WGET_REQUIRED_ARGUMENT_COMMANDS,
+  ...XARGS_FAIL_CLOSED_OPTION_COMMANDS,
+] as const;
+
+const WGET_READ_ONLY_CONTROL_COMMANDS = [
+  ["wget-spider-no-body", "wget --spider https://example.test/file"],
+] as const;
 
 function nativeHookScriptPath(): string {
   return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
@@ -1010,6 +1060,7 @@ describe("codex native hook dispatch", () => {
         name: string,
         toolName: string,
         toolInput: Record<string, unknown>,
+        inheritedEnv: NodeJS.ProcessEnv = {},
       ): Record<string, unknown> => {
         const result = runNativeHookCliResult({
           hook_event_name: "PreToolUse",
@@ -1019,7 +1070,7 @@ describe("codex native hook dispatch", () => {
           tool_name: toolName,
           tool_use_id: `tool-cli-issue-3127-${actor}-${name}`,
           tool_input: toolInput,
-        }, { cwd, env: childEnv });
+        }, { cwd, env: { ...childEnv, ...inheritedEnv } });
         assert.equal(result.status, 0, `${actor}/${name}: ${result.stderr || result.stdout}`);
         return parseSingleJsonStdout(result.stdout);
       };
@@ -1033,6 +1084,10 @@ describe("codex native hook dispatch", () => {
           `${actor}/${name}`,
         );
       };
+
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      requireActorDeny("native-child", "anchorless-state-write", runActorProbe("native-child", "anchorless-state-write", "mcp__omx_state__state_write", { mode: "ultragoal", active: true }));
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderAgentId });
 
       for (const [name, toolName, toolInput] of [
         ["filesystem-write", "mcp__filesystem__write_file", { path: "src/mcp-write.ts", content: "escaped" }],
@@ -1086,6 +1141,98 @@ describe("codex native hook dispatch", () => {
         ["node-destructured-reflect-apply", `node -e "const {rmSync}=require('fs');Reflect.apply(rmSync,null,['src/destructured-reflect.ts'])"`],
         ["node-ansi-c-eval-flag", `node $'-e' "require('fs').rmSync('src/ansi-c.ts')"`],
         ["node-nine-env-wrappers", `${Array.from({ length: 9 }, () => "env").join(" ")} node -e "require('fs').rmSync('src/env-nine.ts')"`],
+        ["node-stdin-pipe", `printf "require('fs').rmSync('src/stdin-pipe.ts')" | node`],
+        ["node-global-function-computed", `node -e "globalThis['Fun'+'ction'](\\"return require('fs').rmSync('src/global-function.ts')\\")()"`],
+        ["node-reflect-global-function", `node -e "Reflect.get(globalThis,'Fun'+'ction')(\\"return require('fs').rmSync('src/reflect-function.ts')\\")()"`],
+        ["node-parenthesized-constructor", `node -e "(console.log.constructor)(\\"return require('fs').rmSync('src/parenthesized-constructor.ts')\\")()"`],
+        ["node-side-effect-import", `node --input-type=module -e "import './mutator.mjs'"`],
+        ["node-require-preload", `node --require ./.omx/state/mutator.cjs -e "console.log('ok')"`],
+        ["node-options-require-preload", `NODE_OPTIONS='--require ./.omx/state/mutator.cjs' node -e "console.log('ok')"`],
+        ["node-exported-options-preload", `export NODE_OPTIONS='--require ./.omx/state/mutator.cjs'; node -e "console.log('ok')"`],
+        ["node-indirect-exported-options-preload", `P='--require ./.omx/state/mutator.cjs'; export NODE_OPTIONS="$P"; node -e "console.log('ok')"`],
+        ["node-command-exported-options-preload", `command export NODE_OPTIONS='--require ./.omx/state/mutator.cjs'; node -e "console.log('ok')"`],
+        ["node-declare-exported-options-preload", `declare -x NODE_OPTIONS='--require ./.omx/state/mutator.cjs'; node -e "console.log('ok')"`],
+        ["node-function-exported-options-preload", `f(){ export NODE_OPTIONS='--require ./.omx/state/mutator.cjs'; }; f; node -e "console.log('ok')"`],
+        ["node-dynamic-export-preload", `N=NODE_OPTIONS; export "$N=--require ./.omx/state/mutator.cjs"; node -e "console.log('ok')"`],
+        ["node-deep-command-exported-options-preload", `command command command command command command export NODE_OPTIONS='--require ./.omx/state/mutator.cjs'; node -e "console.log('ok')"`],
+        ["node-vm-run-in-this-context", `node -e "require('node:vm').runInThisContext(\\"require('fs').rmSync('src/vm.ts')\\")"`],
+        ["node-process-alias-builtin-loader", `node -e "const p=process;p.getBuiltinModule('fs').rmSync('src/process-alias.ts')"`],
+        ["node-reflect-module-require", `node -e "Reflect.apply(Reflect.get(module,'require'),module,['fs']).rmSync('src/reflect-require.ts')"`],
+        ["node-global-process-loader", `node -e "global['process'].getBuiltinModule('fs').rmSync('src/global-process.ts')"`],
+        ["node-ansi-c-command-name", `$'\\u006e\\u006f\\u0064\\u0065' -e "require('fs').rmSync('src/ansi-command.ts')"`],
+        ["node-ansi-c-hex-command-name", `$'\\x6e\\x6f\\x64\\x65' -e "require('fs').rmSync('src/ansi-hex-command.ts')"`],
+        ["node-ansi-c-octal-command-name", `$'\\156\\157\\144\\145' -e "require('fs').rmSync('src/ansi-octal-command.ts')"`],
+        ["node-ansi-c-wide-command-name", `$'\\U0000006e\\U0000006f\\U00000064\\U00000065' -e "require('fs').rmSync('src/ansi-wide-command.ts')"`],
+        ["python-os-remove", `python3 -c "import os;os.remove('src/python-remove.ts')"`],
+        ["python-modeled-write-piggyback", `python3 -c "from pathlib import Path;import subprocess;Path('.omx/state/probe').write_text('x');subprocess.run(['rm','-f','src/python-piggyback.ts'])"`],
+        ["python-path-sitecustomize-preload", `PYTHONPATH=./.omx/state python3 -c "print('ok')"`],
+        ["python-dynamic-open-mode", `python3 -c "m='w';open('src/python-dynamic-open.ts',m)"`],
+        ["python-warnings-module-preload", `PYTHONWARNINGS='ignore::Mutator.Warning' python3 -c "print('ok')"`],
+        ["ruby-uninspected-runtime", `ruby -e "File.delete('src/ruby-delete.ts')"`],
+        ["python-fstring-side-effect", `python3 -c "import subprocess;f'{subprocess.run([\\"touch\\",\\"src/python-fstring.ts\\"])}'"`],
+        ["python-isolated-script", `python3 -I .omx/tmp/session/run.py`],
+        ["perl-eval-substitution", `perl -pi -e 's/^/system(\"rm -f src\/perl-eval.ts\")/e' .omx/state/conductor.log`],
+        ["perl-startup-module-preload", `PERL5LIB=./.omx/state PERL5OPT=-MMutator perl -e 'print;'`],
+        ["git-add-unmodeled-mutation", `git add src/runtime.ts`],
+        ["sort-output-mutation", `sort -o src/sort-output.ts package.json`],
+        ["sed-write-command", `sed -n 'w src/sed-output.ts' package.json`],
+        ["sed-addressed-write-command", `sed -n '1w src/sed-addressed-output.ts' package.json`],
+        ["git-diff-output-mutation", `git diff --output=src/git-output.ts --no-index /dev/null package.json`],
+        ["sort-compress-program-execution", `sort --compress-program=./.omx/state/mutator package.json`],
+        ["rg-pre-helper", `rg --pre ./.omx/state/mutator pattern .`],
+        ["gh-release-download-write", `gh release download --dir src`],
+        ["gh-global-repo-release-download", `gh -R owner/repo release download --dir src`],
+        ["git-external-diff-env", `GIT_EXTERNAL_DIFF=./.omx/state/mutator git diff`],
+        ["git-config-external-diff", `git -c diff.external=./.omx/state/mutator diff`],
+        ["awk-uninspected-runtime", `awk 'BEGIN { print \"x\" > \"src/awk-write.ts\" }'`],
+        ["npm-restart-script", "npm restart"],
+        ["bash-env-stdin-preload", `printf 'touch src/bash-env-preload.ts\\n' | BASH_ENV=/dev/stdin bash -c 'printf safe\\n'`],
+        ["zsh-startup-preload", `ZDOTDIR=./.omx/state zsh -c "printf safe"`],
+        ["python-heredoc-owner-mismatch", `cat <<'SAFE' >/dev/null\nprint('safe')\nSAFE\npython3 <<'PY'\nfrom pathlib import Path\nimport subprocess\nPath('.omx/state/probe').write_text('x')\nsubprocess.run(['touch','src/python-heredoc-bypass.ts'])\nPY`],
+        ["python-pipeline-heredoc-mismatch", `cat <<'SAFE' >/dev/null | python3 <<'PY'\nprint('safe')\nSAFE\nfrom pathlib import Path\nimport subprocess\nPath('.omx/state/probe').write_text('x')\nsubprocess.run(['touch','src/python-pipeline-bypass.ts'])\nPY`],
+        ["python-indented-heredoc-terminator-bypass", `python3 <<'true'
+true=None
+if True:
+ true
+echo=__import__('os').system
+echo ('touch src/heredoc-bypass.ts')
+true`],
+        ["ansi-c-heredoc-delimiter-bypass", `cat <<$'EOF'
+safe
+EOF
+touch src/ansi-heredoc-bypass.ts`],
+        ["comment-heredoc-opener-bypass", `true # <<'EOF'
+touch src/comment-heredoc-bypass.ts
+EOF`],
+        ["arithmetic-heredoc-opener-bypass", `: $((1 << 2))
+touch src/arithmetic-heredoc-bypass.ts`],
+        ["legacy-arithmetic-heredoc-opener-bypass", `: $[1 << 2]
+touch src/legacy-arith-bypass.ts`],
+        ["parameter-expansion-heredoc-opener-bypass", `: ${"${x#<<EOF}"}
+touch src/parameter-expansion-bypass.ts`],
+        ["ansi-cr-heredoc-terminator-bypass", `cat <<$'EOF\\r'
+safe
+EOF\r
+touch src/ansi-cr-heredoc-bypass.ts`],
+        ["piped-shell-function-bypass", `mutate(){ touch src/piped-function-bypass.ts; }; true | mutate`],
+        ["transformed-heredoc-runtime-bypass", `cat <<'PY' | tr a-z A-Z | python3
+from pathlib import Path
+Path('.omx/state/probe').write_text('x')
+PY`],
+        ["path-qualified-runtime-shadow", `./.omx/state/python3 -c "print('ok')"`],
+        ["path-environment-runtime-shadow", `env PATH=.omx/state:/usr/bin:/bin python3 -c "print('ok')"`],
+        ["python-escaped-path-bypass", `python3 -c "from pathlib import Path;Path('.omx/state/\\x2e\\x2e/\\x2e\\x2e/src/python-escape.ts').write_text('x')"`],
+        ["clobber-redirect-bypass", `true >| src/clobber-bypass.ts`],
+        ["cross-boundary-hardlink-bypass", `ln src/source.ts .omx/state/source-link.ts`],
+        ["node-env-file-preload-bypass", `node --env-file=.omx/state/node.env -e "console.log('ok')"`],
+        ["python-cwd-startup-bypass", `cd .omx/state && python3 -c "print('ok')"`],
+        ["sed-in-place-execute-bypass", `sed -i '1e touch src/sed-exec.ts' .omx/state/conductor.log`],
+        ["npm-run-build", "npm run build"],
+        ...WGET_REVIEW_MUTATION_COMMANDS,
+        ["unknown-extensionless-executable", "./.omx/state/mutator"],
+        ["heredoc-delimiter-executable-collision", `cat <<'MUTATOR' > .omx/state/conductor.log\nsafe\nMUTATOR\n./.omx/state/mutator`],
+        ["path-executable-function-name-collision", `mutator() { printf safe; }; ./.omx/state/mutator`],
+        ["wrapped-executable-function-name-collision", `mutator() { printf safe; }; env PATH=.omx/state:/usr/bin:/bin mutator`],
         ["omx-state-clear", `omx state clear --input '{"mode":"ultragoal"}' --json`],
         ["bash-uninspected-script", `bash .omx/state/run.sh`],
         ["source-uninspected-script", `source .omx/state/run.sh`],
@@ -1093,6 +1240,37 @@ describe("codex native hook dispatch", () => {
         for (const actor of ["main-root", "native-child"] as const) {
           requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
         }
+      }
+      const cliStateWrite = `omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"executing","child_marker":"unauthorized"}' --json`;
+      assert.deepEqual(runActorProbe("main-root", "cli-state-write-main", "Bash", { command: cliStateWrite }), {});
+      requireActorDeny("native-child", "cli-state-write-native-child", runActorProbe("native-child", "cli-state-write-native-child", "Bash", { command: cliStateWrite }));
+      for (const [name, command, inheritedEnv] of [
+        ["python-inherited-sitecustomize-preload", `python3 -c "print('ok')"`, { PYTHONPATH: "./.omx/state" }],
+        ["perl-inherited-module-preload", `perl -e 'print;'`, { PERL5LIB: "./.omx/state", PERL5OPT: "-MMutator" }],
+        ["bash-inherited-env-preload", `bash -c 'printf safe\\n'`, { BASH_ENV: "./.omx/state/mutator.sh" }],
+        ["zsh-inherited-startup-preload", `zsh -c 'printf safe'`, { ZDOTDIR: "./.omx/state" }],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }, inheritedEnv));
+        }
+      }
+      for (const [name, command] of [
+        ["gh-issue-create", `gh issue create --title x --body y`],
+        ["gh-api-post", `gh api --method POST /repos/OWNER/REPO/issues -f title=x`],
+        ["gh-api-attached-post", `gh api -XPOST --input .omx/state/create-repo.json /user/repos`],
+        ["omx-ultragoal-checkpoint", `omx ultragoal checkpoint --goal-id G001 --status failed --evidence unauthorized`],
+        ["wrapped-gh-issue-create", `bash -lc 'gh issue create --title x --body y'`],
+        ["wrapped-omx-ultragoal-checkpoint", `bash -lc 'omx ultragoal checkpoint --goal-id G001 --status failed --evidence unauthorized'`],
+        ["wrapped-gjc-ultragoal-checkpoint", `bash -lc 'gjc ultragoal checkpoint --goal-id G001 --status failed --evidence unauthorized'`],
+        ["performance-goal-complete", `omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done`],
+        ["wrapped-performance-goal-complete", `bash -lc 'omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done'`],
+        ["autoresearch-goal-complete", `gjc autoresearch-goal complete --slug safety --evidence done`],
+        ["wrapped-autoresearch-goal-complete", `bash -lc 'gjc autoresearch-goal complete --slug safety --evidence done'`],
+        ["pipeline-read-then-mutate", `omx status | omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done`],
+        ["xargs-gh-api-mutation", `printf '%s' '-XPOST /repos/OWNER/REPO/issues' | xargs gh api`],
+      ] as const) {
+        assert.deepEqual(runActorProbe("main-root", `${name}-main`, "Bash", { command }), {});
+        requireActorDeny("native-child", `${name}-native-child`, runActorProbe("native-child", `${name}-native-child`, "Bash", { command }));
       }
 
       for (const [name, command] of [
@@ -1110,6 +1288,9 @@ describe("codex native hook dispatch", () => {
         ["node-dynamic-object-read", `node -e "const o={x:1};const k='x';console.log(o[k])"`],
         ["node-object-get-prototype-of", `node -e "console.log(Object.getPrototypeOf({}))"`],
         ["node-reflect-get", `node -e "console.log(Reflect.get({x:1},'x'))"`],
+        ["node-object-computed-get-prototype-of", `node -e "Object['getPrototypeOf']({x:1})"`],
+        ["node-object-computed-constructor", `node -e "const o={constructor:7};console.log(o['constructor'])"`],
+        ...WGET_READ_ONLY_CONTROL_COMMANDS,
       ] as const) {
         for (const actor of ["main-root", "native-child"] as const) {
           assert.deepEqual(runActorProbe(actor, name, "Bash", { command }), {}, `${actor}/${name}`);
@@ -22937,6 +23118,19 @@ PY`,
         },
         { cwd },
       );
+      const dispatchBash = (name: string, identity: Record<string, unknown>, command: string) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          ...identity,
+          tool_name: "Bash",
+          tool_use_id: `tool-hook-native-agent-id-${name}`,
+          tool_input: { command },
+        },
+        { cwd },
+      );
+
 
       delete process.env.OMX_TEAM_INTERNAL_WORKER;
       process.env.OMX_TEAM_WORKER = "hook-native-agent-id/worker";
@@ -22965,6 +23159,22 @@ PY`,
       assert.equal(executorAgentId.outputJson?.decision, "block");
       assert.match(String(executorAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
       assert.doesNotMatch(String(executorAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
+      for (const [name, command] of WGET_REVIEW_MUTATION_COMMANDS) {
+        const nativeChildBash = await dispatchBash(`${name}-child`, { agent_id: `agent-hook-native-${name}` }, command);
+        assert.equal(nativeChildBash.outputJson?.decision, "block", name);
+        assert.match(String(nativeChildBash.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, name);
+
+        const mainRootBash = await dispatchBash(`${name}-main`, { agent_id: leaderThreadId }, command);
+        assert.equal(mainRootBash.outputJson?.decision, "block", name);
+        assert.match(String(mainRootBash.outputJson?.reason ?? ""), /Main-root Conductor mode is active/, name);
+      }
+      for (const [name, command] of WGET_READ_ONLY_CONTROL_COMMANDS) {
+        const nativeChildBash = await dispatchBash(`${name}-child`, { agent_id: `agent-hook-native-${name}` }, command);
+        assert.equal(nativeChildBash.outputJson, null, name);
+
+        const mainRootBash = await dispatchBash(`${name}-main`, { agent_id: leaderThreadId }, command);
+        assert.equal(mainRootBash.outputJson, null, name);
+      }
 
       const genericAgentId = await dispatchWrite({ agent_id: "agent-hook-native-default", agent_type: "default" });
       assert.equal(genericAgentId.outputJson?.decision, "block");
