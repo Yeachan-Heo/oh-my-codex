@@ -497,6 +497,33 @@ function normalizeMailboxMessages(rawMailbox) {
   return [];
 }
 
+async function readTeamMailboxMessages(stateDir, teamName, workerName) {
+  const legacyMailbox = await readJsonIfExists(
+    join(stateDir, 'team', teamName, 'mailbox', `${workerName}.json`),
+    null,
+  );
+  const legacyMessages = normalizeMailboxMessages(legacyMailbox);
+  const bridgeMailbox = await readJsonIfExists(join(stateDir, 'mailbox.json'), null);
+  const bridgeRecords = bridgeMailbox && Array.isArray(bridgeMailbox.records)
+    ? bridgeMailbox.records
+    : null;
+  if (!bridgeRecords) return legacyMessages;
+
+  const bridgeByMessageId = new Map(bridgeRecords
+    .filter((message) => safeString(message?.to_worker).trim() === workerName)
+    .map((message) => [safeString(message?.message_id).trim(), message])
+    .filter(([messageId]) => Boolean(messageId)));
+  return legacyMessages.map((message) => {
+    const bridgeMessage = bridgeByMessageId.get(safeString(message?.message_id).trim());
+    if (!bridgeMessage) return message;
+    return {
+      ...message,
+      ...bridgeMessage,
+      body: safeString(bridgeMessage?.body).trim() || message?.body,
+    };
+  });
+}
+
 function normalizeMessageIdentity(msg) {
   if (!msg || typeof msg !== 'object') return '';
   const explicitId = safeString(msg.message_id || '').trim();
@@ -744,14 +771,9 @@ export async function maybeNudgeTeamLeader({
       // ignore
     }
     if (currentSessionId && ownerSessionId && ownerSessionId !== currentSessionId) continue;
-    let mailbox = null;
-    try {
-      const mailboxPath = join(omxDir, 'state', 'team', teamName, 'mailbox', 'leader-fixed.json');
-      mailbox = await readJsonIfExists(mailboxPath, null);
-    } catch {
-      mailbox = null;
-    }
-    const messages = normalizeMailboxMessages(mailbox);
+    const messages = await readTeamMailboxMessages(stateDir, teamName, 'leader-fixed').catch(() => []);
+    const unreadMessages = messages.filter((message) => !safeString(message?.delivered_at).trim());
+    const unreadLeaderMessageCount = unreadMessages.length;
     const newest = messages.length > 0 ? messages[messages.length - 1] : null;
     const newestId = normalizeMessageIdentity(newest);
 
@@ -845,7 +867,9 @@ export async function maybeNudgeTeamLeader({
     // This keeps the leader pane quieter when the leader is not actually stale.
     const stalePanesNudge = paneStatus.alive && leaderStale && !hasFreshProgressEvidence;
     const staleFollowupDue = stalePanesNudge && dueByTime;
-    const hasActionableNewMessage = hasNewMessage && (allowFreshMailboxNudges || leaderStale);
+    const hasActionableNewMessage = unreadLeaderMessageCount > 0
+      && hasNewMessage
+      && (allowFreshMailboxNudges || leaderStale);
 
     let nudgeReason = '';
     let text = '';
@@ -872,7 +896,7 @@ export async function maybeNudgeTeamLeader({
     } else if (stalePanesNudge && hasActionableNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
       text =
-        `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${messages.length} msg(s) pending. `
+        `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${unreadLeaderMessageCount} msg(s) pending. `
         + buildMailboxCheckReminder(teamName);
     } else if (staleFollowupDue) {
       nudgeReason = 'stale_leader_panes_alive';
@@ -881,10 +905,9 @@ export async function maybeNudgeTeamLeader({
         + leaderActionGuidance;
     } else if (hasActionableNewMessage) {
       nudgeReason = 'new_mailbox_message';
-      text = `Team ${teamName}: ${messages.length} msg(s) for leader. ${buildMailboxCheckReminder(teamName)}`;
+      text = `Team ${teamName}: ${unreadLeaderMessageCount} msg(s) for leader. ${buildMailboxCheckReminder(teamName)}`;
     }
 
-    const unreadLeaderMessageCount = messages.filter((message) => !safeString(message?.delivered_at).trim()).length;
     const recordShutdownSuppression = async (orchestrationIntent = null) => {
       await recordSuppressedLeaderNudge({
         logsDir,

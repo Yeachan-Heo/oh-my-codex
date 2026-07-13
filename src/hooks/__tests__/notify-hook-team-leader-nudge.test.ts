@@ -1033,10 +1033,18 @@ describe('notify-hook team leader nudge', () => {
         worker: 'leader-fixed',
         messages: [
           {
+            message_id: 'm0-delivered',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'old update',
+            created_at: '2026-02-13T00:00:00.000Z',
+            delivered_at: '2026-02-13T00:01:00.000Z',
+          },
+          {
             message_id: 'm1',
             from_worker: 'worker-1',
             to_worker: 'leader-fixed',
-            body: 'ACK',
+            body: 'please review',
             created_at: '2026-02-14T00:00:00.000Z',
           },
         ],
@@ -1053,6 +1061,7 @@ describe('notify-hook team leader nudge', () => {
       assert.match(tmuxLog, /-t %91/);
       assert.doesNotMatch(tmuxLog, /-t devsess:0/);
       assert.match(tmuxLog, /Team alpha:/);
+      assert.match(tmuxLog, /Team alpha: 1 msg\(s\) for leader\./);
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
 
       const deliveryLog = await readTeamDeliveryLog(cwd);

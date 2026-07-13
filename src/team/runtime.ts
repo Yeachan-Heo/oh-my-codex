@@ -5146,15 +5146,10 @@ async function finalizeHookPreferredMailboxDispatch(params: {
   return outcome;
 }
 
-async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<DispatchOutcome> {
-  // Canonical leader delivery is durable mailbox persistence plus HUD-owned
-  // authority processing. Team runtime must not directly inject into the
-  // leader pane from this fallback path.
-  const { notifyLeaderMailboxAsync } = await import('./tmux-session.js');
-  const persisted = await notifyLeaderMailboxAsync(config.name, 'system', message, cwd);
-  if (!persisted) {
-    return { ok: false, transport: 'mailbox', reason: 'leader_mailbox_notify_failed' };
-  }
+async function notifyLeaderAsync(config: TeamConfig, _message: string, _cwd: string): Promise<DispatchOutcome> {
+  // queueDirectMailboxMessage has already persisted the original worker
+  // message. Leader attention is HUD-owned, so do not echo the reminder back
+  // into the same mailbox as a second synthetic `system` message.
   if (!config.leader_pane_id) {
     return { ok: true, transport: 'mailbox', reason: 'leader_pane_missing_mailbox_persisted' };
   }
