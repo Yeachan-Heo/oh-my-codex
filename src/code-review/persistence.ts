@@ -16,6 +16,7 @@ import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { resolveStateScope } from '../state/paths.js';
+import type { ReviewRecord, ReviewRunStatus } from './contract.js';
 import { sanitizeForPersistence, validateReviewFinding } from './redaction.js';
 import { renderFinalReviewMarkdown, validateFinalReviewArtifact } from './render.js';
 
@@ -71,8 +72,7 @@ export interface ReviewScopedLockPaths {
 export interface ActiveReviewPointer {
   schema_version: 1;
   review_id: string;
-  status: string;
-  [key: string]: unknown;
+  status: ReviewRunStatus;
 }
 
 export interface AtomicWriteOptions {
@@ -265,15 +265,25 @@ export async function atomicCreatePrivateJson(
   }
 }
 
+const REVIEW_RUN_STATUSES: readonly ReviewRunStatus[] = [
+  'CREATED', 'SCOPE_FROZEN', 'REVIEWING', 'READY_TO_SYNTHESIZE', 'FINALIZED', 'BLOCKED',
+];
+
 function validateActivePointer(value: unknown): ActiveReviewPointer {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainObject(value)
+    || Object.keys(value).length !== 3
+    || !Object.hasOwn(value, 'schema_version')
+    || !Object.hasOwn(value, 'review_id')
+    || !Object.hasOwn(value, 'status')
+    || value.schema_version !== 1
+    || !REVIEW_RUN_STATUSES.includes(value.status as ReviewRunStatus)) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review pointer is malformed');
   }
-  const pointer = value as Record<string, unknown>;
-  if (pointer.schema_version !== 1 || typeof pointer.review_id !== 'string' || typeof pointer.status !== 'string') {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review pointer is malformed');
-  }
-  return pointer as ActiveReviewPointer;
+  return {
+    schema_version: 1,
+    review_id: validateUuid(value.review_id, 'active review_id'),
+    status: value.status as ReviewRunStatus,
+  };
 }
 
 export async function readActiveReview(paths: ReviewPersistencePaths): Promise<ActiveReviewPointer | null> {
@@ -786,6 +796,302 @@ function requirePositiveInteger(value: unknown, name: string): number {
   return value as number;
 }
 
+function requireNonNegativeInteger(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} is invalid`);
+  }
+  return value as number;
+}
+
+function requirePayloadBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} is invalid`);
+  }
+  return value;
+}
+
+function requirePayloadEnum<T extends string>(
+  value: unknown,
+  name: string,
+  allowed: readonly T[],
+): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} is invalid`);
+  }
+  return value as T;
+}
+
+function requireStructuredPayload(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[],
+  name: string,
+): Record<string, unknown> {
+  if (!isPlainObject(value)
+    || required.some((key) => !Object.hasOwn(value, key))
+    || Object.keys(value).some((key) => !required.includes(key) && !optional.includes(key))) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} payload is malformed`);
+  }
+  return value;
+}
+
+function requirePayloadStringArray(value: unknown, name: string, maximum = 5_000): string[] {
+  if (!Array.isArray(value) || value.length > maximum) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} is invalid`);
+  }
+  return value.map((item) => requirePayloadString(item, name));
+}
+
+function validateReviewVerdictPayload(value: unknown): void {
+  const verdict = requireExactPayload(value, [
+    'recommendation', 'architectural_status', 'scope_status', 'evidence_status',
+    'rule_id', 'reasons', 'clean',
+  ], 'review verdict');
+  requirePayloadEnum(verdict.recommendation, 'review verdict recommendation', ['APPROVE', 'COMMENT', 'REQUEST CHANGES'] as const);
+  requirePayloadEnum(verdict.architectural_status, 'review verdict architecture', ['CLEAR', 'WATCH', 'BLOCK'] as const);
+  requirePayloadEnum(verdict.scope_status, 'review verdict scope', ['FULL_SCOPE', 'PARTIAL_SCOPE'] as const);
+  requirePayloadEnum(verdict.evidence_status, 'review verdict evidence', ['FULL_EVIDENCE', 'DEGRADED_EVIDENCE'] as const);
+  requirePayloadString(verdict.rule_id, 'review verdict rule_id', 160);
+  requirePayloadStringArray(verdict.reasons, 'review verdict reasons');
+  requirePayloadBoolean(verdict.clean, 'review verdict clean');
+}
+
+function validateScopePayload(value: unknown): void {
+  const scope = requireStructuredPayload(value, [
+    'selector', 'status', 'scope_hash', 'files', 'changed_lines', 'reasons',
+  ], ['base_ref', 'base_sha', 'head_sha'], 'review scope');
+  const selector = requireStructuredPayload(scope.selector, ['explicit_paths'], ['requested_base'], 'scope selector');
+  requirePayloadStringArray(selector.explicit_paths, 'scope explicit paths');
+  if (selector.requested_base !== undefined) requirePayloadString(selector.requested_base, 'scope requested_base');
+  requirePayloadEnum(scope.status, 'scope status', ['FULL_SCOPE', 'PARTIAL_SCOPE'] as const);
+  requirePayloadHash(scope.scope_hash, 'scope hash');
+  if (!Array.isArray(scope.files) || scope.files.length > 5_000) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'scope files are invalid');
+  }
+  for (const item of scope.files) {
+    const file = requireStructuredPayload(item, ['path', 'change', 'sources', 'binary'], [
+      'previous_path', 'additions', 'deletions',
+    ], 'scope file');
+    requirePayloadString(file.path, 'scope file path');
+    if (file.previous_path !== undefined) requirePayloadString(file.previous_path, 'scope previous path');
+    requirePayloadEnum(file.change, 'scope file change', [
+      'ADDED', 'MODIFIED', 'DELETED', 'RENAMED', 'COPIED', 'TYPE_CHANGED',
+      'UNMERGED', 'SUBMODULE', 'SYMLINK',
+    ] as const);
+    const sources = requirePayloadStringArray(file.sources, 'scope file sources', 4);
+    if (sources.length === 0 || sources.some((source) => !['BASE', 'INDEX', 'WORKTREE', 'UNTRACKED'].includes(source))) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'scope file sources are invalid');
+    }
+    requirePayloadBoolean(file.binary, 'scope file binary');
+    if (file.additions !== undefined) requireNonNegativeInteger(file.additions, 'scope additions');
+    if (file.deletions !== undefined) requireNonNegativeInteger(file.deletions, 'scope deletions');
+  }
+  requireNonNegativeInteger(scope.changed_lines, 'scope changed_lines');
+  requirePayloadStringArray(scope.reasons, 'scope reasons');
+  for (const key of ['base_ref', 'base_sha', 'head_sha'] as const) {
+    if (scope[key] !== undefined) requirePayloadString(scope[key], `scope ${key}`);
+  }
+}
+
+function validateBatchPayload(value: unknown): void {
+  const batch = requireExactPayload(value, [
+    'batch_id', 'module_root', 'files', 'changed_lines', 'oversized_single_file',
+  ], 'review batch');
+  requirePayloadString(batch.batch_id, 'review batch_id', 160);
+  requirePayloadString(batch.module_root, 'review batch module_root');
+  requirePayloadStringArray(batch.files, 'review batch files');
+  requireNonNegativeInteger(batch.changed_lines, 'review batch changed_lines');
+  requirePayloadBoolean(batch.oversized_single_file, 'review batch oversized_single_file');
+}
+
+function validateDiagnosticPayload(value: unknown): void {
+  const diagnostic = requireStructuredPayload(value, [
+    'diagnostic_id', 'capability', 'applicability', 'execution', 'outcome',
+    'thread_id', 'event_ref', 'summary',
+  ], ['tool_name', 'program', 'args', 'source_ref'], 'review diagnostic');
+  requirePayloadString(diagnostic.diagnostic_id, 'diagnostic_id', 160);
+  requirePayloadEnum(diagnostic.capability, 'diagnostic capability', ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK'] as const);
+  requirePayloadEnum(diagnostic.applicability, 'diagnostic applicability', ['APPLICABLE', 'NOT_APPLICABLE'] as const);
+  requirePayloadEnum(diagnostic.execution, 'diagnostic execution', ['NATIVE', 'ACCEPTED_EQUIVALENT', 'FALLBACK', 'UNAVAILABLE', 'SKIPPED'] as const);
+  requirePayloadEnum(diagnostic.outcome, 'diagnostic outcome', ['PASS', 'FAIL', 'TIMED_OUT', 'MALFORMED', 'NOT_RUN'] as const);
+  requirePayloadString(diagnostic.thread_id, 'diagnostic thread_id', 160);
+  requirePayloadString(diagnostic.event_ref, 'diagnostic event_ref');
+  const summary = requirePayloadString(diagnostic.summary, 'diagnostic summary', 2_048);
+  if (Buffer.byteLength(summary, 'utf8') > 2_048) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'diagnostic summary is invalid');
+  }
+  for (const key of ['tool_name', 'program', 'source_ref'] as const) {
+    if (diagnostic[key] !== undefined) requirePayloadString(diagnostic[key], `diagnostic ${key}`);
+  }
+  if (diagnostic.args !== undefined) requirePayloadStringArray(diagnostic.args, 'diagnostic args', 128);
+}
+
+function validateLanePayload(value: unknown): void {
+  const lane = requireStructuredPayload(value, [
+    'lane_id', 'role', 'batch_id', 'scope_hash', 'status', 'attempt', 'timeout_ms',
+    'idle_deadline_at', 'findings', 'diagnostic_ids',
+  ], [
+    'last_heartbeat_at', 'last_processed_activity_ref', 'last_processed_activity_at',
+    'provenance', 'recommendation', 'architectural_status', 'failure_code',
+  ], 'review lane');
+  const role = requirePayloadEnum(lane.role, 'lane role', ['code-reviewer', 'architect'] as const);
+  requirePayloadString(lane.lane_id, 'lane_id', 160);
+  const batchId = requirePayloadString(lane.batch_id, 'lane batch_id', 160);
+  requirePayloadHash(lane.scope_hash, 'lane scope_hash');
+  requirePayloadEnum(lane.status, 'lane status', ['PENDING', 'RUNNING', 'COMPLETE', 'FAILED', 'TIMED_OUT', 'INVALID'] as const);
+  requirePositiveInteger(lane.attempt, 'lane attempt');
+  requirePositiveInteger(lane.timeout_ms, 'lane timeout_ms');
+  requirePayloadTimestamp(lane.idle_deadline_at, 'lane idle_deadline_at');
+  for (const key of ['last_heartbeat_at', 'last_processed_activity_at'] as const) {
+    if (lane[key] !== undefined) requirePayloadTimestamp(lane[key], `lane ${key}`);
+  }
+  if (lane.last_processed_activity_ref !== undefined) {
+    requirePayloadString(lane.last_processed_activity_ref, 'lane last_processed_activity_ref');
+  }
+  if (!Array.isArray(lane.findings) || lane.findings.length > 200) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'lane findings are invalid');
+  }
+  try {
+    lane.findings.forEach(validateReviewFinding);
+  } catch {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'lane finding is invalid');
+  }
+  requirePayloadStringArray(lane.diagnostic_ids, 'lane diagnostic_ids', 256);
+  if (role === 'architect') {
+    if (batchId !== 'global' || lane.recommendation !== undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'architect lane role fields are invalid');
+    }
+    if (lane.architectural_status !== undefined) {
+      requirePayloadEnum(lane.architectural_status, 'lane architectural_status', ['CLEAR', 'WATCH', 'BLOCK'] as const);
+    }
+  } else {
+    if (lane.architectural_status !== undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'reviewer lane role fields are invalid');
+    }
+    if (lane.recommendation !== undefined) {
+      requirePayloadEnum(lane.recommendation, 'lane recommendation', ['APPROVE', 'COMMENT', 'REQUEST CHANGES'] as const);
+    }
+  }
+  if (lane.failure_code !== undefined) requirePayloadString(lane.failure_code, 'lane failure_code', 160);
+  if (lane.provenance !== undefined) {
+    const provenance = requireStructuredPayload(lane.provenance, [
+      'session_id', 'thread_id', 'tracker_lane_id', 'tracker_path', 'first_seen_at',
+    ], ['last_seen_at', 'completed_at', 'agent_id'], 'lane provenance');
+    for (const key of ['session_id', 'thread_id', 'tracker_lane_id', 'tracker_path'] as const) {
+      requirePayloadString(provenance[key], `provenance ${key}`);
+    }
+    requirePayloadTimestamp(provenance.first_seen_at, 'provenance first_seen_at');
+    for (const key of ['last_seen_at', 'completed_at'] as const) {
+      if (provenance[key] !== undefined) requirePayloadTimestamp(provenance[key], `provenance ${key}`);
+    }
+    if (provenance.agent_id !== undefined) requirePayloadString(provenance.agent_id, 'provenance agent_id');
+  }
+}
+
+function validateAttemptPayload(value: unknown): void {
+  const attempt = requireStructuredPayload(value, [
+    'attempt', 'status', 'bindings', 'lane_ids', 'started_at', 'updated_at', 'resumable',
+  ], ['finalized_at', 'verdict', 'resumable_reason'], 'review attempt');
+  requirePositiveInteger(attempt.attempt, 'attempt number');
+  requirePayloadEnum(attempt.status, 'attempt status', REVIEW_RUN_STATUSES);
+  if (!Array.isArray(attempt.bindings) || attempt.bindings.length > 5_000) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'attempt bindings are invalid');
+  }
+  for (const item of attempt.bindings) {
+    const binding = requireStructuredPayload(item, [
+      'lane_id', 'attempt', 'role', 'batch_id',
+    ], ['thread_id'], 'lane binding');
+    requirePayloadString(binding.lane_id, 'binding lane_id', 160);
+    requirePositiveInteger(binding.attempt, 'binding attempt');
+    requirePayloadEnum(binding.role, 'binding role', ['code-reviewer', 'architect'] as const);
+    requirePayloadString(binding.batch_id, 'binding batch_id', 160);
+    if (binding.thread_id !== undefined) requirePayloadString(binding.thread_id, 'binding thread_id', 160);
+  }
+  requirePayloadStringArray(attempt.lane_ids, 'attempt lane_ids');
+  requirePayloadTimestamp(attempt.started_at, 'attempt started_at');
+  requirePayloadTimestamp(attempt.updated_at, 'attempt updated_at');
+  if (attempt.finalized_at !== undefined) requirePayloadTimestamp(attempt.finalized_at, 'attempt finalized_at');
+  if (attempt.verdict !== undefined) validateReviewVerdictPayload(attempt.verdict);
+  requirePayloadBoolean(attempt.resumable, 'attempt resumable');
+  if (attempt.resumable_reason !== undefined) {
+    requirePayloadEnum(attempt.resumable_reason, 'attempt resumable_reason', [
+      'LANE_FAILED', 'LANE_TIMED_OUT', 'LANE_EVIDENCE_INVALID', 'MISSING_LANE', 'MCP_TRANSPORT_DEAD',
+    ] as const);
+  }
+}
+
+function validateReviewRecordPayload(
+  value: unknown,
+  reviewId: string,
+  expectedRevision: number,
+): ReviewRecord {
+  const record = requireStructuredPayload(value, [
+    'schema_version', 'revision', 'review_id', 'status', 'current_attempt',
+    'effective_config', 'review_flags', 'batches', 'lanes', 'attempt_history',
+    'diagnostics', 'resumable', 'created_at', 'updated_at',
+  ], [
+    'last_applied_transaction_id', 'session_id', 'root_thread_id', 'invocation_turn_id',
+    'scope', 'verdict', 'resumable_reason', 'finalized_at', 'supersedes_review_id',
+  ], 'review record');
+  if (record.schema_version !== 1
+    || validateUuid(record.review_id, 'review record review_id') !== reviewId
+    || requirePositiveInteger(record.revision, 'review record revision') !== expectedRevision + 1) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review record identity or revision conflicts');
+  }
+  requirePayloadEnum(record.status, 'review record status', REVIEW_RUN_STATUSES);
+  requirePositiveInteger(record.current_attempt, 'review current_attempt');
+  const config = requireExactPayload(record.effective_config, [
+    'lane_timeout_ms', 'max_files_per_review', 'max_changed_lines_per_review', 'accepted_equivalents',
+  ], 'effective review config');
+  requirePositiveInteger(config.lane_timeout_ms, 'config lane_timeout_ms');
+  requirePositiveInteger(config.max_files_per_review, 'config max_files_per_review');
+  requirePositiveInteger(config.max_changed_lines_per_review, 'config max_changed_lines_per_review');
+  if (!Array.isArray(config.accepted_equivalents) || config.accepted_equivalents.length > 128) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'accepted equivalents are invalid');
+  }
+  for (const item of config.accepted_equivalents) {
+    const equivalent = requireExactPayload(item, [
+      'capability', 'program', 'args', 'source', 'source_ref',
+    ], 'accepted equivalent');
+    requirePayloadEnum(equivalent.capability, 'equivalent capability', ['LSP', 'AST'] as const);
+    requirePayloadString(equivalent.program, 'equivalent program');
+    requirePayloadStringArray(equivalent.args, 'equivalent args', 128);
+    requirePayloadEnum(equivalent.source, 'equivalent source', ['EXPLICIT_USER', 'REPO_CONTRACT'] as const);
+    requirePayloadString(equivalent.source_ref, 'equivalent source_ref');
+  }
+  if (!Array.isArray(record.review_flags)
+    || record.review_flags.some((flag) => flag !== 'BATCHED_REVIEW')
+    || new Set(record.review_flags).size !== record.review_flags.length) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review flags are invalid');
+  }
+  if (!Array.isArray(record.batches) || !Array.isArray(record.lanes)
+    || !Array.isArray(record.attempt_history) || !Array.isArray(record.diagnostics)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review record collections are invalid');
+  }
+  record.batches.forEach(validateBatchPayload);
+  record.lanes.forEach(validateLanePayload);
+  record.attempt_history.forEach(validateAttemptPayload);
+  record.diagnostics.forEach(validateDiagnosticPayload);
+  if (record.scope !== undefined) validateScopePayload(record.scope);
+  if (record.verdict !== undefined) validateReviewVerdictPayload(record.verdict);
+  requirePayloadBoolean(record.resumable, 'review resumable');
+  if (record.resumable_reason !== undefined) {
+    requirePayloadEnum(record.resumable_reason, 'review resumable_reason', [
+      'LANE_FAILED', 'LANE_TIMED_OUT', 'LANE_EVIDENCE_INVALID', 'MISSING_LANE', 'MCP_TRANSPORT_DEAD',
+    ] as const);
+  }
+  requirePayloadTimestamp(record.created_at, 'review created_at');
+  requirePayloadTimestamp(record.updated_at, 'review updated_at');
+  if (record.finalized_at !== undefined) requirePayloadTimestamp(record.finalized_at, 'review finalized_at');
+  for (const key of ['session_id', 'root_thread_id', 'invocation_turn_id'] as const) {
+    if (record[key] !== undefined) requirePayloadString(record[key], `review ${key}`);
+  }
+  for (const key of ['last_applied_transaction_id', 'supersedes_review_id'] as const) {
+    if (record[key] !== undefined) validateUuid(record[key], `review ${key}`);
+  }
+  return record as unknown as ReviewRecord;
+}
+
 function validateLaneResultPayload(
   value: unknown,
   expected: { reviewId: string; laneId: string; attempt: number; scopeHash?: string },
@@ -825,7 +1131,38 @@ function validateTypedEffectPayload(
   effect: DurableTransactionEffect,
   reviewId: string,
   idempotencyKey: string,
+  expectedRevision: number,
 ): void {
+  if (effect.name === 'review') {
+    if (effect.mode !== 'APPLY_REVIEW_REVISION'
+      || effect.target.area !== 'REVIEW_STATE'
+      || effect.target.path !== `${reviewId}/review.json`
+      || effect.review_id !== undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review effect target is invalid');
+    }
+    effect.payload = validateReviewRecordPayload(effect.payload, reviewId, expectedRevision);
+    return;
+  }
+  if (effect.name === 'active-overlay') {
+    if (effect.target.area !== 'REVIEW_STATE' || effect.target.path !== 'active.json') {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay target is invalid');
+    }
+    if (effect.mode === 'REMOVE_MATCHING_ACTIVE') {
+      if (effect.payload !== undefined || effect.review_id !== reviewId) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active cleanup identity conflicts');
+      }
+      return;
+    }
+    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.review_id !== undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay effect is invalid');
+    }
+    const pointer = validateActivePointer(effect.payload);
+    if (pointer.review_id !== reviewId) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay review identity conflicts');
+    }
+    effect.payload = pointer;
+    return;
+  }
   if (effect.name === 'proposal') {
     if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
       || effect.target.path !== `${reviewId}/submissions/${idempotencyKey}/proposal`) {
@@ -959,12 +1296,13 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
   if (!Number.isSafeInteger(value.expected_revision) || (value.expected_revision as number) < 0) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction expected revision is invalid');
   }
+  const expectedRevision = value.expected_revision as number;
   if (!Array.isArray(value.effects) || value.effects.length > 64) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effects are invalid');
   }
   const effects = value.effects.map(validateDurableEffect);
   for (const effect of effects) {
-    validateTypedEffectPayload(effect, reviewId, idempotencyKey);
+    validateTypedEffectPayload(effect, reviewId, idempotencyKey, expectedRevision);
     if (effect.mode === 'REMOVE_MATCHING_ACTIVE' && (
       effect.name !== 'active-overlay'
       || effect.target.area !== 'REVIEW_STATE'
@@ -1003,7 +1341,7 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
     review_id: reviewId,
     operation: value.operation,
     input: sanitizeForPersistence(value.input),
-    expected_revision: value.expected_revision as number,
+    expected_revision: expectedRevision,
     effects,
     response: sanitizeForPersistence(value.response),
   };
@@ -1451,7 +1789,7 @@ export async function recoverDurableTransactions(
   const locks = await acquireReviewLocks(
     paths,
     journalScope === 'START' ? undefined : reviewId,
-    journalScope === 'START' ? ['start'] : ['journal', 'mutation'],
+    journalScope === 'START' ? ['start'] : ['start', 'journal', 'mutation'],
   );
   try {
     return await recoverDurableTransactionLocked(paths, reviewId, key, journalScope);

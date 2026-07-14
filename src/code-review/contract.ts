@@ -11,7 +11,7 @@ export const REVIEW_LIMITS = {
   findingsPerLane: 200,
   findingsPerReview: 5_000,
   diagnostic: 2 * 1_024,
-  diagnosticsPerLane: 16 * 1_024,
+  diagnosticsTotalBytes: 16 * 1_024,
   lanePayload: 1024 * 1024,
 } as const;
 

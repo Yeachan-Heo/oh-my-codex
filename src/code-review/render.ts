@@ -301,7 +301,7 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
     invalid('final review findings exceed the review limit');
   }
   const diagnostics = artifact.diagnostics.map(validateDiagnostic);
-  if (Buffer.byteLength(JSON.stringify(diagnostics), 'utf8') > REVIEW_LIMITS.diagnosticsPerLane) {
+  if (Buffer.byteLength(JSON.stringify(diagnostics), 'utf8') > REVIEW_LIMITS.diagnosticsTotalBytes) {
     invalid('final review diagnostics exceed sixteen KiB');
   }
   const verdict = validateVerdict(artifact.verdict);
@@ -316,6 +316,7 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
 
   if (lanes.length > 0 && scope === undefined) invalid('final lanes require a frozen scope');
   const scopeFiles = new Set(scope?.files.map((file) => file.path) ?? []);
+  const batchFiles = new Map(batches.map((batch) => [batch.batch_id, new Set(batch.files)]));
   for (const batch of batches) {
     if (new Set(batch.files).size !== batch.files.length) invalid('batch files must be unique');
     if (scope && batch.files.some((path) => !scopeFiles.has(path))) invalid('batch contains a file outside the frozen scope');
@@ -327,10 +328,18 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
       if (lane.recommendation !== undefined || lane.architectural_status === undefined) {
         invalid('architect lane has fields for the wrong role');
       }
+      if (lane.diagnostic_ids.length !== 0) invalid('architect lane must not reference diagnostics');
+      if (lane.findings.some((finding) => !scopeFiles.has(finding.file))) {
+        invalid('architect finding is outside the frozen scope');
+      }
     } else {
-      if (lane.batch_id !== 'global' && !batchIds.has(lane.batch_id)) invalid('reviewer lane references an unknown batch');
+      if (!batchIds.has(lane.batch_id)) invalid('reviewer lane references an unknown batch');
       if (lane.recommendation === undefined || lane.architectural_status !== undefined) {
         invalid('reviewer lane has fields for the wrong role');
+      }
+      const files = batchFiles.get(lane.batch_id)!;
+      if (lane.findings.some((finding) => !scopeFiles.has(finding.file) || !files.has(finding.file))) {
+        invalid('reviewer finding is outside its frozen batch');
       }
     }
     if (new Set(lane.diagnostic_ids).size !== lane.diagnostic_ids.length) {

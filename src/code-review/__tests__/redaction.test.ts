@@ -45,6 +45,31 @@ describe('code-review redaction and validation', () => {
     assert.match(redacted, /\[REDACTED\]/u);
   });
 
+  it('redacts quoted JSON secret values across case, snake-case, camelCase, and nested metadata', async () => {
+    const api = await loadRedactionApi();
+    const finding = api.validateReviewFinding({
+      severity: 'HIGH',
+      title: 'Quoted JSON credentials',
+      body: '{"password":"hunter2","API_KEY":"snake-secret"}',
+      file: 'src/a.ts',
+      fix: '{"Authorization":"Bearer header-secret"}',
+      evidence: '{"apiKey":"plain-secret"}',
+    });
+    const sanitized = api.sanitizeForPersistence({
+      reasons: ['{"Password":"reason-secret"}'],
+      diagnostics: [{ summary: '{"authorization":"Basic diagnostic-secret"}' }],
+      nested: { value: '{"client_secret":"nested-secret"}' },
+    });
+    const serialized = JSON.stringify({ finding, sanitized });
+
+    assert.doesNotMatch(
+      serialized,
+      /hunter2|snake-secret|header-secret|plain-secret|reason-secret|diagnostic-secret|nested-secret/u,
+    );
+    assert.match(serialized, /\\"password\\":\\"\[REDACTED\]\\"/u);
+    assert.match(serialized, /\\"apiKey\\":\\"\[REDACTED\]\\"/u);
+  });
+
   it('removes absolute home and repository roots without changing safe relative paths', async () => {
     const api = await loadRedactionApi();
     const repositoryRoot = '/Users/alice/projects/private-repo';
@@ -172,5 +197,12 @@ describe('code-review redaction and validation', () => {
     assert.notEqual(sanitized, input);
     assert.equal(input.reasons[1], 'api_key=private-key-value');
     assert.doesNotMatch(JSON.stringify(sanitized), /very-private-token|private-key-value/u);
+  });
+
+  it('does not impose the finding-body limit on generic persisted strings', async () => {
+    const api = await loadRedactionApi();
+    const value = { diagnostic_summary: 'x'.repeat(2_048) };
+
+    assert.deepEqual(api.sanitizeForPersistence(value), value);
   });
 });

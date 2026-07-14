@@ -5,6 +5,8 @@ import { REVIEW_LIMITS, type ReviewFinding } from './contract.js';
 const PROVIDER_TOKEN_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/giu;
 const GENERIC_SECRET_PATTERN = /\b([A-Za-z0-9_.-]*(?:api[-_]?key|password|passwd|client[-_]?secret|private[-_]?key|github[-_]?token|secret|credential)[A-Za-z0-9_.-]*)(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\r\n]+)/giu;
 const AUTHORIZATION_HEADER_PATTERN = /\bauthorization\s*:\s*[^\r\n]+/giu;
+const JSON_DOUBLE_QUOTED_SECRET_PATTERN = /"([^"\\]*(?:api[-_]?key|password|passwd|client[-_]?secret|private[-_]?key|github[-_]?token|secret|credential|authorization|auth)[^"\\]*)"(\s*:\s*)"(?:\\.|[^"\\])*"/giu;
+const JSON_SINGLE_QUOTED_SECRET_PATTERN = /'([^'\\]*(?:api[-_]?key|password|passwd|client[-_]?secret|private[-_]?key|github[-_]?token|secret|credential|authorization|auth)[^'\\]*)'(\s*:\s*)'(?:\\.|[^'\\])*'/giu;
 const HOME_PATH_PATTERN = /(?:\/Users\/[^/\s]+|\/home\/[^/\s]+)(?=\/)/gu;
 const WINDOWS_HOME_PATH_PATTERN = /\b[A-Za-z]:\\Users\\[^\\\s]+(?=\\)/gu;
 const SENSITIVE_KEY_PARTS = ['token', 'apikey', 'credential', 'password', 'passwd', 'secret', 'auth'] as const;
@@ -41,6 +43,8 @@ export function redactReviewText(
   options: { repositoryRoot?: string } = {},
 ): string {
   let text = redactAuthSecrets(value);
+  text = text.replace(JSON_DOUBLE_QUOTED_SECRET_PATTERN, '"$1"$2"[REDACTED]"');
+  text = text.replace(JSON_SINGLE_QUOTED_SECRET_PATTERN, "'$1'$2'[REDACTED]'");
   text = text.replace(AUTHORIZATION_HEADER_PATTERN, 'Authorization: [REDACTED]');
   text = text.replace(PROVIDER_TOKEN_PATTERN, '[REDACTED]');
   text = text.replace(GENERIC_SECRET_PATTERN, (_match, key: string, separator: string) => (
@@ -153,11 +157,7 @@ function sanitizeValue(
   seen: Set<object>,
 ): unknown {
   if (typeof value === 'string') {
-    const redacted = redactReviewText(value, options);
-    if (unicodeLength(redacted) > REVIEW_LIMITS.body) {
-      throw new ReviewDataValidationError('PERSISTENCE_FAILED', 'persisted string is unbounded');
-    }
-    return redacted;
+    return redactReviewText(value, options);
   }
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') {
