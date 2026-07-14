@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -163,6 +163,71 @@ describe('code-review overlay failure handling', () => {
       assert.match(String(activation?.transition_error), /canonical skill state.*malformed.*repair or clear/i);
       assert.match(String(stop.outputJson?.reason), /continue from the current ralplan artifact/i);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails Stop closed without replacing an unreadable canonical workflow state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-overlay-unreadable-stop-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionDir = join(stateDir, 'sessions', SESSION_ID);
+    const canonicalPath = join(sessionDir, 'skill-active-state.json');
+    try {
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID, cwd }, null, 2));
+      await writeFile(canonicalPath, JSON.stringify(ralplanState(), null, 2));
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: SESSION_ID,
+        thread_id: THREAD_ID,
+        cwd,
+      }, null, 2));
+      await chmod(canonicalPath, 0o200);
+
+      const activation = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the current diff',
+        sessionId: SESSION_ID,
+        threadId: THREAD_ID,
+        nowIso: NOW,
+      });
+      await chmod(canonicalPath, 0o600);
+      const canonicalAfterActivation = JSON.parse(
+        await readFile(canonicalPath, 'utf-8'),
+      ) as SkillActiveStateLike;
+      const detailAfterActivation = JSON.parse(
+        await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8'),
+      ) as { active?: boolean };
+      const stop = await dispatchCodexNativeHook({
+        hook_event_name: 'Stop',
+        cwd,
+        session_id: SESSION_ID,
+        thread_id: THREAD_ID,
+        turn_id: 'turn-unreadable-stop',
+      }, { cwd });
+
+      assert.deepEqual({
+        activationSkills: listActiveSkills(activation ?? {}).map((entry) => entry.skill),
+        canonicalSkills: listActiveSkills(canonicalAfterActivation).map((entry) => entry.skill),
+        detailActive: detailAfterActivation.active,
+        diagnosticCount: activation?.transition_error ? 1 : 0,
+        stopDecision: stop.outputJson?.decision ?? null,
+        stopReason: stop.outputJson?.stopReason ?? null,
+      }, {
+        activationSkills: [],
+        canonicalSkills: ['ralplan'],
+        detailActive: true,
+        diagnosticCount: 1,
+        stopDecision: 'block',
+        stopReason: 'skill_ralplan_planning_continue_artifact',
+      });
+      assert.match(String(activation?.transition_error), /canonical skill state.*unreadable.*repair permissions or clear/i);
+      assert.match(String(stop.outputJson?.reason), /continue from the current ralplan artifact/i);
+    } finally {
+      await chmod(canonicalPath, 0o600).catch(() => undefined);
       await rm(cwd, { recursive: true, force: true });
     }
   });

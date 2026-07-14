@@ -447,7 +447,7 @@ function releaseDeepInterviewInputLock(
 
 interface ExistingSkillStateResult {
   state: SkillActiveState | null;
-  status: 'ok' | 'missing' | 'malformed' | 'unreadable';
+  status: 'ok' | 'missing' | 'malformed' | 'unreadable' | 'unavailable';
 }
 
 async function readExistingSkillState(statePath: string): Promise<ExistingSkillStateResult> {
@@ -455,9 +455,14 @@ async function readExistingSkillState(statePath: string): Promise<ExistingSkillS
   try {
     raw = await readFile(statePath, 'utf-8');
   } catch (error) {
+    const errorCode = (error as NodeJS.ErrnoException).code;
     return {
       state: null,
-      status: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unreadable',
+      status: errorCode === 'ENOENT'
+        ? 'missing'
+        : errorCode === 'ENOTDIR'
+          ? 'unavailable'
+          : 'unreadable',
     };
   }
 
@@ -470,8 +475,18 @@ async function readExistingSkillState(statePath: string): Promise<ExistingSkillS
   }
 }
 
-function buildMalformedCanonicalSkillStateError(statePath: string): string {
-  return `Cannot apply workflow activation because canonical skill state at "${statePath}" is malformed. Repair or clear that file before retrying; existing workflow detail state remains authoritative for Stop enforcement.`;
+function isUnsafeCanonicalSkillStateStatus(
+  status: ExistingSkillStateResult['status'],
+): status is 'malformed' | 'unreadable' {
+  return status === 'malformed' || status === 'unreadable';
+}
+
+function buildUnsafeCanonicalSkillStateError(
+  statePath: string,
+  status: 'malformed' | 'unreadable',
+): string {
+  const repairAction = status === 'unreadable' ? 'Repair permissions or clear' : 'Repair or clear';
+  return `Cannot apply workflow activation because canonical skill state at "${statePath}" is ${status}. ${repairAction} that file before retrying; existing workflow detail state remains authoritative for Stop enforcement.`;
 }
 
 function buildActiveSkills(state: SkillActiveState): SkillActiveEntry[] | undefined {
@@ -1396,7 +1411,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   if (!match) return null;
 
   const nowIso = input.nowIso ?? new Date().toISOString();
-  if (authoritativeResult.status === 'malformed') {
+  if (isUnsafeCanonicalSkillStateStatus(authoritativeResult.status)) {
     return {
       version: 1,
       active: false,
@@ -1410,8 +1425,9 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       thread_id: input.threadId,
       turn_id: input.turnId,
       active_skills: [],
-      transition_error: buildMalformedCanonicalSkillStateError(
+      transition_error: buildUnsafeCanonicalSkillStateError(
         sessionStatePath ?? rootStatePath,
+        authoritativeResult.status,
       ),
     };
   }
