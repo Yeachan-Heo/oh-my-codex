@@ -127,6 +127,18 @@ describe('code-review overlay failure handling', () => {
         cwd,
       }, null, 2));
 
+      const activation = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the current diff',
+        sessionId: SESSION_ID,
+        threadId: THREAD_ID,
+        nowIso: NOW,
+      });
+      const canonicalAfterActivation = await readFile(
+        join(sessionDir, 'skill-active-state.json'),
+        'utf-8',
+      );
       const stop = await dispatchCodexNativeHook({
         hook_event_name: 'Stop',
         cwd,
@@ -134,9 +146,47 @@ describe('code-review overlay failure handling', () => {
         thread_id: THREAD_ID,
         turn_id: 'turn-malformed-stop',
       }, { cwd });
-      assert.equal(stop.outputJson?.decision, 'block');
-      assert.equal(stop.outputJson?.stopReason, 'skill_ralplan_planning_continue_artifact');
+
+      assert.deepEqual({
+        activeSkills: listActiveSkills(activation ?? {}).map((entry) => entry.skill),
+        canonicalAfterActivation,
+        diagnosticCount: activation?.transition_error ? 1 : 0,
+        stopDecision: stop.outputJson?.decision ?? null,
+        stopReason: stop.outputJson?.stopReason ?? null,
+      }, {
+        activeSkills: [],
+        canonicalAfterActivation: '{ malformed canonical',
+        diagnosticCount: 1,
+        stopDecision: 'block',
+        stopReason: 'skill_ralplan_planning_continue_artifact',
+      });
+      assert.match(String(activation?.transition_error), /canonical skill state.*malformed.*repair or clear/i);
       assert.match(String(stop.outputJson?.reason), /continue from the current ralplan artifact/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows a review overlay when the session canonical state is genuinely missing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-overlay-missing-canonical-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      const activation = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the current diff',
+        sessionId: SESSION_ID,
+        threadId: THREAD_ID,
+        nowIso: NOW,
+      });
+      const persisted = JSON.parse(await readFile(
+        join(stateDir, 'sessions', SESSION_ID, 'skill-active-state.json'),
+        'utf-8',
+      )) as SkillActiveStateLike;
+
+      assert.equal(activation?.transition_error, undefined);
+      assert.deepEqual(listActiveSkills(activation ?? {}).map((entry) => entry.skill), ['code-review']);
+      assert.deepEqual(listActiveSkills(persisted).map((entry) => entry.skill), ['code-review']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

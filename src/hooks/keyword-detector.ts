@@ -445,13 +445,33 @@ function releaseDeepInterviewInputLock(
   };
 }
 
-async function readExistingSkillState(statePath: string): Promise<SkillActiveState | null> {
+interface ExistingSkillStateResult {
+  state: SkillActiveState | null;
+  status: 'ok' | 'missing' | 'malformed' | 'unreadable';
+}
+
+async function readExistingSkillState(statePath: string): Promise<ExistingSkillStateResult> {
+  let raw: string;
   try {
-    const raw = await readFile(statePath, 'utf-8');
-    return JSON.parse(raw) as SkillActiveState;
-  } catch {
-    return null;
+    raw = await readFile(statePath, 'utf-8');
+  } catch (error) {
+    return {
+      state: null,
+      status: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unreadable',
+    };
   }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return { state: null, status: 'malformed' };
+    return { state: parsed as SkillActiveState, status: 'ok' };
+  } catch {
+    return { state: null, status: 'malformed' };
+  }
+}
+
+function buildMalformedCanonicalSkillStateError(statePath: string): string {
+  return `Cannot apply workflow activation because canonical skill state at "${statePath}" is malformed. Repair or clear that file before retrying; existing workflow detail state remains authoritative for Stop enforcement.`;
 }
 
 function buildActiveSkills(state: SkillActiveState): SkillActiveEntry[] | undefined {
@@ -1361,8 +1381,11 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const sessionStatePath = input.sessionId
     ? join(input.stateDir, 'sessions', input.sessionId, SKILL_ACTIVE_STATE_FILE)
     : null;
-  const previousRoot = await readExistingSkillState(rootStatePath);
-  const previousSession = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
+  const previousRootResult = await readExistingSkillState(rootStatePath);
+  const previousSessionResult = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
+  const authoritativeResult = input.sessionId ? previousSessionResult! : previousRootResult;
+  const previousRoot = previousRootResult.state;
+  const previousSession = previousSessionResult?.state ?? null;
   const previous = input.sessionId ? previousSession : previousRoot;
   const teamMode = readTeamModeConfig(sourceCwd);
   const match = resolveContinuationKeywordMatch(
@@ -1373,6 +1396,25 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   if (!match) return null;
 
   const nowIso = input.nowIso ?? new Date().toISOString();
+  if (authoritativeResult.status === 'malformed') {
+    return {
+      version: 1,
+      active: false,
+      skill: match.skill,
+      keyword: match.keyword,
+      phase: initialWorkflowPhaseForMode(match.skill as TrackedWorkflowMode),
+      activated_at: nowIso,
+      updated_at: nowIso,
+      source: 'keyword-detector',
+      session_id: input.sessionId,
+      thread_id: input.threadId,
+      turn_id: input.turnId,
+      active_skills: [],
+      transition_error: buildMalformedCanonicalSkillStateError(
+        sessionStatePath ?? rootStatePath,
+      ),
+    };
+  }
   const hadDeepInterviewLock = previous?.skill === 'deep-interview' && previous?.input_lock?.active === true;
   const matches = filterMatchesForTeamMode(detectKeywords(input.text), teamMode.enabled);
   const hasCancelIntent = matches.some((entry) => entry.skill === 'cancel');
