@@ -361,6 +361,7 @@ describe('session lifecycle manager', () => {
       assert.equal(withoutPane.native_session_id, 'codex-native-1');
       assert.equal(withoutPane.tmux_session_name, 'omx-detached-demo');
       assert.equal(withoutPane.tmux_pane_id, '%42');
+      assert.equal(withPane.started_at, withoutPane.started_at);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -37,6 +37,11 @@ import {
   listTeamSessions,
   resolveSharedSessionShutdownTopology,
 } from './tmux-session.js';
+import { acquireHudLifecycleLock, releaseHudLifecycleLock } from '../hud/lifecycle-lock.js';
+import { normalizeSessionId, resolveHudControlPlaneDomain } from '../mcp/state-paths.js';
+import type { HudRuntimeRootSource } from '../hud/tmux.js';
+
+import type { HudRuntimeEnvInput } from '../hud/tmux.js';
 import {
   teamInit as initTeamState,
   DEFAULT_MAX_WORKERS,
@@ -441,23 +446,6 @@ function filterSharedSessionShutdownWorkerPaneIdsByOwner(
   });
 }
 
-function isSharedSessionHudPaneReclaimable(params: {
-  paneId: string;
-  persistedHudPaneId: string | null;
-  leaderOwnedHudPaneIds: string[];
-  teamPaneOwnerId: string;
-  onOwnerReadError?: (paneId: string, error: string) => void;
-}): boolean {
-  const { paneId, persistedHudPaneId, leaderOwnedHudPaneIds, teamPaneOwnerId, onOwnerReadError } = params;
-  const expectedOwnerId = teamPaneOwnerId.trim();
-  if (!expectedOwnerId) return false;
-  const owner = readPaneTeamOwnerTagResult(paneId);
-  if (owner.status === 'value') return owner.value === expectedOwnerId;
-  if (paneId !== persistedHudPaneId) return false;
-  if (owner.status === 'missing') return leaderOwnedHudPaneIds.includes(paneId);
-  onOwnerReadError?.(paneId, owner.error);
-  return false;
-}
 
 function isTrustedSharedSessionLeaderPaneForHudRestore(params: {
   paneId: string | null;
@@ -2511,6 +2499,27 @@ export async function settleStartupAttemptResults(
   });
 }
 
+export function projectHudRuntimeRootEnv(
+  rootSource: HudRuntimeRootSource,
+  env: NodeJS.ProcessEnv,
+): Pick<HudRuntimeEnvInput, 'omxRoot' | 'omxStateRoot' | 'omxTeamStateRoot' | 'rootSource'> {
+  const root = (key: 'OMX_ROOT' | 'OMX_STATE_ROOT' | 'OMX_TEAM_STATE_ROOT'): string | undefined => {
+    const value = env[key]?.trim();
+    return value || undefined;
+  };
+
+  if (rootSource === 'team-env') {
+    return { omxTeamStateRoot: root('OMX_TEAM_STATE_ROOT'), rootSource };
+  }
+  if (rootSource === 'omx-root-env') {
+    return { omxRoot: root('OMX_ROOT'), rootSource };
+  }
+  if (rootSource === 'omx-state-root-env') {
+    return { omxStateRoot: root('OMX_STATE_ROOT'), rootSource };
+  }
+  return { rootSource };
+}
+
 export async function startTeam(
   teamName: string,
   task: string,
@@ -2558,6 +2567,14 @@ export async function startTeam(
   }
 
   const teamStateRoot = resolveCanonicalTeamStateRoot(leaderCwd);
+  const hudRequestedSessionId = normalizeSessionId(resolvedLeaderSessionId);
+  const hudDomain = await resolveHudControlPlaneDomain({
+    cwd: leaderCwd,
+    env: launchEnv,
+    requestedSessionId: hudRequestedSessionId,
+  });
+  const hudRuntime = projectHudRuntimeRootEnv(hudDomain.rootSource, launchEnv);
+
   const requestedApprovedExecution = normalizeApprovedTeamExecutionBinding(options.approvedExecution);
   const requestedApprovedExecutionOutcome = requestedApprovedExecution
     ? readApprovedTeamExecutionHintOutcomeFromBinding(leaderCwd, requestedApprovedExecution)
@@ -2989,21 +3006,47 @@ export async function startTeam(
       approvedExecution,
       ultragoalOutcome,
     });
-    await cleanupTeamWorkerLaunchOrphanedMcpProcesses({
-      cleanup: options.cleanupLaunchOrphanedMcpProcesses,
-      writeWarning: options.writeCleanupWarning,
-    });
+
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
 
     if (workerLaunchMode === 'interactive') {
-      const createdSession = createTeamSession(
-        sanitized,
-        workerCount,
-        leaderCwd,
-        Array.from(workerLaunchPolicyPlan[0]?.workerLaunchArgs ?? []),
-        workerStartups,
-        { ownerSessionId: leaderSessionId, teamPaneOwnerId: config.tmux_pane_owner_id },
-      );
+      const hudLifecycleLock = await acquireHudLifecycleLock({
+        path: hudDomain.reconcileLockPath,
+        domainKey: hudDomain.domainKey,
+        staleMs: 30_000,
+      });
+      if (hudLifecycleLock.status !== 'acquired' || !hudLifecycleLock.lock) {
+        throw new Error(`hud_lifecycle_lock_${hudLifecycleLock.status}`);
+      }
+      let createdSession!: TeamSession;
+      try {
+        createdSession = createTeamSession(
+          sanitized,
+          workerCount,
+          leaderCwd,
+          Array.from(workerLaunchPolicyPlan[0]?.workerLaunchArgs ?? []),
+          workerStartups,
+          {
+            ownerSessionId: hudDomain.claimant.sessionId,
+            teamPaneOwnerId: config.tmux_pane_owner_id,
+            hudRuntime,
+            hudExactCandidate: hudDomain.claimant.sessionId
+              && hudDomain.claimant.leaderPaneId
+              && hudDomain.claimant.tmuxSessionInstanceId
+              && hudDomain.claimant.tmuxPaneInstanceId
+              ? {
+                sessionId: hudDomain.claimant.sessionId,
+                sessionIds: hudDomain.session?.equivalentIds ?? [hudDomain.claimant.sessionId],
+                leaderPaneId: hudDomain.claimant.leaderPaneId,
+                tmuxSessionInstanceId: hudDomain.claimant.tmuxSessionInstanceId,
+                tmuxPaneInstanceId: hudDomain.claimant.tmuxPaneInstanceId,
+              }
+              : null,
+          },
+        );
+      } finally {
+        await releaseHudLifecycleLock(hudLifecycleLock.lock);
+      }
       sessionName = createdSession.name;
       sessionCreated = true;
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
@@ -3259,11 +3302,7 @@ export async function startTeam(
 
       // In split-pane topology, we must not kill the entire tmux session; kill only created panes.
       if (sessionName.includes(':')) {
-        for (const [index, paneId] of createdWorkerPaneIds.entries()) {
-          const panePid = getWorkerPanePid(sessionName, index + 1, paneId);
-          if (panePid) {
-            await terminateTrackedProcessTree(panePid);
-          }
+        for (const paneId of createdWorkerPaneIds) {
           try {
             await killWorkerByPaneIdAsync(paneId, createdLeaderPaneId);
           } catch (err) {
@@ -3954,15 +3993,8 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         legacyInstanceId: leaderSessionId,
       }) ? effectiveLeaderPaneId : null)
       : effectiveLeaderPaneId;
-    const effectiveHudPaneId = sharedSessionTopology
-      ? (sharedSessionTopology.hudPaneIds.find((paneId) => isSharedSessionHudPaneReclaimable({
-        paneId,
-        persistedHudPaneId: hudPaneId,
-        leaderOwnedHudPaneIds: sharedSessionTopology.leaderOwnedHudPaneIds,
-        teamPaneOwnerId: tmuxPaneOwnerId,
-        onOwnerReadError: (hudPaneId, error) => warnOwnerReadError('HUD pane', hudPaneId, error),
-      })) ?? null)
-      : hudPaneId;
+    let effectiveHudPaneId: string | null = sharedSessionTopology ? null : hudPaneId;
+
     const shutdownCandidatePaneIds = sharedSessionTopology
       ? filterSharedSessionShutdownWorkerPaneIdsByOwner(
         sharedSessionTopology.teamWorkerPaneIds,
@@ -3978,14 +4010,6 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       leaderPaneId: effectiveLeaderPaneId,
       hudPaneId: effectiveHudPaneId,
     });
-    if (shouldPrekillInteractiveShutdownProcessTrees(sessionName)) {
-      const workerPanePids = shutdownPaneIds
-        .map((paneId) => getWorkerPanePid(sessionName, 1, paneId))
-        .filter((pid): pid is number => typeof pid === 'number' && Number.isFinite(pid) && pid > 0);
-      for (const panePid of workerPanePids) {
-        await terminateTrackedProcessTree(panePid);
-      }
-    }
 
     let resizeHookWarning: string | null = null;
     if (config.resize_hook_name && config.resize_hook_target) {
@@ -4005,20 +4029,67 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (resizeHookWarning) {
       console.warn(`[team shutdown] ${sanitized}: ${resizeHookWarning}; continuing teardown`);
     }
+    const hudRequestedSessionId = normalizeSessionId(leaderSessionId);
+    const hudRestoreDomain = hudRequestedSessionId
+      ? await resolveHudControlPlaneDomain({
+        cwd,
+        env: process.env,
+        requestedSessionId: hudRequestedSessionId,
+        claimant: {
+          leaderPaneId: effectiveLeaderPaneId ?? undefined,
+          tmuxSessionName: sessionName,
+        },
+      }).catch(() => null)
+      : null;
+    const hasExactHudRestoreEvidence = Boolean(
+      hudRestoreDomain
+      && effectiveLeaderPaneId
+      && trustedHudRestoreLeaderPaneId === effectiveLeaderPaneId
+      && hudRestoreDomain.claimant.sessionId
+      && hudRestoreDomain.claimant.leaderPaneId === effectiveLeaderPaneId
+      && hudRestoreDomain.claimant.tmuxSessionInstanceId
+      && hudRestoreDomain.claimant.tmuxPaneInstanceId,
+    );
+    const exactSharedSessionTopology = hasExactHudRestoreEvidence && sharedSessionTopology && hudRestoreDomain
+      ? resolveSharedSessionShutdownTopology(sessionName, effectiveLeaderPaneId, sanitized, {
+        sessionId: hudRestoreDomain.claimant.sessionId!,
+        sessionIds: hudRestoreDomain.session?.equivalentIds ?? [hudRestoreDomain.claimant.sessionId!],
+        leaderPaneId: hudRestoreDomain.claimant.leaderPaneId!,
+        tmuxSessionInstanceId: hudRestoreDomain.claimant.tmuxSessionInstanceId!,
+        tmuxPaneInstanceId: hudRestoreDomain.claimant.tmuxPaneInstanceId!,
+      })
+      : null;
+    if (sharedSessionTopology) {
+      effectiveHudPaneId = exactSharedSessionTopology?.hudPaneIds.find((paneId) => paneId === hudPaneId) ?? null;
+    }
+    const hudLifecycleLock = hasExactHudRestoreEvidence && hudRestoreDomain
+      ? await acquireHudLifecycleLock({
+        path: hudRestoreDomain.reconcileLockPath,
+        domainKey: hudRestoreDomain.domainKey,
+        staleMs: 30_000,
+      }).catch(() => null)
+      : null;
+    const ownsHudLifecycleLock = hudLifecycleLock?.status === 'acquired' && hudLifecycleLock.lock;
+
+    try {
     let restoredHudPaneId: string | null = null;
-    if (effectiveHudPaneId) {
+    if (effectiveHudPaneId && ownsHudLifecycleLock) {
       await killWorkerByPaneIdAsync(effectiveHudPaneId, effectiveLeaderPaneId ?? undefined);
-      if (sessionName.includes(':')) {
+      if (sessionName.includes(':') && hudRestoreDomain) {
         restoredHudPaneId = restoreStandaloneHudPane(trustedHudRestoreLeaderPaneId, cwd, {
-          sessionId: leaderSessionId,
+          sessionId: hudRestoreDomain.claimant.sessionId,
+          sessionIds: hudRestoreDomain.session?.equivalentIds,
+          leaderPaneId: hudRestoreDomain.claimant.leaderPaneId,
+          tmuxSessionInstanceId: hudRestoreDomain.claimant.tmuxSessionInstanceId,
+          tmuxPaneInstanceId: hudRestoreDomain.claimant.tmuxPaneInstanceId,
+          hudRuntime: projectHudRuntimeRootEnv(hudRestoreDomain.rootSource, process.env),
         });
         if (!restoredHudPaneId) {
-          const reason = trustedHudRestoreLeaderPaneId
-            ? 'failed to restore standalone HUD pane'
-            : 'skipped standalone HUD restore because leader pane ownership could not be verified';
-          console.warn(`[team shutdown] ${sanitized}: ${reason}`);
+          console.warn(`[team shutdown] ${sanitized}: failed to restore standalone HUD pane`);
         }
       }
+    } else if (effectiveHudPaneId) {
+      console.warn(`[team shutdown] ${sanitized}: skipped Team HUD teardown and standalone restore because exact HUD authority evidence or lifecycle lock was unavailable`);
     }
     shutdownPaneIds = collectShutdownPaneIds({
       config,
@@ -4037,8 +4108,13 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     });
     await teardownWorkerPanes(shutdownPaneIds, {
       leaderPaneId: effectiveLeaderPaneId,
-      hudPaneId: restoredHudPaneId ?? effectiveHudPaneId,
+      hudPaneId: restoredHudPaneId ?? (ownsHudLifecycleLock ? effectiveHudPaneId : undefined),
     });
+    } finally {
+      if (hudLifecycleLock?.status === 'acquired' && hudLifecycleLock.lock) {
+        await releaseHudLifecycleLock(hudLifecycleLock.lock);
+      }
+    }
 
     // 4. Destroy tmux session
     if (!sessionName.includes(':')) {

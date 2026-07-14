@@ -9126,6 +9126,10 @@ export async function onHookEvent(event) {
 			process.env.TMUX_PANE = "%1";
 			process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
 			await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+			await writeSessionStart(cwd, "sess-hud-1", {
+				tmuxSessionName: "omx-hud-reconcile",
+				tmuxPaneId: "%1",
+			});
 			await writeFile(
 				join(cwd, ".omx", "hud-config.json"),
 				JSON.stringify(
@@ -9149,7 +9153,15 @@ case "$1" in
     printf '%%1\\tcodex\\tcodex\\n'
     ;;
   display-message)
-    printf '200\\t60\\n'
+    case "$*" in
+      *'#S') printf 'omx-hud-reconcile\n' ;;
+      *) printf '200\t60\n' ;;
+    esac
+    ;;
+  show-option|show-options)
+    case "$*" in
+      *'@omx_pane_instance_id') printf 'sess-hud-1\n' ;;
+    esac
     ;;
   split-window)
     printf '%%9\\n'
@@ -9264,20 +9276,26 @@ esac
 		}
 	});
 
-  it("recreates a leader-only HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-"));
-    const originalTmux = process.env.TMUX;
-    const originalTmuxPane = process.env.TMUX_PANE;
-    const originalPath = process.env.PATH;
-    const originalHudOwner = process.env[OMX_TMUX_HUD_OWNER_ENV];
-    try {
-      process.env.TMUX = "1";
-      process.env.TMUX_PANE = "%1";
-      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
-      const canonicalSessionId = "omx-canonical-hud-reuse";
-      const nativeSessionId = "codex-native-hud-reuse";
-      await mkdir(join(cwd, ".omx", "state", "sessions", canonicalSessionId), { recursive: true });
-      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId });
+	it("recreates a leader-only HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-"));
+		const originalTmux = process.env.TMUX;
+		const originalTmuxPane = process.env.TMUX_PANE;
+		const originalPath = process.env.PATH;
+		const originalHudOwner = process.env[OMX_TMUX_HUD_OWNER_ENV];
+		try {
+			process.env.TMUX = "1";
+			process.env.TMUX_PANE = "%1";
+			process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+			const canonicalSessionId = "omx-canonical-hud-reuse";
+			const nativeSessionId = "codex-native-hud-reuse";
+			await mkdir(join(cwd, ".omx", "state", "sessions", canonicalSessionId), {
+				recursive: true,
+			});
+			await writeSessionStart(cwd, canonicalSessionId, {
+				nativeSessionId,
+				tmuxSessionName: "omx-hud-reuse",
+				tmuxPaneId: "%1",
+			});
 
 			const binDir = await mkdtemp(
 				join(tmpdir(), "omx-native-hook-hud-reuse-bin-"),
@@ -9294,7 +9312,15 @@ case "$1" in
     printf '%%2\tnode\texec env OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\n'
     ;;
   display-message)
-    printf '200\t60\n'
+    case "$*" in
+      *'#S') printf 'omx-hud-reuse\n' ;;
+      *) printf '200\t60\n' ;;
+    esac
+    ;;
+  show-option|show-options)
+    case "$*" in
+      *'@omx_pane_instance_id') printf 'omx-canonical-hud-reuse\n' ;;
+    esac
     ;;
   resize-pane)
     ;;

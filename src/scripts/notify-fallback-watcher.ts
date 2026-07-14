@@ -36,7 +36,7 @@ import {
 } from '../subagents/tracker.js';
 import { listNotifyCanonicalActiveTeams } from './notify-hook/active-team.js';
 import { sameFilePath } from '../utils/paths.js';
-import { validateSessionId } from '../mcp/state-paths.js';
+import { resolveHudControlPlaneDomain, validateSessionId } from '../mcp/state-paths.js';
 import { TEAM_NAME_SAFE_PATTERN } from '../team/contracts.js';
 import { shouldContinueRun } from '../runtime/run-loop.js';
 import { deliverNotifyFallback, compactNotifyFallbackDeliveries, NOTIFY_FALLBACK_LEASE_MS } from './notify-fallback-delivery.js';
@@ -108,14 +108,7 @@ async function writeJsonObjectAtomically(path: string, value: unknown): Promise<
   }
 }
 
-async function waitForPidExit(pid: number, timeoutMs = 3000, stepMs = 50): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isPidAlive(pid)) return true;
-    await sleep(stepMs);
-  }
-  return !isPidAlive(pid);
-}
+
 
 const cwd = resolve(argValue('--cwd', process.cwd()));
 const notifyScript = resolve(argValue('--notify-script', join(cwd, 'dist', 'scripts', 'notify-hook.js')));
@@ -146,10 +139,13 @@ const authorityLifetimeMs = runOnce
   : Math.min(Math.max(pollMs, configuredMaxLifetimeMs), 24 * 60 * 60 * 1000);
 const authorityDeadlineAtMs = startedAt + authorityLifetimeMs;
 
-const runtimeRoot = resolve(process.env.OMX_ROOT || process.env.OMX_STATE_ROOT || cwd);
-const omxDir = join(runtimeRoot, '.omx');
+const configuredStateRoot = safeString(process.env.OMX_TEAM_STATE_ROOT).trim();
+const runtimeRoot = configuredStateRoot
+  ? resolve(configuredStateRoot)
+  : resolve(process.env.OMX_ROOT || process.env.OMX_STATE_ROOT || cwd);
+const omxDir = configuredStateRoot ? dirname(runtimeRoot) : join(runtimeRoot, '.omx');
 const logsDir = join(omxDir, 'logs');
-const stateDir = join(omxDir, 'state');
+const stateDir = configuredStateRoot ? runtimeRoot : join(omxDir, 'state');
 const statePath = join(stateDir, 'notify-fallback-state.json');
 const pidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
 const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
@@ -943,16 +939,21 @@ async function readPidFileRecord(path: string): Promise<PidFileRecord | null> {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    const pid = parsePositivePid(parsed.pid);
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      const pid = parsePositivePid(parsed);
+      return pid === null ? null : { pid };
+    }
+    const record = parsed as Record<string, unknown>;
+    const pid = parsePositivePid(record.pid);
     if (pid === null) return null;
     return {
       pid,
-      parent_pid: parsePositivePid(parsed.parent_pid) ?? undefined,
-      cwd: safeString(parsed.cwd) || undefined,
-      started_at: safeString(parsed.started_at) || undefined,
-      max_lifetime_ms: asNumber(parsed.max_lifetime_ms as string | number | undefined, 0) || undefined,
-      owner_token: safeString(parsed.owner_token) || undefined,
+      parent_pid: parsePositivePid(record.parent_pid) ?? undefined,
+      cwd: safeString(record.cwd) || undefined,
+      started_at: safeString(record.started_at) || undefined,
+      max_lifetime_ms: asNumber(record.max_lifetime_ms as string | number | undefined, 0) || undefined,
+      owner_token: safeString(record.owner_token) || undefined,
     };
   } catch {
     const pid = parsePositivePid(trimmed);
@@ -1280,40 +1281,25 @@ async function runRalphWatcherBehaviorTick(): Promise<void> {
   }
 }
 
-async function registerPidFile(): Promise<void> {
-  if (runOnce) return;
+async function registerPidFile(): Promise<boolean> {
+  if (runOnce) return true;
   await mkdir(dirname(pidFilePath), { recursive: true }).catch(() => {});
 
   const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
-  const existingPid = existingRecord?.pid ?? null;
-  if (existingPid && existingPid !== process.pid && isPidAlive(existingPid)) {
-    try {
-      process.kill(existingPid, 'SIGTERM');
-      const exitedGracefully = await waitForPidExit(existingPid);
-      let forced = false;
-      if (!exitedGracefully && isPidAlive(existingPid)) {
-        forced = true;
-        process.kill(existingPid, 'SIGKILL');
-        await waitForPidExit(existingPid, 1000, 25);
-      }
-      await eventLog({
-        type: 'watcher_stale_pid_reaped',
-        stale_pid: existingPid,
-        pid_file: pidFilePath,
-        forced,
-      });
-    } catch (error) {
-      await eventLog({
-        type: 'watcher_stale_pid_reap_failed',
-        stale_pid: existingPid,
-        pid_file: pidFilePath,
-        error: error instanceof Error ? error.message : safeString(error),
-      });
-    }
+  if (existingRecord && existingRecord.pid !== process.pid && isPidAlive(existingRecord.pid)) {
+    await eventLog({
+      type: 'watcher_registration_blocked',
+      reason: 'live_pid_record',
+      existing_pid: existingRecord.pid,
+      pid_file: pidFilePath,
+    });
+    return false;
   }
 
   await writePidFileRecord();
+  return true;
 }
+
 
 async function removePidFileIfOwned(): Promise<void> {
   if (runOnce) return;
@@ -2054,10 +2040,70 @@ function shutdown(signal: string): void {
   void requestShutdown('signal', signal);
 }
 
+interface HudAuthorityLeaseRecord {
+  version: 2;
+  domainKey: string;
+  baseStateDir: string;
+  rootSource: string;
+  pid: number;
+  platform: string;
+  processStartIdentity: string;
+  claimant: string;
+  token: string;
+  generation: string;
+  heartbeatAt: string;
+}
+
+function isHudAuthorityLeaseRecord(value: unknown): value is HudAuthorityLeaseRecord {
+  if (!value || typeof value !== 'object') return false;
+  const lease = value as Partial<HudAuthorityLeaseRecord>;
+  return lease.version === 2
+    && typeof lease.domainKey === 'string' && lease.domainKey.length > 0
+    && typeof lease.baseStateDir === 'string' && lease.baseStateDir.length > 0
+    && typeof lease.rootSource === 'string' && lease.rootSource.length > 0
+    && typeof lease.pid === 'number' && Number.isInteger(lease.pid) && lease.pid > 0
+    && typeof lease.platform === 'string' && lease.platform.length > 0
+    && typeof lease.processStartIdentity === 'string' && lease.processStartIdentity.trim().length > 0
+    && typeof lease.claimant === 'string'
+    && typeof lease.token === 'string' && lease.token.length > 0
+    && typeof lease.generation === 'string' && lease.generation.length > 0
+    && parseIsoMillis(lease.heartbeatAt) !== null;
+}
+
+async function isAdmittedHudAuthorityWatcher(): Promise<boolean> {
+  if (!authorityOnly) return true;
+  const expectedDomainKey = safeString(process.env.OMX_HUD_AUTHORITY_DOMAIN_KEY);
+  const expectedBaseStateDir = safeString(process.env.OMX_HUD_AUTHORITY_BASE_STATE_DIR);
+  const expectedRootSource = safeString(process.env.OMX_HUD_AUTHORITY_ROOT_SOURCE);
+  const expectedLeasePath = safeString(process.env.OMX_HUD_AUTHORITY_LEASE_PATH);
+  const expectedToken = safeString(process.env.OMX_HUD_AUTHORITY_LEASE_TOKEN);
+  const expectedGeneration = safeString(process.env.OMX_HUD_AUTHORITY_LEASE_GENERATION);
+  const expectedPid = parsePositivePid(process.env.OMX_HUD_AUTHORITY_OWNER_PID);
+  const expectedPlatform = safeString(process.env.OMX_HUD_AUTHORITY_OWNER_PLATFORM);
+  const expectedStartIdentity = safeString(process.env.OMX_HUD_AUTHORITY_OWNER_START_IDENTITY);
+  if (!expectedDomainKey || !expectedBaseStateDir || !expectedRootSource || !expectedLeasePath
+    || !expectedToken || !expectedGeneration || !expectedPid || !expectedPlatform || !expectedStartIdentity) return false;
+  const domain = await resolveHudControlPlaneDomain({ cwd, env: process.env }).catch(() => null);
+  if (!domain || domain.domainKey !== expectedDomainKey || !sameFilePath(domain.baseStateDir, expectedBaseStateDir)
+    || domain.rootSource !== expectedRootSource || !sameFilePath(domain.authorityLeasePath, expectedLeasePath)) return false;
+  const lease = await readFile(expectedLeasePath, 'utf8').then((text) => JSON.parse(text) as unknown).catch(() => null);
+  if (!isHudAuthorityLeaseRecord(lease)) return false;
+  return lease.domainKey === domain.domainKey
+    && sameFilePath(lease.baseStateDir, domain.baseStateDir)
+    && lease.rootSource === domain.rootSource
+    && lease.pid === expectedPid
+    && lease.platform === expectedPlatform
+    && lease.token === expectedToken
+    && lease.generation === expectedGeneration
+    && lease.processStartIdentity === expectedStartIdentity
+    && process.ppid === expectedPid;
+}
+
 async function main(): Promise<void> {
   if (process.env.NODE_ENV === 'test' && process.env.OMX_NOTIFY_FALLBACK_TEST_FATAL === '1') {
     throw new Error('test fatal notify fallback failure');
   }
+  if (!(await isAdmittedHudAuthorityWatcher())) return;
   await mkdir(logsDir, { recursive: true }).catch(() => {});
   await mkdir(stateDir, { recursive: true }).catch(() => {});
   if (!existsSync(notifyScript)) {
@@ -2067,7 +2113,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  await registerPidFile();
+  if (!(await registerPidFile())) return;
   await loadPersistedWatcherState();
   if (!(runOnce && authorityOnly)) {
     await eventLog({

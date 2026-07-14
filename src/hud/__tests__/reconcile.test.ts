@@ -5,7 +5,8 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
-import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcile.js';
+import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit as reconcileHudForPromptSubmitRaw, type ReconcileHudForPromptSubmitDeps } from '../reconcile.js';
+
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from '../constants.js';
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
 
@@ -22,6 +23,52 @@ async function writeHudReconcileLock(cwd: string, owner: Record<string, unknown>
 
 async function readLockOwner(lockPath: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(join(lockPath, 'owner.json'), 'utf-8')) as Record<string, unknown>;
+}
+
+function testReconcileDomain(cwd: string, deps: ReconcileHudForPromptSubmitDeps) {
+  const sessionId = deps.sessionId?.trim() || deps.env?.OMX_SESSION_ID?.trim();
+  const leaderPaneId = deps.env?.TMUX_PANE?.trim();
+  const baseStateDir = cwd.startsWith(tmpdir()) ? join(cwd, '.omx', 'state') : join(tmpdir(), 'omx-hud-reconcile-fixture');
+  return {
+    version: 1 as const,
+    cwd,
+    baseStateDir,
+    rootSource: 'cwd-default' as const,
+    domainKey: `hud-control-plane:${baseStateDir}`,
+    authorityStatePath: join(baseStateDir, 'hud-authority-state.json'),
+    authorityLeasePath: join(baseStateDir, 'hud-authority-lease.json'),
+    authorityLockPath: join(baseStateDir, 'hud-authority.lock'),
+    reconcileLockPath: join(baseStateDir, 'hud-reconcile.lock'),
+    ...(sessionId ? { session: { canonicalId: sessionId, equivalentIds: [sessionId, ...(deps.sessionIds ?? [])], source: 'explicit' as const } } : {}),
+    claimant: { sessionId, leaderPaneId, tmuxSessionName: 'managed' },
+    managed: Boolean(sessionId),
+  };
+}
+
+async function reconcileHudForPromptSubmit(cwd: string, deps: ReconcileHudForPromptSubmitDeps = {}) {
+  const sessionId = deps.sessionId?.trim() || deps.env?.OMX_SESSION_ID?.trim() || '';
+  const listPanes = deps.listCurrentWindowPanes;
+  return reconcileHudForPromptSubmitRaw(cwd, {
+    ...deps,
+    listCurrentWindowPanes: listPanes
+      ? (paneId) => listPanes(paneId).map((pane) => ({
+        ...pane,
+        ...(pane.startCommand.includes('OMX_SESSION_ID=') && !pane.paneInstanceId
+          ? { paneInstanceId: sessionId, sessionInstanceId: sessionId }
+          : {}),
+      }))
+      : undefined,
+    resolveDomain: deps.resolveDomain ?? (async () => testReconcileDomain(cwd, deps)),
+    probeTmuxInstance: deps.probeTmuxInstance ?? (async (paneId) => ({
+      paneTarget: paneId ?? '',
+      sessionName: 'managed',
+      paneInstanceId: '',
+      sessionInstanceId: sessionId,
+      instanceId: sessionId,
+      source: 'session' as const,
+      paneTagStatus: 'absent' as const,
+    })),
+  });
 }
 
 describe('reconcileHudForPromptSubmit', () => {
@@ -165,7 +212,7 @@ describe('reconcileHudForPromptSubmit', () => {
     }
   });
 
-  it('recovers a stale reconcile lock after the recorded holder is dead', async () => {
+  it('fails closed for a stale reconcile lock without a verifiable lifecycle owner', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-reconcile-dead-lock-'));
     try {
       const lockPath = await writeHudReconcileLock(cwd, {
@@ -178,24 +225,20 @@ describe('reconcileHudForPromptSubmit', () => {
       const result = await reconcileHudForPromptSubmit(cwd, {
         env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
         nowMs: () => 20_000,
-        isProcessLive: (pid) => {
-          assert.equal(pid, 4444);
+        isProcessLive: () => {
+          assert.fail('unverifiable legacy lock metadata must not be probed or reaped');
           return false;
         },
-        listCurrentWindowPanes: () => [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex' }],
-        createHudWatchPane: () => {
-          created.push('create');
-          return '%hud';
-        },
+        listCurrentWindowPanes: () => { assert.fail('lock uncertainty must not inspect panes'); return []; },
+        createHudWatchPane: () => { created.push('create'); return '%hud'; },
         resizeTmuxPane: () => true,
         unregisterHudResizeHook: noOpUnregisterHudResizeHook,
         registerHudResizeHook: noOpRegisterHudResizeHook,
         resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
       });
-
-      assert.equal(result.status, 'recreated');
-      assert.deepEqual(created, ['create']);
-      assert.equal(existsSync(lockPath), false);
+      assert.equal(result.status, 'skipped_concurrent');
+      assert.deepEqual(created, []);
+      assert.equal(existsSync(lockPath), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1108,7 +1151,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.deepEqual(created, []);
   });
 
-  it('reuses and deduplicates legacy unowned focused HUD watch panes before recreating', async () => {
+  it('preserves legacy unowned focused HUD watch panes and creates a tagged replacement', async () => {
     const killed: string[] = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
     const created: string[] = [];
@@ -1128,15 +1171,15 @@ describe('reconcileHudForPromptSubmit', () => {
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
-    assert.equal(result.status, 'replaced_duplicates');
-    assert.equal(result.paneId, '%2');
-    assert.equal(result.duplicateCount, 1);
-    assert.deepEqual(killed, ['%3']);
-    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
-    assert.deepEqual(created, []);
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%9');
+    assert.equal(result.duplicateCount, 0);
+    assert.deepEqual(killed, []);
+    assert.deepEqual(resized, [{ paneId: '%9', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+    assert.deepEqual(created, ['create']);
   });
 
-  it('treats an extra legacy focused pane as stale when an owned HUD already exists', async () => {
+  it('preserves an extra legacy focused pane when an owned HUD already exists', async () => {
     const killed: string[] = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
 
@@ -1156,14 +1199,14 @@ describe('reconcileHudForPromptSubmit', () => {
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
-    assert.equal(result.status, 'replaced_duplicates');
+    assert.equal(result.status, 'resized');
     assert.equal(result.paneId, '%2');
-    assert.equal(result.duplicateCount, 1);
-    assert.deepEqual(killed, ['%3']);
+    assert.equal(result.duplicateCount, 0);
+    assert.deepEqual(killed, []);
     assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
   });
 
-  it('deduplicates legacy focused panes that appear during the prompt-submit create race', async () => {
+  it('does not deduplicate legacy focused panes that appear during the prompt-submit create race', async () => {
     const killed: string[] = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
     let listCount = 0;
@@ -1189,10 +1232,10 @@ describe('reconcileHudForPromptSubmit', () => {
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
-    assert.equal(result.status, 'replaced_duplicates');
+    assert.equal(result.status, 'recreated');
     assert.equal(result.paneId, '%9');
-    assert.equal(result.duplicateCount, 1);
-    assert.deepEqual(killed, ['%8']);
+    assert.equal(result.duplicateCount, 0);
+    assert.deepEqual(killed, []);
     assert.deepEqual(resized, [{ paneId: '%9', heightLines: HUD_TMUX_HEIGHT_LINES }]);
   });
 
@@ -1477,7 +1520,7 @@ describe('reconcileHudForPromptSubmit', () => {
   });
 
 
-  it('deduplicates same-leader HUD panes without creating a new pane when session id is unavailable', async () => {
+  it('leaves existing HUD panes unmanaged when session identity is unavailable', async () => {
     const killed: string[] = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
     const created: string[] = [];
@@ -1495,15 +1538,15 @@ describe('reconcileHudForPromptSubmit', () => {
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
-    assert.equal(result.status, 'replaced_duplicates');
-    assert.equal(result.paneId, '%2');
-    assert.equal(result.duplicateCount, 1);
-    assert.deepEqual(killed, ['%3']);
-    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+    assert.equal(result.status, 'skipped_no_session_id');
+    assert.equal(result.paneId, null);
+    assert.equal(result.duplicateCount, 0);
+    assert.deepEqual(killed, []);
+    assert.deepEqual(resized, []);
     assert.deepEqual(created, []);
   });
 
-  it('resizes an existing single HUD pane even without a fresh session id', async () => {
+  it('leaves an existing HUD pane unmanaged without a verified session id', async () => {
     const resized: Array<{ paneId: string; heightLines: number }> = [];
     const created: string[] = [];
 
@@ -1528,10 +1571,10 @@ describe('reconcileHudForPromptSubmit', () => {
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
-    assert.equal(result.status, 'resized');
-    assert.equal(result.paneId, '%2');
+    assert.equal(result.status, 'skipped_no_session_id');
+    assert.equal(result.paneId, null);
     assert.deepEqual(created, []);
-    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
+    assert.deepEqual(resized, []);
   });
 
   it('leaves an existing full-width bottom HUD pane unchanged when geometry and height are healthy', async () => {
@@ -2035,5 +2078,105 @@ fi
     assert.deepEqual(created, []);
     assert.equal(resized[0]?.paneId, '%2');
     assert.equal(resized[0]?.lines, HUD_TMUX_HEIGHT_LINES);
+  });
+});
+
+describe('reconcileHudForPromptSubmit verified lifecycle ownership', () => {
+  it('does not inspect or mutate panes when verified leader ownership is mismatched', async () => {
+    let listed = false;
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: 'socket', TMUX_PANE: '%leader', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      resolveDomain: async () => ({
+        version: 1,
+        cwd: '/repo',
+        baseStateDir: '/tmp/hud-domain',
+        rootSource: 'cwd-default',
+        domainKey: 'hud-control-plane:test',
+        authorityStatePath: '/tmp/hud-domain/hud-authority-state.json',
+        authorityLeasePath: '/tmp/hud-domain/hud-authority-lease.json',
+        authorityLockPath: '/tmp/hud-domain/hud-authority.lock',
+        reconcileLockPath: '/tmp/hud-domain/hud-reconcile.lock',
+        session: { canonicalId: 'sess-a', equivalentIds: ['sess-a'], source: 'explicit' },
+        claimant: { sessionId: 'sess-a', leaderPaneId: '%other', tmuxSessionName: 'managed' },
+        managed: true,
+      }),
+      probeTmuxInstance: async () => ({
+        paneTarget: '%leader',
+        sessionName: 'managed',
+        paneInstanceId: '',
+        sessionInstanceId: 'sess-a',
+        instanceId: 'sess-a',
+        source: 'session',
+        paneTagStatus: 'absent',
+      }),
+      listCurrentWindowPanes: () => { listed = true; return []; },
+      createHudWatchPane: () => { assert.fail('mismatched owner must not create a pane'); return null; },
+    });
+    assert.equal(result.status, 'skipped_not_omx_owned_tmux');
+    assert.equal(listed, false);
+  });
+
+  it('accepts a resolver-provided native alias as the verified current owner', async () => {
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: 'socket', TMUX_PANE: '%leader', OMX_SESSION_ID: 'native-id', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      resolveDomain: async () => ({
+        version: 1, cwd: '/repo', baseStateDir: '/tmp/hud-domain-alias', rootSource: 'cwd-default', domainKey: 'hud-control-plane:alias',
+        authorityStatePath: '/tmp/hud-domain-alias/hud-authority-state.json', authorityLeasePath: '/tmp/hud-domain-alias/hud-authority-lease.json',
+        authorityLockPath: '/tmp/hud-domain-alias/hud-authority.lock', reconcileLockPath: '/tmp/hud-domain-alias/hud-reconcile.lock',
+        session: { canonicalId: 'canonical-id', equivalentIds: ['canonical-id', 'native-id'], source: 'native-alias' },
+        claimant: { sessionId: 'canonical-id', leaderPaneId: '%leader', tmuxSessionName: 'managed' }, managed: true,
+      }),
+      probeTmuxInstance: async () => ({
+        paneTarget: '%leader', sessionName: 'managed', paneInstanceId: 'native-id', sessionInstanceId: '',
+        instanceId: 'native-id', source: 'pane', paneTagStatus: 'present',
+      }),
+      listCurrentWindowPanes: () => [{ paneId: '%leader', currentCommand: 'codex', startCommand: 'codex' }],
+      createHudWatchPane: () => '%hud', resizeTmuxPane: () => true, resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+    assert.equal(result.status, 'recreated');
+  });
+
+  it('preserves a command-matching candidate when pane or server instance identity is missing or mismatched', async () => {
+    const killed: string[] = [];
+    let created = false;
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: 'socket', TMUX_PANE: '%leader', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%leader', currentCommand: 'codex', startCommand: 'codex' },
+        { paneId: '%reused', currentCommand: 'node', paneInstanceId: 'other-server', startCommand: `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%leader' node omx hud --watch` },
+      ],
+      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      createHudWatchPane: () => { created = true; return '%new'; },
+      resizeTmuxPane: () => { assert.fail('unverified candidate must not be resized'); return false; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+    assert.equal(result.status, 'unchanged');
+    assert.equal(result.paneId, null);
+    assert.deepEqual(killed, []);
+    assert.equal(created, false);
+  });
+
+  it('does not deduplicate an unverified pane-id reuse observed after create', async () => {
+    const killed: string[] = [];
+    let listCount = 0;
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: 'socket', TMUX_PANE: '%leader', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => {
+        listCount += 1;
+        return listCount === 1
+          ? [{ paneId: '%leader', currentCommand: 'codex', startCommand: 'codex' }]
+          : [
+            { paneId: '%leader', currentCommand: 'codex', startCommand: 'codex' },
+            { paneId: '%reused', currentCommand: 'node', paneInstanceId: 'other-instance', sessionInstanceId: 'sess-a', startCommand: `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%leader' node omx hud --watch` },
+          ];
+      },
+      createHudWatchPane: () => '%created',
+      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      resizeTmuxPane: () => { assert.fail('unsafe post-create candidates must not be resized'); return false; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%created');
+    assert.deepEqual(killed, []);
   });
 });

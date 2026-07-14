@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { initTeamState, enqueueDispatchRequest, readDispatchRequest } from '../../team/state.js';
 import { buildTmuxSessionName, buildWindowsMsysBackgroundHelperBootstrapScript } from '../../cli/index.js';
 import { writeSessionStart } from '../session.js';
+import { resolveHudControlPlaneDomain } from '../../mcp/state-paths.js';
 
 const DEFAULT_AUTO_NUDGE_RESPONSE = 'continue with the current task only if it is already authorized';
 const INHERITED_OMX_ENV_KEYS = [
@@ -466,6 +467,38 @@ function buildCleanNotifyEnv(
     TMUX: '',
     TMUX_PANE: '',
     ...overrides,
+  };
+}
+
+async function buildAuthorityAdmissionEnv(cwd: string, overrides: Record<string, string> = {}): Promise<NodeJS.ProcessEnv> {
+  const env = buildCleanNotifyEnv(overrides);
+  const domain = await resolveHudControlPlaneDomain({ cwd, env });
+  const identity = 'authority-test-identity';
+  await mkdir(domain.baseStateDir, { recursive: true });
+  await writeFile(domain.authorityLeasePath, JSON.stringify({
+    version: 2,
+    domainKey: domain.domainKey,
+    baseStateDir: domain.baseStateDir,
+    rootSource: domain.rootSource,
+    pid: process.pid,
+    platform: process.platform,
+    processStartIdentity: identity,
+    claimant: JSON.stringify(domain.claimant),
+    token: 'authority-test-token',
+    generation: 'authority-test-generation',
+    heartbeatAt: new Date().toISOString(),
+  }));
+  return {
+    ...env,
+    OMX_HUD_AUTHORITY_DOMAIN_KEY: domain.domainKey,
+    OMX_HUD_AUTHORITY_BASE_STATE_DIR: domain.baseStateDir,
+    OMX_HUD_AUTHORITY_ROOT_SOURCE: domain.rootSource,
+    OMX_HUD_AUTHORITY_LEASE_PATH: domain.authorityLeasePath,
+    OMX_HUD_AUTHORITY_LEASE_TOKEN: 'authority-test-token',
+    OMX_HUD_AUTHORITY_LEASE_GENERATION: 'authority-test-generation',
+    OMX_HUD_AUTHORITY_OWNER_PID: String(process.pid),
+    OMX_HUD_AUTHORITY_OWNER_PLATFORM: process.platform,
+    OMX_HUD_AUTHORITY_OWNER_START_IDENTITY: identity,
   };
 }
 
@@ -955,7 +988,7 @@ describe('notify-fallback watcher', () => {
       const result = spawnSync(
         process.execPath,
         [watcherScript, '--once', '--authority-only', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        { encoding: 'utf-8', env: buildCleanNotifyEnv() },
+        { encoding: 'utf-8', env: await buildAuthorityAdmissionEnv(wd) },
       );
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
@@ -971,6 +1004,25 @@ describe('notify-fallback watcher', () => {
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
       const logContent = await readFile(logPath, 'utf-8').catch(() => '');
       assert.equal(logContent.trim(), '');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed before registration when an authority-only child lacks an owner identity', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-authority-missing-identity-'));
+    try {
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--authority-only', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        { encoding: 'utf-8', env: buildCleanNotifyEnv() },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(await readFile(join(wd, '.omx', 'state', 'notify-fallback-state.json'), 'utf8').then(() => true).catch(() => false), false);
+      assert.equal(await readFile(join(wd, '.omx', 'state', 'notify-fallback.pid'), 'utf8').then(() => true).catch(() => false), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1004,7 +1056,7 @@ describe('notify-fallback watcher', () => {
       const result = spawnSync(
         process.execPath,
         [watcherScript, '--once', '--authority-only', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        { encoding: 'utf-8', env: buildCleanNotifyEnv() },
+        { encoding: 'utf-8', env: await buildAuthorityAdmissionEnv(wd) },
       );
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
@@ -1065,7 +1117,7 @@ describe('notify-fallback watcher', () => {
         [watcherScript, '--once', '--authority-only', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
         {
           encoding: 'utf-8',
-          env: buildCleanNotifyEnv({
+          env: await buildAuthorityAdmissionEnv(wd, {
             PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
             CODEX_HOME: codexHome,
             OMX_SESSION_ID: 'sess-managed-fallback',
@@ -1130,7 +1182,7 @@ describe('notify-fallback watcher', () => {
         [watcherScript, '--once', '--authority-only', '--cwd', aliasWd, '--notify-script', notifyHook, '--poll-ms', '50'],
         {
           encoding: 'utf-8',
-          env: buildCleanNotifyEnv({
+          env: await buildAuthorityAdmissionEnv(aliasWd, {
             PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
             OMX_SESSION_ID: 'sess-cwd-alias',
             TMUX: '1',
@@ -3692,7 +3744,7 @@ exit 0
         {
           cwd: wd,
           encoding: 'utf-8',
-          env: buildCleanNotifyEnv({ HOME: tempHome }),
+          env: await buildAuthorityAdmissionEnv(wd, { HOME: tempHome }),
         },
       );
 
@@ -4451,95 +4503,79 @@ exit 0
     }
   });
 
-  it('replaces a stale watcher from the per-cwd pid file', async () => {
-    const replacementTimeoutMs = 20000; // c8-instrumented Node20 full runs can delay watcher handoff well beyond 8s.
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-pid-'));
-    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-home-'));
+  it('replaces a proven dead watcher record from the per-cwd pid file', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dead-pid-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-dead-home-'));
     const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
     const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
     const pidPath = join(wd, '.omx', 'state', 'notify-fallback.pid');
-    let first: ReturnType<typeof spawn> | undefined;
-    let second: ReturnType<typeof spawn> | undefined;
+    let child: ReturnType<typeof spawn> | undefined;
 
     try {
-      first = spawn(
-        process.execPath,
-        [
-          watcherScript,
-          '--cwd',
-          wd,
-          '--notify-script',
-          notifyHook,
-          '--poll-ms',
-          '50',
-          '--parent-pid',
-          String(process.pid),
-          '--max-lifetime-ms',
-          '5000',
-        ],
-        {
-          cwd: wd,
-          stdio: 'ignore',
-          env: buildCleanNotifyEnv({ HOME: tempHome }),
-        }
-      );
-      assert.ok(first.pid, 'expected first watcher pid');
+      const deadProcess = spawn(process.execPath, ['-e', 'process.exit(0)']);
+      const deadPid = deadProcess.pid;
+      await once(deadProcess, 'exit');
+      assert.ok(deadPid, 'expected a dead process pid');
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(pidPath, JSON.stringify({ pid: deadPid }));
+
+      child = spawn(process.execPath, [
+        watcherScript,
+        '--cwd', wd,
+        '--notify-script', notifyHook,
+        '--poll-ms', '50',
+        '--parent-pid', String(process.pid),
+        '--max-lifetime-ms', '5000',
+      ], { cwd: wd, stdio: 'ignore', env: buildCleanNotifyEnv({ HOME: tempHome }) });
+      assert.ok(child.pid, 'expected replacement watcher pid');
 
       await waitFor(async () => {
         try {
           const pidFile = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number; owner_token?: string };
-          assert.match(pidFile.owner_token ?? '', /^\d+-\d+-/, 'pid file should include an ownership token');
-          return pidFile.pid === first?.pid;
+          assert.match(pidFile.owner_token ?? '', /^\d+-\d+-/, 'replacement pid file should include ownership metadata');
+          return pidFile.pid === child?.pid;
         } catch {
           return false;
         }
-      }, replacementTimeoutMs, 50);
-
-      second = spawn(
-        process.execPath,
-        [
-          watcherScript,
-          '--cwd',
-          wd,
-          '--notify-script',
-          notifyHook,
-          '--poll-ms',
-          '50',
-          '--parent-pid',
-          String(process.pid),
-          '--max-lifetime-ms',
-          '5000',
-        ],
-        {
-          cwd: wd,
-          stdio: 'ignore',
-          env: buildCleanNotifyEnv({ HOME: tempHome }),
-        }
-      );
-      assert.ok(second.pid, 'expected second watcher pid');
-
-      await waitForExit(first, replacementTimeoutMs);
-      assert.equal(first.exitCode, 0);
-
-      await waitFor(async () => {
-        try {
-          const pidFile = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number; owner_token?: string };
-          assert.match(pidFile.owner_token ?? '', /^\d+-\d+-/, 'replacement pid file should keep ownership metadata');
-          return pidFile.pid === second?.pid;
-        } catch {
-          return false;
-        }
-      }, replacementTimeoutMs, 50);
-
-      assert.ok(isPidAlive(second.pid), 'expected replacement watcher to remain alive');
+      });
+      assert.ok(isPidAlive(child.pid), 'expected replacement watcher to remain alive');
     } finally {
-      if (second && isPidAlive(second.pid)) {
-        second.kill('SIGTERM');
-        await waitForExit(second, replacementTimeoutMs).catch(() => {});
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child).catch(() => {});
       }
-      if (first && isPidAlive(first.pid)) {
-        first.kill('SIGTERM');
-        await waitForExit(first, replacementTimeoutMs).catch(() => {});
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for a live legacy pid record without starting a watcher', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-live-legacy-pid-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-live-legacy-home-'));
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    const pidPath = join(wd, '.omx', 'state', 'notify-fallback.pid');
+    let watcher: ReturnType<typeof spawn> | undefined;
+
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(pidPath, `${process.pid}\n`);
+
+      watcher = spawn(process.execPath, [
+        watcherScript,
+        '--cwd', wd,
+        '--notify-script', notifyHook,
+        '--poll-ms', '50',
+      ], { stdio: 'ignore', env: buildCleanNotifyEnv({ HOME: tempHome }) });
+      await waitForExit(watcher);
+      assert.equal(watcher.exitCode, 0);
+      assert.ok(isPidAlive(process.pid), 'live legacy pid must not be signaled');
+      assert.equal(await readFile(pidPath, 'utf-8'), `${process.pid}\n`, 'live legacy record must not be overwritten');
+      assert.equal(await readFile(join(wd, '.omx', 'state', 'notify-fallback-state.json'), 'utf-8').catch(() => ''), '');
+    } finally {
+      if (watcher && isPidAlive(watcher.pid)) {
+        watcher.kill('SIGTERM');
+        await waitForExit(watcher).catch(() => {});
       }
       await rm(wd, { recursive: true, force: true });
       await rm(tempHome, { recursive: true, force: true });

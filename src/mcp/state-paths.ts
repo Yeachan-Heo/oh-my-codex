@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { delimiter, isAbsolute, join, relative, resolve as resolvePath } from 'path';
 import { existsSync, realpathSync } from 'fs';
 import { readFile, readdir } from 'fs/promises';
@@ -51,6 +52,38 @@ export interface ResolvedRuntimeStateScope {
   isSessionScoped: boolean;
   authoritativeActiveDirs: string[];
   compatibilityReadDirs: string[];
+}
+
+export interface ResolvedHudControlPlaneDomain {
+  version: 1;
+  cwd: string;
+  baseStateDir: string;
+  rootSource: StateRootSource;
+  domainKey: string;
+  authorityStatePath: string;
+  authorityLeasePath: string;
+  authorityLockPath: string;
+  reconcileLockPath: string;
+  session?: {
+    canonicalId: string;
+    equivalentIds: string[];
+    source: Exclude<SessionScopeSource, 'root'>;
+  };
+  claimant: {
+    sessionId?: string;
+    leaderPaneId?: string;
+    tmuxSessionName?: string;
+    tmuxSessionInstanceId?: string;
+    tmuxPaneInstanceId?: string;
+  };
+  managed: boolean;
+}
+
+export interface ResolveHudControlPlaneDomainOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  requestedSessionId?: string;
+  claimant?: ResolvedHudControlPlaneDomain['claimant'];
 }
 
 export type StateFileScope = 'root' | 'session';
@@ -240,18 +273,21 @@ function enforceWorkingDirectoryPolicy(resolvedWorkingDirectory: string): string
   return canonicalWorkingDirectory;
 }
 
-export function getBaseStateDirWithSource(workingDirectory?: string): { baseStateDir: string; rootSource: StateRootSource } {
-  const teamStateRootOverride = process.env[OMX_TEAM_STATE_ROOT_ENV]?.trim();
+export function getBaseStateDirWithSource(
+  workingDirectory?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { baseStateDir: string; rootSource: StateRootSource } {
+  const teamStateRootOverride = env[OMX_TEAM_STATE_ROOT_ENV]?.trim();
   if (typeof teamStateRootOverride === 'string' && teamStateRootOverride !== '') {
     return { baseStateDir: resolveWorkingDirectoryForState(teamStateRootOverride), rootSource: 'team-env' };
   }
 
-  const omxRootOverride = process.env[OMX_ROOT_ENV]?.trim();
+  const omxRootOverride = env[OMX_ROOT_ENV]?.trim();
   if (typeof omxRootOverride === 'string' && omxRootOverride !== '') {
     return { baseStateDir: join(resolveWorkingDirectoryForState(omxRootOverride), '.omx', 'state'), rootSource: 'omx-root-env' };
   }
 
-  const omxStateRootOverride = process.env[OMX_STATE_ROOT_ENV]?.trim();
+  const omxStateRootOverride = env[OMX_STATE_ROOT_ENV]?.trim();
   if (typeof omxStateRootOverride === 'string' && omxStateRootOverride !== '') {
     return { baseStateDir: join(resolveWorkingDirectoryForState(omxStateRootOverride), '.omx', 'state'), rootSource: 'omx-state-root-env' };
   }
@@ -517,6 +553,54 @@ export async function resolveRuntimeStateScope(
     isSessionScoped,
     authoritativeActiveDirs: [stateDir],
     compatibilityReadDirs: isSessionScoped && source !== 'explicit' ? [stateDir, baseStateDir] : [stateDir],
+  };
+}
+
+export async function resolveHudControlPlaneDomain(
+  options: ResolveHudControlPlaneDomainOptions = {},
+): Promise<ResolvedHudControlPlaneDomain> {
+  const env = options.env ?? process.env;
+  const cwd = resolveWorkingDirectoryForState(options.cwd);
+  const root = getBaseStateDirWithSource(cwd, env);
+  const baseStateDir = canonicalizeExistingPath(root.baseStateDir);
+  const metadata = await readSessionMetadataFromBaseStateDir(cwd, baseStateDir);
+  const requestedSessionId = validateSessionId(options.requestedSessionId);
+  const envSessionId = readSessionIdFromEnvironment(env);
+  const requestedId = requestedSessionId ?? envSessionId;
+  const canonicalSessionId = requestedId
+    ? resolveCanonicalSessionId(requestedId, metadata) ?? requestedId
+    : metadata?.sessionId;
+  const source: Exclude<SessionScopeSource, 'root'> | undefined = requestedSessionId
+    ? (metadata && canonicalSessionId === metadata.sessionId && requestedSessionId !== metadata.sessionId ? 'native-alias' : 'explicit')
+    : envSessionId
+      ? (metadata && canonicalSessionId === metadata.sessionId && envSessionId !== metadata.sessionId ? 'native-alias' : 'env')
+      : metadata?.sessionId
+        ? 'session-json'
+        : undefined;
+  const equivalentIds = canonicalSessionId
+    ? [...new Set([canonicalSessionId, ...(metadata?.nativeSessionAliases ?? []), metadata?.nativeSessionId, metadata?.ownerOmxSessionId, metadata?.ownerCodexSessionId].filter((id): id is string => typeof id === 'string' && normalizeSessionId(id) !== undefined))]
+    : [];
+  const claimant = {
+    sessionId: canonicalSessionId,
+    leaderPaneId: options.claimant?.leaderPaneId ?? metadata?.leaderPaneId ?? env.TMUX_PANE,
+    tmuxSessionName: options.claimant?.tmuxSessionName ?? metadata?.tmuxSessionName ?? env.TMUX_SESSION,
+    tmuxSessionInstanceId: options.claimant?.tmuxSessionInstanceId ?? env.OMX_TMUX_SESSION_INSTANCE_ID,
+    tmuxPaneInstanceId: options.claimant?.tmuxPaneInstanceId ?? env.OMX_TMUX_PANE_INSTANCE_ID,
+  };
+  const domainKey = `hud-control-plane:${createHash('sha256').update(baseStateDir).digest('hex')}`;
+  return {
+    version: 1,
+    cwd,
+    baseStateDir,
+    rootSource: root.rootSource,
+    domainKey,
+    authorityStatePath: join(baseStateDir, 'hud-authority-state.json'),
+    authorityLeasePath: join(baseStateDir, 'hud-authority-lease.json'),
+    authorityLockPath: join(baseStateDir, 'hud-authority.lock'),
+    reconcileLockPath: join(baseStateDir, 'hud-reconcile.lock'),
+    ...(canonicalSessionId && source ? { session: { canonicalId: canonicalSessionId, equivalentIds, source } } : {}),
+    claimant,
+    managed: Boolean(canonicalSessionId),
   };
 }
 

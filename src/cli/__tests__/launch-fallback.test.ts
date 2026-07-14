@@ -437,7 +437,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(tmuxLog, /tmux:new-session /);
-      assert.match(tmuxLog, /tmux:split-window /);
+      assert.doesNotMatch(tmuxLog, /tmux:split-window /);
       assert.doesNotMatch(tmuxLog, /tmux:attach-session/);
       assert.doesNotMatch(result.stderr, /failed to attach detached tmux session/);
     } finally {
@@ -911,7 +911,7 @@ exit 0
         tmuxLog,
         /tmux:set-hook -t .* client-detached\[[0-9]+\] if-shell -F '#\{==:#\{session_attached\},0\}' 'run-shell -b "tmux clear-history -t %12 >\/dev\/null 2>&1 \|\| true"'/,
       );
-      assert.match(tmuxLog, new RegExp(`tmux:split-window -v -l ${HUD_TMUX_HEIGHT_LINES} .* -t `));
+      assert.doesNotMatch(tmuxLog, /tmux:split-window /);
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1162,7 +1162,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
-      assert.match(tmuxLog, new RegExp(`tmux:split-window -v -l ${HUD_TMUX_HEIGHT_LINES}`));
+      assert.doesNotMatch(tmuxLog, /tmux:split-window /);
       assert.match(tmuxLog, /tmux:set-option -t managed-session mouse on/);
       assert.match(tmuxLog, /tmux:set-option -sq extended-keys always/);
     } finally {

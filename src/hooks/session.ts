@@ -1351,6 +1351,7 @@ function startPointerTransition(
       previousNativeSessionId: options.previousNativeSessionId ?? existing?.previous_native_session_id,
       nativeSessionSwitchedAt: options.nativeSessionSwitchedAt ?? existing?.native_session_switched_at,
       ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
+      startedAt: existing?.started_at,
       tmuxSessionName: options.tmuxSessionName ?? existing?.tmux_session_name,
       tmuxPaneId: options.tmuxPaneId ?? existing?.tmux_pane_id,
     });

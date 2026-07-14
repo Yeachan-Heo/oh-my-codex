@@ -81,10 +81,6 @@ import {
   releaseTmuxExtendedKeysLease,
   withTmuxExtendedKeys,
   serializeDetachedSessionParentEnv,
-  buildInsideTmuxHudHookEnv,
-  registerInsideTmuxHudResizeHook,
-  buildDetachedHudHookEnv,
-  registerDetachedHudLayoutReconcileHook,
   ensureOmxRuntimeCommandShim,
   omxRuntimeCommandShimPath,
   prependOmxRuntimeCommandShimToEnv,
@@ -3387,6 +3383,8 @@ describe("tmux HUD pane helpers", () => {
         "#{pane_bottom}",
         "#{window_width}",
         "#{window_height}",
+        "#{@omx_pane_instance_id}",
+        "#{@omx_instance_id}",
         "#{pane_start_command}",
         "#{pane_current_path}",
       ].join("\x1f"),
@@ -3425,7 +3423,7 @@ describe("tmux HUD pane helpers", () => {
 });
 
 describe("detached tmux new-session sequencing", () => {
-  it("buildDetachedSessionBootstrapSteps uses shared HUD height and split-capture ordering", () => {
+  it("buildDetachedSessionBootstrapSteps creates and tags the leader before reconciliation", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
       "/tmp/project",
@@ -3439,14 +3437,9 @@ describe("detached tmux new-session sequencing", () => {
     );
     assert.deepEqual(
       steps.map((step) => step.name),
-      ["new-session", "tag-session", "split-and-capture-hud-pane"],
+      ["new-session", "tag-session", "reconcile-managed-hud"],
     );
-    const splitStep = steps.find((step) => step.name === "split-and-capture-hud-pane");
-    assert.ok(splitStep);
-    assert.equal(splitStep.args[3], String(HUD_TMUX_HEIGHT_LINES));
-    assert.equal(splitStep.args[6], "omx-demo");
-    assert.equal(splitStep.args.includes("-P"), true);
-    assert.equal(splitStep.args.includes("#{pane_id}"), true);
+    assert.ok(!steps.some((step) => step.args[0] === "split-window"));
     assert.equal(steps[0]?.args.includes("-e"), true);
     assert.equal(steps[0]?.args.includes("OMX_SESSION_ID=omx-session-test"), true);
     assert.equal(
@@ -4009,193 +4002,35 @@ exit 0
     assert.doesNotMatch(argsText, /fake-provider-key/);
   });
 
-  it("runCodex cleans only same-session same-leader HUD panes before launch", async () => {
+  it("runCodex delegates inside-tmux HUD lifecycle to shared reconciliation", async () => {
     const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
-      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ sessionId, leaderPaneId: currentPaneId \}\)\s*: \[\];/,
+      /if \(currentPaneId\) \{\s*await reconcileManagedHudPane\(cwd, sessionId, currentPaneId, hudRuntimeEnv\);\s*\}/,
     );
-    assert.match(source, /const \[keeperHudPaneId, \.\.\.duplicateHudPaneIds\] = staleHudPaneIds;/);
-    assert.match(source, /for \(const paneId of duplicateHudPaneIds\) \{\s*killTmuxPane\(paneId\);\s*\}/);
-    assert.match(source, /if \(keeperHudPaneId\) \{\s*hudPaneId = keeperHudPaneId;/);
-    assert.doesNotMatch(
-      source,
-      /const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ leaderPaneId: currentPaneId \}\);/,
-    );
+    assert.doesNotMatch(source, /listHudWatchPaneIdsInCurrentWindow|createHudWatchPane|registerHudResizeHook\(/);
   });
 
-  it("runCodex skips launch-time HUD cleanup when TMUX_PANE is unavailable", async () => {
+  it("runCodex preserves detached reconciliation sequencing", async () => {
     const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
-      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ sessionId, leaderPaneId: currentPaneId \}\)\s*: \[\];/,
+      /if \(detachedLeaderPaneId\) \{\s*await reconcileManagedHudPane\(cwd, sessionId, detachedLeaderPaneId, hudRuntimeEnv\);\s*\}\s*const finalizeSteps = buildDetachedSessionFinalizeSteps/,
     );
   });
 
-  it("runCodex builds inside-tmux HUD command through explicit runtime-root resolver", async () => {
-    const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
-    assert.match(source, /const hudRuntimeRoot: HudRuntimeRootForLaunch = runtimeContext\s*\? \{ omxRoot: runtimeContext\.omxRoot, rootSource: 'omx-root-env' \}\s*: resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
+  it("reconcileManagedHudPane invokes the shared HUD reconciler with leader identity", async () => {
+    const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
-      /const hudRuntimeEnv = \{\s*\.\.\.buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env,\s*\.\.\.runtimeEnvOverlay,\s*\};\s*const hudEnvArgs = Object\.entries\(hudRuntimeEnv\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
-    );
-    assert.match(source, /if \(env\.OMX_TEAM_STATE_ROOT\?\.trim\(\)\) return 'team-env';\s*if \(env\.OMX_ROOT\?\.trim\(\) \|\| omxRootOverride\) return 'omx-root-env';\s*if \(env\.OMX_STATE_ROOT\?\.trim\(\)\) return 'omx-state-root-env';/);
-    assert.match(
-      source,
-      /buildTmuxPaneCommand\("env",\s*\[\.\.\.hudEnvArgs,\s*"node",\s*omxBin,\s*"hud",\s*"--watch"\]\)/,
-    );
-  });
-
-  it("runCodex registers a HUD resize hook immediately for inside-tmux launches", async () => {
-    const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
-    assert.match(
-      source,
-      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride,\s*baseEnv: runtimeHookEnv,\s*\}\)/,
+      /execFileSync\(process\.execPath, \[omxBin, "hud", "--reconcile-tmux"\], \{/,
     );
     assert.match(
       source,
-      /if \(currentPaneId\) \{\s*unregisterHudResizeHook\(currentPaneId\);\s*\}/,
+      /TMUX_PANE: leaderPaneId,\s*OMX_SESSION_ID: sessionId,\s*\[OMX_TMUX_HUD_OWNER_ENV\]: "1",\s*\[OMX_TMUX_HUD_LEADER_PANE_ENV\]: leaderPaneId/,
     );
   });
 
-  it("buildInsideTmuxHudHookEnv tags hook commands with session, owner, leader, and local root", () => {
-    const env = buildInsideTmuxHudHookEnv(
-      { PATH: "/bin" },
-      "sess-a",
-      "%leader",
-      "/repo",
-    );
-
-    assert.equal(env.PATH, "/bin");
-    assert.equal(env.OMX_SESSION_ID, "sess-a");
-    assert.equal(env.OMX_TMUX_HUD_OWNER, "1");
-    assert.equal(env.OMX_TMUX_HUD_LEADER_PANE, "%leader");
-    assert.equal(env.OMX_ROOT, "/repo");
-  });
-
-  it("registerInsideTmuxHudResizeHook forwards cwd and env to hook registration", () => {
-    const calls: Array<{
-      hudPaneId: string;
-      leaderPaneId: string | undefined;
-      heightLines: number;
-      cwd?: string;
-      env?: NodeJS.ProcessEnv;
-    }> = [];
-
-    const result = registerInsideTmuxHudResizeHook({
-      hudPaneId: "%hud",
-      currentPaneId: "%leader",
-      cwd: "/repo",
-      sessionId: "sess-a",
-      omxRootOverride: "/repo",
-      baseEnv: { PATH: "/bin" },
-      register: (hudPaneId, leaderPaneId, heightLines, options) => {
-        calls.push({ hudPaneId, leaderPaneId, heightLines, cwd: options?.cwd, env: options?.env });
-        return true;
-      },
-    });
-
-    assert.equal(result, true);
-    assert.deepEqual(calls, [{
-      hudPaneId: "%hud",
-      leaderPaneId: "%leader",
-      heightLines: HUD_TMUX_HEIGHT_LINES,
-      cwd: "/repo",
-      env: {
-        PATH: "/bin",
-        OMX_SESSION_ID: "sess-a",
-        OMX_TMUX_HUD_OWNER: "1",
-        OMX_TMUX_HUD_LEADER_PANE: "%leader",
-        OMX_ROOT: "/repo",
-      },
-    }]);
-    assert.equal(registerInsideTmuxHudResizeHook({
-      hudPaneId: null,
-      currentPaneId: "%leader",
-      cwd: "/repo",
-      sessionId: "sess-a",
-      register: () => {
-        throw new Error("should not register without a HUD pane");
-      },
-    }), false);
-  });
-
-  it("buildDetachedHudHookEnv preserves tmux targeting and local launcher identity", () => {
-    const env = buildDetachedHudHookEnv(
-      { PATH: "/bin" },
-      "sess-a",
-      "%leader",
-      "/tmp/tmux.sock,123,7",
-      "/repo/dist/cli/omx.js",
-      "/repo",
-    );
-
-    assert.equal(env.PATH, "/bin");
-    assert.equal(env.TMUX, "/tmp/tmux.sock,123,7");
-    assert.equal(env.TMUX_PANE, "%leader");
-    assert.equal(env.OMX_SESSION_ID, "sess-a");
-    assert.equal(env.OMX_TMUX_HUD_OWNER, "1");
-    assert.equal(env.OMX_ROOT, "/repo");
-    assert.equal(env.OMX_ENTRY_PATH, "/repo/dist/cli/omx.js");
-  });
-
-  it("registerDetachedHudLayoutReconcileHook reads TMUX from the detached leader pane before registering", () => {
-    const calls: Array<{
-      hudPaneId: string;
-      leaderPaneId: string | undefined;
-      heightLines: number;
-      cwd?: string;
-      env?: NodeJS.ProcessEnv;
-    }> = [];
-    const readTargets: string[] = [];
-
-    const result = registerDetachedHudLayoutReconcileHook({
-      hudPaneId: "%hud",
-      detachedLeaderPaneId: "%leader",
-      cwd: "/repo",
-      sessionId: "sess-a",
-      omxBin: "/repo/dist/cli/omx.js",
-      omxRootOverride: "/repo",
-      baseEnv: { PATH: "/bin" },
-      readTmuxEnvValue: (targetPaneId) => {
-        readTargets.push(targetPaneId);
-        return "/tmp/tmux.sock,123,7";
-      },
-      register: (hudPaneId, leaderPaneId, heightLines, options) => {
-        calls.push({ hudPaneId, leaderPaneId, heightLines, cwd: options?.cwd, env: options?.env });
-        return true;
-      },
-    });
-
-    assert.equal(result, true);
-    assert.deepEqual(readTargets, ["%leader"]);
-    assert.deepEqual(calls, [{
-      hudPaneId: "%hud",
-      leaderPaneId: "%leader",
-      heightLines: HUD_TMUX_HEIGHT_LINES,
-      cwd: "/repo",
-      env: {
-        PATH: "/bin",
-        TMUX: "/tmp/tmux.sock,123,7",
-        TMUX_PANE: "%leader",
-        OMX_SESSION_ID: "sess-a",
-        OMX_TMUX_HUD_OWNER: "1",
-        OMX_ROOT: "/repo",
-        OMX_ENTRY_PATH: "/repo/dist/cli/omx.js",
-      },
-    }]);
-    assert.equal(registerDetachedHudLayoutReconcileHook({
-      hudPaneId: "%hud",
-      detachedLeaderPaneId: "%leader",
-      cwd: "/repo",
-      sessionId: "sess-a",
-      omxBin: "/repo/dist/cli/omx.js",
-      readTmuxEnvValue: () => undefined,
-      register: () => {
-        throw new Error("should not register without TMUX");
-      },
-    }), false);
-  });
 
   it("buildDetachedSessionBootstrapSteps starts native Windows detached sessions with powershell", () => {
     const hudCmd = buildWindowsPromptCommand("node", [
@@ -4215,8 +4050,7 @@ exit 0
     );
     assert.equal(steps[0]?.name, "new-session");
     assert.equal(steps[0]?.args.at(-1), "powershell.exe");
-    assert.equal(steps[1]?.name, "split-and-capture-hud-pane");
-    assert.equal(steps[1]?.args.at(-1), hudCmd);
+    assert.equal(steps[1]?.name, "reconcile-managed-hud");
   });
 
   it("buildDetachedWindowsBootstrapScript targets the resolved tmux-compatible command", () => {

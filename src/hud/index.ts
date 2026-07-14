@@ -10,7 +10,6 @@
  *   omx hud --reconcile-tmux
  */
 
-import { execFileSync } from 'child_process';
 import { readlinkSync, realpathSync } from 'node:fs';
 import { readAllState, readHudConfig } from './state.js';
 import { getHudRenderMaxLines, renderHud } from './render.js';
@@ -18,17 +17,14 @@ import type { HudFlags, HudPreset, HudRenderContext, ResolvedHudConfig } from '.
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { sleep } from '../utils/sleep.js';
 import { runHudAuthorityTick } from './authority.js';
-import { resolveOmxCliEntryPath } from '../utils/paths.js';
 import {
-  killTmuxPane,
-  listCurrentWindowHudPaneIds,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   readActiveTmuxPaneId,
+  buildHudRuntimeEnv,
   registerHudResizeHook,
   resizeTmuxPane,
 } from './tmux.js';
 import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from './reconcile.js';
-import { buildHudRuntimeEnv } from './tmux.js';
 
 export const HUD_USAGE = [
   'Usage:',
@@ -160,6 +156,18 @@ function reconcileRunningHudPaneHeight(
   }
 }
 
+function isManagedHudAuthorityWatcher(env: NodeJS.ProcessEnv): boolean {
+  const sessionId = env.OMX_SESSION_ID?.trim();
+  const hudPaneId = env.TMUX_PANE?.trim();
+  const leaderPaneId = env[OMX_TMUX_HUD_LEADER_PANE_ENV]?.trim();
+  return env.TMUX?.trim() !== ''
+    && env[OMX_TMUX_HUD_OWNER_ENV] === '1'
+    && Boolean(sessionId)
+    && Boolean(hudPaneId?.startsWith('%'))
+    && Boolean(leaderPaneId?.startsWith('%'));
+}
+
+
 /**
  * Backward-compatible watch mode runner used by tests.
  */
@@ -250,11 +258,13 @@ export async function runWatchMode(
         maxLines,
       });
       dependencies.writeStdout(line + '\x1b[K\x1b[J');
-      try {
-        await dependencies.runAuthorityTickFn({ cwd: frameCwd });
-      } catch (authorityError) {
-        const message = authorityError instanceof Error ? authorityError.message : String(authorityError);
-        dependencies.writeStderr(`HUD watch authority tick failed: ${message}\n`);
+      if (isManagedHudAuthorityWatcher(dependencies.env)) {
+        try {
+          await dependencies.runAuthorityTickFn({ cwd: frameCwd });
+        } catch (authorityError) {
+          const message = authorityError instanceof Error ? authorityError.message : String(authorityError);
+          dependencies.writeStderr(`HUD watch authority tick failed: ${message}\n`);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -413,64 +423,31 @@ export function buildTmuxSplitArgs(
 }
 
 async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
-  // Check if we're inside tmux
   if (!process.env.TMUX) {
     console.error('Not inside a tmux session. Start tmux first, then run: omx hud --tmux');
     process.exit(1);
-  }
-
-  const omxBin = resolveOmxCliEntryPath();
-  if (!omxBin) {
-    console.error('Failed to resolve OMX launcher path for tmux HUD startup.');
-    process.exit(1);
-  }
-  const envPaneId = process.env.TMUX_PANE?.trim();
-  const currentPaneId = envPaneId || readActiveTmuxPaneId() || undefined;
-  const leaderPaneId = currentPaneId;
-  const sessionId = process.env.OMX_SESSION_ID?.trim() || undefined;
-  const existingHudPaneIds = leaderPaneId || sessionId
-    ? listCurrentWindowHudPaneIds(leaderPaneId, undefined, leaderPaneId ? { leaderPaneId } : { sessionId })
-    : [];
-  if (existingHudPaneIds.length >= 1) {
-    const [keeperPaneId, ...duplicatePaneIds] = existingHudPaneIds;
-    for (const paneId of duplicatePaneIds) {
-      killTmuxPane(paneId);
-    }
-    const config = await readHudConfig(cwd);
-    const ctx = await readAllState(cwd, config);
-    const desiredHeight = getHudRenderMaxLines(ctx);
-    resizeTmuxPane(keeperPaneId, desiredHeight);
-    if (leaderPaneId) registerHudResizeHook(keeperPaneId, leaderPaneId, desiredHeight);
-    console.log(duplicatePaneIds.length > 0
-      ? 'HUD already running in tmux pane. Removed duplicate HUD panes and reused existing HUD pane.'
-      : 'HUD already running in tmux pane. Reused existing HUD pane.');
     return;
   }
 
-  const config = await readHudConfig(cwd);
-  const ctx = await readAllState(cwd, config);
-  const args = buildTmuxSplitArgs(
-    cwd,
-    omxBin,
-    flags.preset,
-    process.env.OMX_SESSION_ID,
-    process.env.OMX_ROOT,
-    currentPaneId,
-    getHudRenderMaxLines(ctx),
-    {
-      omxStateRoot: process.env.OMX_STATE_ROOT,
-      omxTeamStateRoot: process.env.OMX_TEAM_STATE_ROOT,
-      rootSource: process.env.OMX_TEAM_STATE_ROOT ? 'team-env' : process.env.OMX_ROOT ? 'omx-root-env' : process.env.OMX_STATE_ROOT ? 'omx-state-root-env' : 'cwd-default',
-    },
-  );
-
-  try {
-    // Split bottom pane at the shared HUD height, running omx hud --watch.
-    // execFileSync bypasses the shell – cwd and omxBin cannot inject commands.
-    execFileSync('tmux', args, { stdio: 'inherit' });
-    console.log('HUD launched in tmux pane below. Close with: Ctrl+C in that pane, or `tmux kill-pane -t bottom`');
-  } catch {
-    console.error('Failed to create tmux split. Ensure tmux is available.');
-    process.exit(1);
+  const sessionId = process.env.OMX_SESSION_ID?.trim();
+  if (!sessionId) {
+    // A manually opened tmux session has no persisted OMX owner. Rendering it in
+    // place avoids creating a pane that could later be mistaken for managed HUD.
+    await renderOnce(cwd, flags);
+    return;
   }
+
+  const leaderPaneId = process.env.TMUX_PANE?.trim() || readActiveTmuxPaneId() || undefined;
+  const runtimeEnv = buildHudRuntimeEnv({
+    sessionId,
+    leaderPaneId,
+    omxRoot: process.env.OMX_ROOT,
+    omxStateRoot: process.env.OMX_STATE_ROOT,
+    omxTeamStateRoot: process.env.OMX_TEAM_STATE_ROOT,
+    rootSource: process.env.OMX_TEAM_STATE_ROOT ? 'team-env' : process.env.OMX_ROOT ? 'omx-root-env' : process.env.OMX_STATE_ROOT ? 'omx-state-root-env' : 'cwd-default',
+  }).env;
+  const result = await reconcileHudForPromptSubmit(cwd, {
+    env: { ...process.env, ...runtimeEnv, [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+  });
+  if (result.status === 'failed') process.exitCode = 1;
 }

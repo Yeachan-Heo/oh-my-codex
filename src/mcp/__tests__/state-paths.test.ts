@@ -15,6 +15,7 @@ import {
   getReadScopedStateFilePaths,
   readCurrentSessionId,
   resolveRuntimeStateScope,
+  resolveHudControlPlaneDomain,
   resolveStateScope,
   resolveWritableStateScope,
   resolveWorkingDirectoryForState,
@@ -705,4 +706,57 @@ describe('state paths', () => {
     });
   });
 
+});
+
+describe('HUD control-plane domains', () => {
+  it('uses explicit env precedence while deriving a domain key only from the canonical state root', async () => {
+    const root = await mkRealTemp('omx-hud-domain-root-');
+    const otherRoot = await mkRealTemp('omx-hud-domain-other-');
+    const cwd = await mkRealTemp('omx-hud-domain-cwd-');
+    try {
+      const sharedState = join(root, '.omx', 'state');
+      await mkdir(sharedState, { recursive: true });
+      const sharedTeam = await resolveHudControlPlaneDomain({
+        cwd,
+        env: { OMX_TEAM_STATE_ROOT: sharedState, OMX_ROOT: otherRoot, OMX_STATE_ROOT: otherRoot },
+      });
+      const sharedRoot = await resolveHudControlPlaneDomain({ cwd, env: { OMX_ROOT: root } });
+      const isolated = await resolveHudControlPlaneDomain({ cwd, env: { OMX_STATE_ROOT: otherRoot } });
+      const unmanaged = await resolveHudControlPlaneDomain({ cwd, env: {} });
+
+      assert.equal(sharedTeam.rootSource, 'team-env');
+      assert.equal(sharedRoot.rootSource, 'omx-root-env');
+      assert.equal(sharedTeam.baseStateDir, sharedState);
+      assert.equal(sharedTeam.domainKey, sharedRoot.domainKey);
+      assert.notEqual(sharedTeam.domainKey, isolated.domainKey);
+      assert.equal(unmanaged.managed, false);
+      assert.equal(unmanaged.session, undefined);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(otherRoot, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('canonicalizes session aliases as claimant metadata without partitioning the domain', async () => {
+    const cwd = await mkRealTemp('omx-hud-domain-alias-');
+    try {
+      const stateDir = getBaseStateDir(cwd);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'omx-canonical',
+        native_session_id: 'codex-native',
+        cwd,
+      }));
+      const canonical = await resolveHudControlPlaneDomain({ cwd, env: { OMX_SESSION_ID: 'omx-canonical' } });
+      const alias = await resolveHudControlPlaneDomain({ cwd, env: { CODEX_SESSION_ID: 'codex-native' } });
+      assert.equal(alias.session?.canonicalId, 'omx-canonical');
+      assert.ok(alias.session?.equivalentIds.includes('codex-native'));
+      assert.equal(alias.domainKey, canonical.domainKey);
+      assert.equal(alias.claimant.sessionId, 'omx-canonical');
+      assert.equal(alias.managed, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

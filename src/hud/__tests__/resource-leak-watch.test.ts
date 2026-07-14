@@ -10,7 +10,13 @@ describe('HUD watch resource cleanup', () => {
 
     await runWatchMode('/tmp/project', { watch: true, json: false, tmux: false }, {
       isTTY: true,
-      env: {},
+      env: {
+        TMUX: '/tmp/tmux-1000/default,12345,0',
+        TMUX_PANE: '%hud',
+        OMX_SESSION_ID: 'session-a',
+        OMX_TMUX_HUD_OWNER: '1',
+        OMX_TMUX_HUD_LEADER_PANE: '%leader',
+      },
       readHudConfigFn: async () => ({ preset: 'minimal', git: { display: 'repo-branch' }, statusLine: { preset: 'minimal' } }),
       readAllStateFn: async () => ({ cwd: '/tmp/project', config: {}, state: {}, timestamp: '2026-05-21T00:00:00.000Z' }) as never,
       renderHudFn: () => 'hud',

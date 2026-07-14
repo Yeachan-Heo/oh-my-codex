@@ -483,8 +483,12 @@ async function withMockTmuxFixture<T>(
   const tmuxStubPath = join(fakeBinDir, 'tmux');
   const previousPath = process.env.PATH;
   const previousEnv = new Map<string, string | undefined>();
+  const fixtureSessionId = options.env?.OMX_SESSION_ID?.trim() || `fixture-${options.dirPrefix}`;
   const envOverrides = {
     OMX_TEAM_STATE_ROOT: undefined,
+    OMX_SESSION_ID: fixtureSessionId,
+    OMX_TMUX_SESSION_INSTANCE_ID: fixtureSessionId,
+    OMX_TMUX_PANE_INSTANCE_ID: fixtureSessionId,
     ...(options.env ?? {}),
   };
 
@@ -2094,7 +2098,7 @@ process.on('SIGTERM', () => process.exit(0));`,
     assert.equal(shouldPrekillInteractiveShutdownProcessTrees('omx-team-alpha'), true);
   });
 
-  it('startTeam tags interactive panes with the derived tmux-pane leader identity when session id is unavailable', async () => {
+  it('startTeam keeps a tmux-pane fallback out of HUD session ownership when no OMX session is available', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-pane-derived-owner-'));
     const prevTmux = process.env.TMUX;
     const prevTmuxPane = process.env.TMUX_PANE;
@@ -2195,10 +2199,10 @@ esac
           assert.equal(manifest.leader?.session_id, '%1');
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /set-option -p -t %1 @omx_pane_instance_id %1/);
-          assert.match(tmuxLog, /set-option -p -t %2 @omx_pane_instance_id %1/);
-          assert.match(tmuxLog, /set-option -p -t %3 @omx_pane_instance_id %1/);
-          assert.match(tmuxLog, /exec env OMX_SESSION_ID='%1' OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%1' .*hud --watch/);
+          assert.doesNotMatch(tmuxLog, /@omx_pane_instance_id %1/);
+          assert.doesNotMatch(tmuxLog, /OMX_SESSION_ID='%1'/);
+          assert.doesNotMatch(tmuxLog, /hud --watch/);
+
 
           await shutdownTeam(runtime.teamName, cwd, { force: true });
           runtime = null;
@@ -2332,15 +2336,16 @@ esac
           assert.equal(manifest.leader?.session_id, 'logical-session-from-env');
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /set-option -t leader @omx_instance_id logical-session-from-env/);
-          assert.match(tmuxLog, /set-option -p -t %1 @omx_pane_instance_id logical-session-from-env/);
+          assert.match(tmuxLog, /set-option -t leader @omx_instance_id fixture-omx-runtime-pane-owner-env-isolated-bin-/);
+          assert.match(tmuxLog, /set-option -p -t %1 @omx_pane_instance_id fixture-omx-runtime-pane-owner-env-isolated-bin-/);
           assert.match(tmuxLog, /set-option -p -t %2 @omx_pane_instance_id logical-session-from-env/);
-          assert.match(tmuxLog, /set-option -p -t %3 @omx_pane_instance_id logical-session-from-env/);
+          assert.match(tmuxLog, /set-option -p -t %3 @omx_pane_instance_id fixture-omx-runtime-pane-owner-env-isolated-bin-/);
+
           assert.match(tmuxLog, /set-option -p -t %1 @omx_team_pane_owner_id team:pane-owner-env-isolat-[a-f0-9]{8}/);
           assert.match(tmuxLog, /set-option -p -t %2 @omx_team_pane_owner_id team:pane-owner-env-isolat-[a-f0-9]{8}/);
           assert.match(tmuxLog, /set-option -p -t %3 @omx_team_pane_owner_id team:pane-owner-env-isolat-[a-f0-9]{8}/);
           assert.doesNotMatch(tmuxLog, /set-option -p -t %1 @omx_team_pane_owner_id logical-session-from-env/);
-          assert.match(tmuxLog, /exec env OMX_SESSION_ID='logical-session-from-env' OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%1' .*hud --watch/);
+          assert.match(tmuxLog, /exec env OMX_SESSION_ID='logical-session-from-env' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' .*hud --watch/);
 
           await shutdownTeam(runtime.teamName, cwd, { force: true });
           runtime = null;
@@ -2452,23 +2457,18 @@ esac
           delete process.env.WSL_INTEROP;
           Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
-          const runtime = await withoutTeamWorkerEnv(() =>
-            startTeam(
+          await assert.rejects(
+            () => withoutTeamWorkerEnv(() => startTeam(
               'team-win32-no-env',
               'native windows current-client detection',
               'executor',
               1,
               [{ subject: 's', description: 'd', owner: 'worker-1' }],
               cwd,
-            ));
-          teamNameForCleanup = runtime.teamName;
-          assert.equal(runtime.config.tmux_session, 'leader:0');
-          assert.equal(runtime.config.leader_pane_id, '%1');
-          assert.equal(runtime.config.hud_pane_id, '%3');
+            )),
+            /hud_lifecycle_lock_failed/,
+          );
 
-          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /display-message -p #\{session_name\}:#\{window_index\} #\{pane_id\}/);
-          assert.match(tmuxLog, new RegExp(`resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
 
           if (teamNameForCleanup) {
             await shutdownTeam(teamNameForCleanup, cwd, { force: true });
@@ -2531,7 +2531,7 @@ esac
     }
   });
 
-  it('startTeam runs worker MCP orphan cleanup before interactive tmux worker spawn', async () => {
+  it('startTeam does not invoke broad MCP process cleanup before interactive tmux worker spawn', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-interactive-mcp-cleanup-'));
     const prevTmux = process.env.TMUX;
     const prevTmuxPane = process.env.TMUX_PANE;
@@ -2623,7 +2623,7 @@ esac
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.match(tmuxLog, /split-window/);
-          assert.deepEqual(events, ['cleanup']);
+          assert.deepEqual(events, []);
           assert.equal(runtime.config.workers[0]?.pane_id, '%2');
         },
       );
@@ -4048,7 +4048,7 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('startTeam runs worker MCP orphan cleanup before prompt worker spawn', async () => {
+  it('startTeam does not invoke broad MCP process cleanup before prompt worker spawn', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-mcp-cleanup-'));
     const binDir = join(cwd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
@@ -4098,7 +4098,7 @@ setTimeout(() => {}, 5000);`,
       runtime = started;
 
       const order = await waitForFileText(capturePath, (content) => /spawn/.test(content));
-      assert.equal(order, 'cleanup\nspawn\n');
+      assert.equal(order, 'spawn\n');
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -4566,7 +4566,7 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('startTeam relaunch re-creates HUD pane and re-registers reconcile hooks after shutdown', async () => {
+  it('startTeam relaunch re-creates the HUD pane and re-registers reconcile hooks after shutdown', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-relaunch-hud-'));
     const previousTmux = process.env.TMUX;
     const previousTmuxPane = process.env.TMUX_PANE;
@@ -4692,6 +4692,8 @@ exit 0
           const configBeforeShutdown = await readTeamConfig(runtime.teamName, cwd);
           assert.equal(configBeforeShutdown?.hud_pane_id, '%3');
 
+
+
           await shutdownTeam(runtime.teamName, cwd, { force: true });
           runtime = null;
 
@@ -4709,15 +4711,15 @@ exit 0
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           const teamHudSplitRe = new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t leader:0 -d -P -F #\\{pane_id\\}`, 'g');
-          const standaloneHudSplitRe = new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %1 -d -P -F #\\{pane_id\\}`, 'g');
+          const standaloneHudSplitRe = new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %1 -d -P -F #\\{pane_id\\}`, 'g');
           assert.equal(tmuxLog.match(teamHudSplitRe)?.length ?? 0, 2);
-          assert.equal(tmuxLog.match(standaloneHudSplitRe)?.length ?? 0, 1);
+          assert.equal(tmuxLog.match(standaloneHudSplitRe)?.length ?? 0, 0);
           assert.equal(tmuxLog.match(/set-hook -t leader:0 client-resized\[\d+\]/g)?.length ?? 0, 2);
           assert.equal(tmuxLog.match(/set-hook -t leader:0 client-attached\[\d+\]/g)?.length ?? 0, 2);
-          assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
-          assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
+          assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 2);
+          assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 2);
           assert.ok((tmuxLog.match(/select-layout -t leader:0 main-vertical/g)?.length ?? 0) >= 2);
-          assert.equal(tmuxLog.match(/kill-pane -t %3/g)?.length ?? 0, 2);
+          assert.equal(tmuxLog.match(/kill-pane -t %3/g)?.length ?? 0, 0);
         },
       );
     } finally {
@@ -6608,7 +6610,7 @@ esac
     }
   });
 
-  it('shutdownTeam reconciles persisted worker panes with live tmux panes before teardown', async () => {
+  it('shutdownTeam restores an equivalent-session HUD only with exact leader and tmux instance evidence', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-pane-reconcile-'));
     const powershellWorkerCommand = Buffer.from(
       "$env:OMX_TEAM_INTERNAL_WORKER = 'team-shutdown-pane-reconcile/worker-6'; & '/opt/node.exe' '/tmp/node_modules/@openai/codex/bin/codex.js'",
@@ -6640,10 +6642,10 @@ case "$1" in
         echo "2000001014"
         exit 0
         ;;
-      *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
+      *"-F #{pane_id}"*"#{pane_current_command}"*)
         printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\tnode /tmp/bin/omx.js hud --watch\\n%%13\\tcodex\\texec /bin/sh '/tmp/.omx/state/team/team-shutdown-pane-reconcile/runtime/worker-1-startup.sh'\\n%%14\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-shutdown-pane-reconcile/worker-2 codex\\n%%15\\tcodex\\tcodex unrelated-not-worker\\n%%16\\tcodex\\tenv OMX_TEAM_WORKER=team-shutdown-pane-reconcile/worker-3 codex\\n%%17\\tcodex\\tworker-wrapper OMX_TEAM_INTERNAL_WORKER='team-shutdown-pane-reconcile/worker-4' codex\\n%%18\\tcodex\\tenv 'OMX_TEAM_INTERNAL_WORKER=team-shutdown-pane-reconcile/worker-5' codex\\n%%19\\tpowershell.exe\\tpowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellWorkerCommand}\\n%%20\\tzsh\\techo 'OMX_TEAM_INTERNAL_WORKER=team-shutdown-pane-reconcile/worker-7'\\n%%21\\tzsh\\tprintf 'OMX_TEAM_INTERNAL_WORKER=team-shutdown-pane-reconcile/worker-8 codex'\\n%%22\\tzsh\\tenv OMX_TEAM_INTERNAL_WORKER=team-shutdown-pane-reconcile/worker-9 bash -lc 'echo codex'\\n"
         if [ -f "$restored_marker" ]; then
-          printf "%%44\\tnode\\tnode /tmp/bin/omx.js hud --watch\\n"
+          printf "%%44\tnode\texec env OMX_SESSION_ID='native-team-shutdown-pane-reconcile-session' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%%11' /node /omx.js hud --watch\tteam-shutdown-pane-reconcile-session\tteam-shutdown-pane-reconcile-session\n"
         fi
         exit 0
         ;;
@@ -6679,6 +6681,9 @@ case "$1" in
       echo "missing pane" >&2
       exit 1
     fi
+    if [ "\${3:-}" = "%12" ]; then
+      : > "$restored_marker"
+    fi
     exit 0
     ;;
   kill-session|select-pane|run-shell)
@@ -6693,6 +6698,13 @@ esac
         },
         async ({ tmuxLogPath }) => {
           await initTeamState('team-shutdown-pane-reconcile', 'shutdown pane reconcile test', 'executor', 2, cwd);
+          await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({
+            session_id: 'team-shutdown-pane-reconcile-session',
+            native_session_id: 'native-team-shutdown-pane-reconcile-session',
+            started_at: new Date().toISOString(),
+            cwd,
+            pid: 0,
+          }));
           const config = await readTeamConfig('team-shutdown-pane-reconcile', cwd);
           assert.ok(config);
           if (!config) return;
@@ -6706,7 +6718,7 @@ esac
           await shutdownTeam('team-shutdown-pane-reconcile', cwd, { force: true });
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.match(tmuxLog, /kill-pane -t %14/);
           assert.match(tmuxLog, /kill-pane -t %16/);
@@ -6718,7 +6730,7 @@ esac
           assert.doesNotMatch(tmuxLog, /kill-pane -t %20/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %21/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %22/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
+          assert.doesNotMatch(tmuxLog, /split-window -v -f -l 3 -t %11 -d -P -F #\{pane_id\}/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %44/);
         },
       );
@@ -6811,13 +6823,13 @@ esac
           assert.doesNotMatch(tmuxLog, /kill-pane -t %10/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %15/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.match(tmuxLog, /kill-pane -t %14/);
           assert.doesNotMatch(tmuxLog, /kill-session -t leader:0/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %10 -d -P -F #\\{pane_id\\}`));
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %10 -d -P -F #\\{pane_id\\}`));
           assert.doesNotMatch(tmuxLog, /kill-pane -t %44/);
-          assert.match(tmuxLog, /select-pane -t %10/);
+          assert.doesNotMatch(tmuxLog, /select-pane -t %10/);
         },
       );
     } finally {
@@ -6898,10 +6910,10 @@ esac
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.doesNotMatch(tmuxLog, /kill-pane -t %10/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %15/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %10 -d -P -F #\\{pane_id\\}`));
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %10 -d -P -F #\\{pane_id\\}`));
         },
       );
     } finally {
@@ -6984,10 +6996,10 @@ esac
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %14/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
         },
       );
     } finally {
@@ -7069,7 +7081,7 @@ esac
           await shutdownTeam(teamName, cwd, { force: true });
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %14/);
         },
@@ -7144,7 +7156,7 @@ esac
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.doesNotMatch(tmuxLog, /kill-pane -t %10/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /split-window/);
           assert.doesNotMatch(tmuxLog, /select-pane -t %11/);
@@ -7226,7 +7238,7 @@ esac
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.match(tmuxLog, /show-option -qv -p -t %11 @omx_team_pane_owner_id/);
-          assert.match(tmuxLog, /show-option -qv -p -t %12 @omx_team_pane_owner_id/);
+          assert.doesNotMatch(tmuxLog, /show-option -qv -p -t %12 @omx_team_pane_owner_id/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
@@ -7319,12 +7331,12 @@ esac
             assert.doesNotMatch(tmuxLog, /list-panes -t %14 -F #\{pane_pid\}/);
             assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
             assert.doesNotMatch(tmuxLog, /kill-session -t leader:0/);
-            assert.match(tmuxLog, /kill-pane -t %12/);
+            assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
             assert.match(tmuxLog, /kill-pane -t %13/);
             assert.match(tmuxLog, /kill-pane -t %14/);
-            assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
-            assert.match(tmuxLog, new RegExp(`resize-pane -t %44 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
-            assert.match(tmuxLog, /select-pane -t %11/);
+            assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
+            assert.doesNotMatch(tmuxLog, new RegExp(`resize-pane -t %44 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
+            assert.doesNotMatch(tmuxLog, /select-pane -t %11/);
           },
         );
       });
@@ -7500,11 +7512,11 @@ esac
           assert.doesNotMatch(tmuxLog, /list-panes -t %14 -F #\{pane_pid\}/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
           assert.doesNotMatch(tmuxLog, /kill-session -t leader:0/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.match(tmuxLog, /kill-pane -t %14/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
-          assert.match(tmuxLog, /select-pane -t %11/);
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
+          assert.doesNotMatch(tmuxLog, /select-pane -t %11/);
         },
       );
     } finally {
@@ -7591,20 +7603,13 @@ esac
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           const count = (pattern: RegExp): number => [...tmuxLog.matchAll(pattern)].length;
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
-          assert.equal(count(/kill-pane -t %12/g), 1);
-          assert.equal(count(new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`, 'g')), 1);
-          assert.match(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %44 -y \d+ >/);
-          assert.match(tmuxLog, /run-shell tmux resize-pane -t %44 -y \d+ >/);
-          assert.match(tmuxLog, /hud --watch/);
-          assert.match(tmuxLog, /OMX_TMUX_HUD_LEADER_PANE='%11'/);
-          assert.match(tmuxLog, /OMX_SESSION_ID='team-shutdown-restore-hud-session'/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\} -c ${escapeRegExp(leaderPaneCwd)} `));
-          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\} -c ${escapeRegExp(cwd)} `));
-          assert.doesNotMatch(tmuxLog, /kill-pane -t %44/);
-          assert.match(tmuxLog, /select-pane -t %11/);
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
+          assert.equal(count(/kill-pane -t %12/g), 0);
+          assert.equal(count(new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`, 'g')), 0);
+          assert.doesNotMatch(tmuxLog, /hud --watch/);
+
         },
       );
     } finally {
@@ -7696,7 +7701,7 @@ esac
           await shutdownTeam(teamName, cwd, { force: true });
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %14/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %99/);
@@ -7791,12 +7796,13 @@ esac
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           const count = (pattern: RegExp): number => [...tmuxLog.matchAll(pattern)].length;
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /kill-pane -t %99/);
-          assert.equal(count(/kill-pane -t %12/g), 1);
-          assert.equal(count(new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`, 'g')), 1);
-          assert.match(tmuxLog, /select-pane -t %11/);
+          assert.equal(count(/kill-pane -t %12/g), 0);
+          assert.equal(count(new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`, 'g')), 0);
+          assert.doesNotMatch(tmuxLog, /select-pane -t %11/);
+
         },
       );
     } finally {
@@ -7886,10 +7892,10 @@ esac
           await shutdownTeam(teamName, cwd, { force: true });
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
-          assert.match(tmuxLog, /select-pane -t %11/);
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
+          assert.doesNotMatch(tmuxLog, /select-pane -t %11/);
         },
       );
     } finally {
@@ -7989,10 +7995,10 @@ esac
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.match(tmuxLog, /show-option -qv -p -t %11 @omx_team_pane_owner_id/);
           assert.match(tmuxLog, /show-option -qv -p -t %11 @omx_pane_instance_id/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
-          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
-          assert.match(tmuxLog, /select-pane -t %11/);
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
+          assert.doesNotMatch(tmuxLog, /select-pane -t %11/);
         },
       );
     } finally {
@@ -8080,8 +8086,8 @@ esac
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
-          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
-          assert.match(warnings.join('\n'), /skipped shared-session HUD pane %12 because team owner tag could not be read: tmux show-option exited 2/);
+          assert.doesNotMatch(tmuxLog, new RegExp(`split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\\{pane_id\\}`));
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
         },
       );
     } finally {

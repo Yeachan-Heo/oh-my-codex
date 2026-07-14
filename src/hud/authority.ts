@@ -1,8 +1,10 @@
-import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { acquireHudLifecycleLock, releaseHudLifecycleLock, type HudLifecycleLockDeps } from './lifecycle-lock.js';
+import { resolveHudControlPlaneDomain, type ResolvedHudControlPlaneDomain } from '../mcp/state-paths.js';
 import { getPackageRoot } from '../utils/package.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
@@ -30,6 +32,10 @@ export interface RunHudAuthorityTickDeps {
   nowMs?: () => number;
   random?: () => number;
   onLockAcquired?: () => Promise<void> | void;
+  resolveDomain?: (options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<ResolvedHudControlPlaneDomain>;
+  lifecycleLockDeps?: HudLifecycleLockDeps;
+  processStartIdentity?: (pid: number) => Promise<string | undefined>;
+  probeLeaseProcess?: (lease: HudAuthorityLease) => Promise<'live' | 'dead' | 'reused' | 'uncertain'>;
 }
 
 interface HudAuthorityState {
@@ -46,11 +52,6 @@ interface HudAuthorityState {
   last_status: 'spawned' | 'skipped' | 'failed' | 'locked';
   last_reason: string;
   last_error?: string;
-}
-
-interface AuthorityLock {
-  path: string;
-  token: string;
 }
 
 class AuthorityStateReadError extends Error {
@@ -198,81 +199,103 @@ async function writeAuthorityStateUnlessNewerCooldown(path: string, state: HudAu
   return writeAuthorityState(path, state);
 }
 
-async function tryCreateAuthorityLock(lockPath: string, nowMs: number): Promise<AuthorityLock | null> {
-  const token = randomUUID();
-  let createdDir = false;
+export interface HudAuthorityLease {
+  version: 2;
+  domainKey: string;
+  baseStateDir: string;
+  rootSource: ResolvedHudControlPlaneDomain['rootSource'];
+  pid: number;
+  platform: NodeJS.Platform;
+  processStartIdentity: string;
+  claimant: string;
+  token: string;
+  generation: string;
+  heartbeatAt: string;
+}
+
+function claimantIdentity(domain: ResolvedHudControlPlaneDomain): string {
+  return JSON.stringify(domain.claimant);
+}
+
+function isLease(value: unknown): value is HudAuthorityLease {
+  if (typeof value !== 'object' || value === null) return false;
+  const lease = value as Partial<HudAuthorityLease>;
+  return lease.version === 2
+    && typeof lease.domainKey === 'string' && lease.domainKey.length > 0
+    && typeof lease.baseStateDir === 'string' && lease.baseStateDir.length > 0
+    && typeof lease.rootSource === 'string' && lease.rootSource.length > 0
+    && typeof lease.pid === 'number' && Number.isInteger(lease.pid) && lease.pid > 0
+    && typeof lease.platform === 'string' && lease.platform.length > 0
+    && typeof lease.processStartIdentity === 'string' && lease.processStartIdentity.trim().length > 0
+    && typeof lease.claimant === 'string'
+    && typeof lease.token === 'string' && lease.token.length > 0
+    && typeof lease.generation === 'string' && lease.generation.length > 0
+    && parseIsoMs(lease.heartbeatAt) !== null;
+}
+
+async function readAuthorityLease(path: string): Promise<HudAuthorityLease | null | 'uncertain'> {
   try {
-    await mkdir(lockPath, { recursive: false });
-    createdDir = true;
-    await writeFile(join(lockPath, 'owner.json'), JSON.stringify({
-      token,
-      pid: process.pid,
-      acquired_at: new Date(nowMs).toISOString(),
-    }, null, 2));
-    return { path: lockPath, token };
-  } catch {
-    if (createdDir) await rm(lockPath, { recursive: true, force: true }).catch(() => {});
-    return null;
+    const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+    return isLease(value) ? value : 'uncertain';
+  } catch (error) {
+    return isNotFoundError(error) ? null : 'uncertain';
   }
 }
 
-async function readAuthorityLockOwner(lockPath: string): Promise<{ token?: unknown } | null> {
-  return readFile(join(lockPath, 'owner.json'), 'utf-8')
-    .then((content) => JSON.parse(content) as { token?: unknown })
-    .catch(() => null);
-}
-
-async function restoreMovedLock(fromPath: string, toPath: string): Promise<void> {
-  const restored = await rename(fromPath, toPath).then(() => true).catch(() => false);
-  if (!restored) await rm(fromPath, { recursive: true, force: true }).catch(() => {});
-}
-
-async function acquireAuthorityLock(lockPath: string, staleMs: number, nowMs: number): Promise<AuthorityLock | null> {
-  const created = await tryCreateAuthorityLock(lockPath, nowMs);
-  if (created) return created;
-
-  const observedOwner = await readAuthorityLockOwner(lockPath);
-  const lockStat = await stat(lockPath).catch(() => null);
-  if (!lockStat || nowMs - lockStat.mtimeMs <= staleMs) return null;
-
-  const reapPath = `${lockPath}.stale.${process.pid}.${nowMs}.${randomUUID()}`;
+async function writeAuthorityLease(path: string, lease: HudAuthorityLease): Promise<boolean> {
+  const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    await rename(lockPath, reapPath);
+    await writeFile(tempPath, JSON.stringify(lease, null, 2));
+    await rename(tempPath, path);
+    return true;
   } catch {
-    return null;
+    await rm(tempPath, { force: true }).catch(() => {});
+    return false;
   }
-
-  const reapedOwner = await readAuthorityLockOwner(reapPath);
-  const reapedStat = await stat(reapPath).catch(() => null);
-  const reapedObservedLock = observedOwner?.token === reapedOwner?.token
-    && reapedStat?.mtimeMs === lockStat.mtimeMs
-    && nowMs - reapedStat.mtimeMs > staleMs;
-
-  if (!reapedObservedLock) {
-    await restoreMovedLock(reapPath, lockPath);
-    return null;
-  }
-
-  await rm(reapPath, { recursive: true, force: true }).catch(() => {});
-  return tryCreateAuthorityLock(lockPath, nowMs);
 }
 
-async function releaseAuthorityLock(lock: AuthorityLock): Promise<void> {
-  const releasePath = `${lock.path}.release.${process.pid}.${Date.now()}.${lock.token}`;
+async function defaultProcessStartIdentity(pid: number): Promise<string | undefined> {
+  if (process.platform === 'linux') {
+    try {
+      const content = await readFile(`/proc/${pid}/stat`, 'utf8');
+      const closeParen = content.lastIndexOf(')');
+      const fields = closeParen < 0 ? [] : content.slice(closeParen + 2).trim().split(/\s+/);
+      const startTime = fields[19];
+      return startTime ? `linux:${startTime}` : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (process.platform === 'darwin') {
+    const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+    const startTime = result.status === 0 ? result.stdout.trim() : '';
+    return startTime ? `darwin:${startTime}` : undefined;
+  }
+
+  if (process.platform === 'win32') {
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
+    ], { encoding: 'utf8', windowsHide: true });
+    const startTime = result.status === 0 ? result.stdout.trim() : '';
+    return startTime ? `win32:${startTime}` : undefined;
+  }
+
+  return undefined;
+}
+
+async function defaultProbeLeaseProcess(lease: HudAuthorityLease): Promise<'live' | 'dead' | 'reused' | 'uncertain'> {
+  if (lease.platform !== process.platform) return 'uncertain';
   try {
-    await rename(lock.path, releasePath);
-  } catch {
-    return;
+    process.kill(lease.pid, 0);
+  } catch (error) {
+    return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH' ? 'dead' : 'uncertain';
   }
-
-  const releaseOwner = await readAuthorityLockOwner(releasePath);
-  if (releaseOwner?.token === lock.token) {
-    await rm(releasePath, { recursive: true, force: true }).catch(() => {});
-    return;
-  }
-
-  await restoreMovedLock(releasePath, lock.path);
+  const currentIdentity = await defaultProcessStartIdentity(lease.pid);
+  if (!currentIdentity) return 'uncertain';
+  return currentIdentity === lease.processStartIdentity ? 'live' : 'reused';
 }
+
 
 function buildAuthorityState(
   cwd: string,
@@ -295,50 +318,6 @@ function buildAuthorityState(
   };
 }
 
-async function writeRateLimitSkipState(
-  path: string,
-  ownerPath: string,
-  cwd: string,
-  nowMs: number,
-  cooldownMs: number,
-  fallbackJitterMs: number,
-  previousState: HudAuthorityState,
-  reason: 'rate_limited' | 'rate_limited_after_lock',
-): Promise<void> {
-  const skippedState = buildAuthorityState(cwd, nowMs, cooldownMs, previousState.jitter_ms ?? fallbackJitterMs, {
-    last_spawn_at: previousState.last_spawn_at,
-    last_skip_at: new Date(nowMs).toISOString(),
-    next_allowed_at: previousState.next_allowed_at,
-    skip_count: (previousState.skip_count ?? 0) + 1,
-    last_status: 'skipped',
-    last_reason: reason,
-    last_error: previousState.last_error,
-  });
-  await writeAuthorityState(ownerPath, skippedState);
-  await writeAuthorityStateUnlessNewerCooldown(path, skippedState);
-}
-
-async function writeInvalidStateDiagnostic(
-  path: string,
-  ownerPath: string,
-  cwd: string,
-  nowMs: number,
-  cooldownMs: number,
-  jitterMs: number,
-  error: unknown,
-): Promise<boolean> {
-  const failedState = buildAuthorityState(cwd, nowMs, cooldownMs, jitterMs, {
-    last_skip_at: new Date(nowMs).toISOString(),
-    next_allowed_at: new Date(nowMs + cooldownMs + jitterMs).toISOString(),
-    last_status: 'failed',
-    last_reason: 'invalid_authority_state',
-    last_error: error instanceof Error ? error.message : String(error),
-  });
-  const ownerWritten = await writeAuthorityState(ownerPath, failedState);
-  const stateWritten = await writeAuthorityState(path, failedState);
-  return ownerWritten || stateWritten;
-}
-
 export async function runHudAuthorityTick(
   options: RunHudAuthorityTickOptions,
   deps: RunHudAuthorityTickDeps = {},
@@ -348,157 +327,163 @@ export async function runHudAuthorityTick(
   const nodePath = options.nodePath ?? process.execPath;
   const packageRoot = options.packageRoot ?? getPackageRoot();
   const pollMs = Math.max(1, options.pollMs ?? 75);
-  const timeoutMs = Math.max(100, options.timeoutMs ?? 5_000);
+  // The watcher is synchronous by design: never imply a detached child can be
+  // reaped safely later. A bounded tick also keeps the shared lease short.
+  const timeoutMs = Math.min(1_000, Math.max(1, options.timeoutMs ?? 1_000));
   const minIntervalMs = Math.max(
-    250,
+    1_000,
     asPositiveNumber(
       options.minIntervalMs ?? options.env?.OMX_HUD_AUTHORITY_MIN_INTERVAL_MS ?? process.env.OMX_HUD_AUTHORITY_MIN_INTERVAL_MS,
       5_000,
     ),
   );
-  const jitterMaxMs = Math.max(
-    0,
-    asNonNegativeNumber(
-      options.jitterMs ?? options.env?.OMX_HUD_AUTHORITY_JITTER_MS ?? process.env.OMX_HUD_AUTHORITY_JITTER_MS,
-      250,
-    ),
-  );
+  const jitterMaxMs = Math.max(0, asNonNegativeNumber(
+    options.jitterMs ?? options.env?.OMX_HUD_AUTHORITY_JITTER_MS ?? process.env.OMX_HUD_AUTHORITY_JITTER_MS,
+    250,
+  ));
   const nowMs = deps.nowMs?.() ?? Date.now();
-  const random = deps.random ?? Math.random;
-  const jitterMs = jitterMaxMs > 0 ? Math.floor(random() * (jitterMaxMs + 1)) : 0;
+  const jitterMs = jitterMaxMs > 0 ? Math.floor((deps.random ?? Math.random)() * (jitterMaxMs + 1)) : 0;
   const mergedEnv = { ...process.env, ...options.env };
-  const watcherScript = resolveHudWatcherScript(packageRoot, 'notify-fallback-watcher.js', cwd, mergedEnv);
-  const notifyScript = resolveHudWatcherScript(packageRoot, 'notify-hook.js', cwd, mergedEnv);
-  const authorityStateDir = join(cwd, '.omx', 'state');
-  const authorityOwnerPath = join(authorityStateDir, 'notify-fallback-authority-owner.json');
-  const authorityStatePath = join(authorityStateDir, 'notify-fallback-authority-state.json');
-  const authorityLockPath = join(authorityStateDir, 'notify-fallback-authority.lock');
+  const domain = await (deps.resolveDomain ?? resolveHudControlPlaneDomain)({ cwd, env: mergedEnv });
   const runProcess = deps.runProcess ?? defaultRunProcess;
 
-  await mkdir(authorityStateDir, { recursive: true }).catch(() => {});
+  await mkdir(domain.baseStateDir, { recursive: true });
+  const acquired = await acquireHudLifecycleLock(
+    { path: domain.authorityLockPath, domainKey: domain.domainKey, staleMs: Math.max(minIntervalMs * 2, timeoutMs * 2) },
+    { ...deps.lifecycleLockDeps, nowMs: deps.lifecycleLockDeps?.nowMs ?? (() => nowMs) },
+  );
+  // A contender must not emit state or diagnostics. The current primary owns
+  // every canonical authority write, including rate-limit diagnostics.
+  if (acquired.status !== 'acquired' || !acquired.lock) return;
 
-  let previousState: HudAuthorityState | null;
   try {
-    previousState = await readAuthorityState(authorityStatePath);
-  } catch (error) {
-    if (!(await writeInvalidStateDiagnostic(authorityStatePath, authorityOwnerPath, cwd, nowMs, minIntervalMs, jitterMs, error))) {
-      throw new Error('failed to persist HUD authority invalid-state diagnostic');
+    await deps.onLockAcquired?.();
+    const claimant = claimantIdentity(domain);
+    const processStartIdentity = await (deps.processStartIdentity ?? defaultProcessStartIdentity)(process.pid);
+    if (typeof processStartIdentity !== 'string' || processStartIdentity.trim().length === 0) return;
+    const currentLease = await readAuthorityLease(domain.authorityLeasePath);
+    const ownsLease = currentLease !== null
+      && currentLease !== 'uncertain'
+      && currentLease.domainKey === domain.domainKey
+      && currentLease.baseStateDir === domain.baseStateDir
+      && currentLease.rootSource === domain.rootSource
+      && currentLease.pid === process.pid
+      && currentLease.platform === process.platform
+      && currentLease.processStartIdentity === processStartIdentity
+      && currentLease.claimant === claimant;
+    const leaseProbe = currentLease !== null && currentLease !== 'uncertain'
+      ? await (deps.probeLeaseProcess ?? defaultProbeLeaseProcess)(currentLease).catch(() => 'uncertain' as const)
+      : 'uncertain' as const;
+    const staleLease = currentLease !== null
+      && currentLease !== 'uncertain'
+      && currentLease.domainKey === domain.domainKey
+      && currentLease.baseStateDir === domain.baseStateDir
+      && currentLease.rootSource === domain.rootSource
+      && nowMs - (parseIsoMs(currentLease.heartbeatAt) ?? nowMs) >= minIntervalMs * 2
+      && (leaseProbe === 'dead' || leaseProbe === 'reused');
+    // Malformed metadata, no immutable process identity, unrelated domains, and
+    // probe uncertainty are all ownership uncertainty. Never replace them.
+    if (currentLease === 'uncertain' || (currentLease !== null && !ownsLease && !staleLease)) return;
+    const token = ownsLease ? currentLease.token : randomUUID();
+    const generation = ownsLease ? currentLease.generation : randomUUID();
+    if (!(await writeAuthorityLease(domain.authorityLeasePath, {
+      version: 2,
+      domainKey: domain.domainKey,
+      baseStateDir: domain.baseStateDir,
+      rootSource: domain.rootSource,
+      pid: process.pid,
+      platform: process.platform,
+      processStartIdentity,
+      claimant,
+      token,
+      generation,
+      heartbeatAt: new Date(nowMs).toISOString(),
+    }))) {
+      return;
     }
-    return;
-  }
-  const previousNextAllowedMs = parseIsoMs(previousState?.next_allowed_at);
-  if (previousState && previousNextAllowedMs !== null && nowMs < previousNextAllowedMs) {
-    await writeRateLimitSkipState(
-      authorityStatePath,
-      authorityOwnerPath,
-      cwd,
-      nowMs,
-      minIntervalMs,
-      jitterMs,
-      previousState,
-      'rate_limited',
-    );
-    return;
-  }
+    let previousState: HudAuthorityState | null;
+    try {
+      previousState = await readAuthorityState(domain.authorityStatePath);
+    } catch (error) {
+      const failedState = buildAuthorityState(cwd, nowMs, minIntervalMs, jitterMs, {
+        last_skip_at: new Date(nowMs).toISOString(),
+        next_allowed_at: new Date(nowMs + minIntervalMs + jitterMs).toISOString(),
+        last_status: 'failed',
+        last_reason: 'invalid_authority_state',
+        last_error: error instanceof Error ? error.message : String(error),
+      });
+      if (!(await writeAuthorityState(domain.authorityStatePath, failedState))) {
+        throw new Error('failed to persist HUD authority invalid-state diagnostic');
+      }
+      return;
+    }
 
-  const lock = await acquireAuthorityLock(authorityLockPath, timeoutMs + minIntervalMs, nowMs);
-  if (!lock) {
-    const latestState = await readAuthorityState(authorityStatePath).catch(() => null);
-    const diagnosticState = latestState ?? previousState;
-    const lockedState = buildAuthorityState(cwd, nowMs, minIntervalMs, diagnosticState?.jitter_ms ?? jitterMs, {
-      last_spawn_at: diagnosticState?.last_spawn_at,
-      last_skip_at: new Date(nowMs).toISOString(),
-      next_allowed_at: diagnosticState?.next_allowed_at,
-      skip_count: (diagnosticState?.skip_count ?? 0) + 1,
-      last_status: 'locked',
-      last_reason: 'spawn_lock_active',
-      last_error: diagnosticState?.last_error,
-    });
-    await writeAuthorityState(authorityOwnerPath, lockedState);
-    return;
-  }
+    const nextAllowedMs = parseIsoMs(previousState?.next_allowed_at);
+    if (previousState && nextAllowedMs !== null && nowMs < nextAllowedMs) {
+      const skippedState = buildAuthorityState(cwd, nowMs, minIntervalMs, previousState.jitter_ms, {
+        last_spawn_at: previousState.last_spawn_at,
+        last_skip_at: new Date(nowMs).toISOString(),
+        next_allowed_at: previousState.next_allowed_at,
+        skip_count: previousState.skip_count + 1,
+        last_status: 'skipped',
+        last_reason: 'rate_limited',
+        last_error: previousState.last_error,
+      });
+      await writeAuthorityStateUnlessNewerCooldown(domain.authorityStatePath, skippedState);
+      return;
+    }
 
-  await deps.onLockAcquired?.();
-
-  let lockedState: HudAuthorityState | null;
-  try {
-    lockedState = await readAuthorityState(authorityStatePath);
-  } catch (error) {
-    const diagnosticWritten = await writeInvalidStateDiagnostic(authorityStatePath, authorityOwnerPath, cwd, nowMs, minIntervalMs, jitterMs, error);
-    await releaseAuthorityLock(lock);
-    if (!diagnosticWritten) throw new Error('failed to persist HUD authority rate-limit state');
-    return;
-  }
-  const lockedNextAllowedMs = parseIsoMs(lockedState?.next_allowed_at);
-  if (lockedState && lockedNextAllowedMs !== null && nowMs < lockedNextAllowedMs) {
-    await writeRateLimitSkipState(
-      authorityStatePath,
-      authorityOwnerPath,
-      cwd,
-      nowMs,
-      minIntervalMs,
-      jitterMs,
-      lockedState,
-      'rate_limited_after_lock',
-    );
-    await releaseAuthorityLock(lock);
-    return;
-  }
-
-  const nextAllowedAt = new Date(nowMs + minIntervalMs + jitterMs).toISOString();
-  const spawnedState = buildAuthorityState(cwd, nowMs, minIntervalMs, jitterMs, {
-    last_spawn_at: new Date(nowMs).toISOString(),
-    next_allowed_at: nextAllowedAt,
-    skip_count: previousState?.skip_count ?? 0,
-    last_status: 'spawned',
-    last_reason: 'spawned',
-  });
-  await writeAuthorityState(authorityOwnerPath, spawnedState);
-  if (!(await writeAuthorityState(authorityStatePath, spawnedState))) {
-    await releaseAuthorityLock(lock);
-    throw new Error('failed to persist HUD authority rate-limit state');
-  }
-
-  try {
-    await runProcess(
-      nodePath,
-      [
-        watcherScript,
-        '--once',
-        '--authority-only',
-        '--cwd',
-        cwd,
-        '--notify-script',
-        notifyScript,
-        '--poll-ms',
-        String(pollMs),
-      ],
-      {
-        cwd,
-        env: {
-          ...process.env,
-          ...(options.env ?? {}),
-          OMX_HUD_AUTHORITY: '1',
-          OMX_HUD_AUTHORITY_MIN_INTERVAL_MS: String(minIntervalMs),
-          OMX_HUD_AUTHORITY_JITTER_MS: String(jitterMaxMs),
-        },
-        timeoutMs,
-      },
-    );
-  } catch (error) {
-    const failedAt = deps.nowMs?.() ?? Date.now();
-    const failedState = buildAuthorityState(cwd, failedAt, minIntervalMs, jitterMs, {
-      last_spawn_at: spawnedState.last_spawn_at,
+    const nextAllowedAt = new Date(nowMs + minIntervalMs + jitterMs).toISOString();
+    const spawnedState = buildAuthorityState(cwd, nowMs, minIntervalMs, jitterMs, {
+      last_spawn_at: new Date(nowMs).toISOString(),
       next_allowed_at: nextAllowedAt,
       skip_count: previousState?.skip_count ?? 0,
-      last_status: 'failed',
-      last_reason: 'child_failed',
-      last_error: error instanceof Error ? error.message : String(error),
+      last_status: 'spawned',
+      last_reason: 'spawned',
     });
-    await writeAuthorityState(authorityOwnerPath, failedState);
-    await writeAuthorityState(authorityStatePath, failedState);
-    throw error;
+    if (!(await writeAuthorityState(domain.authorityStatePath, spawnedState))) {
+      throw new Error('failed to persist HUD authority rate-limit state');
+    }
+
+    const watcherScript = resolveHudWatcherScript(packageRoot, 'notify-fallback-watcher.js', cwd, mergedEnv);
+    const notifyScript = resolveHudWatcherScript(packageRoot, 'notify-hook.js', cwd, mergedEnv);
+    try {
+      await runProcess(nodePath, [
+        watcherScript, '--once', '--authority-only', '--cwd', cwd,
+        '--notify-script', notifyScript, '--poll-ms', String(pollMs),
+      ], {
+        cwd,
+        env: {
+          ...mergedEnv,
+          OMX_HUD_AUTHORITY: '1',
+          OMX_HUD_AUTHORITY_DOMAIN_KEY: domain.domainKey,
+          OMX_HUD_AUTHORITY_STATE_PATH: domain.authorityStatePath,
+          OMX_HUD_AUTHORITY_MIN_INTERVAL_MS: String(minIntervalMs),
+          OMX_HUD_AUTHORITY_JITTER_MS: String(jitterMaxMs),
+          OMX_HUD_AUTHORITY_LEASE_PATH: domain.authorityLeasePath,
+          OMX_HUD_AUTHORITY_BASE_STATE_DIR: domain.baseStateDir,
+          OMX_HUD_AUTHORITY_ROOT_SOURCE: domain.rootSource,
+          OMX_HUD_AUTHORITY_LEASE_TOKEN: token,
+          OMX_HUD_AUTHORITY_LEASE_GENERATION: generation,
+          OMX_HUD_AUTHORITY_OWNER_PID: String(process.pid),
+          OMX_HUD_AUTHORITY_OWNER_PLATFORM: process.platform,
+          OMX_HUD_AUTHORITY_OWNER_START_IDENTITY: processStartIdentity,
+        },
+        timeoutMs,
+      });
+    } catch (error) {
+      const failedAt = deps.nowMs?.() ?? Date.now();
+      await writeAuthorityState(domain.authorityStatePath, buildAuthorityState(cwd, failedAt, minIntervalMs, jitterMs, {
+        last_spawn_at: spawnedState.last_spawn_at,
+        next_allowed_at: nextAllowedAt,
+        skip_count: spawnedState.skip_count,
+        last_status: 'failed',
+        last_reason: 'child_failed',
+        last_error: error instanceof Error ? error.message : String(error),
+      }));
+      throw error;
+    }
   } finally {
-    await releaseAuthorityLock(lock);
+    await releaseHudLifecycleLock(acquired.lock);
   }
 }

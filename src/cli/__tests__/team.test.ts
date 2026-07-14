@@ -1686,7 +1686,7 @@ esac
       assert.equal(existsSync(join(wd, '.omx', 'state', 'team', 'shared-shutdown-cli')), false);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /kill-pane -t %12/);
+      assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
       assert.match(tmuxLog, /kill-pane -t %13/);
       assert.match(tmuxLog, /kill-pane -t %14/);
       assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);

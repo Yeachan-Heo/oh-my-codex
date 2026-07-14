@@ -41,8 +41,7 @@ import { resolveOmxCliEntryPath } from '../utils/paths.js';
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
 import { OMX_TMUX_HUD_OWNER_ENV } from '../hud/reconcile.js';
-import { findHudWatchPaneIds, hudPaneMatchesOwner, OMX_TMUX_HUD_LEADER_PANE_ENV } from '../hud/tmux.js';
-
+import { buildHudRuntimeEnv, hudPaneMatchesExactCandidate, hudPaneMatchesOwner, OMX_TMUX_HUD_LEADER_PANE_ENV, type HudRuntimeEnvInput } from '../hud/tmux.js';
 const OMX_INSTANCE_OPTION = '@omx_instance_id';
 const OMX_PANE_INSTANCE_OPTION = '@omx_pane_instance_id';
 const OMX_TEAM_PANE_OWNER_OPTION = '@omx_team_pane_owner_id';
@@ -74,13 +73,34 @@ export interface CreateTeamSessionOptions {
   ownerSessionId?: string | null;
   /** Team-scoped pane owner token used only for Team shutdown/teardown. */
   teamPaneOwnerId?: string | null;
+  /** Canonical state-root metadata resolved by the HUD control-plane resolver. */
+  hudRuntime?: Pick<HudRuntimeEnvInput, 'omxRoot' | 'omxStateRoot' | 'omxTeamStateRoot' | 'rootSource'>;
+
+  /** Verified HUD ownership evidence. Without all fields, Team leaves HUD panes untouched. */
+  hudExactCandidate?: ExactTeamHudCandidate | null;
+
+}
+export interface ExactTeamHudCandidate {
+  sessionId: string;
+  sessionIds: string[];
+  leaderPaneId: string;
+  tmuxSessionInstanceId: string;
+  tmuxPaneInstanceId: string;
 }
 
 export interface RestoreStandaloneHudPaneOptions {
-  /** Session id that prompt-submit HUD reconciliation should use to dedupe the restored HUD. */
+  /** Canonical session id that prompt-submit HUD reconciliation should use to dedupe the restored HUD. */
   sessionId?: string | null;
+  /** Resolver-provided canonical and native-equivalent session IDs accepted for exact HUD ownership. */
+  sessionIds?: string[] | null;
+  /** Exact tmux leader/session identity required to reclaim a prior standalone HUD. */
+  leaderPaneId?: string | null;
+  tmuxSessionInstanceId?: string | null;
+  tmuxPaneInstanceId?: string | null;
   /** Explicit HUD cwd override. When omitted, the live leader pane cwd is preferred over team launch cwd. */
   cwd?: string | null;
+  /** Canonical state-root metadata resolved by the HUD control-plane resolver. */
+  hudRuntime?: Pick<HudRuntimeEnvInput, 'omxRoot' | 'omxStateRoot' | 'omxTeamStateRoot' | 'rootSource'>;
 }
 
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
@@ -159,6 +179,8 @@ interface TmuxPaneInfo {
   paneId: string;
   currentCommand: string;
   startCommand: string;
+  paneInstanceId?: string;
+  sessionInstanceId?: string;
 }
 
 type SpawnSyncLike = typeof spawnSync;
@@ -286,15 +308,21 @@ function baseSessionName(target: string): string {
 }
 
 function listPanes(target: string): TmuxPaneInfo[] {
-  const result = runTmux(['list-panes', '-t', target, '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}']);
+  const result = runTmux(['list-panes', '-t', target, '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}\t#{@omx_pane_instance_id}\t#{@omx_instance_id}']);
   if (!result.ok) return [];
   return result.stdout
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [paneId = '', currentCommand = '', startCommand = ''] = line.split('\t');
-      return { paneId, currentCommand, startCommand };
+      const [paneId = '', currentCommand = '', startCommand = '', paneInstanceId = '', sessionInstanceId = ''] = line.split('\t');
+      return {
+        paneId,
+        currentCommand,
+        startCommand,
+        ...(paneInstanceId.trim() ? { paneInstanceId: paneInstanceId.trim() } : {}),
+        ...(sessionInstanceId.trim() ? { sessionInstanceId: sessionInstanceId.trim() } : {}),
+      };
     })
     .filter((pane) => pane.paneId.startsWith('%'));
 }
@@ -336,8 +364,7 @@ function waitForPaneToRemainPresent(
 }
 
 function isHudWatchPane(pane: TmuxPaneInfo): boolean {
-  const start = pane.startCommand || '';
-  return /\bomx\b.*\bhud\b.*--watch/i.test(start);
+  return hudPaneMatchesOwner(pane);
 }
 
 export function chooseTeamLeaderPaneId(panes: TmuxPaneInfo[], preferredPaneId: string): string {
@@ -350,14 +377,30 @@ export function chooseTeamLeaderPaneId(panes: TmuxPaneInfo[], preferredPaneId: s
   return preferredPaneId;
 }
 
-function findHudPaneIds(target: string, leaderPaneId: string): string[] {
-  return findHudWatchPaneIds(listPanes(target), leaderPaneId, { leaderPaneId });
+function findExactTeamHudPaneIds(target: string, candidate: ExactTeamHudCandidate | null): string[] {
+  if (!candidate) return [];
+  return listPanes(target)
+    .filter((pane) => pane.paneId !== candidate.leaderPaneId)
+    .filter((pane) => hudPaneMatchesExactCandidate(pane, {
+      sessionId: candidate.sessionId,
+      sessionIds: candidate.sessionIds,
+      leaderPaneId: candidate.leaderPaneId,
+    }, {
+      tmuxSessionInstanceId: candidate.tmuxSessionInstanceId,
+      tmuxPaneInstanceId: candidate.tmuxPaneInstanceId,
+    }))
+    .map((pane) => pane.paneId);
 }
 
-function findOwnedHudPaneIds(target: string, leaderPaneId: string): string[] {
-  return findHudWatchPaneIds(listPanes(target), leaderPaneId, { leaderPaneId });
+function normalizeExactTeamHudCandidate(candidate: ExactTeamHudCandidate | null | undefined): ExactTeamHudCandidate | null {
+  const sessionId = candidate?.sessionId?.trim() ?? '';
+  const leaderPaneId = normalizePaneTarget(candidate?.leaderPaneId);
+  const tmuxSessionInstanceId = candidate?.tmuxSessionInstanceId?.trim() ?? '';
+  const tmuxPaneInstanceId = candidate?.tmuxPaneInstanceId?.trim() ?? '';
+  const sessionIds = [...new Set([sessionId, ...(candidate?.sessionIds ?? [])].map((id) => id.trim()).filter(Boolean))];
+  if (!sessionId || !leaderPaneId || !tmuxSessionInstanceId || !tmuxPaneInstanceId || sessionIds.length === 0) return null;
+  return { sessionId, sessionIds, leaderPaneId, tmuxSessionInstanceId, tmuxPaneInstanceId };
 }
-
 function readPaneCurrentPath(paneId: string): string | null {
   if (!paneId.startsWith('%')) return null;
   const result = runTmux(['display-message', '-p', '-t', paneId, '#{pane_current_path}']);
@@ -556,18 +599,19 @@ function shellQuoteSingle(value: string): string {
 function formatHudEnvAssignments(
   env: NodeJS.ProcessEnv = process.env,
   owner: { sessionId?: string | null; leaderPaneId?: string | null } = {},
+  hudRuntime: Pick<HudRuntimeEnvInput, 'omxRoot' | 'omxStateRoot' | 'omxTeamStateRoot' | 'rootSource'> = {},
 ): string {
-  const sessionId = (owner.sessionId ?? '').trim();
-  const leaderPaneId = (owner.leaderPaneId ?? '').trim();
-  const assignments = [
-    sessionId ? `OMX_SESSION_ID=${shellQuoteSingle(sessionId)}` : '',
-    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
-    leaderPaneId ? `${OMX_TMUX_HUD_LEADER_PANE_ENV}=${shellQuoteSingle(leaderPaneId)}` : '',
-    ...(typeof env.OMX_ROOT === 'string' && env.OMX_ROOT.trim() !== ''
-      ? [`OMX_ROOT=${shellQuoteSingle(env.OMX_ROOT)}`]
-      : []),
-  ].filter(Boolean);
-  return assignments.join(' ');
+  const runtimeEnv = buildHudRuntimeEnv({
+    sessionId: owner.sessionId ?? undefined,
+    leaderPaneId: owner.leaderPaneId ?? undefined,
+    omxRoot: hudRuntime.omxRoot ?? env.OMX_ROOT,
+    omxStateRoot: hudRuntime.omxStateRoot,
+    omxTeamStateRoot: hudRuntime.omxTeamStateRoot,
+    rootSource: hudRuntime.rootSource,
+  }).env;
+  return Object.entries(runtimeEnv)
+    .map(([key, value]) => `${key}=${shellQuoteSingle(value)}`)
+    .join(' ');
 }
 
 function quotePowerShellArg(value: string): string {
@@ -1630,28 +1674,30 @@ export function createTeamSession(
     const teamTarget = `${sessionName}:${windowIndex}`;
     const ownerSessionId = (options.ownerSessionId ?? process.env.OMX_SESSION_ID ?? '').trim();
     const teamPaneOwnerId = (options.teamPaneOwnerId ?? `team:${safeTeamName}`).trim();
-    if (ownerSessionId) {
-      const tagResult = runTmux(['set-option', '-t', sessionName, OMX_INSTANCE_OPTION, ownerSessionId]);
+    const panes = listPanes(teamTarget);
+    const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
+    const hudExactCandidate = normalizeExactTeamHudCandidate(options.hudExactCandidate);
+    const hasExactHudAuthority = Boolean(hudExactCandidate && hudExactCandidate.leaderPaneId === leaderPaneId);
+    if (hudExactCandidate?.tmuxSessionInstanceId) {
+      const tagResult = runTmux(['set-option', '-t', sessionName, OMX_INSTANCE_OPTION, hudExactCandidate.tmuxSessionInstanceId]);
       if (!tagResult.ok) {
         throw new Error(`failed to tag tmux session ${sessionName}: ${tagResult.stderr}`);
       }
     }
-    const panes = listPanes(teamTarget);
-    const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
-    tagPaneInstance(leaderPaneId, ownerSessionId);
+    tagPaneInstance(leaderPaneId, hudExactCandidate?.tmuxPaneInstanceId ?? ownerSessionId);
     tagPaneTeamOwner(leaderPaneId, teamPaneOwnerId);
-    const initialHudPaneIds = findHudPaneIds(teamTarget, leaderPaneId);
+    const [retainedHudPaneId, ...duplicateHudPaneIds] = hasExactHudAuthority
+      ? findExactTeamHudPaneIds(teamTarget, hudExactCandidate)
+      : [];
     const omxEntry = resolveOmxCliEntryPath();
-    const canRecreateTeamHud = Boolean(omxEntry && omxEntry.trim() !== '');
-    // Team mode prioritizes leader + worker visibility. Remove HUD panes only
-    // when we can recreate the team HUD. Otherwise keep the existing HUD alive
-    // instead of making it disappear on team startup failures or broken installs.
+    const canRecreateTeamHud = hasExactHudAuthority && Boolean(omxEntry && omxEntry.trim() !== '');
+    // Reclaim only exact, resolver-verified duplicate candidates. Legacy or
+    // unverified panes are preserved rather than inferred from their command.
     if (canRecreateTeamHud) {
-      for (const hudPaneId of initialHudPaneIds) {
+      for (const hudPaneId of duplicateHudPaneIds) {
         runTmux(['kill-pane', '-t', hudPaneId]);
       }
     }
-
     const workerPaneIds: string[] = [];
     let rightStackRootPaneId: string | null = null;
     for (let i = 1; i <= workerCount; i++) {
@@ -1731,23 +1777,25 @@ export function createTeamSession(
     // leader + worker columns. Keep this after layout sizing so the main
     // leader/worker topology stays readable and the HUD remains compact.
     // Capture the HUD pane ID so it can be tracked and excluded from worker cleanup.
-    let hudPaneId: string | null = null;
+    let hudPaneId: string | null = retainedHudPaneId ?? null;
     let resizeHookName: string | null = null;
     let resizeHookTarget: string | null = null;
     if (canRecreateTeamHud && omxEntry) {
-      const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: ownerSessionId, leaderPaneId })} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+      const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: ownerSessionId, leaderPaneId }, options.hudRuntime)} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
       const hudCwd = translatePathForMsys(cwd);
-      const hudResult = runTmux([
-        'split-window', '-v', '-f', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', teamTarget, '-d', '-P', '-F', '#{pane_id}', '-c', hudCwd, hudCmd,
-      ]);
-      if (hudResult.ok) {
-        const id = hudResult.stdout.split('\n')[0]?.trim() ?? '';
+      const hudResult = hudPaneId
+        ? null
+        : runTmux([
+          'split-window', '-v', '-f', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', teamTarget, '-d', '-P', '-F', '#{pane_id}', '-c', hudCwd, hudCmd,
+        ]);
+      if (hudPaneId || hudResult?.ok) {
+        const id = hudPaneId ?? (hudResult && hudResult.ok ? hudResult.stdout.split('\n')[0]?.trim() ?? '' : '');
         if (id.startsWith('%')) {
-          rollbackPaneIds.push(id);
+          if (!retainedHudPaneId) rollbackPaneIds.push(id);
           if (isNativeWindows() && !waitForPaneToRemainPresent(teamTarget, id)) {
             throw new Error(`HUD pane did not remain present after tmux split-window returned ${id}`);
           }
-          tagPaneInstance(id, ownerSessionId);
+          tagPaneInstance(id, hudExactCandidate?.tmuxPaneInstanceId ?? ownerSessionId);
           tagPaneTeamOwner(id, teamPaneOwnerId);
           hudPaneId = id;
 
@@ -1857,18 +1905,22 @@ export function restoreStandaloneHudPane(
   options: RestoreStandaloneHudPaneOptions = {},
 ): string | null {
   const normalizedLeaderPaneId = normalizePaneTarget(leaderPaneId);
+  const tmuxPaneInstanceId = options.tmuxPaneInstanceId?.trim();
   if (!normalizedLeaderPaneId) return null;
 
   const omxEntry = resolveOmxCliEntryPath();
   if (!omxEntry || omxEntry.trim() === '') return null;
 
-  const [existingHudPaneId, ...duplicateHudPaneIds] = findOwnedHudPaneIds(
+  const [existingHudPaneId] = findExactTeamHudPaneIds(
     normalizedLeaderPaneId,
-    normalizedLeaderPaneId,
+    normalizeExactTeamHudCandidate({
+      sessionId: options.sessionId ?? '',
+      sessionIds: options.sessionIds ?? [],
+      leaderPaneId: options.leaderPaneId ?? '',
+      tmuxSessionInstanceId: options.tmuxSessionInstanceId ?? '',
+      tmuxPaneInstanceId: options.tmuxPaneInstanceId ?? '',
+    }),
   );
-  for (const paneId of duplicateHudPaneIds) {
-    runTmux(['kill-pane', '-t', paneId]);
-  }
   if (existingHudPaneId) {
     if (isNativeWindows()) {
       runTmux(buildHudResizeArgs(existingHudPaneId));
@@ -1880,7 +1932,7 @@ export function restoreStandaloneHudPane(
     return existingHudPaneId;
   }
 
-  const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: options.sessionId, leaderPaneId: normalizedLeaderPaneId })} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+  const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: options.sessionId, leaderPaneId: normalizedLeaderPaneId }, options.hudRuntime)} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
   let hudResult: ReturnType<typeof runTmux> | null = null;
   for (const restoreCwd of resolveStandaloneHudRestoreCwdCandidates(
     normalizedLeaderPaneId,
@@ -1890,6 +1942,7 @@ export function restoreStandaloneHudPane(
     const candidateResult = runTmux([
       'split-window',
       '-v',
+      '-f',
       '-l',
       String(HUD_TMUX_TEAM_HEIGHT_LINES),
       '-t',
@@ -1911,6 +1964,7 @@ export function restoreStandaloneHudPane(
 
   const paneId = hudResult.stdout.split('\n')[0]?.trim() ?? '';
   if (!paneId.startsWith('%')) return null;
+  if (tmuxPaneInstanceId) tagPaneInstance(paneId, tmuxPaneInstanceId);
 
   if (isNativeWindows()) {
     runTmux(buildHudResizeArgs(paneId));
@@ -2700,9 +2754,10 @@ export interface SharedSessionShutdownTopology {
   livePaneIds: string[];
   teamWorkerPaneIds: string[];
   leaderPaneId: string | null;
+  /** Only resolver-verified exact HUD candidates; unverified HUD panes are preserved. */
   hudPaneIds: string[];
-  leaderOwnedHudPaneIds: string[];
 }
+
 
 function normalizePaneTarget(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
@@ -2747,7 +2802,9 @@ export function resolveSharedSessionShutdownTopology(
   sessionName: string,
   preferredLeaderPaneId?: string | null,
   teamName?: string | null,
+  hudExactCandidate?: ExactTeamHudCandidate | null,
 ): SharedSessionShutdownTopology {
+
   const panes = listPanes(sessionName);
   const livePaneIds = panes
     .map((pane) => normalizePaneTarget(pane.paneId))
@@ -2759,9 +2816,9 @@ export function resolveSharedSessionShutdownTopology(
       teamWorkerPaneIds: [],
       leaderPaneId: fallbackLeaderPaneId,
       hudPaneIds: [],
-      leaderOwnedHudPaneIds: [],
     };
   }
+
 
   const normalizedTeamName = typeof teamName === 'string' ? teamName.trim() : '';
   const normalizedTeamWorkerPaneIds = normalizedTeamName
@@ -2777,25 +2834,28 @@ export function resolveSharedSessionShutdownTopology(
     fallbackLeaderPaneId,
     workerPaneIdSet,
   );
-  const hudPaneIds = panes
-    .filter((pane) => pane.paneId !== resolvedLeaderPaneId)
-    .filter((pane) => isHudWatchPane(pane))
-    .map((pane) => pane.paneId)
-    .filter((paneId) => paneId.startsWith('%'));
-  const leaderOwnedHudPaneIds = resolvedLeaderPaneId
+  const exactHudCandidate = normalizeExactTeamHudCandidate(hudExactCandidate);
+  const hudPaneIds = exactHudCandidate && exactHudCandidate.leaderPaneId === resolvedLeaderPaneId
     ? panes
       .filter((pane) => pane.paneId !== resolvedLeaderPaneId)
-      .filter((pane) => hudPaneMatchesOwner(pane, { leaderPaneId: resolvedLeaderPaneId }))
+      .filter((pane) => hudPaneMatchesExactCandidate(pane, {
+        sessionId: exactHudCandidate.sessionId,
+        sessionIds: exactHudCandidate.sessionIds,
+        leaderPaneId: exactHudCandidate.leaderPaneId,
+      }, {
+        tmuxSessionInstanceId: exactHudCandidate.tmuxSessionInstanceId,
+        tmuxPaneInstanceId: exactHudCandidate.tmuxPaneInstanceId,
+      }))
       .map((pane) => pane.paneId)
       .filter((paneId) => paneId.startsWith('%'))
     : [];
+
 
   return {
     livePaneIds,
     teamWorkerPaneIds: normalizedTeamWorkerPaneIds,
     leaderPaneId: resolvedLeaderPaneId,
     hudPaneIds,
-    leaderOwnedHudPaneIds,
   };
 }
 

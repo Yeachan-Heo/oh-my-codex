@@ -1,19 +1,21 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+
+import { acquireHudLifecycleLock, releaseHudLifecycleLock, type HudLifecycleLockDeps } from './lifecycle-lock.js';
+import { resolveHudControlPlaneDomain, type ResolvedHudControlPlaneDomain } from '../mcp/state-paths.js';
+import { probeActualTmuxInstanceEvidence, tmuxEvidenceBindsCandidate, type ActualTmuxInstanceEvidence } from '../scripts/notify-hook/managed-tmux.js';
+
 import { readAllState, readHudConfig } from './state.js';
 import { getHudRenderMaxLines } from './render.js';
 import { HUD_TMUX_HEIGHT_LINES, isTmuxWindowTooCrampedForHudSplit } from './constants.js';
 import {
   buildHudWatchCommand,
   createHudWatchPane,
-  findLegacyFocusedHudWatchPaneIds,
-  findHudWatchPaneIds,
   isHudWatchPane,
   killTmuxPane,
   listCurrentWindowPanes,
   readCurrentWindowSize,
   readHudPaneOwner,
+  hudPaneMatchesOwner,
   registerHudResizeHook,
   unregisterHudResizeHook,
   resizeTmuxPane,
@@ -75,6 +77,7 @@ function reapOrphanedSessionHudPanes(
     const owner = readHudPaneOwner(pane);
     // Only reclaim HUDs that explicitly belong to this session and name a leader.
     if (!owner.sessionId || !sameSessionIds.has(owner.sessionId) || !owner.leaderPaneId) continue;
+    if (!hasVerifiedHudPaneInstanceIdentity(pane, sameSessionIds)) continue;
     // Keep HUDs whose leader is the current pane or another live non-HUD leader pane.
     if (owner.leaderPaneId === currentPaneId || liveNonHudPaneIds.has(owner.leaderPaneId)) continue;
     if (killPane(pane.paneId)) reaped.push(pane.paneId);
@@ -107,6 +110,7 @@ function reapStaleCurrentLeaderHudPanes(
     if (owner.leaderPaneId !== currentPaneId) continue;
     if (!hasExplicitHudOwnerMarker(pane)) continue;
     if (!owner.sessionId || currentSessionIds.has(owner.sessionId)) continue;
+    if (!hasVerifiedHudPaneInstanceIdentity(pane, currentSessionIds)) continue;
     if (killPane(pane.paneId)) reaped.push(pane.paneId);
   }
   return reaped;
@@ -138,7 +142,7 @@ export interface ReconcileHudForPromptSubmitDeps {
   createHudWatchPane?: (
     cwd: string,
     hudCmd: string,
-    options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string },
+    options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string; instanceId?: string },
   ) => string | null;
   killTmuxPane?: (paneId: string) => boolean;
   resizeTmuxPane?: (paneId: string, heightLines: number) => boolean;
@@ -155,6 +159,14 @@ export interface ReconcileHudForPromptSubmitDeps {
   readCurrentWindowSize?: (currentPaneId?: string) => { width: number | null; height: number | null };
   nowMs?: () => number;
   isProcessLive?: (pid: number) => boolean | null;
+  resolveDomain?: (options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    requestedSessionId?: string;
+  }) => Promise<ResolvedHudControlPlaneDomain>;
+  lifecycleLockDeps?: HudLifecycleLockDeps;
+  probeTmuxInstance?: (paneId?: string) => Promise<ActualTmuxInstanceEvidence>;
+
 }
 
 function ensureHudResizeHook(
@@ -208,16 +220,34 @@ function needsHudHeightResize(pane: TmuxPaneSnapshot, desiredHeight: number): bo
   return typeof pane.paneHeight !== 'number' || pane.paneHeight !== desiredHeight;
 }
 
+function hasVerifiedHudPaneInstanceIdentity(
+  pane: TmuxPaneSnapshot,
+  equivalentSessionIds: ReadonlySet<string>,
+): boolean {
+  const paneInstanceId = pane.paneInstanceId?.trim();
+  const sessionInstanceId = pane.sessionInstanceId?.trim();
+  return Boolean(
+    paneInstanceId
+    && sessionInstanceId
+    && equivalentSessionIds.has(paneInstanceId)
+    && equivalentSessionIds.has(sessionInstanceId),
+  );
+}
+
 function planOwnedHudPaneDedupe(
   panes: TmuxPaneSnapshot[],
   currentPaneId: string | undefined,
   owner: HudPaneOwner,
   preferredPaneId: string,
-): { paneId: string; duplicatePaneIds: string[] } {
-  const ownedPaneIds = [
-    ...findHudWatchPaneIds(panes, currentPaneId, owner),
-    ...findLegacyFocusedHudWatchPaneIds(panes, currentPaneId),
-  ].filter((paneId, index, paneIds) => paneIds.indexOf(paneId) === index);
+  equivalentSessionIds: ReadonlySet<string>,
+): { paneId: string; duplicatePaneIds: string[]; unsafeCandidate: boolean } {
+  const ownedPanes = panes
+    .filter((pane) => pane.paneId !== currentPaneId)
+    .filter((pane) => hudPaneMatchesOwner(pane, owner));
+  if (ownedPanes.some((pane) => !hasVerifiedHudPaneInstanceIdentity(pane, equivalentSessionIds))) {
+    return { paneId: preferredPaneId, duplicatePaneIds: [], unsafeCandidate: true };
+  }
+  const ownedPaneIds = ownedPanes.map((pane) => pane.paneId);
   const keeperPaneId = ownedPaneIds.includes(preferredPaneId)
     ? preferredPaneId
     : (ownedPaneIds[0] ?? preferredPaneId);
@@ -225,135 +255,42 @@ function planOwnedHudPaneDedupe(
   return {
     paneId: keeperPaneId,
     duplicatePaneIds: ownedPaneIds.filter((paneId) => paneId !== keeperPaneId),
+    unsafeCandidate: false,
   };
 }
 
 const HUD_RECONCILE_LOCK_STALE_MS = 10_000;
 
-interface HudReconcileLock {
-  path: string;
-  token: string;
+function isVerifiedManagedHudOwner(
+  domain: ResolvedHudControlPlaneDomain,
+  currentPaneId: string | undefined,
+  evidence: ActualTmuxInstanceEvidence,
+): boolean {
+  const equivalentSessionIds = new Set(
+    [domain.session?.canonicalId, ...(domain.session?.equivalentIds ?? [])]
+      .map((sessionId) => sessionId?.trim() ?? '')
+      .filter(Boolean),
+  );
+  return Boolean(
+    domain.managed
+    && currentPaneId
+    && evidence.paneTarget === currentPaneId
+    && domain.claimant.leaderPaneId === currentPaneId
+    && domain.claimant.tmuxSessionName
+    && domain.claimant.tmuxSessionName === evidence.sessionName
+    && [...equivalentSessionIds].some((sessionId) => tmuxEvidenceBindsCandidate(evidence, sessionId)),
+  );
 }
 
-interface HudReconcileLockOwner {
-  token?: unknown;
-  pid?: unknown;
-  acquired_at?: unknown;
-}
-
-function parseIsoMs(value: unknown): number | null {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function defaultIsProcessLive(pid: number): boolean | null {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    if (code === 'ESRCH') return false;
-    if (code === 'EPERM') return true;
-    return null;
-  }
-}
-
-async function readHudReconcileLockOwner(lockPath: string): Promise<HudReconcileLockOwner | null> {
-  return readFile(join(lockPath, 'owner.json'), 'utf-8')
-    .then((content) => JSON.parse(content) as HudReconcileLockOwner)
-    .catch(() => null);
-}
-
-async function tryCreateHudReconcileLock(lockPath: string, nowMs: number): Promise<HudReconcileLock | null> {
-  const token = randomUUID();
-  let createdDir = false;
-  try {
-    await mkdir(lockPath, { recursive: false });
-    createdDir = true;
-    await writeFile(join(lockPath, 'owner.json'), JSON.stringify({
-      token,
-      pid: process.pid,
-      acquired_at: new Date(nowMs).toISOString(),
-    }, null, 2));
-    return { path: lockPath, token };
-  } catch {
-    if (createdDir) await rm(lockPath, { recursive: true, force: true }).catch(() => {});
-    return null;
-  }
-}
-
-async function restoreMovedLock(fromPath: string, toPath: string): Promise<void> {
-  const restored = await rename(fromPath, toPath).then(() => true).catch(() => false);
-  if (!restored) await rm(fromPath, { recursive: true, force: true }).catch(() => {});
-}
-
-async function acquireHudReconcileLock(
-  lockPath: string,
-  nowMs: number,
-  staleMs: number,
-  isProcessLive: (pid: number) => boolean | null,
-): Promise<HudReconcileLock | null> {
-  const created = await tryCreateHudReconcileLock(lockPath, nowMs);
-  if (created) return created;
-
-  const observedOwner = await readHudReconcileLockOwner(lockPath);
-  const lockStat = await stat(lockPath).catch(() => null);
-  if (!lockStat) return null;
-
-  const ownerPid = typeof observedOwner?.pid === 'number' && Number.isInteger(observedOwner.pid) && observedOwner.pid > 0
-    ? observedOwner.pid
-    : null;
-  const ownerAcquiredMs = parseIsoMs(observedOwner?.acquired_at);
-  const lockAgeMs = ownerAcquiredMs === null ? nowMs - lockStat.mtimeMs : nowMs - ownerAcquiredMs;
-  if (lockAgeMs <= staleMs) return null;
-
-  if (ownerPid !== null) {
-    const liveness = isProcessLive(ownerPid);
-    if (liveness !== false) return null;
-  }
-
-  const reapPath = `${lockPath}.stale.${process.pid}.${nowMs}.${randomUUID()}`;
-  try {
-    await rename(lockPath, reapPath);
-  } catch {
-    return null;
-  }
-
-  const reapedOwner = await readHudReconcileLockOwner(reapPath);
-  const reapedStat = await stat(reapPath).catch(() => null);
-  const reapedOwnerAcquiredMs = parseIsoMs(reapedOwner?.acquired_at);
-  const reapedAgeMs = reapedOwnerAcquiredMs === null && reapedStat
-    ? nowMs - reapedStat.mtimeMs
-    : reapedOwnerAcquiredMs === null ? 0 : nowMs - reapedOwnerAcquiredMs;
-  const reapedObservedLock = observedOwner?.token === reapedOwner?.token
-    && reapedStat?.mtimeMs === lockStat.mtimeMs
-    && reapedAgeMs > staleMs;
-
-  if (!reapedObservedLock) {
-    await restoreMovedLock(reapPath, lockPath);
-    return null;
-  }
-
-  await rm(reapPath, { recursive: true, force: true }).catch(() => {});
-  return tryCreateHudReconcileLock(lockPath, nowMs);
-}
-
-async function releaseHudReconcileLock(lock: HudReconcileLock): Promise<void> {
-  const releasePath = `${lock.path}.release.${process.pid}.${Date.now()}.${lock.token}`;
-  try {
-    await rename(lock.path, releasePath);
-  } catch {
-    return;
-  }
-
-  const releaseOwner = await readHudReconcileLockOwner(releasePath);
-  if (releaseOwner?.token === lock.token) {
-    await rm(releasePath, { recursive: true, force: true }).catch(() => {});
-    return;
-  }
-
-  await restoreMovedLock(releasePath, lock.path);
+function lifecycleLockDepsForReconcile(deps: ReconcileHudForPromptSubmitDeps): HudLifecycleLockDeps {
+  if (!deps.isProcessLive) return deps.lifecycleLockDeps ?? {};
+  return {
+    ...deps.lifecycleLockDeps,
+    probeProcess: deps.lifecycleLockDeps?.probeProcess ?? (async (owner) => {
+      const live = deps.isProcessLive?.(owner.pid);
+      return live === true ? 'live' : live === false ? 'dead' : 'uncertain';
+    }),
+  };
 }
 
 
@@ -380,6 +317,39 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
+  const currentPaneId = env.TMUX_PANE?.trim();
+  const requestedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
+  if (!requestedSessionId) {
+    return {
+      status: 'skipped_no_session_id',
+      paneId: null,
+      desiredHeight: null,
+      duplicateCount: 0,
+    };
+  }
+
+  const domainEnv: NodeJS.ProcessEnv = {
+    ...env,
+    TMUX_PANE: undefined,
+    TMUX_SESSION: undefined,
+  };
+  const domain = await (deps.resolveDomain ?? resolveHudControlPlaneDomain)({
+    cwd,
+    env: domainEnv,
+    requestedSessionId,
+  }).catch(() => null);
+  const evidence = domain && currentPaneId
+    ? await (deps.probeTmuxInstance ?? probeActualTmuxInstanceEvidence)(currentPaneId).catch(() => null)
+    : null;
+  if (!domain || !evidence || !isVerifiedManagedHudOwner(domain, currentPaneId, evidence)) {
+    return {
+      status: 'skipped_not_omx_owned_tmux',
+      paneId: null,
+      desiredHeight: null,
+      duplicateCount: 0,
+    };
+  }
+
   const resolveOmxCliEntryPathFn = deps.resolveOmxCliEntryPath ?? resolveOmxCliEntryPath;
   const omxBin = resolveOmxCliEntryPathFn();
   if (!omxBin) {
@@ -391,22 +361,17 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
-  const listPanes = deps.listCurrentWindowPanes ?? ((paneId) => listCurrentWindowPanes(undefined, paneId));
-  const createPane = deps.createHudWatchPane ?? ((hudCwd, hudCmd, options) => createHudWatchPane(hudCwd, hudCmd, options));
-  const killPane = deps.killTmuxPane ?? ((paneId) => killTmuxPane(paneId));
-  const resizePane = deps.resizeTmuxPane ?? ((paneId, lines) => resizeTmuxPane(paneId, lines));
-
-  const lockPath = join(cwd, '.omx', 'state', 'hud-reconcile.lock');
-  const lockDirReady = await mkdir(dirname(lockPath), { recursive: true }).then(() => true).catch(() => false);
-  const lock = lockDirReady
-    ? await acquireHudReconcileLock(
-      lockPath,
-      deps.nowMs?.() ?? Date.now(),
-      HUD_RECONCILE_LOCK_STALE_MS,
-      deps.isProcessLive ?? defaultIsProcessLive,
+  const lockDirReady = await mkdir(domain.baseStateDir, { recursive: true }).then(() => true).catch(() => false);
+  const acquired = lockDirReady
+    ? await acquireHudLifecycleLock(
+      { path: domain.reconcileLockPath, domainKey: domain.domainKey, staleMs: HUD_RECONCILE_LOCK_STALE_MS },
+      {
+        ...lifecycleLockDepsForReconcile(deps),
+        nowMs: deps.lifecycleLockDeps?.nowMs ?? deps.nowMs ?? (() => Date.now()),
+      },
     )
-    : null;
-  if (lockDirReady && !lock) {
+    : { status: 'failed' as const };
+  if (acquired.status !== 'acquired' || !acquired.lock) {
     return {
       status: 'skipped_concurrent',
       paneId: null,
@@ -415,17 +380,15 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
+  const listPanes = deps.listCurrentWindowPanes ?? ((paneId) => listCurrentWindowPanes(undefined, paneId));
+  const createPane = deps.createHudWatchPane ?? ((hudCwd, hudCmd, options) => createHudWatchPane(hudCwd, hudCmd, options));
+  const killPane = deps.killTmuxPane ?? ((paneId) => killTmuxPane(paneId));
+  const resizePane = deps.resizeTmuxPane ?? ((paneId, lines) => resizeTmuxPane(paneId, lines));
+  const lock = acquired.lock;
+  const resolvedSessionId = domain.session?.canonicalId;
+  const equivalentSessionIds = domain.session?.equivalentIds ?? [];
   try {
 
-  const currentPaneId = env.TMUX_PANE?.trim();
-  const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
-  const equivalentSessionIds = [
-    resolvedSessionId,
-    env.OMX_SESSION_ID?.trim(),
-    ...(deps.sessionIds ?? []),
-  ]
-    .map((sessionId) => sessionId?.trim() ?? '')
-    .filter((sessionId, index, sessionIds) => sessionId !== '' && sessionIds.indexOf(sessionId) === index);
   let panes = listPanes(currentPaneId);
 
   // Reclaim orphaned HUD panes left behind by a destroyed leader before deciding
@@ -458,15 +421,21 @@ export async function reconcileHudForPromptSubmit(
     panes = panes.filter((pane) => !reapedPaneIdSet.has(pane.paneId));
   }
 
+  const equivalentSessionIdSet = new Set(
+    [resolvedSessionId, ...equivalentSessionIds].map((sessionId) => sessionId?.trim() ?? '').filter(Boolean),
+  );
   const owner = {
     sessionId: resolvedSessionId,
     sessionIds: equivalentSessionIds,
     leaderPaneId: currentPaneId,
   };
-  const hudPaneIds = [
-    ...findHudWatchPaneIds(panes, currentPaneId, owner),
-    ...findLegacyFocusedHudWatchPaneIds(panes, currentPaneId),
-  ].filter((paneId, index, paneIds) => paneIds.indexOf(paneId) === index);
+  const ownedHudPanes = panes
+    .filter((pane) => pane.paneId !== currentPaneId)
+    .filter((pane) => hudPaneMatchesOwner(pane, owner));
+  if (ownedHudPanes.some((pane) => !hasVerifiedHudPaneInstanceIdentity(pane, equivalentSessionIdSet))) {
+    return { status: 'unchanged', paneId: null, desiredHeight: null, duplicateCount: 0 };
+  }
+  const hudPaneIds = ownedHudPanes.map((pane) => pane.paneId);
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
   const readHudConfigFn = deps.readHudConfig ?? readHudConfig;
   const hudConfig = await readHudConfigFn(cwd).catch(() => null);
@@ -523,14 +492,7 @@ export async function reconcileHudForPromptSubmit(
     .some((pane) => Boolean(pane && needsHudTopologyRecreate(pane, leaderPane)))
     && (!leaderPane || shouldCreateFullWidthHud(leaderPane));
 
-  if (!resolvedSessionId) {
-    return {
-      status: 'skipped_no_session_id',
-      paneId: null,
-      desiredHeight,
-      duplicateCount,
-    };
-  }
+
 
   // When there is no existing HUD pane to keep/recreate, this reconcile would
   // create a fresh HUD split. Mirror the launch-time guard: if the current tmux
@@ -559,9 +521,10 @@ export async function reconcileHudForPromptSubmit(
     if (killPane(paneId)) removedHudPaneIds.add(paneId);
   }
 
-  const createOptions: { heightLines: number; fullWidth?: boolean; targetPaneId?: string } = {
+  const createOptions: { heightLines: number; fullWidth?: boolean; targetPaneId?: string; instanceId?: string } = {
     heightLines: desiredHeight,
     targetPaneId: currentPaneId,
+    instanceId: resolvedSessionId,
   };
   if (createFullWidth) createOptions.fullWidth = true;
   const paneId = createPane(cwd, hudCmd, createOptions);
@@ -583,7 +546,11 @@ export async function reconcileHudForPromptSubmit(
     currentPaneId,
     owner,
     paneId,
+    equivalentSessionIdSet,
   );
+  if (postCreate.unsafeCandidate) {
+    return { status: 'recreated', paneId, desiredHeight, duplicateCount: 0 };
+  }
   for (const duplicatePaneId of postCreate.duplicatePaneIds) {
     killPane(duplicatePaneId);
   }
@@ -605,6 +572,6 @@ export async function reconcileHudForPromptSubmit(
     duplicateCount: postCreate.duplicatePaneIds.length,
   };
   } finally {
-    if (lock) await releaseHudReconcileLock(lock);
+    await releaseHudLifecycleLock(lock);
   }
 }

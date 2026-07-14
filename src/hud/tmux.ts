@@ -8,6 +8,8 @@ export interface TmuxPaneSnapshot {
   paneId: string;
   currentCommand: string;
   startCommand: string;
+  paneInstanceId?: string;
+  sessionInstanceId?: string;
   currentPath?: string;
   paneLeft?: number;
   paneTop?: number;
@@ -110,14 +112,20 @@ export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
         && windowHeight !== null
       );
       const payloadParts = hasGeometry ? parts.slice(9) : parts.slice(2);
-      const hasCurrentPathColumn = payloadParts.length >= 2;
-      const currentPath = hasCurrentPathColumn ? (payloadParts.at(-1) ?? '') : '';
-      const startCommandParts = hasCurrentPathColumn ? payloadParts.slice(0, -1) : payloadParts;
+      const hasInstanceColumns = hasGeometry && payloadParts.length >= 4;
+      const paneInstanceId = hasInstanceColumns ? (payloadParts[0] ?? '').trim() : '';
+      const sessionInstanceId = hasInstanceColumns ? (payloadParts[1] ?? '').trim() : '';
+      const commandPayloadParts = hasInstanceColumns ? payloadParts.slice(2) : payloadParts;
+      const hasCurrentPathColumn = commandPayloadParts.length >= 2;
+      const currentPath = hasCurrentPathColumn ? (commandPayloadParts.at(-1) ?? '') : '';
+      const startCommandParts = hasCurrentPathColumn ? commandPayloadParts.slice(0, -1) : commandPayloadParts;
       const trimmedCurrentPath = currentPath.trim();
       return {
         paneId: paneId.trim(),
         currentCommand: currentCommand.trim(),
         startCommand: startCommandParts.join('\t').trim(),
+        ...(paneInstanceId ? { paneInstanceId } : {}),
+        ...(sessionInstanceId ? { sessionInstanceId } : {}),
         ...(trimmedCurrentPath ? { currentPath: trimmedCurrentPath } : {}),
         ...(hasGeometry
           ? {
@@ -218,14 +226,22 @@ export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner 
   const paneOwner = readHudPaneOwner(pane);
   const sessionMatches = wantsSession && wantedSessionIds.includes(paneOwner.sessionId ?? '');
   const leaderPaneMatches = wantsLeaderPane && paneOwner.leaderPaneId === wantedLeaderPaneId;
-  const hasLeaderTag = paneOwner.leaderPaneId !== undefined && paneOwner.leaderPaneId !== '';
 
   if (wantsSession && wantsLeaderPane) {
-    if (hasLeaderTag) return sessionMatches && leaderPaneMatches;
-    return sessionMatches;
+    return sessionMatches && leaderPaneMatches;
   }
   if (wantsSession) return sessionMatches;
   return leaderPaneMatches;
+}
+
+export function hudPaneMatchesExactCandidate(
+  pane: TmuxPaneSnapshot,
+  owner: HudPaneOwner,
+  identity: { tmuxSessionInstanceId: string; tmuxPaneInstanceId: string },
+): boolean {
+  return hudPaneMatchesOwner(pane, owner)
+    && pane.sessionInstanceId === identity.tmuxSessionInstanceId
+    && pane.paneInstanceId === identity.tmuxPaneInstanceId;
 }
 
 export function findHudWatchPaneIds(
@@ -497,12 +513,22 @@ export function buildHudRuntimeEnv(input: HudRuntimeEnvInput = {}): HudRuntimeEn
   if (sessionId) env.OMX_SESSION_ID = sessionId;
   env[OMX_TMUX_HUD_OWNER_ENV] = '1';
   if (leaderPaneId) env[OMX_TMUX_HUD_LEADER_PANE_ENV] = leaderPaneId;
-  if (input.rootSource === 'team-env' && input.omxTeamStateRoot?.trim()) {
-    env.OMX_TEAM_STATE_ROOT = input.omxTeamStateRoot.trim();
-  } else if (input.rootSource === 'omx-state-root-env' && input.omxStateRoot?.trim()) {
-    env.OMX_STATE_ROOT = input.omxStateRoot.trim();
-  } else if (input.omxRoot?.trim()) {
-    env.OMX_ROOT = input.omxRoot.trim();
+  const rootSource = input.rootSource ?? (input.omxTeamStateRoot
+    ? 'team-env'
+    : input.omxRoot
+      ? 'omx-root-env'
+      : input.omxStateRoot
+        ? 'omx-state-root-env'
+        : 'cwd-default');
+  if (rootSource === 'team-env') {
+    const value = input.omxTeamStateRoot?.trim();
+    if (value) env.OMX_TEAM_STATE_ROOT = value;
+  } else if (rootSource === 'omx-root-env') {
+    const value = input.omxRoot?.trim();
+    if (value) env.OMX_ROOT = value;
+  } else if (rootSource === 'omx-state-root-env') {
+    const value = input.omxStateRoot?.trim();
+    if (value) env.OMX_STATE_ROOT = value;
   }
   return {
     env,
@@ -553,6 +579,8 @@ export function listCurrentWindowPanes(
           '#{pane_bottom}',
           '#{window_width}',
           '#{window_height}',
+          '#{@omx_pane_instance_id}',
+          '#{@omx_instance_id}',
           '#{pane_start_command}',
           '#{pane_current_path}',
         ].join(TMUX_PANE_FIELD_SEPARATOR),
@@ -611,6 +639,7 @@ export function createHudWatchPane(
     heightLines?: number;
     fullWidth?: boolean;
     targetPaneId?: string;
+    instanceId?: string;
   } = {},
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): string | null {
@@ -633,7 +662,11 @@ export function createHudWatchPane(
     hudCmd,
   ];
   try {
-    return parsePaneIdFromTmuxOutput(execTmuxSync(args));
+    const paneId = parsePaneIdFromTmuxOutput(execTmuxSync(args));
+    if (paneId && options.instanceId?.trim()) {
+      execTmuxSync(['set-option', '-p', '-t', paneId, '@omx_pane_instance_id', options.instanceId.trim()]);
+    }
+    return paneId;
   } catch {
     return null;
   }

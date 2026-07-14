@@ -158,19 +158,9 @@ import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES, isTmuxW
 import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
 import { readUltragoalState } from "../hud/state.js";
 import {
-  createHudWatchPane as createSharedHudWatchPane,
-  killTmuxPane as killSharedTmuxPane,
-  listCurrentWindowHudPaneIds,
-  listCurrentWindowPanes,
   buildHudRuntimeEnv,
   parsePaneIdFromTmuxOutput,
-  reapDeadHudPanes,
-  registerHudResizeHook,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
-  type RegisterHudResizeHookOptions,
-  readCurrentWindowSize,
-  resizeTmuxPane,
-  unregisterHudResizeHook,
 } from "../hud/tmux.js";
 
 export { parseTmuxPaneSnapshot, isHudWatchPane, findHudWatchPaneIds } from "../hud/tmux.js";
@@ -1416,119 +1406,6 @@ function execTmuxFileSync(
   }) as string;
 }
 
-function readTmuxEnvValueForTarget(targetPaneId: string): string | undefined {
-  if (!targetPaneId.startsWith("%")) return undefined;
-  try {
-    const raw = execTmuxFileSync(
-      ["display-message", "-p", "-t", targetPaneId, "#{socket_path},#{pid},#{session_id}"],
-      { encoding: "utf-8" },
-    ).trim();
-    return raw.replace(/,\$(\d+)$/, ",$1") || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-type HudResizeHookRegistrar = (
-  hudPaneId: string,
-  leaderPaneId: string | undefined,
-  heightLines: number,
-  options?: RegisterHudResizeHookOptions,
-) => boolean;
-
-export function buildInsideTmuxHudHookEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  sessionId: string,
-  currentPaneId: string | undefined,
-  omxRootOverride?: string,
-): NodeJS.ProcessEnv {
-  return {
-    ...baseEnv,
-    OMX_SESSION_ID: sessionId,
-    [OMX_TMUX_HUD_OWNER_ENV]: "1",
-    ...(currentPaneId ? { [OMX_TMUX_HUD_LEADER_PANE_ENV]: currentPaneId } : {}),
-    ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
-  };
-}
-
-export function registerInsideTmuxHudResizeHook(options: {
-  hudPaneId: string | null;
-  currentPaneId: string | undefined;
-  cwd: string;
-  sessionId: string;
-  omxRootOverride?: string;
-  baseEnv?: NodeJS.ProcessEnv;
-  register?: HudResizeHookRegistrar;
-}): boolean {
-  const { hudPaneId, currentPaneId } = options;
-  if (!hudPaneId || !currentPaneId) return false;
-  return (options.register ?? registerHudResizeHook)(
-    hudPaneId,
-    currentPaneId,
-    HUD_TMUX_HEIGHT_LINES,
-    {
-      cwd: options.cwd,
-      env: buildInsideTmuxHudHookEnv(
-        options.baseEnv ?? process.env,
-        options.sessionId,
-        currentPaneId,
-        options.omxRootOverride,
-      ),
-    },
-  );
-}
-
-export function buildDetachedHudHookEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  sessionId: string,
-  detachedLeaderPaneId: string,
-  tmuxEnvValue: string,
-  omxBin: string,
-  omxRootOverride?: string,
-): NodeJS.ProcessEnv {
-  return {
-    ...baseEnv,
-    TMUX: tmuxEnvValue,
-    TMUX_PANE: detachedLeaderPaneId,
-    OMX_SESSION_ID: sessionId,
-    [OMX_TMUX_HUD_OWNER_ENV]: "1",
-    ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
-    OMX_ENTRY_PATH: omxBin,
-  };
-}
-
-export function registerDetachedHudLayoutReconcileHook(options: {
-  hudPaneId: string | null;
-  detachedLeaderPaneId: string | null;
-  cwd: string;
-  sessionId: string;
-  omxBin: string;
-  omxRootOverride?: string;
-  baseEnv?: NodeJS.ProcessEnv;
-  readTmuxEnvValue?: (targetPaneId: string) => string | undefined;
-  register?: HudResizeHookRegistrar;
-}): boolean {
-  const { hudPaneId, detachedLeaderPaneId } = options;
-  if (!hudPaneId || !detachedLeaderPaneId) return false;
-  const tmuxEnvValue = (options.readTmuxEnvValue ?? readTmuxEnvValueForTarget)(detachedLeaderPaneId);
-  if (!tmuxEnvValue) return false;
-  return (options.register ?? registerHudResizeHook)(
-    hudPaneId,
-    detachedLeaderPaneId,
-    HUD_TMUX_HEIGHT_LINES,
-    {
-      cwd: options.cwd,
-      env: buildDetachedHudHookEnv(
-        options.baseEnv ?? process.env,
-        options.sessionId,
-        detachedLeaderPaneId,
-        tmuxEnvValue,
-        options.omxBin,
-        options.omxRootOverride,
-      ),
-    },
-  );
-}
 
 export const DETACHED_TMUX_HISTORY_LIMIT = 500;
 const TMUX_HOOK_INDEX_MAX = 1_000_000;
@@ -3353,7 +3230,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
     const notifyTempContractRaw = notifyTempResult.contract.active
       ? serializeNotifyTempContract(notifyTempResult.contract)
       : null;
-    const launchResult = runCodex(
+    const launchResult = await runCodex(
       cwd,
       normalizedArgs,
       sessionId,
@@ -4391,7 +4268,7 @@ export function buildDetachedSessionBootstrapSteps(
   sessionName: string,
   cwd: string,
   codexCmd: string,
-  hudCmd: string,
+  _hudCmd: string,
   workerLaunchArgs: string | null,
   codexHomeOverride?: string,
   notifyTempContractRaw?: string | null,
@@ -4461,21 +4338,6 @@ export function buildDetachedSessionBootstrapSteps(
     ...(inheritedWorkerModel ? ["-e", `${TEAM_WORKER_INHERITED_MODEL_ENV}=${inheritedWorkerModel}`] : []),
     detachedLeaderCmd,
   ];
-  const splitCaptureArgs: string[] = [
-    "split-window",
-    "-v",
-    "-l",
-    String(HUD_TMUX_HEIGHT_LINES),
-    "-d",
-    "-t",
-    sessionName,
-    "-c",
-    cwd,
-    "-P",
-    "-F",
-    "#{pane_id}",
-    hudCmd,
-  ];
   return [
     { name: "new-session", args: newSessionArgs },
     ...(sessionId
@@ -4486,7 +4348,7 @@ export function buildDetachedSessionBootstrapSteps(
           },
         ]
       : []),
-    { name: "split-and-capture-hud-pane", args: splitCaptureArgs },
+    { name: "reconcile-managed-hud", args: [] },
   ];
 }
 
@@ -5137,7 +4999,20 @@ export async function preLaunch(
   }
 
   // 2. Establish the canonical pointer before any session-scoped launch artifact.
+  // Pointer validation must complete before attached-launch tmux metadata is mutated.
   await writeSessionStart(cwd, sessionId, await resolvePreLaunchSessionPointerOptions());
+
+  // Persist the exact binding only after the canonical pointer has committed. A
+  // managed attached launch must bind the persisted owner to the exact pane and
+  // session instance before a hook can reconcile its HUD.
+  tagCurrentTmuxSessionWithInstance(sessionId);
+  const tmuxBinding = await probeActualTmuxInstanceEvidence(process.env.TMUX_PANE);
+  if (tmuxEvidenceBindsCandidate(tmuxBinding, sessionId)) {
+    await writeSessionStart(cwd, sessionId, {
+      ...(tmuxBinding.sessionName ? { tmuxSessionName: tmuxBinding.sessionName } : {}),
+      ...(tmuxBinding.paneTarget ? { tmuxPaneId: tmuxBinding.paneTarget } : {}),
+    });
+  }
 
   // 3. Generate runtime overlay + write session-scoped model instructions file
   const orchestrationMode = await resolveSessionOrchestrationMode(
@@ -5157,9 +5032,8 @@ ${launchAppendix}${dirtyWorktreeGuidance}`
       : `${overlay}${dirtyWorktreeGuidance}`;
   await writeSessionModelInstructionsFile(cwd, sessionId, sessionInstructions);
 
-  // 4. Reset session metrics and tag the established session.
+  // 4. Reset session metrics.
   await resetSessionMetrics(cwd, sessionId);
-  tagCurrentTmuxSessionWithInstance(sessionId);
 
   // 5. Start notify fallback watcher (best effort)
   try {
@@ -5229,7 +5103,7 @@ ${launchAppendix}${dirtyWorktreeGuidance}`
  * runCodex: Launch Codex CLI (blocks until exit).
  * All 3 paths (new tmux, existing tmux, no tmux) block via execSync/execFileSync.
  */
-function runCodex(
+async function runCodex(
   cwd: string,
   args: string[],
   sessionId: string,
@@ -5241,7 +5115,7 @@ function runCodex(
   projectLocalCodexHomeForCleanup?: string,
   runtimeCodexHomeForCleanup?: string,
   runtimeContext?: MadmaxWorktreeRuntimeContext,
-): { postLaunchHandledExternally: boolean } {
+): Promise<{ postLaunchHandledExternally: boolean }> {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
     args,
@@ -5321,73 +5195,10 @@ function runCodex(
   }
 
   if (launchPolicy === "inside-tmux") {
-    // Already in tmux: launch codex in current pane, HUD in bottom split
-    const currentWindowPanes = currentPaneId ? listCurrentWindowPanes(undefined, currentPaneId) : [];
-    reapDeadHudPanes(currentWindowPanes, {
-      killPane: (paneId) => {
-        try {
-          return killSharedTmuxPane(paneId);
-        } catch (err) {
-          logCliOperationFailure(err);
-          return false;
-        }
-      },
-    });
-
-    const staleHudPaneIds = currentPaneId
-      ? listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId })
-      : [];
-
-    let hudPaneId: string | null = null;
-    const [keeperHudPaneId, ...duplicateHudPaneIds] = staleHudPaneIds;
-    for (const paneId of duplicateHudPaneIds) {
-      killTmuxPane(paneId);
-    }
-
-    if (keeperHudPaneId) {
-      hudPaneId = keeperHudPaneId;
-      try {
-        resizeTmuxPane(hudPaneId, HUD_TMUX_HEIGHT_LINES);
-        registerInsideTmuxHudResizeHook({
-          hudPaneId,
-          currentPaneId,
-          cwd,
-          sessionId,
-          omxRootOverride,
-          baseEnv: runtimeHookEnv,
-        });
-      } catch (err) {
-        logCliOperationFailure(err);
-      }
-    } else if (
-      isExistingTmuxWindowTooCrampedForLaunchHud(
-        readCurrentWindowSize(undefined, currentPaneId).height,
-      )
-    ) {
-      // Existing tmux window is height-constrained: forcing a launch-time HUD
-      // split here would steal rows from the Codex TUI and make the
-      // transcript/input area unreadable. Skip the split at launch; the
-      // prompt-submit reconcile path can add the HUD later when there is room.
-      // (closes #2754)
-      hudPaneId = null;
-    } else {
-      try {
-        hudPaneId = createHudWatchPane(cwd, hudCmd, {
-          heightLines: HUD_TMUX_HEIGHT_LINES,
-          targetPaneId: currentPaneId,
-        });
-        registerInsideTmuxHudResizeHook({
-          hudPaneId,
-          currentPaneId,
-          cwd,
-          sessionId,
-          omxRootOverride,
-          baseEnv: runtimeHookEnv,
-        });
-      } catch (err) {
-        logCliOperationFailure(err);
-        // HUD split failed, continue without it
-      }
+    // The shared reconciler owns all managed HUD inspection, dedupe, resize, and
+    // creation. A failed or uncertain proof deliberately leaves panes untouched.
+    if (currentPaneId) {
+      await reconcileManagedHudPane(cwd, sessionId, currentPaneId, hudRuntimeEnv);
     }
 
     // Enable mouse scrolling at session start so scroll works before team
@@ -5409,32 +5220,9 @@ function runCodex(
       }
     }
 
-    const activePaneId = process.env.TMUX_PANE?.trim();
-    if (activePaneId) {
-      try {
-        execTmuxFileSync(["display-message", "-p", "-t", activePaneId, "#S"], {
-          encoding: "utf-8",
-        });
-      } catch {}
-    }
-
-    try {
-      withTmuxExtendedKeys(cwd, () => {
-        runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
-      });
-    } finally {
-      if (currentPaneId) {
-        unregisterHudResizeHook(currentPaneId);
-      }
-      const cleanupPaneIds = buildHudPaneCleanupTargets(
-        listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId }),
-        hudPaneId,
-        currentPaneId,
-      );
-      for (const paneId of cleanupPaneIds) {
-        killTmuxPane(paneId);
-      }
-    }
+    withTmuxExtendedKeys(cwd, () => {
+      runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+    });
     return { postLaunchHandledExternally: false };
   } else if (launchPolicy === "direct") {
     // Detached HUD sessions require tmux. Skip the bootstrap entirely when the
@@ -5448,7 +5236,7 @@ function runCodex(
       ? buildWindowsPromptCommand("codex", launchArgs)
       : null;
     const sessionName = buildDetachedTmuxSessionName(cwd, sessionId);
-    const launchDetachedSession = (): { postLaunchHandledExternally: boolean } => {
+    const launchDetachedSession = async (): Promise<{ postLaunchHandledExternally: boolean }> => {
       const contextKey = runtimeContext?.madmaxDetachedContext ?? process.env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
       const runsRoot = resolveMadmaxRunsRoot(process.env);
       const activeRecordPath = contextKey
@@ -5580,47 +5368,24 @@ function runCodex(
               writeDetachedSessionBinding(leaderPaneId);
             }
           }
-          if (step.name === "split-and-capture-hud-pane") {
-            const hudPaneId = parsePaneIdFromTmuxOutput(output || "");
-            const hookWindowIndex = hudPaneId
-              ? detectDetachedSessionWindowIndex(sessionName)
-              : null;
-            const hookTarget =
-              hudPaneId && hookWindowIndex
-                ? buildResizeHookTarget(sessionName, hookWindowIndex)
-                : null;
-            const hookName =
-              hudPaneId && hookWindowIndex
-                ? buildResizeHookName(
-                    "launch",
-                    sessionName,
-                    hookWindowIndex,
-                    hudPaneId,
-                  )
-                : null;
-            const clientAttachedHookName =
-              hudPaneId && hookWindowIndex
-                ? buildClientAttachedReconcileHookName(
-                    "launch",
-                    sessionName,
-                    hookWindowIndex,
-                    hudPaneId,
-                  )
-                : null;
+          if (step.name === "reconcile-managed-hud") {
+            // The persisted session binding and tmux instance tag are both in
+            // place before the shared reconciler is permitted to mutate panes.
+            await detachedSessionBindingWrite;
+            if (detachedLeaderPaneId) {
+              await reconcileManagedHudPane(cwd, sessionId, detachedLeaderPaneId, hudRuntimeEnv);
+            }
             const finalizeSteps = buildDetachedSessionFinalizeSteps(
               sessionName,
-              hudPaneId,
-              hookWindowIndex,
+              null,
+              null,
               process.env.OMX_MOUSE !== "0",
               nativeWindows,
               shouldAttachDetachedTmuxSession(process.env),
               detachedLeaderPaneId,
             );
             if (nativeWindows && detachedWindowsCodexCmd) {
-              scheduleDetachedWindowsCodexLaunch(
-                sessionName,
-                detachedWindowsCodexCmd,
-              );
+              scheduleDetachedWindowsCodexLaunch(sessionName, detachedWindowsCodexCmd);
             }
             for (const finalizeStep of finalizeSteps) {
               if (finalizeStep.name === "sanitize-copy-mode-style") {
@@ -5631,48 +5396,16 @@ function runCodex(
                 }
                 continue;
               }
-              const stdio =
-                finalizeStep.name === "attach-session" ? "inherit" : "ignore";
+              const stdio = finalizeStep.name === "attach-session" ? "inherit" : "ignore";
               try {
                 const startedAtMs = Date.now();
                 execTmuxFileSync(finalizeStep.args, { stdio });
                 if (finalizeStep.name === "attach-session") {
-                  assertDetachedAttachDidNotNoop(
-                    sessionName,
-                    Date.now() - startedAtMs,
-                    process.env,
-                  );
+                  assertDetachedAttachDidNotNoop(sessionName, Date.now() - startedAtMs, process.env);
                 }
               } catch (err) {
                 logCliOperationFailure(err);
-                if (finalizeStep.name === "attach-session")
-                  throw new Error("failed to attach detached tmux session");
-                continue;
-              }
-              if (
-                finalizeStep.name === "register-resize-hook" &&
-                hookTarget &&
-                hookName
-              ) {
-                registeredHookTarget = hookTarget;
-                registeredHookName = hookName;
-              }
-              if (
-                finalizeStep.name === "register-client-attached-reconcile" &&
-                clientAttachedHookName
-              ) {
-                registeredClientAttachedHookName = clientAttachedHookName;
-              }
-              if (finalizeStep.name === "reconcile-hud-resize") {
-                registerDetachedHudLayoutReconcileHook({
-                  hudPaneId,
-                  detachedLeaderPaneId,
-                  cwd,
-                  sessionId,
-                  omxBin,
-                  omxRootOverride,
-                  baseEnv: runtimeHookEnv,
-                });
+                if (finalizeStep.name === "attach-session") throw new Error("failed to attach detached tmux session");
               }
             }
           }
@@ -5709,9 +5442,9 @@ function runCodex(
     const runsRoot = resolveMadmaxRunsRoot(process.env);
     try {
       if (isMadmaxDetachedGuardEnabled(process.env) && contextKey) {
-        return withMadmaxDetachedContextLock(runsRoot, contextKey, launchDetachedSession);
+        return await withMadmaxDetachedContextLock(runsRoot, contextKey, launchDetachedSession);
       }
-      return launchDetachedSession();
+      return await launchDetachedSession();
     } catch (err) {
       if (err instanceof MadmaxDetachedReuseError || err instanceof MadmaxDetachedGuardError) {
         throw err;
@@ -5724,15 +5457,64 @@ function runCodex(
   }
 }
 
-function listHudWatchPaneIdsInCurrentWindow(
-  currentPaneId?: string,
-  owner: { sessionId?: string; leaderPaneId?: string } = {},
-): string[] {
+async function reconcileManagedHudPane(
+  cwd: string,
+  sessionId: string,
+  leaderPaneId: string,
+  runtimeEnv: NodeJS.ProcessEnv,
+): Promise<void> {
+  const omxBin = resolveOmxCliEntryPath({ argv1: process.argv[1], cwd, env: process.env });
+  if (!omxBin) return;
+
+  let tmuxEnv = process.env.TMUX;
+  if (!tmuxEnv) {
+    try {
+      const socketPath = execTmuxFileSync([
+        "display-message", "-p", "-t", leaderPaneId, "#{socket_path}",
+      ], { encoding: "utf-8" }).trim();
+      if (socketPath) tmuxEnv = `${socketPath},0,0`;
+    } catch {
+      return;
+    }
+  }
+  if (!tmuxEnv) return;
+
+  const {
+    OMX_ROOT: _omxRoot,
+    OMX_STATE_ROOT: _omxStateRoot,
+    OMX_TEAM_STATE_ROOT: _omxTeamStateRoot,
+    ...parentEnv
+  } = process.env;
+  const {
+    OMX_ROOT: runtimeOmxRoot,
+    OMX_STATE_ROOT: runtimeStateRoot,
+    OMX_TEAM_STATE_ROOT: runtimeTeamStateRoot,
+    ...runtimeEnvWithoutRoots
+  } = runtimeEnv;
+  const authoritativeRootEnv = runtimeTeamStateRoot
+    ? { OMX_TEAM_STATE_ROOT: runtimeTeamStateRoot }
+    : runtimeOmxRoot
+      ? { OMX_ROOT: runtimeOmxRoot }
+      : runtimeStateRoot
+        ? { OMX_STATE_ROOT: runtimeStateRoot }
+        : {};
   try {
-    return listCurrentWindowHudPaneIds(currentPaneId, undefined, owner);
-  } catch (err) {
-    logCliOperationFailure(err);
-    return [];
+    execFileSync(process.execPath, [omxBin, "hud", "--reconcile-tmux"], {
+      cwd,
+      env: {
+        ...parentEnv,
+        ...runtimeEnvWithoutRoots,
+        ...authoritativeRootEnv,
+        TMUX: tmuxEnv,
+        TMUX_PANE: leaderPaneId,
+        OMX_SESSION_ID: sessionId,
+        [OMX_TMUX_HUD_OWNER_ENV]: "1",
+        [OMX_TMUX_HUD_LEADER_PANE_ENV]: leaderPaneId,
+      },
+      stdio: "ignore",
+    });
+  } catch {
+    // Reconciliation is fail-closed: never substitute an unlocked split/reap.
   }
 }
 
@@ -5748,26 +5530,6 @@ export function isExistingTmuxWindowTooCrampedForLaunchHud(
   return isTmuxWindowTooCrampedForHudSplit(windowHeight, minWindowHeight);
 }
 
-function createHudWatchPane(
-  cwd: string,
-  hudCmd: string,
-  options: { heightLines?: number; targetPaneId?: string } = {},
-): string | null {
-  return createSharedHudWatchPane(cwd, hudCmd, {
-    heightLines: options.heightLines ?? HUD_TMUX_HEIGHT_LINES,
-    targetPaneId: options.targetPaneId,
-  });
-}
-
-function killTmuxPane(paneId: string): void {
-  if (!paneId.startsWith("%")) return;
-  try {
-    killSharedTmuxPane(paneId);
-  } catch (err) {
-    logCliOperationFailure(err);
-    // Pane may already be gone; ignore.
-  }
-}
 
 export function buildTmuxShellCommand(command: string, args: string[]): string {
   return [quoteShellArg(command), ...args.map(quoteShellArg)].join(" ");
