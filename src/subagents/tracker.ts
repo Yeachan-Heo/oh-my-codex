@@ -85,6 +85,8 @@ export interface PendingRoleIntent {
   binding_state?: 'bound';
   binding_claimant_token?: string;
   bound_at?: string;
+
+  origin_cwd?: string;
 }
 
 export interface SubagentSessionSummary {
@@ -249,6 +251,7 @@ function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
   const claimantToken = readOptionalTrimmedString(candidate.binding_claimant_token);
   const boundAt = readOptionalTrimmedString(candidate.bound_at);
   const hasValidBoundAt = Boolean(boundAt && Number.isFinite(Date.parse(boundAt)));
+  const originCwd = readOptionalTrimmedString(candidate.origin_cwd);
   return {
     role,
     session_id: sessionId,
@@ -257,8 +260,12 @@ function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
     created_at: createdAt,
     expires_at: expiresAt,
     ...(bindingState ? { binding_state: bindingState } : {}),
-    ...(bindingState && claimantToken && hasValidBoundAt ? { binding_claimant_token: claimantToken } : {}),
+    // Preserve the security identity (claimant token) INDEPENDENTLY of bound_at.
+    // A malformed/missing bound_at must never erase the stored claimant, otherwise a
+    // fail-closed CAS would degrade to unauthenticated tokenless completion.
+    ...(bindingState && claimantToken ? { binding_claimant_token: claimantToken } : {}),
     ...(bindingState && hasValidBoundAt ? { bound_at: boundAt } : {}),
+    ...(originCwd ? { origin_cwd: originCwd } : {}),
   };
 }
 
@@ -520,10 +527,15 @@ function restoreQuarantinedCrossProcessLock(lockPath: string, quarantinedPath: s
   try {
     linkSync(quarantinedPath, lockPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+    const code = (error as NodeJS.ErrnoException).code;
+    // EEXIST: a replacement claim already holds the lock; the displaced copy is redundant.
+    // ENOENT: the displaced artifact was already removed (e.g. by a concurrent bounded
+    // sweep) — a fenced clean terminal outcome, never a cleanup failure to throw on.
+    if (code === 'EEXIST') {
       removeCrossProcessLockFile(quarantinedPath);
       return;
     }
+    if (code === 'ENOENT') return;
     throw error;
   }
   removeCrossProcessLockFile(quarantinedPath);
@@ -607,16 +619,29 @@ function sweepForeignCrossProcessLockStages(resourcePath: string, token: string)
   }
 }
 
+export const CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP = 64;
+
 function sweepAbandonedCrossProcessLockArtifacts(resourcePath: string): void {
   const directory = dirname(resourcePath);
   const lockName = basename(crossProcessLockPath(resourcePath));
   const escapedLockName = lockName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const artifactPattern = new RegExp(`^${escapedLockName}\\.([^.]+)\\.[^.]+\\.(?:quarantine|release)$`);
+  const nowMs = Date.now();
+  const aged: Array<{ displacedAtMs: number; entry: string }> = [];
   for (const entry of readdirSync(directory)) {
     const match = artifactPattern.exec(entry);
     if (!match) continue;
     const displacedAtMs = Number(match[1]);
-    if (!Number.isFinite(displacedAtMs) || Date.now() - displacedAtMs <= CROSS_PROCESS_LOCK_LEASE_MS) continue;
+    // Only lease-aged, parseable-timestamp artifacts are eligible; fresh/live/malformed-ts
+    // artifacts are always preserved (never delete a live successor's in-flight evidence).
+    if (!Number.isFinite(displacedAtMs) || nowMs - displacedAtMs <= CROSS_PROCESS_LOCK_LEASE_MS) continue;
+    aged.push({ displacedAtMs, entry });
+  }
+  // Bounded, deterministic cleanup: process oldest-first (tie-break by name) and remove at
+  // most CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP per acquisition, so a large backlog drains
+  // predictably across acquisitions instead of doing unbounded work in a single lock take.
+  aged.sort((a, b) => a.displacedAtMs - b.displacedAtMs || (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+  for (const { entry } of aged.slice(0, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP)) {
     removeCrossProcessLockFile(join(directory, entry));
   }
 }
@@ -806,6 +831,7 @@ export function recordPendingRoleIntent(
       correlation_token: correlationToken,
       created_at: new Date(nowMs).toISOString(),
       expires_at: new Date(nowMs + ttlMs).toISOString(),
+      origin_cwd: cwd,
     };
     state.pending_role_intents = [...pendingRoleIntents, intent];
     context.assertOwnership();
@@ -862,6 +888,9 @@ export function bindPendingRoleIntentUnderLock(
           binding_state: 'bound',
           binding_claimant_token: claimantToken,
           bound_at: new Date(nowMs).toISOString(),
+          // Persist the authenticated origin workspace so shared-root recovery only
+          // completes/publishes for the exact origin workspace (fail-closed foreign).
+          origin_cwd: intent.origin_cwd ?? cwd,
         }
         : intent
     ));

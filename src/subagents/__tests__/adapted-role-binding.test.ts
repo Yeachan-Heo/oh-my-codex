@@ -275,6 +275,7 @@ describe('adapted role binding', () => {
           expires_at: new Date(NOW_MS - 1).toISOString(),
           binding_state: 'bound',
           bound_at: new Date(NOW_MS).toISOString(),
+          origin_cwd: cwd,
         }],
       }, null, 2)}\n`);
 
@@ -289,6 +290,111 @@ describe('adapted role binding', () => {
       })?.session_id, 'session-malformed');
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a stored claimant when bound_at is malformed and fails closed on omitted completion', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
+    const stateDir = getBaseStateDir(cwd);
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [{
+          role: 'architect',
+          session_id: 'session-boundat',
+          parent_thread_id: 'parent-boundat',
+          correlation_token: 'token-boundat',
+          created_at: new Date(NOW_MS).toISOString(),
+          expires_at: new Date(NOW_MS + 600_000).toISOString(),
+          binding_state: 'bound',
+          binding_claimant_token: 'stored-claimant',
+          bound_at: 'not-a-valid-date',
+          origin_cwd: cwd,
+        }],
+      }, null, 2)}\n`);
+
+      // A malformed bound_at must NOT erase the stored security identity.
+      const normalized = (await readSubagentTrackingState(cwd)).pending_role_intents[0];
+      assert.equal(normalized?.binding_claimant_token, 'stored-claimant');
+      assert.equal(normalized?.bound_at, undefined);
+
+      // Fail closed: an omitted caller token cannot complete the claimed journal.
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, {
+          sessionId: 'session-boundat',
+          parentThreadId: 'parent-boundat',
+          correlationToken: 'token-boundat',
+        }),
+        'claimant_mismatch',
+      );
+      assert.equal(listBoundAdaptedRoleIntents(cwd).length, 1);
+      // The exact stored token still completes.
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, {
+          sessionId: 'session-boundat',
+          parentThreadId: 'parent-boundat',
+          correlationToken: 'token-boundat',
+          claimantToken: 'stored-claimant',
+        }),
+        'completed',
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let a foreign workspace recover a retained intent under a shared state root', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-root-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    try {
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      // Under a shared OMX_STATE_ROOT, A and B share one tracker + marker store.
+      const sharedStateDir = getBaseStateDir(cwdA);
+      assert.equal(sharedStateDir, getBaseStateDir(cwdB));
+
+      assert.equal(recordPendingRoleIntent(cwdA, {
+        role: 'architect',
+        sessionId: 'session-a',
+        parentThreadId: 'parent-a',
+        correlationToken: 'token-a',
+        nowMs: NOW_MS,
+      }).ok, true);
+      // A binds (tracker committed) then crashes before publishing the marker.
+      assert.ok(bindPendingRoleIntentUnderLock(cwdA, {
+        sessionId: 'session-a',
+        parentThreadId: 'parent-a',
+        correlationToken: 'token-a',
+        nowMs: NOW_MS,
+      }, bindAdaptedTurn('session-a', 'child-a'))?.claimantToken);
+
+      // Workspace B recovery must NOT steal A's journal or publish an A-scoped marker.
+      recoverAdaptedRoleBindings(cwdB, sharedStateDir, NOW_MS);
+      assert.equal(listBoundAdaptedRoleIntents(cwdB).length, 1);
+      assert.equal(readRoleRoutingMarker(sharedStateDir, {
+        cwd: cwdA,
+        sessionId: 'session-a',
+        parentThreadId: 'parent-a',
+        nowMs: NOW_MS,
+      }), null);
+      assert.equal(existsSync(join(sharedStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), false);
+
+      // The origin workspace A recovery reconstructs the pair and completes it.
+      recoverAdaptedRoleBindings(cwdA, sharedStateDir, NOW_MS);
+      assert.deepEqual(listBoundAdaptedRoleIntents(cwdA), []);
+      assert.equal(readRoleRoutingMarker(sharedStateDir, {
+        cwd: cwdA,
+        sessionId: 'session-a',
+        parentThreadId: 'parent-a',
+        nowMs: NOW_MS,
+      })?.session_id, 'session-a');
+    } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
     }
   });
 

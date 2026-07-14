@@ -39,6 +39,11 @@ function buildAdaptedRoleRoutingMarker(
 export function recoverAdaptedRoleBindings(cwd: string, stateDir: string, nowMs?: number): void {
   const normalizedNowMs = normalizeNowMs(nowMs);
   for (const intent of listBoundAdaptedRoleIntents(cwd, normalizedNowMs)) {
+    // Fail-closed origin authentication: under a shared OMX_ROOT/OMX_STATE_ROOT/
+    // OMX_TEAM_STATE_ROOT the tracker is shared across workspaces. Only recover, publish a
+    // marker for, and complete an intent that belongs to THIS origin workspace; a foreign
+    // workspace's retained journal is left untouched.
+    if (intent.origin_cwd !== cwd) continue;
     try {
       writeRoleRoutingMarker(
         stateDir,

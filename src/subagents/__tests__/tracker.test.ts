@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 interface PendingRoleIntentRecordWorkerInput {
@@ -903,6 +903,53 @@ describe('subagents/tracker', () => {
       assert.equal(existsSync(freshReleasePath), true);
       assert.equal(existsSync(malformedTimestampPath), true);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds the displacement-artifact sweep by a fixed per-acquisition cap, oldest-first', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const overflow = 5;
+    const total = CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP + overflow;
+    const base = Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - total - 1;
+    const artifactPaths: string[] = [];
+    try {
+      for (let i = 0; i < total; i += 1) {
+        // Distinct ascending timestamps so oldest-first ordering is deterministic.
+        const path = `${lockPath}.${base + i}.fixture-${String(i).padStart(4, '0')}.quarantine`;
+        writeFileSync(path, `artifact-${i}\n`);
+        artifactPaths.push(path);
+      }
+      // First acquisition removes exactly CAP oldest artifacts (bounded work).
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'first'), 'first');
+      const remainingAfterFirst = artifactPaths.filter((path) => existsSync(path));
+      assert.equal(remainingAfterFirst.length, overflow);
+      // Survivors are the newest ones (deterministic oldest-first cap).
+      assert.deepEqual(remainingAfterFirst, artifactPaths.slice(CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP));
+      // A subsequent acquisition drains the remaining backlog.
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'second'), 'second');
+      assert.deepEqual(artifactPaths.filter((path) => existsSync(path)), []);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('treats an already-removed displaced release artifact as a clean terminal cleanup', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    try {
+      // Simulate a concurrent bounded sweep unlinking the in-flight displaced .release
+      // between the release rename and its restore attempt: cleanup must fence to a clean
+      // terminal outcome (never throw from cleanup after a successful publication).
+      __setCrossProcessQuarantineBarrierForTest((_lockPath, quarantinedPath) => {
+        rmSync(quarantinedPath, { force: true });
+      });
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'published'), 'published');
+      assert.equal(existsSync(crossProcessLockPath(resourcePath)), false);
+    } finally {
+      __setCrossProcessQuarantineBarrierForTest(null);
       await rm(cwd, { recursive: true, force: true });
     }
   });
