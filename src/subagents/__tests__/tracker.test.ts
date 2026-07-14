@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1146,6 +1146,75 @@ describe('subagents/tracker', () => {
         'sess-role-routing-marker',
       );
     } finally {
+      await rm(baseStateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a same-host claim after a reboot changes the boot id', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const pidStartId = readProcessStartIdentity(process.pid);
+    try {
+      if (!pidStartId) return;
+      const starttime = pidStartId.slice(pidStartId.indexOf(':') + 1);
+      const rebootedClaim = crossProcessLockClaim(
+        'pre-reboot-token',
+        process.pid,
+        Date.now(),
+        hostname(),
+        `pre-reboot-boot-id:${starttime}`,
+      );
+      await writeFile(lockPath, rebootedClaim);
+      assert.equal(
+        withCrossProcessFileLockSync(resourcePath, () => 'reboot recovered', { maxAttempts: 1, retryMs: 1 }),
+        'reboot recovered',
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fences a stalled role-routing marker writer after a successor publishes and leaves no temp artifacts', async () => {
+    const baseStateDir = await mkdtemp(join(tmpdir(), 'omx-role-routing-marker-'));
+    const markerPath = join(baseStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE);
+    const lockPath = crossProcessLockPath(markerPath);
+    const nowMs = Date.now();
+    let barrierRuns = 0;
+    const markerFor = (sessionId: string) => ({
+      schema_version: 1 as const,
+      cwd: '/workspace/project',
+      session_id: sessionId,
+      parent_thread_id: 'thread-parent',
+      observed_at: new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + 60_000).toISOString(),
+    });
+    try {
+      __setCrossProcessPublishBarrierForTest(() => {
+        barrierRuns += 1;
+        writeFileSync(
+          lockPath,
+          crossProcessLockClaim('stalled-marker-token', process.pid, nowMs - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'),
+        );
+        writeRoleRoutingMarker(baseStateDir, markerFor('sess-successor'));
+      });
+
+      assert.throws(() => writeRoleRoutingMarker(baseStateDir, markerFor('sess-stalled')), CrossProcessLockLostError);
+      assert.equal(barrierRuns, 1);
+      assert.equal(
+        readRoleRoutingMarker(baseStateDir, { cwd: '/workspace/project', sessionId: 'sess-successor', parentThreadId: 'thread-parent', nowMs })?.session_id,
+        'sess-successor',
+      );
+      assert.equal(
+        readRoleRoutingMarker(baseStateDir, { cwd: '/workspace/project', sessionId: 'sess-stalled', parentThreadId: 'thread-parent', nowMs }),
+        null,
+      );
+      assert.deepEqual(
+        readdirSync(baseStateDir).filter((entry) => entry.includes('.stage.') || entry.endsWith('.tmp')),
+        [],
+      );
+    } finally {
+      __setCrossProcessPublishBarrierForTest(null);
       await rm(baseStateDir, { recursive: true, force: true });
     }
   });
