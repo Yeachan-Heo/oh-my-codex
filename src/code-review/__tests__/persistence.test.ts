@@ -3001,13 +3001,14 @@ describe('final review artifact rendering', () => {
       assert.deepEqual(accepted, [], `accepted incomplete FINALIZED lanes: ${JSON.stringify(accepted)}`);
 
       const noChanges = finalArtifact(persistence.generateReviewId(), workingDirectory) as any;
+      const changedFile = structuredClone(noChanges.scope.files[0]);
       noChanges.scope.files = [];
       noChanges.scope.changed_lines = 0;
       noChanges.batches = [];
       noChanges.lanes = [];
       noChanges.diagnostics = [];
       noChanges.verdict = {
-        recommendation: 'APPROVE',
+        recommendation: 'COMMENT',
         architectural_status: 'CLEAR',
         scope_status: 'FULL_SCOPE',
         evidence_status: 'FULL_EVIDENCE',
@@ -3015,6 +3016,40 @@ describe('final review artifact rendering', () => {
         reasons: ['No changed files require review.'],
         clean: true,
       };
+
+      const invalidNoChanges = [
+        ['missing scope', (artifact: any) => { delete artifact.scope; }],
+        ['scope files', (artifact: any) => { artifact.scope.files = [changedFile]; }],
+        ['changed lines', (artifact: any) => { artifact.scope.changed_lines = 1; }],
+        ['batches', (artifact: any) => {
+          artifact.batches = [{
+            batch_id: 'unused-batch',
+            module_root: '.',
+            files: [],
+            changed_lines: 0,
+            oversized_single_file: false,
+          }];
+        }],
+        ['rule', (artifact: any) => { artifact.verdict.rule_id = 'CLEAN'; }],
+        ['approval', (artifact: any) => { artifact.verdict.recommendation = 'APPROVE'; }],
+      ] as const;
+      const acceptedNoChanges: string[] = [];
+      for (const [label, mutate] of invalidNoChanges) {
+        const artifact = structuredClone(noChanges);
+        artifact.review_id = persistence.generateReviewId();
+        mutate(artifact);
+        try {
+          await persistence.writeFinalReviewArtifacts(paths, artifact);
+          acceptedNoChanges.push(label);
+        } catch (error) {
+          assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED', label);
+        }
+      }
+      assert.deepEqual(
+        acceptedNoChanges,
+        [],
+        `accepted false zero-lane no-changes artifacts: ${JSON.stringify(acceptedNoChanges)}`,
+      );
       await persistence.writeFinalReviewArtifacts(paths, noChanges);
     });
   });

@@ -383,6 +383,15 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
   if (status === 'FINALIZED' && lanes.some((lane) => lane.status !== 'COMPLETE')) {
     invalid('finalized review requires complete lanes');
   }
+  if (status === 'FINALIZED' && lanes.length === 0
+    && (scope === undefined
+      || scope.files.length !== 0
+      || scope.changed_lines !== 0
+      || batches.length !== 0
+      || verdict.rule_id !== 'NO_CHANGES'
+      || verdict.recommendation !== 'COMMENT')) {
+    invalid('zero-lane finalized review must be a no-changes result');
+  }
 
   validateReviewTopology(
     { scope, batches, lanes, diagnostics },
