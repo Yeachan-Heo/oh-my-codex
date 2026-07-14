@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { getBaseStateDir } from '../../state/paths.js';
 import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
@@ -1397,6 +1398,83 @@ describe('subagents/tracker', () => {
       assert.equal(results.filter(isSingleFlightConflict).length, 1);
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves expired foreign-origin journals through successful pending-role lifecycle writes', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-tracker-shared-writeback-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    try {
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
+      assert.equal(getBaseStateDir(cwdA), getBaseStateDir(cwdB));
+
+      const foreignResult = recordPendingRoleIntent(cwdA, {
+        role: 'architect',
+        sessionId: 'session-foreign',
+        parentThreadId: 'parent-foreign',
+        correlationToken: 'token-foreign',
+        ttlMs: 1,
+        nowMs: 1_000,
+      });
+      assert.equal(foreignResult.ok, true);
+      if (!foreignResult.ok) throw new Error('Expected the foreign role intent to record.');
+      const foreignIntent = foreignResult.intent;
+      const assertForeignRetained = async () => {
+        const retained = (await readSubagentTrackingState(cwdB)).pending_role_intents
+          .find((intent) => intent.correlation_token === foreignIntent.correlation_token);
+        assert.deepEqual(retained, foreignIntent);
+      };
+      const nowMs = 1_002;
+
+      assert.equal(recordPendingRoleIntent(cwdB, {
+        role: 'critic',
+        sessionId: 'session-bound',
+        parentThreadId: 'parent-bound',
+        correlationToken: 'token-bound',
+        nowMs,
+      }).ok, true);
+      await assertForeignRetained();
+
+      const binding = bindPendingRoleIntentUnderLock(cwdB, {
+        sessionId: 'session-bound',
+        parentThreadId: 'parent-bound',
+        correlationToken: 'token-bound',
+        nowMs,
+      }, (state) => state);
+      assert.ok(binding?.claimantToken);
+      await assertForeignRetained();
+
+      assert.equal(completeAdaptedRoleBinding(cwdB, {
+        sessionId: 'session-bound',
+        parentThreadId: 'parent-bound',
+        correlationToken: 'token-bound',
+        claimantToken: binding?.claimantToken,
+        nowMs,
+      }), 'completed');
+      await assertForeignRetained();
+
+      assert.equal(recordPendingRoleIntent(cwdB, {
+        role: 'critic',
+        sessionId: 'session-consume',
+        parentThreadId: 'parent-consume',
+        correlationToken: 'token-consume',
+        nowMs,
+      }).ok, true);
+      assert.deepEqual(consumePendingRoleIntent(cwdB, {
+        sessionId: 'session-consume',
+        parentThreadId: 'parent-consume',
+        correlationToken: 'token-consume',
+        nowMs,
+      }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
+      await assertForeignRetained();
+    } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
     }
   });
 

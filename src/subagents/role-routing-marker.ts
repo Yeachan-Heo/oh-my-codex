@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { RoleRoutingUnavailableMarker } from '../leader/contract.js';
-import { withCrossProcessFileLockSync } from './tracker.js';
+import { canonicalizeOriginCwd, withCrossProcessFileLockSync } from './tracker.js';
 
 export const NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE = 'native-subagent-role-routing.json';
 
@@ -93,6 +93,10 @@ function markerSortTimestamp(marker: RoleRoutingUnavailableMarker): number {
   return Number.isFinite(observedAtMs) ? observedAtMs : Number.NEGATIVE_INFINITY;
 }
 
+function sameCanonicalCwd(a: string | undefined, b: string | undefined): boolean {
+  return canonicalizeOriginCwd(a) === canonicalizeOriginCwd(b);
+}
+
 // Session-isolated, expiring, cross-process-safe store. File shape:
 //   { schema_version: 1, markers: RoleRoutingUnavailableMarker[] }
 export function writeRoleRoutingMarker(baseStateDir: string, marker: RoleRoutingUnavailableMarker): void {
@@ -105,10 +109,12 @@ export function writeRoleRoutingMarker(baseStateDir: string, marker: RoleRouting
   withCrossProcessFileLockSync(markerStorePath(baseStateDir), (context) => {
     const nowMs = Date.now();
     const store = readMarkerStore(baseStateDir);
-    const markers = store.markers.filter((candidate) => (
-      !isExpired(candidate, nowMs)
-      && (candidate.session_id !== normalizedMarker.session_id || (candidate.parent_thread_id ?? '') !== parentThreadId)
-    ));
+    const markers = store.markers.filter((candidate) => {
+      if (!sameCanonicalCwd(candidate.cwd, normalizedMarker.cwd)) return true;
+      if (isExpired(candidate, nowMs)) return false;
+      return candidate.session_id !== normalizedMarker.session_id
+        || (candidate.parent_thread_id ?? '') !== parentThreadId;
+    });
     markers.push(normalizedMarker);
     context.assertOwnership();
     writeMarkerStore(baseStateDir, {
@@ -137,7 +143,7 @@ export function readRoleRoutingMarker(
     .filter((marker) => (
       !isExpired(marker, nowMs)
       && marker.session_id === sessionId
-      && (!marker.cwd || marker.cwd === cwd)
+      && (!marker.cwd || sameCanonicalCwd(marker.cwd, cwd))
       && (!parentThreadId || marker.parent_thread_id === parentThreadId)
     ))
     .sort((left, right) => markerSortTimestamp(right) - markerSortTimestamp(left))[0] ?? null;

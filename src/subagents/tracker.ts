@@ -819,6 +819,16 @@ function isExpiredPendingRoleIntent(intent: PendingRoleIntent, nowMs: number): b
   return !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs;
 }
 
+function pendingRoleIntentPredicates(canonicalOrigin: string | null, nowMs: number) {
+  const isOwn = (intent: PendingRoleIntent) => canonicalizeOriginCwd(intent.origin_cwd) === canonicalOrigin;
+  const shouldPruneExpired = (intent: PendingRoleIntent) => (
+    isOwn(intent)
+    && intent.binding_state !== 'bound'
+    && isExpiredPendingRoleIntent(intent, nowMs)
+  );
+  return { isOwn, shouldPruneExpired };
+}
+
 export function recordPendingRoleIntent(
   cwd: string,
   input: {
@@ -838,15 +848,21 @@ export function recordPendingRoleIntent(
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
+  const canonicalOrigin = canonicalizeOriginCwd(cwd);
+  const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(canonicalOrigin, nowMs);
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
-    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
-    if (pendingRoleIntents.some((intent) => intent.session_id === sessionId && intent.parent_thread_id === parentThreadId)) {
+    const all = state.pending_role_intents;
+    if (all.some((intent) => (
+      isOwn(intent)
+      && intent.session_id === sessionId
+      && intent.parent_thread_id === parentThreadId
+      && (intent.binding_state === 'bound' || !isExpiredPendingRoleIntent(intent, nowMs))
+    ))) {
       return { ok: false, reason: 'single_flight_conflict' };
     }
 
     const ttlMs = typeof input.ttlMs === 'number' && Number.isFinite(input.ttlMs) ? input.ttlMs : 10 * 60_000;
-    const originCwd = canonicalizeOriginCwd(cwd);
     const intent: PendingRoleIntent = {
       role,
       session_id: sessionId,
@@ -855,9 +871,9 @@ export function recordPendingRoleIntent(
       created_at: new Date(nowMs).toISOString(),
       expires_at: new Date(nowMs + ttlMs).toISOString(),
       // Store the canonical origin workspace so it authenticates future bind/complete/recover.
-      ...(originCwd ? { origin_cwd: originCwd } : {}),
+      ...(canonicalOrigin ? { origin_cwd: canonicalOrigin } : {}),
     };
-    state.pending_role_intents = [...pendingRoleIntents, intent];
+    state.pending_role_intents = [...all.filter((candidate) => !shouldPruneExpired(candidate)), intent];
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, state, context.publish);
     return { ok: true, intent };
@@ -880,24 +896,19 @@ export function bindPendingRoleIntentUnderLock(
   if (canonicalOrigin === null) return null;
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
-    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
-    const matchedIntent = pendingRoleIntents.find((intent) => (
-      intent.session_id === sessionId
+    const all = state.pending_role_intents;
+    const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(canonicalOrigin, nowMs);
+    const matchedIntent = all.find((intent) => (
+      isOwn(intent)
+      && intent.session_id === sessionId
       && intent.parent_thread_id === parentThreadId
       && intent.correlation_token === correlationToken
-      // Origin fence (shared-root safety): only the exact origin workspace may match, before
-      // ANY role/claimant disclosure or binding. Applies to pending and already-bound alike.
-      && canonicalizeOriginCwd(intent.origin_cwd) === canonicalOrigin
+      && (intent.binding_state === 'bound' || !isExpiredPendingRoleIntent(intent, nowMs))
     )) ?? null;
 
     if (!matchedIntent) {
-      // Housekeeping prunes only THIS origin's expired intents; a foreign/no-match bind
-      // attempt never mutates another workspace's journals in the shared tracker.
-      const retained = state.pending_role_intents.filter((intent) => !(
-        isExpiredPendingRoleIntent(intent, nowMs)
-        && canonicalizeOriginCwd(intent.origin_cwd) === canonicalOrigin
-      ));
-      if (retained.length !== state.pending_role_intents.length) {
+      const retained = all.filter((intent) => !shouldPruneExpired(intent));
+      if (retained.length !== all.length) {
         state.pending_role_intents = retained;
         context.assertOwnership();
         writeSubagentTrackingStateSync(cwd, state, context.publish);
@@ -919,19 +930,19 @@ export function bindPendingRoleIntentUnderLock(
 
     const claimantToken = randomUUID();
     const boundState = bind(state, adaptedIntent);
-    boundState.pending_role_intents = pendingRoleIntents.map((intent) => (
-      intent === matchedIntent
-        ? {
-          ...intent,
-          binding_state: 'bound',
-          binding_claimant_token: claimantToken,
-          bound_at: new Date(nowMs).toISOString(),
-          // Persist the authenticated origin workspace so shared-root recovery only
-          // completes/publishes for the exact origin workspace (fail-closed foreign).
-          origin_cwd: matchedIntent.origin_cwd ?? canonicalOrigin,
-        }
-        : intent
-    ));
+    boundState.pending_role_intents = all
+      .filter((intent) => !shouldPruneExpired(intent))
+      .map((intent) => (
+        intent === matchedIntent
+          ? {
+            ...matchedIntent,
+            binding_state: 'bound',
+            binding_claimant_token: claimantToken,
+            bound_at: new Date(nowMs).toISOString(),
+            origin_cwd: matchedIntent.origin_cwd ?? canonicalOrigin,
+          }
+          : intent
+      ));
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, boundState, context.publish);
     return { ...adaptedIntent, claimantToken, alreadyBound: false };
@@ -950,22 +961,20 @@ export function consumePendingRoleIntent(
   if (canonicalOrigin === null) return null;
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
-    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
-    const consumed = pendingRoleIntents.find((intent) => (
-      intent.binding_state !== 'bound'
+    const all = state.pending_role_intents;
+    const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(canonicalOrigin, nowMs);
+    const consumed = all.find((intent) => (
+      isOwn(intent)
+      && intent.binding_state !== 'bound'
+      && !isExpiredPendingRoleIntent(intent, nowMs)
       && intent.session_id === sessionId
       && intent.parent_thread_id === parentThreadId
       && intent.correlation_token === correlationToken
-      // Origin fence: only the exact origin workspace may consume its own intent.
-      && canonicalizeOriginCwd(intent.origin_cwd) === canonicalOrigin
     )) ?? null;
 
     if (!consumed) {
-      const retained = state.pending_role_intents.filter((intent) => !(
-        isExpiredPendingRoleIntent(intent, nowMs)
-        && canonicalizeOriginCwd(intent.origin_cwd) === canonicalOrigin
-      ));
-      if (retained.length !== state.pending_role_intents.length) {
+      const retained = all.filter((intent) => !shouldPruneExpired(intent));
+      if (retained.length !== all.length) {
         state.pending_role_intents = retained;
         context.assertOwnership();
         writeSubagentTrackingStateSync(cwd, state, context.publish);
@@ -973,7 +982,9 @@ export function consumePendingRoleIntent(
       return null;
     }
 
-    state.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== consumed);
+    state.pending_role_intents = all
+      .filter((intent) => !shouldPruneExpired(intent))
+      .filter((intent) => intent !== consumed);
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, state, context.publish);
     return { role: consumed.role, provenanceKind: OMX_ADAPTED_PROVENANCE };
@@ -993,21 +1004,18 @@ export function completeAdaptedRoleBinding(
   if (canonicalOrigin === null) return 'not_found';
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
-    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
-    const boundIntent = pendingRoleIntents.find((intent) => (
-      intent.binding_state === 'bound'
+    const all = state.pending_role_intents;
+    const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(canonicalOrigin, nowMs);
+    const boundIntent = all.find((intent) => (
+      isOwn(intent)
+      && intent.binding_state === 'bound'
       && intent.session_id === sessionId
       && intent.parent_thread_id === parentThreadId
       && (correlationToken === undefined || intent.correlation_token === correlationToken)
-      // Origin fence: only the exact origin workspace may complete its own bound journal.
-      && canonicalizeOriginCwd(intent.origin_cwd) === canonicalOrigin
     )) ?? null;
     if (!boundIntent) {
-      const retained = state.pending_role_intents.filter((intent) => !(
-        isExpiredPendingRoleIntent(intent, nowMs)
-        && canonicalizeOriginCwd(intent.origin_cwd) === canonicalOrigin
-      ));
-      if (retained.length !== state.pending_role_intents.length) {
+      const retained = all.filter((intent) => !shouldPruneExpired(intent));
+      if (retained.length !== all.length) {
         state.pending_role_intents = retained;
         context.assertOwnership();
         writeSubagentTrackingStateSync(cwd, state, context.publish);
@@ -1024,7 +1032,9 @@ export function completeAdaptedRoleBinding(
       }
     }
 
-    state.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== boundIntent);
+    state.pending_role_intents = all
+      .filter((intent) => !shouldPruneExpired(intent))
+      .filter((intent) => intent !== boundIntent);
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, state, context.publish);
     return 'completed';

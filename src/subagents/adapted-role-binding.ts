@@ -28,7 +28,7 @@ function buildAdaptedRoleRoutingMarker(
 ): RoleRoutingUnavailableMarker {
   return {
     schema_version: 1,
-    cwd,
+    cwd: canonicalizeOriginCwd(cwd) ?? cwd,
     session_id: sessionId,
     parent_thread_id: parentThreadId,
     observed_at: new Date(nowMs).toISOString(),

@@ -13,6 +13,7 @@ import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeR
 import {
   bindPendingRoleIntentUnderLock,
   completeAdaptedRoleBinding,
+  consumePendingRoleIntent,
   listBoundAdaptedRoleIntents,
   OMX_ADAPTED_PROVENANCE,
   recordPendingRoleIntent,
@@ -345,6 +346,181 @@ describe('adapted role binding', () => {
     }
   });
 
+  it('keeps same-scope markers and tracker evidence isolated by canonical workspace under a shared state root', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-markers-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    try {
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
+      const sharedStateDir = getBaseStateDir(cwdA);
+      assert.equal(sharedStateDir, getBaseStateDir(cwdB));
+      const scope = { sessionId: 'session-shared-marker', parentThreadId: 'parent-shared-marker', nowMs: NOW_MS };
+
+      assert.equal(recordPendingRoleIntent(cwdA, {
+        role: 'architect', ...scope, correlationToken: 'token-a',
+      }).ok, true);
+      assert.equal(recordPendingRoleIntent(cwdB, {
+        role: 'critic', ...scope, correlationToken: 'token-b',
+      }).ok, true);
+
+      assert.deepEqual(bindAndPublishAdaptedRole(cwdA, sharedStateDir, {
+        correlationSessionId: scope.sessionId,
+        parentThreadId: scope.parentThreadId,
+        correlationToken: 'token-a',
+        nowMs: NOW_MS,
+      }, bindAdaptedTurn(scope.sessionId, 'child-a')), { role: 'architect' });
+      assert.deepEqual(bindAndPublishAdaptedRole(cwdB, sharedStateDir, {
+        correlationSessionId: scope.sessionId,
+        parentThreadId: scope.parentThreadId,
+        correlationToken: 'token-b',
+        nowMs: NOW_MS,
+      }, bindAdaptedTurn(scope.sessionId, 'child-b')), { role: 'critic' });
+
+      // B's completed journal removal must not overwrite A's same-scope marker or tracker evidence.
+      const state = await readSubagentTrackingState(cwdA);
+      assert.equal(state.sessions[scope.sessionId]?.threads['child-a']?.role, 'architect');
+      assert.equal(state.sessions[scope.sessionId]?.threads['child-b']?.role, 'critic');
+      assert.deepEqual(state.pending_role_intents, []);
+      assert.equal(readRoleRoutingMarker(sharedStateDir, {
+        cwd: cwdA, sessionId: scope.sessionId, parentThreadId: scope.parentThreadId, nowMs: NOW_MS,
+      })?.cwd, cwdA);
+      assert.equal(readRoleRoutingMarker(sharedStateDir, {
+        cwd: cwdB, sessionId: scope.sessionId, parentThreadId: scope.parentThreadId, nowMs: NOW_MS,
+      })?.cwd, cwdB);
+    } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('retains expired foreign journals through every successful shared-root writeback', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-writeback-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    try {
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
+      assert.equal(getBaseStateDir(cwdA), getBaseStateDir(cwdB));
+
+      const foreignResult = recordPendingRoleIntent(cwdA, {
+        role: 'architect',
+        sessionId: 'session-expired-a',
+        parentThreadId: 'parent-expired-a',
+        correlationToken: 'token-expired-a',
+        ttlMs: 1,
+        nowMs: NOW_MS,
+      });
+      assert.equal(foreignResult.ok, true);
+      if (!foreignResult.ok) throw new Error('Expected the foreign role intent to record.');
+      const expiredForeignIntent = foreignResult.intent;
+      const lateNowMs = NOW_MS + 2;
+      const assertForeignRetained = async () => {
+        const foreignIntent = (await readSubagentTrackingState(cwdB)).pending_role_intents
+          .find((intent) => intent.correlation_token === expiredForeignIntent.correlation_token);
+        assert.deepEqual(foreignIntent, expiredForeignIntent);
+      };
+
+      assert.equal(recordPendingRoleIntent(cwdB, {
+        role: 'critic',
+        sessionId: 'session-bound-b',
+        parentThreadId: 'parent-bound-b',
+        correlationToken: 'token-bound-b',
+        nowMs: lateNowMs,
+      }).ok, true);
+      await assertForeignRetained();
+
+      const bound = bindPendingRoleIntentUnderLock(cwdB, {
+        sessionId: 'session-bound-b',
+        parentThreadId: 'parent-bound-b',
+        correlationToken: 'token-bound-b',
+        nowMs: lateNowMs,
+      }, bindAdaptedTurn('session-bound-b', 'child-bound-b'));
+      assert.ok(bound?.claimantToken);
+      await assertForeignRetained();
+
+      assert.equal(completeAdaptedRoleBinding(cwdB, {
+        sessionId: 'session-bound-b',
+        parentThreadId: 'parent-bound-b',
+        correlationToken: 'token-bound-b',
+        claimantToken: bound?.claimantToken,
+        nowMs: lateNowMs,
+      }), 'completed');
+      await assertForeignRetained();
+
+      assert.equal(recordPendingRoleIntent(cwdB, {
+        role: 'critic',
+        sessionId: 'session-consume-b',
+        parentThreadId: 'parent-consume-b',
+        correlationToken: 'token-consume-b',
+        nowMs: lateNowMs,
+      }).ok, true);
+      await assertForeignRetained();
+      assert.deepEqual(consumePendingRoleIntent(cwdB, {
+        sessionId: 'session-consume-b',
+        parentThreadId: 'parent-consume-b',
+        correlationToken: 'token-consume-b',
+        nowMs: lateNowMs,
+      }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
+      await assertForeignRetained();
+    } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('allows one same-scope winner per origin and lets a bound A journal coexist with B', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-single-flight-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    const scope = { sessionId: 'session-single-flight', parentThreadId: 'parent-single-flight', nowMs: NOW_MS };
+    try {
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
+      assert.equal(getBaseStateDir(cwdA), getBaseStateDir(cwdB));
+
+      assert.equal(recordPendingRoleIntent(cwdA, {
+        role: 'architect', ...scope, correlationToken: 'token-a',
+      }).ok, true);
+      assert.equal(recordPendingRoleIntent(cwdB, {
+        role: 'critic', ...scope, correlationToken: 'token-b',
+      }).ok, true);
+      assert.deepEqual(recordPendingRoleIntent(cwdA, {
+        role: 'critic', ...scope, correlationToken: 'token-a-second',
+      }), { ok: false, reason: 'single_flight_conflict' });
+      assert.deepEqual(recordPendingRoleIntent(cwdB, {
+        role: 'architect', ...scope, correlationToken: 'token-b-second',
+      }), { ok: false, reason: 'single_flight_conflict' });
+
+      const boundA = bindPendingRoleIntentUnderLock(cwdA, {
+        ...scope,
+        correlationToken: 'token-a',
+      }, bindAdaptedTurn(scope.sessionId, 'child-a'));
+      assert.ok(boundA?.claimantToken);
+      assert.deepEqual(consumePendingRoleIntent(cwdB, {
+        ...scope,
+        correlationToken: 'token-b',
+      }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
+
+      // A's bound journal still occupies only A's scope; B can independently record (S, P).
+      assert.equal(recordPendingRoleIntent(cwdB, {
+        role: 'critic', ...scope, correlationToken: 'token-b-after-a-bound',
+      }).ok, true);
+    } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
   it('does not let a foreign workspace recover a retained intent under a shared state root', async () => {
     const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-root-'));
     const cwdA = join(sharedRoot, 'workspace-a');
@@ -352,6 +528,8 @@ describe('adapted role binding', () => {
     const previousStateRoot = process.env.OMX_STATE_ROOT;
     try {
       process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
       // Under a shared OMX_STATE_ROOT, A and B share one tracker + marker store.
       const sharedStateDir = getBaseStateDir(cwdA);
       assert.equal(sharedStateDir, getBaseStateDir(cwdB));
@@ -470,6 +648,21 @@ describe('adapted role binding', () => {
     const aliasCwd = join(aliasParent, 'alias');
     try {
       await symlink(realCwd, aliasCwd);
+      const stateDir = getBaseStateDir(realCwd);
+      writeRoleRoutingMarker(stateDir, {
+        schema_version: 1,
+        cwd: realCwd,
+        session_id: 'session-alias-marker',
+        parent_thread_id: 'parent-alias-marker',
+        observed_at: new Date(NOW_MS).toISOString(),
+        expires_at: new Date(NOW_MS + 600_000).toISOString(),
+      });
+      assert.equal(readRoleRoutingMarker(stateDir, {
+        cwd: aliasCwd,
+        sessionId: 'session-alias-marker',
+        parentThreadId: 'parent-alias-marker',
+        nowMs: NOW_MS,
+      })?.cwd, realCwd);
       const scope = { sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'token-alias', nowMs: NOW_MS };
       // Record via the real path.
       assert.equal(recordPendingRoleIntent(realCwd, { role: 'architect', ...scope }).ok, true);
@@ -501,6 +694,19 @@ describe('adapted role binding', () => {
         sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
       }, callback), null);
       assert.equal(callbackRuns, 0);
+      assert.equal(consumePendingRoleIntent('   ', {
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+      }), null);
+      assert.equal(completeAdaptedRoleBinding('   ', {
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+      }), 'not_found');
+      assert.equal(recordPendingRoleIntent(cwd, {
+        role: 'critic',
+        sessionId: 'session-normal',
+        parentThreadId: 'parent-normal',
+        correlationToken: 'token-normal',
+        nowMs: NOW_MS,
+      }).ok, true);
 
       // A stored intent with NO origin cannot be authenticated -> primary bind returns null.
       await mkdir(stateDir, { recursive: true });
