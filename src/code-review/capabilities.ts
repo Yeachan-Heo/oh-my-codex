@@ -38,7 +38,9 @@ export interface CapabilityObservation {
   capability: Capability;
   execution: 'NATIVE' | 'ACCEPTED_EQUIVALENT' | 'FALLBACK' | 'UNAVAILABLE' | 'SKIPPED';
   outcome: 'PASS' | 'FAIL' | 'TIMED_OUT' | 'MALFORMED' | 'NOT_RUN';
-  empty_result?: boolean;
+  source_ref?: string;
+  program?: string;
+  args?: string[];
 }
 
 export interface CapabilityEvaluation {
@@ -74,10 +76,9 @@ export interface BuildCapabilityPlanOptions {
   trustedFrozenConfig?: FrozenCapabilityConfig;
 }
 
-export interface HookApprovalLedgerEntry {
+export interface HookOwnedApprovalLedgerEntry {
   approval: Record<string, unknown>;
   provenance: {
-    owner: 'CODEX_NATIVE_HOOK';
     event_ref: string;
     nonce: string;
   };
@@ -117,7 +118,18 @@ export interface EquivalentResolutionContext {
 export interface ResolveTrustedEquivalentsOptions {
   requests: unknown;
   context: EquivalentResolutionContext;
-  explicitApprovalLedger?: readonly unknown[];
+}
+
+export interface HookApprovalLedgerIdentity {
+  session_id: string;
+  root_thread_id: string;
+  turn_id: string;
+}
+
+export interface TrustedEquivalentDependencies {
+  loadHookOwnedApprovalLedger?: (
+    identity: HookApprovalLedgerIdentity,
+  ) => Promise<readonly unknown[]>;
   existingConsumptions?: readonly unknown[];
   readBaseContract?: (workingDirectory: string, args: readonly string[]) => Promise<string>;
   now?: Date;
@@ -127,6 +139,7 @@ export interface ResolveTrustedEquivalentsOptions {
 export type CapabilitiesErrorCode =
   | 'INVALID_CAPABILITY_CONFIG'
   | 'INVALID_EQUIVALENT_REQUEST'
+  | 'INVALID_EQUIVALENT_CONTEXT'
   | 'EQUIVALENT_CONSUMPTION_CONFLICT';
 
 export class CapabilitiesError extends Error {
@@ -400,15 +413,107 @@ function failedEvaluation(reasons: string[]): CapabilityEvaluation {
   };
 }
 
+function isObservationCapability(value: unknown): value is Capability {
+  return CAPABILITY_ORDER.some((capability) => capability === value);
+}
+
+function isObservationOutcome(
+  value: unknown,
+): value is CapabilityObservation['outcome'] {
+  return value === 'PASS'
+    || value === 'FAIL'
+    || value === 'TIMED_OUT'
+    || value === 'MALFORMED'
+    || value === 'NOT_RUN';
+}
+
+function parseCapabilityObservation(value: unknown): CapabilityObservation | null {
+  if (!isPlainObject(value)
+    || !isObservationCapability(value.capability)
+    || !isObservationOutcome(value.outcome)) return null;
+  const execution = value.execution;
+  if (execution === 'ACCEPTED_EQUIVALENT') {
+    if (!hasExactKeys(value, [
+      'capability', 'execution', 'outcome', 'source_ref', 'program', 'args',
+    ]) || !isCapability(value.capability) || value.outcome !== 'PASS') return null;
+    const sourceRef = boundedString(value.source_ref);
+    const program = safeProgram(value.program);
+    const args = safeArgs(value.args);
+    if (sourceRef === null || program === null || args === null) return null;
+    return {
+      capability: value.capability,
+      execution,
+      outcome: 'PASS',
+      source_ref: sourceRef,
+      program,
+      args,
+    };
+  }
+  if (!hasExactKeys(value, ['capability', 'execution', 'outcome'])) return null;
+  if (execution === 'NATIVE') {
+    return value.outcome === 'NOT_RUN'
+      ? null
+      : { capability: value.capability, execution, outcome: value.outcome };
+  }
+  if (execution === 'FALLBACK') {
+    return isCapability(value.capability) || value.outcome === 'NOT_RUN'
+      ? null
+      : { capability: value.capability, execution, outcome: value.outcome };
+  }
+  if (execution === 'UNAVAILABLE' || execution === 'SKIPPED') {
+    return value.outcome === 'NOT_RUN'
+      ? { capability: value.capability, execution, outcome: 'NOT_RUN' }
+      : null;
+  }
+  return null;
+}
+
+function parseAcceptedEquivalentList(value: unknown): AcceptedEquivalent[] | null {
+  if (!Array.isArray(value) || value.length > 128) return null;
+  const accepted: AcceptedEquivalent[] = [];
+  for (const entry of value) {
+    if (!isPlainObject(entry)
+      || !hasExactKeys(entry, ['capability', 'program', 'args', 'source', 'source_ref'])
+      || !isCapability(entry.capability)
+      || (entry.source !== 'EXPLICIT_USER' && entry.source !== 'REPO_CONTRACT')) return null;
+    const sourceRef = boundedString(entry.source_ref);
+    const program = safeProgram(entry.program);
+    const args = safeArgs(entry.args);
+    if (sourceRef === null || program === null || args === null) return null;
+    accepted.push({
+      capability: entry.capability,
+      source: entry.source,
+      source_ref: sourceRef,
+      program,
+      args,
+    });
+  }
+  const identities = accepted.map((entry) => `${entry.capability}\0${entry.source_ref}`);
+  return new Set(identities).size === identities.length ? accepted : null;
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function evaluateCapabilityEvidence(
   plan: CapabilityPlan,
   observations: readonly CapabilityObservation[],
+  acceptedEquivalents: readonly AcceptedEquivalent[] = [],
 ): CapabilityEvaluation {
   const applicable = plan.capabilities.filter((entry) => entry.applicability === 'APPLICABLE');
   const applicableNames = new Set(applicable.map((entry) => entry.capability));
   const byCapability = new Map<Capability, CapabilityObservation>();
   const invalid: string[] = [];
-  for (const observation of observations) {
+  if (!Array.isArray(observations)) return failedEvaluation(['OBSERVATIONS_MALFORMED']);
+  const accepted = parseAcceptedEquivalentList(acceptedEquivalents);
+  if (accepted === null) invalid.push('ACCEPTED_EQUIVALENTS_MALFORMED');
+  for (let index = 0; index < observations.length; index += 1) {
+    const observation = parseCapabilityObservation(observations[index]);
+    if (observation === null) {
+      invalid.push(`OBSERVATION_MALFORMED:${index}`);
+      continue;
+    }
     if (!applicableNames.has(observation.capability)) {
       invalid.push(`UNEXPECTED_CAPABILITY:${observation.capability}`);
       continue;
@@ -425,22 +530,22 @@ export function evaluateCapabilityEvidence(
     }
   }
 
-  const unavailableCapabilities = applicable
-    .filter((entry): entry is CapabilityPlanEntry & { capability: 'LSP' | 'AST' } =>
-      (entry.capability === 'LSP' || entry.capability === 'AST')
-      && byCapability.get(entry.capability)?.execution === 'UNAVAILABLE',
-    );
-  for (const unavailable of unavailableCapabilities) {
-    const fallbacks = applicable.filter((entry) =>
-      entry.fallback_for.includes(unavailable.capability),
-    );
-    if (fallbacks.length === 0) {
-      invalid.push(`${unavailable.capability}_FALLBACK_UNAVAILABLE`);
-      continue;
+  for (const entry of applicable) {
+    const observation = byCapability.get(entry.capability);
+    if (observation?.execution === 'FALLBACK'
+      && !entry.fallback_for.some((target) =>
+        byCapability.get(target)?.execution === 'UNAVAILABLE')) {
+      invalid.push(`UNEXPECTED_FALLBACK:${entry.capability}`);
     }
-    for (const fallback of fallbacks) {
-      if (!byCapability.has(fallback.capability)) {
-        invalid.push(`MISSING_FALLBACK:${fallback.capability}`);
+    if (observation?.execution === 'ACCEPTED_EQUIVALENT') {
+      const matches = (accepted ?? []).filter((equivalent) =>
+        equivalent.capability === observation.capability
+        && equivalent.source_ref === observation.source_ref
+        && equivalent.program === observation.program
+        && sameStringArray(equivalent.args, observation.args ?? []),
+      );
+      if (matches.length !== 1) {
+        invalid.push(`UNACCEPTED_EQUIVALENT:${entry.capability}`);
       }
     }
   }
@@ -458,20 +563,23 @@ export function evaluateCapabilityEvidence(
       const unavailableCapability = entry.capability as 'LSP' | 'AST';
       degraded = true;
       reasons.push(`${entry.capability}_UNAVAILABLE`);
-      if (observation.outcome !== 'NOT_RUN'
-        && !(observation.outcome === 'PASS' && observation.empty_result === true)) {
-        hardFailure = true;
-        reasons.push(`${entry.capability}_UNAVAILABLE_RESULT_INVALID`);
-      }
       const fallbacks = applicable.filter((candidate) =>
         candidate.fallback_for.includes(unavailableCapability),
       );
-      if (fallbacks.some((fallback) => {
+      if (!fallbacks.some((fallback) => {
         const result = byCapability.get(fallback.capability);
-        return result?.execution !== 'FALLBACK' || result.outcome !== 'PASS';
+        return result?.execution === 'FALLBACK' && result.outcome === 'PASS';
       })) {
         hardFailure = true;
         reasons.push(`${entry.capability}_FALLBACK_INCOMPLETE`);
+      }
+      continue;
+    }
+    if (observation.execution === 'FALLBACK') {
+      degraded = true;
+      if (observation.outcome !== 'PASS') {
+        hardFailure = true;
+        reasons.push(`${entry.capability}_FALLBACK_${observation.outcome}`);
       }
       continue;
     }
@@ -481,11 +589,6 @@ export function evaluateCapabilityEvidence(
       hardFailure = true;
       reasons.push(`${entry.capability}_${observation.outcome}`);
       continue;
-    }
-    if ((entry.capability === 'LSP' || entry.capability === 'AST')
-      && observation.execution === 'FALLBACK') {
-      degraded = true;
-      reasons.push(`${entry.capability}_FALLBACK_USED`);
     }
   }
 
@@ -540,9 +643,9 @@ function parseHookApproval(value: unknown): ParsedHookApproval | null {
   if (!hasExactKeys(approval, [
     'schema_version', 'session_id', 'root_thread_id', 'turn_id', 'capability', 'source_ref',
     'program', 'args', 'approved_at', 'nonce',
-  ]) || !hasExactKeys(provenance, ['owner', 'event_ref', 'nonce'])
+  ]) || !hasExactKeys(provenance, ['event_ref', 'nonce'])
     || approval.schema_version !== 1 || !isCapability(approval.capability)
-    || provenance.owner !== 'CODEX_NATIVE_HOOK') return null;
+  ) return null;
   const sessionId = boundedString(approval.session_id, 160);
   const rootThreadId = boundedString(approval.root_thread_id, 160);
   const turnId = boundedString(approval.turn_id, 160);
@@ -567,6 +670,17 @@ function parseHookApproval(value: unknown): ParsedHookApproval | null {
     approved_at: approvedAt,
     nonce,
   };
+}
+
+function parseHookApprovalLedger(value: unknown): ParsedHookApproval[] | null {
+  if (!Array.isArray(value) || value.length > 128) return null;
+  const entries: ParsedHookApproval[] = [];
+  for (const candidate of value) {
+    const entry = parseHookApproval(candidate);
+    if (entry === null) return null;
+    entries.push(entry);
+  }
+  return entries;
 }
 
 interface EquivalentConsumptionInput {
@@ -731,12 +845,6 @@ function parseRepositoryContract(text: string): RepositoryEquivalent[] | null {
   return equivalents;
 }
 
-function rawApprovalMatches(value: unknown, request: AcceptedEquivalentRequest): boolean {
-  return isPlainObject(value) && isPlainObject(value.approval)
-    && value.approval.capability === request.capability
-    && value.approval.source_ref === request.source_ref;
-}
-
 function rawConsumptionNonce(value: unknown): unknown {
   return isPlainObject(value) ? value.nonce : undefined;
 }
@@ -745,32 +853,123 @@ function reason(capability: 'LSP' | 'AST', code: string): string {
   return `${capability}_${code}`;
 }
 
+function validateResolutionOptions(
+  value: unknown,
+): { requests: unknown; context: EquivalentResolutionContext } {
+  if (!isPlainObject(value) || !hasExactKeys(value, ['requests', 'context'])
+    || !isPlainObject(value.context)) {
+    throw new CapabilitiesError(
+      'INVALID_EQUIVALENT_CONTEXT',
+      'equivalent resolution input is malformed',
+    );
+  }
+  const context = value.context;
+  const contextKeys = context.base_sha === undefined
+    ? ['workingDirectory', 'session_id', 'root_thread_id', 'turn_id', 'review_id']
+    : ['workingDirectory', 'session_id', 'root_thread_id', 'turn_id', 'review_id', 'base_sha'];
+  if (!hasExactKeys(context, contextKeys)) {
+    throw new CapabilitiesError(
+      'INVALID_EQUIVALENT_CONTEXT',
+      'equivalent resolution context is malformed',
+    );
+  }
+  const workingDirectory = boundedString(context.workingDirectory);
+  const sessionId = boundedString(context.session_id, 160);
+  const rootThreadId = boundedString(context.root_thread_id, 160);
+  const turnId = boundedString(context.turn_id, 160);
+  const reviewId = boundedString(context.review_id, 64);
+  let baseSha: string | undefined;
+  if (context.base_sha !== undefined) {
+    const parsedBaseSha = boundedString(context.base_sha, 128);
+    if (parsedBaseSha === null) {
+      throw new CapabilitiesError(
+        'INVALID_EQUIVALENT_CONTEXT',
+        'equivalent resolution context is malformed',
+      );
+    }
+    baseSha = parsedBaseSha;
+  }
+  if (workingDirectory === null || sessionId === null || rootThreadId === null
+    || turnId === null || reviewId === null || !isUuid(reviewId)) {
+    throw new CapabilitiesError(
+      'INVALID_EQUIVALENT_CONTEXT',
+      'equivalent resolution context is malformed',
+    );
+  }
+  return {
+    requests: value.requests,
+    context: {
+      workingDirectory,
+      session_id: sessionId,
+      root_thread_id: rootThreadId,
+      turn_id: turnId,
+      review_id: reviewId,
+      ...(baseSha === undefined ? {} : { base_sha: baseSha }),
+    },
+  };
+}
+
+function compareEquivalentRequests(
+  left: AcceptedEquivalentRequest,
+  right: AcceptedEquivalentRequest,
+): number {
+  const capabilityOrder = { LSP: 0, AST: 1 } as const;
+  return capabilityOrder[left.capability] - capabilityOrder[right.capability]
+    || byteCompare(left.source_ref, right.source_ref);
+}
+
 export async function resolveTrustedEquivalents(
   options: ResolveTrustedEquivalentsOptions,
+  trustedDependencies: TrustedEquivalentDependencies = {},
 ): Promise<TrustedEquivalentResolution> {
-  const requests = parseAcceptedEquivalentRequests(options.requests);
-  const now = options.now ?? new Date();
-  const ttl = options.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
-  const ledger = options.explicitApprovalLedger ?? [];
-  const consumptions = options.existingConsumptions ?? [];
+  const input = validateResolutionOptions(options);
+  const requests = parseAcceptedEquivalentRequests(input.requests).sort(compareEquivalentRequests);
+  const now = trustedDependencies.now ?? new Date();
+  const ttl = trustedDependencies.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
+  const consumptions = trustedDependencies.existingConsumptions ?? [];
   const accepted: AcceptedEquivalent[] = [];
   const reasons: string[] = [];
   const preparedConsumptions: PreparedEquivalentConsumption[] = [];
   let repositoryContract: RepositoryEquivalent[] | null | undefined;
+  let ledger: ParsedHookApproval[] = [];
+  if (trustedDependencies.loadHookOwnedApprovalLedger !== undefined && requests.length > 0) {
+    try {
+      ledger = parseHookApprovalLedger(await trustedDependencies.loadHookOwnedApprovalLedger({
+        session_id: input.context.session_id,
+        root_thread_id: input.context.root_thread_id,
+        turn_id: input.context.turn_id,
+      })) ?? [];
+    } catch {
+      ledger = [];
+    }
+  }
+  const nonceCounts = new Map<string, number>();
+  for (const entry of ledger) {
+    nonceCounts.set(entry.nonce, (nonceCounts.get(entry.nonce) ?? 0) + 1);
+  }
+  const duplicatedNonces = new Set(
+    [...nonceCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([nonce]) => nonce),
+  );
 
   for (const request of requests) {
-    const candidates = ledger.filter((entry) => rawApprovalMatches(entry, request));
+    const candidates = ledger.filter((entry) =>
+      entry.capability === request.capability && entry.source_ref === request.source_ref);
     if (candidates.length > 0) {
       if (candidates.length !== 1) {
         reasons.push(reason(request.capability, 'EXPLICIT_APPROVAL_DUPLICATE'));
         continue;
       }
-      const approval = parseHookApproval(candidates[0]);
-      const approvedAt = approval === null ? Number.NaN : Date.parse(approval.approved_at);
-      if (approval === null
-        || approval.session_id !== options.context.session_id
-        || approval.root_thread_id !== options.context.root_thread_id
-        || approval.turn_id !== options.context.turn_id
+      const approval = candidates[0] as ParsedHookApproval;
+      if (duplicatedNonces.has(approval.nonce)) {
+        reasons.push(reason(request.capability, 'APPROVAL_NONCE_CONFLICT'));
+        continue;
+      }
+      const approvedAt = Date.parse(approval.approved_at);
+      if (approval.session_id !== input.context.session_id
+        || approval.root_thread_id !== input.context.root_thread_id
+        || approval.turn_id !== input.context.turn_id
         || approval.capability !== request.capability
         || approval.source_ref !== request.source_ref
         || !Number.isSafeInteger(ttl) || ttl <= 0
@@ -797,7 +996,7 @@ export async function resolveTrustedEquivalents(
       }
       const identity: EquivalentConsumptionInput = {
         nonce: approval.nonce,
-        review_id: options.context.review_id,
+        review_id: input.context.review_id,
         capability: request.capability,
         source_ref: request.source_ref,
       };
@@ -819,7 +1018,7 @@ export async function resolveTrustedEquivalents(
       continue;
     }
 
-    const baseSha = options.context.base_sha;
+    const baseSha = input.context.base_sha;
     if (baseSha === undefined || !FULL_GIT_OBJECT_ID.test(baseSha)) {
       reasons.push(reason(request.capability, 'TRUSTED_SOURCE_UNAVAILABLE'));
       continue;
@@ -830,14 +1029,15 @@ export async function resolveTrustedEquivalents(
       continue;
     }
     const ruleId = request.source_ref.slice(prefix.length);
-    if (!/^[a-zA-Z0-9_.-]+$/u.test(ruleId) || options.readBaseContract === undefined) {
+    if (!/^[a-zA-Z0-9_.-]+$/u.test(ruleId)
+      || trustedDependencies.readBaseContract === undefined) {
       reasons.push(reason(request.capability, 'REPO_CONTRACT_UNAVAILABLE'));
       continue;
     }
     if (repositoryContract === undefined) {
       try {
-        const text = await options.readBaseContract(
-          options.context.workingDirectory,
+        const text = await trustedDependencies.readBaseContract(
+          input.context.workingDirectory,
           ['show', `${baseSha}:code-review-equivalents.json`],
         );
         repositoryContract = parseRepositoryContract(text);

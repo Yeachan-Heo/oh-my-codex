@@ -40,6 +40,9 @@ interface CapabilityObservation {
   execution: 'NATIVE' | 'ACCEPTED_EQUIVALENT' | 'FALLBACK' | 'UNAVAILABLE' | 'SKIPPED';
   outcome: 'PASS' | 'FAIL' | 'TIMED_OUT' | 'MALFORMED' | 'NOT_RUN';
   empty_result?: boolean;
+  source_ref?: string;
+  program?: string;
+  args?: string[];
 }
 
 interface CapabilityEvaluation {
@@ -79,6 +82,14 @@ interface HookApprovalLedgerEntry {
   };
 }
 
+interface HookOwnedApprovalLedgerEntry {
+  approval: Record<string, unknown>;
+  provenance: {
+    event_ref: string;
+    nonce: string;
+  };
+}
+
 interface PreparedConsumption {
   schema_version: 1;
   state: 'PREPARED';
@@ -100,6 +111,18 @@ interface TrustedResolution {
   prepared_consumptions: PreparedConsumption[];
 }
 
+interface TrustedEquivalentDependencies {
+  loadHookOwnedApprovalLedger?: (identity: {
+    session_id: string;
+    root_thread_id: string;
+    turn_id: string;
+  }) => Promise<readonly unknown[]>;
+  existingConsumptions?: readonly unknown[];
+  readBaseContract?: (workingDirectory: string, args: readonly string[]) => Promise<string>;
+  now?: Date;
+  approvalTtlMs?: number;
+}
+
 interface CapabilitiesApi {
   classifyReviewFile(file: ScopeFile): FileKind;
   parseFrozenCapabilityConfig(value: unknown): FrozenCapabilityConfig;
@@ -110,6 +133,7 @@ interface CapabilitiesApi {
   evaluateCapabilityEvidence(
     plan: CapabilityPlan,
     observations: readonly CapabilityObservation[],
+    acceptedEquivalents?: readonly AcceptedEquivalent[],
   ): CapabilityEvaluation;
   parseAcceptedEquivalentRequests(value: unknown): AcceptedEquivalentRequest[];
   resolveTrustedEquivalents(options: {
@@ -122,12 +146,7 @@ interface CapabilitiesApi {
       review_id: string;
       base_sha?: string;
     };
-    explicitApprovalLedger?: readonly unknown[];
-    existingConsumptions?: readonly unknown[];
-    readBaseContract?: (workingDirectory: string, args: readonly string[]) => Promise<string>;
-    now?: Date;
-    approvalTtlMs?: number;
-  }): Promise<TrustedResolution>;
+  }, trustedDependencies?: TrustedEquivalentDependencies): Promise<TrustedResolution>;
   prepareEquivalentConsumption(
     input: Omit<PreparedConsumption, 'schema_version' | 'state' | 'prepared_at'>,
     existing?: unknown,
@@ -241,6 +260,17 @@ function explicitApproval(overrides: Record<string, unknown> = {}): HookApproval
       owner: 'CODEX_NATIVE_HOOK',
       event_ref: 'events/user-approval-1.json',
       nonce: typeof overrides.nonce === 'string' ? overrides.nonce : nonce,
+    },
+  };
+}
+
+function hookOwnedApproval(overrides: Record<string, unknown> = {}): HookOwnedApprovalLedgerEntry {
+  const { provenance: _provenance, ...entry } = explicitApproval(overrides);
+  return {
+    ...entry,
+    provenance: {
+      event_ref: 'events/user-approval-1.json',
+      nonce: typeof overrides.nonce === 'string' ? overrides.nonce : 'hook-nonce-1',
     },
   };
 }
@@ -474,24 +504,123 @@ describe('capability evidence degradation', () => {
   it('does not treat unavailable AST with an empty result as successful evidence', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
-    const observations: CapabilityObservation[] = [
+    const observations = [
       { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
       { capability: 'AST', execution: 'UNAVAILABLE', outcome: 'PASS', empty_result: true },
       { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome: 'PASS' },
-    ];
+    ] as unknown as CapabilityObservation[];
     const result = api.evaluateCapabilityEvidence(plan, observations);
     assert.equal(result.evidence_status, 'DEGRADED_EVIDENCE');
-    assert.equal(result.maximum_recommendation, 'COMMENT');
+    assert.equal(result.maximum_recommendation, 'REQUEST CHANGES');
   });
 
   it('accepts a successful trusted equivalent as full evidence', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
+    const accepted: AcceptedEquivalent = {
+      capability: 'LSP',
+      source: 'REPO_CONTRACT',
+      source_ref: 'base:contract#lsp',
+      program: 'npm',
+      args: ['run', 'typecheck'],
+    };
     const observations: CapabilityObservation[] = [
-      { capability: 'LSP', execution: 'ACCEPTED_EQUIVALENT', outcome: 'PASS' },
+      {
+        capability: 'LSP',
+        execution: 'ACCEPTED_EQUIVALENT',
+        outcome: 'PASS',
+        source_ref: accepted.source_ref,
+        program: accepted.program,
+        args: [...accepted.args],
+      },
       { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
     ];
-    assert.equal(api.evaluateCapabilityEvidence(plan, observations).evidence_status, 'FULL_EVIDENCE');
+    assert.equal(api.evaluateCapabilityEvidence(plan, observations, [accepted]).evidence_status, 'FULL_EVIDENCE');
+  });
+
+  it('binds equivalent observations to an accepted command and rejects primary self-fallback', async () => {
+    const api = await loadCapabilitiesApi();
+    const plan = api.buildCapabilityPlan([file('src/a.ts')]);
+    const accepted: AcceptedEquivalent = {
+      capability: 'LSP',
+      source: 'EXPLICIT_USER',
+      source_ref: 'approval:event-1',
+      program: 'npm',
+      args: ['run', 'typecheck'],
+    };
+    const equivalentObservation: CapabilityObservation = {
+      capability: 'LSP',
+      execution: 'ACCEPTED_EQUIVALENT',
+      outcome: 'PASS',
+      source_ref: accepted.source_ref,
+      program: accepted.program,
+      args: [...accepted.args],
+    };
+    assert.equal(api.evaluateCapabilityEvidence(plan, [
+      equivalentObservation,
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], [accepted]).maximum_recommendation, 'APPROVE');
+
+    for (const observation of [
+      { ...equivalentObservation, source_ref: 'approval:other' },
+      { ...equivalentObservation, program: 'pnpm' },
+      { ...equivalentObservation, args: ['run', 'other'] },
+    ]) {
+      assert.equal(api.evaluateCapabilityEvidence(plan, [
+        observation,
+        { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+      ], [accepted]).maximum_recommendation, 'REQUEST CHANGES');
+    }
+    assert.equal(api.evaluateCapabilityEvidence(plan, [
+      { capability: 'LSP', execution: 'FALLBACK', outcome: 'PASS' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], [accepted]).maximum_recommendation, 'REQUEST CHANGES');
+  });
+
+  it('rejects accepted-equivalent execution for non-primary observations and unknown or duplicate schemas', async () => {
+    const api = await loadCapabilitiesApi();
+    const configuredPlan = api.buildCapabilityPlan([
+      file('src/a.ts'),
+      file('unknown.custom'),
+    ], {
+      trustedFrozenConfig: frozenConfig({ typescriptCompiler: true, typescriptLint: true }),
+    });
+    const configuredPassing = passingObservations(configuredPlan);
+    for (const capability of ['COMPILER', 'LINT', 'RG_FALLBACK'] as const) {
+      const observations = configuredPassing.map((observation): CapabilityObservation =>
+        observation.capability === capability
+          ? {
+            capability,
+            execution: 'ACCEPTED_EQUIVALENT',
+            outcome: 'PASS',
+            source_ref: `approval:${capability}`,
+            program: 'npm',
+            args: ['run', 'check'],
+          }
+          : observation);
+      assert.equal(
+        api.evaluateCapabilityEvidence(configuredPlan, observations, []).maximum_recommendation,
+        'REQUEST CHANGES',
+        capability,
+      );
+    }
+
+    const typescriptPlan = api.buildCapabilityPlan([file('src/a.ts')]);
+    const unknownField = {
+      capability: 'LSP',
+      execution: 'NATIVE',
+      outcome: 'PASS',
+      caller_claimed_safe: true,
+    } as unknown as CapabilityObservation;
+    assert.equal(api.evaluateCapabilityEvidence(typescriptPlan, [
+      unknownField,
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], []).maximum_recommendation, 'REQUEST CHANGES');
+    assert.equal(api.evaluateCapabilityEvidence(typescriptPlan, [
+      { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], []).maximum_recommendation, 'REQUEST CHANGES');
   });
 
   it('cannot approve Rust evidence when the mandatory cargo-check capability is absent', async () => {
@@ -569,7 +698,8 @@ describe('trusted diagnostic equivalents', () => {
     const result = await api.resolveTrustedEquivalents({
       requests: [{ capability: 'LSP', source_ref: 'approval:event-1' }],
       context: explicitContext(),
-      explicitApprovalLedger: [explicitApproval()],
+    }, {
+      loadHookOwnedApprovalLedger: async () => [hookOwnedApproval()],
       now: NOW,
       approvalTtlMs: 5 * 60_000,
     });
@@ -586,13 +716,53 @@ describe('trusted diagnostic equivalents', () => {
     assert.deepEqual(result.reasons, []);
   });
 
+  it('cannot self-authorize with raw owner provenance and accepts approvals only from the trusted loader', async () => {
+    const api = await loadCapabilitiesApi();
+    const request = [{ capability: 'LSP' as const, source_ref: 'approval:event-1' }];
+    let loads = 0;
+    await assert.rejects(
+      api.resolveTrustedEquivalents({
+        requests: request,
+        context: explicitContext(),
+        explicitApprovalLedger: [explicitApproval()],
+      } as unknown as {
+        requests: unknown;
+        context: ReturnType<typeof explicitContext>;
+      }, {
+        loadHookOwnedApprovalLedger: async () => {
+          loads += 1;
+          return [hookOwnedApproval()];
+        },
+      }),
+      (error: unknown) => (error as { code?: unknown }).code === 'INVALID_EQUIVALENT_CONTEXT',
+    );
+    assert.equal(loads, 0);
+
+    const calls: unknown[] = [];
+    const trusted = await api.resolveTrustedEquivalents({
+      requests: request,
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async (identity) => {
+        calls.push(identity);
+        return [hookOwnedApproval()];
+      },
+      now: NOW,
+      approvalTtlMs: 5 * 60_000,
+    });
+    assert.deepEqual(calls, [{
+      session_id: 'session-1',
+      root_thread_id: 'root-thread-1',
+      turn_id: 'turn-1',
+    }]);
+    assert.deepEqual(trusted.accepted_equivalents.map((entry) => entry.source), ['EXPLICIT_USER']);
+  });
+
   it('rejects missing, duplicate, expired, context-mismatched, unverifiable, malformed, and consumed approvals', async () => {
     const api = await loadCapabilitiesApi();
     const baseOptions = {
       requests: [{ capability: 'LSP', source_ref: 'approval:event-1' }],
       context: explicitContext(),
-      now: NOW,
-      approvalTtlMs: 5 * 60_000,
     };
     const consumed = api.commitEquivalentConsumption(
       api.prepareEquivalentConsumption({
@@ -606,22 +776,30 @@ describe('trusted diagnostic equivalents', () => {
     );
     const cases: Array<[string, readonly unknown[], (readonly unknown[])?]> = [
       ['missing', [], []],
-      ['duplicate', [explicitApproval(), explicitApproval()], []],
-      ['expired', [explicitApproval({ approved_at: '2026-07-15T00:00:00.000Z' })], []],
-      ['session mismatch', [explicitApproval({ session_id: 'other' })], []],
-      ['root thread mismatch', [explicitApproval({ root_thread_id: 'other' })], []],
-      ['turn mismatch', [explicitApproval({ turn_id: 'other' })], []],
-      ['capability mismatch', [explicitApproval({ capability: 'AST' })], []],
-      ['unverifiable owner', [{ ...explicitApproval(), provenance: { owner: 'MODEL', event_ref: 'e', nonce: 'hook-nonce-1' } }], []],
-      ['nonce mismatch', [{ ...explicitApproval(), provenance: { owner: 'CODEX_NATIVE_HOOK', event_ref: 'e', nonce: 'other' } }], []],
-      ['unknown approval field', [explicitApproval({ untrusted: true })], []],
-      ['already consumed', [explicitApproval()], [consumed]],
+      ['duplicate', [hookOwnedApproval(), hookOwnedApproval()], []],
+      ['expired', [hookOwnedApproval({ approved_at: '2026-07-15T00:00:00.000Z' })], []],
+      ['session mismatch', [hookOwnedApproval({ session_id: 'other' })], []],
+      ['root thread mismatch', [hookOwnedApproval({ root_thread_id: 'other' })], []],
+      ['turn mismatch', [hookOwnedApproval({ turn_id: 'other' })], []],
+      ['capability mismatch', [hookOwnedApproval({ capability: 'AST' })], []],
+      ['caller-owned provenance', [{
+        ...hookOwnedApproval(),
+        provenance: { owner: 'CODEX_NATIVE_HOOK', event_ref: 'e', nonce: 'hook-nonce-1' },
+      }], []],
+      ['unknown ledger field', [{ ...hookOwnedApproval(), untrusted: true }], []],
+      ['nonce mismatch', [{
+        ...hookOwnedApproval(),
+        provenance: { event_ref: 'e', nonce: 'other' },
+      }], []],
+      ['unknown approval field', [hookOwnedApproval({ untrusted: true })], []],
+      ['already consumed', [hookOwnedApproval()], [consumed]],
     ];
     for (const [name, ledger, existingConsumptions = []] of cases) {
-      const result = await api.resolveTrustedEquivalents({
-        ...baseOptions,
-        explicitApprovalLedger: ledger,
+      const result = await api.resolveTrustedEquivalents(baseOptions, {
+        loadHookOwnedApprovalLedger: async () => ledger,
         existingConsumptions,
+        now: NOW,
+        approvalTtlMs: 5 * 60_000,
       });
       assert.deepEqual(result.accepted_equivalents, [], name);
       assert.equal(result.prepared_consumptions.length, 0, name);
@@ -660,9 +838,10 @@ describe('trusted diagnostic equivalents', () => {
         { capability: 'AST', source_ref: 'approval:event-2' },
       ],
       context: explicitContext(),
-      explicitApprovalLedger: [
-        explicitApproval(),
-        explicitApproval({
+    }, {
+      loadHookOwnedApprovalLedger: async () => [
+        hookOwnedApproval(),
+        hookOwnedApproval({
           capability: 'AST',
           source_ref: 'approval:event-2',
           program: 'npm',
@@ -673,9 +852,59 @@ describe('trusted diagnostic equivalents', () => {
       now: NOW,
       approvalTtlMs: 5 * 60_000,
     });
-    assert.deepEqual(result.accepted_equivalents.map((entry) => entry.capability), ['LSP']);
-    assert.equal(result.prepared_consumptions.length, 1);
+    assert.deepEqual(result.accepted_equivalents, []);
+    assert.equal(result.prepared_consumptions.length, 0);
     assert.match(result.reasons.join('\n'), /NONCE/u);
+  });
+
+  it('rejects every globally duplicated ledger nonce independent of request order', async () => {
+    const api = await loadCapabilitiesApi();
+    const ledger = [
+      hookOwnedApproval(),
+      hookOwnedApproval({
+        capability: 'AST',
+        source_ref: 'approval:event-2',
+        program: 'npm',
+        args: ['run', 'ast-check'],
+        nonce: 'hook-nonce-1',
+      }),
+    ];
+    const requests = [
+      { capability: 'LSP' as const, source_ref: 'approval:event-1' },
+      { capability: 'AST' as const, source_ref: 'approval:event-2' },
+    ];
+    const forward = await api.resolveTrustedEquivalents({
+      requests,
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async () => ledger,
+      now: NOW,
+      approvalTtlMs: 5 * 60_000,
+    });
+    const reverse = await api.resolveTrustedEquivalents({
+      requests: [...requests].reverse(),
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async () => [...ledger].reverse(),
+      now: NOW,
+      approvalTtlMs: 5 * 60_000,
+    });
+    assert.deepEqual(forward.accepted_equivalents, []);
+    assert.deepEqual(reverse.accepted_equivalents, []);
+    assert.equal(forward.prepared_consumptions.length, 0);
+    assert.equal(reverse.prepared_consumptions.length, 0);
+    assert.deepEqual(reverse, forward);
+
+    const singleRequest = await api.resolveTrustedEquivalents({
+      requests: [requests[0]],
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async () => ledger,
+      now: NOW,
+      approvalTtlMs: 5 * 60_000,
+    });
+    assert.deepEqual(singleRequest.accepted_equivalents, []);
+    assert.equal(singleRequest.prepared_consumptions.length, 0);
   });
 
   it('reads repository equivalents only from the exact base object with strict schema and source_ref', async () => {
@@ -688,6 +917,7 @@ describe('trusted diagnostic equivalents', () => {
         source_ref: `${baseSha}:code-review-equivalents.json#typescript-ast`,
       }],
       context: { ...explicitContext(), base_sha: baseSha },
+    }, {
       readBaseContract: async (cwd, args) => {
         calls.push({ cwd, args });
         return JSON.stringify({
@@ -736,6 +966,7 @@ describe('trusted diagnostic equivalents', () => {
           source_ref: `${base}:code-review-equivalents.json#typescript-lsp`,
         }],
         context: { ...explicitContext(), base_sha: base },
+      }, {
         readBaseContract: async () => {
           reads += 1;
           return JSON.stringify({
@@ -766,6 +997,7 @@ describe('trusted diagnostic equivalents', () => {
     const noBase = await api.resolveTrustedEquivalents({
       requests: request,
       context: explicitContext(),
+    }, {
       readBaseContract: async () => {
         reads += 1;
         return '{}';
@@ -789,6 +1021,7 @@ describe('trusted diagnostic equivalents', () => {
       const result = await api.resolveTrustedEquivalents({
         requests: request,
         context: { ...explicitContext(), base_sha: baseSha },
+      }, {
         readBaseContract: async () => JSON.stringify(contract),
         now: NOW,
       });

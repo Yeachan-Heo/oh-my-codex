@@ -78,6 +78,7 @@ function validateConfig(config: BatchConfig): BatchConfig {
 function validateScopePath(path: string): string {
   if (
     path.length === 0
+    || path === '.'
     || path.includes('\0')
     || path.includes('\\')
     || isAbsolute(path)
@@ -108,10 +109,9 @@ function changedLines(file: ScopeFile): number {
   return additions + deletions;
 }
 
-async function exists(path: string): Promise<boolean> {
+async function isRegularFile(path: string): Promise<boolean> {
   try {
-    await lstat(path);
-    return true;
+    return (await lstat(path)).isFile();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
@@ -126,8 +126,8 @@ async function moduleRoot(repositoryRoot: string, path: string): Promise<string>
     const absoluteCandidate = resolve(repositoryRoot, relativeCandidate);
     try {
       const [hasPackage, hasCargo] = await Promise.all([
-        exists(join(absoluteCandidate, 'package.json')),
-        exists(join(absoluteCandidate, 'Cargo.toml')),
+        isRegularFile(join(absoluteCandidate, 'package.json')),
+        isRegularFile(join(absoluteCandidate, 'Cargo.toml')),
       ]);
       if (hasPackage || hasCargo) return relativeCandidate || '.';
     } catch (error) {

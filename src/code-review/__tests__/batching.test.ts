@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, it } from 'node:test';
@@ -167,6 +167,41 @@ describe('deterministic review batching', () => {
       files: [source('z.ts'), source('src/a.ts'), source('src/b.ts')],
     });
     assert.deepEqual(plan.batches.map((batch) => batch.module_root), ['.', 'src', 'src']);
+  });
+
+  it('rejects dot, empty, traversal, and absolute scope paths', async () => {
+    const api = await loadBatchingApi();
+    const root = await repository();
+    for (const path of ['.', '', '../escape.ts', '/absolute.ts']) {
+      await assert.rejects(
+        api.createBatchPlan({ repositoryRoot: root, files: [source(path)] }),
+        (error: unknown) => (error as { code?: unknown }).code === 'INVALID_SCOPE',
+        path,
+      );
+    }
+  });
+
+  it('ignores package manifest directories and symlinks outside the repository', async () => {
+    const api = await loadBatchingApi();
+    const root = await repository();
+    await mkdir(join(root, 'directory-case', 'nested', 'src'), { recursive: true });
+    await mkdir(join(root, 'directory-case', 'nested', 'package.json'));
+    await mkdir(join(root, 'symlink-case', 'nested', 'src'), { recursive: true });
+    const outsideManifest = join(root, 'outside-package.json');
+    await writeFile(outsideManifest, '{}');
+    await symlink(outsideManifest, join(root, 'symlink-case', 'nested', 'package.json'));
+
+    const plan = await api.createBatchPlan({
+      repositoryRoot: root,
+      files: [
+        source('directory-case/nested/src/a.ts'),
+        source('symlink-case/nested/src/a.ts'),
+      ],
+    });
+    assert.deepEqual(plan.batches.map((batch) => batch.module_root), [
+      'directory-case',
+      'symlink-case',
+    ]);
   });
 
   it('splits before adding the file that would cross either threshold', async () => {
