@@ -132,6 +132,7 @@ import {
   isNativeSubagentSpawnToolName,
   isRoleRoutingUnavailableEvidence,
   isUnsupportedNativeSubagentEvidence,
+  parseRoleIntentCorrelationToken,
   resolveNativeSubagentSupportStatus,
   type NativeSubagentUnsupportedReason,
 } from "../leader/contract.js";
@@ -406,8 +407,8 @@ function readBoundedFirstLineSync(path: string): string {
 
 function readRoleIntentCorrelationToken(...carrierValues: unknown[]): string | undefined {
   for (const carrierValue of carrierValues) {
-    const match = safeString(carrierValue).trim().match(/^omx-role-intent:(\S+)$/);
-    if (match) return match[1];
+    const correlationToken = parseRoleIntentCorrelationToken(carrierValue);
+    if (correlationToken) return correlationToken;
   }
   return undefined;
 }

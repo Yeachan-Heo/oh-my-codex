@@ -1,3 +1,19 @@
+export const NATIVE_SPAWN_TASK_NAME_PATTERN = /^[a-z0-9_]+$/;
+export const ROLE_INTENT_SPAWN_TASK_NAME_PREFIX = 'omx_role_intent_';
+
+export function buildRoleIntentSpawnTaskName(correlationToken: string): string {
+  return `${ROLE_INTENT_SPAWN_TASK_NAME_PREFIX}${correlationToken.trim()}`;
+}
+
+export function isAppCompatibleSpawnTaskName(taskName: string): boolean {
+  return NATIVE_SPAWN_TASK_NAME_PATTERN.test(taskName);
+}
+
+export function parseRoleIntentCorrelationToken(taskName: unknown): string | undefined {
+  const value = String(taskName).trim();
+  const m = value.match(/^omx_role_intent_([a-z0-9]+)$/);
+  return m ? m[1] : undefined;
+}
 export const LEADER_CONDUCTOR_PHILOSOPHY =
   'Conductor Philosophy: The core principle of OMX is: You are the conductor, not the performer.';
 

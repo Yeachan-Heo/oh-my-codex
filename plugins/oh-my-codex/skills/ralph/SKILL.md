@@ -78,7 +78,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - Standard changes: `task(agent_type="architect", reasoning_effort="medium", prompt="...")`
    - >20 files or security/architectural changes: `task(agent_type="architect", reasoning_effort="xhigh", prompt="...")`
    - Ralph floor: always run an explicit `architect` native subagent, even for small changes
-   - On a `role_routing_unavailable` surface, before each App Architect spawn, run `omx ralplan role-intent write --role architect --parent-thread <leader-thread-id> --json`; read `spawn_task_name` from its receipt (`omx-role-intent:<correlation_token>`), then spawn the App Architect with `task_name` set to that exact App-supported value, **not** `agent_nickname`. The recorded validated intent and correlation token are the authoritative role carrier, never a prompt label.
+   - On a `role_routing_unavailable` surface, before each App Architect spawn, run `omx ralplan role-intent write --role architect --parent-thread <leader-thread-id> --json`; read `spawn_task_name` from its receipt (`omx_role_intent_<correlation_token>`), the App-compatible `task_name` value (lowercase letters, digits, and underscores only), then spawn the App Architect with `task_name` set to that exact unmodified value, **not** `agent_nickname`. The recorded validated intent and correlation token are the authoritative role carrier, never a prompt label.
 7.5 **Mandatory Deslop Pass**:
    - After Step 7 passes, run `oh-my-codex:ai-slop-cleaner` on **all files changed during the Ralph session**.
    - Scope the cleaner to **changed files only**; do not widen the pass beyond Ralph-owned edits.

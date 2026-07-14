@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { resolveRuntimeStateScope } from '../mcp/state-paths.js';
 import { readSubagentTrackingState, recordPendingRoleIntent } from '../subagents/tracker.js';
+import { buildRoleIntentSpawnTaskName, isAppCompatibleSpawnTaskName } from '../leader/contract.js';
 
 export const RALPLAN_HELP = `omx ralplan - RALPLAN consensus support commands
 
@@ -11,7 +12,7 @@ Usage:
 role-intent write records the validated role required by the next adapted native spawn.
 `;
 
-type RoleIntentFailureReason = 'unknown_role' | 'invalid_correlation_token' | 'single_flight_conflict' | 'session_not_current' | 'parent_not_active_leader';
+type RoleIntentFailureReason = 'unknown_role' | 'invalid_correlation_token' | 'single_flight_conflict' | 'session_not_current' | 'parent_not_active_leader' | 'spawn_task_name_unsupported';
 
 interface ParsedRoleIntentWriteArgs {
   role: string;
@@ -27,6 +28,7 @@ export interface RalplanCommandDependencies {
   stderr?: (line: string) => void;
   resolveSessionScope?: typeof resolveRuntimeStateScope;
   recordPendingIntent?: typeof recordPendingRoleIntent;
+  generateCorrelationToken?: () => string;
 }
 
 export async function ralplanCommand(
@@ -71,7 +73,13 @@ export async function ralplanCommand(
     return;
   }
 
-  const correlationToken = randomUUID();
+  const correlationToken = (deps.generateCorrelationToken ?? (() => randomUUID().replace(/-/g, '')))();
+  const spawnTaskName = buildRoleIntentSpawnTaskName(correlationToken);
+  if (!isAppCompatibleSpawnTaskName(spawnTaskName)) {
+    emitRoleIntentFailure('spawn_task_name_unsupported', parsed.json, stdout, stderr);
+    return;
+  }
+
   const recordPendingIntent = deps.recordPendingIntent ?? recordPendingRoleIntent;
   const result = recordPendingIntent(currentScope.cwd, {
     role: parsed.role,
@@ -84,8 +92,6 @@ export async function ralplanCommand(
     emitRoleIntentFailure(result.reason, parsed.json, stdout, stderr);
     return;
   }
-
-  const spawnTaskName = `omx-role-intent:${result.intent.correlation_token}`;
   const receipt = {
     ok: true,
     intent: {

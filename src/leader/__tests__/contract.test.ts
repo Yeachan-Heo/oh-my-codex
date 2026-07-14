@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import {
   LEADER_CONDUCTOR_BLOCK,
   LEADER_CONDUCTOR_DELEGATION_NOTE,
@@ -20,6 +21,11 @@ import {
   isUnsupportedNativeSubagentEvidenceForScope,
   type RoleRoutingUnavailableMarker,
   resolveNativeSubagentSupportStatus,
+  NATIVE_SPAWN_TASK_NAME_PATTERN,
+  ROLE_INTENT_SPAWN_TASK_NAME_PREFIX,
+  buildRoleIntentSpawnTaskName,
+  isAppCompatibleSpawnTaskName,
+  parseRoleIntentCorrelationToken,
 } from '../contract.js';
 
 describe('leader conductor contract', () => {
@@ -359,5 +365,28 @@ describe('leader conductor contract', () => {
       }, { sessionId: 'sess-1' }),
       true,
     );
+  });
+  it('builds and parses App-compatible native role-intent task names', () => {
+    const taskName = buildRoleIntentSpawnTaskName('abc123');
+    assert.equal(taskName, 'omx_role_intent_abc123');
+    assert.equal(taskName, `${ROLE_INTENT_SPAWN_TASK_NAME_PREFIX}abc123`);
+    assert.match(taskName, NATIVE_SPAWN_TASK_NAME_PATTERN);
+
+    assert.equal(isAppCompatibleSpawnTaskName('omx-role-intent:9f8e'), false);
+    assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_DEADBEEF'), false);
+    assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_dead-beef'), false);
+    assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_dead:beef'), false);
+    assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_deadbeef'), true);
+
+    assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_deadbeef'), 'deadbeef');
+    assert.equal(parseRoleIntentCorrelationToken(' omx_role_intent_deadbeef '), 'deadbeef');
+    assert.equal(parseRoleIntentCorrelationToken('omx-role-intent:deadbeef'), undefined);
+    assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_DEADBEEF'), undefined);
+    assert.equal(parseRoleIntentCorrelationToken(''), undefined);
+    assert.equal(parseRoleIntentCorrelationToken(42), undefined);
+
+    const generatedTaskName = buildRoleIntentSpawnTaskName(randomUUID().replace(/-/g, ''));
+    assert.match(generatedTaskName, NATIVE_SPAWN_TASK_NAME_PATTERN);
+    assert.doesNotMatch(generatedTaskName, /[-:]/);
   });
 });
