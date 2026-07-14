@@ -70,6 +70,7 @@ export {
   releaseReviewLocks,
   resolveReviewLockPaths,
   resolveReviewPersistencePaths,
+  runDurableReviewTransactionWithPlanFactory,
   runDurableTransaction,
   writeFinalReviewArtifacts,
 } from './persistence.js';
@@ -80,6 +81,8 @@ export type {
   AtomicWriteOptions,
   CreateReviewConsumptionEffectInput,
   DurableEffectName,
+  DurableReviewPlanFactoryContext,
+  DurableReviewPlanFactoryResult,
   DurableTransactionBoundary,
   DurableTransactionEffect,
   DurableTransactionPlan,
@@ -95,6 +98,7 @@ export type {
   ReviewScopedLockPaths,
   ReleaseReviewLocksOptions,
   RunDurableTransactionOptions,
+  RunDurableReviewTransactionWithPlanFactoryInput,
 } from './persistence.js';
 
 export {

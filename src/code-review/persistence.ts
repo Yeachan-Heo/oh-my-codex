@@ -702,6 +702,25 @@ export interface RunDurableTransactionOptions {
   crashMode?: 'THROW' | 'SIGKILL';
 }
 
+export interface DurableReviewPlanFactoryContext {
+  current_review: ReviewRecord;
+}
+
+export interface RunDurableReviewTransactionWithPlanFactoryInput {
+  review_id: string;
+  session_id: string;
+  root_thread_id: string;
+  /** Runs with the review journal and mutation locks held. Must not call lock-owning persistence APIs. */
+  plan_factory(
+    context: DurableReviewPlanFactoryContext,
+  ): Promise<DurableTransactionPlan | undefined>;
+}
+
+export interface DurableReviewPlanFactoryResult {
+  transaction?: DurableTransactionResult;
+  review: ReviewRecord;
+}
+
 interface PreparedDurableTransaction {
   schema_version: 1;
   state: 'PREPARED';
@@ -2804,6 +2823,91 @@ export async function runDurableTransaction(
       journalScope === 'REVIEW' ? reviewId : undefined,
     );
     return await runDurableTransactionLocked(paths, plan, options);
+  } finally {
+    await releaseReviewLocks(locks);
+  }
+}
+
+function validateDurableReviewPlanFactoryInput(
+  value: unknown,
+): RunDurableReviewTransactionWithPlanFactoryInput {
+  if (!isPlainObject(value) || !hasExactKeys(value, [
+    'review_id', 'session_id', 'root_thread_id', 'plan_factory',
+  ]) || typeof value.plan_factory !== 'function') {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'durable review plan factory input is malformed');
+  }
+  return {
+    review_id: validateUuid(value.review_id, 'review_id'),
+    session_id: requirePayloadString(value.session_id, 'factory session_id', 160),
+    root_thread_id: requirePayloadString(value.root_thread_id, 'factory root_thread_id', 160),
+    plan_factory: value.plan_factory as RunDurableReviewTransactionWithPlanFactoryInput['plan_factory'],
+  };
+}
+
+async function readOwnedReviewForPlanFactory(
+  paths: ReviewPersistencePaths,
+  input: Pick<
+    RunDurableReviewTransactionWithPlanFactoryInput,
+    'review_id' | 'session_id' | 'root_thread_id'
+  >,
+): Promise<ReviewRecord> {
+  const raw = await readJsonIfPresent(join(paths.reviewRoot, input.review_id, 'review.json'));
+  if (!isPlainObject(raw) || !Number.isSafeInteger(raw.revision)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory review record is missing or malformed');
+  }
+  const review = validateReviewRecordPayload(raw, input.review_id, raw.revision as number);
+  if (review.session_id !== input.session_id || review.root_thread_id !== input.root_thread_id) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory review ownership conflicts');
+  }
+  return review;
+}
+
+function validateFactoryReviewPlan(
+  value: unknown,
+  currentReview: ReviewRecord,
+  input: Pick<
+    RunDurableReviewTransactionWithPlanFactoryInput,
+    'review_id' | 'session_id' | 'root_thread_id'
+  >,
+): DurableTransactionPlan {
+  const plan = validateDurablePlan(value);
+  const reviewEffect = plan.effects.find((effect) => effect.mode === 'APPLY_REVIEW_REVISION');
+  if (plan.journal_scope !== 'REVIEW'
+    || plan.review_id !== input.review_id
+    || plan.expected_revision !== currentReview.revision
+    || reviewEffect === undefined) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory transaction identity or revision conflicts');
+  }
+  const proposedReview = reviewEffect.payload as ReviewRecord;
+  if (proposedReview.session_id !== input.session_id
+    || proposedReview.root_thread_id !== input.root_thread_id) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory transaction ownership conflicts');
+  }
+  return plan;
+}
+
+export async function runDurableReviewTransactionWithPlanFactory(
+  paths: ReviewPersistencePaths,
+  inputValue: RunDurableReviewTransactionWithPlanFactoryInput,
+  options: RunDurableTransactionOptions = {},
+): Promise<DurableReviewPlanFactoryResult> {
+  const input = validateDurableReviewPlanFactoryInput(inputValue);
+  if (paths.session_id !== input.session_id) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory persistence scope conflicts');
+  }
+  const locks = await acquireReviewLocks(paths, input.review_id, ['start', 'journal', 'mutation']);
+  try {
+    await recoverPendingReviewTransactionsLocked(paths, input.review_id);
+    const currentReview = await readOwnedReviewForPlanFactory(paths, input);
+    const planValue = await input.plan_factory({ current_review: structuredClone(currentReview) });
+    if (planValue === undefined) return { review: structuredClone(currentReview) };
+    const plan = validateFactoryReviewPlan(planValue, currentReview, input);
+    const transaction = await runDurableTransactionLocked(paths, plan, options);
+    const review = await readOwnedReviewForPlanFactory(paths, input);
+    if (review.revision !== currentReview.revision + 1) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory transaction did not advance the review');
+    }
+    return { transaction, review: structuredClone(review) };
   } finally {
     await releaseReviewLocks(locks);
   }
