@@ -397,6 +397,46 @@ describe('adapted role binding', () => {
     }
   });
 
+  it('preserves legacy no-cwd markers and matches them for any cwd (backward compatibility)', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-legacy-marker-'));
+    try {
+      // Legacy marker shape: no cwd field (pre-cwd-identity markers).
+      writeRoleRoutingMarker(stateDir, {
+        schema_version: 1,
+        session_id: 'session-legacy',
+        parent_thread_id: 'parent-legacy',
+        observed_at: new Date(NOW_MS).toISOString(),
+        expires_at: new Date(NOW_MS + 60_000).toISOString(),
+        evidence: 'legacy',
+      });
+      // A legacy no-cwd marker still matches a read for any cwd (backward compatibility).
+      assert.equal(readRoleRoutingMarker(stateDir, {
+        cwd: '/some/other/workspace', sessionId: 'session-legacy', parentThreadId: 'parent-legacy', nowMs: NOW_MS,
+      })?.evidence, 'legacy');
+
+      // Writing a newer cwd-bearing marker for the SAME session/parent must NOT delete the
+      // legacy no-cwd marker (distinct canonical identity — no cross-identity deletion).
+      writeRoleRoutingMarker(stateDir, {
+        schema_version: 1,
+        cwd: stateDir,
+        session_id: 'session-legacy',
+        parent_thread_id: 'parent-legacy',
+        observed_at: new Date(NOW_MS + 1).toISOString(),
+        expires_at: new Date(NOW_MS + 60_000).toISOString(),
+        evidence: 'cwd-scoped',
+      });
+      // The legacy marker still resolves for an unrelated cwd; the cwd-scoped one resolves for its cwd.
+      assert.equal(readRoleRoutingMarker(stateDir, {
+        cwd: '/some/other/workspace', sessionId: 'session-legacy', parentThreadId: 'parent-legacy', nowMs: NOW_MS,
+      })?.evidence, 'legacy');
+      assert.equal(readRoleRoutingMarker(stateDir, {
+        cwd: stateDir, sessionId: 'session-legacy', parentThreadId: 'parent-legacy', nowMs: NOW_MS,
+      })?.evidence, 'cwd-scoped');
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it('retains expired foreign journals through every successful shared-root writeback', async () => {
     const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-writeback-'));
     const cwdA = join(sharedRoot, 'workspace-a');
