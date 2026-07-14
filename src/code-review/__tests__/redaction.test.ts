@@ -45,6 +45,37 @@ describe('code-review redaction and validation', () => {
     assert.match(redacted, /\[REDACTED\]/u);
   });
 
+  it('redacts AWS access-key identifiers and complete PEM private-key blocks', async () => {
+    const api = await loadRedactionApi();
+    const rsa = '-----BEGIN RSA PRIVATE KEY-----\nrsa-material\n-----END RSA PRIVATE KEY-----';
+    const ec = '-----BEGIN EC PRIVATE KEY-----\nec-material\n-----END EC PRIVATE KEY-----';
+    const pkcs8 = '-----BEGIN PRIVATE KEY-----\npkcs8-material\n-----END PRIVATE KEY-----';
+    const sensitive = [
+      'AKIAIOSFODNN7EXAMPLE',
+      'ASIAIOSFODNN7EXAMPLE',
+      rsa,
+      ec,
+      pkcs8,
+    ].join('\n');
+
+    const redacted = api.redactReviewText(sensitive);
+    assert.doesNotMatch(redacted, /(?:AKIA|ASIA)IOSFODNN7EXAMPLE|BEGIN .*PRIVATE KEY|material/u);
+    assert.equal(redacted.match(/\[REDACTED\]/gu)?.length, 5);
+
+    const finding = api.validateReviewFinding({
+      severity: 'HIGH',
+      title: 'Credentials are exposed',
+      body: 'AWS access key AKIAIOSFODNN7EXAMPLE is present.',
+      file: 'src/a.ts',
+      fix: 'Rotate ASIAIOSFODNN7EXAMPLE immediately.',
+      evidence: `${rsa}\n${ec}\n${pkcs8}`,
+    });
+    assert.doesNotMatch(
+      `${finding.body}\n${finding.fix}\n${finding.evidence}`,
+      /(?:AKIA|ASIA)IOSFODNN7EXAMPLE|BEGIN .*PRIVATE KEY|material/u,
+    );
+  });
+
   it('redacts quoted JSON secret values across case, snake-case, camelCase, and nested metadata', async () => {
     const api = await loadRedactionApi();
     const finding = api.validateReviewFinding({

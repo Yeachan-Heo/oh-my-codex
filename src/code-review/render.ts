@@ -275,6 +275,7 @@ interface ReviewTopologyLane {
   architectural_status?: 'CLEAR' | 'WATCH' | 'BLOCK';
   findings: ReviewFinding[];
   diagnostic_ids: string[];
+  failure_code?: string;
 }
 
 /** Internal cross-binding validation shared by persisted records and final projections. */
@@ -308,7 +309,18 @@ export function validateReviewTopology(
     if (scope && lane.scope_hash !== scope.scope_hash) {
       invalid('lane scope hash contradicts the frozen scope');
     }
-    const requireRoleResult = options.requireRoleResults === true || lane.status === 'COMPLETE';
+    const failed = lane.status === 'FAILED' || lane.status === 'TIMED_OUT' || lane.status === 'INVALID';
+    if (failed) {
+      if (lane.failure_code === undefined
+        || lane.recommendation !== undefined
+        || lane.architectural_status !== undefined) {
+        invalid('failed lane must contain only failure evidence');
+      }
+    } else if (lane.failure_code !== undefined) {
+      invalid('non-failed lane must not contain failure evidence');
+    }
+    const requireRoleResult = lane.status === 'COMPLETE'
+      || (options.requireRoleResults === true && !failed);
     if (lane.role === 'architect') {
       if (lane.batch_id !== 'global') invalid('architect lane must use the global batch');
       if (lane.recommendation !== undefined
@@ -366,9 +378,13 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
     invalid('final review diagnostics are invalid');
   }
   const verdict = validateVerdict(artifact.verdict);
+  const status = enumeration(artifact.status, 'final status', ['FINALIZED', 'BLOCKED'] as const);
   if (scope && verdict.scope_status !== scope.status) invalid('verdict scope status contradicts the manifest');
+  if (status === 'FINALIZED' && verdict.clean && lanes.some((lane) => lane.status !== 'COMPLETE')) {
+    invalid('clean finalized review requires complete lanes');
+  }
 
-  validateReviewTopology({ scope, batches, lanes, diagnostics }, { requireRoleResults: true });
+  validateReviewTopology({ scope, batches, lanes, diagnostics });
   const supersedesReviewId = artifact.supersedes_review_id === undefined
     ? undefined
     : uuid(artifact.supersedes_review_id, 'supersedes_review_id');
@@ -376,7 +392,7 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
     schema_version: 1,
     review_id: uuid(artifact.review_id, 'review_id'),
     revision: integer(artifact.revision, 'revision', 1),
-    status: enumeration(artifact.status, 'final status', ['FINALIZED', 'BLOCKED'] as const),
+    status,
     current_attempt: integer(artifact.current_attempt, 'current_attempt', 1),
     ...(scope === undefined ? {} : { scope }),
     review_flags: artifact.review_flags as 'BATCHED_REVIEW'[],
@@ -491,6 +507,7 @@ export function renderFinalReviewMarkdown(value: unknown): string {
       `- Status: **${lane.status}**`,
       ...(lane.recommendation ? [`- Recommendation: **${lane.recommendation}**`] : []),
       ...(lane.architectural_status ? [`- Architecture: **${lane.architectural_status}**`] : []),
+      ...(lane.failure_code ? [`- Failure: \`${inline(lane.failure_code)}\``] : []),
       '',
       ...findingLines(lane),
     ]),

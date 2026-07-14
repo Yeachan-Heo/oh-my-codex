@@ -1229,19 +1229,35 @@ function validateTypedEffectPayload(
       'schema_version', 'session_id', 'root_thread_id', 'review_id', 'attempt', 'lane_id',
       'child_thread_id', 'scope_hash', 'payload_digest', 'tool_event_ref', 'nonce', 'published_at',
     ], 'post-tool attestation');
+    const publicationId = validateUuid(publication.publication_id, 'publication_id');
+    const activitySessionId = requirePayloadString(activity.session_id, 'activity session_id', 160);
+    const attestationSessionId = requirePayloadString(attestation.session_id, 'attestation session_id', 160);
+    const attempt = requirePositiveInteger(activity.attempt, 'activity attempt');
+    const attestationAttempt = requirePositiveInteger(attestation.attempt, 'attestation attempt');
+    const laneId = requirePayloadString(activity.lane_id, 'activity lane_id', 160);
+    const attestationLaneId = requirePayloadString(attestation.lane_id, 'attestation lane_id', 160);
+    const childThreadId = requirePayloadString(activity.child_thread_id, 'activity child_thread_id', 160);
+    const attestationChildThreadId = requirePayloadString(
+      attestation.child_thread_id,
+      'attestation child_thread_id',
+      160,
+    );
+    const eventRef = requirePayloadString(activity.event_ref, 'activity event_ref');
+    const toolEventRef = requirePayloadString(attestation.tool_event_ref, 'attestation tool_event_ref');
+    requirePayloadString(attestation.root_thread_id, 'attestation root_thread_id', 160);
+    requirePayloadString(attestation.nonce, 'attestation nonce', 160);
     if (publication.schema_version !== 1 || activity.schema_version !== 1 || attestation.schema_version !== 1
       || activity.event_kind !== 'RESULT_POST_TOOL'
+      || publicationId !== idempotencyKey
       || validateUuid(activity.review_id, 'activity review_id') !== reviewId
       || validateUuid(attestation.review_id, 'attestation review_id') !== reviewId
-      || activity.attempt !== attestation.attempt || activity.lane_id !== attestation.lane_id
-      || activity.child_thread_id !== attestation.child_thread_id
-      || activity.event_ref !== attestation.tool_event_ref) {
+      || activitySessionId !== attestationSessionId
+      || attempt !== attestationAttempt || laneId !== attestationLaneId
+      || childThreadId !== attestationChildThreadId
+      || eventRef !== toolEventRef) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool identity conflicts');
     }
-    requirePayloadString(publication.publication_id, 'publication_id', 160);
     requirePayloadTimestamp(publication.published_at, 'published_at');
-    requirePositiveInteger(activity.attempt, 'activity attempt');
-    requirePayloadString(activity.lane_id, 'activity lane_id', 160);
     requirePayloadTimestamp(activity.observed_at, 'activity observed_at');
     requirePayloadHash(attestation.scope_hash, 'attestation scope_hash');
     requirePayloadHash(attestation.payload_digest, 'attestation payload_digest');
@@ -1310,6 +1326,24 @@ function validateTypedEffectPayload(
   }
 }
 
+function validatePostToolProposalBinding(effects: DurableTransactionEffect[]): void {
+  const postTool = effects.find((effect) => effect.name === 'post-tool');
+  if (!postTool) return;
+  const proposal = effects.find((effect) => effect.name === 'proposal');
+  if (!proposal || !isPlainObject(postTool.payload) || !isPlainObject(proposal.payload)
+    || !isPlainObject(postTool.payload.activity) || !isPlainObject(postTool.payload.attestation)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool publication has no proposal binding');
+  }
+  const activity = postTool.payload.activity;
+  const attestation = postTool.payload.attestation;
+  if (activity.attempt !== proposal.payload.attempt
+    || activity.lane_id !== proposal.payload.lane_id
+    || attestation.scope_hash !== proposal.payload.scope_hash
+    || attestation.payload_digest !== proposal.payload.payload_digest) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool publication conflicts with its proposal');
+  }
+}
+
 function validateDurablePlan(value: unknown): DurableTransactionPlan {
   if (!isPlainObject(value)) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction plan is malformed');
   const idempotencyKey = validateUuid(value.idempotency_key, 'idempotency_key');
@@ -1359,6 +1393,7 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
       effect.payload = artifact;
     }
   }
+  validatePostToolProposalBinding(effects);
   const targets = effects.map((effect) => `${effect.target.area}:${effect.target.path}`);
   if (new Set(targets).size !== targets.length) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction targets must be unique');
@@ -1607,6 +1642,34 @@ async function validateReviewEffectCurrentState(
   );
 }
 
+async function validatePostToolTrustContext(
+  paths: ReviewPersistencePaths,
+  intent: Pick<DurableTransactionPlan, 'review_id' | 'expected_revision' | 'effects'>,
+  appliedTransactionId?: string,
+): Promise<void> {
+  const effect = intent.effects.find((candidate) => candidate.name === 'post-tool');
+  if (!effect || !isPlainObject(effect.payload)
+    || !isPlainObject(effect.payload.activity) || !isPlainObject(effect.payload.attestation)) return;
+  const activity = effect.payload.activity;
+  const attestation = effect.payload.attestation;
+  const current = await validateCurrentReviewState(
+    join(paths.reviewRoot, intent.review_id, 'review.json'),
+    intent.review_id,
+    intent.expected_revision,
+    { appliedTransactionId, requireApplied: false },
+  );
+  const activitySessionId = activity.session_id as string;
+  const attestationSessionId = attestation.session_id as string;
+  if ((paths.session_id !== undefined
+      && (activitySessionId !== paths.session_id || attestationSessionId !== paths.session_id))
+    || (current?.session_id !== undefined
+      && (activitySessionId !== current.session_id || attestationSessionId !== current.session_id))
+    || (current?.root_thread_id !== undefined
+      && attestation.root_thread_id !== current.root_thread_id)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool trust context conflicts');
+  }
+}
+
 async function applyReviewRevision(
   path: string,
   payload: unknown,
@@ -1708,6 +1771,7 @@ async function executePrepared(
   prepared: PreparedDurableTransaction,
   options: RunDurableTransactionOptions,
 ): Promise<DurableTransactionResult> {
+  await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
   const files = transactionPaths(paths, prepared.review_id, prepared.idempotency_key, prepared.journal_scope);
   const committedValue = await readJsonIfPresent(files.committed);
   if (committedValue !== undefined) {
@@ -1779,6 +1843,7 @@ async function runDurableTransactionLocked(
     if (prepared.input_digest !== digest) {
       throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
     }
+    await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
     await validateReviewEffectCurrentState(paths, prepared, {
       appliedTransactionId: prepared.transaction_id,
       requireApplied: true,
@@ -1810,11 +1875,12 @@ async function runDurableTransactionLocked(
       response: plan.response,
       prepared_at: new Date().toISOString(),
     };
+    await validatePostToolTrustContext(paths, plan);
     await validateReviewEffectCurrentState(paths, plan, { requireApplied: false });
     maybeCrash('before:prepared', options);
     await atomicCreatePrivateJson(files.prepared, prepared);
-    await publishLocator(paths, prepared);
     maybeCrash('after:prepared', options);
+    await publishLocator(paths, prepared);
   }
   return await executePrepared(paths, prepared, options);
 }
@@ -1900,6 +1966,65 @@ async function readDirectoryEntries(path: string): Promise<Dirent[]> {
   }
 }
 
+async function recoverActiveReviewWithoutLocators(
+  paths: ReviewPersistencePaths,
+  active: ActiveReviewPointer,
+  heldReviewId: string | undefined,
+): Promise<DurableTransactionResult[]> {
+  const entries = await readDirectoryEntries(join(paths.reviewRoot, active.review_id, 'transactions'));
+  const candidates: Array<{ key: string; prepared: PreparedDurableTransaction }> = [];
+  for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
+    if (entry.name.startsWith('.')) continue;
+    if (!entry.isDirectory()) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction entry is not a directory');
+    }
+    const key = validateUuid(entry.name, 'active review transaction idempotency_key');
+    const files = transactionPaths(paths, active.review_id, key, 'REVIEW');
+    if (await readJsonIfPresent(files.committed) !== undefined) continue;
+    const preparedValue = await readJsonIfPresent(files.prepared);
+    if (preparedValue === undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction has no intent');
+    }
+    const prepared = parsePrepared(preparedValue);
+    if (prepared.journal_scope !== 'REVIEW'
+      || prepared.review_id !== active.review_id
+      || prepared.idempotency_key !== key) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction identity conflicts');
+    }
+    candidates.push({ key, prepared });
+  }
+  if (candidates.length === 0) return [];
+  if (candidates.length > 1) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review has ambiguous unlocated transactions');
+  }
+
+  const reviewValue = await readJsonIfPresent(join(paths.reviewRoot, active.review_id, 'review.json'));
+  if (!isPlainObject(reviewValue) || !Number.isSafeInteger(reviewValue.revision)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review pointer is dangling');
+  }
+  const review = validateReviewRecordPayload(reviewValue, active.review_id, reviewValue.revision as number);
+  if (review.status !== active.status) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review pointer conflicts with its review record');
+  }
+
+  const recover = async (): Promise<DurableTransactionResult[]> => {
+    const [{ key, prepared }] = candidates;
+    await publishLocator(paths, prepared);
+    const result = await recoverDurableTransactionLocked(paths, active.review_id, key, 'REVIEW');
+    if (result === null) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction disappeared during recovery');
+    }
+    return [result];
+  };
+  if (active.review_id === heldReviewId) return await recover();
+  const locks = await acquireReviewLocks(paths, active.review_id, ['journal', 'mutation']);
+  try {
+    return await recover();
+  } finally {
+    await releaseReviewLocks(locks);
+  }
+}
+
 async function recoverPendingReviewTransactionsLocked(
   paths: ReviewPersistencePaths,
   heldReviewId?: string,
@@ -1926,6 +2051,7 @@ async function recoverPendingReviewTransactionsLocked(
     const committedValue = await readJsonIfPresent(files.committed);
     if (committedValue !== undefined) {
       validateCommittedAgainstPrepared(committedValue, prepared);
+      await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
       await validateReviewEffectCurrentState(paths, prepared, {
         appliedTransactionId: prepared.transaction_id,
         requireApplied: true,
@@ -1973,6 +2099,10 @@ async function recoverPendingReviewTransactionsLocked(
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction recovery locator references missing intent');
     }
     recovered.push(result);
+  }
+  const active = await readActiveReview(paths);
+  if (active !== null) {
+    recovered.push(...await recoverActiveReviewWithoutLocators(paths, active, heldReviewId));
   }
   return recovered;
 }

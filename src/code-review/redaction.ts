@@ -8,6 +8,7 @@ import {
 } from './contract.js';
 
 const PROVIDER_TOKEN_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/giu;
+const AWS_ACCESS_KEY_ID_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gu;
 const GENERIC_SECRET_PATTERN = /\b([A-Za-z0-9_.-]*(?:api[-_]?key|password|passwd|client[-_]?secret|private[-_]?key|github[-_]?token|secret|credential)[A-Za-z0-9_.-]*)(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\r\n]+)/giu;
 const AUTHORIZATION_HEADER_PATTERN = /\bauthorization\s*:\s*[^\r\n]+/giu;
 const JSON_DOUBLE_QUOTED_SECRET_PATTERN = /"([^"\\]*(?:api[-_]?key|password|passwd|client[-_]?secret|private[-_]?key|github[-_]?token|secret|credential|authorization|auth)[^"\\]*)"(\s*:\s*)"(?:\\.|[^"\\])*"/giu;
@@ -16,6 +17,7 @@ const HOME_PATH_PATTERN = /(?:\/Users\/[^/\s]+|\/home\/[^/\s]+)(?=\/)/gu;
 const WINDOWS_HOME_PATH_PATTERN = /\b[A-Za-z]:\\Users\\[^\\\s]+(?=\\)/gu;
 const SENSITIVE_KEY_PARTS = ['token', 'apikey', 'credential', 'password', 'passwd', 'secret', 'auth'] as const;
 const RAW_CONTEXT_KEY_PARTS = ['source', 'diff', 'model', 'context', 'prompt', 'tool', 'output', 'env', 'environment'] as const;
+const PEM_PRIVATE_KEY_LABELS = ['RSA PRIVATE KEY', 'EC PRIVATE KEY', 'PRIVATE KEY'] as const;
 
 function isForbiddenPersistenceKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/giu, '').toLowerCase();
@@ -43,15 +45,45 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
+function redactPemPrivateKeyBlocks(value: string): string {
+  let cursor = 0;
+  let redacted = '';
+  while (cursor < value.length) {
+    let blockStart = -1;
+    let label: typeof PEM_PRIVATE_KEY_LABELS[number] | undefined;
+    for (const candidate of PEM_PRIVATE_KEY_LABELS) {
+      const index = value.indexOf(`-----BEGIN ${candidate}-----`, cursor);
+      if (index >= 0 && (blockStart < 0 || index < blockStart)) {
+        blockStart = index;
+        label = candidate;
+      }
+    }
+    if (blockStart < 0 || label === undefined) {
+      redacted += value.slice(cursor);
+      break;
+    }
+    const endMarker = `-----END ${label}-----`;
+    const blockEnd = value.indexOf(endMarker, blockStart + label.length);
+    if (blockEnd < 0) {
+      redacted += value.slice(cursor);
+      break;
+    }
+    redacted += `${value.slice(cursor, blockStart)}[REDACTED]`;
+    cursor = blockEnd + endMarker.length;
+  }
+  return redacted;
+}
+
 export function redactReviewText(
   value: unknown,
   options: { repositoryRoot?: string } = {},
 ): string {
-  let text = redactAuthSecrets(value);
+  let text = redactPemPrivateKeyBlocks(redactAuthSecrets(value));
   text = text.replace(JSON_DOUBLE_QUOTED_SECRET_PATTERN, '"$1"$2"[REDACTED]"');
   text = text.replace(JSON_SINGLE_QUOTED_SECRET_PATTERN, "'$1'$2'[REDACTED]'");
   text = text.replace(AUTHORIZATION_HEADER_PATTERN, 'Authorization: [REDACTED]');
   text = text.replace(PROVIDER_TOKEN_PATTERN, '[REDACTED]');
+  text = text.replace(AWS_ACCESS_KEY_ID_PATTERN, '[REDACTED]');
   text = text.replace(GENERIC_SECRET_PATTERN, (_match, key: string, separator: string) => (
     `${key}${separator.trimEnd()} [REDACTED]`
   ));
