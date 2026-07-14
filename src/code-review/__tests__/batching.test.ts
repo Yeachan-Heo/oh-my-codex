@@ -169,6 +169,20 @@ describe('deterministic review batching', () => {
     assert.deepEqual(plan.batches.map((batch) => batch.module_root), ['.', 'src', 'src']);
   });
 
+  it('creates no batches, flags, or lanes for clean and explicit no-match scopes', async () => {
+    const api = await loadBatchingApi();
+    const root = await repository();
+    const expected: BatchPlan = {
+      review_flags: [],
+      batches: [],
+      required_lanes: [],
+    };
+    const cleanFullScope = await api.createBatchPlan({ repositoryRoot: root, files: [] });
+    const explicitNoMatch = await api.createBatchPlan({ repositoryRoot: root, files: [] });
+    assert.deepEqual(cleanFullScope, expected);
+    assert.deepEqual(explicitNoMatch, expected);
+  });
+
   it('rejects dot, empty, traversal, and absolute scope paths', async () => {
     const api = await loadBatchingApi();
     const root = await repository();
@@ -240,6 +254,7 @@ describe('deterministic review batching', () => {
       oversized_single_file: true,
     });
     assert.equal(plan.batches.filter((batch) => batch.oversized_single_file).length, 1);
+    assert.deepEqual(plan.review_flags, ['BATCHED_REVIEW']);
   });
 
   it('counts binary, symlink, submodule, and undefined line totals as zero', async () => {

@@ -216,13 +216,15 @@ export async function createBatchPlan(options: {
     files.length > config.maxFiles || totalLines > config.maxChangedLines
       ? ['BATCHED_REVIEW']
       : [];
-  const requiredLanes: RequiredReviewLane[] = [
-    ...batches.map((batch) => ({
-      lane_id: `reviewer-${batch.batch_id}`,
-      role: 'code-reviewer' as const,
-      batch_id: batch.batch_id,
-    })),
-    { lane_id: 'architect-global', role: 'architect', batch_id: 'global' },
-  ];
+  const requiredLanes: RequiredReviewLane[] = batches.length === 0
+    ? []
+    : [
+      ...batches.map((batch) => ({
+        lane_id: `reviewer-${batch.batch_id}`,
+        role: 'code-reviewer' as const,
+        batch_id: batch.batch_id,
+      })),
+      { lane_id: 'architect-global', role: 'architect', batch_id: 'global' },
+    ];
   return { review_flags: reviewFlags, batches, required_lanes: requiredLanes };
 }
