@@ -167,6 +167,116 @@ describe('code-review overlay failure handling', () => {
     }
   });
 
+  it('fails Stop closed when canonical JSON is schema-invalid', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-overlay-invalid-schema-stop-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionDir = join(stateDir, 'sessions', SESSION_ID);
+    const canonicalPath = join(sessionDir, 'skill-active-state.json');
+    const invalidCanonical = '{"active":true,"skill":123,"active_skills":"bad"}';
+    try {
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID, cwd }, null, 2));
+      await writeFile(canonicalPath, invalidCanonical);
+      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: SESSION_ID,
+        thread_id: THREAD_ID,
+        cwd,
+      }, null, 2));
+
+      const activation = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the current diff',
+        sessionId: SESSION_ID,
+        threadId: THREAD_ID,
+        nowIso: NOW,
+      });
+      const canonicalAfterActivation = await readFile(canonicalPath, 'utf-8');
+      const stop = await dispatchCodexNativeHook({
+        hook_event_name: 'Stop',
+        cwd,
+        session_id: SESSION_ID,
+        thread_id: THREAD_ID,
+        turn_id: 'turn-invalid-schema-stop',
+      }, { cwd });
+
+      assert.deepEqual({
+        activationSkills: listActiveSkills(activation ?? {}).map((entry) => entry.skill),
+        canonicalAfterActivation,
+        diagnosticCount: activation?.transition_error ? 1 : 0,
+        stopDecision: stop.outputJson?.decision ?? null,
+        stopReason: stop.outputJson?.stopReason ?? null,
+      }, {
+        activationSkills: [],
+        canonicalAfterActivation: invalidCanonical,
+        diagnosticCount: 1,
+        stopDecision: 'block',
+        stopReason: 'skill_ralplan_planning_continue_artifact',
+      });
+      assert.match(String(activation?.transition_error), /canonical skill state.*malformed.*repair or clear/i);
+      assert.match(String(stop.outputJson?.reason), /continue from the current ralplan artifact/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts valid terminal and legacy top-level canonical shapes', async () => {
+    const cases: Array<{
+      name: string;
+      canonical: SkillActiveStateLike;
+      expectedSkills: string[];
+    }> = [
+      {
+        name: 'terminal',
+        canonical: ralplanState({ active: false, phase: 'completed', active_skills: [] }),
+        expectedSkills: ['code-review'],
+      },
+      {
+        name: 'legacy top-level',
+        canonical: {
+          active: true,
+          skill: 'ralplan',
+          phase: 'planning',
+          session_id: SESSION_ID,
+          thread_id: THREAD_ID,
+        },
+        expectedSkills: ['ralplan', 'code-review'],
+      },
+    ];
+
+    for (const testCase of cases) {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-overlay-valid-${testCase.name.replaceAll(' ', '-')}-`));
+      const stateDir = join(cwd, '.omx', 'state');
+      const canonicalPath = join(stateDir, 'sessions', SESSION_ID, 'skill-active-state.json');
+      try {
+        await mkdir(join(stateDir, 'sessions', SESSION_ID), { recursive: true });
+        await writeFile(canonicalPath, JSON.stringify(testCase.canonical, null, 2));
+
+        const activation = await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$code-review inspect the current diff',
+          sessionId: SESSION_ID,
+          threadId: THREAD_ID,
+          nowIso: NOW,
+        });
+        const persisted = JSON.parse(await readFile(canonicalPath, 'utf-8')) as SkillActiveStateLike;
+
+        assert.equal(activation?.transition_error, undefined, testCase.name);
+        assert.deepEqual(
+          listActiveSkills(persisted).map((entry) => entry.skill),
+          testCase.expectedSkills,
+          testCase.name,
+        );
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('fails Stop closed without replacing an unreadable canonical workflow state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-overlay-unreadable-stop-'));
     const stateDir = join(cwd, '.omx', 'state');

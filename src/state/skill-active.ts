@@ -244,16 +244,26 @@ function overlayField(entry: SkillActiveEntry, key: string): string {
   return safeString(entry[key]).trim();
 }
 
+const OVERLAY_IDENTITY_FIELDS = ['review_id', 'root_thread_id', 'scope', 'deadline_at'] as const;
+
+function overlayIdentityConflictField(
+  existing: SkillActiveEntry,
+  incoming: SkillActiveEntry,
+): (typeof OVERLAY_IDENTITY_FIELDS)[number] | null {
+  if (existing.skill !== incoming.skill) return null;
+  if (safeString(existing.session_id).trim() !== safeString(incoming.session_id).trim()) return null;
+
+  return OVERLAY_IDENTITY_FIELDS.find((field) => {
+    const incomingValue = overlayField(incoming, field);
+    const existingValue = overlayField(existing, field);
+    return incomingValue.length > 0 && existingValue.length > 0 && incomingValue !== existingValue;
+  }) ?? null;
+}
+
 function overlayIdentityMatches(existing: SkillActiveEntry, incoming: SkillActiveEntry): boolean {
   if (existing.skill !== incoming.skill) return false;
   if (safeString(existing.session_id).trim() !== safeString(incoming.session_id).trim()) return false;
-
-  for (const field of ['review_id', 'root_thread_id', 'scope', 'deadline_at']) {
-    const incomingValue = overlayField(incoming, field);
-    const existingValue = overlayField(existing, field);
-    if (incomingValue && existingValue && incomingValue !== existingValue) return false;
-  }
-  return true;
+  return overlayIdentityConflictField(existing, incoming) === null;
 }
 
 function isTerminalOverlayEntry(entry: SkillActiveEntry): boolean {
@@ -334,6 +344,15 @@ export function mergeSessionAwareSkillOverlay(
       !== JSON.stringify(canonicalTrackedSignature(rootEntries))
   ) {
     throw new Error('Cannot merge skill overlay: conflicting canonical session and root copies.');
+  }
+
+  const identityConflict = authoritativeEntries
+    .map((entry) => ({ entry, field: overlayIdentityConflictField(entry, input.overlay) }))
+    .find((candidate) => candidate.field !== null);
+  if (identityConflict?.field) {
+    throw new Error(
+      `Cannot merge skill overlay: review identity ${identityConflict.field} ${overlayField(identityConflict.entry, identityConflict.field)} conflicts with ${overlayField(input.overlay, identityConflict.field)}.`,
+    );
   }
 
   const existingOverlay = authoritativeEntries.find((entry) => overlayIdentityMatches(entry, input.overlay));

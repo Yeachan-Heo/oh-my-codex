@@ -188,6 +188,73 @@ describe('code-review overlay transition properties', () => {
     });
   });
 
+  it('rejects active and terminal overlays when the review identity changes', async () => {
+    const merge = await loadOverlayMerge();
+    const base = canonical([
+      entry('ralplan'),
+      reviewOverlay({ review_start: START }),
+    ]);
+    const before = JSON.stringify(base);
+    const cases = [
+      {
+        name: 'active replacement',
+        overlay: reviewOverlay({ review_id: 'review-2' }),
+      },
+      {
+        name: 'terminal replacement',
+        overlay: reviewOverlay({
+          review_id: 'review-2',
+          active: false,
+          status: 'completed',
+          phase: 'completed',
+        } as Partial<SkillActiveEntry>),
+      },
+    ];
+
+    const outcomes = cases.map((testCase) => {
+      try {
+        const result = merge({
+          authoritativeState: base,
+          overlay: testCase.overlay,
+          sessionId: SESSION_ID,
+          rootThreadId: THREAD_ID,
+          nowIso: UPDATE,
+        });
+        const review = listActiveSkills(result).find((item) => item.skill === 'code-review');
+        return {
+          name: testCase.name,
+          threw: false,
+          skills: listActiveSkills(result).map((item) => item.skill),
+          reviewId: review?.review_id ?? null,
+          reviewStart: review?.review_start ?? null,
+          stateUnchanged: JSON.stringify(base) === before,
+        };
+      } catch (error) {
+        return {
+          name: testCase.name,
+          threw: true,
+          actionableConflict: /review identity.*review_id/i.test(error instanceof Error ? error.message : String(error)),
+          stateUnchanged: JSON.stringify(base) === before,
+        };
+      }
+    });
+
+    assert.deepEqual(outcomes, [
+      {
+        name: 'active replacement',
+        threw: true,
+        actionableConflict: true,
+        stateUnchanged: true,
+      },
+      {
+        name: 'terminal replacement',
+        threw: true,
+        actionableConflict: true,
+        stateUnchanged: true,
+      },
+    ]);
+  });
+
   it('preserves, de-duplicates, terminalizes idempotently, and isolates fixed-seed event sequences', async () => {
     const merge = await loadOverlayMerge();
     const seeds = [0x1a2b3c4d, 0x5eed1234, 0x7fffffed];

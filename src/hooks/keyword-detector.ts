@@ -24,6 +24,7 @@ import {
   SKILL_ACTIVE_STATE_FILE,
   listActiveSkills,
   mergeSessionAwareSkillOverlay,
+  normalizeSkillActiveState,
   writeSkillActiveStateCopiesForStateDir,
   type SkillActiveEntry,
 } from '../state/skill-active.js';
@@ -467,9 +468,9 @@ async function readExistingSkillState(statePath: string): Promise<ExistingSkillS
   }
 
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) return { state: null, status: 'malformed' };
-    return { state: parsed as SkillActiveState, status: 'ok' };
+    const normalized = normalizeSkillActiveState(JSON.parse(raw));
+    if (!normalized) return { state: null, status: 'malformed' };
+    return { state: normalized as SkillActiveState, status: 'ok' };
   } catch {
     return { state: null, status: 'malformed' };
   }
@@ -1411,7 +1412,8 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   if (!match) return null;
 
   const nowIso = input.nowIso ?? new Date().toISOString();
-  if (isUnsafeCanonicalSkillStateStatus(authoritativeResult.status)) {
+  const isCodeReviewOverlay = match.skill === 'code-review';
+  if (isCodeReviewOverlay && isUnsafeCanonicalSkillStateStatus(authoritativeResult.status)) {
     return {
       version: 1,
       active: false,
@@ -1787,23 +1789,25 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
     ...(match.skill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
   };
-  let state: SkillActiveState;
-  try {
-    state = mergeSessionAwareSkillOverlay({
-      authoritativeState: previous,
-      rootState: previousRoot,
-      overlay: overlayState.active_skills![0]!,
-      sessionId: input.sessionId,
-      rootThreadId: input.threadId,
-      nowIso,
-    }) as SkillActiveState;
-  } catch (error) {
-    return {
-      ...(previous ?? overlayState),
-      updated_at: nowIso,
-      active_skills: listActiveSkills(previous ?? {}),
-      transition_error: error instanceof Error ? error.message : String(error),
-    };
+  let state = overlayState;
+  if (isCodeReviewOverlay) {
+    try {
+      state = mergeSessionAwareSkillOverlay({
+        authoritativeState: previous,
+        rootState: previousRoot,
+        overlay: overlayState.active_skills![0]!,
+        sessionId: input.sessionId,
+        rootThreadId: input.threadId,
+        nowIso,
+      }) as SkillActiveState;
+    } catch (error) {
+      return {
+        ...(previous ?? overlayState),
+        updated_at: nowIso,
+        active_skills: listActiveSkills(previous ?? {}),
+        transition_error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   try {

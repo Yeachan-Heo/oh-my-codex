@@ -63,4 +63,45 @@ describe('code-review workflow event chain', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('keeps baseline replacement semantics for non-review keyword activation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-non-review-activation-e2e-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-non-review-activation-e2e';
+    const threadId = 'thread-non-review-activation-e2e';
+
+    try {
+      await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$ralplan review the implementation plan',
+        sessionId,
+        threadId,
+        nowIso: '2026-07-14T00:00:00.000Z',
+      });
+      const activation = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$analyze inspect the repository',
+        sessionId,
+        threadId,
+        nowIso: '2026-07-14T00:01:00.000Z',
+      });
+      const canonical = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+
+      assert.deepEqual({
+        activationPrimary: activation?.skill,
+        activationEntries: listActiveSkills(activation).map((entry) => entry.skill),
+        canonicalPrimary: canonical?.skill,
+        canonicalEntries: listActiveSkills(canonical).map((entry) => entry.skill),
+      }, {
+        activationPrimary: 'analyze',
+        activationEntries: ['analyze'],
+        canonicalPrimary: 'analyze',
+        canonicalEntries: ['analyze'],
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
