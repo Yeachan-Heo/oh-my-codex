@@ -18,21 +18,26 @@ import type { BatchPlan } from './batching.js';
 import { buildCapabilityPlan } from './capabilities.js';
 import {
   canonicalLanePayloadDigest,
+  parseLaneResultSubmission,
   parseDiagnosticToolEvents,
   parseLaneActivityEvent,
+  parsePostToolPublication,
   validateLaneIndependence,
   validateLaneResultEvidence,
   validateLaneStart,
   validatePostToolPublication,
 } from './evidence.js';
+import { sanitizeForPersistence } from './redaction.js';
 import {
   createReviewConsumptionEffect,
   readReviewConsumptionMarkers,
   recoverPendingReviewTransactions,
   resolveReviewPersistencePaths,
+  runDurableReviewTransactionWithPlanFactory,
   runDurableTransaction,
   type DurableTransactionBoundary,
   type DurableTransactionEffect,
+  type DurableTransactionPlan,
   type ReviewPersistenceContext,
   type ReviewPersistencePaths,
 } from './persistence.js';
@@ -61,6 +66,23 @@ export interface ActivitySnapshot {
   events: unknown[];
   publications: unknown[];
   diagnostic_events?: unknown[];
+}
+
+interface TrustedHookJournalSnapshot {
+  events: unknown[];
+  diagnostic_events: unknown[];
+  publication_ids: string[];
+}
+
+export interface DurableReviewCoordinatorHostDependencies {
+  root_thread_id: string;
+  loadHookJournalSnapshot(input: {
+    session_id: string;
+    root_thread_id: string;
+    review_id: string;
+    cutoff_at: string;
+  }): Promise<unknown>;
+  now?: () => Date;
 }
 
 function parseTimestamp(value: string, name: string): number {
@@ -303,13 +325,14 @@ export function applyLaneStart(input: {
 function sameProposalIdentity(
   proposal: LaneResultProposal,
   event: Extract<ReviewRecordLaneEvent, { event: 'RESULT' }>,
+  result: LaneResultProposal['result'],
 ): boolean {
   return proposal.review_id === event.review_id
     && proposal.attempt === event.attempt
     && proposal.lane_id === event.lane_id
     && proposal.scope_hash === event.scope_hash
     && proposal.idempotency_key === event.idempotency_key
-    && proposal.payload_digest === canonicalLanePayloadDigest(event.result);
+    && proposal.payload_digest === canonicalLanePayloadDigest(result);
 }
 
 export function createLaneResultProposal(input: {
@@ -320,36 +343,43 @@ export function createLaneResultProposal(input: {
   existingProposal?: LaneResultProposal;
 }): LaneResultProposal {
   const { event } = input;
+  if (input.source === 'CLI' && input.existingProposal === undefined) {
+    throw new ReviewCoordinatorError('MCP_TRANSPORT_DEAD', 'CLI cannot initiate a fresh RESULT proposal');
+  }
+  if (event.review_id !== input.review.review_id
+    || (input.existingProposal === undefined && event.attempt !== input.review.current_attempt)) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'late RESULT targets an old or foreign attempt');
+  }
+  const lane = input.review.lanes.find((candidate) =>
+    candidate.lane_id === event.lane_id && candidate.attempt === event.attempt);
+  if (lane === undefined) throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'RESULT targets an unknown lane');
+  let result: LaneResultProposal['result'];
+  try {
+    const parsed = parseLaneResultSubmission({
+      review: input.review,
+      lane,
+      result: event.result,
+      expected_attempt: event.attempt,
+    });
+    result = sanitizeForPersistence(parsed);
+  } catch (error) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
+  }
   if (input.existingProposal !== undefined) {
-    if (!sameProposalIdentity(input.existingProposal, event)) {
+    if (!sameProposalIdentity(input.existingProposal, event, result)) {
       throw new ReviewCoordinatorError('IDEMPOTENCY_CONFLICT', 'existing proposal identity or scope conflicts');
     }
     return input.existingProposal;
   }
-  if (input.source === 'CLI') {
-    throw new ReviewCoordinatorError('MCP_TRANSPORT_DEAD', 'CLI cannot initiate a fresh RESULT proposal');
-  }
-  if (event.review_id !== input.review.review_id || event.attempt !== input.review.current_attempt) {
-    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'late RESULT targets an old or foreign attempt');
-  }
-  const lane = currentLane(input.review, event.lane_id);
   if (lane.status !== 'RUNNING' || lane.attempt !== event.attempt) {
     throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'RESULT requires a currently running, bound lane');
   }
   if (event.scope_hash !== lane.scope_hash || event.scope_hash !== input.review.scope?.scope_hash) {
     throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'RESULT scope hash conflicts with the frozen scope');
   }
-  if (event.result.role !== lane.role
-    || event.result.lane_id !== lane.lane_id
-    || event.result.batch_id !== lane.batch_id
-    || event.result.review_id !== input.review.review_id
-    || event.result.attempt !== input.review.current_attempt
-    || event.result.scope_hash !== lane.scope_hash) {
-    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'RESULT role, lane, batch, or identity conflicts');
-  }
   let digest: string;
   try {
-    digest = canonicalLanePayloadDigest(event.result);
+    digest = canonicalLanePayloadDigest(result);
   } catch (error) {
     throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
   }
@@ -362,7 +392,7 @@ export function createLaneResultProposal(input: {
     scope_hash: lane.scope_hash,
     idempotency_key: event.idempotency_key,
     payload_digest: digest,
-    result: structuredClone(event.result),
+    result: structuredClone(result),
     proposed_at: input.now.toISOString(),
   };
 }
@@ -518,7 +548,9 @@ function reconcileResultPublicationsTrusted(
   let ordinaryEvents: LaneActivityEvent[];
   let diagnosticEvents;
   try {
-    ordinaryEvents = input.snapshot.events.map(parseLaneActivityEvent);
+    ordinaryEvents = input.snapshot.events
+      .map(parseLaneActivityEvent)
+      .filter((event) => event.event_kind !== 'RESULT_POST_TOOL');
     diagnosticEvents = parseDiagnosticToolEvents(input.snapshot.diagnostic_events ?? []);
   } catch (error) {
     throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
@@ -557,21 +589,33 @@ function reconcileResultPublicationsTrusted(
     lane.last_processed_activity_ref === undefined ? [] : [lane.last_processed_activity_ref]));
   const durableConsumptions = new Set(consumedMarkers.map(consumptionMarkerIdentity));
   const nonceSet = new Set<string>();
+  const output = cloneRecord(input.review);
   const validatedPairs: Array<{
     proposal: LaneResultProposal;
     publication: ResultPostToolPublication;
   }> = [];
-  const lateLaneIds = new Set<string>();
+  const matchedLaneIds = new Set<string>();
+  let changed = false;
   for (const pair of matchedRaw) {
-    const lane = currentLane(input.review, pair.proposal.lane_id);
+    const lane = currentLane(output, pair.proposal.lane_id);
     if (lane.status === 'COMPLETE') continue;
     if (lane.status !== 'RUNNING') continue;
+    matchedLaneIds.add(lane.lane_id);
     try {
+      const parsedPublication = parsePostToolPublication(pair.publication);
+      const published = parseTimestamp(parsedPublication.activity.observed_at, 'publication activity');
+      if (published > cutoff) {
+        throw new Error('publication is after the frozen snapshot cutoff');
+      }
+      const precedingEvents = ordinaryEvents.filter((event) =>
+        compareActivity(event, parsedPublication.activity) < 0);
+      if (foldLaneEvents(lane, output, precedingEvents, published)) changed = true;
+      if (lane.status !== 'RUNNING') continue;
       const publication = validatePostToolPublication({
-        review: input.review,
+        review: output,
         lane,
         proposal: pair.proposal,
-        publication: pair.publication,
+        publication: parsedPublication,
         consumedToolEventRefs: consumed,
       });
       for (const [kind, value] of [
@@ -597,25 +641,13 @@ function reconcileResultPublicationsTrusted(
       consumed.add(publication.attestation.tool_event_ref);
       validatedPairs.push({ proposal: pair.proposal, publication });
     } catch (error) {
-      if ((error as Error).message.includes('after the idle deadline')) {
-        lateLaneIds.add(lane.lane_id);
-        continue;
-      }
       throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
     }
   }
 
-  const output = cloneRecord(input.review);
-  const publicationEvents = validatedPairs.map((pair) => pair.publication.activity);
-  let changed = false;
   for (const lane of output.lanes.filter((candidate) => candidate.attempt === output.current_attempt)) {
-    if (lateLaneIds.has(lane.lane_id)) {
-      lane.status = 'TIMED_OUT';
-      lane.failure_code = 'LANE_TIMED_OUT';
-      changed = true;
-      continue;
-    }
-    if (foldLaneEvents(lane, output, [...ordinaryEvents, ...publicationEvents], cutoff)) changed = true;
+    if (!matchedLaneIds.has(lane.lane_id)
+      && foldLaneEvents(lane, output, ordinaryEvents, cutoff)) changed = true;
   }
 
   for (const { proposal, publication } of validatedPairs) {
@@ -817,6 +849,101 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+function exactObjectKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function parseReviewId(value: unknown, name: string): string {
+  if (typeof value !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', `${name} must be a cryptographic UUID`);
+  }
+  return value.toLowerCase();
+}
+
+function parseDurableReconcileRequest(value: unknown): {
+  review_id: string;
+  crashAt?: DurableTransactionBoundary;
+} {
+  if (!isObject(value)
+    || !exactObjectKeys(value, value.crashAt === undefined ? ['review_id'] : ['review_id', 'crashAt'])) {
+    throw new ReviewCoordinatorError(
+      'LANE_EVIDENCE_INVALID',
+      'durable reconciliation accepts only review_id and host test controls',
+    );
+  }
+  const reviewId = parseReviewId(value.review_id, 'review_id');
+  if (value.crashAt !== undefined && (typeof value.crashAt !== 'string'
+    || !/^(?:before|after):(?:prepared|locator|proposal|post-tool|consume|manifest|lane|review|report|active-overlay|approval|stop-marker|committed|receipt|locator-cleanup)$/u.test(value.crashAt))) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'reconciliation crash boundary is invalid');
+  }
+  return {
+    review_id: reviewId,
+    ...(value.crashAt === undefined ? {} : { crashAt: value.crashAt as DurableTransactionBoundary }),
+  };
+}
+
+function parseTrustedHookJournalSnapshot(input: {
+  value: unknown;
+  review: ReviewRecord;
+  cutoff_at: string;
+}): TrustedHookJournalSnapshot {
+  if (!isObject(input.value)
+    || !exactObjectKeys(input.value, ['events', 'diagnostic_events', 'publication_ids'])
+    || !Array.isArray(input.value.events)
+    || !Array.isArray(input.value.diagnostic_events)
+    || !Array.isArray(input.value.publication_ids)
+    || input.value.events.length > 4_096
+    || input.value.diagnostic_events.length > 1_024
+    || input.value.publication_ids.length > 1_024) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted hook journal snapshot is missing or malformed');
+  }
+  let events: LaneActivityEvent[];
+  let diagnosticEvents: ReturnType<typeof parseDiagnosticToolEvents>;
+  let publicationIds: string[];
+  try {
+    events = input.value.events.map(parseLaneActivityEvent);
+    diagnosticEvents = parseDiagnosticToolEvents(input.value.diagnostic_events);
+    publicationIds = input.value.publication_ids.map((value) => parseReviewId(value, 'publication_id'));
+  } catch (error) {
+    if (error instanceof ReviewCoordinatorError) throw error;
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
+  }
+  if (new Set(publicationIds).size !== publicationIds.length) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted publication identity is duplicated');
+  }
+  const cutoff = parseTimestamp(input.cutoff_at, 'trusted snapshot cutoff');
+  const validateEventIdentity = (event: {
+    session_id: string;
+    review_id: string;
+    attempt: number;
+    lane_id: string;
+    child_thread_id: string;
+    observed_at: string;
+  }): void => {
+    const lane = input.review.lanes.find((candidate) =>
+      candidate.lane_id === event.lane_id && candidate.attempt === event.attempt);
+    const observed = parseTimestamp(event.observed_at, 'trusted journal event');
+    if (event.session_id !== input.review.session_id
+      || event.review_id !== input.review.review_id
+      || lane?.provenance === undefined
+      || event.child_thread_id !== lane.provenance.thread_id
+      || observed < parseTimestamp(lane.provenance.first_seen_at, 'lane first_seen_at')
+      || observed > cutoff) {
+      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted hook journal event identity or time is invalid');
+    }
+  };
+  for (const event of events) validateEventIdentity(event);
+  for (const event of diagnosticEvents) validateEventIdentity(event);
+  const currentAttempt = input.review.current_attempt;
+  return {
+    events: events.filter((event) => event.attempt === currentAttempt),
+    diagnostic_events: diagnosticEvents.filter((event) => event.attempt === currentAttempt),
+    publication_ids: publicationIds,
+  };
+}
+
 async function readJson(path: string): Promise<unknown | undefined> {
   try {
     return JSON.parse(await readFile(path, 'utf8')) as unknown;
@@ -871,6 +998,16 @@ function validateStartTransactionResponse(value: unknown, expected: ReviewRecord
     throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'START transaction receipt response is malformed');
   }
   return structuredClone(value) as ReviewRecord;
+}
+
+function validateProposalTransactionResponse(
+  value: unknown,
+  expected: LaneResultProposal,
+): LaneResultProposal {
+  if (!isDeepStrictEqual(value, expected)) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'RESULT transaction receipt response is malformed');
+  }
+  return structuredClone(value) as LaneResultProposal;
 }
 
 function activeStatusTransitionEffects(
@@ -939,15 +1076,16 @@ export interface DurableReviewCoordinator {
   }): Promise<LaneResultProposal>;
   reconcile(input: {
     review_id: string;
-    snapshot: ActivitySnapshot;
-    now: Date;
     crashAt?: DurableTransactionBoundary;
   }): Promise<ReviewRecord>;
   resume(input: { review_id: string; current_scope_hash: string; now: Date; idempotency_key: string }): Promise<ReviewRecord>;
   finalize(input: { review_id: string; current_scope_hash: string; now: Date; idempotency_key: string }): Promise<ReviewRecord>;
 }
 
-export function createDurableReviewCoordinator(context: ReviewPersistenceContext): DurableReviewCoordinator {
+export function createDurableReviewCoordinator(
+  context: ReviewPersistenceContext,
+  host?: DurableReviewCoordinatorHostDependencies,
+): DurableReviewCoordinator {
   let pathsPromise: Promise<ReviewPersistencePaths> | undefined;
   const paths = (): Promise<ReviewPersistencePaths> => {
     pathsPromise ??= resolveReviewPersistencePaths(context);
@@ -1031,11 +1169,11 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         ...(existingProposal === undefined ? {} : { existingProposal }),
       });
       if (existingProposal !== undefined) return proposal;
-      await runDurableTransaction(resolved, {
+      const transaction = await runDurableTransaction(resolved, {
         idempotency_key: event.idempotency_key,
         review_id: event.review_id,
         operation: 'PROPOSE_LANE_RESULT',
-        input: event,
+        input: { ...event, result: proposal.result },
         expected_revision: current.revision,
         effects: [{
           name: 'proposal', mode: 'CREATE_ONCE_JSON',
@@ -1044,99 +1182,138 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         }],
         response: proposal,
       });
-      return proposal;
+      return validateProposalTransactionResponse(transaction.response, proposal);
     },
 
-    async reconcile({ review_id: reviewId, snapshot, now, crashAt }) {
+    async reconcile(request) {
+      const { review_id: reviewId, crashAt } = parseDurableReconcileRequest(request);
       const resolved = await paths();
-      await recoverPendingReviewTransactions(resolved);
-      const current = await readPersistedReview(resolved, reviewId);
-      const persistedProposals: LaneResultProposal[] = [];
-      const persistedPublications: unknown[] = [];
-      const notifiedIds = new Set(snapshot.publications.flatMap((publication) => {
-        if (!isObject(publication) || typeof publication.publication_id !== 'string'
-          || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(publication.publication_id)) return [];
-        return [publication.publication_id];
-      }));
-      for (const id of [...notifiedIds].sort()) {
-        const proposalValue = await readJson(join(resolved.reviewRoot, reviewId, 'submissions', id, 'proposal'));
-        const publicationValue = await readJson(join(resolved.reviewRoot, reviewId, 'submissions', id, 'post-tool'));
-        if (proposalValue === undefined || publicationValue === undefined) continue;
-        persistedProposals.push(parsePersistedProposal(proposalValue, current));
-        persistedPublications.push(publicationValue);
+      if (context.session_id === undefined || host === undefined
+        || typeof host.root_thread_id !== 'string' || host.root_thread_id.length === 0
+        || typeof host.loadHookJournalSnapshot !== 'function') {
+        throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted hook journal loader is unavailable');
       }
-      const persistedSnapshot: ActivitySnapshot = { ...snapshot, publications: persistedPublications };
-      const consumedMarkers = await readReviewConsumptionMarkers(resolved, reviewId);
-      const output = reconcileResultPublicationsTrusted({
-        review: current,
-        proposals: persistedProposals,
-        snapshot: persistedSnapshot,
-        now,
-      }, consumedMarkers);
-      if (output === current) return current;
-      const accepted = output.lanes.filter((lane) => {
-        const before = current.lanes.find((candidate) => candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
-        return lane.status === 'COMPLETE' && before?.status !== 'COMPLETE';
-      });
-      const key = deterministicTransactionId({
+      const sessionId = context.session_id;
+      const rootThreadId = host.root_thread_id;
+      const loadHookJournalSnapshot = host.loadHookJournalSnapshot;
+      const trustedNow = host.now;
+      const result = await runDurableReviewTransactionWithPlanFactory(resolved, {
         review_id: reviewId,
-        attempt: current.current_attempt,
-        cutoff_at: snapshot.cutoff_at,
-        publication_refs: accepted.map((lane) => lane.last_processed_activity_ref).sort(),
-        revision: current.revision,
-      });
-      const effects: DurableTransactionEffect[] = [];
-      for (const lane of accepted) {
-        const proposal = persistedProposals.find((candidate) => candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
-        if (proposal === undefined) throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'terminal lane has no durable proposal');
-        const publication = persistedPublications.find((candidate) =>
-          isObject(candidate) && candidate.publication_id === proposal.idempotency_key) as ResultPostToolPublication | undefined;
-        if (publication === undefined) throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'terminal lane has no durable post-tool publication');
-        effects.push(
-          {
-            name: 'proposal', mode: 'CREATE_ONCE_JSON',
-            target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${proposal.idempotency_key}/proposal` },
-            payload: proposal,
-          },
-          {
-            name: 'post-tool', mode: 'CREATE_ONCE_JSON',
-            target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${proposal.idempotency_key}/post-tool` },
-            payload: publication,
-          },
-          createReviewConsumptionEffect({
-            review_id: reviewId, idempotency_key: key, kind: 'PROPOSAL_KEY',
-            value: proposal.idempotency_key, consumed_at: snapshot.cutoff_at,
-          }),
-          createReviewConsumptionEffect({
-            review_id: reviewId, idempotency_key: key, kind: 'TOOL_EVENT_REF',
-            value: publication.attestation.tool_event_ref, consumed_at: snapshot.cutoff_at,
-          }),
-          createReviewConsumptionEffect({
-            review_id: reviewId, idempotency_key: key, kind: 'NONCE',
-            value: publication.attestation.nonce, consumed_at: snapshot.cutoff_at,
-          }),
-        );
-        effects.push({
-          name: 'lane', mode: 'CREATE_ONCE_JSON',
-          target: { area: 'REVIEW_STATE', path: `${reviewId}/lanes/${lane.lane_id}-attempt-${lane.attempt}/terminal` },
-          payload: {
-            event: 'RESULT', review_id: reviewId, attempt: lane.attempt, lane_id: lane.lane_id,
-            scope_hash: lane.scope_hash, result: proposal.result, idempotency_key: key,
-          },
-        });
-      }
-      effects.push(reviewEffect(output));
-      effects.push(...activeStatusTransitionEffects(current, output));
-      await runDurableTransaction(resolved, {
-        idempotency_key: key,
-        review_id: reviewId,
-        operation: 'RECONCILE_RESULT_PUBLICATIONS',
-        input: { cutoff_at: snapshot.cutoff_at, publication_ids: persistedProposals.map((proposal) => proposal.idempotency_key).sort() },
-        expected_revision: current.revision,
-        effects,
-        response: output,
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        plan_factory: async ({ current_review: current }): Promise<DurableTransactionPlan | undefined> => {
+          const cutoff = (trustedNow ?? (() => new Date()))();
+          if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) {
+            throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted snapshot clock is invalid');
+          }
+          const cutoffAt = cutoff.toISOString();
+          const trusted = parseTrustedHookJournalSnapshot({
+            value: await loadHookJournalSnapshot({
+              session_id: current.session_id ?? sessionId,
+              root_thread_id: rootThreadId,
+              review_id: current.review_id,
+              cutoff_at: cutoffAt,
+            }),
+            review: current,
+            cutoff_at: cutoffAt,
+          });
+          const persistedProposals: LaneResultProposal[] = [];
+          const persistedPublications: unknown[] = [];
+          for (const id of [...trusted.publication_ids].sort()) {
+            const proposalValue = await readJson(join(resolved.reviewRoot, reviewId, 'submissions', id, 'proposal'));
+            const publicationValue = await readJson(join(resolved.reviewRoot, reviewId, 'submissions', id, 'post-tool'));
+            if (proposalValue === undefined || publicationValue === undefined) continue;
+            persistedProposals.push(parsePersistedProposal(proposalValue, current));
+            persistedPublications.push(publicationValue);
+          }
+          const snapshot: ActivitySnapshot = {
+            cutoff_at: cutoffAt,
+            events: trusted.events,
+            publications: persistedPublications,
+            diagnostic_events: trusted.diagnostic_events,
+          };
+          const consumedMarkers = await readReviewConsumptionMarkers(resolved, reviewId);
+          const output = reconcileResultPublicationsTrusted({
+            review: current,
+            proposals: persistedProposals,
+            snapshot,
+            now: cutoff,
+          }, consumedMarkers);
+          if (output === current) return undefined;
+          const accepted = output.lanes.filter((lane) => {
+            const before = current.lanes.find((candidate) =>
+              candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
+            return lane.status === 'COMPLETE' && before?.status !== 'COMPLETE';
+          });
+          const key = deterministicTransactionId({
+            review_id: reviewId,
+            attempt: current.current_attempt,
+            cutoff_at: cutoffAt,
+            publication_refs: accepted.map((lane) => lane.last_processed_activity_ref).sort(),
+            revision: current.revision,
+          });
+          const effects: DurableTransactionEffect[] = [];
+          for (const lane of accepted) {
+            const proposal = persistedProposals.find((candidate) =>
+              candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
+            if (proposal === undefined) {
+              throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'terminal lane has no durable proposal');
+            }
+            const publication = persistedPublications.find((candidate) =>
+              isObject(candidate) && candidate.publication_id === proposal.idempotency_key) as ResultPostToolPublication | undefined;
+            if (publication === undefined) {
+              throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'terminal lane has no durable post-tool publication');
+            }
+            effects.push(
+              {
+                name: 'proposal', mode: 'CREATE_ONCE_JSON',
+                target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${proposal.idempotency_key}/proposal` },
+                payload: proposal,
+              },
+              {
+                name: 'post-tool', mode: 'CREATE_ONCE_JSON',
+                target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${proposal.idempotency_key}/post-tool` },
+                payload: publication,
+              },
+              createReviewConsumptionEffect({
+                review_id: reviewId, idempotency_key: key, kind: 'PROPOSAL_KEY',
+                value: proposal.idempotency_key, consumed_at: cutoffAt,
+              }),
+              createReviewConsumptionEffect({
+                review_id: reviewId, idempotency_key: key, kind: 'TOOL_EVENT_REF',
+                value: publication.attestation.tool_event_ref, consumed_at: cutoffAt,
+              }),
+              createReviewConsumptionEffect({
+                review_id: reviewId, idempotency_key: key, kind: 'NONCE',
+                value: publication.attestation.nonce, consumed_at: cutoffAt,
+              }),
+            );
+            effects.push({
+              name: 'lane', mode: 'CREATE_ONCE_JSON',
+              target: { area: 'REVIEW_STATE', path: `${reviewId}/lanes/${lane.lane_id}-attempt-${lane.attempt}/terminal` },
+              payload: {
+                event: 'RESULT', review_id: reviewId, attempt: lane.attempt, lane_id: lane.lane_id,
+                scope_hash: lane.scope_hash, result: proposal.result, idempotency_key: key,
+              },
+            });
+          }
+          effects.push(reviewEffect(output));
+          effects.push(...activeStatusTransitionEffects(current, output));
+          return {
+            idempotency_key: key,
+            review_id: reviewId,
+            operation: 'RECONCILE_RESULT_PUBLICATIONS',
+            input: {
+              cutoff_at: cutoffAt,
+              publication_ids: persistedProposals.map((proposal) => proposal.idempotency_key).sort(),
+            },
+            expected_revision: current.revision,
+            effects,
+            response: output,
+          };
+        },
       }, crashAt === undefined ? {} : { crashAt });
-      return await readPersistedReview(resolved, reviewId);
+      return result.review;
     },
 
     async resume({ review_id: reviewId, current_scope_hash: currentScopeHash, now, idempotency_key: key }) {

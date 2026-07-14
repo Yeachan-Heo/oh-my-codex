@@ -245,13 +245,14 @@ function exactReviewerResult(
   value: Record<string, unknown>,
   review: ReviewRecord,
   lane: LaneRecord,
+  expectedAttempt = review.current_attempt,
 ): LaneResult | null {
   if (!hasExactKeys(value, [
     'role', 'review_id', 'attempt', 'lane_id', 'batch_id', 'scope_hash',
     'recommendation', 'findings', 'diagnostics',
   ]) || value.role !== 'code-reviewer'
     || value.review_id !== review.review_id
-    || value.attempt !== review.current_attempt
+    || value.attempt !== expectedAttempt
     || value.lane_id !== lane.lane_id
     || value.batch_id !== lane.batch_id
     || value.scope_hash !== lane.scope_hash
@@ -267,7 +268,7 @@ function exactReviewerResult(
   return {
     role: 'code-reviewer',
     review_id: review.review_id,
-    attempt: review.current_attempt,
+    attempt: expectedAttempt,
     lane_id: lane.lane_id,
     batch_id: lane.batch_id,
     scope_hash: lane.scope_hash,
@@ -281,13 +282,14 @@ function exactArchitectResult(
   value: Record<string, unknown>,
   review: ReviewRecord,
   lane: LaneRecord,
+  expectedAttempt = review.current_attempt,
 ): LaneResult | null {
   if (!hasExactKeys(value, [
     'role', 'review_id', 'attempt', 'lane_id', 'batch_id', 'scope_hash',
     'architectural_status', 'findings',
   ]) || value.role !== 'architect'
     || value.review_id !== review.review_id
-    || value.attempt !== review.current_attempt
+    || value.attempt !== expectedAttempt
     || value.lane_id !== lane.lane_id
     || value.batch_id !== 'global'
     || lane.batch_id !== 'global'
@@ -298,7 +300,7 @@ function exactArchitectResult(
   return {
     role: 'architect',
     review_id: review.review_id,
-    attempt: review.current_attempt,
+    attempt: expectedAttempt,
     lane_id: lane.lane_id,
     batch_id: 'global',
     scope_hash: lane.scope_hash,
@@ -313,6 +315,30 @@ function contradiction(result: LaneResult): boolean {
     (result.role === 'code-reviewer' && result.recommendation === 'APPROVE')
     || (result.role === 'architect' && result.architectural_status !== 'BLOCK')
   );
+}
+
+export function parseLaneResultSubmission(input: {
+  review: ReviewRecord;
+  lane: LaneRecord;
+  result: unknown;
+  expected_attempt?: number;
+}): LaneResult {
+  let raw: string | undefined;
+  try {
+    raw = JSON.stringify(input.result);
+  } catch {
+    throw new Error('lane result must be serializable plain JSON');
+  }
+  if (raw === undefined || Buffer.byteLength(raw, 'utf8') > REVIEW_LIMITS.lanePayload) {
+    throw new Error('raw lane result exceeds the payload limit');
+  }
+  if (!isPlainObject(input.result)) throw new Error('lane result schema or identity is invalid');
+  const expectedAttempt = input.expected_attempt ?? input.review.current_attempt;
+  const result = input.lane.role === 'code-reviewer'
+    ? exactReviewerResult(input.result, input.review, input.lane, expectedAttempt)
+    : exactArchitectResult(input.result, input.review, input.lane, expectedAttempt);
+  if (result === null) throw new Error('lane result schema, limits, or identity are invalid');
+  return result;
 }
 
 function sameArgs(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
@@ -498,7 +524,7 @@ export function parseLaneActivityEvent(value: unknown): import('./contract.js').
   };
 }
 
-function parsePublication(value: unknown): ResultPostToolPublication {
+export function parsePostToolPublication(value: unknown): ResultPostToolPublication {
   if (!isPlainObject(value) || !hasExactKeys(value, [
     'schema_version', 'publication_id', 'published_at', 'activity', 'attestation',
   ]) || value.schema_version !== 1 || !isPlainObject(value.attestation)) {
@@ -542,7 +568,7 @@ export function validatePostToolPublication(input: {
   publication: unknown;
   consumedToolEventRefs: ReadonlySet<string>;
 }): ResultPostToolPublication {
-  const publication = parsePublication(input.publication);
+  const publication = parsePostToolPublication(input.publication);
   const activity = publication.activity;
   const attestation = publication.attestation;
   const provenance = input.lane.provenance;

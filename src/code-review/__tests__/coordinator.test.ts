@@ -20,6 +20,8 @@ import {
   waitForLaneRunning,
 } from '../coordinator.js';
 import * as coordinatorModule from '../coordinator.js';
+import { canonicalLanePayloadDigest } from '../evidence.js';
+import { sanitizeForPersistence } from '../redaction.js';
 
 const REVIEW_ID = '11111111-1111-4111-8111-111111111111';
 const REVIEWER_KEY = '22222222-2222-4222-8222-222222222222';
@@ -261,6 +263,64 @@ describe('review coordinator lifecycle', () => {
     assert.throws(() => createLaneResultProposal({ review: running, event, source: 'CLI', now: START }), /CLI|fresh|proposal/i);
     assert.deepEqual(createLaneResultProposal({ review: running, event, source: 'CLI', now: START, existingProposal: proposal }), proposal);
     assert.throws(() => createLaneResultProposal({ review: running, event: { ...event, scope_hash: 'b'.repeat(64) }, source: 'CLI', now: START, existingProposal: proposal }), /conflict|scope|identity/i);
+  });
+
+  it('strictly parses and sanitizes RESULT once before freezing its digest', () => {
+    const running = startLane(initial(), 'reviewer-batch-1', 'child-reviewer');
+    const secret = `github_pat_${'x'.repeat(24)}`;
+    const result: ReviewerLaneResult = {
+      ...reviewerResult(),
+      recommendation: 'COMMENT',
+      findings: [{
+        severity: 'LOW',
+        title: 'Remove embedded credential',
+        body: `authorization: Bearer ${secret}`,
+        file: 'README.md',
+        fix: `replace api_key=${secret}`,
+        evidence: secret,
+      }],
+      diagnostics: [{
+        diagnostic_id: 'lint-token', capability: 'LINT', applicability: 'APPLICABLE',
+        execution: 'NATIVE', outcome: 'PASS', tool_name: 'lint_tool',
+        event_ref: 'diagnostic-token', summary: `token=${secret}`,
+      }],
+    };
+    const event = {
+      event: 'RESULT' as const,
+      review_id: REVIEW_ID,
+      attempt: 1,
+      lane_id: 'reviewer-batch-1',
+      scope_hash: HASH,
+      result,
+      idempotency_key: REVIEWER_KEY,
+    };
+    const proposal = createLaneResultProposal({ review: running, event, source: 'MCP', now: START });
+    assert.doesNotMatch(JSON.stringify(proposal), new RegExp(secret, 'u'));
+    assert.equal(proposal.payload_digest, canonicalLanePayloadDigest(proposal.result));
+    assert.deepEqual(sanitizeForPersistence(proposal.result), proposal.result);
+    assert.deepEqual(
+      createLaneResultProposal({ review: running, event, source: 'CLI', now: START, existingProposal: proposal }),
+      proposal,
+    );
+
+    assert.throws(() => createLaneResultProposal({
+      review: running,
+      event: { ...event, result: { ...result, unknown: true } as ReviewerLaneResult },
+      source: 'MCP',
+      now: START,
+    }), /schema|unknown|invalid/i);
+    assert.throws(() => createLaneResultProposal({
+      review: running,
+      event: {
+        ...event,
+        result: {
+          ...result,
+          findings: [{ ...result.findings[0]!, body: 'x'.repeat(1_048_577) }],
+        },
+      },
+      source: 'MCP',
+      now: START,
+    }), /raw|payload|limit|MiB/i);
   });
 
   it('reconciles only matching atomic PostToolUse publications from the bound children', () => {
