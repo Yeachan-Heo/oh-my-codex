@@ -380,11 +380,14 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
   const verdict = validateVerdict(artifact.verdict);
   const status = enumeration(artifact.status, 'final status', ['FINALIZED', 'BLOCKED'] as const);
   if (scope && verdict.scope_status !== scope.status) invalid('verdict scope status contradicts the manifest');
-  if (status === 'FINALIZED' && verdict.clean && lanes.some((lane) => lane.status !== 'COMPLETE')) {
-    invalid('clean finalized review requires complete lanes');
+  if (status === 'FINALIZED' && lanes.some((lane) => lane.status !== 'COMPLETE')) {
+    invalid('finalized review requires complete lanes');
   }
 
-  validateReviewTopology({ scope, batches, lanes, diagnostics });
+  validateReviewTopology(
+    { scope, batches, lanes, diagnostics },
+    { requireRoleResults: status === 'FINALIZED' },
+  );
   const supersedesReviewId = artifact.supersedes_review_id === undefined
     ? undefined
     : uuid(artifact.supersedes_review_id, 'supersedes_review_id');

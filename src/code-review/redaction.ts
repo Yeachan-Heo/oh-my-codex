@@ -17,7 +17,10 @@ const HOME_PATH_PATTERN = /(?:\/Users\/[^/\s]+|\/home\/[^/\s]+)(?=\/)/gu;
 const WINDOWS_HOME_PATH_PATTERN = /\b[A-Za-z]:\\Users\\[^\\\s]+(?=\\)/gu;
 const SENSITIVE_KEY_PARTS = ['token', 'apikey', 'credential', 'password', 'passwd', 'secret', 'auth'] as const;
 const RAW_CONTEXT_KEY_PARTS = ['source', 'diff', 'model', 'context', 'prompt', 'tool', 'output', 'env', 'environment'] as const;
-const PEM_PRIVATE_KEY_LABELS = ['RSA PRIVATE KEY', 'EC PRIVATE KEY', 'PRIVATE KEY'] as const;
+const PEM_PRIVATE_KEY_LABELS = [
+  'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'PRIVATE KEY', 'ENCRYPTED PRIVATE KEY',
+] as const;
+const PEM_BEGIN_MARKER = '-----BEGIN ';
 
 function isForbiddenPersistenceKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/giu, '').toLowerCase();
@@ -49,27 +52,29 @@ function redactPemPrivateKeyBlocks(value: string): string {
   let cursor = 0;
   let redacted = '';
   while (cursor < value.length) {
-    let blockStart = -1;
-    let label: typeof PEM_PRIVATE_KEY_LABELS[number] | undefined;
-    for (const candidate of PEM_PRIVATE_KEY_LABELS) {
-      const index = value.indexOf(`-----BEGIN ${candidate}-----`, cursor);
-      if (index >= 0 && (blockStart < 0 || index < blockStart)) {
-        blockStart = index;
-        label = candidate;
-      }
-    }
-    if (blockStart < 0 || label === undefined) {
+    const blockStart = value.indexOf(PEM_BEGIN_MARKER, cursor);
+    if (blockStart < 0) {
       redacted += value.slice(cursor);
       break;
     }
+    const label = PEM_PRIVATE_KEY_LABELS.find((candidate) => (
+      value.startsWith(`${PEM_BEGIN_MARKER}${candidate}-----`, blockStart)
+    ));
+    if (label === undefined) {
+      const nextCursor = blockStart + PEM_BEGIN_MARKER.length;
+      redacted += value.slice(cursor, nextCursor);
+      cursor = nextCursor;
+      continue;
+    }
+    const headerEnd = blockStart + `${PEM_BEGIN_MARKER}${label}-----`.length;
+    const nextBlockStart = value.indexOf(PEM_BEGIN_MARKER, headerEnd);
+    const searchBoundary = nextBlockStart < 0 ? value.length : nextBlockStart;
     const endMarker = `-----END ${label}-----`;
-    const blockEnd = value.indexOf(endMarker, blockStart + label.length);
-    if (blockEnd < 0) {
-      redacted += value.slice(cursor);
-      break;
-    }
+    const relativeBlockEnd = value.slice(headerEnd, searchBoundary).indexOf(endMarker);
     redacted += `${value.slice(cursor, blockStart)}[REDACTED]`;
-    cursor = blockEnd + endMarker.length;
+    cursor = relativeBlockEnd < 0
+      ? headerEnd
+      : headerEnd + relativeBlockEnd + endMarker.length;
   }
   return redacted;
 }
@@ -78,7 +83,11 @@ export function redactReviewText(
   value: unknown,
   options: { repositoryRoot?: string } = {},
 ): string {
-  let text = redactPemPrivateKeyBlocks(redactAuthSecrets(value));
+  const rawText = value instanceof Error ? value.message : String(value);
+  if (Buffer.byteLength(rawText, 'utf8') > REVIEW_LIMITS.lanePayload) {
+    throw new ReviewDataValidationError('PERSISTENCE_FAILED', 'review text exceeds one MiB');
+  }
+  let text = redactPemPrivateKeyBlocks(redactAuthSecrets(rawText));
   text = text.replace(JSON_DOUBLE_QUOTED_SECRET_PATTERN, '"$1"$2"[REDACTED]"');
   text = text.replace(JSON_SINGLE_QUOTED_SECRET_PATTERN, "'$1'$2'[REDACTED]'");
   text = text.replace(AUTHORIZATION_HEADER_PATTERN, 'Authorization: [REDACTED]');
@@ -356,6 +365,16 @@ export function sanitizeForPersistence<T>(
   value: T,
   options: { repositoryRoot?: string } = {},
 ): T {
+  let rawSerialized: string | undefined;
+  try {
+    rawSerialized = JSON.stringify(value);
+  } catch {
+    throw new ReviewDataValidationError('PERSISTENCE_FAILED', 'persisted payload is not serializable');
+  }
+  if (rawSerialized !== undefined
+    && Buffer.byteLength(rawSerialized, 'utf8') > REVIEW_LIMITS.lanePayload) {
+    throw new ReviewDataValidationError('PERSISTENCE_FAILED', 'persisted payload exceeds one MiB');
+  }
   const sanitized = sanitizeValue(value, options, new Set()) as T;
   const serialized = JSON.stringify(sanitized);
   if (Buffer.byteLength(serialized, 'utf8') > REVIEW_LIMITS.lanePayload) {

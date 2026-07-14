@@ -1634,12 +1634,29 @@ async function validateReviewEffectCurrentState(
 ): Promise<void> {
   const effect = intent.effects.find((candidate) => candidate.mode === 'APPLY_REVIEW_REVISION');
   if (!effect) return;
-  await validateCurrentReviewState(
+  const current = await validateCurrentReviewState(
     targetPath(paths, effect),
     intent.review_id,
     intent.expected_revision,
     options,
   );
+  const proposed = effect.payload as ReviewRecord;
+  if ((paths.session_id !== undefined && proposed.session_id !== paths.session_id)
+    || (current !== undefined && (
+      proposed.session_id !== current.session_id
+      || proposed.root_thread_id !== current.root_thread_id
+      || proposed.invocation_turn_id !== current.invocation_turn_id
+    ))) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review ownership conflicts');
+  }
+  const postTool = intent.effects.find((candidate) => candidate.name === 'post-tool');
+  if (postTool && isPlainObject(postTool.payload)
+    && isPlainObject(postTool.payload.activity) && isPlainObject(postTool.payload.attestation)
+    && (proposed.session_id !== postTool.payload.activity.session_id
+      || proposed.session_id !== postTool.payload.attestation.session_id
+      || proposed.root_thread_id !== postTool.payload.attestation.root_thread_id)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review ownership conflicts with post-tool publication');
+  }
 }
 
 async function validatePostToolTrustContext(

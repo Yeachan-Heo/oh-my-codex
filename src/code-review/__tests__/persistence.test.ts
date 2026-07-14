@@ -1275,7 +1275,11 @@ describe('code-review durable transaction journal', () => {
       });
       await api.atomicWritePrivateJson(
         join(rootPaths.reviewRoot, rootReviewId, 'review.json'),
-        reviewRecordPayload(rootReviewId, 1),
+        {
+          ...reviewRecordPayload(rootReviewId, 1),
+          session_id: internalSessionId,
+          root_thread_id: rootThreadId,
+        },
       );
       assert.deepEqual(await api.runDurableTransaction(
         rootPaths,
@@ -1305,6 +1309,210 @@ describe('code-review durable transaction journal', () => {
         api.runDurableTransaction(rootPaths, rootConflict),
         (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
       );
+    });
+  });
+
+  it('rejects a review revision that rewrites ownership after valid post-tool evidence', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const sessionId = api.generateReviewId();
+      const differentSessionId = api.generateReviewId();
+      const rootThreadId = 'root-thread-a';
+      const differentRootThreadId = 'root-thread-b';
+      const invocationTurnId = 'invocation-turn-a';
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
+      await api.claimActiveReview(paths, {
+        schema_version: 1, review_id: reviewId, status: 'REVIEWING',
+      });
+      await api.atomicWritePrivateJson(reviewPath, {
+        ...reviewRecordPayload(reviewId, 1),
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        invocation_turn_id: invocationTurnId,
+      });
+      const effects = structuredClone(
+        durableEffects(reviewId, key, workingDirectory, { sessionId, rootThreadId }).slice(0, 3),
+      ) as DurableEffect[];
+      effects.push({
+        name: 'review',
+        mode: 'APPLY_REVIEW_REVISION',
+        target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+        payload: {
+          ...reviewRecordPayload(reviewId, 2),
+          session_id: differentSessionId,
+          root_thread_id: differentRootThreadId,
+          invocation_turn_id: invocationTurnId,
+        },
+      });
+
+      let outcome = 'ACCEPTED';
+      try {
+        await api.runDurableTransaction(paths, {
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: 'IMMUTABLE_REVIEW_OWNERSHIP',
+          input: { review_id: reviewId },
+          expected_revision: 1,
+          effects,
+          response: { review_id: reviewId, revision: 2 },
+        });
+      } catch (error) {
+        outcome = String((error as { code?: unknown }).code);
+      }
+      const persisted = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+        revision: number;
+        session_id?: string;
+        root_thread_id?: string;
+      };
+      const published: string[] = [];
+      for (const [label, path] of [
+        ['prepared', join(paths.reviewRoot, reviewId, 'transactions', key, 'prepared')],
+        ['proposal', join(paths.reviewRoot, reviewId, 'submissions', key, 'proposal')],
+        ['post-tool', join(paths.reviewRoot, reviewId, 'submissions', key, 'post-tool')],
+        ['consumed', join(paths.reviewRoot, reviewId, 'submissions', key, 'consumed')],
+        ['committed', join(paths.reviewRoot, reviewId, 'transactions', key, 'committed')],
+      ] as const) {
+        try {
+          await readFile(path, 'utf8');
+          published.push(label);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+      assert.deepEqual({
+        outcome,
+        revision: persisted.revision,
+        session_id: persisted.session_id,
+        root_thread_id: persisted.root_thread_id,
+        published,
+      }, {
+        outcome: 'PERSISTENCE_FAILED',
+        revision: 1,
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        published: [],
+      });
+    });
+  });
+
+  it('keeps review ownership immutable across revisions and binds new reviews to their scope', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const accepted: string[] = [];
+      const ownership = {
+        session_id: api.generateReviewId(),
+        root_thread_id: 'root-thread-a',
+        invocation_turn_id: 'invocation-turn-a',
+      };
+      const replacements = {
+        session_id: api.generateReviewId(),
+        root_thread_id: 'root-thread-b',
+        invocation_turn_id: 'invocation-turn-b',
+      };
+
+      for (const field of ['session_id', 'root_thread_id', 'invocation_turn_id'] as const) {
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({
+          workingDirectory, session_id: ownership.session_id,
+        });
+        await api.atomicWritePrivateJson(
+          join(paths.reviewRoot, reviewId, 'review.json'),
+          { ...reviewRecordPayload(reviewId, 1), ...ownership },
+        );
+        try {
+          await api.runDurableTransaction(paths, {
+            idempotency_key: key,
+            review_id: reviewId,
+            operation: 'IMMUTABLE_REVIEW_OWNERSHIP_FIELD',
+            input: { field },
+            expected_revision: 1,
+            effects: [{
+              name: 'review',
+              mode: 'APPLY_REVIEW_REVISION',
+              target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+              payload: {
+                ...reviewRecordPayload(reviewId, 2),
+                ...ownership,
+                [field]: replacements[field],
+              },
+            }],
+            response: { review_id: reviewId },
+          });
+          accepted.push(`revision:${field}`);
+        } catch (error) {
+          assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED', field);
+        }
+      }
+
+      const creationReviewId = api.generateReviewId();
+      const creationKey = api.generateReviewId();
+      const creationPaths = await api.resolveReviewPersistencePaths({
+        workingDirectory, session_id: ownership.session_id,
+      });
+      try {
+        await api.runDurableTransaction(creationPaths, {
+          idempotency_key: creationKey,
+          review_id: creationReviewId,
+          operation: 'CREATE_WITH_FOREIGN_SESSION',
+          input: { review_id: creationReviewId },
+          expected_revision: 0,
+          effects: [{
+            name: 'review',
+            mode: 'APPLY_REVIEW_REVISION',
+            target: { area: 'REVIEW_STATE', path: `${creationReviewId}/review.json` },
+            payload: {
+              ...reviewRecordPayload(creationReviewId, 1),
+              ...ownership,
+              session_id: replacements.session_id,
+            },
+          }],
+          response: { review_id: creationReviewId },
+        });
+        accepted.push('creation:paths');
+      } catch (error) {
+        assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED');
+      }
+
+      const publicationReviewId = api.generateReviewId();
+      const publicationKey = api.generateReviewId();
+      const publicationPaths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const publicationEffects = structuredClone(durableEffects(
+        publicationReviewId,
+        publicationKey,
+        workingDirectory,
+        { sessionId: ownership.session_id, rootThreadId: ownership.root_thread_id },
+      ).slice(0, 2)) as DurableEffect[];
+      publicationEffects.push({
+        name: 'review',
+        mode: 'APPLY_REVIEW_REVISION',
+        target: { area: 'REVIEW_STATE', path: `${publicationReviewId}/review.json` },
+        payload: {
+          ...reviewRecordPayload(publicationReviewId, 1),
+          ...ownership,
+          session_id: replacements.session_id,
+          root_thread_id: replacements.root_thread_id,
+        },
+      });
+      try {
+        await api.runDurableTransaction(publicationPaths, {
+          idempotency_key: publicationKey,
+          review_id: publicationReviewId,
+          operation: 'CREATE_WITH_FOREIGN_PUBLICATION',
+          input: { review_id: publicationReviewId },
+          expected_revision: 0,
+          effects: publicationEffects,
+          response: { review_id: publicationReviewId },
+        });
+        accepted.push('creation:publication');
+      } catch (error) {
+        assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED');
+      }
+
+      assert.deepEqual(accepted, [], `accepted mutable review ownership: ${JSON.stringify(accepted)}`);
     });
   });
 
@@ -1844,7 +2052,7 @@ describe('code-review durable transaction journal', () => {
             name: 'review',
             mode: 'APPLY_REVIEW_REVISION',
             target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
-            payload: reviewRecordPayload(reviewId, 1),
+            payload: { ...reviewRecordPayload(reviewId, 1), session_id: sessionId },
           }],
           response: { review_id: reviewId, revision: 1 },
         }, { crashAt: 'after:committed' }), /injected crash/u);
@@ -1902,7 +2110,10 @@ describe('code-review durable transaction journal', () => {
           workingDirectory, session_id: sessionId,
         });
         const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
-        await api.atomicWritePrivateJson(reviewPath, reviewRecordPayload(reviewId, 1));
+        await api.atomicWritePrivateJson(
+          reviewPath,
+          { ...reviewRecordPayload(reviewId, 1), session_id: sessionId },
+        );
         await assert.rejects(api.runDurableTransaction(paths, {
           journal_scope: 'START',
           idempotency_key: key,
@@ -1914,12 +2125,15 @@ describe('code-review durable transaction journal', () => {
             name: 'review',
             mode: 'APPLY_REVIEW_REVISION',
             target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
-            payload: reviewRecordPayload(reviewId, 2),
+            payload: { ...reviewRecordPayload(reviewId, 2), session_id: sessionId },
           }],
           response: { review_id: reviewId, revision: 2 },
         }, { crashAt: 'after:committed' }), /injected crash/u);
 
-        const rolledBack = reviewRecordPayload(reviewId, testCase.revision);
+        const rolledBack: Record<string, unknown> = {
+          ...reviewRecordPayload(reviewId, testCase.revision),
+          session_id: sessionId,
+        };
         if (testCase.binding === 'wrong') {
           rolledBack.last_applied_transaction_id = api.generateReviewId();
         }
@@ -1944,7 +2158,10 @@ describe('code-review durable transaction journal', () => {
         workingDirectory, session_id: validSessionId,
       });
       const validReviewPath = join(validPaths.reviewRoot, validReviewId, 'review.json');
-      await api.atomicWritePrivateJson(validReviewPath, reviewRecordPayload(validReviewId, 1));
+      await api.atomicWritePrivateJson(
+        validReviewPath,
+        { ...reviewRecordPayload(validReviewId, 1), session_id: validSessionId },
+      );
       await assert.rejects(api.runDurableTransaction(validPaths, {
         journal_scope: 'START',
         idempotency_key: validKey,
@@ -1956,7 +2173,7 @@ describe('code-review durable transaction journal', () => {
           name: 'review',
           mode: 'APPLY_REVIEW_REVISION',
           target: { area: 'REVIEW_STATE', path: `${validReviewId}/review.json` },
-          payload: reviewRecordPayload(validReviewId, 2),
+          payload: { ...reviewRecordPayload(validReviewId, 2), session_id: validSessionId },
         }],
         response: { review_id: validReviewId, revision: 2 },
       }, { crashAt: 'after:committed' }), /injected crash/u);
@@ -2025,7 +2242,10 @@ describe('code-review durable transaction journal', () => {
       const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
       await api.claimActiveReview(paths, { schema_version: 1, review_id: reviewId, status: 'REVIEWING' });
       const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
-      await api.atomicWritePrivateJson(reviewPath, reviewRecordPayload(reviewId, 1));
+      await api.atomicWritePrivateJson(
+        reviewPath,
+        { ...reviewRecordPayload(reviewId, 1), session_id: sessionId },
+      );
       const proposal = durableEffects(reviewId, key, workingDirectory)[0]!;
       const plan: DurablePlan = {
         idempotency_key: key,
@@ -2037,7 +2257,7 @@ describe('code-review durable transaction journal', () => {
           name: 'review',
           mode: 'APPLY_REVIEW_REVISION',
           target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
-          payload: reviewRecordPayload(reviewId, 2),
+          payload: { ...reviewRecordPayload(reviewId, 2), session_id: sessionId },
         }],
         response: { review_id: reviewId, revision: 2 },
       };
@@ -2756,6 +2976,46 @@ describe('final review artifact rendering', () => {
           (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
         );
       }
+    });
+  });
+
+  it('requires every FINALIZED lane to be complete even when the verdict is not clean', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const { persistence } = await loadFinalArtifactApi();
+      const paths = await persistence.resolveReviewPersistencePaths({ workingDirectory });
+      const accepted: string[] = [];
+      for (const status of ['FAILED', 'TIMED_OUT', 'INVALID', 'PENDING', 'RUNNING'] as const) {
+        const artifact = finalArtifact(persistence.generateReviewId(), workingDirectory) as any;
+        artifact.lanes[0].status = status;
+        delete artifact.lanes[0].recommendation;
+        if (status === 'FAILED' || status === 'TIMED_OUT' || status === 'INVALID') {
+          artifact.lanes[0].failure_code = `LANE_${status}`;
+        }
+        try {
+          await persistence.writeFinalReviewArtifacts(paths, artifact);
+          accepted.push(status);
+        } catch (error) {
+          assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED', status);
+        }
+      }
+      assert.deepEqual(accepted, [], `accepted incomplete FINALIZED lanes: ${JSON.stringify(accepted)}`);
+
+      const noChanges = finalArtifact(persistence.generateReviewId(), workingDirectory) as any;
+      noChanges.scope.files = [];
+      noChanges.scope.changed_lines = 0;
+      noChanges.batches = [];
+      noChanges.lanes = [];
+      noChanges.diagnostics = [];
+      noChanges.verdict = {
+        recommendation: 'APPROVE',
+        architectural_status: 'CLEAR',
+        scope_status: 'FULL_SCOPE',
+        evidence_status: 'FULL_EVIDENCE',
+        rule_id: 'NO_CHANGES',
+        reasons: ['No changed files require review.'],
+        clean: true,
+      };
+      await persistence.writeFinalReviewArtifacts(paths, noChanges);
     });
   });
 

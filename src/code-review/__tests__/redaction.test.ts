@@ -76,6 +76,76 @@ describe('code-review redaction and validation', () => {
     );
   });
 
+  it('continues after an unterminated PEM header and redacts later encrypted and unencrypted keys', async () => {
+    const api = await loadRedactionApi();
+    const sensitive = [
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'unterminated-rsa-material',
+      '-----BEGIN EC PRIVATE KEY-----',
+      'later-ec-material',
+      '-----END EC PRIVATE KEY-----',
+      '-----BEGIN PRIVATE KEY-----',
+      'later-pkcs8-material',
+      '-----END PRIVATE KEY-----',
+      '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+      'later-encrypted-material',
+      '-----END ENCRYPTED PRIVATE KEY-----',
+    ].join('\n');
+
+    const redacted = api.redactReviewText(sensitive);
+    assert.doesNotMatch(
+      redacted,
+      /BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY|later-(?:ec|pkcs8|encrypted)-material/u,
+    );
+    assert.ok((redacted.match(/\[REDACTED\]/gu)?.length ?? 0) >= 4);
+  });
+
+  it('rejects over-one-MiB raw text and serialized payloads before redaction can shrink them', async () => {
+    const api = await loadRedactionApi();
+    const accepted: string[] = [];
+    for (const [label, operation] of [
+      ['text-bytes', () => api.redactReviewText('é'.repeat(524_289))],
+      ['serialized-secret', () => api.sanitizeForPersistence({
+        summary: `api_key=${'s'.repeat(1024 * 1024)}`,
+      })],
+    ] as const) {
+      try {
+        operation();
+        accepted.push(label);
+      } catch (error) {
+        assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED', label);
+      }
+    }
+    assert.deepEqual(accepted, [], `accepted oversized raw input: ${JSON.stringify(accepted)}`);
+  });
+
+  it('redacts repeated PEM blocks with near-linear doubling cost', async () => {
+    const api = await loadRedactionApi();
+    const header = '-----BEGIN RSA PRIVATE KEY-----\n';
+    const footer = '\n-----END RSA PRIVATE KEY-----\n';
+    const block = `${header}${'x'.repeat(256 - header.length - footer.length)}${footer}`;
+    assert.equal(Buffer.byteLength(block, 'utf8'), 256);
+    const measureMedian = (value: string): number => {
+      api.redactReviewText(value);
+      const samples: number[] = [];
+      for (let index = 0; index < 7; index += 1) {
+        const started = process.hrtime.bigint();
+        api.redactReviewText(value);
+        samples.push(Number(process.hrtime.bigint() - started));
+      }
+      samples.sort((left, right) => left - right);
+      return samples[Math.floor(samples.length / 2)]!;
+    };
+    const medians = [64, 128, 256].map((kib) => (
+      measureMedian(block.repeat((kib * 1024) / block.length))
+    ));
+    const ratios = [medians[1]! / medians[0]!, medians[2]! / medians[1]!];
+    assert.ok(
+      ratios.every((ratio) => ratio < 3.4),
+      `PEM redaction doubling ratios were ${ratios.map((ratio) => ratio.toFixed(2)).join(', ')}`,
+    );
+  });
+
   it('redacts quoted JSON secret values across case, snake-case, camelCase, and nested metadata', async () => {
     const api = await loadRedactionApi();
     const finding = api.validateReviewFinding({
