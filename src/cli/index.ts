@@ -6581,7 +6581,7 @@ async function flushNotifyFallbackOnce(
     {
       cwd,
       stdio: "ignore",
-      timeout: 3000,
+      timeout: 45_000,
       windowsHide: true,
       env: buildNotifyFallbackWatcherEnv(process.env, {
         codexHomeOverride: options.codexHomeOverride,
