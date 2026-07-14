@@ -3,6 +3,22 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import type { ReviewRecordLaneEvent } from '../contract.js';
+// @ts-expect-error Final persistence projections are intentionally not part of the public barrel.
+import type { FinalReviewArtifact as ForbiddenFinalReviewArtifact } from '../index.js';
+
+void (null as unknown as ForbiddenFinalReviewArtifact);
+
+const compileTimeLaneStart: ReviewRecordLaneEvent = {
+  event: 'START',
+  review_id: '6e6ea9c8-f4c0-4eec-9084-e7185abcbce2',
+  attempt: 1,
+  lane_id: 'reviewer-1',
+  thread_id: 'thread-1',
+  idempotency_key: '0f81b54a-b046-4562-9b8b-1c6bccd326f8',
+};
+
+void compileTimeLaneStart;
 
 interface ParsedStartInvocation {
   operation: 'start';
@@ -119,6 +135,12 @@ describe('parseCodeReviewArguments', () => {
         await api.parseCodeReviewArguments([], { workingDirectory }),
         { operation: 'start', format: 'markdown', selector: { explicit_paths: [] } },
       );
+    });
+  });
+
+  it('rejects the unprefixed bare code-review alias', async () => {
+    await withRepository(async (workingDirectory, api) => {
+      await assertInvalidInvocation(api, workingDirectory, ['code-review']);
     });
   });
 

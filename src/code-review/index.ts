@@ -1,5 +1,101 @@
-export * from './arguments.js';
-export * from './contract.js';
-export * from './persistence.js';
-export * from './redaction.js';
-export * from './render.js';
+export {
+  InvalidReviewInvocationError,
+  parseCodeReviewArguments,
+  parseCodeReviewInvocation,
+} from './arguments.js';
+export type {
+  ParseCodeReviewArgumentsOptions,
+  ParsedCodeReviewInvocation,
+  ReviewOutputFormat,
+} from './arguments.js';
+
+export { FINDING_SEVERITY_ORDER, REVIEW_LIMITS, REVIEW_SCHEMA_VERSION } from './contract.js';
+export type {
+  AcceptedEquivalent,
+  AcceptedEquivalentRequest,
+  ArchitectLaneResult,
+  ArchitectStatus,
+  DiagnosticSubmission,
+  DiagnosticSummary,
+  EffectiveReviewConfig,
+  EvidenceStatus,
+  ExplicitEquivalentApproval,
+  FinalVerdict,
+  LaneActivityEvent,
+  LaneBinding,
+  LaneProvenance,
+  LaneRecord,
+  LaneResult,
+  LaneResultProposal,
+  LaneStatus,
+  LaneSubmissionAttestation,
+  ResultPostToolPublication,
+  ResumableReason,
+  ReviewAttempt,
+  ReviewBatch,
+  ReviewFinding,
+  ReviewRecommendation,
+  ReviewRecord,
+  ReviewRecordLaneEvent,
+  ReviewerLaneResult,
+  ReviewRunStatus,
+  ScopeFile,
+  ScopeFileChange,
+  ScopeFileSource,
+  ScopeManifest,
+  ScopeSelector,
+  ScopeStatus,
+} from './contract.js';
+
+export {
+  ReviewPersistenceError,
+  acquireReviewLocks,
+  atomicCreatePrivateJson,
+  atomicWritePrivateJson,
+  claimActiveReview,
+  generateReviewId,
+  probeReviewLockOwner,
+  readActiveReview,
+  recoverDurableTransactions,
+  recoverPendingReviewTransactions,
+  releaseReviewLocks,
+  resolveReviewLockPaths,
+  resolveReviewPersistencePaths,
+  runDurableTransaction,
+  writeFinalReviewArtifacts,
+} from './persistence.js';
+export type {
+  AcquireReviewLocksOptions,
+  ActiveReviewPointer,
+  AtomicCreateOptions,
+  AtomicWriteOptions,
+  DurableEffectName,
+  DurableTransactionBoundary,
+  DurableTransactionEffect,
+  DurableTransactionPlan,
+  DurableTransactionResult,
+  DurableTransactionStage,
+  ReviewLockHandle,
+  ReviewLockName,
+  ReviewLockOwner,
+  ReviewLockOwnerStatus,
+  ReviewPersistenceContext,
+  ReviewPersistenceErrorCode,
+  ReviewPersistencePaths,
+  ReviewScopedLockPaths,
+  ReleaseReviewLocksOptions,
+  RunDurableTransactionOptions,
+} from './persistence.js';
+
+export {
+  ReviewDataValidationError,
+  redactReviewText,
+  sanitizeForPersistence,
+  validateReviewFinding,
+} from './redaction.js';
+export {
+  FinalArtifactValidationError,
+  projectFinalReviewArtifact,
+  renderFinalReviewMarkdown,
+  validateFinalReviewArtifact,
+} from './render.js';

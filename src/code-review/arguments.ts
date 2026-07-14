@@ -68,9 +68,8 @@ export async function parseCodeReviewArguments(
   rawArgs: readonly string[],
   options: ParseCodeReviewArgumentsOptions,
 ): Promise<ParsedCodeReviewInvocation> {
-  const args = rawArgs[0] === '$code-review' || rawArgs[0] === 'code-review'
-    ? rawArgs.slice(1)
-    : [...rawArgs];
+  if (rawArgs[0] === 'code-review') invalid('code-review must be invoked as $code-review');
+  const args = rawArgs[0] === '$code-review' ? rawArgs.slice(1) : [...rawArgs];
   let format: ReviewOutputFormat = 'markdown';
   let base: string | undefined;
   let reviewId: string | undefined;

@@ -295,6 +295,7 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
     invalid('final review collections are invalid');
   }
   const scope = artifact.scope === undefined ? undefined : validateScope(artifact.scope);
+  const batches = artifact.batches.map(validateBatch);
   const lanes = artifact.lanes.map(validateFinalLane);
   if (lanes.reduce((total, lane) => total + lane.findings.length, 0) > REVIEW_LIMITS.findingsPerReview) {
     invalid('final review findings exceed the review limit');
@@ -305,6 +306,40 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
   }
   const verdict = validateVerdict(artifact.verdict);
   if (scope && verdict.scope_status !== scope.status) invalid('verdict scope status contradicts the manifest');
+
+  const batchIds = new Set(batches.map((batch) => batch.batch_id));
+  if (batchIds.size !== batches.length) invalid('review batch ids must be unique');
+  const laneIds = new Set(lanes.map((lane) => lane.lane_id));
+  if (laneIds.size !== lanes.length) invalid('final lane ids must be unique');
+  const diagnosticIds = new Set(diagnostics.map((diagnostic) => diagnostic.diagnostic_id));
+  if (diagnosticIds.size !== diagnostics.length) invalid('diagnostic ids must be unique');
+
+  if (lanes.length > 0 && scope === undefined) invalid('final lanes require a frozen scope');
+  const scopeFiles = new Set(scope?.files.map((file) => file.path) ?? []);
+  for (const batch of batches) {
+    if (new Set(batch.files).size !== batch.files.length) invalid('batch files must be unique');
+    if (scope && batch.files.some((path) => !scopeFiles.has(path))) invalid('batch contains a file outside the frozen scope');
+  }
+  for (const lane of lanes) {
+    if (scope && lane.scope_hash !== scope.scope_hash) invalid('lane scope hash contradicts the frozen scope');
+    if (lane.role === 'architect') {
+      if (lane.batch_id !== 'global') invalid('architect lane must use the global batch');
+      if (lane.recommendation !== undefined || lane.architectural_status === undefined) {
+        invalid('architect lane has fields for the wrong role');
+      }
+    } else {
+      if (lane.batch_id !== 'global' && !batchIds.has(lane.batch_id)) invalid('reviewer lane references an unknown batch');
+      if (lane.recommendation === undefined || lane.architectural_status !== undefined) {
+        invalid('reviewer lane has fields for the wrong role');
+      }
+    }
+    if (new Set(lane.diagnostic_ids).size !== lane.diagnostic_ids.length) {
+      invalid('lane diagnostic references must be unique');
+    }
+    if (lane.diagnostic_ids.some((id) => !diagnosticIds.has(id))) {
+      invalid('lane references an unknown diagnostic');
+    }
+  }
   const supersedesReviewId = artifact.supersedes_review_id === undefined
     ? undefined
     : uuid(artifact.supersedes_review_id, 'supersedes_review_id');
@@ -316,7 +351,7 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
     current_attempt: integer(artifact.current_attempt, 'current_attempt', 1),
     ...(scope === undefined ? {} : { scope }),
     review_flags: artifact.review_flags as 'BATCHED_REVIEW'[],
-    batches: artifact.batches.map(validateBatch),
+    batches,
     lanes,
     diagnostics,
     verdict,

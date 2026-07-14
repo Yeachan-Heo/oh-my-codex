@@ -7,7 +7,20 @@ const GENERIC_SECRET_PATTERN = /\b([A-Za-z0-9_.-]*(?:api[-_]?key|password|passwd
 const AUTHORIZATION_HEADER_PATTERN = /\bauthorization\s*:\s*[^\r\n]+/giu;
 const HOME_PATH_PATTERN = /(?:\/Users\/[^/\s]+|\/home\/[^/\s]+)(?=\/)/gu;
 const WINDOWS_HOME_PATH_PATTERN = /\b[A-Za-z]:\\Users\\[^\\\s]+(?=\\)/gu;
-const FORBIDDEN_PERSISTENCE_KEY = /^(?:raw[_-]?(?:diff|source|model[_-]?context|context)|full[_-]?diff|source[_-]?(?:code|text)|prompt|system[_-]?prompt|tool[_-]?output|credentials?|env|environment)$/iu;
+const SENSITIVE_KEY_PARTS = ['token', 'apikey', 'credential', 'password', 'passwd', 'secret', 'auth'] as const;
+const RAW_CONTEXT_KEY_PARTS = ['source', 'diff', 'model', 'context', 'prompt', 'tool', 'output', 'env', 'environment'] as const;
+
+function isForbiddenPersistenceKey(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/giu, '').toLowerCase();
+  if (SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part))) return true;
+  if (normalized === 'prompt' || normalized === 'systemprompt' || normalized === 'tooloutput'
+    || normalized === 'env' || normalized === 'environment' || normalized === 'fulldiff'
+    || normalized === 'sourcecode' || normalized === 'sourcetext') {
+    return true;
+  }
+  return normalized.startsWith('raw')
+    && RAW_CONTEXT_KEY_PARTS.some((part) => normalized.slice(3).includes(part));
+}
 
 export class ReviewDataValidationError extends Error {
   readonly code: 'LANE_EVIDENCE_INVALID' | 'PERSISTENCE_FAILED';
@@ -164,7 +177,7 @@ function sanitizeValue(
     }
     const output: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      if (FORBIDDEN_PERSISTENCE_KEY.test(key)) {
+      if (isForbiddenPersistenceKey(key)) {
         throw new ReviewDataValidationError('PERSISTENCE_FAILED', `forbidden persistence field: ${key}`);
       }
       output[key] = sanitizeValue(item, options, seen);

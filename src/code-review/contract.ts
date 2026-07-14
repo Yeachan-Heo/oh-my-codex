@@ -257,7 +257,7 @@ export interface LaneResultProposal {
 
 export type ReviewRecordLaneEvent =
   | {
-      type: 'START';
+      event: 'START';
       review_id: string;
       attempt: number;
       lane_id: string;
@@ -265,7 +265,7 @@ export type ReviewRecordLaneEvent =
       idempotency_key: string;
     }
   | {
-      type: 'RESULT';
+      event: 'RESULT';
       review_id: string;
       attempt: number;
       lane_id: string;

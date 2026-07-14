@@ -112,6 +112,27 @@ describe('code-review redaction and validation', () => {
     }
   });
 
+  it('fails closed on generic sensitive and raw-context keys at every nesting shape', async () => {
+    const api = await loadRedactionApi();
+    const forbidden = [
+      { token: 'plain-token-value' },
+      { apiKey: 'plain-api-key-value' },
+      { raw_prompt: 'private prompt' },
+      { raw_tool_output: 'private tool output' },
+      { nested: { 'Credential-Value': 'private credential' } },
+      { values: [{ Password: 'private password' }] },
+      [{ AUTH: 'private authorization value' }],
+    ];
+
+    for (const value of forbidden) {
+      assert.throws(
+        () => api.sanitizeForPersistence(value),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+        JSON.stringify(value),
+      );
+    }
+  });
+
   it('strictly validates finding paths, line ranges, string bounds, and unknown fields', async () => {
     const api = await loadRedactionApi();
     const invalidFindings = [

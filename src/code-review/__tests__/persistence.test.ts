@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,12 +10,18 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 interface ReviewPersistencePaths {
+  workingDirectory: string;
   reviewRoot: string;
   activePath: string;
   startLockPath: string;
+  reviewsRoot: string;
+  startTransactionsRoot: string;
+  pendingReviewTransactionsRoot: string;
+}
+
+interface ReviewScopedLockPaths {
   journalLockPath: string;
   mutationLockPath: string;
-  reviewsRoot: string;
 }
 
 interface PersistenceApi {
@@ -44,8 +51,20 @@ interface ReviewLockHandle {
 }
 
 interface LockPersistenceApi extends PersistenceApi {
+  resolveReviewLockPaths(paths: ReviewPersistencePaths, review_id: string): ReviewScopedLockPaths;
+  probeReviewLockOwner(
+    owner: {
+      pid: number;
+      hostname: string;
+      process_start_marker: string;
+      nonce: string;
+      acquired_at: string;
+    },
+    readMarker?: (pid: number) => Promise<string | null>,
+  ): Promise<'live' | 'absent' | 'reused' | 'unknown'>;
   acquireReviewLocks(
     paths: ReviewPersistencePaths,
+    review_id: string | undefined,
     requested: readonly ReviewLockName[],
     options?: {
       timeoutMs?: number;
@@ -61,7 +80,10 @@ interface LockPersistenceApi extends PersistenceApi {
       onAcquired?: (name: ReviewLockName) => void;
     },
   ): Promise<ReviewLockHandle[]>;
-  releaseReviewLocks(handles: readonly ReviewLockHandle[]): Promise<boolean[]>;
+  releaseReviewLocks(
+    handles: readonly ReviewLockHandle[],
+    options?: { afterOwnerRead?: (handle: ReviewLockHandle) => void | Promise<void> },
+  ): Promise<boolean[]>;
 }
 
 type DurableStage =
@@ -115,12 +137,16 @@ interface DurablePersistenceApi extends LockPersistenceApi {
     paths: ReviewPersistencePaths,
     input: { review_id: string; idempotency_key: string; journal_scope?: 'START' | 'REVIEW' },
   ): Promise<{ state: 'COMMITTED'; response: unknown } | null>;
+  recoverPendingReviewTransactions(
+    paths: ReviewPersistencePaths,
+  ): Promise<Array<{ state: 'COMMITTED'; response: unknown }>>;
 }
 
 interface FinalArtifactApi extends DurablePersistenceApi {
   writeFinalReviewArtifacts(
     paths: ReviewPersistencePaths,
     artifact: unknown,
+    options?: { afterJsonPublished?: (jsonPath: string) => void | Promise<void> },
   ): Promise<{ jsonPath: string; markdownPath: string; artifact_sha256: string }>;
 }
 
@@ -294,13 +320,28 @@ describe('code-review persistence foundations', () => {
 });
 
 describe('code-review persistence locks', () => {
+  it('places only start.lock at session root and derives review-scoped journal and mutation paths', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadLockPersistenceApi();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = api.generateReviewId();
+      assert.equal(typeof api.resolveReviewLockPaths, 'function');
+      assert.deepEqual(api.resolveReviewLockPaths(paths, reviewId), {
+        journalLockPath: join(paths.reviewRoot, reviewId, 'journal.lock'),
+        mutationLockPath: join(paths.reviewRoot, reviewId, 'mutation.lock'),
+      });
+      assert.equal(paths.startLockPath, join(paths.reviewRoot, 'start.lock'));
+    });
+  });
+
   it('acquires requested locks in start -> journal -> mutation order and permits skipped locks', async () => {
     const workingDirectory = await mkdtemp(join(tmpdir(), 'omx-code-review-locks-'));
     try {
       const api = await loadLockPersistenceApi();
       const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = api.generateReviewId();
       const observed: ReviewLockName[] = [];
-      const all = await api.acquireReviewLocks(paths, ['mutation', 'start', 'journal'], {
+      const all = await api.acquireReviewLocks(paths, reviewId, ['mutation', 'start', 'journal'], {
         timeoutMs: 0,
         onAcquired: (name) => observed.push(name),
       });
@@ -308,11 +349,11 @@ describe('code-review persistence locks', () => {
       assert.deepEqual(all.map((handle) => handle.name), observed);
       assert.deepEqual(await api.releaseReviewLocks(all), [true, true, true]);
 
-      const journalOnly = await api.acquireReviewLocks(paths, ['journal'], { timeoutMs: 0 });
+      const journalOnly = await api.acquireReviewLocks(paths, reviewId, ['journal'], { timeoutMs: 0 });
       assert.deepEqual(journalOnly.map((handle) => handle.name), ['journal']);
       await api.releaseReviewLocks(journalOnly);
 
-      const withoutJournal = await api.acquireReviewLocks(paths, ['mutation', 'start'], { timeoutMs: 0 });
+      const withoutJournal = await api.acquireReviewLocks(paths, reviewId, ['mutation', 'start'], { timeoutMs: 0 });
       assert.deepEqual(withoutJournal.map((handle) => handle.name), ['start', 'mutation']);
       await api.releaseReviewLocks(withoutJournal);
     } finally {
@@ -333,7 +374,7 @@ describe('code-review persistence locks', () => {
         acquired_at: '2026-07-14T00:00:00.000Z',
       });
 
-      const handles = await api.acquireReviewLocks(paths, ['start'], {
+      const handles = await api.acquireReviewLocks(paths, undefined, ['start'], {
         timeoutMs: 0,
         ownerProbe: () => 'absent',
       });
@@ -370,7 +411,7 @@ describe('code-review persistence locks', () => {
         await api.atomicWritePrivateJson(paths.startLockPath, localOwner);
         await writeFile(paths.startLockPath, testCase.content, { mode: 0o600 });
         await assert.rejects(
-          api.acquireReviewLocks(paths, ['start'], {
+          api.acquireReviewLocks(paths, undefined, ['start'], {
             timeoutMs: 0,
             ownerProbe: () => testCase.probe,
           }),
@@ -395,7 +436,7 @@ describe('code-review persistence locks', () => {
       let monotonicNow = 0;
       let waits = 0;
       await assert.rejects(
-        api.acquireReviewLocks(paths, ['start'], {
+        api.acquireReviewLocks(paths, undefined, ['start'], {
           timeoutMs: 60_000,
           now: () => monotonicNow,
           ownerProbe: () => 'live',
@@ -415,7 +456,7 @@ describe('code-review persistence locks', () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadLockPersistenceApi();
       const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
-      const handles = await api.acquireReviewLocks(paths, ['start'], { timeoutMs: 0 });
+      const handles = await api.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
       await api.atomicWritePrivateJson(paths.startLockPath, {
         pid: process.pid,
         hostname: hostname(),
@@ -429,13 +470,80 @@ describe('code-review persistence locks', () => {
     });
   });
 
+  it('atomically quarantines release and preserves an owner replaced after the initial read', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadLockPersistenceApi();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const handles = await api.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
+      const replacementNonce = api.generateReviewId();
+
+      const released = await api.releaseReviewLocks(handles, {
+        afterOwnerRead: async () => {
+          await api.atomicWritePrivateJson(paths.startLockPath, {
+            pid: process.pid,
+            hostname: hostname(),
+            process_start_marker: 'replacement-marker',
+            nonce: replacementNonce,
+            acquired_at: '2026-07-14T00:00:00.000Z',
+          });
+        },
+      });
+
+      assert.deepEqual(released, [false]);
+      const owner = JSON.parse(await readFile(paths.startLockPath, 'utf8')) as { nonce: string };
+      assert.equal(owner.nonce, replacementNonce);
+    });
+  });
+
+  it('classifies a real child marker as live, a forged marker as reused, and unavailable identity as unknown', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadLockPersistenceApi();
+      assert.equal(typeof api.probeReviewLockOwner, 'function');
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const moduleUrl = new URL('../persistence.js', import.meta.url).href;
+      const childProgram = `
+        const persistence = await import(process.argv[1]);
+        const paths = await persistence.resolveReviewPersistencePaths({
+          workingDirectory: process.argv[2], session_id: process.argv[3],
+        });
+        await persistence.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
+        process.stdout.write('ACQUIRED\\n');
+        setInterval(() => undefined, 1000);
+      `;
+      const child = spawn(process.execPath, [
+        '--input-type=module', '-e', childProgram, moduleUrl, workingDirectory, sessionId,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      try {
+        await once(child.stdout!, 'data');
+        const owner = JSON.parse(await readFile(paths.startLockPath, 'utf8')) as {
+          pid: number;
+          hostname: string;
+          process_start_marker: string;
+          nonce: string;
+          acquired_at: string;
+        };
+        assert.equal(await api.probeReviewLockOwner(owner), 'live');
+        assert.equal(await api.probeReviewLockOwner({
+          ...owner,
+          process_start_marker: `${owner.process_start_marker}-forged`,
+        }), 'reused');
+        assert.equal(await api.probeReviewLockOwner(owner, async () => null), 'unknown');
+      } finally {
+        child.kill('SIGTERM');
+        await once(child, 'close');
+      }
+    });
+  });
+
   it('orders hook-first and coordinator-first journal contention without reversing locks', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadLockPersistenceApi();
       const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
-      const hookFirst = await api.acquireReviewLocks(paths, ['journal'], { timeoutMs: 0 });
+      const reviewId = api.generateReviewId();
+      const hookFirst = await api.acquireReviewLocks(paths, reviewId, ['journal'], { timeoutMs: 0 });
       let releasedHook = false;
-      const coordinator = await api.acquireReviewLocks(paths, ['mutation', 'journal', 'start'], {
+      const coordinator = await api.acquireReviewLocks(paths, reviewId, ['mutation', 'journal', 'start'], {
         timeoutMs: 5_000,
         waitForChange: async () => {
           if (!releasedHook) {
@@ -447,11 +555,11 @@ describe('code-review persistence locks', () => {
       assert.deepEqual(coordinator.map((handle) => handle.name), ['start', 'journal', 'mutation']);
 
       await assert.rejects(
-        api.acquireReviewLocks(paths, ['journal'], { timeoutMs: 0 }),
+        api.acquireReviewLocks(paths, reviewId, ['journal'], { timeoutMs: 0 }),
         (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_LOCKED',
       );
       await api.releaseReviewLocks(coordinator);
-      const hookAfter = await api.acquireReviewLocks(paths, ['journal'], { timeoutMs: 0 });
+      const hookAfter = await api.acquireReviewLocks(paths, reviewId, ['journal'], { timeoutMs: 0 });
       assert.equal(hookAfter.length, 1);
       await api.releaseReviewLocks(hookAfter);
     });
@@ -469,14 +577,14 @@ describe('code-review persistence locks', () => {
           workingDirectory: process.argv[2], session_id: process.argv[3],
         });
         try {
-          const handles = await persistence.acquireReviewLocks(paths, ['start'], { timeoutMs: 0 });
+          const handles = await persistence.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
           process.stdout.write('ACQUIRED');
           if (process.argv[4] === 'release') await persistence.releaseReviewLocks(handles);
         } catch (error) {
           process.stdout.write(String(error?.code ?? 'UNKNOWN'));
         }
       `;
-      const parentHandles = await api.acquireReviewLocks(paths, ['start'], { timeoutMs: 0 });
+      const parentHandles = await api.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
       const liveAttempt = await execFileAsync(process.execPath, [
         '--input-type=module', '-e', childProgram, moduleUrl, workingDirectory, sessionId, 'release',
       ]);
@@ -487,7 +595,7 @@ describe('code-review persistence locks', () => {
         '--input-type=module', '-e', childProgram, moduleUrl, workingDirectory, sessionId, 'abandon',
       ]);
       assert.equal(abandoned.stdout, 'ACQUIRED');
-      const recovered = await api.acquireReviewLocks(paths, ['start'], { timeoutMs: 0 });
+      const recovered = await api.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
       assert.equal(recovered.length, 1);
       await api.releaseReviewLocks(recovered);
     });
@@ -510,31 +618,101 @@ const DURABLE_STAGES: readonly DurableStage[] = [
   'locator-cleanup',
 ];
 
-function durableEffects(reviewId: string, key: string): DurableEffect[] {
+function reviewerResult(reviewId: string): Record<string, unknown> {
+  return {
+    role: 'code-reviewer',
+    review_id: reviewId,
+    attempt: 1,
+    lane_id: 'reviewer-1',
+    batch_id: 'batch-1',
+    scope_hash: 'a'.repeat(64),
+    recommendation: 'REQUEST CHANGES',
+    findings: [],
+    diagnostics: [],
+  };
+}
+
+function durableEffects(reviewId: string, key: string, repositoryRoot: string): DurableEffect[] {
+  const now = '2026-07-14T00:00:00.000Z';
+  const result = reviewerResult(reviewId);
   return [
     {
       name: 'proposal',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${key}/proposal` },
-      payload: { state: 'PENDING_HOST_ATTESTATION' },
+      payload: {
+        schema_version: 1,
+        state: 'PENDING_HOST_ATTESTATION',
+        review_id: reviewId,
+        attempt: 1,
+        lane_id: 'reviewer-1',
+        scope_hash: 'a'.repeat(64),
+        idempotency_key: key,
+        payload_digest: 'b'.repeat(64),
+        result,
+        proposed_at: now,
+      },
     },
     {
       name: 'post-tool',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${key}/post-tool` },
-      payload: { publication_id: key },
+      payload: {
+        schema_version: 1,
+        publication_id: key,
+        published_at: now,
+        activity: {
+          schema_version: 1,
+          session_id: key,
+          review_id: reviewId,
+          attempt: 1,
+          lane_id: 'reviewer-1',
+          child_thread_id: 'child-thread-1',
+          event_ref: 'events/result-post-tool-1.json',
+          event_kind: 'RESULT_POST_TOOL',
+          observed_at: now,
+        },
+        attestation: {
+          schema_version: 1,
+          session_id: key,
+          root_thread_id: 'root-thread-1',
+          review_id: reviewId,
+          attempt: 1,
+          lane_id: 'reviewer-1',
+          child_thread_id: 'child-thread-1',
+          scope_hash: 'a'.repeat(64),
+          payload_digest: 'b'.repeat(64),
+          tool_event_ref: 'events/result-post-tool-1.json',
+          nonce: key,
+          published_at: now,
+        },
+      },
     },
     {
       name: 'consume',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${key}/consumed` },
-      payload: { consumed: true },
+      payload: {
+        schema_version: 1,
+        state: 'CONSUMED',
+        review_id: reviewId,
+        idempotency_key: key,
+        consumed_at: now,
+      },
     },
     {
       name: 'lane',
       mode: 'CREATE_ONCE_JSON',
-      target: { area: 'REVIEW_STATE', path: `${reviewId}/lanes/lane-attempt-1/terminal` },
-      payload: { status: 'COMPLETE' },
+      target: { area: 'REVIEW_STATE', path: `${reviewId}/lanes/reviewer-1-attempt-1/terminal` },
+      payload: {
+        event: 'RESULT',
+        review_id: reviewId,
+        attempt: 1,
+        lane_id: 'reviewer-1',
+        scope_hash: 'a'.repeat(64),
+        result,
+        idempotency_key: key,
+      },
     },
     {
       name: 'review',
@@ -546,7 +724,7 @@ function durableEffects(reviewId: string, key: string): DurableEffect[] {
       name: 'report',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'FINAL_REVIEWS', path: `${reviewId}.json` },
-      payload: { schema_version: 1, review_id: reviewId, scope_hash: 'a'.repeat(64) },
+      payload: finalArtifact(reviewId, repositoryRoot),
     },
     {
       name: 'active-overlay',
@@ -558,18 +736,248 @@ function durableEffects(reviewId: string, key: string): DurableEffect[] {
       name: 'approval',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'REVIEW_STATE', path: `approvals/${key}/consumed` },
-      payload: { consumed: true },
+      payload: {
+        schema_version: 1,
+        state: 'CONSUMED',
+        review_id: reviewId,
+        idempotency_key: key,
+        consumed_at: now,
+      },
     },
     {
       name: 'stop-marker',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'REVIEW_STATE', path: 'stop-terminal-brief.json' },
-      payload: { state: 'PENDING_BRIEF', review_id: reviewId },
+      payload: { schema_version: 1, state: 'PENDING_BRIEF', review_id: reviewId, created_at: now },
     },
   ];
 }
 
 describe('code-review durable transaction journal', () => {
+  it('uses only start.lock for START and leaves no journal, revision, or effect when a review lock is held', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const startReviewId = api.generateReviewId();
+      const startKey = api.generateReviewId();
+      const legacyRootJournalPath = join(paths.reviewRoot, 'journal.lock');
+      await api.atomicWritePrivateJson(legacyRootJournalPath, {
+        pid: process.pid,
+        hostname: hostname(),
+        process_start_marker: 'legacy-root-owner',
+        nonce: api.generateReviewId(),
+        acquired_at: '2026-07-14T00:00:00.000Z',
+      });
+      try {
+        const startResult = await api.runDurableTransaction(paths, {
+          journal_scope: 'START',
+          idempotency_key: startKey,
+          review_id: startReviewId,
+          operation: 'START_WITH_SKIPPED_REVIEW_LOCKS',
+          input: { review_id: startReviewId },
+          expected_revision: 0,
+          effects: [{
+            name: 'review',
+            mode: 'APPLY_REVIEW_REVISION',
+            target: { area: 'REVIEW_STATE', path: `${startReviewId}/review.json` },
+            payload: { schema_version: 1, review_id: startReviewId, revision: 1 },
+          }],
+          response: { review_id: startReviewId },
+        });
+        assert.equal(startResult.state, 'COMMITTED');
+      } finally {
+        await rm(legacyRootJournalPath, { force: true });
+      }
+
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      const scoped = api.resolveReviewLockPaths(paths, reviewId);
+      await api.atomicWritePrivateJson(scoped.journalLockPath, {
+        pid: process.pid,
+        hostname: hostname(),
+        process_start_marker: 'live-review-owner',
+        nonce: api.generateReviewId(),
+        acquired_at: '2026-07-14T00:00:00.000Z',
+      });
+      await assert.rejects(
+        api.runDurableTransaction(paths, {
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: 'BLOCKED_REVIEW',
+          input: { review_id: reviewId },
+          expected_revision: 0,
+          effects: [{
+            name: 'proposal',
+            mode: 'CREATE_ONCE_JSON',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${key}/proposal` },
+            payload: { state: 'PENDING_HOST_ATTESTATION' },
+          }],
+          response: { review_id: reviewId },
+        }, { crashAt: undefined }),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_LOCKED',
+      );
+      for (const forbiddenPath of [
+        join(paths.reviewRoot, reviewId, 'transactions', key, 'prepared'),
+        join(paths.reviewRoot, reviewId, 'submissions', key, 'proposal'),
+        join(paths.reviewRoot, reviewId, 'review.json'),
+      ]) {
+        await assert.rejects(readFile(forbiddenPath, 'utf8'), (error: unknown) => (
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ));
+      }
+
+      const gatedReviewId = api.generateReviewId();
+      const gatedKey = api.generateReviewId();
+      const gatedEffect = durableEffects(gatedReviewId, gatedKey, workingDirectory)[2]!;
+      const startGate = await api.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
+      try {
+        await assert.rejects(api.runDurableTransaction(paths, {
+          idempotency_key: gatedKey,
+          review_id: gatedReviewId,
+          operation: 'RECOVERY_SCAN_REQUIRES_START_LOCK',
+          input: { review_id: gatedReviewId },
+          expected_revision: 0,
+          effects: [gatedEffect],
+          response: { ok: true },
+        }), (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_LOCKED');
+        await assert.rejects(
+          readFile(join(paths.reviewRoot, gatedEffect.target.path), 'utf8'),
+          (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+        );
+      } finally {
+        await api.releaseReviewLocks(startGate);
+      }
+    });
+  });
+
+  it('automatically discovers and recovers crashed A before applying unrelated mutation B', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      assert.equal(typeof api.recoverPendingReviewTransactions, 'function');
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = api.generateReviewId();
+      const firstKey = api.generateReviewId();
+      const secondKey = api.generateReviewId();
+      const firstEffect = durableEffects(reviewId, firstKey, workingDirectory)[0]!;
+      const secondEffect = durableEffects(reviewId, secondKey, workingDirectory)[2]!;
+      const firstEffectPath = firstEffect.target.path;
+
+      await assert.rejects(api.runDurableTransaction(paths, {
+        idempotency_key: firstKey,
+        review_id: reviewId,
+        operation: 'CRASHED_A',
+        input: { sequence: 'A' },
+        expected_revision: 0,
+        effects: [firstEffect],
+        response: { sequence: 'A' },
+      }, { crashAt: 'after:locator' }), /injected crash/u);
+
+      const second = await api.runDurableTransaction(paths, {
+        idempotency_key: secondKey,
+        review_id: reviewId,
+        operation: 'MUTATION_B',
+        input: { sequence: 'B' },
+        expected_revision: 0,
+        effects: [secondEffect],
+        response: { sequence: 'B' },
+      });
+
+      assert.deepEqual(second, { state: 'COMMITTED', response: { sequence: 'B' } });
+      assert.deepEqual(
+        JSON.parse(await readFile(join(paths.reviewRoot, firstEffectPath), 'utf8')),
+        firstEffect.payload,
+      );
+      await readFile(join(paths.reviewRoot, reviewId, 'transactions', firstKey, 'committed'), 'utf8');
+      assert.deepEqual(await readdir(paths.pendingReviewTransactionsRoot).catch(() => []), []);
+    });
+  });
+
+  it('rejects marker-only payloads for typed proposal, post-tool, lane, approval, and Stop effects', async () => {
+    const cases: Array<{
+      name: DurableEffect['name'];
+      path: (reviewId: string, key: string) => string;
+      payload: (reviewId: string, key: string) => unknown;
+    }> = [
+      { name: 'proposal', path: (reviewId, key) => `${reviewId}/submissions/${key}/proposal`, payload: () => ({ state: 'PENDING_HOST_ATTESTATION' }) },
+      { name: 'post-tool', path: (reviewId, key) => `${reviewId}/submissions/${key}/post-tool`, payload: (_reviewId, key) => ({ publication_id: key }) },
+      { name: 'lane', path: (reviewId) => `${reviewId}/lanes/reviewer-attempt-1/terminal`, payload: () => ({ status: 'COMPLETE' }) },
+      { name: 'approval', path: (_reviewId, key) => `approvals/${key}/consumed`, payload: () => ({ consumed: true }) },
+      { name: 'stop-marker', path: () => 'stop-terminal-brief.json', payload: () => ({ state: 'PENDING_BRIEF' }) },
+    ];
+    for (const testCase of cases) {
+      await withWorkspace(async (workingDirectory) => {
+        const api = await loadDurablePersistenceApi();
+        const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const target = testCase.path(reviewId, key);
+        await assert.rejects(api.runDurableTransaction(paths, {
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: `INVALID_${testCase.name}`,
+          input: { effect: testCase.name },
+          expected_revision: 0,
+          effects: [{
+            name: testCase.name,
+            mode: 'CREATE_ONCE_JSON',
+            target: { area: 'REVIEW_STATE', path: target },
+            payload: testCase.payload(reviewId, key),
+          }],
+          response: { ok: false },
+        }), (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED', testCase.name);
+        await assert.rejects(readFile(join(paths.reviewRoot, target), 'utf8'), (error: unknown) => (
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ));
+      });
+    }
+  });
+
+  it('rejects tampered prepared input, effects, revision, and locator identity before side effects', async () => {
+    const mutations = ['input', 'effects', 'revision', 'locator'] as const;
+    for (const mutation of mutations) {
+      await withWorkspace(async (workingDirectory) => {
+        const api = await loadDurablePersistenceApi();
+        assert.equal(typeof api.recoverPendingReviewTransactions, 'function');
+        const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const proposalEffect = durableEffects(reviewId, key, workingDirectory)[0]!;
+        const effectPath = proposalEffect.target.path;
+        await assert.rejects(api.runDurableTransaction(paths, {
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: 'TAMPER_TEST',
+          input: { stable: true },
+          expected_revision: 0,
+          effects: [proposalEffect],
+          response: { ok: true },
+        }, { crashAt: 'after:locator' }), /injected crash/u);
+
+        const locatorNames = await readdir(paths.pendingReviewTransactionsRoot);
+        assert.equal(locatorNames.length, 1);
+        const locatorPath = join(paths.pendingReviewTransactionsRoot, locatorNames[0]!);
+        const locator = JSON.parse(await readFile(locatorPath, 'utf8')) as Record<string, unknown>;
+        const preparedPath = join(paths.reviewRoot, reviewId, 'transactions', key, 'prepared');
+        const prepared = JSON.parse(await readFile(preparedPath, 'utf8')) as Record<string, unknown>;
+        if (mutation === 'input') prepared.input = { stable: false };
+        if (mutation === 'effects') prepared.effects = [];
+        if (mutation === 'revision') prepared.expected_revision = 99;
+        if (mutation === 'locator') locator.review_id = api.generateReviewId();
+        await writeFile(preparedPath, `${JSON.stringify(prepared, null, 2)}\n`, { mode: 0o600 });
+        await writeFile(locatorPath, `${JSON.stringify(locator, null, 2)}\n`, { mode: 0o600 });
+
+        await assert.rejects(
+          api.recoverPendingReviewTransactions(paths),
+          (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+          mutation,
+        );
+        await assert.rejects(readFile(join(paths.reviewRoot, effectPath), 'utf8'), (error: unknown) => (
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ));
+      });
+    }
+  });
+
   it('recovers root start-WAL allocation and publishes revision one only from COMMITTED', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
@@ -658,29 +1066,47 @@ describe('code-review durable transaction journal', () => {
           operation: 'TEST_DURABLE_MUTATION',
           input: { review_id: reviewId, requested: 'bounded' },
           expected_revision: 1,
-          effects: durableEffects(reviewId, key),
+          effects: durableEffects(reviewId, key, workingDirectory),
           response: { review_id: reviewId, revision: 2 },
         };
 
-        let publishedSuccess = false;
-        await assert.rejects(
-          api.runDurableTransaction(paths, plan, { crashAt }).then(() => {
-            publishedSuccess = true;
-          }),
-          /injected crash/u,
-          crashAt,
-        );
-        assert.equal(publishedSuccess, false, `${crashAt} must not publish success`);
+        const moduleUrl = new URL('../persistence.js', import.meta.url).href;
+        const childProgram = `
+          const persistence = await import(process.argv[1]);
+          const paths = await persistence.resolveReviewPersistencePaths({
+            workingDirectory: process.argv[2], session_id: process.argv[3],
+          });
+          await persistence.runDurableTransaction(paths, JSON.parse(process.argv[4]), {
+            crashAt: process.argv[5],
+          });
+        `;
+        let childFailed = false;
+        try {
+          await execFileAsync(process.execPath, [
+            '--input-type=module', '-e', childProgram, moduleUrl, workingDirectory,
+            sessionId, JSON.stringify(plan), crashAt,
+          ]);
+        } catch (error) {
+          childFailed = true;
+          assert.match(String(error), /injected crash/u, crashAt);
+        }
+        assert.equal(childFailed, true, `${crashAt} child must exit before publishing success`);
 
-        const recovered = await api.recoverDurableTransactions(paths, {
-          review_id: reviewId,
-          idempotency_key: key,
-        }) ?? await api.runDurableTransaction(paths, plan);
-        assert.deepEqual(recovered, {
-          state: 'COMMITTED',
-          response: { review_id: reviewId, revision: 2 },
-        }, crashAt);
-        assert.deepEqual(await api.runDurableTransaction(paths, plan), recovered, crashAt);
+        const recovered = await api.recoverPendingReviewTransactions(paths);
+        if (crashAt === 'before:prepared') {
+          assert.deepEqual(recovered, [], crashAt);
+          await assert.rejects(
+            readFile(join(paths.reviewRoot, reviewId, 'transactions', key, 'prepared'), 'utf8'),
+            (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+          );
+          continue;
+        }
+        if (recovered.length > 0) {
+          assert.deepEqual(recovered, [{
+            state: 'COMMITTED',
+            response: { review_id: reviewId, revision: 2 },
+          }], crashAt);
+        }
 
         const committed = JSON.parse(await readFile(
           join(paths.reviewRoot, reviewId, 'transactions', key, 'committed'),
@@ -693,15 +1119,16 @@ describe('code-review durable transaction journal', () => {
         assert.equal(review.revision, 2, crashAt);
         assert.equal(review.last_applied_transaction_id, committed.transaction_id, crashAt);
 
-        const createdTargets = durableEffects(reviewId, key)
+        const createdTargets = durableEffects(reviewId, key, workingDirectory)
           .filter((effect) => effect.mode === 'CREATE_ONCE_JSON')
           .map((effect) => effect.target.area === 'FINAL_REVIEWS'
             ? join(paths.reviewsRoot, effect.target.path)
             : join(paths.reviewRoot, effect.target.path));
         for (const target of createdTargets) {
-          assert.doesNotThrow(() => JSON.parse('null'));
           JSON.parse(await readFile(target, 'utf8'));
         }
+        const markdown = await readFile(join(paths.reviewsRoot, `${reviewId}.md`), 'utf8');
+        assert.match(markdown, new RegExp(`Review ID: ${reviewId}`, 'u'), crashAt);
         assert.equal(await api.readActiveReview(paths), null, crashAt);
         const locatorRoot = join(paths.reviewRoot, 'pending-review-transactions');
         assert.deepEqual(await readdir(locatorRoot).catch(() => []), [], crashAt);
@@ -726,7 +1153,7 @@ describe('code-review durable transaction journal', () => {
         operation: 'TEST_CONFLICT',
         input: { value: 1 },
         expected_revision: 1,
-        effects: [durableEffects(reviewId, key)[4]!],
+        effects: [durableEffects(reviewId, key, workingDirectory)[4]!],
         response: { ok: true },
       };
       await api.runDurableTransaction(paths, plan);
@@ -744,26 +1171,39 @@ describe('code-review durable transaction journal', () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
       const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
-      const journalPath = join(paths.reviewRoot, 'activity', 'child-thread', 'event-1');
-      await assert.rejects(
-        api.atomicCreatePrivateJson(journalPath, { event_ref: 'event-1' }, {
-          beforePublish: () => {
-            throw new Error('hook crashed before no-replace publication');
-          },
-        }),
-        /hook crashed/u,
-      );
-      await assert.rejects(readFile(journalPath, 'utf8'), (error: unknown) => (
-        (error as NodeJS.ErrnoException).code === 'ENOENT'
-      ));
+      const reviewId = api.generateReviewId();
+      const journalPath = join(paths.reviewRoot, reviewId, 'activity', 'child-thread', 'event-1');
+      const hookLock = await api.acquireReviewLocks(paths, reviewId, ['journal'], { timeoutMs: 0 });
+      try {
+        await assert.rejects(
+          api.atomicCreatePrivateJson(journalPath, { event_ref: 'event-1' }, {
+            beforePublish: () => {
+              throw new Error('hook crashed before no-replace publication');
+            },
+          }),
+          /hook crashed/u,
+        );
+        await assert.rejects(readFile(journalPath, 'utf8'), (error: unknown) => (
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ));
 
-      await api.atomicCreatePrivateJson(journalPath, { event_ref: 'event-1' });
-      assert.deepEqual(JSON.parse(await readFile(journalPath, 'utf8')), { event_ref: 'event-1' });
-      await assert.rejects(api.atomicCreatePrivateJson(journalPath, { event_ref: 'different' }), (error: unknown) => (
-        (error as NodeJS.ErrnoException).code === 'EEXIST'
-        || (error as { code?: unknown }).code === 'IDEMPOTENCY_CONFLICT'
-      ));
-      assert.deepEqual(JSON.parse(await readFile(journalPath, 'utf8')), { event_ref: 'event-1' });
+        await api.atomicCreatePrivateJson(journalPath, { event_ref: 'event-1' });
+        assert.deepEqual(JSON.parse(await readFile(journalPath, 'utf8')), { event_ref: 'event-1' });
+        await assert.rejects(api.atomicCreatePrivateJson(journalPath, { event_ref: 'different' }), (error: unknown) => (
+          (error as NodeJS.ErrnoException).code === 'EEXIST'
+          || (error as { code?: unknown }).code === 'IDEMPOTENCY_CONFLICT'
+        ));
+      } finally {
+        await api.releaseReviewLocks(hookLock);
+      }
+      const coordinatorLocks = await api.acquireReviewLocks(
+        paths, reviewId, ['mutation', 'journal'], { timeoutMs: 0 },
+      );
+      try {
+        assert.deepEqual(JSON.parse(await readFile(journalPath, 'utf8')), { event_ref: 'event-1' });
+      } finally {
+        await api.releaseReviewLocks(coordinatorLocks);
+      }
     });
   });
 
@@ -959,9 +1399,28 @@ function finalArtifact(reviewId: string, repositoryRoot: string): unknown {
         fix: 'Remove api_key=final-key-secret',
         evidence: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
       }],
+      diagnostic_ids: ['diagnostic-1'],
+    }, {
+      lane_id: 'architect-1',
+      role: 'architect',
+      batch_id: 'global',
+      scope_hash: 'a'.repeat(64),
+      status: 'COMPLETE',
+      attempt: 1,
+      architectural_status: 'CLEAR',
+      findings: [],
       diagnostic_ids: [],
     }],
-    diagnostics: [],
+    diagnostics: [{
+      diagnostic_id: 'diagnostic-1',
+      capability: 'LINT',
+      applicability: 'APPLICABLE',
+      execution: 'NATIVE',
+      outcome: 'FAIL',
+      tool_name: 'eslint',
+      event_ref: 'events/lint-1.json',
+      summary: 'One review finding was confirmed.',
+    }],
     verdict: {
       recommendation: 'REQUEST CHANGES',
       architectural_status: 'CLEAR',
@@ -997,6 +1456,83 @@ describe('final review artifact rendering', () => {
       assert.equal(markdown, render.renderFinalReviewMarkdown(parsed));
       assert.match(written.artifact_sha256, /^[0-9a-f]{64}$/u);
       assert.doesNotMatch(`${jsonText}\n${markdown}`, /final-artifact-secret|final-key-secret|ghp_|\/Users\//u);
+    });
+  });
+
+  it('rejects duplicate or out-of-plan lanes, batches, scope hashes, and diagnostic references', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const { persistence } = await loadFinalArtifactApi();
+      const paths = await persistence.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = persistence.generateReviewId();
+      const base = finalArtifact(reviewId, workingDirectory) as any;
+      const invalidArtifacts: unknown[] = [];
+
+      const duplicateLane = structuredClone(base);
+      duplicateLane.lanes.push(structuredClone(duplicateLane.lanes[0]));
+      invalidArtifacts.push(duplicateLane);
+
+      const duplicateBatch = structuredClone(base);
+      duplicateBatch.batches.push(structuredClone(duplicateBatch.batches[0]));
+      invalidArtifacts.push(duplicateBatch);
+
+      const badArchitect = structuredClone(base);
+      badArchitect.lanes[1].batch_id = 'batch-1';
+      badArchitect.lanes[1].recommendation = 'APPROVE';
+      invalidArtifacts.push(badArchitect);
+
+      const badReviewer = structuredClone(base);
+      badReviewer.lanes[0].batch_id = 'missing-batch';
+      badReviewer.lanes[0].architectural_status = 'CLEAR';
+      invalidArtifacts.push(badReviewer);
+
+      const wrongScope = structuredClone(base);
+      wrongScope.lanes[0].scope_hash = 'b'.repeat(64);
+      invalidArtifacts.push(wrongScope);
+
+      const danglingDiagnostic = structuredClone(base);
+      danglingDiagnostic.lanes[0].diagnostic_ids = ['missing-diagnostic'];
+      invalidArtifacts.push(danglingDiagnostic);
+
+      const duplicateDiagnostic = structuredClone(base);
+      duplicateDiagnostic.diagnostics.push(structuredClone(duplicateDiagnostic.diagnostics[0]));
+      invalidArtifacts.push(duplicateDiagnostic);
+
+      const duplicateDiagnosticRef = structuredClone(base);
+      duplicateDiagnosticRef.lanes[0].diagnostic_ids.push('diagnostic-1');
+      invalidArtifacts.push(duplicateDiagnosticRef);
+
+      for (const invalid of invalidArtifacts) {
+        await assert.rejects(
+          persistence.writeFinalReviewArtifacts(paths, invalid),
+          (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+        );
+      }
+    });
+  });
+
+  it('renders Markdown from the exact validated JSON bytes published on disk', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const { persistence, render } = await loadFinalArtifactApi();
+      const paths = await persistence.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = persistence.generateReviewId();
+      const value = finalArtifact(reviewId, workingDirectory) as any;
+      let hookCalled = false;
+
+      const written = await persistence.writeFinalReviewArtifacts(paths, value, {
+        afterJsonPublished: async (jsonPath) => {
+          hookCalled = true;
+          const published = JSON.parse(await readFile(jsonPath, 'utf8')) as any;
+          assert.deepEqual(published.verdict.reasons, ['A high-severity finding remains.']);
+          value.verdict.reasons = ['In-memory mutation must not control Markdown.'];
+        },
+      });
+
+      const diskJson = JSON.parse(await readFile(written.jsonPath, 'utf8')) as unknown;
+      const markdown = await readFile(written.markdownPath, 'utf8');
+      assert.equal(hookCalled, true);
+      assert.equal(markdown, render.renderFinalReviewMarkdown(diskJson));
+      assert.match(markdown, /A high-severity finding remains\./u);
+      assert.doesNotMatch(markdown, /In-memory mutation must not control Markdown/u);
     });
   });
 
