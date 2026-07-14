@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readlink } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { TextDecoder } from 'node:util';
 import type {
   ScopeFile,
   ScopeFileChange,
@@ -91,8 +92,40 @@ function posixPath(path: string): string {
   return path.split(sep).join('/');
 }
 
-function trimOutput(output: Buffer): string {
-  return output.toString('utf8').trim();
+function decodeUtf8Strict(output: Buffer, context: string): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(output);
+  } catch (error) {
+    throw new ScopeResolutionError(
+      'GIT_COMMAND_FAILED',
+      `Git returned invalid UTF-8 for ${context}`,
+      { cause: error },
+    );
+  }
+}
+
+function decodeNulSegments(output: Buffer, context: string): string[] {
+  const segments: string[] = [];
+  let start = 0;
+  for (let index = 0; index <= output.length; index += 1) {
+    if (index !== output.length && output[index] !== 0) continue;
+    if (index > start) {
+      segments.push(decodeUtf8Strict(output.subarray(start, index), context));
+    }
+    start = index + 1;
+  }
+  return segments;
+}
+
+function trimTextOutput(output: Buffer, context: string): string {
+  return decodeUtf8Strict(output, context).trim();
+}
+
+function decodePathLine(output: Buffer, context: string): string {
+  const decoded = decodeUtf8Strict(output, context);
+  if (decoded.endsWith('\r\n')) return decoded.slice(0, -2);
+  if (decoded.endsWith('\n')) return decoded.slice(0, -1);
+  return decoded;
 }
 
 function errorExitCode(error: unknown): number | undefined {
@@ -245,9 +278,9 @@ export function parseNameStatus(
   output: Buffer | string,
   source: ScopeFileSource,
 ): ParsedNameStatus[] {
-  const values = (Buffer.isBuffer(output) ? output.toString('utf8') : output)
-    .split('\0')
-    .filter((value) => value.length > 0);
+  const values = Buffer.isBuffer(output)
+    ? decodeNulSegments(output, 'name-status path')
+    : output.split('\0').filter((value) => value.length > 0);
   const records: ParsedNameStatus[] = [];
 
   for (let index = 0; index < values.length; ) {
@@ -273,7 +306,9 @@ export function parseNameStatus(
 }
 
 export function parseNumStat(output: Buffer | string): ParsedNumStat[] {
-  const values = (Buffer.isBuffer(output) ? output.toString('utf8') : output).split('\0');
+  const values = Buffer.isBuffer(output)
+    ? decodeNulSegments(output, 'numstat path')
+    : output.split('\0');
   const records: ParsedNumStat[] = [];
 
   for (let index = 0; index < values.length; index += 1) {
@@ -361,14 +396,14 @@ function mergeDiscovery(
 }
 
 function parseIndexEntry(output: Buffer): GitTreeEntry | undefined {
-  const first = output.toString('utf8').split('\0').find((value) => value.length > 0);
+  const first = decodeNulSegments(output, 'index path')[0];
   if (!first) return undefined;
   const match = /^(\d{6}) ([0-9a-f]+) [0-3]\t/.exec(first);
   return match ? { mode: match[1] as string, objectId: match[2] as string } : undefined;
 }
 
 function parseTreeEntry(output: Buffer): GitTreeEntry | undefined {
-  const first = output.toString('utf8').split('\0').find((value) => value.length > 0);
+  const first = decodeNulSegments(output, 'tree path')[0];
   if (!first) return undefined;
   const match = /^(\d{6}) \S+ ([0-9a-f]+)\t/.exec(first);
   return match ? { mode: match[1] as string, objectId: match[2] as string } : undefined;
@@ -452,10 +487,14 @@ async function resolveBase(
       requestedBase,
       headSha,
     ]);
-    if (!mergeBase || trimOutput(mergeBase).length === 0) {
+    if (!mergeBase || trimTextOutput(mergeBase, 'explicit merge-base').length === 0) {
       throw new ScopeResolutionError('INVALID_BASE', `Explicit base has no merge-base: ${requestedBase}`);
     }
-    return { baseRef: requestedBase, baseSha: trimOutput(mergeBase), resolved: true };
+    return {
+      baseRef: requestedBase,
+      baseSha: trimTextOutput(mergeBase, 'explicit merge-base'),
+      resolved: true,
+    };
   }
 
   const upstream = await optionalGit(git, repositoryRoot, [
@@ -464,15 +503,19 @@ async function resolveBase(
     '--symbolic-full-name',
     '@{upstream}',
   ]);
-  const upstreamRef = upstream ? trimOutput(upstream) : '';
+  const upstreamRef = upstream ? trimTextOutput(upstream, 'configured upstream') : '';
   if (upstreamRef.length > 0) {
     const mergeBase = await optionalGit(git, repositoryRoot, [
       'merge-base',
       upstreamRef,
       headSha,
     ]);
-    if (mergeBase && trimOutput(mergeBase).length > 0) {
-      return { baseRef: upstreamRef, baseSha: trimOutput(mergeBase), resolved: true };
+    if (mergeBase && trimTextOutput(mergeBase, 'upstream merge-base').length > 0) {
+      return {
+        baseRef: upstreamRef,
+        baseSha: trimTextOutput(mergeBase, 'upstream merge-base'),
+        resolved: true,
+      };
     }
   }
 
@@ -483,8 +526,7 @@ async function resolveBase(
   ]);
   const targets = [
     ...new Set(
-      remoteHeads
-        .toString('utf8')
+      decodeUtf8Strict(remoteHeads, 'remote default refs')
         .split(/\r?\n/)
         .map((value) => value.trim())
         .filter((value) => value.length > 0),
@@ -493,8 +535,12 @@ async function resolveBase(
   if (targets.length === 1) {
     const target = targets[0] as string;
     const mergeBase = await optionalGit(git, repositoryRoot, ['merge-base', target, headSha]);
-    if (mergeBase && trimOutput(mergeBase).length > 0) {
-      return { baseRef: target, baseSha: trimOutput(mergeBase), resolved: true };
+    if (mergeBase && trimTextOutput(mergeBase, 'remote merge-base').length > 0) {
+      return {
+        baseRef: target,
+        baseSha: trimTextOutput(mergeBase, 'remote merge-base'),
+        resolved: true,
+      };
     }
   }
 
@@ -610,7 +656,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
       { cause: error },
     );
   }
-  const repositoryRoot = trimOutput(repositoryRootOutput);
+  const repositoryRoot = decodePathLine(repositoryRootOutput, 'repository root');
   if (repositoryRoot.length === 0) {
     throw new ScopeResolutionError('NOT_GIT_REPOSITORY', 'Git returned an empty repository root');
   }
@@ -621,8 +667,9 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
       : { requested_base: options.selector.requested_base }),
     explicit_paths: normalizeExplicitPaths(repositoryRoot, options.selector?.explicit_paths ?? []),
   };
-  const headSha = trimOutput(
+  const headSha = trimTextOutput(
     await requiredGit(git, repositoryRoot, ['rev-parse', '--verify', 'HEAD^{commit}']),
+    'HEAD commit',
   );
   const base = await resolveBase(git, repositoryRoot, selector.requested_base, headSha);
   const reasons: string[] = base.resolved ? [] : ['BASE_UNRESOLVED'];
@@ -635,7 +682,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
     '--',
   ]);
   if (unmerged.length > 0) {
-    const path = unmerged.toString('utf8').split('\0').find((value) => value.length > 0) ?? 'unknown';
+    const path = decodeNulSegments(unmerged, 'unmerged path')[0] ?? 'unknown';
     throw new ScopeResolutionError('UNMERGED', `Unmerged path prevents review: ${path}`);
   }
 
@@ -691,7 +738,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
     '-z',
     '--',
   ]);
-  for (const path of untracked.toString('utf8').split('\0').filter((value) => value.length > 0)) {
+  for (const path of decodeNulSegments(untracked, 'untracked path')) {
     mergeDiscovery(discovered, [
       { path: posixPath(path), change: 'ADDED', source: 'UNTRACKED' },
     ]);
@@ -703,7 +750,23 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
       ignoredPaths.add(explicitPath);
     }
   }
-  if (ignoredPaths.size > 0) reasons.push('IGNORED_PATH_EXCLUDED');
+  let hasIgnoredDescendant = false;
+  if (selector.explicit_paths.length > 0) {
+    const ignoredInventory = await requiredGit(git, repositoryRoot, [
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '-z',
+      '--',
+      ...selector.explicit_paths.filter((path) => path.length > 0),
+    ]);
+    hasIgnoredDescendant =
+      decodeNulSegments(ignoredInventory, 'ignored path inventory').length > 0;
+  }
+  if (ignoredPaths.size > 0 || hasIgnoredDescendant) {
+    reasons.push('IGNORED_PATH_EXCLUDED');
+  }
   const effectiveExplicitPaths = selector.explicit_paths.filter((path) => !ignoredPaths.has(path));
   const selected = [...discovered.values()]
     .filter(

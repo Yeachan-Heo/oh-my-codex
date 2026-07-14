@@ -210,6 +210,30 @@ describe('real Git scope discovery', () => {
     });
   });
 
+  it('preserves a repository root whose final path segment ends in a space', async () => {
+    const api = await loadScopeApi();
+    const outer = await mkdtemp(join(tmpdir(), 'omx-code-review-spaced-root-'));
+    const repository = join(outer, 'repository ');
+    try {
+      await mkdir(repository);
+      await git(repository, 'init', '-q');
+      await git(repository, 'config', 'user.email', 'scope@example.invalid');
+      await git(repository, 'config', 'user.name', 'Scope Test');
+      await writeFile(join(repository, 'tracked.txt'), 'initial\n');
+      await git(repository, 'add', '--', 'tracked.txt');
+      await git(repository, 'commit', '-qm', 'initial');
+      await writeFile(join(repository, 'tracked.txt'), 'changed\n');
+
+      const manifest = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: [] },
+      });
+      assert.deepEqual(manifest.files.map((entry) => entry.path), ['tracked.txt']);
+    } finally {
+      await rm(outer, { recursive: true, force: true });
+    }
+  });
+
   it('preserves rename, deletion, type-change, binary, symlink, and gitlink boundaries', async () => {
     await withRepository(async (repository, api) => {
       await writeFile(join(repository, 'rename-me.txt'), 'rename\n');
@@ -296,12 +320,31 @@ describe('real Git scope discovery', () => {
 
       const manifest = await api.resolveGitScope({
         workingDirectory: repository,
-        selector: { explicit_paths: ['ignored.txt'] },
+        selector: { requested_base: 'HEAD', explicit_paths: ['ignored.txt'] },
       });
 
       assert.deepEqual(manifest.files, []);
       assert.equal(manifest.changed_lines, 0);
-      assert.deepEqual(manifest.reasons, ['BASE_UNRESOLVED', 'IGNORED_PATH_EXCLUDED']);
+      assert.deepEqual(manifest.reasons, ['IGNORED_PATH_EXCLUDED']);
+    });
+  });
+
+  it('reports ignored directory descendants without filtering visible changed siblings', async () => {
+    await withRepository(async (repository, api) => {
+      await writeFile(join(repository, '.gitignore'), 'mixed/*.ignored\n');
+      await git(repository, 'add', '--', '.gitignore');
+      await mkdir(join(repository, 'mixed'));
+      await writeFile(join(repository, 'mixed', 'secret.ignored'), 'must not be read\n');
+      await writeFile(join(repository, 'mixed', 'visible.ts'), 'review me\n');
+
+      const manifest = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: ['mixed'] },
+      });
+
+      assert.deepEqual(manifest.files.map((entry) => entry.path), ['mixed/visible.ts']);
+      assert.equal(manifest.status, 'PARTIAL_SCOPE');
+      assert.deepEqual(manifest.reasons, ['IGNORED_PATH_EXCLUDED']);
     });
   });
 
@@ -333,6 +376,25 @@ describe('real Git scope discovery', () => {
       };
       await assert.rejects(
         api.resolveGitScope({ workingDirectory: repository, gitExecutor: failedUpstreamProbe }),
+        (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED',
+      );
+
+      const invalidUntrackedPaths: GitExecutor = async (workingDirectory, args) => {
+        if (
+          args[0] === 'ls-files' &&
+          args.includes('--others') &&
+          !args.includes('--ignored')
+        ) {
+          return Buffer.from([0x80, 0, 0x81, 0]);
+        }
+        return api.runGitCommand(workingDirectory, args);
+      };
+      await assert.rejects(
+        api.resolveGitScope({
+          workingDirectory: repository,
+          selector: { requested_base: 'HEAD', explicit_paths: [] },
+          gitExecutor: invalidUntrackedPaths,
+        }),
         (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED',
       );
     });

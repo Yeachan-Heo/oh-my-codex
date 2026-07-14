@@ -9,12 +9,15 @@ import type { ScopeFileSource, ScopeManifest } from '../contract.js';
 
 const execFile = promisify(execFileCallback);
 const PROPERTY_SEED = 0x5c0f_2026;
+type GitExecutor = (workingDirectory: string, args: readonly string[]) => Promise<Buffer>;
 
 interface ScopeApi {
   resolveGitScope(options: {
     workingDirectory: string;
     selector?: { requested_base?: string; explicit_paths: string[] };
+    gitExecutor?: GitExecutor;
   }): Promise<ScopeManifest>;
+  runGitCommand(workingDirectory: string, args: readonly string[]): Promise<Buffer>;
 }
 
 async function loadScopeApi(): Promise<ScopeApi> {
@@ -45,6 +48,30 @@ function shuffledIndices(length: number, seed: number): number[] {
     [result[index], result[swap]] = [result[swap] as number, result[index] as number];
   }
   return result;
+}
+
+function reverseAndDuplicateDiscoveryRecords(args: readonly string[], output: Buffer): Buffer {
+  const values = output.toString('utf8').split('\0').filter((value) => value.length > 0);
+  if (values.length === 0) return output;
+
+  if (args.includes('--name-status')) {
+    const records: string[][] = [];
+    for (let index = 0; index < values.length; ) {
+      const status = values[index++] as string;
+      const width = status.startsWith('R') || status.startsWith('C') ? 2 : 1;
+      records.push([status, ...values.slice(index, index + width)]);
+      index += width;
+    }
+    const reordered = records.reverse();
+    return Buffer.from([...reordered, reordered[0] as string[]].flat().join('\0') + '\0');
+  }
+
+  if (args[0] === 'ls-files' && args.includes('--others') && !args.includes('--ignored')) {
+    const reordered = values.reverse();
+    return Buffer.from([...reordered, reordered[0] as string].join('\0') + '\0');
+  }
+
+  return output;
 }
 
 describe('scope union properties', () => {
@@ -95,6 +122,14 @@ describe('scope union properties', () => {
       }
 
       const first = await api.resolveGitScope({ workingDirectory: repository });
+      const perturbed = await api.resolveGitScope({
+        workingDirectory: repository,
+        gitExecutor: async (workingDirectory, args) =>
+          reverseAndDuplicateDiscoveryRecords(
+            args,
+            await api.runGitCommand(workingDirectory, args),
+          ),
+      });
       const second = await api.resolveGitScope({
         workingDirectory: repository,
         selector: { explicit_paths: ['generated'] },
@@ -104,6 +139,7 @@ describe('scope union properties', () => {
       );
 
       assert.deepEqual(first.files.map((entry) => entry.path), expectedPaths, `seed=${PROPERTY_SEED}`);
+      assert.deepEqual(perturbed, first, `seed=${PROPERTY_SEED} reordered discovery`);
       assert.deepEqual(second.files.map((entry) => entry.path), expectedPaths, `seed=${PROPERTY_SEED}`);
       assert.equal(new Set(first.files.map((entry) => entry.path)).size, fileCount);
       for (const entry of first.files) {

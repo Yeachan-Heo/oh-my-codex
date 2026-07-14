@@ -121,6 +121,35 @@ describe('scope normalization and parsing', () => {
     ]);
   });
 
+  it('fails closed before invalid UTF-8 path bytes can collapse to replacement characters', async () => {
+    const api = await loadScopeApi();
+    const invalidNameStatus = Buffer.concat([
+      Buffer.from('A\0'),
+      Buffer.from([0x80]),
+      Buffer.from('\0A\0'),
+      Buffer.from([0x81]),
+      Buffer.from('\0'),
+    ]);
+    const invalidNumStat = Buffer.concat([
+      Buffer.from('1\t0\t'),
+      Buffer.from([0x80]),
+      Buffer.from([0]),
+      Buffer.from('1\t0\t'),
+      Buffer.from([0x81]),
+      Buffer.from('\0'),
+    ]);
+
+    for (const run of [
+      () => api.parseNameStatus(invalidNameStatus, 'INDEX'),
+      () => api.parseNumStat(invalidNumStat),
+    ]) {
+      assert.throws(
+        run,
+        (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED',
+      );
+    }
+  });
+
   it('classifies symlink and submodule modes without following their targets', async () => {
     const api = await loadScopeApi();
     assert.equal(api.classifyGitMode('120000'), 'SYMLINK');
