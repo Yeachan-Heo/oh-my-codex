@@ -1088,6 +1088,35 @@ async function runSigkillTransaction(
   );
 }
 
+async function runSigkillFactoryTransaction(
+  workingDirectory: string,
+  sessionId: string,
+  rootThreadId: string,
+  plan: DurablePlan,
+): Promise<void> {
+  const moduleUrl = new URL('../persistence.js', import.meta.url).href;
+  const program = `
+    const persistence = await import(process.argv[1]);
+    const paths = await persistence.resolveReviewPersistencePaths({
+      workingDirectory: process.argv[2], session_id: process.argv[3],
+    });
+    const plan = JSON.parse(process.argv[5]);
+    await persistence.runDurableReviewTransactionWithPlanFactory(paths, {
+      review_id: plan.review_id,
+      session_id: process.argv[3],
+      root_thread_id: process.argv[4],
+      plan_factory: async () => plan,
+    }, { crashAt: 'after:prepared', crashMode: 'SIGKILL' });
+  `;
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      '--input-type=module', '-e', program, moduleUrl, workingDirectory,
+      sessionId, rootThreadId, JSON.stringify(plan),
+    ]),
+    (error: unknown) => (error as { signal?: unknown }).signal === 'SIGKILL',
+  );
+}
+
 describe('code-review durable transaction journal', () => {
   it('uses only start.lock for START and leaves no journal, revision, or effect when a review lock is held', async () => {
     await withWorkspace(async (workingDirectory) => {
@@ -4170,42 +4199,71 @@ describe('runtime-enforced review persistence regressions', () => {
     });
   });
 
-  it('recovers a crashed factory transaction before taking the next trusted snapshot', async () => {
+  it('recovers a locator-less factory transaction before taking the next trusted snapshot', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
-      const sessionId = api.generateReviewId();
-      const rootThreadId = 'root-thread-1';
-      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
-      const reviewId = api.generateReviewId();
-      const key = api.generateReviewId();
-      await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), {
-        ...reviewRecordPayload(reviewId, 1), session_id: sessionId, root_thread_id: rootThreadId,
-      });
+      const crashModes = process.platform === 'win32' ? ['THROW'] as const : ['THROW', 'SIGKILL'] as const;
+      for (const crashMode of crashModes) {
+        const sessionId = api.generateReviewId();
+        const rootThreadId = 'root-thread-1';
+        const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const currentReview = {
+          ...reviewRecordPayload(reviewId, 1),
+          session_id: sessionId,
+          root_thread_id: rootThreadId,
+        } as ReviewRecordSnapshot;
+        const plan = trustedFactoryRevisionPlan(currentReview, key);
+        await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), currentReview);
+        assert.equal(await api.readActiveReview(paths), null);
 
-      await assert.rejects(
-        api.runDurableReviewTransactionWithPlanFactory(paths, {
+        if (crashMode === 'THROW') {
+          await assert.rejects(
+            api.runDurableReviewTransactionWithPlanFactory(paths, {
+              review_id: reviewId,
+              session_id: sessionId,
+              root_thread_id: rootThreadId,
+              plan_factory: async () => plan,
+            }, { crashAt: 'after:prepared', crashMode }),
+            /injected crash at after:prepared/u,
+          );
+        } else {
+          await runSigkillFactoryTransaction(workingDirectory, sessionId, rootThreadId, plan);
+        }
+
+        const transactionRoot = join(paths.reviewRoot, reviewId, 'transactions', key);
+        assert.equal((JSON.parse(await readFile(join(transactionRoot, 'prepared'), 'utf8')) as {
+          state: string;
+        }).state, 'PREPARED');
+        await assert.rejects(
+          readFile(join(transactionRoot, 'committed'), 'utf8'),
+          (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+        );
+        assert.deepEqual(await readdir(paths.pendingReviewTransactionsRoot).catch(() => []), []);
+        assert.equal((JSON.parse(await readFile(
+          join(paths.reviewRoot, reviewId, 'review.json'), 'utf8',
+        )) as { revision: number }).revision, 1);
+
+        const observedRevisions: number[] = [];
+        const recovered = await api.runDurableReviewTransactionWithPlanFactory(paths, {
           review_id: reviewId,
           session_id: sessionId,
           root_thread_id: rootThreadId,
-          plan_factory: async ({ current_review }) => trustedFactoryRevisionPlan(current_review, key),
-        }, { crashAt: 'after:locator' }),
-        /injected crash at after:locator/u,
-      );
-
-      const observedRevisions: number[] = [];
-      const recovered = await api.runDurableReviewTransactionWithPlanFactory(paths, {
-        review_id: reviewId,
-        session_id: sessionId,
-        root_thread_id: rootThreadId,
-        plan_factory: async ({ current_review }) => {
-          observedRevisions.push(current_review.revision);
-          return undefined;
-        },
-      });
-      assert.deepEqual(observedRevisions, [2]);
-      assert.equal(recovered.transaction, undefined);
-      assert.equal(recovered.review.revision, 2);
-      assert.deepEqual(await readdir(paths.pendingReviewTransactionsRoot).catch(() => []), []);
+          plan_factory: async ({ current_review }) => {
+            observedRevisions.push(current_review.revision);
+            return undefined;
+          },
+        });
+        assert.deepEqual(observedRevisions, [2], crashMode);
+        assert.equal(recovered.transaction, undefined);
+        assert.equal(recovered.review.revision, 2);
+        assert.equal((JSON.parse(await readFile(join(transactionRoot, 'committed'), 'utf8')) as {
+          state: string;
+        }).state, 'COMMITTED');
+        assert.deepEqual(await readdir(paths.pendingReviewTransactionsRoot).catch(() => []), []);
+        assert.equal(await api.readActiveReview(paths), null);
+      }
     });
   });
 

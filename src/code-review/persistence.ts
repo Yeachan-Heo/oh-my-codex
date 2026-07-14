@@ -2856,10 +2856,20 @@ async function readOwnedReviewForPlanFactory(
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory review record is missing or malformed');
   }
   const review = validateReviewRecordPayload(raw, input.review_id, raw.revision as number);
+  assertReviewOwnedByPlanFactory(review, input);
+  return review;
+}
+
+function assertReviewOwnedByPlanFactory(
+  review: ReviewRecord,
+  input: Pick<
+    RunDurableReviewTransactionWithPlanFactoryInput,
+    'session_id' | 'root_thread_id'
+  >,
+): void {
   if (review.session_id !== input.session_id || review.root_thread_id !== input.root_thread_id) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory review ownership conflicts');
   }
-  return review;
 }
 
 function validateFactoryReviewPlan(
@@ -2898,6 +2908,11 @@ export async function runDurableReviewTransactionWithPlanFactory(
   const locks = await acquireReviewLocks(paths, input.review_id, ['start', 'journal', 'mutation']);
   try {
     await recoverPendingReviewTransactionsLocked(paths, input.review_id);
+    await recoverReviewWithoutLocatorsLocked(
+      paths,
+      input.review_id,
+      (review) => assertReviewOwnedByPlanFactory(review, input),
+    );
     const currentReview = await readOwnedReviewForPlanFactory(paths, input);
     const planValue = await input.plan_factory({ current_review: structuredClone(currentReview) });
     if (planValue === undefined) return { review: structuredClone(currentReview) };
@@ -3088,56 +3103,76 @@ export async function readReviewConsumptionMarkers(
   return (await readReviewConsumptionGroups(paths, reviewIdValue)).flatMap((group) => group.markers);
 }
 
+async function findReviewTransactionWithoutLocator(
+  paths: ReviewPersistencePaths,
+  reviewId: string,
+): Promise<{ key: string; prepared: PreparedDurableTransaction } | undefined> {
+  const entries = await readDirectoryEntries(join(paths.reviewRoot, reviewId, 'transactions'));
+  const candidates: Array<{ key: string; prepared: PreparedDurableTransaction }> = [];
+  for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
+    if (entry.name.startsWith('.')) continue;
+    if (!entry.isDirectory()) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review transaction entry is not a directory');
+    }
+    const key = validateUuid(entry.name, 'review transaction idempotency_key');
+    const files = transactionPaths(paths, reviewId, key, 'REVIEW');
+    const preparedValue = await readJsonIfPresent(files.prepared);
+    if (preparedValue === undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review transaction has no intent');
+    }
+    const prepared = parsePrepared(preparedValue);
+    if (prepared.journal_scope !== 'REVIEW'
+      || prepared.review_id !== reviewId
+      || prepared.idempotency_key !== key) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review transaction identity conflicts');
+    }
+    const committedValue = await readJsonIfPresent(files.committed);
+    if (committedValue !== undefined) {
+      validateCommittedAgainstPrepared(committedValue, prepared);
+      continue;
+    }
+    candidates.push({ key, prepared });
+  }
+  if (candidates.length === 0) return undefined;
+  if (candidates.length > 1) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review has ambiguous unlocated transactions');
+  }
+  return candidates[0];
+}
+
+async function recoverReviewWithoutLocatorsLocked(
+  paths: ReviewPersistencePaths,
+  reviewId: string,
+  validateCurrentReview: (review: ReviewRecord) => void,
+): Promise<DurableTransactionResult[]> {
+  const candidate = await findReviewTransactionWithoutLocator(paths, reviewId);
+  if (candidate === undefined) return [];
+
+  const reviewValue = await readJsonIfPresent(join(paths.reviewRoot, reviewId, 'review.json'));
+  if (!isPlainObject(reviewValue) || !Number.isSafeInteger(reviewValue.revision)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review transaction owner is missing');
+  }
+  const review = validateReviewRecordPayload(reviewValue, reviewId, reviewValue.revision as number);
+  validateCurrentReview(review);
+
+  await publishLocator(paths, candidate.prepared);
+  const result = await recoverDurableTransactionLocked(paths, reviewId, candidate.key, 'REVIEW');
+  if (result === null) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review transaction disappeared during recovery');
+  }
+  return [result];
+}
+
 async function recoverActiveReviewWithoutLocators(
   paths: ReviewPersistencePaths,
   active: ActiveReviewPointer,
   heldReviewId: string | undefined,
 ): Promise<DurableTransactionResult[]> {
-  const entries = await readDirectoryEntries(join(paths.reviewRoot, active.review_id, 'transactions'));
-  const candidates: Array<{ key: string; prepared: PreparedDurableTransaction }> = [];
-  for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
-    if (entry.name.startsWith('.')) continue;
-    if (!entry.isDirectory()) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction entry is not a directory');
+  const recover = () => recoverReviewWithoutLocatorsLocked(paths, active.review_id, (review) => {
+    if (review.status !== active.status) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review pointer conflicts with its review record');
     }
-    const key = validateUuid(entry.name, 'active review transaction idempotency_key');
-    const files = transactionPaths(paths, active.review_id, key, 'REVIEW');
-    if (await readJsonIfPresent(files.committed) !== undefined) continue;
-    const preparedValue = await readJsonIfPresent(files.prepared);
-    if (preparedValue === undefined) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction has no intent');
-    }
-    const prepared = parsePrepared(preparedValue);
-    if (prepared.journal_scope !== 'REVIEW'
-      || prepared.review_id !== active.review_id
-      || prepared.idempotency_key !== key) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction identity conflicts');
-    }
-    candidates.push({ key, prepared });
-  }
-  if (candidates.length === 0) return [];
-  if (candidates.length > 1) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review has ambiguous unlocated transactions');
-  }
-
-  const reviewValue = await readJsonIfPresent(join(paths.reviewRoot, active.review_id, 'review.json'));
-  if (!isPlainObject(reviewValue) || !Number.isSafeInteger(reviewValue.revision)) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review pointer is dangling');
-  }
-  const review = validateReviewRecordPayload(reviewValue, active.review_id, reviewValue.revision as number);
-  if (review.status !== active.status) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review pointer conflicts with its review record');
-  }
-
-  const recover = async (): Promise<DurableTransactionResult[]> => {
-    const [{ key, prepared }] = candidates;
-    await publishLocator(paths, prepared);
-    const result = await recoverDurableTransactionLocked(paths, active.review_id, key, 'REVIEW');
-    if (result === null) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active review transaction disappeared during recovery');
-    }
-    return [result];
-  };
+  });
   if (active.review_id === heldReviewId) return await recover();
   const locks = await acquireReviewLocks(paths, active.review_id, ['journal', 'mutation']);
   try {
