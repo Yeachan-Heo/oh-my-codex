@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
 import { promisify } from 'node:util';
 
@@ -438,6 +439,45 @@ describe('code-review persistence locks', () => {
     } finally {
       await rm(workingDirectory, { recursive: true, force: true });
     }
+  });
+
+  it('serves repeated twenty-way lock contention without starvation or remnants', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadLockPersistenceApi();
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      for (let round = 0; round < 5; round += 1) {
+        let start!: () => void;
+        const barrier = new Promise<void>((resolve) => { start = resolve; });
+        let active = 0;
+        let maximumActive = 0;
+        const startedAt = performance.now();
+        const contenders = Array.from({ length: 20 }, async () => {
+          await barrier;
+          try {
+            const handles = await api.acquireReviewLocks(paths, undefined, ['start']);
+            active += 1;
+            maximumActive = Math.max(maximumActive, active);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            active -= 1;
+            await api.releaseReviewLocks(handles);
+            return undefined;
+          } catch (error) {
+            return (error as { code?: unknown }).code;
+          }
+        });
+        start();
+        const outcomes = await Promise.all(contenders);
+        const elapsedMs = performance.now() - startedAt;
+        assert.deepEqual(outcomes.filter((outcome) => outcome !== undefined), [], `round ${round}`);
+        assert.equal(maximumActive, 1, `round ${round}`);
+        assert.ok(elapsedMs < 3_500, `round ${round} took ${elapsedMs}ms`);
+        const remnants = (await readdir(paths.reviewRoot).catch(() => [])).filter((name) => (
+          name.includes('.lock') || name.includes('.release-') || name.includes('.reap-') || name.includes('.tmp-')
+        ));
+        assert.deepEqual(remnants, [], `round ${round} remnants`);
+      }
+    });
   });
 
   it('reclaims only a parseable same-host lock whose PID is provably absent', async () => {
@@ -3764,6 +3804,61 @@ describe('final review artifact rendering', () => {
     });
   });
 
+  it('fails closed on BLOCKED approvals and permits only the scope-free REVIEW_NOT_STARTED shape', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const { persistence } = await loadFinalArtifactApi();
+      const paths = await persistence.resolveReviewPersistencePaths({ workingDirectory });
+      const scopeFree = finalArtifact(persistence.generateReviewId(), workingDirectory) as any;
+      scopeFree.status = 'BLOCKED';
+      delete scopeFree.scope;
+      scopeFree.batches = [];
+      scopeFree.lanes = [];
+      scopeFree.diagnostics = [];
+      scopeFree.verdict = {
+        recommendation: 'REQUEST CHANGES',
+        architectural_status: 'BLOCK',
+        scope_status: 'PARTIAL_SCOPE',
+        evidence_status: 'DEGRADED_EVIDENCE',
+        rule_id: 'REVIEW_NOT_STARTED',
+        reasons: ['REVIEW_NOT_STARTED'],
+        clean: false,
+      };
+      const written = await persistence.writeFinalReviewArtifacts(paths, scopeFree);
+      assert.equal((JSON.parse(await readFile(written.jsonPath, 'utf8')) as {
+        verdict: { rule_id: string };
+      }).verdict.rule_id, 'REVIEW_NOT_STARTED');
+
+      const invalid: unknown[] = [];
+      for (const verdict of [{ recommendation: 'APPROVE', clean: true }, {
+        recommendation: 'APPROVE', clean: false,
+      }, { recommendation: 'REQUEST CHANGES', clean: true }] as const) {
+        const blocked = finalArtifact(persistence.generateReviewId(), workingDirectory) as any;
+        blocked.status = 'BLOCKED';
+        blocked.verdict.recommendation = verdict.recommendation;
+        blocked.verdict.clean = verdict.clean;
+        invalid.push(blocked);
+      }
+      for (const mutate of [
+        (artifact: any) => { artifact.verdict.rule_id = 'INVALID_OR_MISSING_EVIDENCE'; },
+        (artifact: any) => { artifact.verdict.reasons = ['MISSING_LANE']; },
+        (artifact: any) => { artifact.verdict.scope_status = 'FULL_SCOPE'; },
+        (artifact: any) => { artifact.verdict.evidence_status = 'FULL_EVIDENCE'; },
+        (artifact: any) => { artifact.verdict.architectural_status = 'CLEAR'; },
+      ]) {
+        const malformed = structuredClone(scopeFree);
+        malformed.review_id = persistence.generateReviewId();
+        mutate(malformed);
+        invalid.push(malformed);
+      }
+      for (const artifact of invalid) {
+        await assert.rejects(
+          persistence.writeFinalReviewArtifacts(paths, artifact),
+          (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+        );
+      }
+    });
+  });
+
   it('requires every FINALIZED lane to be complete even when the verdict is not clean', async () => {
     await withWorkspace(async (workingDirectory) => {
       const { persistence } = await loadFinalArtifactApi();
@@ -4035,6 +4130,201 @@ describe('final review artifact rendering', () => {
 });
 
 describe('runtime-enforced review persistence regressions', () => {
+  it('rejects fail-open BLOCKED verdicts in durable ReviewRecord revisions before PREPARED', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const invalidPayloads = [
+        (reviewId: string) => ({
+          ...reviewRecordPayload(reviewId, 2),
+          status: 'BLOCKED',
+          scope: reviewScope(),
+          verdict: {
+            recommendation: 'APPROVE', architectural_status: 'CLEAR',
+            scope_status: 'FULL_SCOPE', evidence_status: 'FULL_EVIDENCE',
+            rule_id: 'CLEAN_APPROVAL', reasons: ['ALL_REQUIRED_EVIDENCE_CLEAR'], clean: true,
+          },
+          finalized_at: '2026-07-14T00:00:00.000Z',
+        }),
+        (reviewId: string) => ({
+          ...reviewRecordPayload(reviewId, 2),
+          status: 'BLOCKED',
+          verdict: {
+            recommendation: 'REQUEST CHANGES', architectural_status: 'BLOCK',
+            scope_status: 'PARTIAL_SCOPE', evidence_status: 'DEGRADED_EVIDENCE',
+            rule_id: 'INVALID_OR_MISSING_EVIDENCE', reasons: ['MISSING_LANE'], clean: false,
+          },
+          finalized_at: '2026-07-14T00:00:00.000Z',
+        }),
+        (reviewId: string) => ({
+          ...reviewRecordPayload(reviewId, 2),
+          attempt_history: [{
+            attempt: 1,
+            status: 'BLOCKED',
+            bindings: [],
+            lane_ids: [],
+            started_at: '2026-07-14T00:00:00.000Z',
+            updated_at: '2026-07-14T00:00:00.000Z',
+            verdict: {
+              recommendation: 'APPROVE', architectural_status: 'CLEAR',
+              scope_status: 'FULL_SCOPE', evidence_status: 'FULL_EVIDENCE',
+              rule_id: 'CLEAN_APPROVAL', reasons: ['ALL_REQUIRED_EVIDENCE_CLEAR'], clean: true,
+            },
+            resumable: false,
+          }],
+        }),
+      ];
+      for (const makePayload of invalidPayloads) {
+        const sessionId = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        await api.atomicWritePrivateJson(
+          join(paths.reviewRoot, reviewId, 'review.json'),
+          { ...reviewRecordPayload(reviewId, 1), session_id: sessionId },
+        );
+        const payload = { ...makePayload(reviewId), session_id: sessionId };
+        await assert.rejects(
+          api.runDurableTransaction(paths, {
+            idempotency_key: key,
+            review_id: reviewId,
+            operation: 'INVALID_BLOCKED_TERMINAL',
+            input: { review_id: reviewId },
+            expected_revision: 1,
+            effects: [{
+              name: 'review', mode: 'APPLY_REVIEW_REVISION',
+              target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+              payload,
+            }],
+            response: { review_id: reviewId, revision: 2 },
+          }),
+          (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+        );
+        await assert.rejects(
+          readFile(join(paths.reviewRoot, reviewId, 'transactions', key, 'prepared'), 'utf8'),
+          (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+        );
+      }
+    });
+  });
+
+  it('replays an integrity-bound historical REVIEW transaction after a later lane revision', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const sessionId = api.generateReviewId();
+      const rootThreadId = 'root-thread-1';
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const reviewId = api.generateReviewId();
+      const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
+      const initial = {
+        ...reviewRecordPayload(reviewId, 1), session_id: sessionId, root_thread_id: rootThreadId,
+      };
+      await api.atomicWritePrivateJson(reviewPath, initial);
+
+      const transactionAKey = api.generateReviewId();
+      const publicationKey = api.generateReviewId();
+      const planA = consumedPublicationPlan(
+        api, reviewId, transactionAKey, publicationKey, workingDirectory, sessionId,
+      );
+      const originalA = await api.runDurableTransaction(paths, planA);
+      const reviewAfterAText = await readFile(reviewPath, 'utf8');
+      const reviewAfterA = JSON.parse(reviewAfterAText) as ReviewRecordSnapshot & {
+        lanes: Array<{ recommendation?: string }>;
+        last_applied_transaction_id?: string;
+      };
+      assert.deepEqual(await api.runDurableTransaction(paths, planA), originalA);
+
+      const transactionBKey = api.generateReviewId();
+      const reviewAfterB = structuredClone(reviewAfterA);
+      delete reviewAfterB.last_applied_transaction_id;
+      reviewAfterB.revision = 3;
+      reviewAfterB.updated_at = '2026-07-14T00:00:01.000Z';
+      reviewAfterB.lanes[0]!.recommendation = 'COMMENT';
+      await api.runDurableTransaction(paths, {
+        idempotency_key: transactionBKey,
+        review_id: reviewId,
+        operation: 'LATER_LANE_MUTATION',
+        input: { review_id: reviewId, revision: 2 },
+        expected_revision: 2,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: reviewAfterB,
+        }],
+        response: { review_id: reviewId, revision: 3 },
+      });
+      const reviewAfterBText = await readFile(reviewPath, 'utf8');
+
+      assert.deepEqual(await api.runDurableTransaction(paths, planA), originalA);
+      const conflictingA = structuredClone(planA);
+      conflictingA.response = { review_id: reviewId, revision: 2, tampered: true };
+      await assert.rejects(
+        api.runDurableTransaction(paths, conflictingA),
+        (error: unknown) => (error as { code?: unknown }).code === 'IDEMPOTENCY_CONFLICT',
+      );
+
+      await api.atomicWritePrivateJson(reviewPath, initial);
+      await assert.rejects(
+        api.runDurableTransaction(paths, planA),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      const changedSameRevision = structuredClone(reviewAfterA);
+      changedSameRevision.updated_at = '2026-07-14T00:00:02.000Z';
+      await api.atomicWritePrivateJson(reviewPath, changedSameRevision);
+      await assert.rejects(
+        api.runDurableTransaction(paths, planA),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      const wrongTransaction = structuredClone(reviewAfterA);
+      wrongTransaction.last_applied_transaction_id = api.generateReviewId();
+      await api.atomicWritePrivateJson(reviewPath, wrongTransaction);
+      await assert.rejects(
+        api.runDurableTransaction(paths, planA),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+
+      const wrongOwner = JSON.parse(reviewAfterBText) as Record<string, unknown>;
+      wrongOwner.session_id = api.generateReviewId();
+      await api.atomicWritePrivateJson(reviewPath, wrongOwner);
+      await assert.rejects(
+        api.runDurableTransaction(paths, planA),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      const wrongTopology = JSON.parse(reviewAfterBText) as { lanes: unknown[] };
+      wrongTopology.lanes.push(structuredClone(wrongTopology.lanes[0]));
+      await api.atomicWritePrivateJson(reviewPath, wrongTopology);
+      await assert.rejects(
+        api.runDurableTransaction(paths, planA),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      await writeFile(reviewPath, reviewAfterBText, { mode: 0o600 });
+
+      const transactionRoot = join(paths.reviewRoot, reviewId, 'transactions', transactionAKey);
+      const committedPath = join(transactionRoot, 'committed');
+      const committedText = await readFile(committedPath, 'utf8');
+      const tamperedCommitted = JSON.parse(committedText) as Record<string, unknown>;
+      tamperedCommitted.response = { tampered: true };
+      await writeFile(committedPath, `${JSON.stringify(tamperedCommitted, null, 2)}\n`, { mode: 0o600 });
+      await assert.rejects(
+        api.runDurableTransaction(paths, planA),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      await writeFile(committedPath, committedText, { mode: 0o600 });
+
+      const preparedPath = join(transactionRoot, 'prepared');
+      const preparedText = await readFile(preparedPath, 'utf8');
+      const tamperedPrepared = JSON.parse(preparedText) as Record<string, unknown>;
+      tamperedPrepared.operation = 'TAMPERED_HISTORICAL_OPERATION';
+      await writeFile(preparedPath, `${JSON.stringify(tamperedPrepared, null, 2)}\n`, { mode: 0o600 });
+      await assert.rejects(
+        api.runDurableTransaction(paths, planA),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      await writeFile(preparedPath, preparedText, { mode: 0o600 });
+      assert.deepEqual(await api.runDurableTransaction(paths, planA), originalA);
+      assert.equal(await readFile(reviewPath, 'utf8'), reviewAfterBText);
+    });
+  });
+
   it('serializes trusted plan factories without a snapshot-to-commit lock gap', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();

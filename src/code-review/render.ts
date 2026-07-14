@@ -361,6 +361,45 @@ export function validateReviewTopology(
   }
 }
 
+/** Enforces the basic fail-closed rule for every persisted BLOCKED verdict. */
+export function validateBlockedReviewVerdict(
+  status: 'FINALIZED' | 'BLOCKED',
+  verdict: FinalVerdict,
+): void {
+  if (status === 'BLOCKED'
+    && (verdict.recommendation !== 'REQUEST CHANGES' || verdict.clean !== false)) {
+    invalid('blocked review must request changes and cannot be clean');
+  }
+}
+
+/** Enforces fail-closed semantics shared by terminal records and their final projection. */
+export function validateTerminalReviewOutcome(value: {
+  status: 'FINALIZED' | 'BLOCKED';
+  scope?: ScopeManifest;
+  batches: readonly unknown[];
+  lanes: readonly unknown[];
+  verdict: FinalVerdict;
+}): void {
+  const { status, scope, batches, lanes, verdict } = value;
+  if (scope !== undefined && verdict.scope_status !== scope.status) {
+    invalid('verdict scope status contradicts the manifest');
+  }
+  validateBlockedReviewVerdict(status, verdict);
+  if (status !== 'BLOCKED') return;
+  if (scope === undefined && (
+    batches.length !== 0
+    || lanes.length !== 0
+    || verdict.architectural_status !== 'BLOCK'
+    || verdict.scope_status !== 'PARTIAL_SCOPE'
+    || verdict.evidence_status !== 'DEGRADED_EVIDENCE'
+    || verdict.rule_id !== 'REVIEW_NOT_STARTED'
+    || verdict.reasons.length !== 1
+    || verdict.reasons[0] !== 'REVIEW_NOT_STARTED'
+  )) {
+    invalid('scope-free blocked review must be REVIEW_NOT_STARTED');
+  }
+}
+
 export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact {
   const artifact = object(value, 'final review artifact', [
     'schema_version', 'review_id', 'revision', 'status', 'current_attempt', 'scope', 'review_flags',
@@ -389,7 +428,7 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
   }
   const verdict = validateVerdict(artifact.verdict);
   const status = enumeration(artifact.status, 'final status', ['FINALIZED', 'BLOCKED'] as const);
-  if (scope && verdict.scope_status !== scope.status) invalid('verdict scope status contradicts the manifest');
+  validateTerminalReviewOutcome({ status, scope, batches, lanes, verdict });
   if (status === 'FINALIZED' && lanes.some((lane) => lane.status !== 'COMPLETE')) {
     invalid('finalized review requires complete lanes');
   }

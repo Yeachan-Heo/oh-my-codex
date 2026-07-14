@@ -17,6 +17,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } 
 import { performance } from 'node:perf_hooks';
 import { resolveStateScope } from '../state/paths.js';
 import type {
+  FinalVerdict,
   ReviewConsumptionGroup,
   ReviewConsumptionKind,
   ReviewConsumptionManifest,
@@ -34,13 +35,16 @@ import {
 } from './redaction.js';
 import {
   renderFinalReviewMarkdown,
+  validateBlockedReviewVerdict,
   validateFinalReviewArtifact,
   validateReviewTopology,
+  validateTerminalReviewOutcome,
 } from './render.js';
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_LOCK_WAIT_MS = 5_000;
+const LOCK_WAIT_RECHECK_MS = 25;
 const MAX_DURABLE_TRANSACTION_EFFECTS = 128;
 const PROCESS_IDENTITY_TIMEOUT_MS = 1_000;
 const PROCESS_IDENTITY_MAX_BUFFER = 4_096;
@@ -471,7 +475,7 @@ async function defaultWaitForLockChange(path: string, remainingMs: number): Prom
       watcher?.close();
       resolveWait();
     };
-    const timer = setTimeout(finish, remainingMs);
+    const timer = setTimeout(finish, Math.min(remainingMs, LOCK_WAIT_RECHECK_MS));
     try {
       watcher = watch(dirname(path), (_event, fileName) => {
         if (fileName === null || fileName.toString() === basename(path)) finish();
@@ -1308,7 +1312,16 @@ function validateAttemptPayload(value: unknown): void {
   requirePayloadTimestamp(attempt.started_at, 'attempt started_at');
   requirePayloadTimestamp(attempt.updated_at, 'attempt updated_at');
   if (attempt.finalized_at !== undefined) requirePayloadTimestamp(attempt.finalized_at, 'attempt finalized_at');
-  if (attempt.verdict !== undefined) validateReviewVerdictPayload(attempt.verdict);
+  if (attempt.verdict !== undefined) {
+    validateReviewVerdictPayload(attempt.verdict);
+    if (attempt.status === 'BLOCKED') {
+      try {
+        validateBlockedReviewVerdict('BLOCKED', attempt.verdict as unknown as FinalVerdict);
+      } catch {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'blocked attempt verdict is invalid');
+      }
+    }
+  }
   requirePayloadBoolean(attempt.resumable, 'attempt resumable');
   if (attempt.resumable_reason !== undefined) {
     requirePayloadEnum(attempt.resumable_reason, 'attempt resumable_reason', [
@@ -1398,8 +1411,18 @@ function validateReviewRecordPayload(
       lanes: validated.lanes,
       diagnostics: validated.diagnostics,
     });
+    if ((validated.status === 'FINALIZED' || validated.status === 'BLOCKED')
+      && validated.verdict !== undefined) {
+      validateTerminalReviewOutcome({
+        status: validated.status,
+        scope: validated.scope,
+        batches: validated.batches,
+        lanes: validated.lanes,
+        verdict: validated.verdict,
+      });
+    }
   } catch {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review topology is invalid');
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review topology or terminal outcome is invalid');
   }
   return validated;
 }
@@ -2355,6 +2378,16 @@ async function validateReviewEffectCurrentState(
     intent.expected_revision,
     options,
   );
+  validateReviewOwnership(paths, intent, current);
+}
+
+function validateReviewOwnership(
+  paths: ReviewPersistencePaths,
+  intent: Pick<DurableTransactionPlan, 'review_id' | 'effects'>,
+  current: ReviewRecord | undefined,
+): void {
+  const effect = intent.effects.find((candidate) => candidate.mode === 'APPLY_REVIEW_REVISION');
+  if (!effect) return;
   const proposed = effect.payload as ReviewRecord;
   if ((paths.session_id !== undefined && proposed.session_id !== paths.session_id)
     || (current !== undefined && (
@@ -2520,6 +2553,15 @@ async function validatePostToolTrustContext(
     intent.expected_revision,
     { appliedTransactionId, requireApplied: false },
   );
+  validatePostToolTrustBindings(paths, intent, current);
+}
+
+function validatePostToolTrustBindings(
+  paths: ReviewPersistencePaths,
+  intent: Pick<DurableTransactionPlan, 'effects'>,
+  current: ReviewRecord | undefined,
+): void {
+  const effects = intent.effects.filter((candidate) => candidate.name === 'post-tool');
   for (const effect of effects) {
     if (!isPlainObject(effect.payload)
       || !isPlainObject(effect.payload.activity)
@@ -2539,6 +2581,52 @@ async function validatePostToolTrustContext(
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool trust context conflicts');
     }
   }
+}
+
+async function validateCommittedReviewReplayState(
+  paths: ReviewPersistencePaths,
+  prepared: PreparedDurableTransaction,
+): Promise<void> {
+  const effect = prepared.effects.find((candidate) => candidate.mode === 'APPLY_REVIEW_REVISION');
+  if (!effect) {
+    await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
+    await validateReviewEffectCurrentState(paths, prepared, {
+      appliedTransactionId: prepared.transaction_id,
+      requireApplied: true,
+    });
+    await validateActiveEffectCurrentState(paths, prepared, {
+      appliedTransactionId: prepared.transaction_id,
+      requireApplied: true,
+    });
+    return;
+  }
+
+  const raw = await readJsonIfPresent(targetPath(paths, effect));
+  if (!isPlainObject(raw) || !Number.isSafeInteger(raw.revision)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed review record is missing or malformed');
+  }
+  const current = validateReviewRecordPayload(raw, prepared.review_id, raw.revision as number);
+  const resultRevision = prepared.expected_revision + 1;
+  if (current.revision < resultRevision) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed review revision was rolled back');
+  }
+
+  validateReviewOwnership(paths, prepared, current);
+  validatePostToolTrustBindings(paths, prepared, current);
+  if (current.revision > resultRevision) return;
+
+  const expected = {
+    ...(effect.payload as ReviewRecord),
+    revision: resultRevision,
+    last_applied_transaction_id: prepared.transaction_id,
+  };
+  if (canonicalDigest(current) !== canonicalDigest(expected)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed review result digest conflicts');
+  }
+  await validateActiveEffectCurrentState(paths, prepared, {
+    appliedTransactionId: prepared.transaction_id,
+    requireApplied: true,
+  });
 }
 
 async function applyReviewRevision(
@@ -2661,19 +2749,11 @@ async function executePrepared(
   prepared: PreparedDurableTransaction,
   options: RunDurableTransactionOptions,
 ): Promise<DurableTransactionResult> {
-  await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
   const files = transactionPaths(paths, prepared.review_id, prepared.idempotency_key, prepared.journal_scope);
   const committedValue = await readJsonIfPresent(files.committed);
   if (committedValue !== undefined) {
     const committed = validateCommittedAgainstPrepared(committedValue, prepared);
-    await validateReviewEffectCurrentState(paths, prepared, {
-      appliedTransactionId: prepared.transaction_id,
-      requireApplied: true,
-    });
-    await validateActiveEffectCurrentState(paths, prepared, {
-      appliedTransactionId: prepared.transaction_id,
-      requireApplied: true,
-    });
+    await validateCommittedReviewReplayState(paths, prepared);
     if (prepared.journal_scope === 'START') {
       maybeCrash('before:receipt', options);
       await publishStartReceipt(paths, prepared, committed);
@@ -2682,6 +2762,7 @@ async function executePrepared(
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
+  await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
   await validateReviewEffectCurrentState(paths, prepared, {
     appliedTransactionId: prepared.transaction_id,
     requireApplied: false,
@@ -2755,15 +2836,7 @@ async function runDurableTransactionLocked(
     if (prepared.input_digest !== digest) {
       throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
     }
-    await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
-    await validateReviewEffectCurrentState(paths, prepared, {
-      appliedTransactionId: prepared.transaction_id,
-      requireApplied: true,
-    });
-    await validateActiveEffectCurrentState(paths, prepared, {
-      appliedTransactionId: prepared.transaction_id,
-      requireApplied: true,
-    });
+    await validateCommittedReviewReplayState(paths, prepared);
     await publishStartReceipt(paths, prepared, committed);
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
