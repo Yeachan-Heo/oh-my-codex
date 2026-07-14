@@ -138,6 +138,56 @@ describe('code-review redaction and validation', () => {
     }
   });
 
+  it('redacts OpenSSH private keys when complete or truncated at either boundary', async () => {
+    const api = await loadRedactionApi();
+    const cases = [
+      {
+        name: 'complete',
+        body: 'OPENSSH_COMPLETE_BODY_1c9e',
+        input: [
+          'head',
+          '-----BEGIN OPENSSH PRIVATE KEY-----',
+          'OPENSSH_COMPLETE_BODY_1c9e',
+          '-----END OPENSSH PRIVATE KEY-----',
+          'tail',
+        ].join('\n'),
+        expected: 'head\n[REDACTED]\ntail',
+      },
+      {
+        name: 'truncated-next-begin',
+        body: 'OPENSSH_NEXT_BODY_5a2d',
+        input: [
+          'head',
+          '-----BEGIN OPENSSH PRIVATE KEY-----',
+          'OPENSSH_NEXT_BODY_5a2d',
+          '-----BEGIN RSA PRIVATE KEY-----',
+          'LATER_RSA_BODY_7b4f',
+          '-----END RSA PRIVATE KEY-----',
+          'tail',
+        ].join('\n'),
+        expected: 'head\n[REDACTED][REDACTED]\ntail',
+      },
+      {
+        name: 'truncated-eof',
+        body: 'OPENSSH_EOF_BODY_8d6a',
+        input: [
+          'head',
+          '-----BEGIN OPENSSH PRIVATE KEY-----',
+          'OPENSSH_EOF_BODY_8d6a',
+        ].join('\n'),
+        expected: 'head\n[REDACTED]',
+      },
+    ] as const;
+
+    const leaks = cases.flatMap(({ name, body, input }) => (
+      api.redactReviewText(input).includes(body) ? [name] : []
+    ));
+    assert.deepEqual(leaks, [], `leaked OpenSSH private keys: ${JSON.stringify(leaks)}`);
+    for (const { input, expected } of cases) {
+      assert.equal(api.redactReviewText(input), expected);
+    }
+  });
+
   it('rejects over-one-MiB raw text and serialized payloads before redaction can shrink them', async () => {
     const api = await loadRedactionApi();
     const accepted: string[] = [];

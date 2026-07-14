@@ -18,7 +18,7 @@ const WINDOWS_HOME_PATH_PATTERN = /\b[A-Za-z]:\\Users\\[^\\\s]+(?=\\)/gu;
 const SENSITIVE_KEY_PARTS = ['token', 'apikey', 'credential', 'password', 'passwd', 'secret', 'auth'] as const;
 const RAW_CONTEXT_KEY_PARTS = ['source', 'diff', 'model', 'context', 'prompt', 'tool', 'output', 'env', 'environment'] as const;
 const PEM_PRIVATE_KEY_LABELS = [
-  'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'PRIVATE KEY', 'ENCRYPTED PRIVATE KEY',
+  'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'OPENSSH PRIVATE KEY', 'PRIVATE KEY', 'ENCRYPTED PRIVATE KEY',
 ] as const;
 const PEM_BEGIN_MARKER = '-----BEGIN ';
 
