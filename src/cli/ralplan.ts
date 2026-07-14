@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
+
 import { resolveRuntimeStateScope } from '../mcp/state-paths.js';
-import { recordPendingRoleIntent } from '../subagents/tracker.js';
+import { readSubagentTrackingState, recordPendingRoleIntent } from '../subagents/tracker.js';
 
 export const RALPLAN_HELP = `omx ralplan - RALPLAN consensus support commands
 
@@ -9,7 +11,7 @@ Usage:
 role-intent write records the validated role required by the next adapted native spawn.
 `;
 
-type RoleIntentFailureReason = 'unknown_role' | 'single_flight_conflict';
+type RoleIntentFailureReason = 'unknown_role' | 'invalid_correlation_token' | 'single_flight_conflict' | 'session_not_current' | 'parent_not_active_leader';
 
 interface ParsedRoleIntentWriteArgs {
   role: string;
@@ -45,17 +47,37 @@ export async function ralplanCommand(
   const parsed = parseRoleIntentWriteArgs(args.slice(2));
   const cwd = (deps.cwd ?? process.cwd)();
   const resolveSessionScope = deps.resolveSessionScope ?? resolveRuntimeStateScope;
-  const scope = await resolveSessionScope(cwd, parsed.sessionId);
-  if (!scope.sessionId) {
+  const currentScope = await resolveSessionScope(cwd);
+  if (!currentScope.sessionId) {
     emitRoleIntentFailure('missing_session', parsed.json, stdout, stderr);
     return;
   }
 
+  const requestedScope = parsed.sessionId === undefined
+    ? currentScope
+    : await resolveSessionScope(cwd, parsed.sessionId);
+  if (requestedScope.sessionId !== currentScope.sessionId) {
+    emitRoleIntentFailure('session_not_current', parsed.json, stdout, stderr);
+    return;
+  }
+
+  const trackingState = await readSubagentTrackingState(currentScope.cwd);
+  const activeLeaderThreadIds = new Set([
+    trackingState.sessions[currentScope.sessionId]?.leader_thread_id?.trim(),
+    currentScope.metadata?.nativeSessionId?.trim(),
+  ].filter((threadId): threadId is string => Boolean(threadId)));
+  if (!activeLeaderThreadIds.has(parsed.parentThreadId.trim())) {
+    emitRoleIntentFailure('parent_not_active_leader', parsed.json, stdout, stderr);
+    return;
+  }
+
+  const correlationToken = randomUUID();
   const recordPendingIntent = deps.recordPendingIntent ?? recordPendingRoleIntent;
-  const result = recordPendingIntent(scope.cwd, {
+  const result = recordPendingIntent(currentScope.cwd, {
     role: parsed.role,
-    sessionId: scope.sessionId,
+    sessionId: currentScope.sessionId,
     parentThreadId: parsed.parentThreadId,
+    correlationToken,
     ...(parsed.ttlMs === undefined ? {} : { ttlMs: parsed.ttlMs }),
   });
   if (!result.ok) {
@@ -69,6 +91,7 @@ export async function ralplanCommand(
       role: result.intent.role,
       session_id: result.intent.session_id,
       parent_thread_id: result.intent.parent_thread_id,
+      correlation_token: result.intent.correlation_token,
       expires_at: result.intent.expires_at,
     },
   };
@@ -76,7 +99,7 @@ export async function ralplanCommand(
     stdout(JSON.stringify(receipt));
     return;
   }
-  stdout(`role-intent recorded: role=${receipt.intent.role} session=${receipt.intent.session_id} parent-thread=${receipt.intent.parent_thread_id} expires-at=${receipt.intent.expires_at}`);
+  stdout(`role-intent recorded: role=${receipt.intent.role} session=${receipt.intent.session_id} parent-thread=${receipt.intent.parent_thread_id} correlation-token=${receipt.intent.correlation_token} expires-at=${receipt.intent.expires_at}`);
 }
 
 function parseRoleIntentWriteArgs(args: string[]): ParsedRoleIntentWriteArgs {

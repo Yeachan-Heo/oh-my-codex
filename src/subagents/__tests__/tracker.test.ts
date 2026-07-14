@@ -4,7 +4,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { buildSubagentResumeLedger, createSubagentTrackingState, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession } from '../tracker.js';
+import { bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 interface PendingRoleIntentRecordWorkerInput {
   operation: 'record';
@@ -12,6 +13,7 @@ interface PendingRoleIntentRecordWorkerInput {
   role: string;
   sessionId: string;
   parentThreadId: string;
+  correlationToken: string;
   nowMs: number;
 }
 
@@ -20,6 +22,7 @@ interface PendingRoleIntentConsumeWorkerInput {
   cwd: string;
   sessionId: string;
   parentThreadId: string;
+  correlationToken: string;
   nowMs: number;
 }
 
@@ -744,14 +747,87 @@ describe('subagents/tracker', () => {
     );
   });
 
+  it('reclaims stale or dead cross-process lock owners', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    try {
+      await writeFile(crossProcessLockPath(resourcePath), `${JSON.stringify({
+        pid: process.pid,
+        host: 'test-host',
+        acquired_at: new Date(Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1).toISOString(),
+      })}\n`);
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'stale lock recovered'), 'stale lock recovered');
+
+      const child = spawn(process.execPath, ['--eval', '']);
+      const deadOwnerPid = child.pid;
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Lock-owner child exited with code ${code}`)));
+      });
+      assert.ok(deadOwnerPid);
+      await writeFile(crossProcessLockPath(resourcePath), `${JSON.stringify({
+        pid: deadOwnerPid,
+        host: 'test-host',
+        acquired_at: new Date().toISOString(),
+      })}\n`);
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'dead lock recovered'), 'dead lock recovered');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the shared recoverable lock for role-routing markers', async () => {
+    const baseStateDir = await mkdtemp(join(tmpdir(), 'omx-role-routing-marker-'));
+    const nowMs = Date.now();
+    try {
+      await writeFile(crossProcessLockPath(join(baseStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), `${JSON.stringify({
+        pid: process.pid,
+        host: 'test-host',
+        acquired_at: new Date(nowMs - CROSS_PROCESS_LOCK_LEASE_MS - 1).toISOString(),
+      })}\n`);
+      writeRoleRoutingMarker(baseStateDir, {
+        schema_version: 1,
+        cwd: '/workspace/project',
+        session_id: 'sess-role-routing-marker',
+        parent_thread_id: 'thread-parent',
+        observed_at: new Date(nowMs).toISOString(),
+        expires_at: new Date(nowMs + 60_000).toISOString(),
+      });
+      assert.equal(
+        readRoleRoutingMarker(baseStateDir, {
+          cwd: '/workspace/project',
+          sessionId: 'sess-role-routing-marker',
+          parentThreadId: 'thread-parent',
+          nowMs,
+        })?.session_id,
+        'sess-role-routing-marker',
+      );
+    } finally {
+      await rm(baseStateDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects pending role intents for unknown roles', () => {
     assert.deepEqual(
       recordPendingRoleIntent(process.cwd(), {
         role: 'not-a-known-role',
         sessionId: 'sess-role-intent',
         parentThreadId: 'thread-parent',
+        correlationToken: 'correlation-token',
       }),
       { ok: false, reason: 'unknown_role' },
+    );
+  });
+
+  it('rejects pending role intents with an empty correlation token', () => {
+    assert.deepEqual(
+      recordPendingRoleIntent(process.cwd(), {
+        role: 'architect',
+        sessionId: 'sess-role-intent',
+        parentThreadId: 'thread-parent',
+        correlationToken: '',
+      }),
+      { ok: false, reason: 'invalid_correlation_token' },
     );
   });
 
@@ -763,6 +839,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_000,
         }).ok,
         true,
@@ -772,6 +849,7 @@ describe('subagents/tracker', () => {
           role: 'critic',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
+          correlationToken: 'critic-token',
           nowMs: 1_001,
         }),
         { ok: false, reason: 'single_flight_conflict' },
@@ -791,6 +869,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent-concurrent-record',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_000,
         },
         {
@@ -799,12 +878,51 @@ describe('subagents/tracker', () => {
           role: 'critic',
           sessionId: 'sess-role-intent-concurrent-record',
           parentThreadId: 'thread-parent',
+          correlationToken: 'critic-token',
           nowMs: 1_000,
         },
       ]);
 
       assert.equal(results.filter(isSuccessfulRoleIntentRecord).length, 1);
       assert.equal(results.filter(isSingleFlightConflict).length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('binds a pending role intent only when its correlation token matches', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const input = {
+      sessionId: 'sess-role-intent',
+      parentThreadId: 'thread-parent',
+      nowMs: 1_001,
+    };
+    let bindCount = 0;
+    const bind = (state: ReturnType<typeof createSubagentTrackingState>, intent: { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE }) => {
+      bindCount += 1;
+      assert.deepEqual(intent, { role: 'architect', provenanceKind: OMX_ADAPTED_PROVENANCE });
+      return state;
+    };
+    try {
+      assert.equal(
+        recordPendingRoleIntent(cwd, {
+          role: 'architect',
+          sessionId: input.sessionId,
+          parentThreadId: input.parentThreadId,
+          correlationToken: 'expected-token',
+          nowMs: 1_000,
+        }).ok,
+        true,
+      );
+      assert.equal(bindPendingRoleIntentUnderLock(cwd, input, bind), null);
+      assert.equal(bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'wrong-token' }, bind), null);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, 'expected-token');
+      assert.deepEqual(
+        bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expected-token' }, bind),
+        { role: 'architect', provenanceKind: OMX_ADAPTED_PROVENANCE },
+      );
+      assert.equal(bindCount, 1);
+      assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -818,6 +936,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_000,
         }).ok,
         true,
@@ -826,6 +945,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_001,
         }),
         { role: 'architect', provenanceKind: OMX_ADAPTED_PROVENANCE },
@@ -834,6 +954,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_002,
         }),
         null,
@@ -851,6 +972,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_000,
         }).ok,
         true,
@@ -862,6 +984,7 @@ describe('subagents/tracker', () => {
           cwd,
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_001,
         },
         {
@@ -869,6 +992,7 @@ describe('subagents/tracker', () => {
           cwd,
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_001,
         },
       ]);
@@ -884,6 +1008,7 @@ describe('subagents/tracker', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const sessionId = 'sess-role-intent-lifecycle-race';
     const parentThreadId = 'thread-parent';
+    const correlationToken = 'architect-token';
     try {
       const recordResults = await runConcurrentPendingRoleIntentWorkers(cwd, [
         {
@@ -892,6 +1017,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId,
           parentThreadId,
+          correlationToken,
           nowMs: 1_000,
         },
         {
@@ -915,6 +1041,7 @@ describe('subagents/tracker', () => {
           cwd,
           sessionId,
           parentThreadId,
+          correlationToken,
           nowMs: 1_001,
         },
         {
@@ -944,6 +1071,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_000,
           ttlMs: 10,
         }).ok,
@@ -953,6 +1081,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
+          correlationToken: 'architect-token',
           nowMs: 1_010,
         }),
         null,

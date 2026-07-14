@@ -1,22 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { RoleRoutingUnavailableMarker } from '../leader/contract.js';
+import { withCrossProcessFileLockSync } from './tracker.js';
 
 export const NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE = 'native-subagent-role-routing.json';
 
 const ROLE_ROUTING_MARKER_SCHEMA_VERSION = 1;
 const ROLE_ROUTING_MARKER_LOCK_RETRY_MS = 10;
-const ROLE_ROUTING_MARKER_LOCK_TIMEOUT_MS = 5_000;
+const ROLE_ROUTING_MARKER_LOCK_MAX_ATTEMPTS = 200;
 
 type RoleRoutingMarkerStore = {
   schema_version: 1;
@@ -25,62 +17,6 @@ type RoleRoutingMarkerStore = {
 
 function markerStorePath(baseStateDir: string): string {
   return join(baseStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE);
-}
-
-function markerLockPath(baseStateDir: string): string {
-  return `${markerStorePath(baseStateDir)}.lock`;
-}
-
-function waitForLockRetry(): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ROLE_ROUTING_MARKER_LOCK_RETRY_MS);
-}
-
-function withRoleRoutingMarkerLock<T>(baseStateDir: string, operation: () => T): T {
-  const lockPath = markerLockPath(baseStateDir);
-  mkdirSync(dirname(lockPath), { recursive: true });
-  const startedAt = Date.now();
-  let lastError: unknown;
-
-  while (Date.now() - startedAt < ROLE_ROUTING_MARKER_LOCK_TIMEOUT_MS) {
-    let descriptor: number | undefined;
-    let acquired = false;
-    try {
-      descriptor = openSync(lockPath, 'wx');
-      acquired = true;
-      writeFileSync(descriptor, `${process.pid}:${randomUUID()}\n`);
-      closeSync(descriptor);
-      descriptor = undefined;
-      try {
-        return operation();
-      } finally {
-        unlinkSync(lockPath);
-      }
-    } catch (error) {
-      if (descriptor !== undefined) {
-        try {
-          closeSync(descriptor);
-        } catch {
-          // Preserve the original lock acquisition failure.
-        }
-      }
-      if (acquired) {
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          // Preserve the persistence failure that caused lock release.
-        }
-        throw error;
-      }
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'EEXIST') throw error;
-      lastError = error;
-      waitForLockRetry();
-    }
-  }
-
-  throw new Error(
-    `Timed out acquiring role-routing marker lock at ${lockPath}: ${lastError instanceof Error ? lastError.message : String(lastError ?? 'lock remained busy')}`,
-  );
 }
 
 function readString(value: unknown): string | null {
@@ -157,7 +93,7 @@ export function writeRoleRoutingMarker(baseStateDir: string, marker: RoleRouting
   }
   const parentThreadId = normalizedMarker.parent_thread_id ?? '';
 
-  withRoleRoutingMarkerLock(baseStateDir, () => {
+  withCrossProcessFileLockSync(markerStorePath(baseStateDir), () => {
     const nowMs = Date.now();
     const store = readMarkerStore(baseStateDir);
     const markers = store.markers.filter((candidate) => (
@@ -169,6 +105,9 @@ export function writeRoleRoutingMarker(baseStateDir: string, marker: RoleRouting
       schema_version: ROLE_ROUTING_MARKER_SCHEMA_VERSION,
       markers,
     });
+  }, {
+    maxAttempts: ROLE_ROUTING_MARKER_LOCK_MAX_ATTEMPTS,
+    retryMs: ROLE_ROUTING_MARKER_LOCK_RETRY_MS,
   });
 }
 

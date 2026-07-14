@@ -3108,7 +3108,7 @@ PY`,
 		}
 	});
 
-	it("binds a consumed adapted role intent to an untyped child without fabricating later child roles", async () => {
+	it("binds a matching adapted role token and authorizes the child to write its ralplan review artifact", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-adapted-role-correlation-"),
 		);
@@ -3117,6 +3117,7 @@ PY`,
 			const canonicalSessionId = "omx-adapted-role-session";
 			const parentThreadId = "codex-adapted-role-parent";
 			const childThreadId = "codex-adapted-role-child";
+			const correlationToken = "adapted-role-correlation-token";
 			await mkdir(join(stateDir, "sessions", canonicalSessionId), {
 				recursive: true,
 			});
@@ -3128,6 +3129,7 @@ PY`,
 					role: "architect",
 					sessionId: canonicalSessionId,
 					parentThreadId,
+					correlationToken,
 				}).ok,
 				true,
 			);
@@ -3140,7 +3142,12 @@ PY`,
 					payload: {
 						id: childThreadId,
 						source: {
-							subagent: { thread_spawn: { parent_thread_id: parentThreadId } },
+							subagent: {
+								thread_spawn: {
+									parent_thread_id: parentThreadId,
+									agent_nickname: correlationToken,
+								},
+							},
 						},
 					},
 				})}\n`,
@@ -3189,6 +3196,45 @@ PY`,
 				Date.parse(marker.expires_at) - Date.parse(marker.observed_at) >=
 					60 * 60_000,
 			);
+			await writeJson(join(stateDir, "sessions", canonicalSessionId, "skill-active-state.json"), {
+				active: true,
+				skill: "ralplan",
+				phase: "planning",
+				session_id: canonicalSessionId,
+				thread_id: parentThreadId,
+				active_skills: [
+					{
+						skill: "ralplan",
+						phase: "planning",
+						active: true,
+						session_id: canonicalSessionId,
+						thread_id: parentThreadId,
+					},
+				],
+			});
+			await writeJson(join(stateDir, "sessions", canonicalSessionId, "ralplan-state.json"), {
+				active: true,
+				mode: "ralplan",
+				current_phase: "architect-review",
+				session_id: canonicalSessionId,
+				thread_id: parentThreadId,
+			});
+			const reviewArtifactWrite = await dispatchCodexNativeHook(
+				{
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: canonicalSessionId,
+					thread_id: childThreadId,
+					tool_name: "Edit",
+					tool_input: {
+						file_path: ".gjc/plans/ralplan/current/architect-review.md",
+						old_string: "draft",
+						new_string: "approved",
+					},
+				},
+				{ cwd },
+			);
+			assert.equal(reviewArtifactWrite.outputJson, null);
 
 			const refreshSeedNowMs = Date.now();
 			writeRoleRoutingMarker(stateDir, {
@@ -3268,12 +3314,150 @@ PY`,
 				];
 			assert.equal(untypedThread?.role, undefined);
 			assert.equal(untypedThread?.provenance_kind, undefined);
+			const untypedReviewArtifactWrite = await dispatchCodexNativeHook(
+				{
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: canonicalSessionId,
+					thread_id: untypedChildThreadId,
+					tool_name: "Edit",
+					tool_input: {
+						file_path: ".gjc/plans/ralplan/current/untyped-review.md",
+						old_string: "draft",
+						new_string: "approved",
+					},
+				},
+				{ cwd },
+			);
+			assert.equal(untypedReviewArtifactWrite.outputJson?.decision, "block");
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("atomically binds one adapted role intent to only one concurrent untyped child", async () => {
+	it("leaves a child without the correlation token untyped and blocked from ralplan review writes", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "omx-native-hook-adapted-role-missing-token-"),
+		);
+		try {
+			const stateDir = join(cwd, ".omx", "state");
+			const canonicalSessionId = "omx-adapted-role-missing-token";
+			const parentThreadId = "codex-adapted-role-missing-token-parent";
+			const childThreadId = "codex-adapted-role-missing-token-child";
+			const correlationToken = "adapted-role-required-token";
+			const sessionDir = join(stateDir, "sessions", canonicalSessionId);
+			await mkdir(sessionDir, { recursive: true });
+			await writeSessionStart(cwd, canonicalSessionId, {
+				nativeSessionId: parentThreadId,
+			});
+			await writeJson(join(sessionDir, "skill-active-state.json"), {
+				active: true,
+				skill: "ralplan",
+				phase: "planning",
+				session_id: canonicalSessionId,
+				thread_id: parentThreadId,
+				active_skills: [
+					{
+						skill: "ralplan",
+						phase: "planning",
+						active: true,
+						session_id: canonicalSessionId,
+						thread_id: parentThreadId,
+					},
+				],
+			});
+			await writeJson(join(sessionDir, "ralplan-state.json"), {
+				active: true,
+				mode: "ralplan",
+				current_phase: "architect-review",
+				session_id: canonicalSessionId,
+				thread_id: parentThreadId,
+			});
+			assert.equal(
+				recordPendingRoleIntent(cwd, {
+					role: "architect",
+					sessionId: canonicalSessionId,
+					parentThreadId,
+					correlationToken,
+				}).ok,
+				true,
+			);
+
+			const transcriptPath = join(cwd, "adapted-child-missing-token.jsonl");
+			await writeFile(
+				transcriptPath,
+				`${JSON.stringify({
+					type: "session_meta",
+					payload: {
+						id: childThreadId,
+						source: {
+							subagent: { thread_spawn: { parent_thread_id: parentThreadId } },
+						},
+					},
+				})}\n`,
+			);
+			await dispatchCodexNativeHook(
+				{
+					hook_event_name: "SessionStart",
+					cwd,
+					session_id: childThreadId,
+					transcript_path: transcriptPath,
+				},
+				{ cwd },
+			);
+
+			const tracking = JSON.parse(
+				await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"),
+			) as {
+				pending_role_intents?: Array<{ correlation_token?: string }>;
+				sessions?: Record<
+					string,
+					{ threads?: Record<string, { role?: string; provenance_kind?: string }> }
+				>;
+			};
+			assert.deepEqual(
+				tracking.pending_role_intents?.map((intent) => intent.correlation_token),
+				[correlationToken],
+			);
+			assert.equal(
+				tracking.sessions?.[canonicalSessionId]?.threads?.[childThreadId]?.role,
+				undefined,
+			);
+			assert.equal(
+				tracking.sessions?.[canonicalSessionId]?.threads?.[childThreadId]?.provenance_kind,
+				undefined,
+			);
+			assert.equal(
+				readRoleRoutingMarker(stateDir, {
+					cwd,
+					sessionId: canonicalSessionId,
+					parentThreadId,
+				}),
+				null,
+			);
+
+			const blockedReviewArtifactWrite = await dispatchCodexNativeHook(
+				{
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: canonicalSessionId,
+					thread_id: childThreadId,
+					tool_name: "Edit",
+					tool_input: {
+						file_path: ".gjc/plans/ralplan/current/architect-review.md",
+						old_string: "draft",
+						new_string: "approved",
+					},
+				},
+				{ cwd },
+			);
+			assert.equal(blockedReviewArtifactWrite.outputJson?.decision, "block");
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("prevents a concurrent unrelated untyped child from stealing an adapted role intent", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-adapted-role-race-"),
 		);
@@ -3285,6 +3469,8 @@ PY`,
 				"codex-adapted-role-race-child-a",
 				"codex-adapted-role-race-child-b",
 			];
+			const adaptedChildThreadId = childThreadIds[0]!;
+			const correlationToken = "adapted-role-race-token";
 			await mkdir(join(stateDir, "sessions", canonicalSessionId), {
 				recursive: true,
 			});
@@ -3296,6 +3482,7 @@ PY`,
 					role: "architect",
 					sessionId: canonicalSessionId,
 					parentThreadId,
+					correlationToken,
 				}).ok,
 				true,
 			);
@@ -3311,7 +3498,12 @@ PY`,
 								id: childThreadId,
 								source: {
 									subagent: {
-										thread_spawn: { parent_thread_id: parentThreadId },
+										thread_spawn: {
+											parent_thread_id: parentThreadId,
+											...(childThreadId === adaptedChildThreadId
+												? { agent_nickname: correlationToken }
+												: {}),
+										},
 									},
 								},
 							},
@@ -3353,7 +3545,7 @@ PY`,
 				(childThreadId) =>
 					threads[childThreadId]?.provenance_kind === "omx_adapted",
 			);
-			assert.equal(adaptedChildThreadIds.length, 1);
+			assert.deepEqual(adaptedChildThreadIds, [adaptedChildThreadId]);
 			assert.deepEqual(tracking.pending_role_intents, []);
 			assert.ok(
 				readRoleRoutingMarker(stateDir, {
@@ -3410,20 +3602,16 @@ PY`,
 		}
 	});
 
-	it("keeps adapted role intent pending and reports persistence failures before binding", async () => {
+	it("commits adapted tracker binding before publishing the role-routing marker", async () => {
 		const cwd = await mkdtemp(
-			join(tmpdir(), "omx-native-hook-adapted-role-bind-failure-"),
+			join(tmpdir(), "omx-native-hook-adapted-role-marker-publish-"),
 		);
-		const originalConsoleError = console.error;
-		const diagnostics: string[] = [];
-		console.error = (...args: unknown[]) => {
-			diagnostics.push(args.map((arg) => String(arg)).join(" "));
-		};
 		try {
 			const stateDir = join(cwd, ".omx", "state");
-			const canonicalSessionId = "omx-adapted-role-bind-failure";
-			const parentThreadId = "codex-adapted-role-bind-failure-parent";
-			const childThreadId = "codex-adapted-role-bind-failure-child";
+			const canonicalSessionId = "omx-adapted-role-marker-publish";
+			const parentThreadId = "codex-adapted-role-marker-publish-parent";
+			const childThreadId = "codex-adapted-role-marker-publish-child";
+			const correlationToken = "adapted-role-marker-publish-token";
 			await mkdir(join(stateDir, "sessions", canonicalSessionId), {
 				recursive: true,
 			});
@@ -3435,12 +3623,13 @@ PY`,
 					role: "architect",
 					sessionId: canonicalSessionId,
 					parentThreadId,
+					correlationToken,
 				}).ok,
 				true,
 			);
 			await mkdir(join(stateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE));
 
-			const transcriptPath = join(cwd, "adapted-child-bind-failure.jsonl");
+			const transcriptPath = join(cwd, "adapted-child-marker-publish.jsonl");
 			await writeFile(
 				transcriptPath,
 				`${JSON.stringify({
@@ -3448,7 +3637,12 @@ PY`,
 					payload: {
 						id: childThreadId,
 						source: {
-							subagent: { thread_spawn: { parent_thread_id: parentThreadId } },
+							subagent: {
+								thread_spawn: {
+									parent_thread_id: parentThreadId,
+									agent_nickname: correlationToken,
+								},
+							},
 						},
 					},
 				})}\n`,
@@ -3470,41 +3664,30 @@ PY`,
 			const tracking = JSON.parse(
 				await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"),
 			) as {
-				pending_role_intents?: Array<{
-					role?: string;
-					session_id?: string;
-					parent_thread_id?: string;
-					created_at?: string;
-					expires_at?: string;
-				}>;
+				pending_role_intents?: unknown[];
 				sessions?: Record<
 					string,
 					{ threads?: Record<string, { role?: string; provenance_kind?: string }> }
 				>;
 			};
-			assert.deepEqual(tracking.pending_role_intents, [
-				{
-					role: "architect",
-					session_id: canonicalSessionId,
-					parent_thread_id: parentThreadId,
-					created_at: tracking.pending_role_intents?.[0]?.created_at,
-					expires_at: tracking.pending_role_intents?.[0]?.expires_at,
-				},
-			]);
+			assert.deepEqual(tracking.pending_role_intents, []);
 			assert.equal(
 				tracking.sessions?.[canonicalSessionId]?.threads?.[childThreadId]?.role,
-				undefined,
+				"architect",
 			);
 			assert.equal(
 				tracking.sessions?.[canonicalSessionId]?.threads?.[childThreadId]?.provenance_kind,
-				undefined,
+				"omx_adapted",
 			);
-			assert.match(
-				diagnostics.join("\n"),
-				/SECURITY: native adapted role binding was not durably persisted/,
+			assert.equal(
+				readRoleRoutingMarker(stateDir, {
+					cwd,
+					sessionId: canonicalSessionId,
+					parentThreadId,
+				}),
+				null,
 			);
 		} finally {
-			console.error = originalConsoleError;
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
@@ -22303,18 +22486,20 @@ PY`,
         current_phase: "planning",
         session_id: nativeSessionId,
       });
-      const now = "2026-06-30T00:00:00.000Z";
+      const architectCompletedAt = "2026-06-30T00:00:00.000Z";
+      const criticStartedAt = "2026-06-30T00:01:00.000Z";
+      const criticCompletedAt = "2026-06-30T00:02:00.000Z";
       await writeJson(join(stateDir, "subagent-tracking.json"), {
         schemaVersion: 1,
         sessions: {
           [nativeSessionId]: {
             session_id: nativeSessionId,
             leader_thread_id: "thread-leader",
-            updated_at: now,
+            updated_at: criticCompletedAt,
             threads: {
-              "thread-leader": { thread_id: "thread-leader", kind: "leader", first_seen_at: now, last_seen_at: now, turn_count: 1 },
-              "thread-architect": { thread_id: "thread-architect", kind: "subagent", first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
-              "thread-critic": { thread_id: "thread-critic", kind: "subagent", first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+              "thread-leader": { thread_id: "thread-leader", kind: "leader", first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, turn_count: 1 },
+              "thread-architect": { thread_id: "thread-architect", kind: "subagent", first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, completed_at: architectCompletedAt, turn_count: 1, mode: "architect" },
+              "thread-critic": { thread_id: "thread-critic", kind: "subagent", first_seen_at: criticStartedAt, last_seen_at: criticCompletedAt, completed_at: criticCompletedAt, turn_count: 1, mode: "critic" },
             },
           },
         },

@@ -448,7 +448,6 @@ export async function runRalplanConsensus(
       if (architectReview.artifacts) Object.assign(aggregatedArtifacts, architectReview.artifacts);
       await recordRalplanSubagentTurn(cwd, options.sessionId, {
         threadId: architectReview.thread_id,
-        role: architectReview.agent_role,
         laneId: architectReview.lane_id,
         scope: options.task,
         summary: architectReview.summary,
@@ -520,7 +519,6 @@ export async function runRalplanConsensus(
       if (criticReview.artifacts) Object.assign(aggregatedArtifacts, criticReview.artifacts);
       await recordRalplanSubagentTurn(cwd, options.sessionId, {
         threadId: criticReview.thread_id,
-        role: criticReview.agent_role,
         laneId: criticReview.lane_id,
         scope: options.task,
         summary: criticReview.summary,

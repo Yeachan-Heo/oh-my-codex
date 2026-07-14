@@ -19,7 +19,9 @@ async function readScopedRalplanState(cwd: string, sessionId: string): Promise<R
 }
 
 async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
-  const now = '2026-05-28T00:00:00.000Z';
+  const architectCompletedAt = '2026-05-28T00:00:00.000Z';
+  const criticStartedAt = '2026-05-28T00:05:00.000Z';
+  const criticCompletedAt = '2026-05-28T00:10:00.000Z';
   const trackingPath = subagentTrackingPath(cwd);
   await mkdir(join(trackingPath, '..'), { recursive: true });
   await writeFile(trackingPath, JSON.stringify({
@@ -28,30 +30,32 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
       [sessionId]: {
         session_id: sessionId,
         leader_thread_id: 'thread-leader',
-        updated_at: now,
+        updated_at: criticCompletedAt,
         threads: {
           'thread-leader': {
             thread_id: 'thread-leader',
             kind: 'leader',
-            first_seen_at: now,
-            last_seen_at: now,
+            first_seen_at: architectCompletedAt,
+            last_seen_at: architectCompletedAt,
             turn_count: 1,
           },
           'thread-architect': {
             thread_id: 'thread-architect',
             kind: 'subagent',
-            first_seen_at: now,
-            last_seen_at: now,
-            completed_at: now,
+            first_seen_at: architectCompletedAt,
+            last_seen_at: architectCompletedAt,
+            completed_at: architectCompletedAt,
             turn_count: 1,
+            role: 'architect',
           },
           'thread-critic': {
             thread_id: 'thread-critic',
             kind: 'subagent',
-            first_seen_at: now,
-            last_seen_at: now,
-            completed_at: now,
+            first_seen_at: criticStartedAt,
+            last_seen_at: criticCompletedAt,
+            completed_at: criticCompletedAt,
             turn_count: 1,
+            role: 'critic',
           },
         },
       },
@@ -496,7 +500,8 @@ describe('ralplan runtime', () => {
   it('preserves existing tracker completion for review threads without native-required mode', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-preserve-completion-'));
     const sessionId = 'sess-ralplan-preserve-completion';
-    const completedAt = '2026-05-28T00:00:00.000Z';
+    const architectCompletedAt = '2026-05-28T00:00:00.000Z';
+    const criticCompletedAt = '2026-05-28T00:10:00.000Z';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
@@ -538,8 +543,8 @@ describe('ralplan runtime', () => {
       const tracking = JSON.parse(await readFile(subagentTrackingPath(cwd), 'utf-8')) as {
         sessions?: Record<string, { threads?: Record<string, { completed_at?: string }> }>;
       };
-      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-architect']?.completed_at, completedAt);
-      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-critic']?.completed_at, completedAt);
+      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-architect']?.completed_at, architectCompletedAt);
+      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-critic']?.completed_at, criticCompletedAt);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

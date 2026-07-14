@@ -37,6 +37,7 @@ import {
 import {
 	bindPendingRoleIntentUnderLock,
 	isTrustedSubagentThread,
+	OMX_ADAPTED_PROVENANCE,
 	readSubagentSessionSummary,
 	readSubagentSessionLedger,
 	readSubagentTrackingState,
@@ -560,6 +561,7 @@ async function recordNativeSubagentSessionStart(
 				{
 					sessionId: correlationSessionId,
 					parentThreadId,
+					correlationToken: metadata.agentNickname,
 				},
 				(state, intent) => {
 					let next = state;
@@ -583,18 +585,20 @@ async function recordNativeSubagentSessionStart(
 							provenanceKind: intent.provenanceKind,
 						});
 					}
-					recordNativeSubagentRoleRoutingMarker(
-						cwd,
-						getBaseStateDir(cwd),
-						correlationSessionId,
-						parentThreadId,
-					);
 					return next;
 				},
 			);
 		} catch (error) {
 			reportRoleRoutingBindingFailure(error);
 			throw error;
+		}
+		if (adaptedRoleIntent) {
+			recordNativeSubagentRoleRoutingMarker(
+				cwd,
+				getBaseStateDir(cwd),
+				correlationSessionId,
+				parentThreadId,
+			);
 		}
 	}
 
@@ -9706,6 +9710,12 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
   if (!session) return false;
 
   const payloadThreadId = readPayloadThreadId(payload);
+  const trackedPayloadThread = payloadThreadId ? session.threads[payloadThreadId] : undefined;
+  const hasTrackedAdaptedTypedRole =
+    payloadThreadId !== ""
+    && isTrustedSubagentThread(session, payloadThreadId)
+    && trackedPayloadThread?.provenance_kind === OMX_ADAPTED_PROVENANCE
+    && resolveInstalledRoleName(trackedPayloadThread.role ?? "") !== null;
 
   // Resolve the Main-root leader THREAD identity from the tracker's leader_thread_id
   // plus the canonical session's native_session_id (the leader's native thread). Only
@@ -9738,9 +9748,13 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
 
   // Planning boundary guards (ralplan, deep-interview) still require a recognized typed
   // agent role, so an untyped collaboration.spawn_agent child cannot write before an
-  // execution handoff/approval. Only the Main-root Conductor/Ralph executing guard opts
-  // into untyped tracker/runtime provenance (#3116, #3117).
-  if (options.allowUntypedProvenance !== true && !isTypedAgentRolePayload(payload)) {
+  // execution handoff/approval. A tracker-recorded OMX-adapted child is the equivalent
+  // of a typed role only when its own persisted role is installed and validated.
+  if (
+    options.allowUntypedProvenance !== true
+    && !isTypedAgentRolePayload(payload)
+    && !hasTrackedAdaptedTypedRole
+  ) {
     return false;
   }
 

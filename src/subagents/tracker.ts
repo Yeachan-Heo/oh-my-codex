@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { getBaseStateDir } from '../state/paths.js';
@@ -78,6 +79,7 @@ export interface PendingRoleIntent {
   role: string;
   session_id: string;
   parent_thread_id: string;
+  correlation_token: string;
   created_at: string;
   expires_at: string;
 }
@@ -234,14 +236,16 @@ function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
   const role = readOptionalTrimmedString(candidate.role);
   const sessionId = readOptionalTrimmedString(candidate.session_id);
   const parentThreadId = readOptionalTrimmedString(candidate.parent_thread_id);
+  const correlationToken = readOptionalTrimmedString(candidate.correlation_token);
   const createdAt = readOptionalTrimmedString(candidate.created_at);
   const expiresAt = readOptionalTrimmedString(candidate.expires_at);
-  if (!role || !sessionId || !parentThreadId || !createdAt || !expiresAt) return null;
+  if (!role || !sessionId || !parentThreadId || !correlationToken || !createdAt || !expiresAt) return null;
   if (!Number.isFinite(Date.parse(createdAt)) || !Number.isFinite(Date.parse(expiresAt))) return null;
   return {
     role,
     session_id: sessionId,
     parent_thread_id: parentThreadId,
+    correlation_token: correlationToken,
     created_at: createdAt,
     expires_at: expiresAt,
   };
@@ -347,8 +351,14 @@ function atomicTrackingTempPath(path: string): string {
 
 export const DEFAULT_CROSS_PROCESS_LOCK_MAX_ATTEMPTS = 80;
 export const DEFAULT_CROSS_PROCESS_LOCK_RETRY_MS = 2;
+export const CROSS_PROCESS_LOCK_LEASE_MS = 60_000;
 
 const crossProcessLockWaitArray = new Int32Array(new SharedArrayBuffer(4));
+
+type CrossProcessLockOwner = {
+  pid?: number;
+  acquiredAtMs?: number;
+};
 
 export function crossProcessLockPath(resourcePath: string): string {
   return `${resourcePath}.lock`;
@@ -356,6 +366,60 @@ export function crossProcessLockPath(resourcePath: string): string {
 
 function sleepForCrossProcessLockSync(durationMs: number): void {
   Atomics.wait(crossProcessLockWaitArray, 0, 0, durationMs);
+}
+
+function readCrossProcessLockOwner(lockPath: string): CrossProcessLockOwner | null {
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as {
+      pid?: unknown;
+      acquired_at?: unknown;
+    };
+    const pid = typeof parsed.pid === 'number' && Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
+    const acquiredAtMs = typeof parsed.acquired_at === 'string' ? Date.parse(parsed.acquired_at) : Number.NaN;
+    return {
+      ...(pid ? { pid } : {}),
+      ...(Number.isFinite(acquiredAtMs) ? { acquiredAtMs } : {}),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    return {};
+  }
+}
+
+function isCrossProcessLockOwnerDead(pid: number | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+function isCrossProcessLockOlderThanLease(lockPath: string, acquiredAtMs: number | undefined, nowMs: number): boolean {
+  if (typeof acquiredAtMs === 'number') return acquiredAtMs < nowMs - CROSS_PROCESS_LOCK_LEASE_MS;
+  try {
+    return statSync(lockPath).mtimeMs < nowMs - CROSS_PROCESS_LOCK_LEASE_MS;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+}
+
+function recoverCrossProcessFileLock(lockPath: string): boolean {
+  const owner = readCrossProcessLockOwner(lockPath);
+  if (owner === null) return true;
+
+  const nowMs = Date.now();
+  if (!isCrossProcessLockOwnerDead(owner.pid) && !isCrossProcessLockOlderThanLease(lockPath, owner.acquiredAtMs, nowMs)) {
+    return false;
+  }
+
+  try {
+    unlinkSync(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return true;
 }
 
 export function withCrossProcessFileLockSync<T>(
@@ -375,16 +439,29 @@ export function withCrossProcessFileLockSync<T>(
 
   mkdirSync(dirname(lockPath), { recursive: true });
   let descriptor: number | undefined;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  let contentionAttempts = 0;
+  while (contentionAttempts < maxAttempts) {
     try {
       descriptor = openSync(lockPath, 'wx');
+      try {
+        writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, host: hostname(), acquired_at: new Date().toISOString() })}\n`);
+      } catch (error) {
+        try {
+          closeSync(descriptor);
+        } finally {
+          unlinkSync(lockPath);
+        }
+        throw error;
+      }
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (attempt === maxAttempts - 1) {
+      if (recoverCrossProcessFileLock(lockPath)) continue;
+      if (contentionAttempts === maxAttempts - 1) {
         throw new Error(`Timed out waiting for cross-process lock at ${lockPath}`);
       }
-      sleepForCrossProcessLockSync(Math.min(25, retryMs * 2 ** Math.min(attempt, 4)));
+      sleepForCrossProcessLockSync(Math.min(25, retryMs * 2 ** Math.min(contentionAttempts, 4)));
+      contentionAttempts += 1;
     }
   }
 
@@ -458,12 +535,15 @@ export function recordPendingRoleIntent(
     role: string;
     sessionId: string;
     parentThreadId: string;
+    correlationToken: string;
     ttlMs?: number;
     nowMs?: number;
   },
-): { ok: true; intent: PendingRoleIntent } | { ok: false; reason: 'unknown_role' | 'single_flight_conflict' } {
+): { ok: true; intent: PendingRoleIntent } | { ok: false; reason: 'unknown_role' | 'invalid_correlation_token' | 'single_flight_conflict' } {
   const role = resolveInstalledRoleName(input.role);
   if (!role) return { ok: false, reason: 'unknown_role' };
+  const correlationToken = readOptionalTrimmedString(input.correlationToken);
+  if (!correlationToken) return { ok: false, reason: 'invalid_correlation_token' };
 
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
@@ -480,6 +560,7 @@ export function recordPendingRoleIntent(
       role,
       session_id: sessionId,
       parent_thread_id: parentThreadId,
+      correlation_token: correlationToken,
       created_at: new Date(nowMs).toISOString(),
       expires_at: new Date(nowMs + ttlMs).toISOString(),
     };
@@ -491,16 +572,21 @@ export function recordPendingRoleIntent(
 
 export function bindPendingRoleIntentUnderLock(
   cwd: string,
-  input: { sessionId: string; parentThreadId: string; nowMs?: number },
+  input: { sessionId: string; parentThreadId: string; correlationToken?: string; nowMs?: number },
   bind: (state: SubagentTrackingState, intent: { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE }) => SubagentTrackingState,
 ): { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE } | null {
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
+  const correlationToken = readOptionalTrimmedString(input.correlationToken);
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), () => {
     const state = readSubagentTrackingStateSync(cwd);
     const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
-    const consumed = pendingRoleIntents.find((intent) => intent.session_id === sessionId && intent.parent_thread_id === parentThreadId) ?? null;
+    const consumed = pendingRoleIntents.find((intent) => (
+      intent.session_id === sessionId
+      && intent.parent_thread_id === parentThreadId
+      && intent.correlation_token === correlationToken
+    )) ?? null;
 
     if (!consumed) {
       if (pendingRoleIntents.length !== state.pending_role_intents.length) {
@@ -515,9 +601,7 @@ export function bindPendingRoleIntentUnderLock(
       provenanceKind: OMX_ADAPTED_PROVENANCE,
     } as const;
     const boundState = bind(state, adaptedIntent);
-    boundState.pending_role_intents = pendingRoleIntents.filter(
-      (intent) => intent.session_id !== sessionId || intent.parent_thread_id !== parentThreadId,
-    );
+    boundState.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== consumed);
     writeSubagentTrackingStateSync(cwd, boundState);
     return adaptedIntent;
   });
@@ -525,7 +609,7 @@ export function bindPendingRoleIntentUnderLock(
 
 export function consumePendingRoleIntent(
   cwd: string,
-  input: { sessionId: string; parentThreadId: string; nowMs?: number },
+  input: { sessionId: string; parentThreadId: string; correlationToken?: string; nowMs?: number },
 ): { role: string; provenanceKind: 'omx_adapted' } | null {
   return bindPendingRoleIntentUnderLock(cwd, input, (state) => state);
 }
