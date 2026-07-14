@@ -4467,6 +4467,20 @@ esac
           assert.doesNotMatch(tmuxLog, /set-option -t shared @omx_instance_id session-instance/);
           assert.doesNotMatch(tmuxLog, /set-option -p -t %1 @omx_pane_instance_id pane-instance/);
 
+          const failedEvidenceSession = createTeamSession('Owned HUD Evidence Unavailable', 1, cwd, [], [], {
+            ownerSessionId: 'leader-session-a',
+            hudExactCandidate: null,
+          });
+          assert.equal(failedEvidenceSession.hudPaneId, null);
+          const failedEvidenceLog = await readFile(logPath, 'utf-8');
+          assert.doesNotMatch(
+            failedEvidenceLog,
+            /set-option -p -t %1 @omx_pane_instance_id leader-session-a/,
+          );
+          assert.doesNotMatch(failedEvidenceLog, /split-window -v -f -l 3/);
+          assert.doesNotMatch(failedEvidenceLog, /kill-pane -t/);
+          assert.doesNotMatch(failedEvidenceLog, /resize-pane/);
+
           const tagMismatchSession = createTeamSession('Owned HUD Tag Mismatch', 1, cwd, [], [], {
             ownerSessionId: 'leader-session-a',
             hudExactCandidate: {

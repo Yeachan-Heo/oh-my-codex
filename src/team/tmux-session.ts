@@ -1759,6 +1759,10 @@ export function createTeamSession(
     const panes = listPanes(teamTarget);
     const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
     const hudExactCandidate = normalizeExactTeamHudCandidate(options.hudExactCandidate);
+    const hudExactCandidateWasProvided = Object.prototype.hasOwnProperty.call(
+      options,
+      'hudExactCandidate',
+    );
     const recheckedSessionTag = hudExactCandidate?.tmuxSessionName
       ? runTmux(['show-options', '-qv', '-t', sessionName, OMX_INSTANCE_OPTION])
       : null;
@@ -1775,7 +1779,7 @@ export function createTeamSession(
       && hudExactCandidate.leaderPaneId === leaderPaneId
       && hudEvidenceStillMatches,
     );
-    if (!hudExactCandidate) {
+    if (!hudExactCandidate && !hudExactCandidateWasProvided) {
       tagPaneInstance(leaderPaneId, ownerSessionId);
     }
     tagPaneTeamOwner(leaderPaneId, teamPaneOwnerId);
