@@ -1462,6 +1462,17 @@ describe('subagents/tracker', () => {
         'claimant_mismatch',
       );
       assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+      // Fail-closed: an OMITTED caller token must not complete a journal that carries a
+      // stored claimant token (prevents unauthenticated completion / successor theft).
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, {
+          sessionId: input.sessionId,
+          parentThreadId: input.parentThreadId,
+          correlationToken: input.correlationToken,
+        }),
+        'claimant_mismatch',
+      );
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
       assert.equal(
         completeAdaptedRoleBinding(cwd, { ...input, claimantToken: binding.claimantToken }),
         'completed',

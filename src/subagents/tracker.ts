@@ -931,8 +931,14 @@ export function completeAdaptedRoleBinding(
       }
       return 'not_found';
     }
-    if (claimantToken !== undefined && boundIntent.binding_claimant_token && boundIntent.binding_claimant_token !== claimantToken) {
-      return 'claimant_mismatch';
+    // Fail-closed claimant CAS: a stored claimant token requires the caller to present
+    // the exact token. An omitted or wrong token must never complete the claimed journal
+    // (prevents unauthenticated completion / successor theft). Tokenless completion is
+    // permitted only for malformed/legacy bound journals that carry no stored claimant.
+    if (boundIntent.binding_claimant_token) {
+      if (claimantToken === undefined || boundIntent.binding_claimant_token !== claimantToken) {
+        return 'claimant_mismatch';
+      }
     }
 
     state.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== boundIntent);
