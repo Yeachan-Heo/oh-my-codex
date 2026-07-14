@@ -4,6 +4,7 @@ import type {
   LaneRecord,
   LaneResultProposal,
   ResultPostToolPublication,
+  ReviewAttempt,
   ReviewRecord,
   ScopeFile,
 } from '../contract.js';
@@ -399,7 +400,13 @@ describe('lane evidence validation', () => {
     }
   });
 
-  it('enforces distinct overlapping initial lanes and only exempts explicit resume overlap', () => {
+  it('exempts only a retained opposite-role lane from replacement overlap', () => {
+    const validateWithAttempt = (input: {
+      lanes: readonly LaneRecord[];
+      batched: boolean;
+      resume: boolean;
+      attempt: ReviewAttempt;
+    }): string[] => validateLaneIndependence(input);
     const reviewer = lane();
     const architect = lane({
       lane_id: 'architect-global',
@@ -414,11 +421,94 @@ describe('lane evidence validation', () => {
         completed_at: '2026-07-14T00:06:00.000Z',
       },
     });
-    assert.deepEqual(validateLaneIndependence({ lanes: [reviewer, architect], batched: false, resume: false }), []);
-    const nonOverlap = { ...architect, provenance: { ...architect.provenance!, first_seen_at: '2026-07-14T00:06:00.001Z' } };
-    assert.match(validateLaneIndependence({ lanes: [reviewer, nonOverlap], batched: false, resume: false }).join('\n'), /overlap/i);
-    assert.deepEqual(validateLaneIndependence({ lanes: [reviewer, nonOverlap], batched: false, resume: true }), []);
+    const initialAttempt = {
+      attempt: 1,
+      status: 'READY_TO_SYNTHESIZE' as const,
+      bindings: [
+        { lane_id: reviewer.lane_id, attempt: 1, role: reviewer.role, batch_id: reviewer.batch_id, thread_id: reviewer.provenance!.thread_id },
+        { lane_id: architect.lane_id, attempt: 1, role: architect.role, batch_id: architect.batch_id, thread_id: architect.provenance!.thread_id },
+      ],
+      lane_ids: [reviewer.lane_id, architect.lane_id],
+      started_at: NOW,
+      updated_at: '2026-07-14T00:06:00.000Z',
+      resumable: false,
+    };
+    assert.deepEqual(validateWithAttempt({ lanes: [reviewer, architect], batched: false, resume: false, attempt: initialAttempt }), []);
+    const nonOverlap = {
+      ...architect,
+      provenance: {
+        ...architect.provenance!,
+        first_seen_at: '2026-07-14T00:06:00.001Z',
+        completed_at: '2026-07-14T00:07:00.000Z',
+      },
+    };
+    assert.match(validateWithAttempt({ lanes: [reviewer, nonOverlap], batched: false, resume: false, attempt: initialAttempt }).join('\n'), /overlap/i);
+
+    const replacementArchitect = lane({
+      ...nonOverlap,
+      lane_id: 'architect-global-resume-2',
+      attempt: 2,
+      provenance: {
+        ...nonOverlap.provenance!,
+        tracker_lane_id: 'architect-global-resume-2',
+        thread_id: 'child-architect-replacement',
+      },
+    });
+    const retainedAndReplacementAttempt = {
+      ...initialAttempt,
+      attempt: 2,
+      bindings: [
+        { lane_id: reviewer.lane_id, attempt: 1, role: reviewer.role, batch_id: reviewer.batch_id, thread_id: reviewer.provenance!.thread_id },
+        { lane_id: replacementArchitect.lane_id, attempt: 2, role: replacementArchitect.role, batch_id: replacementArchitect.batch_id, thread_id: replacementArchitect.provenance!.thread_id },
+      ],
+      lane_ids: [reviewer.lane_id, replacementArchitect.lane_id],
+    };
+    assert.deepEqual(validateWithAttempt({
+      lanes: [reviewer, replacementArchitect],
+      batched: false,
+      resume: true,
+      attempt: retainedAndReplacementAttempt,
+    }), []);
+
+    const replacementReviewer = lane({
+      lane_id: 'reviewer-batch-1-resume-2',
+      attempt: 2,
+      provenance: {
+        ...reviewer.provenance!,
+        tracker_lane_id: 'reviewer-batch-1-resume-2',
+        thread_id: 'child-reviewer-replacement',
+        first_seen_at: '2026-07-14T00:07:00.001Z',
+        completed_at: '2026-07-14T00:08:00.000Z',
+      },
+    });
+    const twoReplacementAttempt = {
+      ...retainedAndReplacementAttempt,
+      bindings: [
+        { lane_id: replacementReviewer.lane_id, attempt: 2, role: replacementReviewer.role, batch_id: replacementReviewer.batch_id, thread_id: replacementReviewer.provenance!.thread_id },
+        { lane_id: replacementArchitect.lane_id, attempt: 2, role: replacementArchitect.role, batch_id: replacementArchitect.batch_id, thread_id: replacementArchitect.provenance!.thread_id },
+      ],
+      lane_ids: [replacementReviewer.lane_id, replacementArchitect.lane_id],
+    };
+    assert.match(validateWithAttempt({
+      lanes: [replacementReviewer, replacementArchitect],
+      batched: false,
+      resume: true,
+      attempt: twoReplacementAttempt,
+    }).join('\n'), /overlap|concurrent/i);
+
+    const mismatchedBinding = {
+      ...retainedAndReplacementAttempt,
+      bindings: retainedAndReplacementAttempt.bindings.map((binding) => binding.lane_id === replacementArchitect.lane_id
+        ? { ...binding, thread_id: 'wrong-thread' }
+        : binding),
+    };
+    assert.match(validateWithAttempt({
+      lanes: [reviewer, replacementArchitect],
+      batched: false,
+      resume: true,
+      attempt: mismatchedBinding,
+    }).join('\n'), /binding|provenance|thread/i);
     const reused = { ...architect, provenance: { ...architect.provenance!, thread_id: 'child-reviewer' } };
-    assert.match(validateLaneIndependence({ lanes: [reviewer, reused], batched: false, resume: false }).join('\n'), /distinct|reuse/i);
+    assert.match(validateWithAttempt({ lanes: [reviewer, reused], batched: false, resume: false, attempt: initialAttempt }).join('\n'), /distinct|reuse/i);
   });
 });

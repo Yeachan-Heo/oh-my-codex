@@ -7,6 +7,8 @@ import type {
   LaneResultProposal,
   ResultPostToolPublication,
   ReviewAttempt,
+  ReviewConsumptionKind,
+  ReviewConsumptionMarker,
   ReviewRecord,
   ReviewRecordLaneEvent,
   ScopeManifest,
@@ -23,6 +25,8 @@ import {
   validatePostToolPublication,
 } from './evidence.js';
 import {
+  createReviewConsumptionEffect,
+  readReviewConsumptionMarkers,
   recoverPendingReviewTransactions,
   resolveReviewPersistencePaths,
   runDurableTransaction,
@@ -98,6 +102,15 @@ function validateBatchPlan(scope: ScopeManifest, plan: BatchPlan): BatchPlan {
     || !Array.isArray(plan.batches)
     || !Array.isArray(plan.required_lanes)) {
     throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'batch plan collections or flags are invalid');
+  }
+  if (scope.files.length === 0) {
+    if (scope.changed_lines !== 0
+      || plan.review_flags.length !== 0
+      || plan.batches.length !== 0
+      || plan.required_lanes.length !== 0) {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'an empty scope requires an empty authoritative batch plan');
+    }
+    return structuredClone(plan);
   }
   const batchIds = plan.batches.map((batch) => batch.batch_id);
   if (new Set(batchIds).size !== batchIds.length || batchIds.some((id) => typeof id !== 'string' || id.length === 0)) {
@@ -464,13 +477,42 @@ function filesForLane(record: ReviewRecord, lane: LaneRecord) {
   return (record.scope?.files ?? []).filter((file) => files.has(file.path));
 }
 
-export function reconcileResultPublications(input: {
+interface ReconcileResultPublicationsInput {
   review: ReviewRecord;
   proposals: readonly LaneResultProposal[];
   snapshot: ActivitySnapshot;
-  consumedToolEventRefs?: ReadonlySet<string>;
   now: Date;
-}): ReviewRecord {
+}
+
+function consumptionMarkerIdentity(marker: Pick<ReviewConsumptionMarker, 'kind' | 'value_sha256'>): string {
+  return `${marker.kind}:${marker.value_sha256}`;
+}
+
+function consumptionIdentityForValue(input: {
+  review_id: string;
+  idempotency_key: string;
+  kind: ReviewConsumptionKind;
+  value: string;
+  consumed_at: string;
+}): string {
+  const effect = createReviewConsumptionEffect(input);
+  return consumptionMarkerIdentity(effect.payload as ReviewConsumptionMarker);
+}
+
+export function reconcileResultPublications(input: ReconcileResultPublicationsInput): ReviewRecord {
+  if (Object.hasOwn(input, 'consumedToolEventRefs')) {
+    throw new ReviewCoordinatorError(
+      'LANE_EVIDENCE_INVALID',
+      'consumption state must come from durable review markers, not caller input',
+    );
+  }
+  return reconcileResultPublicationsTrusted(input, []);
+}
+
+function reconcileResultPublicationsTrusted(
+  input: ReconcileResultPublicationsInput,
+  consumedMarkers: readonly ReviewConsumptionMarker[],
+): ReviewRecord {
   const cutoff = parseTimestamp(input.snapshot.cutoff_at, 'snapshot cutoff');
   let ordinaryEvents: LaneActivityEvent[];
   let diagnosticEvents;
@@ -512,6 +554,7 @@ export function reconcileResultPublications(input: {
 
   const consumed = new Set(input.review.lanes.flatMap((lane) =>
     lane.last_processed_activity_ref === undefined ? [] : [lane.last_processed_activity_ref]));
+  const durableConsumptions = new Set(consumedMarkers.map(consumptionMarkerIdentity));
   const nonceSet = new Set<string>();
   const validatedPairs: Array<{
     proposal: LaneResultProposal;
@@ -530,6 +573,22 @@ export function reconcileResultPublications(input: {
         publication: pair.publication,
         consumedToolEventRefs: consumed,
       });
+      for (const [kind, value] of [
+        ['PROPOSAL_KEY', pair.proposal.idempotency_key],
+        ['TOOL_EVENT_REF', publication.attestation.tool_event_ref],
+        ['NONCE', publication.attestation.nonce],
+      ] as const) {
+        const identity = consumptionIdentityForValue({
+          review_id: input.review.review_id,
+          idempotency_key: pair.proposal.idempotency_key,
+          kind,
+          value,
+          consumed_at: input.snapshot.cutoff_at,
+        });
+        if (durableConsumptions.has(identity)) {
+          throw new Error(`${kind.toLowerCase()} was already consumed by this review`);
+        }
+      }
       if (nonceSet.has(publication.attestation.nonce)) {
         throw new Error('attestation nonce is reused');
       }
@@ -573,17 +632,18 @@ export function reconcileResultPublications(input: {
       changed = true;
       continue;
     }
-    if (evidence.evidence_status === 'DEGRADED_EVIDENCE') {
-      invalidLane(lane);
-      changed = true;
-      continue;
-    }
     lane.status = 'COMPLETE';
     lane.findings = evidence.result.findings;
     lane.diagnostic_ids = evidence.diagnostics.map((diagnostic) => diagnostic.diagnostic_id);
     lane.last_processed_activity_ref = publication.activity.event_ref;
     lane.last_processed_activity_at = publication.activity.observed_at;
-    if (evidence.result.role === 'code-reviewer') lane.recommendation = evidence.result.recommendation;
+    if (evidence.result.role === 'code-reviewer') {
+      lane.recommendation = evidence.evidence_status === 'DEGRADED_EVIDENCE'
+        && evidence.result.recommendation === 'APPROVE'
+        ? 'COMMENT'
+        : evidence.result.recommendation;
+      if (evidence.evidence_status === 'DEGRADED_EVIDENCE') lane.failure_code = 'DIAGNOSTIC_DEGRADED';
+    }
     else lane.architectural_status = evidence.result.architectural_status;
     if (lane.provenance !== undefined) lane.provenance.completed_at = publication.published_at;
     output.diagnostics.push(...evidence.diagnostics);
@@ -708,6 +768,7 @@ export function finalizeReview(input: {
       lanes: lanes.filter((lane) => lane.status === 'COMPLETE'),
       batched: input.review.review_flags.includes('BATCHED_REVIEW'),
       resume: input.review.current_attempt > 1,
+      attempt,
     }),
   ];
   const evidenceStatus = reviewers.some((lane) => lane.failure_code === 'DIAGNOSTIC_DEGRADED')
@@ -804,6 +865,46 @@ function reviewEffect(record: ReviewRecord): DurableTransactionEffect {
   };
 }
 
+function activeStatusTransitionEffects(
+  current: ReviewRecord,
+  output: ReviewRecord,
+): DurableTransactionEffect[] {
+  if (current.status === output.status) return [];
+  if (output.status === 'FINALIZED' || output.status === 'BLOCKED') {
+    return [{
+      name: 'active-overlay',
+      mode: 'REMOVE_MATCHING_ACTIVE',
+      target: { area: 'REVIEW_STATE', path: 'active.json' },
+      review_id: current.review_id,
+      expected_status: current.status,
+      expected_revision: current.revision,
+    }];
+  }
+  if (current.status === 'BLOCKED') {
+    return [{
+      name: 'active-overlay',
+      mode: 'RESTORE_MISSING_ACTIVE',
+      target: { area: 'REVIEW_STATE', path: 'active.json' },
+      payload: { schema_version: 1, review_id: current.review_id, status: output.status },
+      review_id: current.review_id,
+      expected_status: current.status,
+      expected_revision: current.revision,
+    }];
+  }
+  if (current.status === 'FINALIZED') {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'finalized reviews cannot transition back to active');
+  }
+  return [{
+    name: 'active-overlay',
+    mode: 'UPDATE_MATCHING_ACTIVE',
+    target: { area: 'REVIEW_STATE', path: 'active.json' },
+    payload: { schema_version: 1, review_id: current.review_id, status: output.status },
+    review_id: current.review_id,
+    expected_status: current.status,
+    expected_revision: current.revision,
+  }];
+}
+
 async function readPersistedReview(paths: ReviewPersistencePaths, reviewId: string): Promise<ReviewRecord> {
   const value = await readJson(join(paths.reviewRoot, reviewId, 'review.json'));
   if (!isObject(value) || value.review_id !== reviewId || !Number.isSafeInteger(value.revision)) {
@@ -853,11 +954,9 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
   return {
     async start({ record, idempotency_key: idempotencyKey, crashAt }) {
       const resolved = await paths();
-      // START-scoped journals are retained and Task 2 revalidates their revision-one
-      // review effect on every root scan. A locator-backed REVIEW transaction provides
-      // the same create-once allocation and root recovery without becoming stale after
-      // the first lane mutation.
+      const terminal = record.status === 'FINALIZED' || record.status === 'BLOCKED';
       await runDurableTransaction(resolved, {
+        journal_scope: 'START',
         idempotency_key: idempotencyKey,
         review_id: record.review_id,
         operation: 'START_REVIEW',
@@ -865,12 +964,17 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         expected_revision: 0,
         effects: [
           reviewEffect(record),
-          {
+          ...(terminal ? [{
+            name: 'report' as const,
+            mode: 'CREATE_ONCE_JSON' as const,
+            target: { area: 'FINAL_REVIEWS' as const, path: `${record.review_id}.json` },
+            payload: projectFinalReviewArtifact(record),
+          }] : [{
             name: 'active-overlay',
-            mode: 'CREATE_ONCE_JSON',
-            target: { area: 'REVIEW_STATE', path: 'active.json' },
+            mode: 'CREATE_ONCE_JSON' as const,
+            target: { area: 'REVIEW_STATE' as const, path: 'active.json' },
             payload: { schema_version: 1, review_id: record.review_id, status: record.status },
-          },
+          }]),
         ],
         response: record,
       }, crashAt === undefined ? {} : { crashAt });
@@ -954,12 +1058,13 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         persistedPublications.push(publicationValue);
       }
       const persistedSnapshot: ActivitySnapshot = { ...snapshot, publications: persistedPublications };
-      const output = reconcileResultPublications({
+      const consumedMarkers = await readReviewConsumptionMarkers(resolved, reviewId);
+      const output = reconcileResultPublicationsTrusted({
         review: current,
         proposals: persistedProposals,
         snapshot: persistedSnapshot,
         now,
-      });
+      }, consumedMarkers);
       if (output === current) return current;
       const accepted = output.lanes.filter((lane) => {
         const before = current.lanes.find((candidate) => candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
@@ -973,16 +1078,36 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         revision: current.revision,
       });
       const effects: DurableTransactionEffect[] = [];
-      if (accepted.length > 0) {
-        effects.push({
-          name: 'consume', mode: 'CREATE_ONCE_JSON',
-          target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${key}/consumed` },
-          payload: { schema_version: 1, state: 'CONSUMED', review_id: reviewId, idempotency_key: key, consumed_at: snapshot.cutoff_at },
-        });
-      }
       for (const lane of accepted) {
         const proposal = persistedProposals.find((candidate) => candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
         if (proposal === undefined) throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'terminal lane has no durable proposal');
+        const publication = persistedPublications.find((candidate) =>
+          isObject(candidate) && candidate.publication_id === proposal.idempotency_key) as ResultPostToolPublication | undefined;
+        if (publication === undefined) throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'terminal lane has no durable post-tool publication');
+        effects.push(
+          {
+            name: 'proposal', mode: 'CREATE_ONCE_JSON',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${proposal.idempotency_key}/proposal` },
+            payload: proposal,
+          },
+          {
+            name: 'post-tool', mode: 'CREATE_ONCE_JSON',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${proposal.idempotency_key}/post-tool` },
+            payload: publication,
+          },
+          createReviewConsumptionEffect({
+            review_id: reviewId, idempotency_key: key, kind: 'PROPOSAL_KEY',
+            value: proposal.idempotency_key, consumed_at: snapshot.cutoff_at,
+          }),
+          createReviewConsumptionEffect({
+            review_id: reviewId, idempotency_key: key, kind: 'TOOL_EVENT_REF',
+            value: publication.attestation.tool_event_ref, consumed_at: snapshot.cutoff_at,
+          }),
+          createReviewConsumptionEffect({
+            review_id: reviewId, idempotency_key: key, kind: 'NONCE',
+            value: publication.attestation.nonce, consumed_at: snapshot.cutoff_at,
+          }),
+        );
         effects.push({
           name: 'lane', mode: 'CREATE_ONCE_JSON',
           target: { area: 'REVIEW_STATE', path: `${reviewId}/lanes/${lane.lane_id}-attempt-${lane.attempt}/terminal` },
@@ -993,6 +1118,7 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         });
       }
       effects.push(reviewEffect(output));
+      effects.push(...activeStatusTransitionEffects(current, output));
       await runDurableTransaction(resolved, {
         idempotency_key: key,
         review_id: reviewId,
@@ -1014,10 +1140,7 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         input: { current_scope_hash: currentScopeHash }, expected_revision: current.revision,
         effects: [
           reviewEffect(output),
-          {
-            name: 'active-overlay', mode: 'CREATE_ONCE_JSON', target: { area: 'REVIEW_STATE', path: 'active.json' },
-            payload: { schema_version: 1, review_id: reviewId, status: 'REVIEWING' },
-          },
+          ...activeStatusTransitionEffects(current, output),
         ],
         response: output,
       });
@@ -1035,7 +1158,7 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         effects: [
           reviewEffect(output),
           { name: 'report', mode: 'CREATE_ONCE_JSON', target: { area: 'FINAL_REVIEWS', path: `${reviewId}.json` }, payload: projectFinalReviewArtifact(output) },
-          { name: 'active-overlay', mode: 'REMOVE_MATCHING_ACTIVE', target: { area: 'REVIEW_STATE', path: 'active.json' }, review_id: reviewId },
+          ...activeStatusTransitionEffects(current, output),
         ],
         response: output,
       });

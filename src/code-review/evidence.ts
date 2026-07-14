@@ -8,6 +8,7 @@ import type {
   LaneResult,
   LaneResultProposal,
   ResultPostToolPublication,
+  ReviewAttempt,
   ReviewFinding,
   ReviewRecord,
 } from './contract.js';
@@ -602,29 +603,63 @@ export function validateLaneIndependence(input: {
   lanes: readonly LaneRecord[];
   batched: boolean;
   resume: boolean;
+  attempt: ReviewAttempt;
 }): string[] {
   const reasons: string[] = [];
   const current = input.lanes.filter((lane) => lane.provenance !== undefined);
   if (current.length !== input.lanes.length) reasons.push('INDEPENDENT_REVIEW_PROVENANCE_MISSING');
   for (const lane of current) {
     if (lane.provenance!.tracker_lane_id !== lane.lane_id) reasons.push(`TRACKER_LANE_MISMATCH:${lane.lane_id}`);
+    try {
+      if (timestamp(lane.provenance!.first_seen_at, 'lane first_seen_at')
+        > timestamp(lane.provenance!.completed_at, 'lane completed_at')) {
+        reasons.push(`LANE_PROVENANCE_INTERVAL_INVALID:${lane.lane_id}`);
+      }
+    } catch {
+      reasons.push(`LANE_PROVENANCE_INTERVAL_INVALID:${lane.lane_id}`);
+    }
+    if (input.attempt.lane_ids.filter((laneId) => laneId === lane.lane_id).length !== 1
+      || lane.attempt > input.attempt.attempt
+      || (!input.resume && lane.attempt !== input.attempt.attempt)) {
+      reasons.push(`ATTEMPT_LANE_IDENTITY_MISMATCH:${lane.lane_id}`);
+    }
+    const bindings = input.attempt.bindings.filter((binding) =>
+      binding.lane_id === lane.lane_id && binding.attempt === lane.attempt);
+    if (bindings.length !== 1) {
+      reasons.push(`ATTEMPT_BINDING_MISSING_OR_DUPLICATE:${lane.lane_id}`);
+    } else {
+      const binding = bindings[0]!;
+      if (binding.role !== lane.role
+        || binding.batch_id !== lane.batch_id
+        || binding.thread_id !== lane.provenance!.thread_id) {
+        reasons.push(`ATTEMPT_BINDING_PROVENANCE_MISMATCH:${lane.lane_id}`);
+      }
+    }
   }
   const threads = current.map((lane) => lane.provenance!.thread_id);
   if (new Set(threads).size !== threads.length) reasons.push('NATIVE_CHILD_THREADS_MUST_BE_DISTINCT');
   const architects = current.filter((lane) => lane.role === 'architect');
   const reviewers = current.filter((lane) => lane.role === 'code-reviewer');
   if (architects.length !== 1 || reviewers.length === 0) reasons.push('REQUIRED_REVIEW_LANES_MISSING');
-  if (!input.resume && architects.length === 1 && reviewers.length > 0) {
-    const overlaps = reviewers.some((reviewer) => {
+  if (architects.length === 1 && reviewers.length > 0) {
+    const architect = architects[0]!;
+    const reviewersRequiringOverlap = input.resume
+      ? reviewers.filter((reviewer) =>
+          reviewer.attempt === input.attempt.attempt && architect.attempt === input.attempt.attempt)
+      : reviewers;
+    const overlapRequired = !input.resume || reviewersRequiringOverlap.length > 0;
+    const overlaps = reviewersRequiringOverlap.some((reviewer) => {
       try {
-        return intervalsOverlap(architects[0]!.provenance!, reviewer.provenance!);
+        return intervalsOverlap(architect.provenance!, reviewer.provenance!);
       } catch {
         return false;
       }
     });
-    if (!overlaps) reasons.push(input.batched
+    if (overlapRequired && !overlaps) reasons.push(input.batched
       ? 'BATCHED_ARCHITECT_MUST_OVERLAP_FIRST_REVIEWER_WAVE'
-      : 'INITIAL_REVIEWER_ARCHITECT_INTERVALS_MUST_OVERLAP');
+      : input.resume
+        ? 'REPLACEMENT_REVIEWER_ARCHITECT_INTERVALS_MUST_OVERLAP'
+        : 'INITIAL_REVIEWER_ARCHITECT_INTERVALS_MUST_OVERLAP');
   }
   return [...new Set(reasons)];
 }

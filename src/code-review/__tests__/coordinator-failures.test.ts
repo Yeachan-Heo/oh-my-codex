@@ -26,6 +26,7 @@ import {
 import * as coordinatorModule from '../coordinator.js';
 import {
   atomicCreatePrivateJson,
+  readReviewConsumptionMarkers,
   resolveReviewPersistencePaths,
   type DurableTransactionBoundary,
 } from '../persistence.js';
@@ -190,6 +191,63 @@ function publication(proposal: LaneResultProposal, at: string): ResultPostToolPu
 }
 
 describe('review coordinator failure and concurrency invariants', () => {
+  it('publishes a terminal no-changes review without reserving the active pointer', async () => {
+    await withTemporaryReviewRoot(async (root) => {
+      const emptyPlan: BatchPlan = { review_flags: [], batches: [], required_lanes: [] };
+      const emptyScope: ScopeManifest = {
+        ...scope(),
+        selector: { explicit_paths: ['missing.ts'] },
+        files: [],
+        changed_lines: 0,
+      };
+      const record = createInitialReviewRecord({
+        review_id: REVIEW_ID,
+        session_id: 'session-1',
+        root_thread_id: 'root-1',
+        scope: emptyScope,
+        batch_plan: emptyPlan,
+        now: START,
+      });
+      const durable = durableFactory()({ workingDirectory: root, session_id: 'session-1' });
+      const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
+      const finalized = await durable.start({ record, idempotency_key: START_KEY });
+
+      assert.equal(finalized.status, 'FINALIZED');
+      await assert.rejects(readFile(paths.activePath, 'utf8'), (error: unknown) => (
+        (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ));
+      const artifact = JSON.parse(await readFile(join(paths.reviewsRoot, `${REVIEW_ID}.json`), 'utf8')) as {
+        verdict?: { rule_id?: string };
+      };
+      assert.equal(artifact.verdict?.rule_id, 'NO_CHANGES');
+      assert.match(await readFile(join(paths.reviewsRoot, `${REVIEW_ID}.md`), 'utf8'), /NO_CHANGES|No changes/i);
+
+      const nextReviewId = '44444444-4444-4444-8444-444444444444';
+      const plan: BatchPlan = {
+        review_flags: [],
+        batches: [{ batch_id: 'batch-1', module_root: '.', files: ['README.md'], changed_lines: 1, oversized_single_file: false }],
+        required_lanes: [
+          { lane_id: 'reviewer-batch-1', role: 'code-reviewer', batch_id: 'batch-1' },
+          { lane_id: 'architect-global', role: 'architect', batch_id: 'global' },
+        ],
+      };
+      const next = createInitialReviewRecord({
+        review_id: nextReviewId,
+        session_id: 'session-1',
+        root_thread_id: 'root-1',
+        scope: scope(),
+        batch_plan: plan,
+        now: START,
+      });
+      await durable.start({ record: next, idempotency_key: '55555555-5555-4555-8555-555555555555' });
+      assert.deepEqual(JSON.parse(await readFile(paths.activePath, 'utf8')), {
+        schema_version: 1,
+        review_id: nextReviewId,
+        status: 'REVIEWING',
+      });
+    });
+  });
+
   it('rejects invalid timeout configuration instead of falling back', () => {
     for (const value of ['29999', '3600001', '0', '-1', '1.5', 'garbage']) {
       assert.throws(() => resolveLaneTimeoutMs({ OMX_CODE_REVIEW_LANE_TIMEOUT_MS: value }), /configuration|timeout/i);
@@ -257,6 +315,17 @@ describe('review coordinator failure and concurrency invariants', () => {
     assert.equal(noEvents.lanes[0]!.status, 'TIMED_OUT');
   });
 
+  it('rejects caller-supplied consumption state', () => {
+    const untrustedInput = {
+      review: running(),
+      proposals: [],
+      snapshot: { cutoff_at: '2026-07-14T00:00:30.000Z', events: [], publications: [] },
+      consumedToolEventRefs: new Set<string>(),
+      now: new Date('2026-07-14T00:00:30.000Z'),
+    };
+    assert.throws(() => reconcileResultPublications(untrustedInput), /durable|marker|caller|consumption/i);
+  });
+
   it('linearizes the snapshot cutoff and admits only a fully combined publication', () => {
     const record = running();
     const proposal = resultProposal(record);
@@ -265,7 +334,6 @@ describe('review coordinator failure and concurrency invariants', () => {
       review: record,
       proposals: [proposal],
       snapshot: { cutoff_at: '2026-07-14T00:01:00.000Z', events: [], publications: [before] },
-      consumedToolEventRefs: new Set(),
       now: new Date('2026-07-14T00:02:00.000Z'),
     });
     assert.equal(accepted.lanes[0]!.status, 'COMPLETE', 'PREPARED before deadline must survive later recovery');
@@ -275,7 +343,6 @@ describe('review coordinator failure and concurrency invariants', () => {
       review: record,
       proposals: [proposal],
       snapshot: { cutoff_at: '2026-07-14T00:01:00.001Z', events: [], publications: [after] },
-      consumedToolEventRefs: new Set(),
       now: new Date('2026-07-14T00:01:00.001Z'),
     });
     assert.equal(rejected.lanes[0]!.status, 'TIMED_OUT');
@@ -283,7 +350,6 @@ describe('review coordinator failure and concurrency invariants', () => {
       review: record,
       proposals: [proposal],
       snapshot: { cutoff_at: '2026-07-14T00:00:59.999Z', events: [], publications: [{ ...before, attestation: undefined } as unknown as ResultPostToolPublication] },
-      consumedToolEventRefs: new Set(),
       now: START,
     }), /atomic|attestation|publication/i);
   });
@@ -299,7 +365,6 @@ describe('review coordinator failure and concurrency invariants', () => {
       review: record,
       proposals: [proposal],
       snapshot: { cutoff_at: '2026-07-14T00:00:59.500Z', events: [], publications: [unmatched] },
-      consumedToolEventRefs: new Set(),
       now: new Date('2026-07-14T00:00:59.500Z'),
     });
     assert.deepEqual(reconciled, record);
@@ -313,7 +378,6 @@ describe('review coordinator failure and concurrency invariants', () => {
       review: timedOut,
       proposals: [],
       snapshot: { cutoff_at: '2099-01-01T00:00:00.000Z', events: [], publications: [] },
-      consumedToolEventRefs: new Set(),
       now: new Date('2099-01-01T00:00:00.000Z'),
     });
     assert.equal(reconciled.lanes[0]!.status, 'TIMED_OUT');
@@ -386,7 +450,7 @@ describe('review coordinator failure and concurrency invariants', () => {
     }), /CLI|fresh|proposal/i);
   });
 
-  it('persists concurrent child proposals and one atomic reconciliation through Task 2 WAL', async () => {
+  it('root-recovers an initial PREPARED transaction and continues past revision one', async () => {
     await withTemporaryReviewRoot(async (root) => {
       const plan: BatchPlan = {
         review_flags: [],
@@ -404,12 +468,20 @@ describe('review coordinator failure and concurrency invariants', () => {
       const durable = durableFactory()({ workingDirectory: root, session_id: 'session-1' });
       const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
       await assert.rejects(
-        durable.start({ record, idempotency_key: START_KEY, crashAt: 'after:locator' }),
+        durable.start({ record, idempotency_key: START_KEY, crashAt: 'after:prepared' }),
         /injected crash/i,
       );
       await assert.rejects(readFile(paths.activePath, 'utf8'), (error: unknown) => (
         (error as NodeJS.ErrnoException).code === 'ENOENT'
       ));
+      await assert.rejects(
+        readFile(join(paths.reviewRoot, REVIEW_ID, 'review.json'), 'utf8'),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+      );
+      await assert.rejects(
+        readdir(paths.pendingReviewTransactionsRoot),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+      );
       const recoveredStart = await durable.get(REVIEW_ID);
       assert.equal(recoveredStart.revision, 1);
       assert.deepEqual(JSON.parse(await readFile(paths.activePath, 'utf8')), {
@@ -425,6 +497,7 @@ describe('review coordinator failure and concurrency invariants', () => {
         tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-architect', tracker_lane_id: 'architect-global', tracker_path: 'tracker-architect', first_seen_at: START.toISOString() },
         now: START,
       });
+      assert.equal((await durable.get(REVIEW_ID)).revision, 3, 'later root scans must not replay a stale revision-one START');
       const beforeProposalRevision = (await durable.get(REVIEW_ID)).revision;
       const reviewerEvent = {
         event: 'RESULT' as const, review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1', scope_hash: HASH,
@@ -464,15 +537,15 @@ describe('review coordinator failure and concurrency invariants', () => {
       assert.equal(reconciled.lanes.filter((lane) => lane.status === 'COMPLETE').length, 2);
       assert.equal(reconciled.lanes.some((lane) => lane.last_processed_activity_ref === reviewerPublication.activity.event_ref), true);
       assert.equal(reconciled.lanes.some((lane) => lane.last_processed_activity_ref === architectPublication.activity.event_ref), true);
-      const submissionDirs = await readdir(join(paths.reviewRoot, REVIEW_ID, 'submissions'));
-      const consumed = await Promise.all(submissionDirs.map(async (directory) => {
-        try {
-          return await readFile(join(paths.reviewRoot, REVIEW_ID, 'submissions', directory, 'consumed'), 'utf8');
-        } catch {
-          return null;
-        }
-      }));
-      assert.equal(consumed.filter((value) => value !== null).length, 1);
+      const consumed = await readReviewConsumptionMarkers(paths, REVIEW_ID);
+      assert.equal(consumed.length, 6);
+      assert.deepEqual(
+        consumed.reduce<Record<string, number>>((counts, marker) => ({
+          ...counts,
+          [marker.kind]: (counts[marker.kind] ?? 0) + 1,
+        }), {}),
+        { NONCE: 2, PROPOSAL_KEY: 2, TOOL_EVENT_REF: 2 },
+      );
       assert.equal(await readFile(join(paths.reviewRoot, REVIEW_ID, 'lanes', 'reviewer-batch-1-attempt-1', 'terminal'), 'utf8').then(() => true), true);
       assert.equal(await readFile(join(paths.reviewRoot, REVIEW_ID, 'lanes', 'architect-global-attempt-1', 'terminal'), 'utf8').then(() => true), true);
       const replayed = await durable.reconcile({ review_id: REVIEW_ID, snapshot, now: new Date('2026-07-14T00:06:00.000Z') });
@@ -501,18 +574,58 @@ describe('review coordinator failure and concurrency invariants', () => {
         event: { event: 'START', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1', thread_id: 'child-reviewer', idempotency_key: REVIEWER_START_KEY },
         tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker-reviewer', first_seen_at: START.toISOString() }, now: START,
       });
-      const proposal = await durable.recordResult({
+      await durable.recordStart({
+        event: { event: 'START', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global', thread_id: 'child-architect', idempotency_key: ARCHITECT_START_KEY },
+        tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-architect', tracker_lane_id: 'architect-global', tracker_path: 'tracker-architect', first_seen_at: START.toISOString() }, now: START,
+      });
+      const reviewerProposal = await durable.recordResult({
         event: { event: 'RESULT', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1', scope_hash: HASH, result: resultProposal(running()).result, idempotency_key: RESULT_KEY },
         source: 'MCP', now: START,
       });
-      const published = publication(proposal, '2026-07-14T00:00:59.000Z');
+      const architectKey = '33333333-3333-4333-8333-333333333333';
+      const architectProposal = await durable.recordResult({
+        event: {
+          event: 'RESULT', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global', scope_hash: HASH,
+          result: {
+            role: 'architect', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global', batch_id: 'global',
+            scope_hash: HASH, architectural_status: 'CLEAR', findings: [],
+          },
+          idempotency_key: architectKey,
+        },
+        source: 'MCP', now: START,
+      });
+      const reviewerPublication = publication(reviewerProposal, '2026-07-14T00:00:59.000Z');
+      const rawArchitectPublication = publication(architectProposal, '2026-07-14T00:00:59.100Z');
+      const architectPublication: ResultPostToolPublication = {
+        ...rawArchitectPublication,
+        activity: { ...rawArchitectPublication.activity, child_thread_id: 'child-architect' },
+        attestation: { ...rawArchitectPublication.attestation, child_thread_id: 'child-architect' },
+      };
       const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
-      await atomicCreatePrivateJson(join(paths.reviewRoot, REVIEW_ID, 'submissions', RESULT_KEY, 'post-tool'), published);
-      const snapshot = { cutoff_at: '2026-07-14T00:00:59.500Z', events: [], publications: [published], diagnostic_events: [] };
+      await Promise.all([
+        atomicCreatePrivateJson(join(paths.reviewRoot, REVIEW_ID, 'submissions', RESULT_KEY, 'post-tool'), reviewerPublication),
+        atomicCreatePrivateJson(join(paths.reviewRoot, REVIEW_ID, 'submissions', architectKey, 'post-tool'), architectPublication),
+      ]);
+      const snapshot = {
+        cutoff_at: '2026-07-14T00:00:59.500Z',
+        events: [],
+        publications: [reviewerPublication, architectPublication],
+        diagnostic_events: [],
+      };
       await assert.rejects(durable.reconcile({ review_id: REVIEW_ID, snapshot, now: new Date(snapshot.cutoff_at), crashAt: 'after:prepared' }), /injected crash/i);
+      assert.deepEqual(JSON.parse(await readFile(paths.activePath, 'utf8')), {
+        schema_version: 1,
+        review_id: REVIEW_ID,
+        status: 'REVIEWING',
+      });
       const recovered = await durable.reconcile({ review_id: REVIEW_ID, snapshot, now: new Date('2026-07-14T00:02:00.000Z') });
       assert.equal(recovered.lanes.find((lane) => lane.lane_id === 'reviewer-batch-1')?.status, 'COMPLETE');
-      assert.equal(recovered.revision, 3);
+      assert.equal(recovered.revision, 4);
+      assert.deepEqual(JSON.parse(await readFile(paths.activePath, 'utf8')), {
+        schema_version: 1,
+        review_id: REVIEW_ID,
+        status: 'READY_TO_SYNTHESIZE',
+      });
       const transactions = await readdir(join(paths.reviewRoot, REVIEW_ID, 'transactions'));
       const committed = await Promise.all(transactions.map(async (directory) => {
         try {
@@ -523,5 +636,104 @@ describe('review coordinator failure and concurrency invariants', () => {
       }));
       assert.equal(committed.some((value) => value?.includes('COMMITTED')), true);
     });
+  });
+
+  it('rejects nonce and tool-event reuse across separate observations', async () => {
+    for (const reusedIdentity of ['nonce', 'tool-event-ref'] as const) {
+      await withTemporaryReviewRoot(async (root) => {
+        const plan: BatchPlan = {
+          review_flags: [],
+          batches: [{ batch_id: 'batch-1', module_root: '.', files: ['README.md'], changed_lines: 1, oversized_single_file: false }],
+          required_lanes: [
+            { lane_id: 'reviewer-batch-1', role: 'code-reviewer', batch_id: 'batch-1' },
+            { lane_id: 'architect-global', role: 'architect', batch_id: 'global' },
+          ],
+        };
+        const record = createInitialReviewRecord({
+          review_id: REVIEW_ID,
+          session_id: 'session-1',
+          root_thread_id: 'root-1',
+          scope: scope(),
+          batch_plan: plan,
+          now: START,
+        });
+        const durable = durableFactory()({ workingDirectory: root, session_id: 'session-1' });
+        const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
+        await durable.start({ record, idempotency_key: START_KEY });
+        await durable.recordStart({
+          event: { event: 'START', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1', thread_id: 'child-reviewer', idempotency_key: REVIEWER_START_KEY },
+          tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker-reviewer', first_seen_at: START.toISOString() },
+          now: START,
+        });
+        await durable.recordStart({
+          event: { event: 'START', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global', thread_id: 'child-architect', idempotency_key: ARCHITECT_START_KEY },
+          tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-architect', tracker_lane_id: 'architect-global', tracker_path: 'tracker-architect', first_seen_at: START.toISOString() },
+          now: START,
+        });
+        const reviewerProposal = await durable.recordResult({
+          event: {
+            event: 'RESULT', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1', scope_hash: HASH,
+            result: resultProposal(running()).result, idempotency_key: RESULT_KEY,
+          },
+          source: 'MCP',
+          now: START,
+        });
+        const architectKey = '33333333-3333-4333-8333-333333333333';
+        const architectProposal = await durable.recordResult({
+          event: {
+            event: 'RESULT', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global', scope_hash: HASH,
+            result: {
+              role: 'architect', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global', batch_id: 'global',
+              scope_hash: HASH, architectural_status: 'CLEAR', findings: [],
+            },
+            idempotency_key: architectKey,
+          },
+          source: 'MCP',
+          now: START,
+        });
+        const reviewerPublication = publication(reviewerProposal, '2026-07-14T00:00:30.000Z');
+        await atomicCreatePrivateJson(
+          join(paths.reviewRoot, REVIEW_ID, 'submissions', RESULT_KEY, 'post-tool'),
+          reviewerPublication,
+        );
+        await durable.reconcile({
+          review_id: REVIEW_ID,
+          snapshot: { cutoff_at: '2026-07-14T00:00:31.000Z', events: [], publications: [reviewerPublication], diagnostic_events: [] },
+          now: new Date('2026-07-14T00:00:31.000Z'),
+        });
+        assert.deepEqual(
+          (await readReviewConsumptionMarkers(paths, REVIEW_ID)).map((marker) => marker.kind).sort(),
+          ['NONCE', 'PROPOSAL_KEY', 'TOOL_EVENT_REF'],
+        );
+
+        const baseArchitectPublication = publication(architectProposal, '2026-07-14T00:00:40.000Z');
+        const architectPublication: ResultPostToolPublication = {
+          ...baseArchitectPublication,
+          activity: {
+            ...baseArchitectPublication.activity,
+            child_thread_id: 'child-architect',
+            ...(reusedIdentity === 'tool-event-ref'
+              ? { event_ref: reviewerPublication.activity.event_ref }
+              : {}),
+          },
+          attestation: {
+            ...baseArchitectPublication.attestation,
+            child_thread_id: 'child-architect',
+            ...(reusedIdentity === 'tool-event-ref'
+              ? { tool_event_ref: reviewerPublication.attestation.tool_event_ref }
+              : { nonce: reviewerPublication.attestation.nonce }),
+          },
+        };
+        await atomicCreatePrivateJson(
+          join(paths.reviewRoot, REVIEW_ID, 'submissions', architectKey, 'post-tool'),
+          architectPublication,
+        );
+        await assert.rejects(durable.reconcile({
+          review_id: REVIEW_ID,
+          snapshot: { cutoff_at: '2026-07-14T00:00:41.000Z', events: [], publications: [architectPublication], diagnostic_events: [] },
+          now: new Date('2026-07-14T00:00:41.000Z'),
+        }), /consum|reuse|nonce|event.ref|evidence/i);
+      });
+    }
   });
 });

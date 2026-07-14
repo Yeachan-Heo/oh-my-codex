@@ -146,6 +146,37 @@ function publication(proposal: LaneResultProposal, child: string, at: string): R
 }
 
 describe('review coordinator lifecycle', () => {
+  it('finalizes an empty authoritative BatchPlan without creating review lanes', () => {
+    const emptyScope: ScopeManifest = {
+      ...scope(),
+      files: [],
+      changed_lines: 0,
+    };
+    const emptyPlan: BatchPlan = {
+      review_flags: [],
+      batches: [],
+      required_lanes: [],
+    };
+    const record = createInitialReviewRecord({
+      review_id: REVIEW_ID,
+      session_id: 'session-1',
+      root_thread_id: 'root-1',
+      scope: emptyScope,
+      batch_plan: emptyPlan,
+      now: START,
+    });
+
+    assert.equal(record.status, 'FINALIZED');
+    assert.deepEqual(record.batches, []);
+    assert.deepEqual(record.lanes, []);
+    assert.deepEqual(record.attempt_history[0]!.lane_ids, []);
+    assert.deepEqual(record.attempt_history[0]!.bindings, []);
+    assert.equal(record.attempt_history[0]!.status, 'FINALIZED');
+    assert.equal(record.verdict?.recommendation, 'COMMENT');
+    assert.equal(record.verdict?.rule_id, 'NO_CHANGES');
+    assert.equal(record.verdict?.clean, false);
+  });
+
   it('creates every planned lane with a ten-minute default and bounded configuration', () => {
     const record = initial();
     assert.equal(record.status, 'REVIEWING');
@@ -258,7 +289,6 @@ describe('review coordinator lifecycle', () => {
           publication(architectProposal, 'child-architect', '2026-07-14T00:04:01.000Z'),
         ],
       },
-      consumedToolEventRefs: new Set(),
       now: new Date('2026-07-14T00:05:00.000Z'),
     });
     assert.equal(reconciled.lanes.every((lane) => lane.status === 'COMPLETE'), true);
@@ -306,7 +336,7 @@ describe('review coordinator lifecycle', () => {
         { schema_version: 1, session_id: 'session-1', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1', child_thread_id: 'child-reviewer', event_ref: 'diag-ast', observed_at: '2026-07-14T00:03:01.000Z', program: 'node', args: ['ast-check.js'] },
       ],
     };
-    const reconciled = reconcileResultPublications({ review: record, proposals: [proposal], snapshot, consumedToolEventRefs: new Set(), now: new Date(snapshot.cutoff_at) });
+    const reconciled = reconcileResultPublications({ review: record, proposals: [proposal], snapshot, now: new Date(snapshot.cutoff_at) });
     assert.equal(reconciled.lanes[0]!.status, 'COMPLETE');
     assert.equal(reconciled.lanes[0]!.failure_code, undefined);
     assert.equal(reconciled.diagnostics.length, 2);
@@ -321,8 +351,42 @@ describe('review coordinator lifecycle', () => {
       },
       now: new Date(snapshot.cutoff_at),
     });
-    assert.equal(mismatched.lanes[0]!.status, 'INVALID');
-    assert.equal(mismatched.lanes[0]!.failure_code, 'LANE_EVIDENCE_INVALID');
+    assert.equal(mismatched.lanes[0]!.status, 'COMPLETE');
+    assert.equal(mismatched.lanes[0]!.failure_code, 'DIAGNOSTIC_DEGRADED');
+    assert.equal(mismatched.lanes[0]!.recommendation, 'COMMENT');
+    assert.equal(mismatched.status, 'REVIEWING');
+
+    const missingLedger = reconcileResultPublications({
+      review: record,
+      proposals: [proposal],
+      snapshot: { ...snapshot, diagnostic_events: [] },
+      now: new Date(snapshot.cutoff_at),
+    });
+    assert.equal(missingLedger.lanes[0]!.status, 'COMPLETE');
+    assert.equal(missingLedger.lanes[0]!.failure_code, 'DIAGNOSTIC_DEGRADED');
+    assert.equal(missingLedger.lanes[0]!.recommendation, 'COMMENT');
+
+    const incompleteResult: ReviewerLaneResult = { ...result, diagnostics: result.diagnostics.slice(0, 1) };
+    const incompleteProposal = createLaneResultProposal({
+      review: record,
+      event: {
+        event: 'RESULT', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1', scope_hash: HASH,
+        result: incompleteResult, idempotency_key: '44444444-4444-4444-8444-444444444444',
+      },
+      source: 'MCP',
+      now: START,
+    });
+    const incomplete = reconcileResultPublications({
+      review: record,
+      proposals: [incompleteProposal],
+      snapshot: {
+        ...snapshot,
+        publications: [publication(incompleteProposal, 'child-reviewer', '2026-07-14T00:04:00.000Z')],
+      },
+      now: new Date(snapshot.cutoff_at),
+    });
+    assert.equal(incomplete.lanes[0]!.status, 'INVALID');
+    assert.equal(incomplete.lanes[0]!.failure_code, 'LANE_EVIDENCE_INVALID');
     for (const observed_at of ['2026-07-14T00:05:00.001Z', '2026-07-13T23:59:59.999Z']) {
       assert.throws(() => reconcileResultPublications({
         review: record,
@@ -341,6 +405,13 @@ describe('review coordinator lifecycle', () => {
     const complete = {
       ...record,
       status: 'READY_TO_SYNTHESIZE' as const,
+      attempt_history: record.attempt_history.map((attempt) => ({
+        ...attempt,
+        bindings: attempt.bindings.map((binding) => ({
+          ...binding,
+          thread_id: binding.role === 'architect' ? 'child-architect' : 'child-reviewer',
+        })),
+      })),
       lanes: record.lanes.map((lane): LaneRecord => lane.role === 'architect'
         ? {
             ...lane,
