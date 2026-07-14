@@ -4480,3 +4480,36 @@ describe('applyRalplanGate', () => {
     assert.ok(result.gatedKeywords.includes('ultrawork'));
   });
 });
+
+describe('code-review canonical overlay preservation', () => {
+  it('keeps ralplan authoritative while adding a non-tracked code-review entry', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-code-review-overlay-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-keyword-code-review-overlay';
+    try {
+      await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$ralplan prepare the review plan',
+        sessionId,
+        threadId: 'thread-keyword-code-review-overlay',
+        nowIso: '2026-07-14T00:00:00.000Z',
+      });
+      const result = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the diff',
+        sessionId,
+        threadId: 'thread-keyword-code-review-overlay',
+        nowIso: '2026-07-14T00:01:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ralplan');
+      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['ralplan', 'code-review']);
+      assert.equal(existsSync(join(stateDir, 'sessions', sessionId, 'code-review-state.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});

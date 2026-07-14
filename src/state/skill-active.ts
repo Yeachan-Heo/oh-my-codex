@@ -35,6 +35,7 @@ export interface SkillActiveEntry {
   session_id?: string;
   thread_id?: string;
   turn_id?: string;
+  [key: string]: unknown;
 }
 
 export interface SkillActiveStateLike {
@@ -68,6 +69,15 @@ export interface SyncCanonicalSkillStateOptions {
   nowIso?: string;
   source?: string;
   allSessions?: boolean;
+}
+
+export interface MergeSessionAwareSkillOverlayInput {
+  authoritativeState: SkillActiveStateLike | null;
+  rootState?: SkillActiveStateLike | null;
+  overlay: SkillActiveEntry;
+  sessionId?: string;
+  rootThreadId?: string;
+  nowIso: string;
 }
 
 function safeString(value: unknown): string {
@@ -228,6 +238,149 @@ export function listActiveSkills(raw: unknown): SkillActiveEntry[] {
   }
 
   return [...deduped.values()];
+}
+
+function overlayField(entry: SkillActiveEntry, key: string): string {
+  return safeString(entry[key]).trim();
+}
+
+function overlayIdentityMatches(existing: SkillActiveEntry, incoming: SkillActiveEntry): boolean {
+  if (existing.skill !== incoming.skill) return false;
+  if (safeString(existing.session_id).trim() !== safeString(incoming.session_id).trim()) return false;
+
+  for (const field of ['review_id', 'root_thread_id', 'scope', 'deadline_at']) {
+    const incomingValue = overlayField(incoming, field);
+    const existingValue = overlayField(existing, field);
+    if (incomingValue && existingValue && incomingValue !== existingValue) return false;
+  }
+  return true;
+}
+
+function isTerminalOverlayEntry(entry: SkillActiveEntry): boolean {
+  if (entry.active === false || isTerminalSkillActivePhase(entry.phase)) return true;
+  return isTerminalSkillActivePhase(entry.status);
+}
+
+function assertCanonicalOverlayContext(
+  state: SkillActiveStateLike | null,
+  sessionId: string,
+  rootThreadId: string,
+): void {
+  if (!state) return;
+  const stateSessionId = safeString(state.session_id).trim();
+  if (sessionId && stateSessionId && stateSessionId !== sessionId) {
+    throw new Error(`Cannot merge skill overlay: canonical session ${stateSessionId} conflicts with ${sessionId}.`);
+  }
+  const stateThreadId = safeString(state.thread_id).trim();
+  if (rootThreadId && stateThreadId && stateThreadId !== rootThreadId) {
+    throw new Error(`Cannot merge skill overlay: canonical root thread ${stateThreadId} conflicts with ${rootThreadId}.`);
+  }
+
+  for (const entry of listActiveSkills(state)) {
+    const entrySessionId = safeString(entry.session_id).trim();
+    if (sessionId && entrySessionId && entrySessionId !== sessionId) {
+      throw new Error(`Cannot merge skill overlay: canonical session entry ${entrySessionId} conflicts with ${sessionId}.`);
+    }
+    const entryThreadId = safeString(entry.thread_id).trim();
+    if (rootThreadId && entryThreadId && entryThreadId !== rootThreadId) {
+      throw new Error(`Cannot merge skill overlay: canonical root thread entry ${entryThreadId} conflicts with ${rootThreadId}.`);
+    }
+  }
+}
+
+function relevantRootEntries(
+  state: SkillActiveStateLike | null | undefined,
+  sessionId: string,
+  rootThreadId: string,
+): SkillActiveEntry[] {
+  if (!state) return [];
+  return listActiveSkills(state).filter((entry) => {
+    const entrySessionId = safeString(entry.session_id ?? state.session_id).trim();
+    const entryThreadId = safeString(entry.thread_id ?? state.thread_id).trim();
+    if (sessionId && entrySessionId !== sessionId) return false;
+    if (rootThreadId && entryThreadId && entryThreadId !== rootThreadId) return false;
+    return true;
+  });
+}
+
+function canonicalTrackedSignature(entries: SkillActiveEntry[]): string[] {
+  return entries
+    .filter((entry) => isTrackedWorkflowMode(entry.skill))
+    .map((entry) => `${entry.skill}:${safeString(entry.phase).trim()}`)
+    .sort();
+}
+
+export function mergeSessionAwareSkillOverlay(
+  input: MergeSessionAwareSkillOverlayInput,
+): SkillActiveStateLike {
+  const sessionId = safeString(input.sessionId).trim();
+  const rootThreadId = safeString(input.rootThreadId).trim();
+  const overlaySessionId = safeString(input.overlay.session_id).trim();
+  const overlayThreadId = safeString(input.overlay.root_thread_id ?? input.overlay.thread_id).trim();
+  if (sessionId && overlaySessionId && overlaySessionId !== sessionId) {
+    throw new Error(`Cannot merge skill overlay: overlay session ${overlaySessionId} conflicts with ${sessionId}.`);
+  }
+  if (rootThreadId && overlayThreadId && overlayThreadId !== rootThreadId) {
+    throw new Error(`Cannot merge skill overlay: overlay root thread ${overlayThreadId} conflicts with ${rootThreadId}.`);
+  }
+  assertCanonicalOverlayContext(input.authoritativeState, sessionId, rootThreadId);
+
+  const authoritativeEntries = listActiveSkills(input.authoritativeState ?? {});
+  const rootEntries = relevantRootEntries(input.rootState, sessionId, rootThreadId);
+  if (
+    input.authoritativeState
+    && rootEntries.length > 0
+    && JSON.stringify(canonicalTrackedSignature(authoritativeEntries))
+      !== JSON.stringify(canonicalTrackedSignature(rootEntries))
+  ) {
+    throw new Error('Cannot merge skill overlay: conflicting canonical session and root copies.');
+  }
+
+  const existingOverlay = authoritativeEntries.find((entry) => overlayIdentityMatches(entry, input.overlay));
+  let nextEntries = authoritativeEntries.filter((entry) => (
+    isTrackedWorkflowMode(entry.skill)
+    && !overlayIdentityMatches(entry, input.overlay)
+  ));
+  if (!isTerminalOverlayEntry(input.overlay)) {
+    const activatedAt = safeString(existingOverlay?.activated_at).trim()
+      || safeString(input.overlay.activated_at).trim()
+      || input.nowIso;
+    const reviewStart = overlayField(existingOverlay ?? input.overlay, 'review_start')
+      || overlayField(input.overlay, 'review_start')
+      || (input.overlay.skill === 'code-review' ? input.nowIso : '');
+    nextEntries.push({
+      ...(existingOverlay ?? {}),
+      ...input.overlay,
+      active: true,
+      activated_at: activatedAt,
+      updated_at: safeString(input.overlay.updated_at).trim() || input.nowIso,
+      session_id: sessionId || overlaySessionId || undefined,
+      thread_id: safeString(input.overlay.thread_id).trim() || rootThreadId || undefined,
+      ...(reviewStart ? { review_start: reviewStart } : {}),
+    });
+  }
+
+  const trackedPrimary = nextEntries.find((entry) => isTrackedWorkflowMode(entry.skill));
+  const currentPrimary = nextEntries.find((entry) => entry.skill === safeString(input.authoritativeState?.skill).trim());
+  const primary = trackedPrimary ?? currentPrimary ?? nextEntries[0];
+  const inherited = nextEntries.length > 0
+    ? clearTerminalSkillActiveMarkers({ ...(input.authoritativeState ?? {}) })
+    : { ...(input.authoritativeState ?? {}) };
+  return {
+    ...inherited,
+    version: 1,
+    active: nextEntries.length > 0,
+    skill: primary?.skill ?? safeString(inherited.skill).trim(),
+    keyword: primary?.skill === safeString(input.authoritativeState?.skill).trim()
+      ? safeString(input.authoritativeState?.keyword).trim()
+      : primary ? `$${primary.skill}` : safeString(inherited.keyword).trim(),
+    phase: primary?.phase ?? safeString(inherited.phase).trim(),
+    activated_at: primary?.activated_at ?? (safeString(inherited.activated_at).trim() || input.nowIso),
+    updated_at: input.nowIso,
+    session_id: primary?.session_id ?? (sessionId || undefined),
+    thread_id: primary?.thread_id ?? (rootThreadId || undefined),
+    active_skills: nextEntries,
+  };
 }
 
 export function normalizeSkillActiveState(raw: unknown): SkillActiveStateLike | null {

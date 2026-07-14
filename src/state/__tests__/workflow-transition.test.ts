@@ -8,6 +8,7 @@ import {
   buildWorkflowTransitionMessage,
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
+  isTrackedWorkflowMode,
   readActiveWorkflowModes,
 } from '../workflow-transition.js';
 import { reconcileWorkflowTransition } from '../workflow-transition-reconcile.js';
@@ -378,4 +379,15 @@ describe('workflow transition rules', () => {
     });
   });
 
+});
+
+describe('code-review overlay transition boundary', () => {
+  it('keeps code-review outside tracked workflow compatibility decisions', () => {
+    assert.equal(isTrackedWorkflowMode('code-review'), false);
+    const decision = evaluateWorkflowTransition(['ralplan', 'code-review'], 'team');
+    assert.equal(decision.allowed, true);
+    assert.deepEqual(decision.currentModes, ['ralplan']);
+    assert.deepEqual(decision.autoCompleteModes, ['ralplan']);
+    assert.deepEqual(decision.resultingModes, ['team']);
+  });
 });

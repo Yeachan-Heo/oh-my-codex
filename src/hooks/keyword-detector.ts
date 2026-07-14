@@ -23,6 +23,7 @@ import { readTeamModeConfig } from '../config/team-mode.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
   listActiveSkills,
+  mergeSessionAwareSkillOverlay,
   writeSkillActiveStateCopiesForStateDir,
   type SkillActiveEntry,
 } from '../state/skill-active.js';
@@ -1703,7 +1704,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     return workflowState;
   }
 
-  const state: SkillActiveState = {
+  const overlayState: SkillActiveState = {
     version: 1,
     active: true,
     skill: match.skill,
@@ -1728,6 +1729,24 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
     ...(match.skill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
   };
+  let state: SkillActiveState;
+  try {
+    state = mergeSessionAwareSkillOverlay({
+      authoritativeState: previous,
+      rootState: previousRoot,
+      overlay: overlayState.active_skills![0]!,
+      sessionId: input.sessionId,
+      rootThreadId: input.threadId,
+      nowIso,
+    }) as SkillActiveState;
+  } catch (error) {
+    return {
+      ...(previous ?? overlayState),
+      updated_at: nowIso,
+      active_skills: listActiveSkills(previous ?? {}),
+      transition_error: error instanceof Error ? error.message : String(error),
+    };
+  }
 
   try {
     const nextState = await persistStatefulSkillSeedState(

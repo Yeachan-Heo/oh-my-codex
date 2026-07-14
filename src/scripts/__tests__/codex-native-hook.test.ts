@@ -26099,3 +26099,38 @@ describe('native Stop autopilot deep-interview wait', () => {
     }
   });
 });
+
+describe('native Stop malformed overlay canonical state', () => {
+  it('fails closed on the active ralplan detail with one actionable continuation response', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-native-stop-malformed-overlay-canonical-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-native-stop-malformed-overlay';
+    const threadId = 'thread-native-stop-malformed-overlay';
+    try {
+      await writeJson(join(stateDir, 'session.json'), { session_id: sessionId, cwd });
+      await writeJson(join(stateDir, 'sessions', sessionId, 'ralplan-state.json'), {
+        mode: 'ralplan',
+        active: true,
+        current_phase: 'planning',
+        session_id: sessionId,
+        thread_id: threadId,
+        cwd,
+      });
+      await writeFile(join(stateDir, 'sessions', sessionId, 'skill-active-state.json'), '{ malformed canonical');
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: 'Stop',
+        cwd,
+        session_id: sessionId,
+        thread_id: threadId,
+        turn_id: 'turn-native-stop-malformed-overlay',
+      }, { cwd });
+
+      assert.equal(result.outputJson?.decision, 'block');
+      assert.equal(result.outputJson?.stopReason, 'skill_ralplan_planning_continue_artifact');
+      assert.match(String(result.outputJson?.reason), /continue from the current ralplan artifact/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
