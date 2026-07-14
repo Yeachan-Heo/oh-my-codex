@@ -1569,11 +1569,11 @@ async function validateCurrentReviewState(
   path: string,
   reviewId: string,
   expectedRevision: number,
-  appliedTransactionId?: string,
+  options: { appliedTransactionId?: string; requireApplied: boolean },
 ): Promise<ReviewRecord | undefined> {
   const current = await readJsonIfPresent(path);
   if (current === undefined) {
-    if (expectedRevision !== 0) {
+    if (options.requireApplied || expectedRevision !== 0) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review record is missing');
     }
     return undefined;
@@ -1583,10 +1583,10 @@ async function validateCurrentReviewState(
   }
   const revision = current.revision as number;
   const validated = validateReviewRecordPayload(current, reviewId, revision);
-  if (revision === expectedRevision) return validated;
-  if (appliedTransactionId !== undefined
+  if (!options.requireApplied && revision === expectedRevision) return validated;
+  if (options.appliedTransactionId !== undefined
     && revision === expectedRevision + 1
-    && validated.last_applied_transaction_id === appliedTransactionId) {
+    && validated.last_applied_transaction_id === options.appliedTransactionId) {
     return validated;
   }
   throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review revision is ambiguous');
@@ -1595,7 +1595,7 @@ async function validateCurrentReviewState(
 async function validateReviewEffectCurrentState(
   paths: ReviewPersistencePaths,
   intent: Pick<DurableTransactionPlan, 'review_id' | 'expected_revision' | 'effects'>,
-  appliedTransactionId?: string,
+  options: { appliedTransactionId?: string; requireApplied: boolean },
 ): Promise<void> {
   const effect = intent.effects.find((candidate) => candidate.mode === 'APPLY_REVIEW_REVISION');
   if (!effect) return;
@@ -1603,7 +1603,7 @@ async function validateReviewEffectCurrentState(
     targetPath(paths, effect),
     intent.review_id,
     intent.expected_revision,
-    appliedTransactionId,
+    options,
   );
 }
 
@@ -1617,7 +1617,7 @@ async function applyReviewRevision(
     path,
     prepared.review_id,
     prepared.expected_revision,
-    prepared.transaction_id,
+    { appliedTransactionId: prepared.transaction_id, requireApplied: false },
   );
   if (current === undefined) {
     await atomicCreatePrivateJson(path, {
@@ -1709,13 +1709,20 @@ async function executePrepared(
   options: RunDurableTransactionOptions,
 ): Promise<DurableTransactionResult> {
   const files = transactionPaths(paths, prepared.review_id, prepared.idempotency_key, prepared.journal_scope);
-  await validateReviewEffectCurrentState(paths, prepared, prepared.transaction_id);
   const committedValue = await readJsonIfPresent(files.committed);
   if (committedValue !== undefined) {
     const committed = validateCommittedAgainstPrepared(committedValue, prepared);
+    await validateReviewEffectCurrentState(paths, prepared, {
+      appliedTransactionId: prepared.transaction_id,
+      requireApplied: true,
+    });
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
+  await validateReviewEffectCurrentState(paths, prepared, {
+    appliedTransactionId: prepared.transaction_id,
+    requireApplied: false,
+  });
 
   maybeCrash('before:locator', options);
   if (prepared.journal_scope === 'REVIEW') {
@@ -1772,7 +1779,10 @@ async function runDurableTransactionLocked(
     if (prepared.input_digest !== digest) {
       throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
     }
-    await validateReviewEffectCurrentState(paths, prepared, prepared.transaction_id);
+    await validateReviewEffectCurrentState(paths, prepared, {
+      appliedTransactionId: prepared.transaction_id,
+      requireApplied: true,
+    });
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
@@ -1800,7 +1810,7 @@ async function runDurableTransactionLocked(
       response: plan.response,
       prepared_at: new Date().toISOString(),
     };
-    await validateReviewEffectCurrentState(paths, plan);
+    await validateReviewEffectCurrentState(paths, plan, { requireApplied: false });
     maybeCrash('before:prepared', options);
     await atomicCreatePrivateJson(files.prepared, prepared);
     await publishLocator(paths, prepared);
@@ -1916,7 +1926,10 @@ async function recoverPendingReviewTransactionsLocked(
     const committedValue = await readJsonIfPresent(files.committed);
     if (committedValue !== undefined) {
       validateCommittedAgainstPrepared(committedValue, prepared);
-      await validateReviewEffectCurrentState(paths, prepared, prepared.transaction_id);
+      await validateReviewEffectCurrentState(paths, prepared, {
+        appliedTransactionId: prepared.transaction_id,
+        requireApplied: true,
+      });
       continue;
     }
     const result = await recoverDurableTransactionLocked(paths, prepared.review_id, key, 'START');

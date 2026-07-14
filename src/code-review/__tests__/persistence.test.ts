@@ -1673,6 +1673,92 @@ describe('code-review durable transaction journal', () => {
     });
   });
 
+  it('rejects committed START recovery when the applied review was rolled back or lost its transaction binding', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const accepted: Array<{ label: string; result: unknown }> = [];
+      const cases = [
+        { label: 'revision one without transaction binding', revision: 1, binding: 'missing', route: 'root' },
+        { label: 'revision one with stale transaction binding', revision: 1, binding: 'wrong', route: 'direct' },
+        { label: 'revision two without transaction binding', revision: 2, binding: 'missing', route: 'root' },
+        { label: 'revision two with wrong transaction binding', revision: 2, binding: 'wrong', route: 'direct' },
+      ] as const;
+
+      for (const testCase of cases) {
+        const sessionId = api.generateReviewId();
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({
+          workingDirectory, session_id: sessionId,
+        });
+        const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
+        await api.atomicWritePrivateJson(reviewPath, reviewRecordPayload(reviewId, 1));
+        await assert.rejects(api.runDurableTransaction(paths, {
+          journal_scope: 'START',
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: 'COMMITTED_REVIEW_ROLLBACK',
+          input: { revision: 2 },
+          expected_revision: 1,
+          effects: [{
+            name: 'review',
+            mode: 'APPLY_REVIEW_REVISION',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+            payload: reviewRecordPayload(reviewId, 2),
+          }],
+          response: { review_id: reviewId, revision: 2 },
+        }, { crashAt: 'after:committed' }), /injected crash/u);
+
+        const rolledBack = reviewRecordPayload(reviewId, testCase.revision);
+        if (testCase.binding === 'wrong') {
+          rolledBack.last_applied_transaction_id = api.generateReviewId();
+        }
+        await writeFile(reviewPath, `${JSON.stringify(rolledBack, null, 2)}\n`, { mode: 0o600 });
+
+        try {
+          const result = testCase.route === 'direct'
+            ? await api.recoverDurableTransactions(paths, {
+                journal_scope: 'START', review_id: reviewId, idempotency_key: key,
+              })
+            : await api.recoverPendingReviewTransactions(paths);
+          accepted.push({ label: testCase.label, result });
+        } catch (error) {
+          assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED', testCase.label);
+        }
+      }
+
+      const validSessionId = api.generateReviewId();
+      const validReviewId = api.generateReviewId();
+      const validKey = api.generateReviewId();
+      const validPaths = await api.resolveReviewPersistencePaths({
+        workingDirectory, session_id: validSessionId,
+      });
+      const validReviewPath = join(validPaths.reviewRoot, validReviewId, 'review.json');
+      await api.atomicWritePrivateJson(validReviewPath, reviewRecordPayload(validReviewId, 1));
+      await assert.rejects(api.runDurableTransaction(validPaths, {
+        journal_scope: 'START',
+        idempotency_key: validKey,
+        review_id: validReviewId,
+        operation: 'VALID_COMMITTED_REVIEW_BINDING',
+        input: { revision: 2 },
+        expected_revision: 1,
+        effects: [{
+          name: 'review',
+          mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${validReviewId}/review.json` },
+          payload: reviewRecordPayload(validReviewId, 2),
+        }],
+        response: { review_id: validReviewId, revision: 2 },
+      }, { crashAt: 'after:committed' }), /injected crash/u);
+      const applied = JSON.parse(await readFile(validReviewPath, 'utf8')) as Record<string, unknown>;
+      assert.equal(applied.revision, 2);
+      assert.equal(typeof applied.last_applied_transaction_id, 'string');
+      assert.deepEqual(await api.recoverPendingReviewTransactions(validPaths), []);
+      assert.deepEqual(JSON.parse(await readFile(validReviewPath, 'utf8')), applied);
+      assert.deepEqual(accepted, [], `accepted invalid committed review state: ${JSON.stringify(accepted)}`);
+    });
+  });
+
   it('rejects tampered prepared input, effects, revision, and locator identity before side effects', async () => {
     const mutations = ['input', 'effects', 'revision', 'locator'] as const;
     for (const mutation of mutations) {
