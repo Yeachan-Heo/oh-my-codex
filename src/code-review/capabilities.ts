@@ -566,7 +566,7 @@ export function evaluateCapabilityEvidence(
       const fallbacks = applicable.filter((candidate) =>
         candidate.fallback_for.includes(unavailableCapability),
       );
-      if (!fallbacks.some((fallback) => {
+      if (fallbacks.length === 0 || !fallbacks.every((fallback) => {
         const result = byCapability.get(fallback.capability);
         return result?.execution === 'FALLBACK' && result.outcome === 'PASS';
       })) {

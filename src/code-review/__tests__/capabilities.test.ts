@@ -475,6 +475,30 @@ describe('capability evidence degradation', () => {
     assert.match(result.reasons.join('\n'), /LSP|AST/u);
   });
 
+  it('requires every declared fallback for an unavailable primary capability', async () => {
+    const api = await loadCapabilitiesApi();
+    const plan = api.buildCapabilityPlan([file('src/a.ts')], {
+      trustedFrozenConfig: frozenConfig({
+        typescriptCompiler: true,
+        typescriptLint: true,
+      }),
+    });
+    const withoutRg: CapabilityObservation[] = [
+      { capability: 'LSP', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'COMPILER', execution: 'FALLBACK', outcome: 'PASS' },
+      { capability: 'LINT', execution: 'FALLBACK', outcome: 'PASS' },
+    ];
+    assert.equal(
+      api.evaluateCapabilityEvidence(plan, withoutRg).maximum_recommendation,
+      'REQUEST CHANGES',
+    );
+    assert.equal(api.evaluateCapabilityEvidence(plan, [
+      ...withoutRg,
+      { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome: 'PASS' },
+    ]).maximum_recommendation, 'COMMENT');
+  });
+
   it('requires REQUEST CHANGES for failed, timed-out, malformed, or incomplete fallback evidence', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
