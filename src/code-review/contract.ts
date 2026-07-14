@@ -47,6 +47,38 @@ export interface ReviewConsumptionMarker {
   consumed_at: string;
 }
 
+export interface ReviewConsumptionManifestMarkerRef {
+  kind: ReviewConsumptionKind;
+  value_sha256: string;
+  path: string;
+}
+
+export interface ReviewConsumptionManifestPublication {
+  publication_id: string;
+  markers: [
+    ReviewConsumptionManifestMarkerRef,
+    ReviewConsumptionManifestMarkerRef,
+    ReviewConsumptionManifestMarkerRef,
+  ];
+}
+
+export interface ReviewConsumptionManifest {
+  schema_version: 1;
+  state: 'COMMITTED';
+  review_id: string;
+  transaction_id: string;
+  idempotency_key: string;
+  publication_count: number;
+  marker_count: number;
+  publications: ReviewConsumptionManifestPublication[];
+  committed_at: string;
+}
+
+export interface ReviewConsumptionGroup {
+  manifest: ReviewConsumptionManifest;
+  markers: ReviewConsumptionMarker[];
+}
+
 export interface ScopeSelector {
   requested_base?: string;
   explicit_paths: string[];

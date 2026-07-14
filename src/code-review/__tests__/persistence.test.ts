@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -11,11 +12,13 @@ const execFileAsync = promisify(execFile);
 
 interface ReviewPersistencePaths {
   workingDirectory: string;
+  session_id?: string;
   reviewRoot: string;
   activePath: string;
   startLockPath: string;
   reviewsRoot: string;
   startTransactionsRoot: string;
+  startReceiptsRoot: string;
   pendingReviewTransactionsRoot: string;
 }
 
@@ -100,6 +103,7 @@ type DurableStage =
   | 'proposal'
   | 'post-tool'
   | 'consume'
+  | 'manifest'
   | 'lane'
   | 'review'
   | 'report'
@@ -107,12 +111,13 @@ type DurableStage =
   | 'approval'
   | 'stop-marker'
   | 'committed'
+  | 'receipt'
   | 'locator-cleanup';
 
 type DurableBoundary = `before:${DurableStage}` | `after:${DurableStage}`;
 
 interface DurableEffect {
-  name: Exclude<DurableStage, 'prepared' | 'locator' | 'committed' | 'locator-cleanup'>;
+  name: Exclude<DurableStage, 'prepared' | 'locator' | 'committed' | 'receipt' | 'locator-cleanup'>;
   mode:
     | 'CREATE_ONCE_JSON'
     | 'APPLY_REVIEW_REVISION'
@@ -158,7 +163,7 @@ interface DurablePersistenceApi extends LockPersistenceApi {
   runDurableTransaction(
     paths: ReviewPersistencePaths,
     plan: DurablePlan,
-    options?: { crashAt?: DurableBoundary },
+    options?: { crashAt?: DurableBoundary; crashMode?: 'THROW' | 'SIGKILL' },
   ): Promise<{ state: 'COMMITTED'; response: unknown }>;
   recoverDurableTransactions(
     paths: ReviewPersistencePaths,
@@ -178,6 +183,13 @@ interface DurablePersistenceApi extends LockPersistenceApi {
     paths: ReviewPersistencePaths,
     review_id: string,
   ): Promise<ReviewConsumptionMarker[]>;
+  readReviewConsumptionGroups(
+    paths: ReviewPersistencePaths,
+    review_id: string,
+  ): Promise<Array<{
+    manifest: { idempotency_key: string; transaction_id: string; publication_count: number };
+    markers: ReviewConsumptionMarker[];
+  }>>;
 }
 
 interface FinalArtifactApi extends DurablePersistenceApi {
@@ -228,6 +240,7 @@ async function loadDurablePersistenceApi(): Promise<DurablePersistenceApi> {
   assert.equal(typeof loaded.recoverDurableTransactions, 'function');
   assert.equal(typeof loaded.createReviewConsumptionEffect, 'function');
   assert.equal(typeof loaded.readReviewConsumptionMarkers, 'function');
+  assert.equal(typeof loaded.readReviewConsumptionGroups, 'function');
   assert.equal(typeof loaded.atomicCreatePrivateJson, 'function');
   return loaded as DurablePersistenceApi;
 }
@@ -648,6 +661,7 @@ const DURABLE_STAGES: readonly DurableStage[] = [
   'proposal',
   'post-tool',
   'consume',
+  'manifest',
   'lane',
   'review',
   'report',
@@ -799,6 +813,23 @@ function durableEffects(
 ): DurableEffect[] {
   const now = '2026-07-14T00:00:00.000Z';
   const result = reviewerResult(reviewId);
+  const typedConsumption = (kind: ReviewConsumptionKind, value: string): DurableEffect => {
+    const digest = createHash('sha256')
+      .update('omx-code-review-consumption\0', 'utf8')
+      .update(kind, 'utf8')
+      .update('\0', 'utf8')
+      .update(value, 'utf8')
+      .digest('hex');
+    const directory = { PROPOSAL_KEY: 'proposal-key', TOOL_EVENT_REF: 'tool-event-ref', NONCE: 'nonce' }[kind];
+    return {
+      name: 'consume', mode: 'CREATE_ONCE_JSON',
+      target: { area: 'REVIEW_STATE', path: `${reviewId}/consumptions/${directory}/${digest}.json` },
+      payload: {
+        schema_version: 1, state: 'CONSUMED', review_id: reviewId, kind,
+        value_sha256: digest, idempotency_key: key, consumed_at: now,
+      },
+    };
+  };
   return [
     {
       name: 'proposal',
@@ -885,6 +916,17 @@ function durableEffects(
       payload: {
         ...reviewRecordPayload(reviewId, 2),
         status: 'FINALIZED',
+        scope: reviewScope(),
+        batches: [{
+          batch_id: 'batch-1', module_root: '.', files: ['src/a.ts'],
+          changed_lines: 1, oversized_single_file: false,
+        }],
+        lanes: [{
+          lane_id: 'reviewer-1', role: 'code-reviewer', batch_id: 'batch-1',
+          scope_hash: 'a'.repeat(64), status: 'COMPLETE', attempt: 1,
+          timeout_ms: 30_000, idle_deadline_at: now, recommendation: 'REQUEST CHANGES',
+          findings: [], diagnostic_ids: [],
+        }],
         ...(trust.sessionId ? { session_id: trust.sessionId } : {}),
         ...(trust.rootThreadId ? { root_thread_id: trust.rootThreadId } : {}),
       },
@@ -900,7 +942,7 @@ function durableEffects(
       mode: 'REMOVE_MATCHING_ACTIVE',
       target: { area: 'REVIEW_STATE', path: 'active.json' },
       review_id: reviewId,
-      expected_status: 'REVIEWING',
+      expected_status: 'READY_TO_SYNTHESIZE',
       expected_revision: 1,
     },
     {
@@ -921,7 +963,79 @@ function durableEffects(
       target: { area: 'REVIEW_STATE', path: 'stop-terminal-brief.json' },
       payload: { schema_version: 1, state: 'PENDING_BRIEF', review_id: reviewId, created_at: now },
     },
+    typedConsumption('PROPOSAL_KEY', key),
+    typedConsumption('TOOL_EVENT_REF', 'events/result-post-tool-1.json'),
+    typedConsumption('NONCE', key),
   ];
+}
+
+function consumedPublicationPlan(
+  api: DurablePersistenceApi,
+  reviewId: string,
+  transactionKey: string,
+  publicationKey: string,
+  workingDirectory: string,
+  sessionId: string,
+): DurablePlan {
+  const now = '2026-07-14T00:00:00.000Z';
+  const complete = durableEffects(reviewId, publicationKey, workingDirectory, {
+    sessionId, rootThreadId: 'root-thread-1',
+  });
+  const publication = complete[1]!.payload as any;
+  const markers = ([
+    ['PROPOSAL_KEY', publicationKey],
+    ['TOOL_EVENT_REF', publication.attestation.tool_event_ref],
+    ['NONCE', publication.attestation.nonce],
+  ] as const).map(([kind, value]) => api.createReviewConsumptionEffect({
+    review_id: reviewId,
+    idempotency_key: transactionKey,
+    kind,
+    value,
+    consumed_at: now,
+  }));
+  return {
+    idempotency_key: transactionKey,
+    review_id: reviewId,
+    operation: 'CONSUME_BOUND_PUBLICATION',
+    input: { review_id: reviewId, publication_id: publicationKey },
+    expected_revision: 1,
+    effects: [...complete.slice(0, 2), ...markers, {
+      name: 'review', mode: 'APPLY_REVIEW_REVISION',
+      target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+      payload: {
+        ...(complete[4]!.payload as Record<string, unknown>),
+        status: 'REVIEWING',
+        session_id: sessionId,
+        root_thread_id: 'root-thread-1',
+      },
+    }],
+    response: { review_id: reviewId, revision: 2, publication_id: publicationKey },
+  };
+}
+
+async function runSigkillTransaction(
+  workingDirectory: string,
+  sessionId: string,
+  plan: DurablePlan,
+  crashAt: DurableBoundary,
+): Promise<void> {
+  const moduleUrl = new URL('../persistence.js', import.meta.url).href;
+  const program = `
+    const persistence = await import(process.argv[1]);
+    const paths = await persistence.resolveReviewPersistencePaths({
+      workingDirectory: process.argv[2], session_id: process.argv[3],
+    });
+    await persistence.runDurableTransaction(paths, JSON.parse(process.argv[4]), {
+      crashAt: process.argv[5], crashMode: 'SIGKILL',
+    });
+  `;
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      '--input-type=module', '-e', program, moduleUrl, workingDirectory,
+      sessionId, JSON.stringify(plan), crashAt,
+    ]),
+    (error: unknown) => (error as { signal?: unknown }).signal === 'SIGKILL',
+  );
 }
 
 describe('code-review durable transaction journal', () => {
@@ -1159,7 +1273,11 @@ describe('code-review durable transaction journal', () => {
         key: string,
         sessionId: string,
       ): DurablePlan => {
-        const effects = structuredClone(durableEffects(reviewId, key, workingDirectory).slice(0, 3)) as any[];
+        const complete = durableEffects(reviewId, key, workingDirectory);
+        const effects = structuredClone([
+          ...complete.slice(0, 2),
+          ...complete.slice(-3),
+        ]) as any[];
         effects[1].payload.activity.session_id = sessionId;
         effects[1].payload.attestation.session_id = sessionId;
         effects[1].payload.attestation.root_thread_id = rootThreadId;
@@ -1168,7 +1286,7 @@ describe('code-review durable transaction journal', () => {
           mode: 'APPLY_REVIEW_REVISION',
           target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
           payload: {
-            ...reviewRecordPayload(reviewId, 2),
+            ...(complete[4]!.payload as Record<string, unknown>),
             session_id: sessionId,
             root_thread_id: rootThreadId,
           },
@@ -2126,8 +2244,12 @@ describe('code-review durable transaction journal', () => {
         operation: 'VALID_START_COMMITTED_SCAN',
         input: { stable: true },
         expected_revision: 0,
-        effects: [],
-        response: { review_id: validReviewId, stable: true },
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${validReviewId}/review.json` },
+          payload: { ...reviewRecordPayload(validReviewId, 1), session_id: validSessionId },
+        }],
+        response: { review_id: validReviewId, revision: 1, stable: true },
       }, { crashAt: 'after:committed' }), /injected crash/u);
       assert.deepEqual(await api.recoverPendingReviewTransactions(validPaths), []);
       assert.deepEqual(accepted, [], `accepted tampered START state: ${JSON.stringify(accepted)}`);
@@ -2754,9 +2876,17 @@ describe('code-review durable transaction journal', () => {
       const reviewId = api.generateReviewId();
       const key = api.generateReviewId();
       const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
+      const blockedAttempt = {
+        attempt: 1, status: 'BLOCKED', bindings: [], lane_ids: [],
+        started_at: '2026-07-14T00:00:00.000Z', updated_at: '2026-07-14T00:00:00.000Z',
+        resumable: true, resumable_reason: 'LANE_FAILED',
+      };
       await api.atomicWritePrivateJson(
         reviewPath,
-        { ...reviewRecordPayload(reviewId, 2), status: 'BLOCKED', resumable: true },
+        {
+          ...reviewRecordPayload(reviewId, 2), status: 'BLOCKED', resumable: true,
+          resumable_reason: 'LANE_FAILED', attempt_history: [blockedAttempt],
+        },
       );
       await assert.rejects(api.runDurableTransaction(paths, {
         idempotency_key: key,
@@ -2767,7 +2897,15 @@ describe('code-review durable transaction journal', () => {
         effects: [{
           name: 'review', mode: 'APPLY_REVIEW_REVISION',
           target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
-          payload: reviewRecordPayload(reviewId, 3),
+          payload: {
+            ...reviewRecordPayload(reviewId, 3),
+            current_attempt: 2,
+            attempt_history: [blockedAttempt, {
+              attempt: 2, status: 'REVIEWING', bindings: [], lane_ids: [],
+              started_at: '2026-07-14T00:01:00.000Z', updated_at: '2026-07-14T00:01:00.000Z',
+              resumable: false,
+            }],
+          },
         }, {
           name: 'active-overlay', mode: 'RESTORE_MISSING_ACTIVE',
           target: { area: 'REVIEW_STATE', path: 'active.json' },
@@ -2788,14 +2926,16 @@ describe('code-review durable transaction journal', () => {
   it('durably consumes proposal, tool event, and nonce identities without persisting raw values', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
-      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
       const reviewId = api.generateReviewId();
       const key = api.generateReviewId();
+      const publicationKey = api.generateReviewId();
       const now = '2026-07-14T00:00:00.000Z';
       const rawValues: Record<ReviewConsumptionKind, string> = {
-        PROPOSAL_KEY: '../../proposal/raw-key',
-        TOOL_EVENT_REF: 'events/private-tool-event-ref',
-        NONCE: 'secret-nonce-value',
+        PROPOSAL_KEY: publicationKey,
+        TOOL_EVENT_REF: 'events/result-post-tool-1.json',
+        NONCE: publicationKey,
       };
       const markerEffects = (Object.keys(rawValues) as ReviewConsumptionKind[]).map((kind) => (
         api.createReviewConsumptionEffect({
@@ -2813,20 +2953,24 @@ describe('code-review durable transaction journal', () => {
       assert.equal(new Set(markerEffects.map((effect) => effect.target.path)).size, 3);
       await api.atomicWritePrivateJson(
         join(paths.reviewRoot, reviewId, 'review.json'),
-        reviewRecordPayload(reviewId, 1),
+        { ...reviewRecordPayload(reviewId, 1), session_id: sessionId, root_thread_id: 'root-thread-1' },
       );
+      const complete = durableEffects(reviewId, publicationKey, workingDirectory, {
+        sessionId, rootThreadId: 'root-thread-1',
+      });
       await assert.rejects(api.runDurableTransaction(paths, {
         idempotency_key: key,
         review_id: reviewId,
         operation: 'CONSUME_REPLAY_IDENTITIES',
         input: { review_id: reviewId },
         expected_revision: 1,
-        effects: [...markerEffects, {
+        effects: [...complete.slice(0, 2), ...markerEffects, {
           name: 'review', mode: 'APPLY_REVIEW_REVISION',
           target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
           payload: {
-            ...reviewRecordPayload(reviewId, 2),
-            diagnostics: [diagnosticPayload('diagnostic-consumption', 'Bounded result accepted.', true)],
+            ...(complete[4]!.payload as Record<string, unknown>),
+            session_id: sessionId,
+            root_thread_id: 'root-thread-1',
           },
         }],
         response: { review_id: reviewId, revision: 2 },
@@ -2974,6 +3118,17 @@ describe('code-review durable transaction journal', () => {
             ...reviewRecordPayload(reviewId, 2),
             session_id: sessionId,
             root_thread_id: 'root-thread-1',
+            scope: reviewScope(),
+            batches: [{
+              batch_id: 'batch-1', module_root: '.', files: ['src/a.ts'],
+              changed_lines: 1, oversized_single_file: false,
+            }],
+            lanes: ['reviewer-1', 'reviewer-2'].map((laneId) => ({
+              lane_id: laneId, role: 'code-reviewer', batch_id: 'batch-1',
+              scope_hash: 'a'.repeat(64), status: 'COMPLETE', attempt: 1,
+              timeout_ms: 30_000, idle_deadline_at: now,
+              recommendation: 'REQUEST CHANGES', findings: [], diagnostic_ids: [],
+            })),
           },
         }],
         response: { review_id: reviewId, revision: 2 },
@@ -3020,10 +3175,11 @@ describe('code-review durable transaction journal', () => {
         const key = api.generateReviewId();
         const trust = { sessionId, rootThreadId: 'root-thread-1' };
         const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
-        await api.claimActiveReview(paths, { schema_version: 1, review_id: reviewId, status: 'REVIEWING' });
+        await api.claimActiveReview(paths, { schema_version: 1, review_id: reviewId, status: 'READY_TO_SYNTHESIZE' });
         const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
         await api.atomicWritePrivateJson(reviewPath, {
           ...reviewRecordPayload(reviewId, 1),
+          status: 'READY_TO_SYNTHESIZE',
           session_id: sessionId,
           root_thread_id: trust.rootThreadId,
         });
@@ -3795,6 +3951,545 @@ describe('final review artifact rendering', () => {
       await assert.rejects(readFile(join(paths.reviewsRoot, `${reviewId}.md`), 'utf8'), (error: unknown) => (
         (error as NodeJS.ErrnoException).code === 'ENOENT'
       ));
+    });
+  });
+});
+
+describe('runtime-enforced review persistence regressions', () => {
+  it('replays the original START response after its transaction directory was cleaned', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      const plan: DurablePlan = {
+        journal_scope: 'START',
+        idempotency_key: key,
+        review_id: reviewId,
+        operation: 'START_RECEIPT_REPLAY',
+        input: { review_id: reviewId },
+        expected_revision: 0,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: reviewRecordPayload(reviewId, 1),
+        }, {
+          name: 'active-overlay', mode: 'CREATE_ONCE_JSON',
+          target: { area: 'REVIEW_STATE', path: 'active.json' },
+          payload: { schema_version: 1, review_id: reviewId, status: 'REVIEWING' },
+        }],
+        response: { review_id: reviewId, revision: 1, stable: true },
+      };
+
+      const first = await api.runDurableTransaction(paths, plan);
+      assert.deepEqual(await readdir(paths.startTransactionsRoot).catch(() => []), []);
+      assert.deepEqual(await api.runDurableTransaction(paths, plan), first);
+    });
+  });
+
+  it('rejects a READY_TO_SYNTHESIZE to CREATED active-state regression before PREPARED', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      await api.claimActiveReview(paths, {
+        schema_version: 1, review_id: reviewId, status: 'READY_TO_SYNTHESIZE',
+      });
+      await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), {
+        ...reviewRecordPayload(reviewId, 1), status: 'READY_TO_SYNTHESIZE',
+      });
+
+      await assert.rejects(api.runDurableTransaction(paths, {
+        idempotency_key: key,
+        review_id: reviewId,
+        operation: 'REGRESS_ACTIVE_STATE',
+        input: { review_id: reviewId },
+        expected_revision: 1,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: { ...reviewRecordPayload(reviewId, 2), status: 'CREATED' },
+        }, {
+          name: 'active-overlay', mode: 'UPDATE_MATCHING_ACTIVE',
+          target: { area: 'REVIEW_STATE', path: 'active.json' },
+          payload: { schema_version: 1, review_id: reviewId, status: 'CREATED' },
+          review_id: reviewId,
+          expected_status: 'READY_TO_SYNTHESIZE',
+          expected_revision: 1,
+        }],
+        response: { ok: false },
+      }), (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED');
+      await assert.rejects(
+        readFile(join(paths.reviewRoot, reviewId, 'transactions', key, 'prepared'), 'utf8'),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+      );
+    });
+  });
+
+  it('rejects complete consumption triples that are not bound to their proposal and post-tool pair', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const reviewId = api.generateReviewId();
+      const transactionKey = api.generateReviewId();
+      const publicationKey = api.generateReviewId();
+      const now = '2026-07-14T00:00:00.000Z';
+      const pair = durableEffects(reviewId, publicationKey, workingDirectory, {
+        sessionId, rootThreadId: 'root-thread-1',
+      }).slice(0, 2);
+      const markers = (['PROPOSAL_KEY', 'TOOL_EVENT_REF', 'NONCE'] as const).map((kind) => (
+        api.createReviewConsumptionEffect({
+          review_id: reviewId,
+          idempotency_key: transactionKey,
+          kind,
+          value: `unbound-${kind}`,
+          consumed_at: now,
+        })
+      ));
+      await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), {
+        ...reviewRecordPayload(reviewId, 1), session_id: sessionId, root_thread_id: 'root-thread-1',
+      });
+
+      await assert.rejects(api.runDurableTransaction(paths, {
+        idempotency_key: transactionKey,
+        review_id: reviewId,
+        operation: 'UNBOUND_COMPLETE_TRIPLE',
+        input: { review_id: reviewId },
+        expected_revision: 1,
+        effects: [...pair, ...markers, {
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: {
+            ...reviewRecordPayload(reviewId, 2),
+            session_id: sessionId,
+            root_thread_id: 'root-thread-1',
+          },
+        }],
+        response: { ok: false },
+      }), (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED');
+    });
+  });
+
+  it('renders the sanctioned diagnostic-degraded complete reviewer result but rejects degraded approval', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const { persistence } = await loadFinalArtifactApi();
+      const paths = await persistence.resolveReviewPersistencePaths({ workingDirectory });
+      const degraded = finalArtifact(persistence.generateReviewId(), workingDirectory) as any;
+      degraded.lanes[0].failure_code = 'DIAGNOSTIC_DEGRADED';
+      degraded.lanes[0].recommendation = 'COMMENT';
+      degraded.diagnostics[0].execution = 'FALLBACK';
+      degraded.diagnostics[0].outcome = 'PASS';
+      await persistence.writeFinalReviewArtifacts(paths, degraded);
+
+      const approve = structuredClone(degraded);
+      approve.review_id = persistence.generateReviewId();
+      approve.lanes[0].recommendation = 'APPROVE';
+      await assert.rejects(
+        persistence.writeFinalReviewArtifacts(paths, approve),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+
+      const durableReviewId = persistence.generateReviewId();
+      await persistence.atomicWritePrivateJson(
+        join(paths.reviewRoot, durableReviewId, 'review.json'),
+        reviewRecordPayload(durableReviewId, 1),
+      );
+      const durableDegraded = reviewRecordWithTopology(durableReviewId, 2) as any;
+      durableDegraded.lanes[0].failure_code = 'DIAGNOSTIC_DEGRADED';
+      durableDegraded.lanes[0].recommendation = 'COMMENT';
+      await persistence.runDurableTransaction(paths, {
+        idempotency_key: persistence.generateReviewId(),
+        review_id: durableReviewId,
+        operation: 'PERSIST_TASK5_DEGRADED_RESULT',
+        input: { review_id: durableReviewId },
+        expected_revision: 1,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${durableReviewId}/review.json` },
+          payload: durableDegraded,
+        }],
+        response: { review_id: durableReviewId, revision: 2 },
+      });
+      const persisted = JSON.parse(await readFile(
+        join(paths.reviewRoot, durableReviewId, 'review.json'), 'utf8',
+      )) as any;
+      assert.deepEqual({
+        status: persisted.lanes[0].status,
+        failure_code: persisted.lanes[0].failure_code,
+        recommendation: persisted.lanes[0].recommendation,
+      }, {
+        status: 'COMPLETE', failure_code: 'DIAGNOSTIC_DEGRADED', recommendation: 'COMMENT',
+      });
+    });
+  });
+
+  it('reads only complete manifest-bound consumption groups and fails closed on deletion, extras, and temp state', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const reviewId = api.generateReviewId();
+      const transactionKey = api.generateReviewId();
+      const publicationKey = api.generateReviewId();
+      await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), {
+        ...reviewRecordPayload(reviewId, 1), session_id: sessionId, root_thread_id: 'root-thread-1',
+      });
+      const plan = consumedPublicationPlan(
+        api, reviewId, transactionKey, publicationKey, workingDirectory, sessionId,
+      );
+      await api.runDurableTransaction(paths, plan);
+      const groups = await api.readReviewConsumptionGroups(paths, reviewId);
+      assert.deepEqual(
+        groups.map((group) => ({
+          key: group.manifest.idempotency_key,
+          count: group.manifest.publication_count,
+          markers: group.markers.length,
+        })),
+        [{ key: transactionKey, count: 1, markers: 3 }],
+      );
+
+      const markerEffect = plan.effects.find((effect) => (
+        effect.name === 'consume' && (effect.payload as { kind?: unknown }).kind === 'NONCE'
+      ))!;
+      const markerPath = join(paths.reviewRoot, markerEffect.target.path);
+      const markerText = await readFile(markerPath, 'utf8');
+      await rm(markerPath);
+      await assert.rejects(
+        api.readReviewConsumptionGroups(paths, reviewId),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      await writeFile(markerPath, markerText, { mode: 0o600 });
+
+      const marker = JSON.parse(markerText) as ReviewConsumptionMarker;
+      const extraDigest = 'f'.repeat(64);
+      const extraPath = join(markerPath, '..', `${extraDigest}.json`);
+      await api.atomicWritePrivateJson(extraPath, { ...marker, value_sha256: extraDigest });
+      await assert.rejects(
+        api.readReviewConsumptionGroups(paths, reviewId),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      await rm(extraPath);
+
+      const tempPath = join(
+        paths.reviewRoot,
+        reviewId,
+        'consumptions',
+        'manifests',
+        `.${transactionKey}.json.tmp-${process.pid}-${api.generateReviewId()}`,
+      );
+      await writeFile(tempPath, '{}\n', { mode: 0o600 });
+      await assert.rejects(
+        api.readReviewConsumptionGroups(paths, reviewId),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+    });
+  });
+
+  it('rejects non-resumable, reason-conflicting, and wrong-attempt active restoration', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const now = '2026-07-14T00:00:00.000Z';
+      const cases = [
+        {
+          label: 'resumable false',
+          mutateCurrent: (review: any) => {
+            review.resumable = false;
+            delete review.resumable_reason;
+            review.attempt_history[0].resumable = false;
+            delete review.attempt_history[0].resumable_reason;
+          },
+          mutateProposed: (_review: any) => undefined,
+        },
+        {
+          label: 'reason conflict',
+          mutateCurrent: (review: any) => { review.resumable_reason = 'MISSING_LANE'; },
+          mutateProposed: (_review: any) => undefined,
+        },
+        {
+          label: 'wrong attempt',
+          mutateCurrent: (_review: any) => undefined,
+          mutateProposed: (review: any) => {
+            review.current_attempt = 3;
+            review.attempt_history[1].attempt = 3;
+          },
+        },
+      ];
+      for (const testCase of cases) {
+        const paths = await api.resolveReviewPersistencePaths({
+          workingDirectory, session_id: api.generateReviewId(),
+        });
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const blockedAttempt = {
+          attempt: 1, status: 'BLOCKED', bindings: [], lane_ids: [],
+          started_at: now, updated_at: now, resumable: true, resumable_reason: 'LANE_FAILED',
+        };
+        const current: any = {
+          ...reviewRecordPayload(reviewId, 1), status: 'BLOCKED', resumable: true,
+          resumable_reason: 'LANE_FAILED', attempt_history: [blockedAttempt],
+          session_id: paths.session_id,
+        };
+        const proposed: any = {
+          ...reviewRecordPayload(reviewId, 2), current_attempt: 2,
+          attempt_history: [blockedAttempt, {
+            attempt: 2, status: 'REVIEWING', bindings: [], lane_ids: [],
+            started_at: now, updated_at: now, resumable: false,
+          }],
+          session_id: paths.session_id,
+        };
+        testCase.mutateCurrent(current);
+        testCase.mutateProposed(proposed);
+        await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), current);
+        await assert.rejects(api.runDurableTransaction(paths, {
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: 'INVALID_RESTORE',
+          input: { label: testCase.label },
+          expected_revision: 1,
+          effects: [{
+            name: 'review', mode: 'APPLY_REVIEW_REVISION',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+            payload: proposed,
+          }, {
+            name: 'active-overlay', mode: 'RESTORE_MISSING_ACTIVE',
+            target: { area: 'REVIEW_STATE', path: 'active.json' },
+            payload: { schema_version: 1, review_id: reviewId, status: 'REVIEWING' },
+            review_id: reviewId, expected_status: 'BLOCKED', expected_revision: 1,
+          }],
+          response: { ok: false },
+        }), (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED', testCase.label);
+        await assert.rejects(
+          readFile(join(paths.reviewRoot, reviewId, 'transactions', key, 'prepared'), 'utf8'),
+          (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+        );
+      }
+    });
+  });
+
+  it('survives SIGKILL after START locator cleanup using its committed receipt', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      const plan: DurablePlan = {
+        journal_scope: 'START',
+        idempotency_key: key,
+        review_id: reviewId,
+        operation: 'SIGKILL_START_RECEIPT',
+        input: { review_id: reviewId },
+        expected_revision: 0,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: { ...reviewRecordPayload(reviewId, 1), session_id: sessionId },
+        }],
+        response: { review_id: reviewId, revision: 1, original: true },
+      };
+      await runSigkillTransaction(workingDirectory, sessionId, plan, 'after:locator-cleanup');
+      assert.deepEqual(await readdir(paths.startTransactionsRoot).catch(() => []), []);
+      assert.deepEqual(await api.runDurableTransaction(paths, plan), {
+        state: 'COMMITTED', response: plan.response,
+      });
+      assert.deepEqual(await readdir(paths.startReceiptsRoot), [`${key}.json`]);
+
+      await api.runDurableTransaction(paths, {
+        idempotency_key: api.generateReviewId(), review_id: reviewId,
+        operation: 'ADVANCE_AFTER_RECEIPT', input: { review_id: reviewId }, expected_revision: 1,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: { ...reviewRecordPayload(reviewId, 2), session_id: sessionId },
+        }],
+        response: { revision: 2 },
+      });
+      assert.deepEqual((await api.runDurableTransaction(paths, plan)).response, plan.response);
+      await assert.rejects(
+        api.runDurableTransaction(paths, { ...plan, input: { review_id: reviewId, conflict: true } }),
+        (error: unknown) => (error as { code?: unknown }).code === 'IDEMPOTENCY_CONFLICT',
+      );
+    });
+  });
+
+  it('fails closed on rolled-back, missing, malformed, duplicate, hidden, or wrong-identity START receipts', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      const plan: DurablePlan = {
+        journal_scope: 'START', idempotency_key: key, review_id: reviewId,
+        operation: 'START_RECEIPT_INTEGRITY', input: { review_id: reviewId }, expected_revision: 0,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: { ...reviewRecordPayload(reviewId, 1), session_id: sessionId },
+        }],
+        response: { review_id: reviewId, revision: 1 },
+      };
+      await api.runDurableTransaction(paths, plan);
+      const receiptPath = join(paths.startReceiptsRoot, `${key}.json`);
+      const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
+      const receiptText = await readFile(receiptPath, 'utf8');
+      const reviewText = await readFile(reviewPath, 'utf8');
+      const rejectsScan = async (): Promise<void> => {
+        await assert.rejects(
+          api.recoverPendingReviewTransactions(paths),
+          (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+        );
+      };
+
+      await rm(reviewPath);
+      await rejectsScan();
+      await writeFile(reviewPath, reviewText, { mode: 0o600 });
+
+      const revisionZero = { ...(JSON.parse(reviewText) as Record<string, unknown>), revision: 0 };
+      await writeFile(reviewPath, `${JSON.stringify(revisionZero)}\n`, { mode: 0o600 });
+      await rejectsScan();
+      await writeFile(reviewPath, reviewText, { mode: 0o600 });
+
+      const wrongIdentity = {
+        ...(JSON.parse(receiptText) as Record<string, unknown>), review_id: api.generateReviewId(),
+      };
+      await writeFile(receiptPath, `${JSON.stringify(wrongIdentity)}\n`, { mode: 0o600 });
+      await rejectsScan();
+      await writeFile(receiptPath, receiptText, { mode: 0o600 });
+
+      await writeFile(receiptPath, '{}\n', { mode: 0o600 });
+      await rejectsScan();
+      await writeFile(receiptPath, receiptText, { mode: 0o600 });
+
+      const duplicatePath = join(paths.startReceiptsRoot, `${api.generateReviewId()}.json`);
+      await writeFile(duplicatePath, receiptText, { mode: 0o600 });
+      await rejectsScan();
+      await rm(duplicatePath);
+
+      const hiddenPath = join(
+        paths.startReceiptsRoot,
+        `.${key}.json.tmp-${process.pid}-${api.generateReviewId()}`,
+      );
+      await writeFile(hiddenPath, '{}\n', { mode: 0o600 });
+      await rejectsScan();
+    });
+  });
+
+  it('recovers active UPDATE, REMOVE, and RESTORE transitions after real SIGKILL', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const now = '2026-07-14T00:00:00.000Z';
+      for (const mode of ['UPDATE', 'REMOVE', 'RESTORE'] as const) {
+        const sessionId = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        let current: any;
+        let proposed: any;
+        let activeEffect: DurableEffect;
+        if (mode === 'UPDATE') {
+          current = { ...reviewRecordPayload(reviewId, 1), session_id: sessionId };
+          proposed = { ...reviewRecordPayload(reviewId, 2), session_id: sessionId, status: 'READY_TO_SYNTHESIZE' };
+          await api.claimActiveReview(paths, { schema_version: 1, review_id: reviewId, status: 'REVIEWING' });
+          activeEffect = {
+            name: 'active-overlay', mode: 'UPDATE_MATCHING_ACTIVE',
+            target: { area: 'REVIEW_STATE', path: 'active.json' },
+            payload: { schema_version: 1, review_id: reviewId, status: 'READY_TO_SYNTHESIZE' },
+            review_id: reviewId, expected_status: 'REVIEWING', expected_revision: 1,
+          };
+        } else if (mode === 'REMOVE') {
+          current = { ...reviewRecordPayload(reviewId, 1), session_id: sessionId, status: 'READY_TO_SYNTHESIZE' };
+          proposed = { ...reviewRecordPayload(reviewId, 2), session_id: sessionId, status: 'FINALIZED' };
+          await api.claimActiveReview(paths, { schema_version: 1, review_id: reviewId, status: 'READY_TO_SYNTHESIZE' });
+          activeEffect = {
+            name: 'active-overlay', mode: 'REMOVE_MATCHING_ACTIVE',
+            target: { area: 'REVIEW_STATE', path: 'active.json' },
+            review_id: reviewId, expected_status: 'READY_TO_SYNTHESIZE', expected_revision: 1,
+          };
+        } else {
+          const blockedAttempt = {
+            attempt: 1, status: 'BLOCKED', bindings: [], lane_ids: [],
+            started_at: now, updated_at: now, resumable: true, resumable_reason: 'LANE_FAILED',
+          };
+          current = {
+            ...reviewRecordPayload(reviewId, 1), session_id: sessionId, status: 'BLOCKED',
+            resumable: true, resumable_reason: 'LANE_FAILED', attempt_history: [blockedAttempt],
+          };
+          proposed = {
+            ...reviewRecordPayload(reviewId, 2), session_id: sessionId, current_attempt: 2,
+            attempt_history: [blockedAttempt, {
+              attempt: 2, status: 'REVIEWING', bindings: [], lane_ids: [],
+              started_at: now, updated_at: now, resumable: false,
+            }],
+          };
+          activeEffect = {
+            name: 'active-overlay', mode: 'RESTORE_MISSING_ACTIVE',
+            target: { area: 'REVIEW_STATE', path: 'active.json' },
+            payload: { schema_version: 1, review_id: reviewId, status: 'REVIEWING' },
+            review_id: reviewId, expected_status: 'BLOCKED', expected_revision: 1,
+          };
+        }
+        await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), current);
+        const plan: DurablePlan = {
+          idempotency_key: key, review_id: reviewId, operation: `SIGKILL_ACTIVE_${mode}`,
+          input: { review_id: reviewId }, expected_revision: 1,
+          effects: [{
+            name: 'review', mode: 'APPLY_REVIEW_REVISION',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` }, payload: proposed,
+          }, activeEffect],
+          response: { review_id: reviewId, revision: 2 },
+        };
+        await runSigkillTransaction(workingDirectory, sessionId, plan, 'after:active-overlay');
+        await api.recoverPendingReviewTransactions(paths);
+        const active = await api.readActiveReview(paths);
+        assert.equal(active?.status ?? null, mode === 'REMOVE' ? null : proposed.status, mode);
+        const review = JSON.parse(await readFile(join(paths.reviewRoot, reviewId, 'review.json'), 'utf8')) as any;
+        assert.deepEqual({ revision: review.revision, status: review.status }, {
+          revision: 2, status: proposed.status,
+        }, mode);
+      }
+    });
+  });
+
+  it('recovers batched consumption across PREPARED, manifest, and COMMITTED SIGKILL boundaries', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      for (const crashAt of ['after:prepared', 'after:manifest', 'after:committed'] as const) {
+        const sessionId = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+        const reviewId = api.generateReviewId();
+        const transactionKey = api.generateReviewId();
+        const publicationKey = api.generateReviewId();
+        await api.claimActiveReview(paths, { schema_version: 1, review_id: reviewId, status: 'REVIEWING' });
+        await api.atomicWritePrivateJson(join(paths.reviewRoot, reviewId, 'review.json'), {
+          ...reviewRecordPayload(reviewId, 1), session_id: sessionId, root_thread_id: 'root-thread-1',
+        });
+        const plan = consumedPublicationPlan(
+          api, reviewId, transactionKey, publicationKey, workingDirectory, sessionId,
+        );
+        await runSigkillTransaction(workingDirectory, sessionId, plan, crashAt);
+        if (crashAt === 'after:manifest') {
+          await assert.rejects(
+            api.readReviewConsumptionGroups(paths, reviewId),
+            (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+          );
+        }
+        await api.recoverPendingReviewTransactions(paths);
+        const groups = await api.readReviewConsumptionGroups(paths, reviewId);
+        assert.deepEqual(groups.map((group) => ({
+          key: group.manifest.idempotency_key,
+          count: group.manifest.publication_count,
+          markers: group.markers.length,
+        })), [{ key: transactionKey, count: 1, markers: 3 }], crashAt);
+      }
     });
   });
 });

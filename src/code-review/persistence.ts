@@ -17,7 +17,11 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } 
 import { performance } from 'node:perf_hooks';
 import { resolveStateScope } from '../state/paths.js';
 import type {
+  ReviewConsumptionGroup,
   ReviewConsumptionKind,
+  ReviewConsumptionManifest,
+  ReviewConsumptionManifestMarkerRef,
+  ReviewConsumptionManifestPublication,
   ReviewConsumptionMarker,
   ReviewRecord,
   ReviewRunStatus,
@@ -71,6 +75,7 @@ export interface ReviewPersistencePaths {
   activePath: string;
   startLockPath: string;
   startTransactionsRoot: string;
+  startReceiptsRoot: string;
   pendingReviewTransactionsRoot: string;
   approvalsRoot: string;
   stopTerminalBriefPath: string;
@@ -188,6 +193,7 @@ export async function resolveReviewPersistencePaths(
     activePath: join(reviewRoot, 'active.json'),
     startLockPath: join(reviewRoot, 'start.lock'),
     startTransactionsRoot: join(reviewRoot, 'start-transactions'),
+    startReceiptsRoot: join(reviewRoot, 'start-receipts'),
     pendingReviewTransactionsRoot: join(reviewRoot, 'pending-review-transactions'),
     approvalsRoot: join(reviewRoot, 'approvals'),
     stopTerminalBriefPath: join(reviewRoot, 'stop-terminal-brief.json'),
@@ -283,6 +289,14 @@ const REVIEW_RUN_STATUSES: readonly ReviewRunStatus[] = [
   'CREATED', 'SCOPE_FROZEN', 'REVIEWING', 'READY_TO_SYNTHESIZE', 'FINALIZED', 'BLOCKED',
 ];
 const TERMINAL_REVIEW_STATUSES: readonly ReviewRunStatus[] = ['FINALIZED', 'BLOCKED'];
+const ACTIVE_UPDATE_TRANSITIONS: Readonly<Partial<Record<ReviewRunStatus, ReviewRunStatus>>> = {
+  CREATED: 'SCOPE_FROZEN',
+  SCOPE_FROZEN: 'REVIEWING',
+  REVIEWING: 'READY_TO_SYNTHESIZE',
+};
+const RESUMABLE_REASONS = [
+  'LANE_FAILED', 'LANE_TIMED_OUT', 'LANE_EVIDENCE_INVALID', 'MISSING_LANE', 'MCP_TRANSPORT_DEAD',
+] as const;
 const REVIEW_CONSUMPTION_KINDS: readonly ReviewConsumptionKind[] = [
   'PROPOSAL_KEY', 'TOOL_EVENT_REF', 'NONCE',
 ];
@@ -624,6 +638,7 @@ export type DurableTransactionStage =
   | 'proposal'
   | 'post-tool'
   | 'consume'
+  | 'manifest'
   | 'lane'
   | 'review'
   | 'report'
@@ -631,11 +646,12 @@ export type DurableTransactionStage =
   | 'approval'
   | 'stop-marker'
   | 'committed'
+  | 'receipt'
   | 'locator-cleanup';
 export type DurableTransactionBoundary = `before:${DurableTransactionStage}` | `after:${DurableTransactionStage}`;
 export type DurableEffectName = Exclude<
   DurableTransactionStage,
-  'prepared' | 'locator' | 'committed' | 'locator-cleanup'
+  'prepared' | 'locator' | 'committed' | 'receipt' | 'locator-cleanup'
 >;
 
 export interface DurableTransactionEffect {
@@ -682,6 +698,7 @@ export interface DurableTransactionResult {
 
 export interface RunDurableTransactionOptions {
   crashAt?: DurableTransactionBoundary;
+  crashMode?: 'THROW' | 'SIGKILL';
 }
 
 interface PreparedDurableTransaction {
@@ -718,10 +735,35 @@ interface DurableTransactionLocator {
   input_digest: string;
 }
 
+interface CommittedStartReceipt {
+  schema_version: 1;
+  state: 'COMMITTED';
+  transaction_id: string;
+  idempotency_key: string;
+  request_digest: string;
+  review_id: string;
+  session_id: string | null;
+  response: unknown;
+  result_revision: number;
+  result_digest: string;
+  committed_at: string;
+}
+
+interface ReviewConsumptionManifestIntent {
+  schema_version: 1;
+  review_id: string;
+  idempotency_key: string;
+  publication_count: number;
+  marker_count: number;
+  publications: ReviewConsumptionManifestPublication[];
+  committed_at: string;
+}
+
 const DURABLE_EFFECT_ORDER: readonly DurableEffectName[] = [
   'proposal',
   'post-tool',
   'consume',
+  'manifest',
   'lane',
   'review',
   'report',
@@ -978,6 +1020,92 @@ function validateReviewConsumptionMarker(
     value_sha256: valueSha256,
     idempotency_key: idempotencyKey,
     consumed_at: consumedAt,
+  };
+}
+
+function validateConsumptionMarkerRef(value: unknown): ReviewConsumptionManifestMarkerRef {
+  const ref = requireExactPayload(value, ['kind', 'value_sha256', 'path'], 'consumption manifest marker ref');
+  const kind = requirePayloadEnum(ref.kind, 'manifest marker kind', REVIEW_CONSUMPTION_KINDS);
+  const valueSha256 = requirePayloadHash(ref.value_sha256, 'manifest marker digest');
+  const path = validateRelativePersistencePath(ref.path);
+  return { kind, value_sha256: valueSha256, path };
+}
+
+function validateConsumptionManifestPublications(value: unknown): ReviewConsumptionManifestPublication[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest publications are invalid');
+  }
+  const publications = value.map((item) => {
+    const publication = requireExactPayload(item, ['publication_id', 'markers'], 'consumption manifest publication');
+    const publicationId = validateUuid(publication.publication_id, 'manifest publication_id');
+    if (!Array.isArray(publication.markers) || publication.markers.length !== REVIEW_CONSUMPTION_KINDS.length) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest marker refs are invalid');
+    }
+    const markers = publication.markers.map(validateConsumptionMarkerRef);
+    if (markers.some((marker, index) => marker.kind !== REVIEW_CONSUMPTION_KINDS[index])) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest marker refs are reordered');
+    }
+    return {
+      publication_id: publicationId,
+      markers: markers as ReviewConsumptionManifestPublication['markers'],
+    };
+  });
+  if (new Set(publications.map((publication) => publication.publication_id)).size !== publications.length) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest publication is duplicated');
+  }
+  return publications;
+}
+
+function validateConsumptionManifestIntent(
+  value: unknown,
+  reviewId: string,
+  idempotencyKey: string,
+): ReviewConsumptionManifestIntent {
+  const manifest = requireExactPayload(value, [
+    'schema_version', 'review_id', 'idempotency_key', 'publication_count', 'marker_count',
+    'publications', 'committed_at',
+  ], 'consumption manifest');
+  const publications = validateConsumptionManifestPublications(manifest.publications);
+  if (manifest.schema_version !== 1
+    || validateUuid(manifest.review_id, 'manifest review_id') !== reviewId
+    || validateUuid(manifest.idempotency_key, 'manifest idempotency_key') !== idempotencyKey
+    || requirePositiveInteger(manifest.publication_count, 'manifest publication_count') !== publications.length
+    || requirePositiveInteger(manifest.marker_count, 'manifest marker_count')
+      !== publications.length * REVIEW_CONSUMPTION_KINDS.length) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest identity conflicts');
+  }
+  return {
+    schema_version: 1,
+    review_id: reviewId,
+    idempotency_key: idempotencyKey,
+    publication_count: publications.length,
+    marker_count: publications.length * REVIEW_CONSUMPTION_KINDS.length,
+    publications,
+    committed_at: requirePayloadTimestamp(manifest.committed_at, 'manifest committed_at'),
+  };
+}
+
+function validateConsumptionManifest(value: unknown): ReviewConsumptionManifest {
+  const manifest = requireExactPayload(value, [
+    'schema_version', 'state', 'review_id', 'transaction_id', 'idempotency_key',
+    'publication_count', 'marker_count', 'publications', 'committed_at',
+  ], 'committed consumption manifest');
+  const intent = validateConsumptionManifestIntent({
+    schema_version: manifest.schema_version,
+    review_id: manifest.review_id,
+    idempotency_key: manifest.idempotency_key,
+    publication_count: manifest.publication_count,
+    marker_count: manifest.marker_count,
+    publications: manifest.publications,
+    committed_at: manifest.committed_at,
+  }, validateUuid(manifest.review_id, 'manifest review_id'), validateUuid(manifest.idempotency_key, 'manifest idempotency_key'));
+  if (manifest.state !== 'COMMITTED') {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest is not committed');
+  }
+  return {
+    ...intent,
+    state: 'COMMITTED',
+    transaction_id: validateUuid(manifest.transaction_id, 'manifest transaction_id'),
   };
 }
 
@@ -1444,6 +1572,15 @@ function validateTypedEffectPayload(
     effect.payload = marker;
     return;
   }
+  if (effect.name === 'manifest') {
+    if (effect.mode !== 'CREATE_ONCE_JSON'
+      || effect.target.area !== 'REVIEW_STATE'
+      || effect.target.path !== `${reviewId}/consumptions/manifests/${idempotencyKey}.json`) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest target conflicts');
+    }
+    effect.payload = validateConsumptionManifestIntent(effect.payload, reviewId, idempotencyKey);
+    return;
+  }
   if (effect.name === 'approval') {
     const expectedPath = `approvals/${idempotencyKey}/consumed`;
     if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
@@ -1587,7 +1724,13 @@ function validateActiveOverlayBinding(
     const pointer = activeEffect.payload as ActiveReviewPointer;
     if (activeEffect.expected_status !== 'BLOCKED'
       || pointer.status !== review.status
-      || TERMINAL_REVIEW_STATUSES.includes(pointer.status)) {
+      || pointer.status !== 'REVIEWING'
+      || review.resumable
+      || review.resumable_reason !== undefined
+      || review.attempt_history.length === 0
+      || review.attempt_history.at(-1)?.attempt !== review.current_attempt
+      || review.attempt_history.at(-1)?.status !== 'REVIEWING'
+      || review.attempt_history.at(-1)?.resumable !== false) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay restoration does not match its review');
     }
     return;
@@ -1598,34 +1741,171 @@ function validateActiveOverlayBinding(
   if (activeEffect.mode === 'UPDATE_MATCHING_ACTIVE') {
     const pointer = activeEffect.payload as ActiveReviewPointer;
     if (pointer.status !== review.status
-      || pointer.status === activeEffect.expected_status
-      || TERMINAL_REVIEW_STATUSES.includes(pointer.status)) {
+      || ACTIVE_UPDATE_TRANSITIONS[activeEffect.expected_status] !== pointer.status) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay update does not match its review');
     }
     return;
   }
-  if (activeEffect.mode !== 'REMOVE_MATCHING_ACTIVE'
-    || !TERMINAL_REVIEW_STATUSES.includes(review.status)) {
+  const validRemoval = activeEffect.mode === 'REMOVE_MATCHING_ACTIVE'
+    && ((review.status === 'FINALIZED' && activeEffect.expected_status === 'READY_TO_SYNTHESIZE')
+      || (review.status === 'BLOCKED' && !TERMINAL_REVIEW_STATUSES.includes(activeEffect.expected_status)));
+  if (!validRemoval) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay removal requires a terminal review');
   }
 }
 
-function validateConsumptionTopology(effects: DurableTransactionEffect[]): void {
+function validateConsumedResultInReview(
+  review: ReviewRecord,
+  proposalEffect: DurableTransactionEffect,
+  postToolEffect: DurableTransactionEffect,
+): void {
+  const proposal = proposalEffect.payload as Record<string, unknown>;
+  const publication = postToolEffect.payload as Record<string, unknown>;
+  const activity = publication.activity as Record<string, unknown>;
+  const result = proposal.result as Record<string, unknown>;
+  const lane = review.lanes.find((candidate) => (
+    candidate.lane_id === proposal.lane_id && candidate.attempt === proposal.attempt
+  ));
+  if (lane === undefined || lane.status !== 'COMPLETE'
+    || lane.role !== result.role
+    || lane.batch_id !== result.batch_id
+    || canonicalDigest(lane.findings) !== canonicalDigest(result.findings)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumed result is not incorporated in its review lane');
+  }
+  if (result.role === 'architect') {
+    if (lane.architectural_status !== result.architectural_status || lane.diagnostic_ids.length !== 0) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumed architect result is not incorporated exactly');
+    }
+    return;
+  }
+  if (!Array.isArray(result.diagnostics)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumed reviewer diagnostics are malformed');
+  }
+  const expectedRecommendation = lane.failure_code === 'DIAGNOSTIC_DEGRADED'
+    && result.recommendation === 'APPROVE' ? 'COMMENT' : result.recommendation;
+  const expectedDiagnostics = result.diagnostics.map((diagnostic) => ({
+    ...(diagnostic as Record<string, unknown>),
+    thread_id: activity.child_thread_id,
+  }));
+  const actualDiagnostics = lane.diagnostic_ids.map((id) => (
+    review.diagnostics.find((diagnostic) => diagnostic.diagnostic_id === id)
+  ));
+  if (lane.recommendation !== expectedRecommendation
+    || lane.diagnostic_ids.length !== expectedDiagnostics.length
+    || actualDiagnostics.some((diagnostic) => diagnostic === undefined)
+    || canonicalDigest(actualDiagnostics) !== canonicalDigest(expectedDiagnostics)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumed reviewer evidence is not incorporated exactly');
+  }
+}
+
+function validateConsumptionTopology(
+  effects: DurableTransactionEffect[],
+  reviewId: string,
+  idempotencyKey: string,
+): void {
   const typedMarkers = effects
     .filter((effect) => effect.name === 'consume')
     .map((effect) => effect.payload)
     .filter((payload): payload is ReviewConsumptionMarker => (
       isPlainObject(payload) && Object.hasOwn(payload, 'kind')
     ));
-  if (typedMarkers.length === 0) return;
-  const counts = REVIEW_CONSUMPTION_KINDS.map((kind) => (
-    typedMarkers.filter((marker) => marker.kind === kind).length
-  ));
-  if (typedMarkers.length > REVIEW_CONSUMPTION_KINDS.length * 16
-    || counts[0] === 0
-    || !counts.every((count) => count === counts[0])
-    || effects.filter((effect) => effect.name === 'review').length !== 1) {
+  const postTools = effects.filter((effect) => effect.name === 'post-tool');
+  const manifests = effects.filter((effect) => effect.name === 'manifest');
+  if (postTools.length === 0) {
+    if (typedMarkers.length !== 0 || manifests.length !== 0) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption has no publication pair');
+    }
+    return;
+  }
+  const reviewEffects = effects.filter((effect) => effect.name === 'review');
+  if (postTools.length > 16
+    || typedMarkers.length !== postTools.length * REVIEW_CONSUMPTION_KINDS.length
+    || reviewEffects.length !== 1
+    || manifests.length > 1) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption topology is invalid');
+  }
+  const proposals = new Map(effects.filter((effect) => effect.name === 'proposal').map((effect) => [
+    (effect.payload as { idempotency_key: string }).idempotency_key,
+    effect,
+  ]));
+  const markerByIdentity = new Map<string, ReviewConsumptionMarker>();
+  let consumedAt: string | undefined;
+  for (const marker of typedMarkers) {
+    if (marker.review_id !== reviewId || marker.idempotency_key !== idempotencyKey
+      || (consumedAt !== undefined && marker.consumed_at !== consumedAt)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption transaction binding conflicts');
+    }
+    consumedAt ??= marker.consumed_at;
+    const identity = `${marker.kind}:${marker.value_sha256}`;
+    if (markerByIdentity.has(identity)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption marker is duplicated');
+    }
+    markerByIdentity.set(identity, marker);
+  }
+  const publications: ReviewConsumptionManifestPublication[] = [];
+  const referencedMarkers = new Set<string>();
+  const consumedLaneAttempts = new Set<string>();
+  const review = reviewEffects[0]!.payload as ReviewRecord;
+  for (const postTool of postTools) {
+    const publication = postTool.payload as Record<string, unknown>;
+    const publicationId = publication.publication_id as string;
+    const proposal = proposals.get(publicationId);
+    const attestation = publication.attestation as Record<string, unknown>;
+    if (proposal === undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption publication has no proposal');
+    }
+    const proposalPayload = proposal.payload as Record<string, unknown>;
+    const laneAttempt = `${proposalPayload.lane_id as string}:${proposalPayload.attempt as number}`;
+    if (consumedLaneAttempts.has(laneAttempt)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review lane has multiple consumption publications');
+    }
+    consumedLaneAttempts.add(laneAttempt);
+    const values: Record<ReviewConsumptionKind, string> = {
+      PROPOSAL_KEY: publicationId,
+      TOOL_EVENT_REF: attestation.tool_event_ref as string,
+      NONCE: attestation.nonce as string,
+    };
+    const refs = REVIEW_CONSUMPTION_KINDS.map((kind) => {
+      const digest = reviewConsumptionDigest(kind, values[kind]);
+      const markerIdentity = `${kind}:${digest}`;
+      const marker = markerByIdentity.get(markerIdentity);
+      if (marker === undefined || referencedMarkers.has(markerIdentity)) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption marker does not bind its publication');
+      }
+      referencedMarkers.add(markerIdentity);
+      return {
+        kind,
+        value_sha256: digest,
+        path: `${reviewId}/consumptions/${REVIEW_CONSUMPTION_DIRECTORIES[kind]}/${digest}.json`,
+      };
+    }) as ReviewConsumptionManifestPublication['markers'];
+    validateConsumedResultInReview(review, proposal, postTool);
+    publications.push({ publication_id: publicationId, markers: refs });
+  }
+  if (referencedMarkers.size !== typedMarkers.length || consumedAt === undefined) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption transaction has extra markers');
+  }
+  const expected: ReviewConsumptionManifestIntent = {
+    schema_version: 1,
+    review_id: reviewId,
+    idempotency_key: idempotencyKey,
+    publication_count: publications.length,
+    marker_count: publications.length * REVIEW_CONSUMPTION_KINDS.length,
+    publications,
+    committed_at: consumedAt,
+  };
+  if (manifests.length === 0) {
+    effects.push({
+      name: 'manifest',
+      mode: 'CREATE_ONCE_JSON',
+      target: {
+        area: 'REVIEW_STATE',
+        path: `${reviewId}/consumptions/manifests/${idempotencyKey}.json`,
+      },
+      payload: expected,
+    });
+  } else if (canonicalDigest(manifests[0]!.payload) !== canonicalDigest(expected)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption manifest conflicts with publication bindings');
   }
 }
 
@@ -1682,7 +1962,10 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
   }
   validatePostToolProposalBinding(effects, idempotencyKey);
   validateActiveOverlayBinding(effects, journalScope, expectedRevision);
-  validateConsumptionTopology(effects);
+  validateConsumptionTopology(effects, reviewId, idempotencyKey);
+  if (effects.length > 64) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effects are invalid');
+  }
   const targets = effects.map((effect) => `${effect.target.area}:${effect.target.path}`);
   if (new Set(targets).size !== targets.length) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction targets must be unique');
@@ -1835,6 +2118,122 @@ function validateCommittedAgainstPrepared(
   return committed;
 }
 
+function parseStartReceipt(value: unknown): CommittedStartReceipt {
+  if (!isPlainObject(value) || !hasExactKeys(value, [
+    'schema_version', 'state', 'transaction_id', 'idempotency_key', 'request_digest',
+    'review_id', 'session_id', 'response', 'result_revision', 'result_digest', 'committed_at',
+  ]) || value.schema_version !== 1 || value.state !== 'COMMITTED'
+    || (value.session_id !== null && typeof value.session_id !== 'string')) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt is malformed');
+  }
+  return {
+    schema_version: 1,
+    state: 'COMMITTED',
+    transaction_id: validateUuid(value.transaction_id, 'START receipt transaction_id'),
+    idempotency_key: validateUuid(value.idempotency_key, 'START receipt idempotency_key'),
+    request_digest: requirePayloadHash(value.request_digest, 'START receipt request_digest'),
+    review_id: validateUuid(value.review_id, 'START receipt review_id'),
+    session_id: value.session_id === null
+      ? null
+      : requirePayloadString(value.session_id, 'START receipt session_id', 160),
+    response: sanitizeForPersistence(value.response),
+    result_revision: requirePositiveInteger(value.result_revision, 'START receipt result_revision'),
+    result_digest: requirePayloadHash(value.result_digest, 'START receipt result_digest'),
+    committed_at: requirePayloadTimestamp(value.committed_at, 'START receipt committed_at'),
+  };
+}
+
+async function scanStartReceipts(paths: ReviewPersistencePaths): Promise<Map<string, CommittedStartReceipt>> {
+  const receipts = new Map<string, CommittedStartReceipt>();
+  for (const entry of await readDirectoryEntries(paths.startReceiptsRoot)) {
+    const match = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/iu.exec(entry.name);
+    if (!entry.isFile() || match === null) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt index contains an unknown entry');
+    }
+    const filenameKey = validateUuid(match[1], 'START receipt filename');
+    const raw = await readJsonIfPresent(join(paths.startReceiptsRoot, entry.name));
+    if (raw === undefined) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt disappeared');
+    const receipt = parseStartReceipt(raw);
+    if (receipt.idempotency_key !== filenameKey || receipts.has(receipt.idempotency_key)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt identity is duplicated');
+    }
+    const reviewRaw = await readJsonIfPresent(join(paths.reviewRoot, receipt.review_id, 'review.json'));
+    if (!isPlainObject(reviewRaw) || !Number.isSafeInteger(reviewRaw.revision)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt review is missing');
+    }
+    const review = validateReviewRecordPayload(reviewRaw, receipt.review_id, reviewRaw.revision as number);
+    if ((review.session_id ?? null) !== receipt.session_id
+      || review.revision < receipt.result_revision
+      || (review.revision === receipt.result_revision && (
+        canonicalDigest(review) !== receipt.result_digest
+        || review.last_applied_transaction_id !== receipt.transaction_id
+      ))) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt result conflicts');
+    }
+    receipts.set(receipt.idempotency_key, receipt);
+  }
+  return receipts;
+}
+
+async function validateStartReceiptResult(
+  paths: ReviewPersistencePaths,
+  receipt: CommittedStartReceipt,
+  plan: DurableTransactionPlan,
+): Promise<DurableTransactionResult> {
+  if (receipt.request_digest !== planDigest(plan)) {
+    throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
+  }
+  if (receipt.review_id !== plan.review_id
+    || receipt.result_revision !== plan.expected_revision + 1
+    || (paths.session_id ?? null) !== receipt.session_id) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt session identity conflicts');
+  }
+  const raw = await readJsonIfPresent(join(paths.reviewRoot, receipt.review_id, 'review.json'));
+  if (!isPlainObject(raw) || !Number.isSafeInteger(raw.revision)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt review is missing');
+  }
+  const review = validateReviewRecordPayload(raw, receipt.review_id, raw.revision as number);
+  if ((review.session_id ?? null) !== receipt.session_id || review.revision < receipt.result_revision) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt result was rolled back or replaced');
+  }
+  if (review.revision === receipt.result_revision && canonicalDigest(review) !== receipt.result_digest) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt result digest conflicts');
+  }
+  return { state: 'COMMITTED', response: receipt.response };
+}
+
+async function publishStartReceipt(
+  paths: ReviewPersistencePaths,
+  prepared: PreparedDurableTransaction,
+  committed: CommittedDurableTransaction,
+): Promise<void> {
+  if (prepared.journal_scope !== 'START') return;
+  const raw = await readJsonIfPresent(join(paths.reviewRoot, prepared.review_id, 'review.json'));
+  if (!isPlainObject(raw) || !Number.isSafeInteger(raw.revision)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'cannot receipt a missing START result');
+  }
+  const review = validateReviewRecordPayload(raw, prepared.review_id, raw.revision as number);
+  if (review.revision !== prepared.expected_revision + 1
+    || review.last_applied_transaction_id !== prepared.transaction_id
+    || (review.session_id ?? null) !== (paths.session_id ?? null)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'cannot receipt an ambiguous START result');
+  }
+  const receipt: CommittedStartReceipt = {
+    schema_version: 1,
+    state: 'COMMITTED',
+    transaction_id: prepared.transaction_id,
+    idempotency_key: prepared.idempotency_key,
+    request_digest: prepared.input_digest,
+    review_id: prepared.review_id,
+    session_id: paths.session_id ?? null,
+    response: committed.response,
+    result_revision: review.revision,
+    result_digest: canonicalDigest(review),
+    committed_at: committed.committed_at,
+  };
+  await createOnceMatching(join(paths.startReceiptsRoot, `${prepared.idempotency_key}.json`), receipt);
+}
+
 function parseLocator(value: unknown): DurableTransactionLocator {
   if (!isPlainObject(value) || !hasExactKeys(value, [
     'schema_version', 'transaction_id', 'review_id', 'idempotency_key', 'input_digest',
@@ -1864,7 +2263,11 @@ function assertLocatorMatchesPrepared(
 }
 
 function maybeCrash(boundary: DurableTransactionBoundary, options: RunDurableTransactionOptions): void {
-  if (options.crashAt === boundary) throw new Error(`injected crash at ${boundary}`);
+  if (options.crashAt !== boundary) return;
+  if (options.crashMode === 'SIGKILL' && process.platform !== 'win32') {
+    process.kill(process.pid, 'SIGKILL');
+  }
+  throw new Error(`injected crash at ${boundary}`);
 }
 
 function targetPath(paths: ReviewPersistencePaths, effect: DurableTransactionEffect): string {
@@ -1949,6 +2352,53 @@ async function validateReviewEffectCurrentState(
   }
 }
 
+function validateRestoreTransition(current: ReviewRecord, proposed: ReviewRecord): void {
+  const nextAttempt = current.current_attempt + 1;
+  const priorAttempt = current.attempt_history.at(-1);
+  const resumedAttempt = proposed.attempt_history.at(-1);
+  if (current.status !== 'BLOCKED'
+    || current.resumable !== true
+    || current.resumable_reason === undefined
+    || !RESUMABLE_REASONS.includes(current.resumable_reason)
+    || priorAttempt?.attempt !== current.current_attempt
+    || priorAttempt.status !== 'BLOCKED'
+    || priorAttempt.resumable !== true
+    || priorAttempt.resumable_reason !== current.resumable_reason
+    || proposed.status !== 'REVIEWING'
+    || proposed.current_attempt !== nextAttempt
+    || proposed.resumable !== false
+    || proposed.resumable_reason !== undefined
+    || proposed.attempt_history.length !== current.attempt_history.length + 1
+    || canonicalDigest(proposed.attempt_history.slice(0, -1)) !== canonicalDigest(current.attempt_history)
+    || resumedAttempt?.attempt !== nextAttempt
+    || resumedAttempt.status !== 'REVIEWING'
+    || resumedAttempt.resumable !== false
+    || resumedAttempt.resumable_reason !== undefined
+    || resumedAttempt.finalized_at !== undefined
+    || resumedAttempt.verdict !== undefined
+    || proposed.lanes.length < current.lanes.length
+    || canonicalDigest(proposed.lanes.slice(0, current.lanes.length)) !== canonicalDigest(current.lanes)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review is not an exact resumable transition');
+  }
+  const lanesById = new Map(proposed.lanes.map((lane) => [lane.lane_id, lane] as const));
+  if (new Set(resumedAttempt.lane_ids).size !== resumedAttempt.lane_ids.length
+    || resumedAttempt.bindings.length !== resumedAttempt.lane_ids.length
+    || resumedAttempt.bindings.some((binding, index) => {
+      const lane = lanesById.get(binding.lane_id);
+      return binding.lane_id !== resumedAttempt.lane_ids[index]
+        || lane === undefined
+        || lane.attempt !== binding.attempt
+        || lane.role !== binding.role
+        || lane.batch_id !== binding.batch_id
+        || (binding.attempt === nextAttempt && lane.status !== 'PENDING');
+    })
+    || proposed.lanes.slice(current.lanes.length).some((lane) => (
+      lane.attempt !== nextAttempt || lane.status !== 'PENDING'
+    ))) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'resumed review lane topology conflicts');
+  }
+}
+
 async function validateActiveEffectCurrentState(
   paths: ReviewPersistencePaths,
   intent: Pick<DurableTransactionPlan, 'review_id' | 'expected_revision' | 'effects'>,
@@ -1993,6 +2443,7 @@ async function validateActiveEffectCurrentState(
         || review.revision !== effect.expected_revision) {
         throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay restoration precondition conflicts');
       }
+      validateRestoreTransition(review, reviewEffect.payload as ReviewRecord);
       return active;
     }
     if ((options.requireApplied && !matchesNext)
@@ -2134,6 +2585,15 @@ async function applyEffect(
     return;
   }
   const path = targetPath(paths, effect);
+  if (effect.name === 'manifest') {
+    const intent = effect.payload as ReviewConsumptionManifestIntent;
+    await createOnceMatching(path, {
+      ...intent,
+      state: 'COMMITTED',
+      transaction_id: prepared.transaction_id,
+    } satisfies ReviewConsumptionManifest);
+    return;
+  }
   if (effect.mode === 'CREATE_ONCE_JSON') {
     await createOnceMatching(path, effect.payload);
     return;
@@ -2191,6 +2651,11 @@ async function executePrepared(
       appliedTransactionId: prepared.transaction_id,
       requireApplied: true,
     });
+    if (prepared.journal_scope === 'START') {
+      maybeCrash('before:receipt', options);
+      await publishStartReceipt(paths, prepared, committed);
+      maybeCrash('after:receipt', options);
+    }
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
@@ -2234,6 +2699,11 @@ async function executePrepared(
   maybeCrash('before:committed', options);
   await createOnceMatching(files.committed, committed);
   maybeCrash('after:committed', options);
+  if (prepared.journal_scope === 'START') {
+    maybeCrash('before:receipt', options);
+    await publishStartReceipt(paths, prepared, committed);
+    maybeCrash('after:receipt', options);
+  }
   maybeCrash('before:locator-cleanup', options);
   await cleanupLocator(paths, prepared);
   maybeCrash('after:locator-cleanup', options);
@@ -2248,6 +2718,10 @@ async function runDurableTransactionLocked(
   const plan = validateDurablePlan(planValue);
   const digest = planDigest(plan);
   const journalScope = plan.journal_scope ?? 'REVIEW';
+  if (journalScope === 'START') {
+    const receipt = (await scanStartReceipts(paths)).get(plan.idempotency_key);
+    if (receipt !== undefined) return await validateStartReceiptResult(paths, receipt, plan);
+  }
   const files = transactionPaths(paths, plan.review_id, plan.idempotency_key, journalScope);
   const existingCommitted = await readJsonIfPresent(files.committed);
   if (existingCommitted !== undefined) {
@@ -2267,6 +2741,7 @@ async function runDurableTransactionLocked(
       appliedTransactionId: prepared.transaction_id,
       requireApplied: true,
     });
+    await publishStartReceipt(paths, prepared, committed);
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
@@ -2386,45 +2861,123 @@ async function readDirectoryEntries(path: string): Promise<Dirent[]> {
   }
 }
 
-export async function readReviewConsumptionMarkers(
+export async function readReviewConsumptionGroups(
   paths: ReviewPersistencePaths,
   reviewIdValue: string,
-): Promise<ReviewConsumptionMarker[]> {
+): Promise<ReviewConsumptionGroup[]> {
   const reviewId = validateUuid(reviewIdValue, 'review_id');
   const root = join(paths.reviewRoot, reviewId, 'consumptions');
   const directoryToKind = new Map(
     REVIEW_CONSUMPTION_KINDS.map((kind) => [REVIEW_CONSUMPTION_DIRECTORIES[kind], kind] as const),
   );
   const rootEntries = await readDirectoryEntries(root);
-  const markers: ReviewConsumptionMarker[] = [];
+  const allowedDirectories = new Set([...directoryToKind.keys(), 'manifests']);
+  const markers = new Map<string, ReviewConsumptionMarker>();
+  const manifests: ReviewConsumptionManifest[] = [];
   for (const directory of [...rootEntries].sort((left, right) => left.name.localeCompare(right.name))) {
-    if (directory.name.startsWith('.')) continue;
-    const kind = directoryToKind.get(directory.name);
-    if (!directory.isDirectory() || kind === undefined) {
+    if (!directory.isDirectory() || !allowedDirectories.has(directory.name)) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption directory is invalid');
     }
+    const kind = directoryToKind.get(directory.name);
     const entries = await readDirectoryEntries(join(root, directory.name));
     for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
-      if (entry.name.startsWith('.')) continue;
-      const match = /^([0-9a-f]{64})\.json$/u.exec(entry.name);
-      if (!entry.isFile() || match === null) {
-        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption entry is invalid');
+      if (!entry.isFile()) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption entry is invalid');
+      const path = join(root, directory.name, entry.name);
+      const value = await readJsonIfPresent(path);
+      if (value === undefined) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption entry disappeared');
+      if (directory.name === 'manifests') {
+        const match = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/iu.exec(entry.name);
+        if (match === null) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest entry is invalid');
+        const manifest = validateConsumptionManifest(value);
+        if (manifest.review_id !== reviewId || manifest.idempotency_key !== validateUuid(match[1], 'manifest filename')) {
+          throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest path conflicts');
+        }
+        manifests.push(manifest);
+      } else {
+        const match = /^([0-9a-f]{64})\.json$/u.exec(entry.name);
+        if (kind === undefined || match === null) {
+          throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption entry is invalid');
+        }
+        const marker = validateReviewConsumptionMarker(value, reviewId);
+        const identity = `${marker.kind}:${marker.value_sha256}`;
+        if (marker.kind !== kind || marker.value_sha256 !== match[1] || markers.has(identity)) {
+          throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption path conflicts with its marker');
+        }
+        markers.set(identity, marker);
       }
-      const value = await readJsonIfPresent(join(root, directory.name, entry.name));
-      if (value === undefined) {
-        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption entry disappeared');
-      }
-      const marker = validateReviewConsumptionMarker(value, reviewId);
-      if (marker.kind !== kind || marker.value_sha256 !== match[1]) {
-        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption path conflicts with its marker');
-      }
-      markers.push(marker);
     }
   }
-  return markers.sort((left, right) => (
-    REVIEW_CONSUMPTION_KINDS.indexOf(left.kind) - REVIEW_CONSUMPTION_KINDS.indexOf(right.kind)
-    || left.value_sha256.localeCompare(right.value_sha256)
-  ));
+  if (markers.size === 0 && manifests.length === 0) return [];
+  if (markers.size === 0 || manifests.length === 0) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption state is partial');
+  }
+  const seenManifestKeys = new Set<string>();
+  const consumedMarkers = new Set<string>();
+  const groups: ReviewConsumptionGroup[] = [];
+  for (const manifest of manifests.sort((left, right) => left.idempotency_key.localeCompare(right.idempotency_key))) {
+    if (seenManifestKeys.has(manifest.idempotency_key)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest is duplicated');
+    }
+    seenManifestKeys.add(manifest.idempotency_key);
+    const files = transactionPaths(paths, reviewId, manifest.idempotency_key, 'REVIEW');
+    const preparedValue = await readJsonIfPresent(files.prepared);
+    const committedValue = await readJsonIfPresent(files.committed);
+    if (preparedValue === undefined || committedValue === undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest transaction is incomplete');
+    }
+    const prepared = parsePrepared(preparedValue);
+    const committed = validateCommittedAgainstPrepared(committedValue, prepared);
+    if (prepared.transaction_id !== manifest.transaction_id
+      || committed.transaction_id !== manifest.transaction_id
+      || prepared.review_id !== reviewId
+      || prepared.idempotency_key !== manifest.idempotency_key) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest transaction conflicts');
+    }
+    const intent = prepared.effects.find((effect) => effect.name === 'manifest');
+    const persistedIntent = {
+      schema_version: manifest.schema_version,
+      review_id: manifest.review_id,
+      idempotency_key: manifest.idempotency_key,
+      publication_count: manifest.publication_count,
+      marker_count: manifest.marker_count,
+      publications: manifest.publications,
+      committed_at: manifest.committed_at,
+    } satisfies ReviewConsumptionManifestIntent;
+    if (intent === undefined || canonicalDigest(intent.payload) !== canonicalDigest(persistedIntent)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest conflicts with its intent');
+    }
+    const groupMarkers: ReviewConsumptionMarker[] = [];
+    for (const publication of manifest.publications) {
+      for (const ref of publication.markers) {
+        const identity = `${ref.kind}:${ref.value_sha256}`;
+        const marker = markers.get(identity);
+        const expectedPath = `${reviewId}/consumptions/${REVIEW_CONSUMPTION_DIRECTORIES[ref.kind]}/${ref.value_sha256}.json`;
+        if (marker === undefined
+          || marker.idempotency_key !== manifest.idempotency_key
+          || ref.path !== expectedPath
+          || consumedMarkers.has(identity)) {
+          throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest marker conflicts');
+        }
+        consumedMarkers.add(identity);
+        groupMarkers.push(marker);
+      }
+    }
+    if (groupMarkers.length !== manifest.publication_count * REVIEW_CONSUMPTION_KINDS.length) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption manifest count conflicts');
+    }
+    groups.push({ manifest, markers: groupMarkers });
+  }
+  if (consumedMarkers.size !== markers.size) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption state contains an uncommitted marker');
+  }
+  return groups;
+}
+
+export async function readReviewConsumptionMarkers(
+  paths: ReviewPersistencePaths,
+  reviewIdValue: string,
+): Promise<ReviewConsumptionMarker[]> {
+  return (await readReviewConsumptionGroups(paths, reviewIdValue)).flatMap((group) => group.markers);
 }
 
 async function recoverActiveReviewWithoutLocators(
@@ -2491,6 +3044,7 @@ async function recoverPendingReviewTransactionsLocked(
   heldReviewId?: string,
 ): Promise<DurableTransactionResult[]> {
   await readActiveReview(paths);
+  await scanStartReceipts(paths);
   const recovered: DurableTransactionResult[] = [];
 
   const startEntries = await readDirectoryEntries(paths.startTransactionsRoot);
@@ -2511,7 +3065,7 @@ async function recoverPendingReviewTransactionsLocked(
     }
     const committedValue = await readJsonIfPresent(files.committed);
     if (committedValue !== undefined) {
-      validateCommittedAgainstPrepared(committedValue, prepared);
+      const committed = validateCommittedAgainstPrepared(committedValue, prepared);
       await validatePostToolTrustContext(paths, prepared, prepared.transaction_id);
       await validateReviewEffectCurrentState(paths, prepared, {
         appliedTransactionId: prepared.transaction_id,
@@ -2521,6 +3075,7 @@ async function recoverPendingReviewTransactionsLocked(
         appliedTransactionId: prepared.transaction_id,
         requireApplied: true,
       });
+      await publishStartReceipt(paths, prepared, committed);
       await cleanupLocator(paths, prepared);
       continue;
     }

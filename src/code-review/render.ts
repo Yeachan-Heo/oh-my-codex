@@ -310,13 +310,16 @@ export function validateReviewTopology(
       invalid('lane scope hash contradicts the frozen scope');
     }
     const failed = lane.status === 'FAILED' || lane.status === 'TIMED_OUT' || lane.status === 'INVALID';
+    const diagnosticDegraded = lane.status === 'COMPLETE'
+      && lane.role === 'code-reviewer'
+      && lane.failure_code === 'DIAGNOSTIC_DEGRADED';
     if (failed) {
       if (lane.failure_code === undefined
         || lane.recommendation !== undefined
         || lane.architectural_status !== undefined) {
         invalid('failed lane must contain only failure evidence');
       }
-    } else if (lane.failure_code !== undefined) {
+    } else if (lane.failure_code !== undefined && !diagnosticDegraded) {
       invalid('non-failed lane must not contain failure evidence');
     }
     const requireRoleResult = lane.status === 'COMPLETE'
@@ -336,6 +339,13 @@ export function validateReviewTopology(
       if (lane.architectural_status !== undefined
         || (requireRoleResult && lane.recommendation === undefined)) {
         invalid('reviewer lane has fields for the wrong role');
+      }
+      if (diagnosticDegraded && (
+        lane.recommendation === 'APPROVE'
+        || lane.recommendation === undefined
+        || lane.diagnostic_ids.length === 0
+      )) {
+        invalid('diagnostic-degraded reviewer lane requires bounded non-approval evidence');
       }
       const files = batchFiles.get(lane.batch_id)!;
       if (lane.findings.some((finding) => !scopeFiles.has(finding.file) || !files.has(finding.file))) {
