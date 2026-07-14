@@ -69,13 +69,17 @@ function readMarkerStore(baseStateDir: string): RoleRoutingMarkerStore {
 function writeMarkerStore(
   baseStateDir: string,
   store: RoleRoutingMarkerStore,
-  assertOwnership?: () => void,
+  publish?: (contents: string) => void,
 ): void {
   const path = markerStorePath(baseStateDir);
   mkdirSync(dirname(path), { recursive: true });
+  const contents = `${JSON.stringify(store, null, 2)}\n`;
+  if (publish) {
+    publish(contents);
+    return;
+  }
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(store, null, 2)}\n`);
-  assertOwnership?.();
+  writeFileSync(temporaryPath, contents);
   renameSync(temporaryPath, path);
 }
 
@@ -110,7 +114,7 @@ export function writeRoleRoutingMarker(baseStateDir: string, marker: RoleRouting
     writeMarkerStore(baseStateDir, {
       schema_version: ROLE_ROUTING_MARKER_SCHEMA_VERSION,
       markers,
-    }, context.assertOwnership);
+    }, context.publish);
   }, {
     maxAttempts: ROLE_ROUTING_MARKER_LOCK_MAX_ATTEMPTS,
     retryMs: ROLE_ROUTING_MARKER_LOCK_RETRY_MS,

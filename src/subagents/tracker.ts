@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, ftruncateSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { getBaseStateDir } from '../state/paths.js';
 import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
@@ -360,6 +360,7 @@ type CrossProcessLockClaim = {
   pid: number;
   host: string;
   acquiredAtMs: number;
+  pidStartId?: string;
 };
 
 type CrossProcessLockState =
@@ -369,6 +370,7 @@ type CrossProcessLockState =
 
 export type CrossProcessFileLockContext = {
   assertOwnership(): void;
+  publish(contents: string): void;
 };
 
 export class CrossProcessLockLostError extends Error {
@@ -386,12 +388,29 @@ function sleepForCrossProcessLockSync(durationMs: number): void {
   Atomics.wait(crossProcessLockWaitArray, 0, 0, durationMs);
 }
 
+export function readProcessStartIdentity(pid: number): string | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    const closingParenthesis = stat.lastIndexOf(')');
+    const fields = stat.slice(closingParenthesis + 1).trim().split(/\s+/);
+    const starttime = fields[19];
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
+    if (closingParenthesis < 0 || !starttime || !/^\d+$/.test(starttime) || !bootId) return undefined;
+    return `${bootId}:${starttime}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function createCrossProcessLockClaim(token: string): CrossProcessLockClaim {
+  const pidStartId = readProcessStartIdentity(process.pid);
   return {
     token,
     pid: process.pid,
     host: hostname(),
     acquiredAtMs: Date.now(),
+    ...(pidStartId ? { pidStartId } : {}),
   };
 }
 
@@ -401,6 +420,7 @@ function serializeCrossProcessLockClaim(claim: CrossProcessLockClaim): string {
     pid: claim.pid,
     host: claim.host,
     acquired_at: new Date(claim.acquiredAtMs).toISOString(),
+    ...(claim.pidStartId ? { pid_start_id: claim.pidStartId } : {}),
   })}\n`;
 }
 
@@ -411,15 +431,21 @@ function readCrossProcessLockState(lockPath: string): CrossProcessLockState {
       pid?: unknown;
       host?: unknown;
       acquired_at?: unknown;
+      pid_start_id?: unknown;
     };
     const token = typeof parsed.token === 'string' && parsed.token === parsed.token.trim() && parsed.token ? parsed.token : undefined;
     const pid = typeof parsed.pid === 'number' && Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
     const host = typeof parsed.host === 'string' && parsed.host.trim() ? parsed.host : undefined;
     const acquiredAtMs = typeof parsed.acquired_at === 'string' ? Date.parse(parsed.acquired_at) : Number.NaN;
-    if (!token || !pid || !host || !Number.isFinite(acquiredAtMs)) return { kind: 'malformed' };
+    const pidStartId = parsed.pid_start_id === undefined
+      ? undefined
+      : typeof parsed.pid_start_id === 'string' && parsed.pid_start_id.trim()
+        ? parsed.pid_start_id
+        : null;
+    if (!token || !pid || !host || !Number.isFinite(acquiredAtMs) || pidStartId === null) return { kind: 'malformed' };
     return {
       kind: 'claim',
-      claim: { token, pid, host, acquiredAtMs },
+      claim: { token, pid, host, acquiredAtMs, ...(pidStartId ? { pidStartId } : {}) },
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
@@ -441,7 +467,11 @@ function isCrossProcessLockOlderThanLease(acquiredAtMs: number, nowMs: number): 
 }
 
 function isCrossProcessLockReclaimable(claim: CrossProcessLockClaim): boolean {
-  if (claim.host === hostname()) return isCrossProcessLockOwnerDead(claim.pid);
+  if (claim.host !== hostname()) return isCrossProcessLockOlderThanLease(claim.acquiredAtMs, Date.now());
+  if (isCrossProcessLockOwnerDead(claim.pid)) return true;
+
+  const currentPidStartId = readProcessStartIdentity(claim.pid);
+  if (claim.pidStartId && currentPidStartId) return currentPidStartId !== claim.pidStartId;
   return isCrossProcessLockOlderThanLease(claim.acquiredAtMs, Date.now());
 }
 
@@ -539,6 +569,30 @@ function releaseCrossProcessFileLock(lockPath: string, token: string): void {
   restoreQuarantinedCrossProcessLock(lockPath, quarantinedPath);
 }
 
+function crossProcessLockStagePath(resourcePath: string, token: string): string {
+  return `${resourcePath}.stage.${token}`;
+}
+
+function createCrossProcessLockStage(stagePath: string): void {
+  const descriptor = openSync(stagePath, 'wx');
+  closeSync(descriptor);
+}
+
+function sweepForeignCrossProcessLockStages(resourcePath: string, token: string): void {
+  const directory = dirname(resourcePath);
+  const stagePrefix = `${basename(resourcePath)}.stage.`;
+  for (const entry of readdirSync(directory)) {
+    if (!entry.startsWith(stagePrefix) || entry.slice(stagePrefix.length) === token) continue;
+    removeCrossProcessLockFile(join(directory, entry));
+  }
+}
+
+let crossProcessPublishBarrier: (() => void) | null = null;
+
+export function __setCrossProcessPublishBarrierForTest(barrier: (() => void) | null): void {
+  crossProcessPublishBarrier = barrier;
+}
+
 export function withCrossProcessFileLockSync<T>(
   resourcePath: string,
   operation: (context: CrossProcessFileLockContext) => T,
@@ -556,6 +610,7 @@ export function withCrossProcessFileLockSync<T>(
 
   mkdirSync(dirname(lockPath), { recursive: true });
   const token = randomUUID();
+  const stagePath = crossProcessLockStagePath(resourcePath, token);
   let acquired = false;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (tryAcquireCrossProcessFileLock(lockPath, token)) {
@@ -579,10 +634,39 @@ export function withCrossProcessFileLockSync<T>(
   }
 
   try {
+    sweepForeignCrossProcessLockStages(resourcePath, token);
+    createCrossProcessLockStage(stagePath);
     return operation({
       assertOwnership: () => assertCrossProcessFileLockOwnership(lockPath, token),
+      publish: (contents: string) => {
+        let descriptor: number;
+        try {
+          descriptor = openSync(stagePath, 'r+');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new CrossProcessLockLostError(lockPath);
+          throw error;
+        }
+        try {
+          ftruncateSync(descriptor, 0);
+          writeSync(descriptor, contents);
+        } finally {
+          closeSync(descriptor);
+        }
+
+        const barrier = crossProcessPublishBarrier;
+        crossProcessPublishBarrier = null;
+        barrier?.();
+        try {
+          renameSync(stagePath, resourcePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new CrossProcessLockLostError(lockPath);
+          throw error;
+        }
+        createCrossProcessLockStage(stagePath);
+      },
     });
   } finally {
+    removeCrossProcessLockFile(stagePath);
     releaseCrossProcessFileLock(lockPath, token);
   }
 }
@@ -600,14 +684,18 @@ function readSubagentTrackingStateSync(cwd: string): SubagentTrackingState {
 function writeSubagentTrackingStateSync(
   cwd: string,
   state: SubagentTrackingState,
-  assertOwnership?: () => void,
+  publish?: (contents: string) => void,
 ): string {
   const normalized = normalizeSubagentTrackingState(state);
   const path = subagentTrackingPath(cwd);
   mkdirSync(dirname(path), { recursive: true });
+  const contents = `${JSON.stringify(normalized, null, 2)}\n`;
+  if (publish) {
+    publish(contents);
+    return path;
+  }
   const temporaryPath = atomicTrackingTempPath(path);
-  writeFileSync(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`);
-  assertOwnership?.();
+  writeFileSync(temporaryPath, contents);
   renameSync(temporaryPath, path);
   return path;
 }
@@ -678,7 +766,7 @@ export function recordPendingRoleIntent(
     };
     state.pending_role_intents = [...pendingRoleIntents, intent];
     context.assertOwnership();
-    writeSubagentTrackingStateSync(cwd, state, context.assertOwnership);
+    writeSubagentTrackingStateSync(cwd, state, context.publish);
     return { ok: true, intent };
   });
 }
@@ -705,7 +793,7 @@ export function bindPendingRoleIntentUnderLock(
       if (pendingRoleIntents.length !== state.pending_role_intents.length) {
         state.pending_role_intents = pendingRoleIntents;
         context.assertOwnership();
-        writeSubagentTrackingStateSync(cwd, state, context.assertOwnership);
+        writeSubagentTrackingStateSync(cwd, state, context.publish);
       }
       return null;
     }
@@ -717,7 +805,7 @@ export function bindPendingRoleIntentUnderLock(
     const boundState = bind(state, adaptedIntent);
     boundState.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== consumed);
     context.assertOwnership();
-    writeSubagentTrackingStateSync(cwd, boundState, context.assertOwnership);
+    writeSubagentTrackingStateSync(cwd, boundState, context.publish);
     return adaptedIntent;
   });
 }
@@ -861,7 +949,7 @@ export async function recordSubagentTurnForSession(cwd: string, input: RecordSub
     const current = readSubagentTrackingStateSync(cwd);
     const next = recordSubagentTurn(current, input);
     context.assertOwnership();
-    writeSubagentTrackingStateSync(cwd, next, context.assertOwnership);
+    writeSubagentTrackingStateSync(cwd, next, context.publish);
     return next;
   });
 }

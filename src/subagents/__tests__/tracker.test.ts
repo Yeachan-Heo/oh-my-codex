@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { __setCrossProcessPublishBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 interface PendingRoleIntentRecordWorkerInput {
@@ -172,12 +172,19 @@ const CROSS_PROCESS_LOCK_HOLDER_SOURCE = `
   });
 `;
 
-function crossProcessLockClaim(token: string, pid: number, acquiredAtMs: number, host = hostname()): string {
+function crossProcessLockClaim(
+  token: string,
+  pid: number,
+  acquiredAtMs: number,
+  host = hostname(),
+  pidStartId?: string,
+): string {
   return `${JSON.stringify({
     token,
     pid,
     host,
     acquired_at: new Date(acquiredAtMs).toISOString(),
+    ...(pidStartId ? { pid_start_id: pidStartId } : {}),
   })}\n`;
 }
 
@@ -928,6 +935,58 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('prevents a fenced predecessor from publishing after its staged slot is swept', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    let barrierRuns = 0;
+    try {
+      __setCrossProcessPublishBarrierForTest(() => {
+        barrierRuns += 1;
+        writeFileSync(
+          lockPath,
+          crossProcessLockClaim('stalled-remote-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'),
+        );
+        withCrossProcessFileLockSync(resourcePath, (context) => {
+          context.publish('S_B');
+        }, { maxAttempts: 2, retryMs: 1 });
+      });
+
+      assert.throws(
+        () => withCrossProcessFileLockSync(resourcePath, (context) => {
+          context.publish('S_A');
+        }),
+        CrossProcessLockLostError,
+      );
+      assert.equal(barrierRuns, 1);
+      assert.equal(readFileSync(resourcePath, 'utf-8'), 'S_B');
+    } finally {
+      __setCrossProcessPublishBarrierForTest(null);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports lock loss when a successor sweeps a staged slot before publication opens it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    try {
+      withCrossProcessFileLockSync(resourcePath, (context) => {
+        writeFileSync(
+          lockPath,
+          crossProcessLockClaim('stalled-remote-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'),
+        );
+        withCrossProcessFileLockSync(resourcePath, (successor) => {
+          successor.publish('S_B');
+        }, { maxAttempts: 2, retryMs: 1 });
+        assert.throws(() => context.publish('S_A'), CrossProcessLockLostError);
+      });
+      assert.equal(readFileSync(resourcePath, 'utf-8'), 'S_B');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('recovers despite an abandoned legacy recovery guard', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const resourcePath = join(cwd, 'lock-resource');
@@ -966,12 +1025,72 @@ describe('subagents/tracker', () => {
     }
   });
 
-  it('does not steal a live same-host claim after its lease or mistake its token for ours', async () => {
+  it('reclaims a same-host claim held by a reused live pid', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const resourcePath = join(cwd, 'lock-resource');
     const lockPath = crossProcessLockPath(resourcePath);
-    const reusedPidClaim = crossProcessLockClaim('reused-pid-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1);
+    const pidStartId = readProcessStartIdentity(process.pid);
     try {
+      if (!pidStartId) return;
+      await writeFile(
+        lockPath,
+        crossProcessLockClaim(
+          'reused-pid-token',
+          process.pid,
+          Date.now(),
+          hostname(),
+          'bogus-pid-start-id',
+        ),
+      );
+      assert.equal(
+        withCrossProcessFileLockSync(resourcePath, () => 'reused pid recovered', { maxAttempts: 1, retryMs: 1 }),
+        'reused pid recovered',
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the lease fallback for legacy same-host claims without a process identity', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    try {
+      await writeFile(
+        lockPath,
+        crossProcessLockClaim('expired-legacy-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1),
+      );
+      assert.equal(
+        withCrossProcessFileLockSync(resourcePath, () => 'legacy lease recovered', { maxAttempts: 1, retryMs: 1 }),
+        'legacy lease recovered',
+      );
+
+      const freshLegacyClaim = crossProcessLockClaim('fresh-legacy-token', process.pid, Date.now());
+      await writeFile(lockPath, freshLegacyClaim);
+      assert.throws(
+        () => withCrossProcessFileLockSync(resourcePath, () => 'must not run', { maxAttempts: 2, retryMs: 1 }),
+        /Timed out waiting for cross-process lock/,
+      );
+      assert.equal(readFileSync(lockPath, 'utf-8'), freshLegacyClaim);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not steal a live same-host identity-matched claim after its lease or mistake its token for ours', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const pidStartId = readProcessStartIdentity(process.pid);
+    try {
+      if (!pidStartId) return;
+      const reusedPidClaim = crossProcessLockClaim(
+        'reused-pid-token',
+        process.pid,
+        Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1,
+        hostname(),
+        pidStartId,
+      );
       await writeFile(lockPath, reusedPidClaim);
       assert.throws(
         () => withCrossProcessFileLockSync(resourcePath, () => 'must not run', { maxAttempts: 2, retryMs: 1 }),
