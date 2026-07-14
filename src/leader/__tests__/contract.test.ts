@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   LEADER_CONDUCTOR_BLOCK,
   LEADER_CONDUCTOR_DELEGATION_NOTE,
@@ -23,6 +26,8 @@ import {
   resolveNativeSubagentSupportStatus,
   NATIVE_SPAWN_TASK_NAME_PATTERN,
   ROLE_INTENT_SPAWN_TASK_NAME_PREFIX,
+  ROLE_INTENT_CORRELATION_TOKEN_PATTERN,
+  canonicalizeOriginCwd,
   buildRoleIntentSpawnTaskName,
   isAppCompatibleSpawnTaskName,
   parseRoleIntentCorrelationToken,
@@ -377,10 +382,13 @@ describe('leader conductor contract', () => {
     assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_dead-beef'), false);
     assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_dead:beef'), false);
     assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_deadbeef'), true);
+    assert.equal(ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test('abc123'), true);
+    assert.equal(ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test('abc_def'), false);
 
     assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_deadbeef'), 'deadbeef');
     assert.equal(parseRoleIntentCorrelationToken(' omx_role_intent_deadbeef '), 'deadbeef');
     assert.equal(parseRoleIntentCorrelationToken('omx-role-intent:deadbeef'), undefined);
+    assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_abc_def'), undefined);
     assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_DEADBEEF'), undefined);
     assert.equal(parseRoleIntentCorrelationToken(''), undefined);
     assert.equal(parseRoleIntentCorrelationToken(42), undefined);
@@ -388,5 +396,41 @@ describe('leader conductor contract', () => {
     const generatedTaskName = buildRoleIntentSpawnTaskName(randomUUID().replace(/-/g, ''));
     assert.match(generatedTaskName, NATIVE_SPAWN_TASK_NAME_PATTERN);
     assert.doesNotMatch(generatedTaskName, /[-:]/);
+  });
+
+  it('canonicalizes symlinked origins without collapsing uncanonicalizable or missing identities', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-contract-canonical-origin-'));
+    const realWorkspace = join(root, 'real-workspace');
+    const aliasWorkspace = join(root, 'alias-workspace');
+    const loopA = join(root, 'loop-a');
+    const loopB = join(root, 'loop-b');
+    try {
+      await mkdir(realWorkspace);
+      await symlink(realWorkspace, aliasWorkspace, 'dir');
+      await symlink('loop-a', loopA);
+      await symlink('loop-b', loopB);
+
+      assert.equal(
+        canonicalizeOriginCwd(join(aliasWorkspace, 'missing', 'leaf')),
+        canonicalizeOriginCwd(join(realWorkspace, 'missing', 'leaf')),
+      );
+      assert.notEqual(canonicalizeOriginCwd(loopA), canonicalizeOriginCwd(loopB));
+      assert.equal(canonicalizeOriginCwd(undefined), null);
+      assert.equal(canonicalizeOriginCwd(''), null);
+
+      assert.equal(
+        resolveNativeSubagentSupportStatus({
+          cwd: aliasWorkspace,
+          persistedSupportBlocker: {
+            status: 'unsupported',
+            reason: 'multi_agent_v1_unavailable',
+            cwd: realWorkspace,
+          },
+        }).status,
+        'unsupported',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

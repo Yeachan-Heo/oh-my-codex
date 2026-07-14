@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { getBaseStateDir } from '../../state/paths.js';
 import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { subagentTrackingPath } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 interface PendingRoleIntentRecordWorkerInput {
@@ -1513,18 +1514,158 @@ describe('subagents/tracker', () => {
       const retainedIntent = (await readSubagentTrackingState(cwd)).pending_role_intents[0];
       assert.equal(retainedIntent?.binding_state, 'bound');
       assert.equal(retainedIntent?.binding_claimant_token, firstBinding?.claimantToken);
-      assert.deepEqual(
-        bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expected-token' }, bind),
-        {
-          role: 'architect',
-          provenanceKind: OMX_ADAPTED_PROVENANCE,
-          claimantToken: firstBinding?.claimantToken,
-          alreadyBound: true,
-        },
-      );
+      const replay = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expected-token' }, bind);
+      assert.deepEqual(replay, {
+        role: 'architect',
+        provenanceKind: OMX_ADAPTED_PROVENANCE,
+        claimantToken: undefined,
+        alreadyBound: true,
+      });
       assert.equal(bindCount, 1);
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expected-token', claimantToken: replay?.claimantToken }),
+        'claimant_mismatch',
+      );
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expected-token', claimantToken: firstBinding?.claimantToken }),
+        'completed',
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates a same-workspace cwd-partitioned legacy journal on bind and still consumes one', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-legacy-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    const nowMs = Date.now();
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      delete process.env.OMX_STATE_ROOT;
+      await mkdir(getBaseStateDir(cwd), { recursive: true });
+      const legacyIntent = {
+        role: 'architect',
+        session_id: 'legacy-session-bind',
+        parent_thread_id: 'legacy-parent-bind',
+        correlation_token: 'legacy-token-bind',
+        created_at: new Date(nowMs).toISOString(),
+        expires_at: new Date(nowMs + 60_000).toISOString(),
+      };
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [legacyIntent],
+      })}\n`);
+
+      const binding = bindPendingRoleIntentUnderLock(cwd, {
+        sessionId: legacyIntent.session_id,
+        parentThreadId: legacyIntent.parent_thread_id,
+        correlationToken: legacyIntent.correlation_token,
+        nowMs,
+      }, (state) => state);
+      assert.equal(binding?.alreadyBound, false);
+      assert.ok(binding?.claimantToken);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.origin_cwd, cwd);
+      assert.equal(completeAdaptedRoleBinding(cwd, {
+        sessionId: legacyIntent.session_id,
+        parentThreadId: legacyIntent.parent_thread_id,
+        correlationToken: legacyIntent.correlation_token,
+        claimantToken: binding?.claimantToken,
+        nowMs,
+      }), 'completed');
+
+      const legacyConsumeIntent = {
+        ...legacyIntent,
+        session_id: 'legacy-session-consume',
+        parent_thread_id: 'legacy-parent-consume',
+        correlation_token: 'legacy-token-consume',
+      };
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [legacyConsumeIntent],
+      })}\n`);
+      assert.deepEqual(consumePendingRoleIntent(cwd, {
+        sessionId: legacyConsumeIntent.session_id,
+        parentThreadId: legacyConsumeIntent.parent_thread_id,
+        correlationToken: legacyConsumeIntent.correlation_token,
+        nowMs,
+      }), { role: 'architect', provenanceKind: OMX_ADAPTED_PROVENANCE });
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      if (previousTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not allow a shared-root workspace to claim another originless legacy journal', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-shared-legacy-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    const nowMs = Date.now();
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
+      const legacyIntent = {
+        role: 'architect',
+        session_id: 'shared-legacy-session',
+        parent_thread_id: 'shared-legacy-parent',
+        correlation_token: 'shared-legacy-token',
+        created_at: new Date(nowMs).toISOString(),
+        expires_at: new Date(nowMs + 60_000).toISOString(),
+      };
+      await mkdir(getBaseStateDir(cwdA), { recursive: true });
+      await writeFile(subagentTrackingPath(cwdA), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [legacyIntent],
+      })}\n`);
+
+      let bindCalled = false;
+      assert.equal(bindPendingRoleIntentUnderLock(cwdB, {
+        sessionId: legacyIntent.session_id,
+        parentThreadId: legacyIntent.parent_thread_id,
+        correlationToken: legacyIntent.correlation_token,
+        nowMs,
+      }, (state) => {
+        bindCalled = true;
+        return state;
+      }), null);
+      assert.equal(bindCalled, false);
+      assert.equal(consumePendingRoleIntent(cwdB, {
+        sessionId: legacyIntent.session_id,
+        parentThreadId: legacyIntent.parent_thread_id,
+        correlationToken: legacyIntent.correlation_token,
+        nowMs,
+      }), null);
+      assert.equal(completeAdaptedRoleBinding(cwdB, {
+        sessionId: legacyIntent.session_id,
+        parentThreadId: legacyIntent.parent_thread_id,
+        correlationToken: legacyIntent.correlation_token,
+        nowMs,
+      }), 'not_found');
+      assert.deepEqual((await readSubagentTrackingState(cwdA)).pending_role_intents, [legacyIntent]);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      if (previousTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
     }
   });
 

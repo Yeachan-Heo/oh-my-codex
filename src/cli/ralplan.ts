@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 import { resolveRuntimeStateScope } from '../mcp/state-paths.js';
 import { readSubagentTrackingState, recordPendingRoleIntent } from '../subagents/tracker.js';
-import { buildRoleIntentSpawnTaskName, isAppCompatibleSpawnTaskName } from '../leader/contract.js';
+import {
+  ROLE_INTENT_CORRELATION_TOKEN_PATTERN,
+  buildRoleIntentSpawnTaskName,
+  isAppCompatibleSpawnTaskName,
+  parseRoleIntentCorrelationToken,
+} from '../leader/contract.js';
 
 export const RALPLAN_HELP = `omx ralplan - RALPLAN consensus support commands
 
@@ -75,7 +80,11 @@ export async function ralplanCommand(
 
   const correlationToken = (deps.generateCorrelationToken ?? (() => randomUUID().replace(/-/g, '')))();
   const spawnTaskName = buildRoleIntentSpawnTaskName(correlationToken);
-  if (!isAppCompatibleSpawnTaskName(spawnTaskName)) {
+  if (
+    !ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(correlationToken)
+    || !isAppCompatibleSpawnTaskName(spawnTaskName)
+    || parseRoleIntentCorrelationToken(spawnTaskName) !== correlationToken
+  ) {
     emitRoleIntentFailure('spawn_task_name_unsupported', parsed.json, stdout, stderr);
     return;
   }

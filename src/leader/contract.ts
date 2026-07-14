@@ -1,5 +1,10 @@
+import { realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+
 export const NATIVE_SPAWN_TASK_NAME_PATTERN = /^[a-z0-9_]+$/;
+export const ROLE_INTENT_CORRELATION_TOKEN_PATTERN = /^[a-z0-9]+$/;
 export const ROLE_INTENT_SPAWN_TASK_NAME_PREFIX = 'omx_role_intent_';
+
 
 export function buildRoleIntentSpawnTaskName(correlationToken: string): string {
   return `${ROLE_INTENT_SPAWN_TASK_NAME_PREFIX}${correlationToken.trim()}`;
@@ -11,9 +16,38 @@ export function isAppCompatibleSpawnTaskName(taskName: string): boolean {
 
 export function parseRoleIntentCorrelationToken(taskName: unknown): string | undefined {
   const value = String(taskName).trim();
-  const m = value.match(/^omx_role_intent_([a-z0-9]+)$/);
-  return m ? m[1] : undefined;
+  if (!value.startsWith(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX)) return undefined;
+  const correlationToken = value.slice(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX.length);
+  return ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(correlationToken) ? correlationToken : undefined;
 }
+
+// Canonical origin-workspace identity for adapted role-intent journals. Existing paths
+// resolve symlinks; nonexistent leaves retain their suffix beneath a canonical ancestor.
+export function canonicalizeOriginCwd(cwd: string | undefined): string | null {
+  const trimmed = typeof cwd === 'string' ? cwd.trim() : '';
+  if (!trimmed) return null;
+  let resolved: string;
+  try {
+    resolved = resolve(trimmed);
+  } catch {
+    return null;
+  }
+  let prefix = resolved;
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(prefix);
+      return suffix.length ? join(real, ...suffix) : real;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return resolved;
+      const parent = dirname(prefix);
+      if (parent === prefix) return resolved;
+      suffix.unshift(basename(prefix));
+      prefix = parent;
+    }
+  }
+}
+
 export const LEADER_CONDUCTOR_PHILOSOPHY =
   'Conductor Philosophy: The core principle of OMX is: You are the conductor, not the performer.';
 
@@ -148,7 +182,7 @@ function blockerMatchesScope(blocker: Record<string, unknown>, input: NativeSuba
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= (input.nowMs ?? Date.now())) return false;
   }
   const blockerCwd = supportString(blocker.cwd);
-  if (blockerCwd && (!input.cwd || blockerCwd !== input.cwd)) return false;
+  if (blockerCwd && (!input.cwd || canonicalizeOriginCwd(blockerCwd) !== canonicalizeOriginCwd(input.cwd))) return false;
   const blockerSessionId = supportString(blocker.session_id ?? blocker.sessionId);
   if (blockerSessionId && (!input.sessionId || blockerSessionId !== input.sessionId)) return false;
   return true;

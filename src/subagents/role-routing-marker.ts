@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { RoleRoutingUnavailableMarker } from '../leader/contract.js';
-import { canonicalizeOriginCwd, withCrossProcessFileLockSync } from './tracker.js';
+import { canonicalizeOriginCwd, type RoleRoutingUnavailableMarker } from '../leader/contract.js';
+import { withCrossProcessFileLockSync } from './tracker.js';
 
 export const NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE = 'native-subagent-role-routing.json';
 
@@ -146,5 +146,10 @@ export function readRoleRoutingMarker(
       && (!marker.cwd || sameCanonicalCwd(marker.cwd, cwd))
       && (!parentThreadId || marker.parent_thread_id === parentThreadId)
     ))
-    .sort((left, right) => markerSortTimestamp(right) - markerSortTimestamp(left))[0] ?? null;
+    .sort((left, right) => {
+      const leftCwdRank = left.cwd ? 1 : 0;
+      const rightCwdRank = right.cwd ? 1 : 0;
+      if (leftCwdRank !== rightCwdRank) return rightCwdRank - leftCwdRank;
+      return markerSortTimestamp(right) - markerSortTimestamp(left);
+    })[0] ?? null;
 }

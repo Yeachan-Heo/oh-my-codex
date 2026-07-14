@@ -407,8 +407,10 @@ function readBoundedFirstLineSync(path: string): string {
 
 function readRoleIntentCorrelationToken(...carrierValues: unknown[]): string | undefined {
   for (const carrierValue of carrierValues) {
-    const correlationToken = parseRoleIntentCorrelationToken(carrierValue);
-    if (correlationToken) return correlationToken;
+    if (carrierValue === undefined || carrierValue === null) continue;
+    const taskName = String(carrierValue).trim();
+    if (!taskName) continue;
+    return parseRoleIntentCorrelationToken(taskName);
   }
   return undefined;
 }
@@ -441,7 +443,6 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
       threadSpawn.task_name ?? threadSpawn.taskName,
       subagent.task_name ?? subagent.taskName,
       payload.task_name ?? payload.taskName,
-      ...agentNicknameCarrierValues,
     );
     const agentRole = safeString(
       threadSpawn.agent_role

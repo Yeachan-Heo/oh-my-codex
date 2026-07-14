@@ -141,14 +141,14 @@ describe('ralplan role-intent write', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
-  it('fails before persisting an App-incompatible spawn task name', async () => {
+  it('fails closed before persistence when a token passes the App name validator but cannot round-trip', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-role-intent-'));
     try {
       await writeCurrentSession(cwd, 'current-session', 'native-leader', 'tracker-leader');
 
       const result = await invokeRoleIntent(cwd, [
         'role-intent', 'write', '--role', 'architect', '--parent-thread', 'native-leader', '--json',
-      ], { generateCorrelationToken: () => 'bad-token-with-hyphens' });
+      ], { generateCorrelationToken: () => 'abc_def' });
 
       assert.equal(result.exitCode, 1);
       assert.deepEqual(result.stderr, []);

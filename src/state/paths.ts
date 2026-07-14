@@ -5,6 +5,7 @@ export {
   validateStateModeSegment,
   resolveWorkingDirectoryForState,
   getBaseStateDir,
+  getBaseStateDirWithSource,
   getStateDir,
   getStatePath,
   readCurrentSessionId,

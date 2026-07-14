@@ -405,7 +405,7 @@ describe('adapted role binding', () => {
         schema_version: 1,
         session_id: 'session-legacy',
         parent_thread_id: 'parent-legacy',
-        observed_at: new Date(NOW_MS).toISOString(),
+        observed_at: new Date(NOW_MS + 1).toISOString(),
         expires_at: new Date(NOW_MS + 60_000).toISOString(),
         evidence: 'legacy',
       });
@@ -414,14 +414,13 @@ describe('adapted role binding', () => {
         cwd: '/some/other/workspace', sessionId: 'session-legacy', parentThreadId: 'parent-legacy', nowMs: NOW_MS,
       })?.evidence, 'legacy');
 
-      // Writing a newer cwd-bearing marker for the SAME session/parent must NOT delete the
-      // legacy no-cwd marker (distinct canonical identity — no cross-identity deletion).
+      // A newer legacy marker must not shadow an exact cwd-bearing marker for the same scope.
       writeRoleRoutingMarker(stateDir, {
         schema_version: 1,
         cwd: stateDir,
         session_id: 'session-legacy',
         parent_thread_id: 'parent-legacy',
-        observed_at: new Date(NOW_MS + 1).toISOString(),
+        observed_at: new Date(NOW_MS).toISOString(),
         expires_at: new Date(NOW_MS + 60_000).toISOString(),
         evidence: 'cwd-scoped',
       });
@@ -633,6 +632,36 @@ describe('adapted role binding', () => {
       const sharedStateDir = getBaseStateDir(cwdA);
       assert.equal(sharedStateDir, getBaseStateDir(cwdB));
       const scope = { sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'token-a', nowMs: NOW_MS };
+      const legacyScope = {
+        sessionId: 'session-legacy-no-origin',
+        parentThreadId: 'parent-legacy-no-origin',
+        correlationToken: 'token-legacy-no-origin',
+        nowMs: NOW_MS,
+      };
+      await mkdir(sharedStateDir, { recursive: true });
+      await writeFile(subagentTrackingPath(cwdA), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [{
+          role: 'architect',
+          session_id: legacyScope.sessionId,
+          parent_thread_id: legacyScope.parentThreadId,
+          correlation_token: legacyScope.correlationToken,
+          created_at: new Date(NOW_MS).toISOString(),
+          expires_at: new Date(NOW_MS + 600_000).toISOString(),
+        }],
+      }, null, 2)}\n`);
+      // A shared root carries no workspace identity for a pre-upgrade journal, so B cannot
+      // claim it through either direct binding or the adapted binding surface.
+      assert.equal(bindPendingRoleIntentUnderLock(cwdB, legacyScope, foreignCallback), null);
+      assert.equal(bindAndPublishAdaptedRole(cwdB, sharedStateDir, {
+        correlationSessionId: legacyScope.sessionId,
+        parentThreadId: legacyScope.parentThreadId,
+        correlationToken: legacyScope.correlationToken,
+        nowMs: NOW_MS,
+      }, foreignCallback), null);
+      assert.equal(foreignCallbackRuns, 0);
+
 
       assert.equal(recordPendingRoleIntent(cwdA, { role: 'architect', ...scope }).ok, true);
 
@@ -643,8 +672,8 @@ describe('adapted role binding', () => {
       }, foreignCallback), null);
       assert.equal(foreignCallbackRuns, 0);
       const stillPending = (await readSubagentTrackingState(cwdA)).pending_role_intents;
-      assert.equal(stillPending.length, 1);
-      assert.equal(stillPending[0]?.binding_state, undefined);
+      assert.equal(stillPending.find((intent) => intent.correlation_token === scope.correlationToken)?.binding_state, undefined);
+      assert.equal(stillPending.find((intent) => intent.correlation_token === legacyScope.correlationToken)?.origin_cwd, undefined);
       assert.equal(existsSync(join(sharedStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), false);
 
       // Origin A binds its own intent (now already-bound).
@@ -663,10 +692,10 @@ describe('adapted role binding', () => {
       assert.equal(foreignCallbackRuns, 0);
       assert.equal(listBoundAdaptedRoleIntents(cwdA).length, 1);
 
-      // Same-workspace A idempotent retry still authenticates and returns its own claimant.
+      // A same-workspace replay sees no durable claimant disclosure.
       const originRetry = bindPendingRoleIntentUnderLock(cwdA, scope, foreignCallback);
       assert.equal(originRetry?.alreadyBound, true);
-      assert.equal(originRetry?.claimantToken, originBind?.claimantToken);
+      assert.equal(originRetry?.claimantToken, undefined);
       assert.equal(foreignCallbackRuns, 0);
 
       // Origin A recovery converges the pair.
@@ -720,7 +749,7 @@ describe('adapted role binding', () => {
     }
   });
 
-  it('fails closed on a malformed caller origin or an intent with no stored origin', async () => {
+  it('fails closed on a malformed caller origin but migrates a cwd-partitioned originless journal', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
     let callbackRuns = 0;
@@ -748,7 +777,8 @@ describe('adapted role binding', () => {
         nowMs: NOW_MS,
       }).ok, true);
 
-      // A stored intent with NO origin cannot be authenticated -> primary bind returns null.
+      // A cwd-partitioned base state root identifies a legacy no-origin journal with this
+      // workspace, so a successful bind stamps its canonical origin for future isolation.
       await mkdir(stateDir, { recursive: true });
       await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
         schemaVersion: 1,
@@ -762,12 +792,12 @@ describe('adapted role binding', () => {
           expires_at: new Date(NOW_MS + 600_000).toISOString(),
         }],
       }, null, 2)}\n`);
-      assert.equal(bindPendingRoleIntentUnderLock(cwd, {
+      const legacyBinding = bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
-      }, callback), null);
-      assert.equal(callbackRuns, 0);
-      // The origin-less intent is retained, not consumed.
-      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+      }, callback);
+      assert.equal(legacyBinding?.alreadyBound, false);
+      assert.ok(legacyBinding?.claimantToken);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.origin_cwd, cwd);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

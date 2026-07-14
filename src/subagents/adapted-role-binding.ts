@@ -1,7 +1,6 @@
-import type { RoleRoutingUnavailableMarker } from '../leader/contract.js';
+import { canonicalizeOriginCwd, type RoleRoutingUnavailableMarker } from '../leader/contract.js';
 import {
   bindPendingRoleIntentUnderLock,
-  canonicalizeOriginCwd,
   completeAdaptedRoleBinding,
   listBoundAdaptedRoleIntents,
   OMX_ADAPTED_PROVENANCE,
@@ -80,6 +79,11 @@ export function bindAndPublishAdaptedRole(
     nowMs,
   }, bind);
   if (!binding) return null;
+
+  if (binding.alreadyBound || binding.claimantToken === undefined) {
+    recoverAdaptedRoleBindings(cwd, stateDir, nowMs);
+    return { role: binding.role };
+  }
 
   writeRoleRoutingMarker(
     stateDir,

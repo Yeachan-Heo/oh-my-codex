@@ -29542,7 +29542,7 @@ describe("#3118 native role contract", () => {
 		});
 	});
 
-	it("leaves a task_name marker token mismatch untyped and unconsumed (#3118)", async () => {
+	it("fails closed on a present non-marker task_name without falling back to agent_nickname (#3118)", async () => {
 		await withIsolatedNativeRoleState("unbound-task-name-mismatch", async (cwd, stateDir) => {
 			const canonicalSessionId = "sess-3118-unbound-task-name-mismatch";
 			const parentThreadId = "thread-3118-unbound-task-name-mismatch-parent";
@@ -29563,7 +29563,8 @@ describe("#3118 native role contract", () => {
 			await startUntypedNativeChild(cwd, {
 				childSessionId,
 				parentThreadId,
-				taskName: buildRoleIntentSpawnTaskName("f3118"),
+				taskName: "not_a_marker",
+				agentNickname: buildRoleIntentSpawnTaskName(correlationToken),
 			});
 
 			const child = await readNativeRoleChild(stateDir, canonicalSessionId, childSessionId);
@@ -29618,7 +29619,7 @@ describe("#3118 native role contract", () => {
 		});
 	});
 
-	it("binds a matching agent_nickname marker as the native fallback carrier (#3118)", async () => {
+	it("does not authenticate an agent_nickname role-intent marker without task_name (#3118)", async () => {
 		await withIsolatedNativeRoleState("adapted-agent-nickname-fallback", async (cwd, stateDir) => {
 			const canonicalSessionId = "sess-3118-adapted-agent-nickname-fallback";
 			const parentThreadId = "thread-3118-adapted-agent-nickname-fallback-parent";
@@ -29643,16 +29644,14 @@ describe("#3118 native role contract", () => {
 			});
 
 			const child = await readNativeRoleChild(stateDir, canonicalSessionId, childSessionId);
-			assert.equal(child?.mode, "architect");
-			assert.equal(child?.role, "architect");
-			assert.equal(child?.provenance_kind, "omx_adapted");
-			assert.equal(existsSync(join(stateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), true);
-			assert.ok(
-				readRoleRoutingMarker(stateDir, {
-					cwd,
-					sessionId: canonicalSessionId,
-					parentThreadId,
-				}),
+			assert.equal(child?.mode, undefined);
+			assert.equal(child?.role, undefined);
+			assert.equal(child?.provenance_kind, undefined);
+			assert.equal(existsSync(join(stateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), false);
+			assert.equal(readRoleRoutingMarker(stateDir, { cwd, sessionId: canonicalSessionId, parentThreadId }), null);
+			assert.equal(
+				(await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token,
+				correlationToken,
 			);
 		});
 	});
