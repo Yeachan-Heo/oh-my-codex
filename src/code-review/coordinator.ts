@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   LaneActivityEvent,
   LaneRecord,
@@ -865,6 +866,13 @@ function reviewEffect(record: ReviewRecord): DurableTransactionEffect {
   };
 }
 
+function validateStartTransactionResponse(value: unknown, expected: ReviewRecord): ReviewRecord {
+  if (!isDeepStrictEqual(value, expected)) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'START transaction receipt response is malformed');
+  }
+  return structuredClone(value) as ReviewRecord;
+}
+
 function activeStatusTransitionEffects(
   current: ReviewRecord,
   output: ReviewRecord,
@@ -955,7 +963,7 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
     async start({ record, idempotency_key: idempotencyKey, crashAt }) {
       const resolved = await paths();
       const terminal = record.status === 'FINALIZED' || record.status === 'BLOCKED';
-      await runDurableTransaction(resolved, {
+      const transaction = await runDurableTransaction(resolved, {
         journal_scope: 'START',
         idempotency_key: idempotencyKey,
         review_id: record.review_id,
@@ -978,7 +986,7 @@ export function createDurableReviewCoordinator(context: ReviewPersistenceContext
         ],
         response: record,
       }, crashAt === undefined ? {} : { crashAt });
-      return await readPersistedReview(resolved, record.review_id);
+      return validateStartTransactionResponse(transaction.response, record);
     },
 
     async get(reviewId) {

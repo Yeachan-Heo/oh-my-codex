@@ -191,6 +191,72 @@ function publication(proposal: LaneResultProposal, at: string): ResultPostToolPu
 }
 
 describe('review coordinator failure and concurrency invariants', () => {
+  it('returns the immutable START receipt across replay, conflict, and transport death', async () => {
+    const plan: BatchPlan = {
+      review_flags: [],
+      batches: [{ batch_id: 'batch-1', module_root: '.', files: ['README.md'], changed_lines: 1, oversized_single_file: false }],
+      required_lanes: [
+        { lane_id: 'reviewer-batch-1', role: 'code-reviewer', batch_id: 'batch-1' },
+        { lane_id: 'architect-global', role: 'architect', batch_id: 'global' },
+      ],
+    };
+    const record = createInitialReviewRecord({
+      review_id: REVIEW_ID,
+      session_id: 'session-1',
+      root_thread_id: 'root-1',
+      scope: scope(),
+      batch_plan: plan,
+      now: START,
+    });
+    const startReviewer = (durable: DurableCoordinatorForTest): Promise<ReviewRecord> => (
+      durable.recordStart({
+        event: {
+          event: 'START', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1',
+          thread_id: 'child-reviewer', idempotency_key: REVIEWER_START_KEY,
+        },
+        tracker: {
+          schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer',
+          tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker-reviewer',
+          first_seen_at: START.toISOString(),
+        },
+        now: START,
+      })
+    );
+
+    await withTemporaryReviewRoot(async (root) => {
+      const durable = durableFactory()({ workingDirectory: root, session_id: 'session-1' });
+      const first = await durable.start({ record, idempotency_key: START_KEY });
+      assert.equal(first.revision, 1);
+      assert.equal((await startReviewer(durable)).revision, 2);
+      assert.deepEqual(await durable.start({ record, idempotency_key: START_KEY }), first);
+
+      const conflicting = createInitialReviewRecord({
+        review_id: REVIEW_ID,
+        session_id: 'session-1',
+        root_thread_id: 'root-1',
+        scope: { ...scope(), scope_hash: 'b'.repeat(64) },
+        batch_plan: plan,
+        now: START,
+      });
+      await assert.rejects(
+        durable.start({ record: conflicting, idempotency_key: START_KEY }),
+        (error: unknown) => (error as { code?: unknown }).code === 'IDEMPOTENCY_CONFLICT',
+      );
+    });
+
+    await withTemporaryReviewRoot(async (root) => {
+      const durable = durableFactory()({ workingDirectory: root, session_id: 'session-1' });
+      await assert.rejects(
+        durable.start({ record, idempotency_key: START_KEY, crashAt: 'after:locator-cleanup' }),
+        /injected crash/i,
+      );
+      const recoveredReceipt = await durable.start({ record, idempotency_key: START_KEY });
+      assert.equal(recoveredReceipt.revision, 1);
+      assert.equal((await startReviewer(durable)).revision, 2);
+      assert.deepEqual(await durable.start({ record, idempotency_key: START_KEY }), recoveredReceipt);
+    });
+  });
+
   it('publishes a terminal no-changes review without reserving the active pointer', async () => {
     await withTemporaryReviewRoot(async (root) => {
       const emptyPlan: BatchPlan = { review_flags: [], batches: [], required_lanes: [] };
@@ -212,6 +278,7 @@ describe('review coordinator failure and concurrency invariants', () => {
       const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
       const finalized = await durable.start({ record, idempotency_key: START_KEY });
 
+      assert.deepEqual(finalized, record);
       assert.equal(finalized.status, 'FINALIZED');
       await assert.rejects(readFile(paths.activePath, 'utf8'), (error: unknown) => (
         (error as NodeJS.ErrnoException).code === 'ENOENT'
@@ -245,6 +312,7 @@ describe('review coordinator failure and concurrency invariants', () => {
         review_id: nextReviewId,
         status: 'REVIEWING',
       });
+      assert.deepEqual(await durable.start({ record, idempotency_key: START_KEY }), finalized);
     });
   });
 
