@@ -1,33 +1,34 @@
-# oh-my-codex 0.20.0
+# oh-my-codex 0.20.1
 
-`0.20.0` migrates the entire OMX model contract to OpenAI's GPT-5.6 generation (Sol/Terra/Luna) and rolls up the dev-branch fixes and features merged since `0.19.1`.
+`0.20.1` is a patch release for the reliability fixes in `v0.20.0..9eadab9f191103177fb3eac1b237188ada1f503c`.
 
 ## Highlights
 
-- Frontier lane `gpt-5.6-sol`, standard lane `gpt-5.6-terra`, spark lane `gpt-5.6-luna` across runtime, agents, Rust crates, docs, prompts, skills, and the plugin mirror.
-- Planner/architect exact `gpt-5.6-sol` pins (medium/xhigh); researcher exact `gpt-5.6-terra`; fast lanes on `gpt-5.6-luna`.
-- Exact-model composition seam retargeted to `gpt-5.6-terra` with final-resolved-model precedence.
-- Setup offers prompt-gated upgrades from legacy `gpt-5.3-codex` / `gpt-5.5` to `gpt-5.6-sol`.
-- Autopilot classifies canonical Terra/Luna as cheap planning lanes.
-- Doctor reports accurate Spark model sources including `models.team_low_complexity`.
-- New `omx capabilities lock`/`check` CLI providing a manual capabilities-lockfile preflight command (#3087).
-- Project setup defaults to plugin mode with plugin cache (#3085); plugin hooks gated to omx-launched sessions (#3086); resume plugin preflight opt-in (#3088).
-- Persisted subagents reopen on SessionStart (#3099); canonical worktree tool context (#3102).
+- CRLF-safe generated `AGENTS.md` marker insertion (#3107).
+- Ralplan can write normalized direct-child Markdown draft artifacts under `.omx/drafts/` without relaxing the native planning-write boundary (#3110).
+- Fresh setup stops seeding legacy multi-agent and context-window defaults, leaving user-owned configuration and native role routing intact (#3111, #3115).
+- Stop hook responses remain schema-safe (#3114).
+- Conductor execution recognizes trusted delegated collaboration-child provenance while protecting leader and planning-boundary cases (#3117; issue #3116).
+- Native delegation detection handles incomplete capability inventories safely, and quoted Bash argument values no longer misparse as write targets (#3120; issue #3119).
 
-## Merged PRs since v0.19.1
+## Merged PRs since v0.20.0
 
-#3079, #3080, #3082, #3085, #3086, #3087, #3088, #3091, #3092, #3094, #3097, #3099, #3100, #3102, #3104, plus direct migration commits `3e579633`, `0ac484e0`, `51ee0c28`.
+#3107 (CRLF generated AGENTS marker insertion), #3110 (Ralplan Markdown draft artifact writes), #3111 (legacy multi-agent default seeding), #3114 (schema-safe Stop responses), #3115 (legacy context-default seeding), #3117 (delegated collaboration-child provenance; issue #3116), #3120 (native delegation detection and quoted Bash target parsing; issue #3119).
+
+## Prior-release collateral corrections
+
+`f644d2cd3ae98587942aa94f0030f083ea0bb10f` corrected the 0.20.0 collateral compare coverage, and `5d43a5bf6f008de17f9425bee4495c457c60b96a` clarified that capabilities preflight is a manual command. These direct commits are prior-release collateral corrections, not 0.20.1 product headlines.
 
 ## Compatibility
 
-No breaking CLI or package-layout changes. Existing explicit model overrides keep their semantics as opaque strings. Project-scoped setup now defaults to plugin install mode (#3085) and plugin hooks activate only for omx-launched sessions (#3086).
+Patch release with no intentional breaking CLI or package-layout changes.
 
 ## Validation
 
-Green dev and main CI, full node + Rust suites, three architect review rounds ending CLEAR/APPROVE, adversarial QA/red-team artifacts; readiness evidence in `docs/qa/release-readiness-0.20.0.md`.
+The pre-tag command gates, evidence schema, and pending external CI/publication evidence are declared in `docs/qa/release-readiness-0.20.1.md`. No local gate, review, CI, tag, or publication result is asserted here.
 
 ## Contributors
 
 Thanks to the contributors who made this release possible.
 
-**Full Changelog**: [`v0.19.1...v0.20.0`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.19.1...v0.20.0)
+**Full Changelog**: [`v0.20.0...v0.20.1`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.20.0...v0.20.1)

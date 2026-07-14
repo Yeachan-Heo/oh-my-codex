@@ -2,7 +2,8 @@
   "$schema": "https://biomejs.dev/schemas/latest/schema.json",
   "files": {
     "includes": ["src/**/*.ts", "bin/**/*.js", "scripts/**/*.js"],
-    "ignoreUnknown": true
+    "ignoreUnknown": true,
+    "maxSize": 2097152
   },
   "linter": {
     "enabled": true,

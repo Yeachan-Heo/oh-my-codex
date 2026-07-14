@@ -5110,17 +5110,77 @@ function resolveCommandRedirectTarget(
 	return resolved !== undefined ? resolved : target;
 }
 
+// Masks redirect metacharacters (`<`/`>`) that appear INSIDE shell quotes so a
+// quoted regex/source value (e.g. `gh issue create --body '...>{1,2}...'` or
+// `omx state write --input '{"reason":"a>b"}'`) is not misread as a redirect
+// write target. Escaped quotes at the top level (`\'`, `\"`) are literal
+// characters and must NOT open a span, and `$'...'` ANSI-C quoting processes
+// backslash escapes (so `\'` does not close it) — otherwise a genuine `>`
+// redirect could be masked behind a false span and its write missed. Only
+// characters inside a real quoted span are masked; unquoted redirect operators
+// survive intact. Unterminated/ambiguous quoting fails closed: the original
+// command is returned unmasked so genuine redirects stay visible to the scan.
+function maskQuotedRedirectMetacharsForCommandScan(command: string): string {
+  let masked = "";
+  // null = unquoted; "'" = single quotes (no escapes); '"' = double quotes
+  // (backslash escapes); "$'" = ANSI-C $'...' (backslash escapes, incl. \').
+  let quote: "'" | "\"" | "$'" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (quote === null) {
+      // A backslash escapes the next character at the top level, so an escaped
+      // quote is a literal char and must not open a quoted span.
+      if (char === "\\") {
+        masked += char;
+        const next = command[index + 1];
+        if (next !== undefined) {
+          masked += next;
+          index += 1;
+        }
+        continue;
+      }
+      if (char === "$" && command[index + 1] === "'") {
+        quote = "$'";
+        masked += "$'";
+        index += 1;
+        continue;
+      }
+      if (char === "'" || char === "\"") quote = char;
+      masked += char;
+      continue;
+    }
+    if ((quote === "\"" || quote === "$'") && char === "\\") {
+      // Escapes inside double/ANSI-C spans keep the backslash and its escaped
+      // char (masking a redirect metachar so quoted data cannot be a false
+      // target); the escaped char never closes the span.
+      masked += char;
+      const next = command[index + 1];
+      if (next !== undefined) {
+        masked += next === "<" || next === ">" ? "_" : next;
+        index += 1;
+      }
+      continue;
+    }
+    const closesSpan = quote === "$'" ? char === "'" : char === quote;
+    if (closesSpan) {
+      quote = null;
+      masked += char;
+      continue;
+    }
+    masked += char === "<" || char === ">" ? "_" : char;
+  }
+  if (quote !== null) return command;
+  return masked;
+}
+
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
-	const targets: string[] = [];
-	const commandOutsideHeredocBodies = stripHeredocBodiesForCommandScan(command);
-	for (const match of commandOutsideHeredocBodies.matchAll(
-		/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g,
-	)) {
-		const candidate = safeString(match[2]).trim();
-		if (candidate && !isNullDeviceRedirectTarget(candidate))
-			targets.push(candidate);
-	}
-	return targets;
+  const targets: string[] = [];
+  const commandOutsideHeredocBodies = maskQuotedRedirectMetacharsForCommandScan(stripHeredocBodiesForCommandScan(command));
+  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^>])>{1,2}\s*(["']?)([^\s&|;<>]+)\1/g)) {
+    const candidate = safeString(match[2]).trim();
+    if (candidate && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
+  }
+  return targets;
 }
 
 function commandHasDestructiveGitSubcommand(command: string): boolean {
@@ -5278,22 +5338,31 @@ function findGitSubcommandIndex(
 	return null;
 }
 
-function commandHasDeepInterviewWriteIntent(command: string): boolean {
-	return (
-		commandInvokesApplyPatch(command) ||
-		extractDeepInterviewCommandRedirectTargets(command).length > 0 ||
-		/\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command) ||
-		extractConductorEditorWriteTargets(command).length > 0 ||
-		/\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command) ||
-		/\bperl\s+(?:[^\n;&|]*\s)?-[^-\s]*i(?:\b|['"])/.test(command) ||
-		/\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(
-			command,
-		) ||
-		extractConductorBashMutations(command).length > 0 ||
-		extractConductorInterpreterWrites(command).length > 0 ||
-		commandHasDestructiveGitSubcommand(command) ||
-		commandHasPackageInstallIntent(command)
-	);
+
+function commandHasDeepInterviewWriteIntent(command: string, depth = 0): boolean {
+  return commandInvokesApplyPatch(command)
+    || extractDeepInterviewCommandRedirectTargets(command).length > 0
+    || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
+    || extractConductorEditorWriteTargets(command).length > 0
+    || /\bsed\s+(?:[^\n;&|]*\s)?-i(?:\b|['"])/.test(command)
+    || /\bperl\s+(?:[^\n;&|]*\s)?-[^-\s]*i(?:\b|['"])/.test(command)
+    || /\b(?:python3?|node|perl|ruby)\b[\s\S]{0,260}\b(?:writeFileSync|writeFile|write_text|open\([^)]*["']w|File\.write|Path\()/.test(command)
+    || extractConductorBashMutations(command).length > 0
+    || extractConductorInterpreterWrites(command).length > 0
+    || commandHasDestructiveGitSubcommand(command)
+    || commandHasPackageInstallIntent(command)
+    // Recurse into wrapped shells (`bash -lc "cat > f"`, `eval`, `env`) and
+    // command substitutions so a real redirect INSIDE a nested command string
+    // is still classified as write intent. This is required because quoted
+    // redirect metacharacters are now masked at the outer scan (#3119): the
+    // mask removes false positives from quoted DATA values while nested-command
+    // recursion re-detects genuine redirects, preserving fail-closed blocking.
+    // The depth guard mirrors evaluateConductorBashWrite's nesting bound;
+    // extractors return strict substrings, so recursion always terminates.
+    || (depth < CONDUCTOR_BASH_MAX_NESTING_DEPTH && (
+      extractNestedShellCommandStringsForStateScan(command).some((nested) => commandHasDeepInterviewWriteIntent(nested, depth + 1))
+      || extractNestedCommandSubstitutionStringsForStateScan(command).some((nested) => commandHasDeepInterviewWriteIntent(nested, depth + 1))
+    ));
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
@@ -9313,25 +9382,11 @@ async function buildRalplanPreToolUseBoundaryOutput(
 	stateDir: string,
 	resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-	const sessionId = safeString(
-		resolvedSessionId ?? readPayloadSessionId(payload),
-	).trim();
-	if (
-		await hasTrustedTypedSubagentProvenanceForPreToolUse(
-			payload,
-			cwd,
-			sessionId,
-		)
-	)
-		return null;
-	const threadId = readPayloadThreadId(payload);
-	const activeState = await readActiveRalplanStateForPreToolUse(
-		cwd,
-		stateDir,
-		sessionId,
-		threadId,
-	);
-	if (!activeState) return null;
+  const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
+  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
+  const threadId = readPayloadThreadId(payload);
+  const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
+  if (!activeState) return null;
 
 	const toolName = safeString(payload.tool_name).trim();
 	const command = readPreToolUseCommand(payload);
@@ -9417,25 +9472,11 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
 	stateDir: string,
 	resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-	const sessionId = safeString(
-		resolvedSessionId ?? readPayloadSessionId(payload),
-	).trim();
-	if (
-		await hasTrustedTypedSubagentProvenanceForPreToolUse(
-			payload,
-			cwd,
-			sessionId,
-		)
-	)
-		return null;
-	const threadId = readPayloadThreadId(payload);
-	const activeState = await readActiveDeepInterviewStateForPreToolUse(
-		cwd,
-		stateDir,
-		sessionId,
-		threadId,
-	);
-	if (!activeState) return null;
+  const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
+  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
+  const threadId = readPayloadThreadId(payload);
+  const activeState = await readActiveDeepInterviewStateForPreToolUse(cwd, stateDir, sessionId, threadId);
+  if (!activeState) return null;
 
 	const toolName = safeString(payload.tool_name).trim();
 	const command = readPreToolUseCommand(payload);
@@ -9653,34 +9694,80 @@ interface ActiveConductorState {
 }
 
 async function hasTrustedTypedSubagentProvenanceForPreToolUse(
-	payload: CodexHookPayload,
-	cwd: string,
-	sessionId: string,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  options: { allowUntypedProvenance?: boolean } = {},
 ): Promise<boolean> {
-	if (hasTeamWorkerEnvironment()) return true;
-	if (!isTypedAgentRolePayload(payload)) return false;
-	const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
-	const session = trackingState?.sessions?.[sessionId];
-	if (!session) return false;
+  if (hasTeamWorkerEnvironment()) return true;
+  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
+  const session = trackingState?.sessions?.[sessionId];
+  if (!session) return false;
 
-	const payloadThreadId = readPayloadThreadId(payload);
-	if (payloadThreadId && isTrustedSubagentThread(session, payloadThreadId))
-		return true;
+  const payloadThreadId = readPayloadThreadId(payload);
 
-	const source = safeObject(payload.source);
-	const subagent = safeObject(source.subagent);
-	const threadSpawn = safeObject(subagent.thread_spawn);
-	const parentThreadId = safeString(
-		threadSpawn.parent_thread_id ??
-			threadSpawn.parentThreadId ??
-			threadSpawn.leader_thread_id ??
-			threadSpawn.leaderThreadId,
-	).trim();
-	if (!parentThreadId) return false;
-	const leaderThreadId = safeString(session.leader_thread_id).trim();
-	if (payloadThreadId && leaderThreadId && payloadThreadId === leaderThreadId)
-		return false;
-	return leaderThreadId === parentThreadId || parentThreadId in session.threads;
+  // Resolve the Main-root leader THREAD identity from the tracker's leader_thread_id
+  // plus the canonical session's native_session_id (the leader's native thread). Only
+  // genuine leader-thread identifiers may anchor the leader: owner_*_session_id are
+  // session-level ids, not thread anchors, so they must NOT populate this set — their
+  // mere presence would make it non-empty and suppress the fail-closed guard below
+  // without ever excluding the leader thread (#3117 P4). The native_session_id anchor is
+  // honored only when the root session pointer provably maps to the sessionId under
+  // evaluation, so a stale/foreign session.json cannot supply another session's leader
+  // anchor (#3117 P3); the tracker alone is insufficient because it can omit
+  // leader_thread_id or corruptly label the leader kind:"subagent" (#3117 P2).
+  const sessionState = await readRootSessionStateFromStateDir(stateDir).catch(() => null);
+  const trackerLeaderThreadId = safeString(session.leader_thread_id).trim();
+  const leaderIdentityAnchors = new Set<string>();
+  if (trackerLeaderThreadId) leaderIdentityAnchors.add(trackerLeaderThreadId);
+  if (sessionState && sessionId && payloadMatchesSessionPointer(sessionId, sessionState)) {
+    const nativeSessionId = safeString(sessionState.native_session_id).trim();
+    if (nativeSessionId) leaderIdentityAnchors.add(nativeSessionId);
+  }
+
+  // Leader self-guard: the Main-root Conductor is never a delegated executor. Block it
+  // ahead of every trust path, even when tracker or payload provenance is (possibly
+  // corruptly) attached to the leader thread.
+  if (payloadThreadId && leaderIdentityAnchors.has(payloadThreadId)) return false;
+
+  // Fail closed: without an authoritative leader anchor we cannot affirm the payload is
+  // a non-leader delegated performer rather than a mislabeled leader, so we refuse trust
+  // instead of inferring it from a corrupt tracker kind:"subagent" alone (#3117 P2).
+  if (leaderIdentityAnchors.size === 0) return false;
+
+  // Planning boundary guards (ralplan, deep-interview) still require a recognized typed
+  // agent role, so an untyped collaboration.spawn_agent child cannot write before an
+  // execution handoff/approval. Only the Main-root Conductor/Ralph executing guard opts
+  // into untyped tracker/runtime provenance (#3116, #3117).
+  if (options.allowUntypedProvenance !== true && !isTypedAgentRolePayload(payload)) {
+    return false;
+  }
+
+  // Tracker-backed provenance: the payload's own thread is a recorded, non-leader
+  // subagent for this session — the non-spoofable anchor that lets native
+  // collaboration.spawn_agent children/descendants edit under the Conductor guard even
+  // without a recognized typed role (#3116). subagent-tracking.json is derived from
+  // child SessionStart transcript metadata, not the live tool-call payload.
+  if (payloadThreadId && isTrustedSubagentThread(session, payloadThreadId)) return true;
+
+  // Runtime-attached spawn provenance: trust a genuine spawned subagent turn whose
+  // declared parent maps to this session's leader or a tracked thread. parentThreadId
+  // comes from the runtime-set source.subagent.thread_spawn (not agent-controlled tool
+  // arguments); an absent parent is rejected, the leader self-guard above blocks the
+  // main root, and cross-session parents fail because they are not in this session's
+  // tracked threads (#3116).
+  const source = safeObject(payload.source);
+  const subagent = safeObject(source.subagent);
+  const threadSpawn = safeObject(subagent.thread_spawn);
+  const parentThreadId = safeString(
+    threadSpawn.parent_thread_id
+      ?? threadSpawn.parentThreadId
+      ?? threadSpawn.leader_thread_id
+      ?? threadSpawn.leaderThreadId,
+  ).trim();
+  if (!parentThreadId) return false;
+  return leaderIdentityAnchors.has(parentThreadId) || parentThreadId in session.threads;
 }
 
 function isActiveConductorModeState(
@@ -9702,34 +9789,18 @@ async function readActiveMainRootConductorStateForPreToolUse(
 	stateDir: string,
 	resolvedSessionId?: string,
 ): Promise<ActiveConductorState | null> {
-	const sessionId = safeString(
-		resolvedSessionId ?? readPayloadSessionId(payload),
-	).trim();
-	const payloadSessionId = readPayloadSessionId(payload);
-	if (payloadSessionId && sessionId && payloadSessionId !== sessionId) {
-		const currentSession = await readUsableSessionStateFromStateDir(
-			cwd,
-			stateDir,
-		).catch(() => null);
-		const payloadMatchesMappedSession =
-			payloadSessionId ===
-				safeString(currentSession?.native_session_id).trim() ||
-			payloadSessionId ===
-				safeString(currentSession?.owner_omx_session_id).trim() ||
-			payloadSessionId ===
-				safeString(currentSession?.owner_codex_session_id).trim();
-		if (!payloadMatchesMappedSession) return null;
-	}
-	const threadId = readPayloadThreadId(payload);
-	if (!sessionId) return null;
-	if (
-		await hasTrustedTypedSubagentProvenanceForPreToolUse(
-			payload,
-			cwd,
-			sessionId,
-		)
-	)
-		return null;
+  const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
+  const payloadSessionId = readPayloadSessionId(payload);
+  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) {
+    const currentSession = await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
+    const payloadMatchesMappedSession = payloadSessionId === safeString(currentSession?.native_session_id).trim()
+      || payloadSessionId === safeString(currentSession?.owner_omx_session_id).trim()
+      || payloadSessionId === safeString(currentSession?.owner_codex_session_id).trim();
+    if (!payloadMatchesMappedSession) return null;
+  }
+  const threadId = readPayloadThreadId(payload);
+  if (!sessionId) return null;
+  if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId, { allowUntypedProvenance: true })) return null;
 
 	const canonicalState = await readVisibleSkillActiveStateForStateDir(
 		stateDir,

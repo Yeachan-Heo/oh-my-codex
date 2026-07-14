@@ -23,6 +23,9 @@ import {
   resolvePersistedApprovedTeamExecutionContinuityState,
   writePersistedApprovedTeamExecutionBinding,
 } from '../approved-execution.js';
+import { TEAM_WORKER_INHERITED_MODEL_ENV } from '../model-contract.js';
+import { buildWorkerProcessLaunchSpec } from '../tmux-session.js';
+
 
 delete process.env.OMX_TEAM_STATE_ROOT;
 
@@ -636,6 +639,106 @@ describe('scaleUp', () => {
     }
   });
 
+  it('rejects explicit mixed worker policy before scale-up creates worker state or a pane', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-explicit-policy-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-explicit-policy-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(tmuxStubPath, `#!/bin/sh
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+exit 0
+`);
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      await initTeamState('scale-up-explicit-policy', 'task', 'executor', 1, cwd);
+
+      const result = await scaleUp(
+        'scale-up-explicit-policy',
+        1,
+        'executor',
+        [{ subject: 'new task', description: 'new task', owner: 'worker-2' }],
+        cwd,
+        {
+          OMX_TEAM_SCALING_ENABLED: '1',
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --sandbox workspace-write',
+        },
+      );
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.match(result.error, /Invalid OMX_TEAM_WORKER_LAUNCH_ARGS: bypass cannot be combined with direct approval or sandbox policy/);
+      }
+      const config = await readTeamConfig('scale-up-explicit-policy', cwd);
+      assert.equal(config?.workers.length, 1);
+      assert.equal(config?.next_worker_index, 2);
+      assert.deepEqual(await readScaleUpTaskPayloads('scale-up-explicit-policy', cwd), []);
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', 'scale-up-explicit-policy', 'workers', 'worker-2')), false);
+      assert.equal(existsSync(workerStartupScriptPath(cwd, 'scale-up-explicit-policy', 'worker-2')), false);
+      const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+      assert.equal(tmuxCommands.some((command) => command.startsWith('split-window ')), false);
+      assert.equal(tmuxCommands.some((command) => command.startsWith('send-keys ')), false);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects Claude and Gemini restrictive config policy before scale-up creates task payloads, worker state, a pane, or process', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-restrictive-noncodex-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-restrictive-noncodex-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(tmuxStubPath, `#!/bin/sh
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+exit 0
+`);
+      await chmod(tmuxStubPath, 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      for (const workerCli of ['claude', 'gemini'] as const) {
+        const teamName = `scale-up-restrictive-${workerCli}`;
+        await writeFile(tmuxLogPath, '');
+        await initTeamState(teamName, 'task', 'executor', 1, cwd);
+        const result = await scaleUp(
+          teamName,
+          1,
+          'executor',
+          [{ subject: 'new task', description: 'new task', owner: 'worker-2' }],
+          cwd,
+          {
+            OMX_TEAM_SCALING_ENABLED: '1',
+            OMX_TEAM_WORKER_CLI: workerCli,
+            OMX_TEAM_WORKER_LAUNCH_ARGS: `--config 'sandbox_mode="workspace-write"'`,
+          },
+        );
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.match(result.error, new RegExp(`Selected team worker CLI "${workerCli}" is incompatible with an explicit approval or sandbox policy\\.`));
+        }
+        const config = await readTeamConfig(teamName, cwd);
+        assert.equal(config?.workers.length, 1);
+        assert.equal(config?.next_worker_index, 2);
+        assert.deepEqual(await readScaleUpTaskPayloads(teamName, cwd), []);
+        assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', teamName, 'workers', 'worker-2')), false);
+        assert.equal(existsSync(workerStartupScriptPath(cwd, teamName, 'worker-2')), false);
+        const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+        assert.equal(tmuxCommands.some((command) => command.startsWith('split-window ')), false);
+        assert.equal(tmuxCommands.some((command) => command.startsWith('send-keys ')), false);
+      }
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
 
   it('persists scaled-up task roles in canonical task state and inbox ids', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-role-'));
@@ -711,6 +814,8 @@ describe('scaleUp', () => {
         [{ subject: 'document routing report only', description: 'document routing report only', owner: 'worker-2', role: 'writer' }],
         cwd,
         { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+
+
       );
       assert.equal(result.ok, true);
       if (!result.ok) return;
@@ -733,6 +838,136 @@ describe('scaleUp', () => {
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('covers the scale-up config-policy and no-policy argv matrix', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-policy-matrix-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-policy-matrix-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const capturePath = join(cwd, 'worker-argv.txt');
+    const emptyCodexHome = await mkdtemp(join(tmpdir(), 'omx-scale-up-policy-matrix-codex-home-'));
+    const previousPath = process.env.PATH;
+    const previousArgv = process.argv;
+    const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    try {
+      await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
+      await writeFile(
+        join(fakeBinDir, 'codex'),
+        `#!/bin/sh
+printf '%s\\n' "$@" > '${capturePath}'
+`,
+      );
+      await chmod(join(fakeBinDir, 'codex'), 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+
+      const runScaleUpCase = async (params: {
+        teamName: string;
+        role?: string;
+        launchArgs: string;
+        inheritedModel?: string;
+      }): Promise<string[]> => {
+        await writeFile(capturePath, '');
+        await initTeamState(params.teamName, 'task', 'executor', 1, cwd);
+        await configureScaleUpTeamForDirectDispatch(params.teamName, cwd);
+        const result = await scaleUp(
+          params.teamName,
+          1,
+          'executor',
+          [{
+            subject: 'implement task',
+            description: 'implement task',
+            owner: 'worker-2',
+            ...(params.role === undefined ? {} : { role: params.role }),
+          }],
+          cwd,
+          {
+            OMX_TEAM_SCALING_ENABLED: '1',
+            OMX_TEAM_SKIP_READY_WAIT: '1',
+            CODEX_HOME: emptyCodexHome,
+            OMX_TEAM_WORKER_LAUNCH_ARGS: params.launchArgs,
+            ...(params.inheritedModel ? { [TEAM_WORKER_INHERITED_MODEL_ENV]: params.inheritedModel } : {}),
+          },
+        );
+        if (!result.ok) assert.fail(result.error);
+
+        const startupScriptPath = workerStartupScriptPath(cwd, params.teamName, 'worker-2');
+        const scriptResult = execFileSync('/bin/sh', [startupScriptPath], { encoding: 'utf-8' });
+        assert.equal(scriptResult, '');
+        return (await readFile(capturePath, 'utf-8')).trim().split('\n');
+      };
+
+      process.argv = [
+        ...previousArgv.filter((arg) => arg !== '--dangerously-bypass-approvals-and-sandbox' && arg !== '--madmax'),
+        '--madmax',
+      ];
+      const sandboxArgs = await runScaleUpCase({
+        teamName: 'scale-up-sandbox-policy',
+        role: 'executor',
+        launchArgs: String.raw`--config 'sandbox_mode="workspace-write"' -- 'C:\scale-up\nested\' '--sandbox=read-only' '--madmax'`,
+        inheritedModel: 'leader-model',
+      });
+      const expectedSandboxArgs = [
+        '--sandbox', 'workspace-write',
+        '-c', 'model_reasoning_effort="medium"',
+        '--model', 'leader-model',
+        '--', 'C:\\scale-up\\nested\\', '--sandbox=read-only', '--madmax',
+      ];
+      assert.deepEqual(sandboxArgs, expectedSandboxArgs);
+      assert.deepEqual(
+        buildWorkerProcessLaunchSpec(
+          'initial-policy-team',
+          1,
+          expectedSandboxArgs,
+          cwd,
+          { CODEX_HOME: emptyCodexHome },
+          'codex',
+          undefined,
+          'executor',
+        ).args,
+        sandboxArgs,
+      );
+
+      const approvalArgs = await runScaleUpCase({
+        teamName: 'scale-up-approval-policy',
+        role: 'executor',
+        launchArgs: '--ask-for-approval=on-request',
+        inheritedModel: 'leader-model',
+      });
+      assert.deepEqual(approvalArgs, [
+        '--ask-for-approval', 'on-request',
+        '-c', 'model_reasoning_effort="medium"',
+        '--model', 'leader-model',
+      ]);
+
+      process.argv = previousArgv.filter((arg) => arg !== '--dangerously-bypass-approvals-and-sandbox' && arg !== '--madmax');
+      const bypass = '--dangerously-bypass-approvals-and-sandbox';
+      assert.deepEqual(
+        await runScaleUpCase({ teamName: 'scale-up-execution-default', role: 'executor', launchArgs: '--model policy-model' }),
+        ['-c', 'model_reasoning_effort="medium"', '--model', 'policy-model', bypass],
+      );
+      assert.deepEqual(
+        await runScaleUpCase({ teamName: 'scale-up-nonexecution-default', role: 'explore', launchArgs: '--model policy-model' }),
+        ['-c', 'model_reasoning_effort="low"', '--model', 'policy-model'],
+      );
+      assert.deepEqual(
+        await runScaleUpCase({ teamName: 'scale-up-absent-role-default', launchArgs: '--model policy-model' }),
+        ['-c', 'model_reasoning_effort="medium"', '--model', 'policy-model', bypass],
+      );
+      assert.deepEqual(
+        await runScaleUpCase({ teamName: 'scale-up-unknown-role-default', role: 'unknown-role', launchArgs: '--model policy-model' }),
+        ['-c', 'model_reasoning_effort="medium"', '--model', 'policy-model', bypass],
+      );
+    } finally {
+      process.argv = previousArgv;
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      await rm(emptyCodexHome, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
       await rm(fakeBinDir, { recursive: true, force: true });
     }

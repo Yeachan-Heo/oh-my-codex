@@ -102,6 +102,8 @@ import {
   getTeamLowComplexityModel,
 } from "../../config/models.js";
 import type { ProcessEntry } from "../cleanup.js";
+import { splitWorkerLaunchArgs } from "../../team/model-contract.js";
+
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, "..", "..", "..");
@@ -1759,7 +1761,7 @@ describe("resolveTeamWorkerLaunchArgsEnv (spark)", () => {
         true,
         expectedLowComplexityModel(),
       ),
-      `--model ${expectedLowComplexityModel()}`,
+      `"--model" "${expectedLowComplexityModel()}"`,
     );
   });
 
@@ -1771,7 +1773,7 @@ describe("resolveTeamWorkerLaunchArgsEnv (spark)", () => {
         true,
         expectedLowComplexityModel(),
       ),
-      "--model gpt-5",
+      '"--model" "gpt-5"',
     );
   });
 
@@ -1783,7 +1785,7 @@ describe("resolveTeamWorkerLaunchArgsEnv (spark)", () => {
         true,
         expectedLowComplexityModel(),
       ),
-      "--model gpt-4.1",
+      '"--model" "gpt-4.1"',
     );
   });
 });
@@ -5612,7 +5614,7 @@ describe("team worker launch arg inheritance helpers", () => {
         ],
         true,
       ),
-      '--no-alt-screen --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort="xhigh" --model old-b',
+      '"--no-alt-screen" "--dangerously-bypass-approvals-and-sandbox" "-c" "model_reasoning_effort=\\"xhigh\\"" "--model" "old-b"',
     );
   });
 
@@ -5627,7 +5629,7 @@ describe("team worker launch arg inheritance helpers", () => {
         ],
         false,
       ),
-      "--no-alt-screen",
+      '"--no-alt-screen"',
     );
   });
 
@@ -5638,7 +5640,7 @@ describe("team worker launch arg inheritance helpers", () => {
         ["--model=gpt-5.6-terra"],
         true,
       ),
-      "--no-alt-screen --model gpt-5.6-terra",
+      '"--no-alt-screen" "--model" "gpt-5.6-terra"',
     );
   });
 
@@ -5650,7 +5652,7 @@ describe("team worker launch arg inheritance helpers", () => {
         true,
         DEFAULT_FRONTIER_MODEL,
       ),
-      `--no-alt-screen --dangerously-bypass-approvals-and-sandbox --model ${DEFAULT_FRONTIER_MODEL}`,
+      `"--no-alt-screen" "--dangerously-bypass-approvals-and-sandbox" "--model" "${DEFAULT_FRONTIER_MODEL}"`,
     );
   });
 
@@ -5662,7 +5664,7 @@ describe("team worker launch arg inheritance helpers", () => {
         true,
         "fallback-model",
       ),
-      "--model env-model-final",
+      '"--model" "env-model-final"',
     );
   });
 
@@ -5674,7 +5676,67 @@ describe("team worker launch arg inheritance helpers", () => {
         true,
         "fallback-model",
       ),
-      "--no-alt-screen --model inherited-model",
+      '"--no-alt-screen" "--model" "inherited-model"',
+
+    );
+  });
+});
+
+describe("team worker launch argument environment serialization", () => {
+  it("round-trips quoted, empty, and literal args while direct policy suppresses inherited bypass", () => {
+    const raw = resolveTeamWorkerLaunchArgsEnv(
+      '"" "two words" $VAR --sandbox=workspace-write',
+      [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--model", "leader-model",
+      ],
+      true,
+    );
+    assert.ok(raw);
+    assert.deepEqual(splitWorkerLaunchArgs(raw ?? undefined), [
+      '',
+      'two words',
+      '$VAR',
+      '--sandbox', 'workspace-write',
+      '--model', 'leader-model',
+    ]);
+  });
+
+  it("round-trips Windows paths, including terminal backslashes, through the environment", () => {
+    const path = "C:\\Users\\alice\\file.txt";
+    const terminalPath = "C:\\Users\\alice\\";
+    const raw = resolveTeamWorkerLaunchArgsEnv(
+      [
+        "--add-dir", path,
+        "--add-dir", `"${path}"`,
+        "--add-dir", `'${terminalPath}'`,
+      ].join(" "),
+      [],
+      false,
+    );
+
+    assert.deepEqual(splitWorkerLaunchArgs(raw ?? undefined), [
+      "--add-dir", path,
+      "--add-dir", path,
+      "--add-dir", terminalPath,
+    ]);
+  });
+
+  it("honors the inheritance gate and rejects an explicitly mixed source before transport", () => {
+    const noInheritance = resolveTeamWorkerLaunchArgsEnv(
+      '--ask-for-approval=on-request',
+      ["--dangerously-bypass-approvals-and-sandbox", "--model", "leader-model"],
+      false,
+    );
+    assert.deepEqual(splitWorkerLaunchArgs(noInheritance ?? undefined), [
+      '--ask-for-approval', 'on-request',
+    ]);
+    assert.throws(
+      () => resolveTeamWorkerLaunchArgsEnv(
+        '--dangerously-bypass-approvals-and-sandbox --sandbox workspace-write',
+        [],
+      ),
+      /Invalid OMX_TEAM_WORKER_LAUNCH_ARGS: bypass cannot be combined with direct approval or sandbox policy/,
     );
   });
 });

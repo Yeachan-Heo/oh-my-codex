@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 
+## [0.20.1] - 2026-07-12
+
+Patch release for the reliability fixes in `v0.20.0..9eadab9f191103177fb3eac1b237188ada1f503c`. No intentional breaking CLI or package-layout changes.
+
+### Fixed
+
+- **CRLF AGENTS markers** — generated `AGENTS.md` marker insertion preserves CRLF line endings (#3107).
+- **Ralplan drafts** — the native planning-write boundary permits normalized direct-child Markdown artifacts under `.omx/drafts/` while retaining its fail-closed protections (#3110).
+- **Fresh configuration ownership** — setup no longer seeds legacy multi-agent or context-window defaults, preserving user-owned configuration and native role routing (#3111, #3115).
+- **Stop hook protocol** — Stop responses no longer emit unsupported top-level fields and remain schema-safe (#3114).
+- **Delegated child provenance** — the Conductor guard accepts trusted delegated collaboration children while continuing to protect leader and planning-boundary cases (#3117; issue #3116).
+- **Native delegation and Bash targets** — native delegation detection distinguishes incomplete capability inventories, and quoted Bash argument values no longer masquerade as write redirects (#3120; issue #3119).
+
+### Release collateral
+
+- `f644d2cd3ae98587942aa94f0030f083ea0bb10f` and `5d43a5bf6f008de17f9425bee4495c457c60b96a` are prior-release documentation corrections carried forward from 0.20.0 collateral; they are not 0.20.1 product-fix headlines.
+
+### PRs
+
+- #3107, #3110, #3111, #3114, #3115, #3117, #3120. Issues #3116 and #3119 are associated issues, not additional PRs.
+
+### Verification
+
+- Pre-tag requirements, evidence schema, and pending external evidence are declared in `docs/qa/release-readiness-0.20.1.md`; this changelog records no test, CI, tag, or publication result.
 ## [0.20.0] - 2026-07-10
 
 Minor release migrating the entire model contract to OpenAI's GPT-5.6 generation (publicly released 2026-07-09), plus the accumulated dev-branch fixes and features merged since `0.19.1`.

@@ -74,12 +74,24 @@ Setup-owned trust state is limited to those generated wrapper identities; user h
 
 The Main-root Conductor write guard blocks source, package, git, and substantive
 plan/spec/review edits from the leader while allowing workflow metadata writes.
-Delegated performer lanes are exempt only when the event is a known typed role
-and trusted lane provenance exists. Native Codex events may provide that
-provenance either through `source.subagent.thread_spawn.parent_thread_id` or
-through an existing `.omx/state/subagent-tracking.json` entry whose `thread_id`
-is recorded as `kind:"subagent"`. A bare typed role on the leader event is not
-enough to bypass the guard.
+Trust for delegated performer lanes is scoped by guard:
+
+- Planning boundary guards (`ralplan`, `deep-interview`) exempt a delegated lane
+  only when the event is a known typed role (catalog-bounded or an installed
+  `*.toml` role) **and** trusted lane provenance exists. This keeps untyped
+  `collaboration.spawn_agent` children from writing source before an execution
+  handoff/approval.
+- The Main-root Conductor / Ralph executing guard additionally trusts a delegated
+  lane on trusted provenance alone, regardless of role label, so native
+  `collaboration.spawn_agent` children and descendants can perform bounded writes
+  during execution (#3116).
+
+Native Codex events may provide that provenance either through
+`source.subagent.thread_spawn.parent_thread_id` or through an existing
+`.omx/state/subagent-tracking.json` entry whose `thread_id` is recorded as
+`kind:"subagent"`. The session leader thread is never trusted through either
+path, so a bare typed role on the leader event — or provenance attached to the
+leader thread — is not enough to bypass the guard.
 
 ## Document-refresh warning MVP
 
