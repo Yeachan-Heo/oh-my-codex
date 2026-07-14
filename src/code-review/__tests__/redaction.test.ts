@@ -100,6 +100,44 @@ describe('code-review redaction and validation', () => {
     assert.ok((redacted.match(/\[REDACTED\]/gu)?.length ?? 0) >= 4);
   });
 
+  it('redacts every truncated private-key body through the next PEM block or EOF', async () => {
+    const api = await loadRedactionApi();
+    const outputs: Array<{ label: string; chained: string; eof: string }> = [];
+    const leaks: string[] = [];
+    for (const label of [
+      'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'PRIVATE KEY', 'ENCRYPTED PRIVATE KEY',
+    ] as const) {
+      const slug = label.replaceAll(' ', '_');
+      const truncatedBody = `TRUNCATED_BODY_${slug}_9f3c`;
+      const laterBody = `LATER_COMPLETE_BODY_${slug}_4a7d`;
+      const chained = api.redactReviewText([
+        `head-${slug}`,
+        `-----BEGIN ${label}-----`,
+        truncatedBody,
+        '-----BEGIN RSA PRIVATE KEY-----',
+        laterBody,
+        '-----END RSA PRIVATE KEY-----',
+        `tail-${slug}`,
+      ].join('\n'));
+      const eofBody = `EOF_BODY_${slug}_2b8e`;
+      const eof = api.redactReviewText([
+        `head-${slug}`,
+        `-----BEGIN ${label}-----`,
+        eofBody,
+      ].join('\n'));
+      if (chained.includes(truncatedBody)) leaks.push(`${label}:next-begin`);
+      if (eof.includes(eofBody)) leaks.push(`${label}:eof`);
+      outputs.push({ label, chained, eof });
+    }
+
+    assert.deepEqual(leaks, [], `leaked truncated PEM bodies: ${JSON.stringify(leaks)}`);
+    for (const { label, chained, eof } of outputs) {
+      const slug = label.replaceAll(' ', '_');
+      assert.equal(chained, `head-${slug}\n[REDACTED][REDACTED]\ntail-${slug}`);
+      assert.equal(eof, `head-${slug}\n[REDACTED]`);
+    }
+  });
+
   it('rejects over-one-MiB raw text and serialized payloads before redaction can shrink them', async () => {
     const api = await loadRedactionApi();
     const accepted: string[] = [];

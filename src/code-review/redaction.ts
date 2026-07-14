@@ -73,7 +73,7 @@ function redactPemPrivateKeyBlocks(value: string): string {
     const relativeBlockEnd = value.slice(headerEnd, searchBoundary).indexOf(endMarker);
     redacted += `${value.slice(cursor, blockStart)}[REDACTED]`;
     cursor = relativeBlockEnd < 0
-      ? headerEnd
+      ? searchBoundary
       : headerEnd + relativeBlockEnd + endMarker.length;
   }
   return redacted;
