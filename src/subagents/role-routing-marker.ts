@@ -66,11 +66,16 @@ function readMarkerStore(baseStateDir: string): RoleRoutingMarkerStore {
   }
 }
 
-function writeMarkerStore(baseStateDir: string, store: RoleRoutingMarkerStore): void {
+function writeMarkerStore(
+  baseStateDir: string,
+  store: RoleRoutingMarkerStore,
+  assertOwnership?: () => void,
+): void {
   const path = markerStorePath(baseStateDir);
   mkdirSync(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(store, null, 2)}\n`);
+  assertOwnership?.();
   renameSync(temporaryPath, path);
 }
 
@@ -93,7 +98,7 @@ export function writeRoleRoutingMarker(baseStateDir: string, marker: RoleRouting
   }
   const parentThreadId = normalizedMarker.parent_thread_id ?? '';
 
-  withCrossProcessFileLockSync(markerStorePath(baseStateDir), () => {
+  withCrossProcessFileLockSync(markerStorePath(baseStateDir), (context) => {
     const nowMs = Date.now();
     const store = readMarkerStore(baseStateDir);
     const markers = store.markers.filter((candidate) => (
@@ -101,10 +106,11 @@ export function writeRoleRoutingMarker(baseStateDir: string, marker: RoleRouting
       && (candidate.session_id !== normalizedMarker.session_id || (candidate.parent_thread_id ?? '') !== parentThreadId)
     ));
     markers.push(normalizedMarker);
+    context.assertOwnership();
     writeMarkerStore(baseStateDir, {
       schema_version: ROLE_ROUTING_MARKER_SCHEMA_VERSION,
       markers,
-    });
+    }, context.assertOwnership);
   }, {
     maxAttempts: ROLE_ROUTING_MARKER_LOCK_MAX_ATTEMPTS,
     retryMs: ROLE_ROUTING_MARKER_LOCK_RETRY_MS,

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 interface PendingRoleIntentRecordWorkerInput {
@@ -158,9 +158,11 @@ const CROSS_PROCESS_LOCK_HOLDER_SOURCE = `
   const resourcePath = process.env.OMX_LOCK_RESOURCE_PATH ?? '';
   const readyPath = process.env.OMX_LOCK_READY_PATH ?? '';
   const releasePath = process.env.OMX_LOCK_RELEASE_PATH ?? '';
+  const publicationPath = process.env.OMX_LOCK_PUBLICATION_PATH ?? '';
   const waitArray = new Int32Array(new SharedArrayBuffer(4));
 
   tracker.withCrossProcessFileLockSync(resourcePath, () => {
+    if (publicationPath) writeFileSync(publicationPath, 'successor\\n');
     writeFileSync(readyPath, 'ready\\n');
     const deadline = Date.now() + 5_000;
     while (!existsSync(releasePath)) {
@@ -170,16 +172,21 @@ const CROSS_PROCESS_LOCK_HOLDER_SOURCE = `
   });
 `;
 
-function crossProcessLockClaim(token: string, pid: number, acquiredAtMs: number): string {
+function crossProcessLockClaim(token: string, pid: number, acquiredAtMs: number, host = hostname()): string {
   return `${JSON.stringify({
     token,
     pid,
-    host: 'test-host',
+    host,
     acquired_at: new Date(acquiredAtMs).toISOString(),
   })}\n`;
 }
 
-function spawnCrossProcessLockHolder(resourcePath: string, readyPath: string, releasePath: string) {
+function spawnCrossProcessLockHolder(
+  resourcePath: string,
+  readyPath: string,
+  releasePath: string,
+  publicationPath?: string,
+) {
   return spawn(process.execPath, ['--input-type=module', '--eval', CROSS_PROCESS_LOCK_HOLDER_SOURCE], {
     env: {
       ...process.env,
@@ -187,6 +194,7 @@ function spawnCrossProcessLockHolder(resourcePath: string, readyPath: string, re
       OMX_LOCK_RESOURCE_PATH: resourcePath,
       OMX_LOCK_READY_PATH: readyPath,
       OMX_LOCK_RELEASE_PATH: releasePath,
+      ...(publicationPath ? { OMX_LOCK_PUBLICATION_PATH: publicationPath } : {}),
     },
   });
 }
@@ -821,7 +829,7 @@ describe('subagents/tracker', () => {
     let successor: ReturnType<typeof spawn> | undefined;
     try {
       withCrossProcessFileLockSync(resourcePath, () => {
-        writeFileSync(lockPath, crossProcessLockClaim('expired-owner-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1));
+        writeFileSync(lockPath, crossProcessLockClaim('expired-owner-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'));
         successor = spawnCrossProcessLockHolder(resourcePath, successorReadyPath, successorReleasePath);
         waitForFileSync(successorReadyPath);
       });
@@ -886,23 +894,108 @@ describe('subagents/tracker', () => {
     }
   });
 
-  it('fails closed for a malformed cross-process lockfile', async () => {
+  it('fences a stalled claimant after a remote-lease successor publishes', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const resourcePath = join(cwd, 'lock-resource');
     const lockPath = crossProcessLockPath(resourcePath);
-    const malformedLock = 'not valid json\n';
-    let operationRan = false;
+    const successorReadyPath = join(cwd, 'successor-ready');
+    const successorReleasePath = join(cwd, 'successor-release');
+    const publicationPath = join(cwd, 'publication');
+    let successor: ReturnType<typeof spawn> | undefined;
     try {
-      await writeFile(lockPath, malformedLock);
-
       assert.throws(
-        () => withCrossProcessFileLockSync(resourcePath, () => {
-          operationRan = true;
-        }, { maxAttempts: 2, retryMs: 1 }),
+        () => withCrossProcessFileLockSync(resourcePath, (context) => {
+          writeFileSync(
+            lockPath,
+            crossProcessLockClaim('stalled-remote-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'),
+          );
+          successor = spawnCrossProcessLockHolder(resourcePath, successorReadyPath, successorReleasePath, publicationPath);
+          waitForFileSync(successorReadyPath);
+          context.assertOwnership();
+          writeFileSync(publicationPath, 'stale predecessor\n');
+        }),
+        CrossProcessLockLostError,
+      );
+      assert.ok(successor);
+      assert.equal(readFileSync(publicationPath, 'utf-8'), 'successor\n');
+      assert.ok(existsSync(lockPath));
+    } finally {
+      if (successor) {
+        writeFileSync(successorReleasePath, 'release\n');
+        await waitForChildExit(successor);
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers despite an abandoned legacy recovery guard', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    try {
+      await mkdir(`${lockPath}.guard`);
+      await writeFile(lockPath, '');
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'guard ignored'), 'guard ignored');
+      assert.equal(existsSync(lockPath), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not use local pid liveness to reclaim a remote claim before its lease', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const deadOwner = spawn(process.execPath, ['--eval', '']);
+    try {
+      const deadOwnerPid = deadOwner.pid;
+      await waitForChildExit(deadOwner);
+      assert.ok(deadOwnerPid);
+      const freshRemoteClaim = crossProcessLockClaim('fresh-remote-token', deadOwnerPid, Date.now(), 'remote-test-host');
+      await writeFile(lockPath, freshRemoteClaim);
+      assert.throws(
+        () => withCrossProcessFileLockSync(resourcePath, () => 'must not run', { maxAttempts: 2, retryMs: 1 }),
         /Timed out waiting for cross-process lock/,
       );
-      assert.equal(operationRan, false);
-      assert.equal(readFileSync(lockPath, 'utf-8'), malformedLock);
+      assert.equal(readFileSync(lockPath, 'utf-8'), freshRemoteClaim);
+
+      await writeFile(lockPath, crossProcessLockClaim('expired-remote-token', deadOwnerPid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'));
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'remote lease recovered'), 'remote lease recovered');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not steal a live same-host claim after its lease or mistake its token for ours', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const reusedPidClaim = crossProcessLockClaim('reused-pid-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1);
+    try {
+      await writeFile(lockPath, reusedPidClaim);
+      assert.throws(
+        () => withCrossProcessFileLockSync(resourcePath, () => 'must not run', { maxAttempts: 2, retryMs: 1 }),
+        /Timed out waiting for cross-process lock/,
+      );
+      assert.equal(readFileSync(lockPath, 'utf-8'), reusedPidClaim);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers empty, partial, and malformed cross-process lock claims', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    try {
+      for (const malformedLock of ['', '{"token":"partial"', 'not valid json\n']) {
+        await writeFile(lockPath, malformedLock);
+        assert.equal(
+          withCrossProcessFileLockSync(resourcePath, () => 'malformed lock recovered', { maxAttempts: 1, retryMs: 1 }),
+          'malformed lock recovered',
+        );
+        assert.equal(existsSync(lockPath), false);
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -914,7 +1007,7 @@ describe('subagents/tracker', () => {
     try {
       await writeFile(
         crossProcessLockPath(join(baseStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)),
-        crossProcessLockClaim('expired-marker-token', process.pid, nowMs - CROSS_PROCESS_LOCK_LEASE_MS - 1),
+        crossProcessLockClaim('expired-marker-token', process.pid, nowMs - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'),
       );
       writeRoleRoutingMarker(baseStateDir, {
         schema_version: 1,

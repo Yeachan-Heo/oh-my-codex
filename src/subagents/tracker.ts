@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -367,17 +367,19 @@ type CrossProcessLockState =
   | { kind: 'claim'; claim: CrossProcessLockClaim }
   | { kind: 'malformed' };
 
-type CrossProcessLockRecovery =
-  | { kind: 'not_recovered' }
-  | { kind: 'retry' }
-  | { kind: 'recovered'; descriptor: number };
+export type CrossProcessFileLockContext = {
+  assertOwnership(): void;
+};
+
+export class CrossProcessLockLostError extends Error {
+  constructor(lockPath: string) {
+    super(`Lost cross-process lock ownership at ${lockPath}`);
+    this.name = 'CrossProcessLockLostError';
+  }
+}
 
 export function crossProcessLockPath(resourcePath: string): string {
   return `${resourcePath}.lock`;
-}
-
-function crossProcessLockGuardPath(lockPath: string): string {
-  return `${lockPath}.guard`;
 }
 
 function sleepForCrossProcessLockSync(durationMs: number): void {
@@ -438,92 +440,108 @@ function isCrossProcessLockOlderThanLease(acquiredAtMs: number, nowMs: number): 
   return acquiredAtMs < nowMs - CROSS_PROCESS_LOCK_LEASE_MS;
 }
 
-function writeCrossProcessLockClaimAtomically(lockPath: string, claim: CrossProcessLockClaim): void {
-  const temporaryPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temporaryPath, serializeCrossProcessLockClaim(claim));
-    renameSync(temporaryPath, lockPath);
-  } catch (error) {
-    try {
-      unlinkSync(temporaryPath);
-    } catch (cleanupError) {
-      if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanupError;
-    }
-    throw error;
-  }
+function isCrossProcessLockReclaimable(claim: CrossProcessLockClaim): boolean {
+  if (claim.host === hostname()) return isCrossProcessLockOwnerDead(claim.pid);
+  return isCrossProcessLockOlderThanLease(claim.acquiredAtMs, Date.now());
 }
 
-function tryAcquireCrossProcessLockGuard(lockPath: string): boolean {
+function removeCrossProcessLockFile(path: string): void {
   try {
-    mkdirSync(crossProcessLockGuardPath(lockPath));
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw error;
-  }
-}
-
-function releaseCrossProcessLockGuard(lockPath: string): void {
-  try {
-    rmdirSync(crossProcessLockGuardPath(lockPath));
+    unlinkSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 
-function recoverCrossProcessFileLock(lockPath: string, token: string): CrossProcessLockRecovery {
-  if (!tryAcquireCrossProcessLockGuard(lockPath)) return { kind: 'not_recovered' };
-
+function tryAcquireCrossProcessFileLock(lockPath: string, token: string): boolean {
+  const temporaryPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+  let acquired = false;
   try {
-    const state = readCrossProcessLockState(lockPath);
-    if (state.kind === 'missing') return { kind: 'retry' };
-    if (state.kind === 'malformed') return { kind: 'not_recovered' };
-
-    const { claim } = state;
-    const nowMs = Date.now();
-    if (!isCrossProcessLockOwnerDead(claim.pid) && !isCrossProcessLockOlderThanLease(claim.acquiredAtMs, nowMs)) {
-      return { kind: 'not_recovered' };
+    writeFileSync(temporaryPath, serializeCrossProcessLockClaim(createCrossProcessLockClaim(token)));
+    try {
+      linkSync(temporaryPath, lockPath);
+      acquired = true;
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
     }
-
-    writeCrossProcessLockClaimAtomically(lockPath, createCrossProcessLockClaim(token));
-    const descriptor = openSync(lockPath, 'r');
-    const successorState = readCrossProcessLockState(lockPath);
-    if (successorState.kind === 'claim' && successorState.claim.token === token) {
-      return { kind: 'recovered', descriptor };
-    }
-    closeSync(descriptor);
-    return { kind: 'not_recovered' };
   } finally {
-    releaseCrossProcessLockGuard(lockPath);
+    try {
+      removeCrossProcessLockFile(temporaryPath);
+    } catch (error) {
+      if (!acquired) throw error;
+    }
   }
 }
 
-function releaseCrossProcessFileLock(lockPath: string, token: string, maxAttempts: number, retryMs: number): void {
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (tryAcquireCrossProcessLockGuard(lockPath)) {
-      try {
-        const state = readCrossProcessLockState(lockPath);
-        if (state.kind === 'claim' && state.claim.token === token) {
-          try {
-            unlinkSync(lockPath);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-          }
-        }
-      } finally {
-        releaseCrossProcessLockGuard(lockPath);
-      }
-      return;
-    }
-    if (attempt < maxAttempts - 1) {
-      sleepForCrossProcessLockSync(Math.min(25, retryMs * 2 ** Math.min(attempt, 4)));
-    }
+function restoreQuarantinedCrossProcessLock(lockPath: string, quarantinedPath: string): void {
+  try {
+    linkSync(quarantinedPath, lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
+    throw error;
   }
+  removeCrossProcessLockFile(quarantinedPath);
+}
+
+function recoverCrossProcessFileLock(lockPath: string, observed: CrossProcessLockState): boolean {
+  if (observed.kind === 'missing') return true;
+  if (observed.kind === 'claim' && !isCrossProcessLockReclaimable(observed.claim)) return false;
+
+  const quarantinedPath = `${lockPath}.${randomUUID()}.quarantine`;
+  try {
+    renameSync(lockPath, quarantinedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+
+  const captured = readCrossProcessLockState(quarantinedPath);
+  const capturedExpectedClaim = observed.kind === 'claim'
+    && captured.kind === 'claim'
+    && captured.claim.token === observed.claim.token;
+  const capturedRecoverable = captured.kind === 'malformed'
+    || (capturedExpectedClaim && captured.kind === 'claim' && isCrossProcessLockReclaimable(captured.claim));
+  if (!capturedRecoverable) {
+    restoreQuarantinedCrossProcessLock(lockPath, quarantinedPath);
+    return true;
+  }
+
+  removeCrossProcessLockFile(quarantinedPath);
+  return true;
+}
+
+function assertCrossProcessFileLockOwnership(lockPath: string, token: string): void {
+  const state = readCrossProcessLockState(lockPath);
+  if (state.kind === 'claim' && state.claim.token === token) return;
+  throw new CrossProcessLockLostError(lockPath);
+}
+
+function releaseCrossProcessFileLock(lockPath: string, token: string): void {
+  const observed = readCrossProcessLockState(lockPath);
+  if (observed.kind !== 'claim' || observed.claim.token !== token) return;
+
+  const quarantinedPath = `${lockPath}.${randomUUID()}.release`;
+  try {
+    renameSync(lockPath, quarantinedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+
+  const captured = readCrossProcessLockState(quarantinedPath);
+  if (captured.kind === 'claim' && captured.claim.token === token) {
+    removeCrossProcessLockFile(quarantinedPath);
+    return;
+  }
+
+  restoreQuarantinedCrossProcessLock(lockPath, quarantinedPath);
 }
 
 export function withCrossProcessFileLockSync<T>(
   resourcePath: string,
-  operation: () => T,
+  operation: (context: CrossProcessFileLockContext) => T,
   options: { maxAttempts?: number; retryMs?: number } = {},
 ): T {
   const lockPath = crossProcessLockPath(resourcePath);
@@ -538,50 +556,34 @@ export function withCrossProcessFileLockSync<T>(
 
   mkdirSync(dirname(lockPath), { recursive: true });
   const token = randomUUID();
-  let descriptor: number | undefined;
-  let contentionAttempts = 0;
-  while (contentionAttempts < maxAttempts) {
-    try {
-      descriptor = openSync(lockPath, 'wx');
-      try {
-        writeFileSync(descriptor, serializeCrossProcessLockClaim(createCrossProcessLockClaim(token)));
-      } catch (error) {
-        try {
-          closeSync(descriptor);
-        } finally {
-          unlinkSync(lockPath);
-        }
-        throw error;
-      }
+  let acquired = false;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (tryAcquireCrossProcessFileLock(lockPath, token)) {
+      acquired = true;
       break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const recovery = recoverCrossProcessFileLock(lockPath, token);
-      if (recovery.kind === 'recovered') {
-        descriptor = recovery.descriptor;
-        break;
-      }
-      if (recovery.kind === 'retry') continue;
-      if (contentionAttempts === maxAttempts - 1) {
-        throw new Error(`Timed out waiting for cross-process lock at ${lockPath}`);
-      }
-      sleepForCrossProcessLockSync(Math.min(25, retryMs * 2 ** Math.min(contentionAttempts, 4)));
-      contentionAttempts += 1;
     }
+
+    const recovered = recoverCrossProcessFileLock(lockPath, readCrossProcessLockState(lockPath));
+    if (recovered && tryAcquireCrossProcessFileLock(lockPath, token)) {
+      acquired = true;
+      break;
+    }
+    if (attempt === maxAttempts - 1) {
+      throw new Error(`Timed out waiting for cross-process lock at ${lockPath}`);
+    }
+    sleepForCrossProcessLockSync(Math.min(25, retryMs * 2 ** Math.min(attempt, 4)));
   }
 
-  if (descriptor === undefined) {
-    throw new Error(`Failed to acquire cross-process lock at ${lockPath}`);
+  if (!acquired) {
+    throw new Error(`Timed out waiting for cross-process lock at ${lockPath}`);
   }
 
   try {
-    return operation();
+    return operation({
+      assertOwnership: () => assertCrossProcessFileLockOwnership(lockPath, token),
+    });
   } finally {
-    try {
-      closeSync(descriptor);
-    } finally {
-      releaseCrossProcessFileLock(lockPath, token, maxAttempts, retryMs);
-    }
+    releaseCrossProcessFileLock(lockPath, token);
   }
 }
 
@@ -595,12 +597,17 @@ function readSubagentTrackingStateSync(cwd: string): SubagentTrackingState {
   }
 }
 
-function writeSubagentTrackingStateSync(cwd: string, state: SubagentTrackingState): string {
+function writeSubagentTrackingStateSync(
+  cwd: string,
+  state: SubagentTrackingState,
+  assertOwnership?: () => void,
+): string {
   const normalized = normalizeSubagentTrackingState(state);
   const path = subagentTrackingPath(cwd);
   mkdirSync(dirname(path), { recursive: true });
   const temporaryPath = atomicTrackingTempPath(path);
   writeFileSync(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`);
+  assertOwnership?.();
   renameSync(temporaryPath, path);
   return path;
 }
@@ -653,7 +660,7 @@ export function recordPendingRoleIntent(
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
-  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), () => {
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
     const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
     if (pendingRoleIntents.some((intent) => intent.session_id === sessionId && intent.parent_thread_id === parentThreadId)) {
@@ -670,7 +677,8 @@ export function recordPendingRoleIntent(
       expires_at: new Date(nowMs + ttlMs).toISOString(),
     };
     state.pending_role_intents = [...pendingRoleIntents, intent];
-    writeSubagentTrackingStateSync(cwd, state);
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, state, context.assertOwnership);
     return { ok: true, intent };
   });
 }
@@ -684,7 +692,7 @@ export function bindPendingRoleIntentUnderLock(
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
   const correlationToken = readOptionalTrimmedString(input.correlationToken);
-  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), () => {
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
     const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
     const consumed = pendingRoleIntents.find((intent) => (
@@ -696,7 +704,8 @@ export function bindPendingRoleIntentUnderLock(
     if (!consumed) {
       if (pendingRoleIntents.length !== state.pending_role_intents.length) {
         state.pending_role_intents = pendingRoleIntents;
-        writeSubagentTrackingStateSync(cwd, state);
+        context.assertOwnership();
+        writeSubagentTrackingStateSync(cwd, state, context.assertOwnership);
       }
       return null;
     }
@@ -707,7 +716,8 @@ export function bindPendingRoleIntentUnderLock(
     } as const;
     const boundState = bind(state, adaptedIntent);
     boundState.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== consumed);
-    writeSubagentTrackingStateSync(cwd, boundState);
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, boundState, context.assertOwnership);
     return adaptedIntent;
   });
 }
@@ -847,10 +857,11 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
 }
 
 export async function recordSubagentTurnForSession(cwd: string, input: RecordSubagentTurnInput): Promise<SubagentTrackingState> {
-  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), () => {
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const current = readSubagentTrackingStateSync(cwd);
     const next = recordSubagentTurn(current, input);
-    writeSubagentTrackingStateSync(cwd, next);
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, next, context.assertOwnership);
     return next;
   });
 }
