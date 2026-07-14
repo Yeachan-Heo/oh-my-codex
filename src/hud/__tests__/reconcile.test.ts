@@ -5,7 +5,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
-import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit as reconcileHudForPromptSubmitRaw, type ReconcileHudForPromptSubmitDeps } from '../reconcile.js';
+import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit as reconcileHudForPromptSubmitRaw, teardownManagedHudPane, type ReconcileHudForPromptSubmitDeps } from '../reconcile.js';
 
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES } from '../constants.js';
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
@@ -2178,5 +2178,63 @@ describe('reconcileHudForPromptSubmit verified lifecycle ownership', () => {
     assert.equal(result.status, 'recreated');
     assert.equal(result.paneId, '%created');
     assert.deepEqual(killed, []);
+  });
+});
+
+describe('teardownManagedHudPane', () => {
+  it('removes only the exact owner HUD and unregisters its leader hooks', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-teardown-exact-'));
+    const killed: string[] = [];
+    const unregistered: string[] = [];
+    const deps: ReconcileHudForPromptSubmitDeps = {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'session-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      sessionId: 'session-a',
+      resolveDomain: async () => testReconcileDomain(cwd, { sessionId: 'session-a', env: { TMUX_PANE: '%1' } }),
+      probeTmuxInstance: async () => ({
+        paneTarget: '%1', sessionName: 'managed', paneInstanceId: 'session-a', sessionInstanceId: '',
+        instanceId: 'session-a', source: 'pane', paneTagStatus: 'present',
+      }),
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', paneInstanceId: 'session-a', sessionInstanceId: 'session-a' },
+        { paneId: '%2', currentCommand: 'node', startCommand: "exec env OMX_SESSION_ID='session-a' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' node omx.js hud --watch", paneInstanceId: 'session-a', sessionInstanceId: 'session-a' },
+        { paneId: '%3', currentCommand: 'node', startCommand: "exec env OMX_SESSION_ID='session-b' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' node omx.js hud --watch", paneInstanceId: 'session-b', sessionInstanceId: 'session-b' },
+      ],
+      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      unregisterHudResizeHook: (paneId) => { if (paneId) unregistered.push(paneId); return true; },
+    };
+    try {
+      const result = await teardownManagedHudPane(cwd, deps);
+      assert.equal(result.status, 'removed');
+      assert.deepEqual(result.removedPaneIds, ['%2']);
+      assert.deepEqual(killed, ['%2']);
+      assert.deepEqual(unregistered, ['%1']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves every pane when leader instance evidence is mismatched', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-teardown-uncertain-'));
+    const killed: string[] = [];
+    try {
+      const result = await teardownManagedHudPane(cwd, {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'session-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        sessionId: 'session-a',
+        resolveDomain: async () => testReconcileDomain(cwd, { sessionId: 'session-a', env: { TMUX_PANE: '%1' } }),
+        probeTmuxInstance: async () => ({
+          paneTarget: '%1', sessionName: 'managed', paneInstanceId: 'session-a', sessionInstanceId: '',
+          instanceId: 'session-a', source: 'pane', paneTagStatus: 'present',
+        }),
+        listCurrentWindowPanes: () => [
+          { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', paneInstanceId: 'stale', sessionInstanceId: 'session-a' },
+          { paneId: '%2', currentCommand: 'node', startCommand: "exec env OMX_SESSION_ID='session-a' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' node omx.js hud --watch", paneInstanceId: 'session-a', sessionInstanceId: 'session-a' },
+        ],
+        killTmuxPane: (paneId) => { killed.push(paneId); return true; },
+      });
+      assert.equal(result.status, 'skipped_not_omx_owned_tmux');
+      assert.deepEqual(killed, []);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });

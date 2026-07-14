@@ -59,6 +59,7 @@ import {
   evaluateStartupDirectTriggerSafetyCapture,
   mitigateCopyModeUnderlineArtifacts,
   establishExactTeamHudCandidate,
+  probeExactTeamHudCandidate,
 } from '../tmux-session.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
 import * as tmuxSessionModule from '../tmux-session.js';
@@ -256,6 +257,44 @@ esac
       else delete process.env.OMX_TMUX_SESSION_INSTANCE_ID;
       if (typeof previousPaneTag === 'string') process.env.OMX_TMUX_PANE_INSTANCE_ID = previousPaneTag;
       else delete process.env.OMX_TMUX_PANE_INSTANCE_ID;
+    }
+  });
+
+  it('reads shutdown evidence without rewriting tmux tags', async () => {
+    const previousPane = process.env.TMUX_PANE;
+    try {
+      process.env.TMUX_PANE = '%1';
+      await withMockTmuxFixture(
+        'omx-readonly-hud-evidence-',
+        (logPath) => `#!/bin/sh
+printf '%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  display-message) printf 'leader:0 %%1\\n' ;;
+  show-options) printf 'session-instance\\n' ;;
+  show-option) printf 'pane-instance\\n' ;;
+  *) exit 0 ;;
+esac
+`,
+        async ({ logPath }) => {
+          assert.deepEqual(probeExactTeamHudCandidate({
+            sessionId: 'canonical-session',
+            sessionIds: ['canonical-session', 'native-alias'],
+            expectedLeaderPaneId: '%1',
+          }), {
+            sessionId: 'canonical-session',
+            sessionIds: ['canonical-session', 'native-alias'],
+            leaderPaneId: '%1',
+            tmuxSessionInstanceId: 'session-instance',
+            tmuxPaneInstanceId: 'pane-instance',
+            tmuxSessionName: 'leader',
+            tmuxWindowIndex: '0',
+          });
+          assert.doesNotMatch(await readFile(logPath, 'utf-8'), /set-option/);
+        },
+      );
+    } finally {
+      if (typeof previousPane === 'string') process.env.TMUX_PANE = previousPane;
+      else delete process.env.TMUX_PANE;
     }
   });
 

@@ -160,6 +160,50 @@ export function establishExactTeamHudCandidate(
   };
 }
 
+/** Reads exact live Team HUD evidence without establishing or rewriting tmux tags. */
+export function probeExactTeamHudCandidate(
+  options: EstablishExactTeamHudCandidateOptions,
+): ExactTeamHudCandidateContext | null {
+  const sessionId = options.sessionId?.trim() ?? '';
+  const sessionIds = [...new Set([sessionId, ...(options.sessionIds ?? [])]
+    .map((value) => value.trim())
+    .filter(Boolean))];
+  const expectedLeaderPaneId = normalizePaneTarget(options.expectedLeaderPaneId);
+  if (!sessionId || sessionIds.length === 0) return null;
+
+  const paneTarget = normalizePaneTarget(process.env.TMUX_PANE);
+  const displayArgs = paneTarget
+    ? ['display-message', '-p', '-t', paneTarget, '#{session_name}:#{window_index} #{pane_id}']
+    : ['display-message', '-p', '#{session_name}:#{window_index} #{pane_id}'];
+  const readContext = (): { sessionName: string; windowIndex: string; leaderPaneId: string } | null => {
+    const context = runTmux(displayArgs);
+    if (!context.ok) return null;
+    const [sessionAndWindow = '', leaderPaneId = ''] = context.stdout.split(' ').map((value) => value.trim());
+    const [sessionName = '', windowIndex = ''] = sessionAndWindow.split(':').map((value) => value.trim());
+    if (!sessionName || !windowIndex || !normalizePaneTarget(leaderPaneId)) return null;
+    return { sessionName, windowIndex, leaderPaneId };
+  };
+
+  const before = readContext();
+  if (!before || (expectedLeaderPaneId && before.leaderPaneId !== expectedLeaderPaneId)) return null;
+  const sessionTag = runTmux(['show-options', '-qv', '-t', before.sessionName, OMX_INSTANCE_OPTION]);
+  const paneTag = runTmux(['show-option', '-qv', '-p', '-t', before.leaderPaneId, OMX_PANE_INSTANCE_OPTION]);
+  const tmuxSessionInstanceId = sessionTag.ok ? sessionTag.stdout.trim() : '';
+  const tmuxPaneInstanceId = paneTag.ok ? paneTag.stdout.trim() : '';
+  if (!tmuxSessionInstanceId || !tmuxPaneInstanceId) return null;
+  const after = readContext();
+  if (!after || after.sessionName !== before.sessionName || after.windowIndex !== before.windowIndex || after.leaderPaneId !== before.leaderPaneId) return null;
+  return {
+    sessionId,
+    sessionIds,
+    leaderPaneId: before.leaderPaneId,
+    tmuxSessionInstanceId,
+    tmuxPaneInstanceId,
+    tmuxSessionName: before.sessionName,
+    tmuxWindowIndex: before.windowIndex,
+  };
+}
+
 export interface RestoreStandaloneHudPaneOptions {
   /** Canonical session id that prompt-submit HUD reconciliation should use to dedupe the restored HUD. */
   sessionId?: string | null;

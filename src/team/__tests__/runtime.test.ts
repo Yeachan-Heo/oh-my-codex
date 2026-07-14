@@ -8154,8 +8154,9 @@ esac
           await shutdownTeam('team-shutdown-exclusions', cwd, { force: true });
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
           assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-exclusions/);
         },
       );
     } finally {

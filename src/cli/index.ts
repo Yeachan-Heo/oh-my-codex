@@ -132,7 +132,7 @@ import {
   writeSessionEnd,
   resetSessionMetrics,
 } from "../hooks/session.js";
-import { probeActualTmuxInstanceEvidence, tmuxEvidenceBindsCandidate } from "../scripts/notify-hook/managed-tmux.js";
+import { probeActualTmuxInstanceEvidence, tmuxEvidenceBindsCandidate, type ActualTmuxInstanceEvidence } from "../scripts/notify-hook/managed-tmux.js";
 import {
   buildClientAttachedReconcileHookName,
   buildReconcileHudResizeArgs,
@@ -155,7 +155,7 @@ import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServers
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES, isTmuxWindowTooCrampedForHudSplit } from "../hud/constants.js";
-import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
+import { OMX_TMUX_HUD_OWNER_ENV, teardownManagedHudPane } from "../hud/reconcile.js";
 import { readUltragoalState } from "../hud/state.js";
 import {
   buildHudRuntimeEnv,
@@ -359,6 +359,7 @@ const TEAM_INHERIT_LEADER_FLAGS_ENV = "OMX_TEAM_INHERIT_LEADER_FLAGS";
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = "OMX_BYPASS_DEFAULT_SYSTEM_PROMPT";
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = "OMX_MODEL_INSTRUCTIONS_FILE";
 const OMX_INSTANCE_OPTION = "@omx_instance_id";
+const OMX_PANE_INSTANCE_OPTION = "@omx_pane_instance_id";
 const OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_RALPH_APPEND_INSTRUCTIONS_FILE";
 const OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE_ENV =
@@ -3577,21 +3578,32 @@ function tagTmuxSessionWithInstance(sessionName: string, sessionId: string): voi
   });
 }
 
-function tagCurrentTmuxSessionWithInstance(sessionId: string): void {
-  if (!process.env.TMUX) return;
+async function establishCurrentTmuxInstanceBinding(sessionId: string): Promise<ActualTmuxInstanceEvidence | null> {
+  if (!process.env.TMUX || !process.env.TMUX_PANE) return null;
+  const paneTarget = process.env.TMUX_PANE.trim();
+  if (!paneTarget) return null;
   try {
-    const tmuxPaneTarget = process.env.TMUX_PANE;
-    const displayArgs = tmuxPaneTarget
-      ? ["display-message", "-p", "-t", tmuxPaneTarget, "#S"]
-      : ["display-message", "-p", "#S"];
-    const sessionName = execFileSync("tmux", displayArgs, {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
+    const readContext = (): string => execFileSync(
+      "tmux",
+      ["display-message", "-p", "-t", paneTarget, "#{session_name}:#{window_index} #{pane_id}"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 },
+    ).trim();
+    const before = readContext();
+    const [sessionAndWindow = "", livePaneId = ""] = before.split(" ");
+    const sessionName = sessionAndWindow.split(":")[0]?.trim() ?? "";
+    if (!sessionName || livePaneId.trim() !== paneTarget) return null;
+    tagTmuxSessionWithInstance(sessionName, sessionId);
+    execFileSync("tmux", ["set-option", "-p", "-t", paneTarget, OMX_PANE_INSTANCE_OPTION, sessionId], {
+      stdio: ["ignore", "ignore", "ignore"],
       timeout: 2000,
-    }).trim();
-    if (sessionName) tagTmuxSessionWithInstance(sessionName, sessionId);
+    });
+    const evidence = await probeActualTmuxInstanceEvidence(paneTarget);
+    if (readContext() !== before || evidence.sessionName !== sessionName || !tmuxEvidenceBindsCandidate(evidence, sessionId)) {
+      return null;
+    }
+    return evidence;
   } catch {
-    // Best effort only: launch should not fail just because tmux tagging failed.
+    return null;
   }
 }
 
@@ -5005,9 +5017,8 @@ export async function preLaunch(
   // Persist the exact binding only after the canonical pointer has committed. A
   // managed attached launch must bind the persisted owner to the exact pane and
   // session instance before a hook can reconcile its HUD.
-  tagCurrentTmuxSessionWithInstance(sessionId);
-  const tmuxBinding = await probeActualTmuxInstanceEvidence(process.env.TMUX_PANE);
-  if (tmuxEvidenceBindsCandidate(tmuxBinding, sessionId)) {
+  const tmuxBinding = await establishCurrentTmuxInstanceBinding(sessionId);
+  if (tmuxBinding) {
     await writeSessionStart(cwd, sessionId, {
       ...(tmuxBinding.sessionName ? { tmuxSessionName: tmuxBinding.sessionName } : {}),
       ...(tmuxBinding.paneTarget ? { tmuxPaneId: tmuxBinding.paneTarget } : {}),
@@ -5220,9 +5231,18 @@ async function runCodex(
       }
     }
 
-    withTmuxExtendedKeys(cwd, () => {
-      runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
-    });
+    try {
+      withTmuxExtendedKeys(cwd, () => {
+        runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+      });
+    } finally {
+      if (currentPaneId) {
+        await teardownManagedHudPane(cwd, {
+          env: { ...process.env, ...hudRuntimeEnv, TMUX_PANE: currentPaneId },
+          sessionId,
+        });
+      }
+    }
     return { postLaunchHandledExternally: false };
   } else if (launchPolicy === "direct") {
     // Detached HUD sessions require tmux. Skip the bootstrap entirely when the

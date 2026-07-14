@@ -37,6 +37,7 @@ import {
   listTeamSessions,
   resolveSharedSessionShutdownTopology,
   establishExactTeamHudCandidate,
+  probeExactTeamHudCandidate,
 } from './tmux-session.js';
 import { acquireHudLifecycleLock, releaseHudLifecycleLock } from '../hud/lifecycle-lock.js';
 import { normalizeSessionId, resolveHudControlPlaneDomain } from '../mcp/state-paths.js';
@@ -4024,7 +4025,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       console.warn(`[team shutdown] ${sanitized}: ${resizeHookWarning}; continuing teardown`);
     }
     const hudRequestedSessionId = normalizeSessionId(leaderSessionId);
-    const hudRestoreDomain = hudRequestedSessionId
+    const initialHudRestoreDomain = hudRequestedSessionId
       ? await resolveHudControlPlaneDomain({
         cwd,
         env: process.env,
@@ -4032,6 +4033,26 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         claimant: {
           leaderPaneId: effectiveLeaderPaneId ?? undefined,
           tmuxSessionName: sessionName,
+        },
+      }).catch(() => null)
+      : null;
+    const liveHudCandidate = initialHudRestoreDomain && effectiveLeaderPaneId
+      ? probeExactTeamHudCandidate({
+        sessionId: initialHudRestoreDomain.claimant.sessionId,
+        sessionIds: initialHudRestoreDomain.session?.equivalentIds,
+        expectedLeaderPaneId: effectiveLeaderPaneId,
+      })
+      : null;
+    const hudRestoreDomain = liveHudCandidate && hudRequestedSessionId
+      ? await resolveHudControlPlaneDomain({
+        cwd,
+        env: process.env,
+        requestedSessionId: hudRequestedSessionId,
+        claimant: {
+          leaderPaneId: liveHudCandidate.leaderPaneId,
+          tmuxSessionName: liveHudCandidate.tmuxSessionName,
+          tmuxSessionInstanceId: liveHudCandidate.tmuxSessionInstanceId,
+          tmuxPaneInstanceId: liveHudCandidate.tmuxPaneInstanceId,
         },
       }).catch(() => null)
       : null;

@@ -16,6 +16,7 @@ import {
   readCurrentWindowSize,
   readHudPaneOwner,
   hudPaneMatchesOwner,
+  hudPaneMatchesExactCandidate,
   registerHudResizeHook,
   unregisterHudResizeHook,
   resizeTmuxPane,
@@ -573,5 +574,79 @@ export async function reconcileHudForPromptSubmit(
   };
   } finally {
     await releaseHudLifecycleLock(lock);
+  }
+}
+
+export interface TeardownManagedHudResult {
+  status: 'removed' | 'unchanged' | 'skipped_not_omx_owned_tmux' | 'skipped_concurrent';
+  removedPaneIds: string[];
+}
+
+export async function teardownManagedHudPane(
+  cwd: string,
+  deps: ReconcileHudForPromptSubmitDeps = {},
+): Promise<TeardownManagedHudResult> {
+  const env = deps.env ?? process.env;
+  const currentPaneId = env.TMUX_PANE?.trim();
+  const requestedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
+  if (!env.TMUX || !isExplicitOmxOwnedTmuxEnv(env) || !currentPaneId || !requestedSessionId) {
+    return { status: 'skipped_not_omx_owned_tmux', removedPaneIds: [] };
+  }
+
+  const domain = await (deps.resolveDomain ?? resolveHudControlPlaneDomain)({
+    cwd,
+    env: { ...env, TMUX_PANE: undefined, TMUX_SESSION: undefined },
+    requestedSessionId,
+  }).catch(() => null);
+  const evidence = domain
+    ? await (deps.probeTmuxInstance ?? probeActualTmuxInstanceEvidence)(currentPaneId).catch(() => null)
+    : null;
+  if (!domain || !evidence || !isVerifiedManagedHudOwner(domain, currentPaneId, evidence)) {
+    return { status: 'skipped_not_omx_owned_tmux', removedPaneIds: [] };
+  }
+
+  const lockDirReady = await mkdir(domain.baseStateDir, { recursive: true }).then(() => true).catch(() => false);
+  const acquired = lockDirReady
+    ? await acquireHudLifecycleLock(
+      { path: domain.reconcileLockPath, domainKey: domain.domainKey, staleMs: HUD_RECONCILE_LOCK_STALE_MS },
+      lifecycleLockDepsForReconcile(deps),
+    )
+    : { status: 'failed' as const };
+  if (acquired.status !== 'acquired' || !acquired.lock) {
+    return { status: 'skipped_concurrent', removedPaneIds: [] };
+  }
+
+  try {
+    const panes = (deps.listCurrentWindowPanes ?? ((paneId) => listCurrentWindowPanes(undefined, paneId)))(currentPaneId);
+    const leader = panes.find((pane) => pane.paneId === currentPaneId && !isHudWatchPane(pane));
+    const equivalentSessionIds = new Set(
+      [domain.session?.canonicalId, ...(domain.session?.equivalentIds ?? [])]
+        .map((value) => value?.trim() ?? '')
+        .filter(Boolean),
+    );
+    const tmuxSessionInstanceId = leader?.sessionInstanceId?.trim() ?? '';
+    const tmuxPaneInstanceId = leader?.paneInstanceId?.trim() ?? '';
+    if (!leader || !equivalentSessionIds.has(tmuxSessionInstanceId) || !equivalentSessionIds.has(tmuxPaneInstanceId)) {
+      return { status: 'skipped_not_omx_owned_tmux', removedPaneIds: [] };
+    }
+
+    const identity = { tmuxSessionInstanceId, tmuxPaneInstanceId };
+    const removedPaneIds: string[] = [];
+    const killPane = deps.killTmuxPane ?? killTmuxPane;
+    for (const pane of panes) {
+      if (pane.paneId === currentPaneId || !isHudWatchPane(pane)) continue;
+      const exactOwner = [...equivalentSessionIds].some((sessionId) => hudPaneMatchesExactCandidate(
+        pane,
+        { sessionId, leaderPaneId: currentPaneId },
+        identity,
+      ));
+      if (exactOwner && killPane(pane.paneId)) removedPaneIds.push(pane.paneId);
+    }
+    if (removedPaneIds.length > 0) {
+      (deps.unregisterHudResizeHook ?? unregisterHudResizeHook)(currentPaneId);
+    }
+    return { status: removedPaneIds.length > 0 ? 'removed' : 'unchanged', removedPaneIds };
+  } finally {
+    await releaseHudLifecycleLock(acquired.lock);
   }
 }
