@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildTmuxSessionName } from '../../cli/index.js';
+import { normalizeSkillActiveState } from '../../scripts/notify-hook/auto-nudge.js';
 
 const NOTIFY_HOOK_SCRIPT = new URL('../../../dist/scripts/notify-hook.js', import.meta.url);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
@@ -19,6 +20,18 @@ const INHERITED_OMX_ENV_KEYS = [
   'OMX_STARTUP_CWD',
   'OMX_ENTRY_PATH',
 ] as const;
+
+describe('notify lifecycle owner normalization', () => {
+  it('preserves the stored Codex owner for lifecycle authorization checks', () => {
+    const state = normalizeSkillActiveState({
+      skill: 'ralph',
+      active: true,
+      phase: 'executing',
+      owner_codex_session_id: 'codex-owner-a',
+    });
+    assert.equal(state?.owner_codex_session_id, 'codex-owner-a');
+  });
+});
 
 async function withTempWorkingDir(run: (cwd: string) => Promise<void>): Promise<void> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-auto-nudge-'));
@@ -2811,12 +2824,14 @@ exit 0
         phase: 'executing',
         source: 'keyword-detector',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
       });
       await writeJson(join(sessionStateDir, 'autoresearch-state.json'), {
         active: true,
         mode: 'autoresearch',
         current_phase: 'executing',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
         validation_mode: 'mission-validator-script',
         mission_validator_command: 'node scripts/validate.js',
         completion_artifact_path: '.omx/specs/autoresearch-demo/completion.json',
@@ -2869,12 +2884,14 @@ exit 0
         phase: 'reviewing',
         source: 'keyword-detector',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
       });
       await writeJson(join(sessionStateDir, 'autoresearch-state.json'), {
         active: true,
         mode: 'autoresearch',
         current_phase: 'reviewing',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
         validation_mode: 'mission-validator-script',
         mission_validator_command: 'node scripts/validate.js',
         completion_artifact_path: '.omx/specs/autoresearch-demo/completion.json',

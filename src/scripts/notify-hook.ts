@@ -21,7 +21,20 @@
 import { writeFile, appendFile, mkdir, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { isSessionStateUsable, normalizeSessionId } from '../hooks/session.js';
+import {
+  appendPromptSessionProvenanceRejection,
+  isSessionStateUsable,
+  readSessionPointer,
+  normalizeSessionId,
+  resolveSessionPointerContext,
+  type SessionPointerContext,
+} from '../hooks/session.js';
+import {
+  evaluateResolvedPromptTurn,
+  extractSelectedTargetOwnerEvidence,
+  preflightSelectedTargetOwner,
+  type ResolvedPromptTurnContext,
+} from '../hooks/prompt-session-provenance.js';
 
 import { safeString, asNumber } from './notify-hook/utils.js';
 import {
@@ -31,17 +44,17 @@ import {
 } from './notify-hook/payload-parser.js';
 import { getBaseStateDir } from '../mcp/state-paths.js';
 import {
-  getOmxSessionIdFromEnvironment,
   getScopedStatePath,
+  getScopedStatePathAtScope,
+  readScopedJsonAtScope,
   hasExistingScopedSessionDir,
-  isExplicitNotifySessionFork,
   readCurrentSessionId,
-  readNotifySessionMetadata,
   readScopedJsonIfExists,
   getScopedStateDirsForCurrentSession,
   normalizeNotifyState,
   pruneRecentTurns,
   readdir,
+  type NotifyStateScope,
 } from './notify-hook/state-io.js';
 import { isLeaderStale, resolveLeaderStalenessThresholdMs, maybeNudgeTeamLeader } from './notify-hook/team-leader-nudge.js';
 import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
@@ -53,7 +66,7 @@ import {
   isDeepInterviewInputLockActive,
   syncSkillStateFromTurn,
 } from './notify-hook/auto-nudge.js';
-import { isManagedOmxSession } from './notify-hook/managed-tmux.js';
+import { isManagedOmxSessionAtPromptContext } from './notify-hook/managed-tmux.js';
 import { logNotifyHookEvent } from './notify-hook/log.js';
 import { reconcileRalphSessionResume } from './notify-hook/ralph-session-resume.js';
 import { sendPaneInput } from './notify-hook/team-tmux-guard.js';
@@ -362,55 +375,75 @@ function isNotifyFallbackTaskCompletePayload(payload: Record<string, unknown>): 
 }
 
 interface LeaderNotifyWriteDecision {
-  allowScopedWrites: boolean;
-  sessionId: string;
-  reason: string;
+  readonly context: ResolvedPromptTurnContext;
+  readonly pointerContext: SessionPointerContext;
+  readonly scope?: NotifyStateScope;
+}
+
+async function preflightLeaderNotifyTarget(
+  stateDir: string,
+  context: ResolvedPromptTurnContext,
+): Promise<ResolvedPromptTurnContext> {
+  if (context.status !== 'authorized') return context;
+  const scope: NotifyStateScope = {
+    targetSessionId: context.authorization.targetSessionId,
+    ownerCodexSessionId: context.authorization.ownerCodexSessionId,
+    allowedStorageSessionIds: context.authorization.allowedStorageSessionIds,
+  };
+  const probePath = await getScopedStatePathAtScope(stateDir, 'prompt-provenance-probe.json', scope);
+  const targetDir = dirname(probePath);
+  const evidence: Array<{ ownerCodexSessionId?: unknown; targetSessionId?: unknown }> = [];
+  let filenames: string[];
+  try {
+    filenames = await readdir(targetDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return context;
+    return preflightSelectedTargetOwner(context, [{ ownerCodexSessionId: {} }], 'notify', new Date().toISOString());
+  }
+  for (const filename of filenames) {
+    if (!filename.endsWith('-state.json') && filename !== 'skill-active-state.json') continue;
+    try {
+      const value = JSON.parse(await readFile(join(targetDir, filename), 'utf8')) as unknown;
+      evidence.push(...extractSelectedTargetOwnerEvidence(value));
+    } catch {
+      evidence.push({ ownerCodexSessionId: {} });
+    }
+  }
+  return preflightSelectedTargetOwner(context, evidence, 'notify', new Date().toISOString());
 }
 
 async function resolveLeaderNotifyWriteDecision(
+  cwd: string,
   stateDir: string,
-  payloadSessionId: string,
+  payloadSessionId: unknown,
 ): Promise<LeaderNotifyWriteDecision> {
-  const metadata = await readNotifySessionMetadata(stateDir);
-  const canonicalSessionId = metadata.sessionId || '';
-  const configuredOmxSessionId = safeString(process.env.OMX_SESSION_ID).trim();
-  const omxSessionId = getOmxSessionIdFromEnvironment();
-  const normalizedPayloadSessionId = payloadSessionId
-    ? normalizeSessionId(payloadSessionId)
-    : undefined;
-
-  if (configuredOmxSessionId && !omxSessionId) {
-    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'omx_session_id_invalid' };
-  }
-  if (payloadSessionId && !normalizedPayloadSessionId) {
-    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'payload_session_id_invalid' };
-  }
-
-  if (metadata.status === 'missing') {
-    if (normalizedPayloadSessionId) {
-      if (omxSessionId && omxSessionId !== normalizedPayloadSessionId) {
-        return { allowScopedWrites: false, sessionId: '', reason: 'session_pointer_missing' };
-      }
-      return { allowScopedWrites: true, sessionId: normalizedPayloadSessionId, reason: 'native_payload_session' };
-    }
-    return { allowScopedWrites: true, sessionId: '', reason: 'root_without_session_pointer' };
-  }
-  if (metadata.status !== 'usable' || !canonicalSessionId) {
-    return { allowScopedWrites: false, sessionId: '', reason: 'session_pointer_unusable' };
-  }
-
-  if (omxSessionId && isExplicitNotifySessionFork(omxSessionId, metadata)) {
-    if (await hasExistingScopedSessionDir(stateDir, omxSessionId)) {
-      return { allowScopedWrites: true, sessionId: omxSessionId, reason: 'explicit_existing_fork' };
-    }
-    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'explicit_fork_scope_missing' };
-  }
-
-  if (omxSessionId && omxSessionId !== canonicalSessionId && !metadata.aliases.includes(omxSessionId)) {
-    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'managed_session_unmatched' };
-  }
-
-  return { allowScopedWrites: true, sessionId: canonicalSessionId, reason: 'canonical_session_pointer' };
+  const pointerContext = resolveSessionPointerContext(cwd);
+  const selectedPointer = await readSessionPointer(pointerContext);
+  const ownerEnvSessionId = process.env.OMX_SESSION_ID;
+  const normalizedOwnerEnvSessionId = normalizeSessionId(ownerEnvSessionId);
+  const forkScopeExists = normalizedOwnerEnvSessionId
+    ? await hasExistingScopedSessionDir(stateDir, normalizedOwnerEnvSessionId)
+    : false;
+  const context = evaluateResolvedPromptTurn({
+    producer: 'notify',
+    payloadSessionId,
+    ownerEnvSessionId,
+    selectedPointer,
+    forkScopeExists,
+    nowIso: new Date().toISOString(),
+  });
+  const preflightedContext = await preflightLeaderNotifyTarget(stateDir, context);
+  if (preflightedContext.status !== 'authorized') return { context: preflightedContext, pointerContext };
+  if (context.status !== 'authorized') return { context, pointerContext };
+  return {
+    context: preflightedContext,
+    pointerContext,
+    scope: {
+      targetSessionId: preflightedContext.authorization.targetSessionId,
+      ownerCodexSessionId: preflightedContext.authorization.ownerCodexSessionId,
+      allowedStorageSessionIds: preflightedContext.authorization.allowedStorageSessionIds,
+    },
+  };
 }
 
 async function main() {
@@ -433,7 +466,8 @@ async function main() {
   if (!(await isOmxManagedCwd(cwd))) {
     process.exit(0);
   }
-  const payloadSessionId = safeString(payload.session_id || payload['session-id'] || '');
+  const rawPayloadSessionId = payload.session_id ?? payload['session-id'];
+  const payloadSessionId = safeString(rawPayloadSessionId);
   const payloadThreadId = safeString(payload['thread-id'] || payload.thread_id || '');
   const inputMessages = normalizeInputMessages(payload);
   const latestUserInput = safeString(inputMessages.length > 0 ? inputMessages[inputMessages.length - 1] : '');
@@ -454,9 +488,22 @@ async function main() {
   const omxDir = join(cwd, '.omx');
   const leaderWriteDecision = isTeamWorker
     ? null
-    : await resolveLeaderNotifyWriteDecision(stateDir, payloadSessionId);
-  const canWriteLeaderScopedState = leaderWriteDecision?.allowScopedWrites === true;
-  let currentOmxSessionId = isTeamWorker ? '' : leaderWriteDecision?.sessionId || '';
+    : await resolveLeaderNotifyWriteDecision(cwd, stateDir, rawPayloadSessionId);
+  if (!isTeamWorker && leaderWriteDecision?.context.status === 'rejected') {
+    await appendPromptSessionProvenanceRejection(
+      leaderWriteDecision.pointerContext,
+      leaderWriteDecision.context.diagnostic,
+    ).catch(() => {});
+    return;
+  }
+  if (!isTeamWorker && leaderWriteDecision?.context.status === 'suppressed-target-child') return;
+  const leaderAuthorization = leaderWriteDecision?.context.status === 'authorized'
+    ? leaderWriteDecision.context.authorization
+    : null;
+  const canWriteLeaderScopedState = Boolean(leaderWriteDecision?.scope && leaderAuthorization);
+  let currentOmxSessionId = isTeamWorker
+    ? ''
+    : leaderWriteDecision?.scope?.targetSessionId || '';
   const getEffectiveSessionId = () => currentOmxSessionId || payloadSessionId;
 
   // Ensure directories exist
@@ -464,16 +511,6 @@ async function main() {
   if (isTeamWorker && workerStateRootResolved) {
     await mkdir(stateDir, { recursive: true }).catch(() => {});
     currentOmxSessionId = await readCurrentSessionId(stateDir).catch(() => '') || '';
-  }
-  if (!isTeamWorker && !canWriteLeaderScopedState) {
-    await logNotifyHookEvent(logsDir, {
-      timestamp: new Date().toISOString(),
-      level: 'warn',
-      type: 'notify_scoped_writes_suppressed',
-      reason: leaderWriteDecision?.reason,
-      session_id: currentOmxSessionId || null,
-      payload_session_id: payloadSessionId || null,
-    }).catch(() => {});
   }
 
   // Turn-level dedupe prevents double-processing when native notify and fallback
@@ -488,9 +525,14 @@ async function main() {
         const eventType = safeString(payload.type || 'agent-turn-complete');
         const key = `${threadId || 'no-thread'}|${turnId}|${eventType}`;
         const dedupeSessionId = getEffectiveSessionId();
-        const dedupeStatePath = await getScopedStatePath(stateDir, 'notify-hook-state.json', dedupeSessionId);
+        const scope = leaderWriteDecision?.scope;
+        const dedupeStatePath = scope
+          ? await getScopedStatePathAtScope(stateDir, 'notify-hook-state.json', scope)
+          : await getScopedStatePath(stateDir, 'notify-hook-state.json', dedupeSessionId);
         const dedupeState = normalizeNotifyState(
-          await readScopedJsonIfExists(stateDir, 'notify-hook-state.json', dedupeSessionId, null),
+          scope
+            ? await readScopedJsonAtScope(stateDir, 'notify-hook-state.json', scope, null)
+            : await readScopedJsonIfExists(stateDir, 'notify-hook-state.json', dedupeSessionId, null),
         );
         dedupeState.recent_turns = pruneRecentTurns(dedupeState.recent_turns, now);
         if (dedupeState.recent_turns[key]) {
@@ -589,16 +631,18 @@ async function main() {
     try {
       const resumeResult = await reconcileRalphSessionResume({
         stateDir,
-        payloadSessionId,
+        authorization: leaderAuthorization!,
         env: {
           ...process.env,
-          OMX_SESSION_ID: getEffectiveSessionId(),
+          OMX_SESSION_ID: leaderAuthorization!.targetSessionId,
           CODEX_SESSION_ID: '',
           SESSION_ID: '',
         },
         payloadThreadId,
       });
-      if (resumeResult.currentOmxSessionId) currentOmxSessionId = resumeResult.currentOmxSessionId;
+      if (resumeResult.currentOmxSessionId && resumeResult.currentOmxSessionId === leaderAuthorization!.targetSessionId) {
+        currentOmxSessionId = resumeResult.currentOmxSessionId;
+      }
       if (resumeResult.resumed || resumeResult.updatedCurrentOwner) {
         await logNotifyHookEvent(logsDir, {
           timestamp: new Date().toISOString(),
@@ -758,9 +802,10 @@ async function main() {
   // 4. Write HUD state summary for `omx hud` (lead session only)
   if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
-      const scopedSessionId = getEffectiveSessionId();
-      const hudStatePath = await getScopedStatePath(stateDir, 'hud-state.json', scopedSessionId);
-      let hudState = await readScopedJsonIfExists(stateDir, 'hud-state.json', scopedSessionId, {
+      const scope = leaderWriteDecision?.scope;
+      if (!scope) return;
+      const hudStatePath = await getScopedStatePathAtScope(stateDir, 'hud-state.json', scope);
+      let hudState = await readScopedJsonAtScope(stateDir, 'hud-state.json', scope, {
         last_turn_at: '',
         turn_count: 0,
       });
@@ -789,6 +834,8 @@ async function main() {
     }
   }
 
+  let skillSyncResult: Awaited<ReturnType<typeof syncSkillStateFromTurn>> | null = null;
+
   // 4.45. Skill activation tracking: update skill-active-state.json before any nudge logic.
   if (isTeamWorker || canWriteLeaderScopedState) {
     try {
@@ -812,6 +859,12 @@ async function main() {
             sessionId: activationSessionId,
             threadId: payloadThreadId,
             turnId: safeString(payload['turn-id'] || payload.turn_id || ''),
+            ...(!isTeamWorker && leaderWriteDecision ? {
+              resolvedPromptTurnContext: leaderWriteDecision.context,
+              onProvenanceRejected: async (diagnostic: import('../hooks/prompt-session-provenance.js').PromptDiagnosticDescriptor) => {
+                await appendPromptSessionProvenanceRejection(leaderWriteDecision.pointerContext, diagnostic).catch(() => {});
+              },
+            } : {}),
           });
         }
       }
@@ -820,7 +873,12 @@ async function main() {
     }
 
     try {
-      await syncSkillStateFromTurn(stateDir, payload);
+      skillSyncResult = await syncSkillStateFromTurn(
+        stateDir,
+        payload,
+        !isTeamWorker && leaderAuthorization ? leaderAuthorization.targetSessionId : '',
+        !isTeamWorker ? leaderAuthorization : null,
+      );
     } catch {
       // Non-fatal: lifecycle sync should not block the hook
     }
@@ -854,7 +912,7 @@ async function main() {
   // Skip for team workers - only the lead should inject prompts
   if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
-      await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
+      await handleTmuxInjection({ payload, cwd, stateDir, logsDir, context: leaderWriteDecision!.context });
     } catch {
       // Non-critical
     }
@@ -1006,7 +1064,14 @@ async function main() {
   //    Works for both leader and worker contexts.
   if ((isTeamWorker || canWriteLeaderScopedState) && (!deepInterviewStateActive || deepInterviewInputLockActive)) {
     try {
-      await maybeAutoNudge({ cwd, stateDir, logsDir, payload });
+      await maybeAutoNudge({
+        cwd,
+        stateDir,
+        logsDir,
+        payload,
+        context: isTeamWorker ? null : leaderWriteDecision!.context,
+        syncResult: skillSyncResult,
+      });
     } catch {
       // Non-critical
     }
@@ -1047,7 +1112,7 @@ async function main() {
       const { processCodeSimplifier } = await import('../hooks/code-simplifier/index.js');
       const csResult = processCodeSimplifier(cwd, stateDir);
       if (csResult.triggered) {
-        const managedSession = await isManagedOmxSession(cwd, payload, { allowTeamWorker: false });
+        const managedSession = await isManagedOmxSessionAtPromptContext(cwd, leaderWriteDecision!.context, { allowTeamWorker: false });
         if (!managedSession) {
           const { logTmuxHookEvent } = await import('./notify-hook/log.js');
           await logTmuxHookEvent(logsDir, {
@@ -1056,7 +1121,7 @@ async function main() {
             reason: 'unmanaged_session',
           });
         } else {
-          const csPaneId = await resolveNudgePaneTarget(stateDir, cwd, payload);
+          const csPaneId = await resolveNudgePaneTarget(stateDir, cwd, payload, leaderWriteDecision!.context);
           if (csPaneId) {
             const csText = `${csResult.message} ${DEFAULT_MARKER}`;
             const sendResult = await sendPaneInput({

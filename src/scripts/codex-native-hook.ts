@@ -25,6 +25,7 @@ import {
 import { resolveCanonicalTeamStateRoot, resolveWorkerNotifyTeamStateRootPath } from "../team/state-root.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
 import {
+  appendPromptSessionProvenanceRejection,
   appendToLog,
   isSessionPointerLaunchAbort,
   isSessionStale,
@@ -37,6 +38,13 @@ import {
   resolveSessionPointerContext,
   type SessionState,
 } from "../hooks/session.js";
+import {
+  evaluateResolvedPromptTurn,
+  extractSelectedTargetOwnerEvidence,
+  preflightSelectedTargetOwner,
+  type PromptThreadFacts,
+  type ResolvedPromptTurnContext,
+} from "../hooks/prompt-session-provenance.js";
 import {
   appendTeamEvent,
   readTeamLeaderAttention,
@@ -546,6 +554,32 @@ async function isNativeSubagentHook(
   return Object.values(trackingState.sessions).some((session) => (
     candidateIds.some((id) => isTrustedSubagentThread(session, id))
   ));
+}
+
+async function readNativePromptThreadFacts(
+  cwd: string,
+  nativeSessionId: string,
+  threadId: string,
+  currentSessionState?: SessionState | null,
+): Promise<PromptThreadFacts | undefined> {
+  const candidateIds = [nativeSessionId, threadId].map((value) => value.trim()).filter(Boolean);
+  if (candidateIds.length === 0) return undefined;
+  const currentNativeIds = new Set([
+    safeString(currentSessionState?.native_session_id).trim(),
+    safeString(currentSessionState?.codex_session_id).trim(),
+    safeString(currentSessionState?.owner_codex_session_id).trim(),
+  ].filter(Boolean));
+  const currentTargetAnchored = Boolean(nativeSessionId && currentNativeIds.has(nativeSessionId));
+  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
+  if (!trackingState) return currentTargetAnchored ? { currentTargetAnchored: true, rootOrDrift: true } : undefined;
+  const roots = Object.values(trackingState.sessions).flatMap((session) => (
+    candidateIds.some((candidate) => isTrustedSubagentThread(session, candidate))
+      ? [session.session_id]
+      : []
+  ));
+  return roots.length > 0 || currentTargetAnchored
+    ? { trackerRootOwnerSessionIds: roots, currentTargetAnchored, rootOrDrift: currentTargetAnchored }
+    : undefined;
 }
 
 function shouldSuppressSubagentLifecycleHookDispatch(): boolean {
@@ -9723,6 +9757,32 @@ async function buildStopHookOutput(
   );
 }
 
+async function preflightNativePromptTarget(
+  stateDir: string,
+  context: ResolvedPromptTurnContext,
+): Promise<ResolvedPromptTurnContext> {
+  if (context.status !== "authorized") return context;
+  const targetDir = join(stateDir, "sessions", context.authorization.targetSessionId);
+  const evidence: Array<{ ownerCodexSessionId?: unknown; targetSessionId?: unknown }> = [];
+  let filenames: string[];
+  try {
+    filenames = await readdir(targetDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return context;
+    return preflightSelectedTargetOwner(context, [{ ownerCodexSessionId: {} }], "native", new Date().toISOString());
+  }
+  for (const filename of filenames) {
+    if (!filename.endsWith("-state.json") && filename !== SKILL_ACTIVE_STATE_FILE) continue;
+    try {
+      const value = JSON.parse(await readFile(join(targetDir, filename), "utf8")) as unknown;
+      evidence.push(...extractSelectedTargetOwnerEvidence(value));
+    } catch {
+      evidence.push({ ownerCodexSessionId: {} });
+    }
+  }
+  return preflightSelectedTargetOwner(context, evidence, "native", new Date().toISOString());
+}
+
 export async function dispatchCodexNativeHook(
   payload: CodexHookPayload,
   options: NativeHookDispatchOptions = {},
@@ -9740,9 +9800,6 @@ export async function dispatchCodexNativeHook(
   // Native hooks must use the exact pointer root selected for this dispatch.
   const pointerContext = resolveSessionPointerContext(cwd);
   const stateDir = pointerContext.baseStateDir;
-  if (hookEventName !== "Stop") {
-    await mkdir(stateDir, { recursive: true });
-  }
 
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
   let skillState: SkillActiveState | null = null;
@@ -9755,7 +9812,30 @@ export async function dispatchCodexNativeHook(
   const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
   const pointer = await readSessionPointer(pointerContext);
   const currentSessionState = pointer.status === "usable" ? pointer.state ?? null : null;
-  let allowImplicitSessionSideEffects = pointer.status === "usable" || pointer.status === "absent";
+  let promptTurnContext: ResolvedPromptTurnContext | null = hookEventName === "UserPromptSubmit"
+    ? evaluateResolvedPromptTurn({
+      producer: "native",
+      payloadSessionId: payload.session_id ?? payload.sessionId,
+      ownerEnvSessionId: undefined,
+      selectedPointer: pointer,
+      threadFacts: await readNativePromptThreadFacts(cwd, nativeSessionId, threadId, currentSessionState),
+      nowIso: new Date().toISOString(),
+    })
+    : null;
+  if (promptTurnContext) {
+    promptTurnContext = await preflightNativePromptTarget(stateDir, promptTurnContext);
+  }
+  if (promptTurnContext?.status === "rejected") {
+    await appendPromptSessionProvenanceRejection(pointerContext, promptTurnContext.diagnostic).catch(() => {});
+    return { hookEventName, omxEventName, skillState: null, outputJson: null };
+  }
+  if (promptTurnContext?.status === "suppressed-target-child") {
+    return { hookEventName, omxEventName, skillState: null, outputJson: null };
+  }
+  if (hookEventName !== "Stop") {
+    await mkdir(stateDir, { recursive: true });
+  }
+  let allowImplicitSessionSideEffects = pointer.status === "usable" || pointer.status === "absent" || promptTurnContext?.status === "authorized";
   let stopAuthorizationFailure: { stopReason: string; reason: string } | null = allowImplicitSessionSideEffects
     ? null
     : {
@@ -9763,6 +9843,11 @@ export async function dispatchCodexNativeHook(
       reason: `OMX cannot authorize Stop while the selected session pointer is ${pointer.status}; repair the pointer evidence before continuing.`,
     };
   let canonicalSessionId = safeString(currentSessionState?.session_id).trim();
+  if (promptTurnContext?.status === "authorized") {
+    canonicalSessionId = promptTurnContext.authorization.targetSessionId;
+  }
+  const allowPromptGlobalSideEffects = promptTurnContext?.status !== "authorized"
+    || promptTurnContext.authorization.globalSideEffects === "allow";
   let resolvedNativeSessionId = nativeSessionId;
   let skipCanonicalSessionStartContext = false;
   let isSubagentSessionStart = false;
@@ -9921,13 +10006,17 @@ export async function dispatchCodexNativeHook(
 
   if (hookEventName === "UserPromptSubmit") {
     const prompt = readPromptText(payload);
-    goalWorkflowAdditionalContext = await buildCompletedGoalCleanupPromptWarning(cwd, prompt).catch(() => null)
-      ?? await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(() => null);
-    ultragoalSteeringAdditionalContext = prompt && !isSubagentPromptSubmit && allowImplicitSessionSideEffects
+    goalWorkflowAdditionalContext = allowPromptGlobalSideEffects
+      ? await buildCompletedGoalCleanupPromptWarning(cwd, prompt).catch(() => null)
+        ?? await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(() => null)
+      : null;
+    ultragoalSteeringAdditionalContext = prompt && !isSubagentPromptSubmit && allowImplicitSessionSideEffects && allowPromptGlobalSideEffects
       ? await applyUserPromptUltragoalSteering(cwd, prompt).catch((error) => `OMX native UserPromptSubmit rejected bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${error instanceof Error ? error.message : String(error)}`)
       : null;
     let suppressActivationSeeding = !allowImplicitSessionSideEffects;
-    if (prompt && !isSubagentPromptSubmit && allowImplicitSessionSideEffects) {
+    if (promptTurnContext?.status === "authorized") {
+      sessionIdForState = promptTurnContext.authorization.targetSessionId;
+    } else if (prompt && !isSubagentPromptSubmit && allowImplicitSessionSideEffects) {
       const rawHookSessionId = canonicalSessionId || nativeSessionId;
       const normalizedHookSessionId = normalizeSessionId(rawHookSessionId);
       const explicitHookSessionId = currentSessionState ? undefined : normalizedHookSessionId;
@@ -9958,10 +10047,14 @@ export async function dispatchCodexNativeHook(
         sessionId: sessionIdForState || undefined,
         threadId,
         turnId,
+        resolvedPromptTurnContext: promptTurnContext ?? undefined,
+        onProvenanceRejected: async (diagnostic) => {
+          await appendPromptSessionProvenanceRejection(pointerContext, diagnostic).catch(() => {});
+        },
       });
     }
     // --- Triage classifier (advisory-only, non-keyword prompts) ---
-    if (prompt && skillState === null && !isSubagentPromptSubmit) {
+    if (prompt && skillState === null && !isSubagentPromptSubmit && allowPromptGlobalSideEffects) {
       try {
         if (readTriageConfig().enabled) {
           const normalized = prompt.trim().toLowerCase();
@@ -10037,7 +10130,7 @@ export async function dispatchCodexNativeHook(
     const skipHudReconcileForDoctorSmoke = process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE === "1";
     const skipHudReconcileForTeamWorkerPane = !isSubagentPromptSubmit
       && await isConfirmedTeamWorkerPromptSubmitPane(cwd).catch(() => false);
-    if (allowImplicitSessionSideEffects && !skipHudReconcileForDoctorSmoke && !skipHudReconcileForTeamWorkerPane) {
+    if (allowImplicitSessionSideEffects && allowPromptGlobalSideEffects && !skipHudReconcileForDoctorSmoke && !skipHudReconcileForTeamWorkerPane) {
       const reconcileHudForPromptSubmitFn = options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
       const hudSessionId = resolveHudReconcileSessionId(
         currentSessionState,
@@ -10054,7 +10147,7 @@ export async function dispatchCodexNativeHook(
     }
   }
 
-  if (omxEventName && allowImplicitSessionSideEffects && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
+  if (omxEventName && allowImplicitSessionSideEffects && allowPromptGlobalSideEffects && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
     const baseContext = buildBaseContext(cwd, payload, hookEventName!, canonicalSessionId);
     if (resolvedNativeSessionId) {
       baseContext.native_session_id = resolvedNativeSessionId;

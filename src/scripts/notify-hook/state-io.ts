@@ -79,20 +79,7 @@ function readOmxSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): 
   }
 }
 
-export function isExplicitNotifySessionFork(
-  candidateSessionId: string | undefined,
-  metadata: Pick<SessionMetadata, 'sessionId' | 'aliases'>,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  const explicitOmxSessionId = readOmxSessionIdFromEnvironment(env);
-  return Boolean(
-    candidateSessionId
-    && explicitOmxSessionId === candidateSessionId
-    && metadata.sessionId
-    && candidateSessionId !== metadata.sessionId
-    && !metadata.aliases.includes(candidateSessionId),
-  );
-}
+/** Neutral fact for the provenance evaluator; it never interprets fork policy. */
 
 export async function hasExistingScopedSessionDir(baseStateDir: string, sessionId: string): Promise<boolean> {
   try {
@@ -177,6 +164,26 @@ export async function getScopedStateDirsForCurrentSession(
   return resolveBaseScopedStateDirs(baseStateDir, explicitSessionId, options);
 }
 
+export interface NotifyStateScope {
+  readonly targetSessionId: string;
+  readonly ownerCodexSessionId: string;
+  readonly allowedStorageSessionIds: readonly string[];
+}
+
+export async function getScopedStatePathAtScope(
+  baseStateDir: string,
+  fileName: string,
+  scope: NotifyStateScope,
+): Promise<string> {
+  if (!isSafeStateFileName(fileName)) {
+    throw new Error(`unsafe state file name: ${fileName}`);
+  }
+  if (!scope.allowedStorageSessionIds.includes(scope.targetSessionId)) {
+    throw new Error('notify state scope target is unauthorized');
+  }
+  return join(baseStateDir, 'sessions', scope.targetSessionId, fileName);
+}
+
 export async function getScopedStatePath(
   baseStateDir: string,
   fileName: string,
@@ -217,6 +224,26 @@ export async function writeScopedJson(
   value: unknown,
 ): Promise<void> {
   const targetPath = await getScopedStatePath(baseStateDir, fileName, explicitSessionId);
+  await mkdir(dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, JSON.stringify(value, null, 2));
+}
+
+export async function readScopedJsonAtScope(
+  baseStateDir: string,
+  fileName: string,
+  scope: NotifyStateScope,
+  fallback: any,
+): Promise<any> {
+  return readJsonIfExists(await getScopedStatePathAtScope(baseStateDir, fileName, scope), fallback);
+}
+
+export async function writeScopedJsonAtScope(
+  baseStateDir: string,
+  fileName: string,
+  scope: NotifyStateScope,
+  value: unknown,
+): Promise<void> {
+  const targetPath = await getScopedStatePathAtScope(baseStateDir, fileName, scope);
   await mkdir(dirname(targetPath), { recursive: true });
   await writeFile(targetPath, JSON.stringify(value, null, 2));
 }

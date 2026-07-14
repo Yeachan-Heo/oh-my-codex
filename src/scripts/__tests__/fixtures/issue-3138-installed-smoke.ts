@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const SCHEMA = 'omx.issue3138.installed-smoke.v4';
+const SCHEMA = 'omx.issue3138.installed-smoke.v5';
 const MANDATORY_SCENARIOS = [
   'missing-owner-alias-activation',
   'unmatched-write',
@@ -17,6 +17,8 @@ const MANDATORY_SCENARIOS = [
   'managed-unmatched-idle-delivery-no-receipts',
   'rejected-root-no-launch',
   'managed-unmatched-lifecycle-delivery-no-receipts',
+  'explicit-payload-session-isolation',
+  'notify-existing-fork-preserves-payload-owner',
 ] as const;
 
 type ScenarioName = typeof MANDATORY_SCENARIOS[number];
@@ -147,6 +149,22 @@ function runInstalledCli(
   env: NodeJS.ProcessEnv = process.env,
 ) {
   return spawnSync(process.execPath, [installedCliPath(packageRoot), ...args], {
+    cwd,
+    encoding: 'utf-8',
+    env,
+  });
+}
+
+function runInstalledScript(
+  packageRoot: string,
+  cwd: string,
+  relativeScriptPath: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  const scriptPath = join(packageRoot, relativeScriptPath);
+  assert(existsSync(scriptPath), `installed script is missing: ${scriptPath}`);
+  return spawnSync(process.execPath, [scriptPath, ...args], {
     cwd,
     encoding: 'utf-8',
     env,
@@ -562,6 +580,82 @@ async function scenarioManagedUnmatchedLifecycleDeliveryNoReceipts(packageRoot: 
   });
 }
 
+async function scenarioExplicitPayloadSessionIsolation(packageRoot: string): Promise<void> {
+  await withWorkspace('explicit-payload-isolation', async (cwd, home) => {
+    const firstSessionId = 'codex-payload-first';
+    const secondSessionId = 'codex-payload-second';
+    await writeCanonicalPointer(packageRoot, cwd, home, firstSessionId, firstSessionId);
+    await writeModeState(cwd, firstSessionId, 'ralph', { marker: 'first-before', owner_codex_session_id: firstSessionId });
+    await writeModeState(cwd, secondSessionId, 'ralph', { marker: 'second-before', owner_codex_session_id: secondSessionId });
+    const pointerPath = join(cwd, '.omx', 'state', 'session.json');
+    const pointerBefore = await readFile(pointerPath, 'utf8');
+    await withEnvironment(cleanEnv(home, cwd), async () => {
+      const native = await importInstalled<{
+        dispatchCodexNativeHook: (payload: Record<string, unknown>, options?: Record<string, unknown>) => Promise<{
+          outputJson: Record<string, unknown> | null;
+        }>;
+      }>(packageRoot, 'dist/scripts/codex-native-hook.js');
+      const secondBeforeFirst = await readFile(statePath(cwd, secondSessionId, 'ralph'), 'utf-8');
+      const first = await native.dispatchCodexNativeHook({
+        hook_event_name: 'UserPromptSubmit', session_id: firstSessionId, thread_id: 'explicit-first', turn_id: 'explicit-first-turn', cwd,
+        prompt: '$ralph continue first payload session',
+      }, { cwd });
+      assert(first.outputJson?.decision !== 'block', 'first explicit payload prompt was blocked');
+      assert(await readFile(statePath(cwd, secondSessionId, 'ralph'), 'utf-8') === secondBeforeFirst, 'first explicit payload mutated second scoped state');
+
+      const firstBeforeSecond = await readFile(statePath(cwd, firstSessionId, 'ralph'), 'utf-8');
+      const second = await native.dispatchCodexNativeHook({
+        hook_event_name: 'UserPromptSubmit', session_id: secondSessionId, thread_id: 'explicit-second', turn_id: 'explicit-second-turn', cwd,
+        prompt: '$ralph continue second payload session',
+      }, { cwd });
+      assert(second.outputJson?.decision !== 'block', 'second explicit payload prompt was blocked');
+      assert(await readFile(statePath(cwd, firstSessionId, 'ralph'), 'utf-8') === firstBeforeSecond, 'second explicit payload mutated first scoped state');
+    });
+    assert(await readFile(pointerPath, 'utf8') === pointerBefore, 'explicit payload prompts rewrote the selected pointer');
+  });
+}
+
+async function scenarioNotifyExistingForkPreservesPayloadOwner(packageRoot: string): Promise<void> {
+  await withWorkspace('notify-existing-fork-owner', async (cwd, home) => {
+    const canonicalSessionId = 'omx-notify-canonical';
+    const payloadSessionId = 'codex-notify-owner';
+    const forkSessionId = 'omx-notify-existing-fork';
+    const canonicalHudPath = join(cwd, '.omx', 'state', 'sessions', canonicalSessionId, 'hud-state.json');
+    await writeCanonicalPointer(packageRoot, cwd, home, canonicalSessionId, payloadSessionId);
+    await mkdir(join(cwd, '.omx', 'state', 'sessions', forkSessionId), { recursive: true });
+    await mkdir(join(cwd, '.omx', 'state', 'sessions', canonicalSessionId), { recursive: true });
+    await writeFile(canonicalHudPath, JSON.stringify({ turn_count: 7, marker: 'canonical-source' }, null, 2));
+    const canonicalHudBefore = await readFile(canonicalHudPath, 'utf-8');
+    const pointerPath = join(cwd, '.omx', 'state', 'session.json');
+    const pointerBefore = await readFile(pointerPath, 'utf-8');
+    const pointer = await readJson<Record<string, unknown>>(pointerPath);
+    assert(pointer.native_session_id === payloadSessionId, 'notify fork setup did not bind payload owner P');
+    const result = runInstalledScript(packageRoot, cwd, 'dist/scripts/notify-hook.js', [JSON.stringify({
+      cwd, session_id: payloadSessionId, type: 'agent-turn-complete', thread_id: 'notify-fork-thread', turn_id: 'notify-fork-turn',
+      input_messages: ['$ralph continue'], last_assistant_message: 'fork storage receipt',
+    })], cleanEnv(home, cwd, { OMX_SESSION_ID: forkSessionId }));
+    assert(result.status === 0, result.stderr || result.stdout || 'installed notify fork route failed');
+    const forkDir = join(cwd, '.omx', 'state', 'sessions', forkSessionId);
+    const skillState = await readJson<Record<string, unknown>>(join(forkDir, 'skill-active-state.json'));
+    const ralphState = await readJson<Record<string, unknown>>(join(forkDir, 'ralph-state.json'));
+    assert(skillState.owner_codex_session_id === payloadSessionId, 'notify fork skill state did not retain payload owner P');
+    assert(ralphState.owner_codex_session_id === payloadSessionId, 'notify fork Ralph seed did not retain payload owner P');
+    const second = runInstalledScript(packageRoot, cwd, 'dist/scripts/notify-hook.js', [JSON.stringify({
+      cwd, session_id: payloadSessionId, type: 'agent-turn-complete', thread_id: 'notify-fork-thread', turn_id: 'notify-fork-turn-2',
+      input_messages: [], last_assistant_message: 'fork lifecycle continuation',
+    })], cleanEnv(home, cwd, { OMX_SESSION_ID: forkSessionId }));
+    assert(second.status === 0, second.stderr || second.stdout || 'installed notify fork continuation failed');
+    const ralphAfterSecond = await readJson<Record<string, unknown>>(join(forkDir, 'ralph-state.json'));
+    assert(ralphAfterSecond.owner_codex_session_id === payloadSessionId, 'notify fork lifecycle sync lost payload owner P');
+    assert(existsSync(join(cwd, '.omx', 'state', 'sessions', forkSessionId, 'hud-state.json')), 'notify fork route did not mutate existing fork storage');
+    assert(existsSync(join(cwd, '.omx', 'state', 'sessions', forkSessionId, 'notify-hook-state.json')), 'notify fork route did not persist its fork receipt');
+    assert(await readFile(canonicalHudPath, 'utf-8') === canonicalHudBefore, 'notify fork route mutated canonical source storage');
+    assert(!existsSync(join(cwd, '.omx', 'state', 'sessions', canonicalSessionId, 'notify-hook-state.json')), 'notify fork route created a canonical receipt');
+    assert(!existsSync(join(cwd, '.omx', 'state', 'sessions', payloadSessionId)), 'notify fork route created payload owner storage');
+    assert(await readFile(pointerPath, 'utf-8') === pointerBefore, 'notify fork route mutated the payload owner pointer');
+  });
+}
+
 async function runScenario(name: ScenarioName, packageRoot: string): Promise<void> {
   switch (name) {
     case 'missing-owner-alias-activation':
@@ -593,6 +687,12 @@ async function runScenario(name: ScenarioName, packageRoot: string): Promise<voi
       return;
     case 'managed-unmatched-lifecycle-delivery-no-receipts':
       await scenarioManagedUnmatchedLifecycleDeliveryNoReceipts(packageRoot);
+      return;
+    case 'explicit-payload-session-isolation':
+      await scenarioExplicitPayloadSessionIsolation(packageRoot);
+      return;
+    case 'notify-existing-fork-preserves-payload-owner':
+      await scenarioNotifyExistingForkPreservesPayloadOwner(packageRoot);
       return;
   }
 }

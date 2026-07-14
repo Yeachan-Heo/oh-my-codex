@@ -7,6 +7,9 @@ import { join } from 'node:path';
 
 import {
   getScopedStatePath,
+  getScopedStatePathAtScope,
+  readScopedJsonAtScope,
+  writeScopedJsonAtScope,
   readCurrentSessionId,
   readScopedJsonIfExists,
   resolveScopedStateDir,
@@ -202,6 +205,33 @@ describe('notify-hook state I/O session authority', () => {
       ) as { turn_count?: unknown };
       assert.equal(value.turn_count, 12);
       assert.equal(existsSync(join(stateDir, 'sessions', ownerSessionId)), false);
+    } finally {
+      if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the immutable target scope without consulting a stale environment session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-state-io-context-'));
+    const previousOmxSessionId = process.env.OMX_SESSION_ID;
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const scope = {
+        targetSessionId: 'fork-existing',
+        ownerCodexSessionId: 'payload-owner',
+        allowedStorageSessionIds: ['fork-existing'],
+      };
+      await mkdir(join(stateDir, 'sessions', 'fork-existing'), { recursive: true });
+      process.env.OMX_SESSION_ID = 'stale-singleton';
+
+      assert.equal(
+        await getScopedStatePathAtScope(stateDir, 'hud-state.json', scope),
+        join(stateDir, 'sessions', 'fork-existing', 'hud-state.json'),
+      );
+      await writeScopedJsonAtScope(stateDir, 'hud-state.json', scope, { turn_count: 1 });
+      assert.deepEqual(await readScopedJsonAtScope(stateDir, 'hud-state.json', scope, null), { turn_count: 1 });
+      assert.equal(existsSync(join(stateDir, 'sessions', 'stale-singleton')), false);
     } finally {
       if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
       else delete process.env.OMX_SESSION_ID;

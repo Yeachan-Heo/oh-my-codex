@@ -16,6 +16,7 @@ import {
 import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
+import { evaluateResolvedPromptTurn } from '../prompt-session-provenance.js';
 
 async function withIsolatedHome<T>(prefix: string, run: (homeDir: string) => Promise<T>): Promise<T> {
   const homeDir = await mkdtemp(join(tmpdir(), `omx-keyword-home-${prefix}-`));
@@ -4478,5 +4479,99 @@ describe('applyRalplanGate', () => {
     const result = applyRalplanGate(['ralph', 'ultrawork'], 'ralph ultrawork build');
     assert.ok(result.gatedKeywords.includes('ralph'));
     assert.ok(result.gatedKeywords.includes('ultrawork'));
+  });
+});
+
+describe('recordSkillActivation prompt provenance', () => {
+  it('writes only the authorized explicit payload session and stamps its owner', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-provenance-'));
+    try {
+      const context = evaluateResolvedPromptTurn({
+        producer: 'native',
+        payloadSessionId: 'payload-session',
+        selectedPointer: { status: 'absent' },
+        nowIso: '2026-07-14T00:00:00.000Z',
+      });
+      const state = await recordSkillActivation({
+        stateDir,
+        text: '$ralplan implement the scoped change',
+        sessionId: 'payload-session',
+        resolvedPromptTurnContext: context,
+      });
+      assert.equal(state?.owner_codex_session_id, 'payload-session');
+      assert.equal(existsSync(join(stateDir, 'sessions', 'payload-session', SKILL_ACTIVE_STATE_FILE)), true);
+      assert.equal(existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)), false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects nested foreign owners before direct activation writes', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-nested-owner-'));
+    try {
+      const targetDir = join(stateDir, 'sessions', 'target');
+      await mkdir(targetDir, { recursive: true });
+      const statePath = join(targetDir, SKILL_ACTIVE_STATE_FILE);
+      const original = JSON.stringify({
+        skill: 'ralph', active: true, session_id: 'target', owner_codex_session_id: 'target',
+        active_skills: [{ skill: 'ralph', session_id: 'target', owner_codex_session_id: 'foreign' }],
+      });
+      await writeFile(statePath, original);
+      const context = evaluateResolvedPromptTurn({ producer: 'native', payloadSessionId: 'target', selectedPointer: { status: 'absent' } });
+      let rejections = 0;
+      const result = await recordSkillActivation({
+        stateDir, text: '$ralph continue', sessionId: 'target', resolvedPromptTurnContext: context,
+        onProvenanceRejected: () => { rejections += 1; },
+      });
+      assert.equal(result, null);
+      assert.equal(rejections, 1);
+      assert.equal(await readFile(statePath, 'utf8'), original);
+      assert.equal(existsSync(join(targetDir, 'ralph-state.json')), false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed target state before direct activation writes', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-malformed-owner-'));
+    try {
+      const targetDir = join(stateDir, 'sessions', 'target');
+      await mkdir(targetDir, { recursive: true });
+      const malformedPath = join(targetDir, 'ralph-state.json');
+      await writeFile(malformedPath, '{ malformed');
+      const context = evaluateResolvedPromptTurn({ producer: 'native', payloadSessionId: 'target', selectedPointer: { status: 'absent' } });
+      let rejections = 0;
+      const result = await recordSkillActivation({
+        stateDir, text: '$ralph continue', sessionId: 'target', resolvedPromptTurnContext: context,
+        onProvenanceRejected: () => { rejections += 1; },
+      });
+      assert.equal(result, null);
+      assert.equal(rejections, 1);
+      assert.equal(await readFile(malformedPath, 'utf8'), '{ malformed');
+      assert.equal(existsSync(join(targetDir, SKILL_ACTIVE_STATE_FILE)), false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects target enumeration failures before direct activation writes', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-enumeration-owner-'));
+    try {
+      const sessionsDir = join(stateDir, 'sessions');
+      await mkdir(sessionsDir, { recursive: true });
+      const targetPath = join(sessionsDir, 'target');
+      await writeFile(targetPath, 'not-a-directory');
+      const context = evaluateResolvedPromptTurn({ producer: 'native', payloadSessionId: 'target', selectedPointer: { status: 'absent' } });
+      let rejections = 0;
+      const result = await recordSkillActivation({
+        stateDir, text: '$ralph continue', sessionId: 'target', resolvedPromptTurnContext: context,
+        onProvenanceRejected: () => { rejections += 1; },
+      });
+      assert.equal(result, null);
+      assert.equal(rejections, 1);
+      assert.equal(await readFile(targetPath, 'utf8'), 'not-a-directory');
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 });

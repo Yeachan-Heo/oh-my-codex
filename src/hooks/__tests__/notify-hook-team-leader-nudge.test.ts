@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initTeamState, enqueueDispatchRequest, readDispatchRequest } from '../../team/state.js';
@@ -279,10 +279,17 @@ function runNotifyHook(
   fakeBinDir: string,
   extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
+  const sessionPath = join(cwd, '.omx', 'state', 'session.json');
+  if (!existsSync(sessionPath)) {
+    mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+    writeFileSync(sessionPath, JSON.stringify({ session_id: extraEnv.OMX_SESSION_ID || 'thread-test' }));
+  }
+  const sessionState = JSON.parse(readFileSync(sessionPath, 'utf8')) as { session_id?: string };
   const payload = {
     cwd,
     type: 'agent-turn-complete',
     'thread-id': 'thread-test',
+    session_id: sessionState.session_id,
     'turn-id': `turn-${Date.now()}`,
     'input-messages': ['test'],
     'last-assistant-message': 'output',

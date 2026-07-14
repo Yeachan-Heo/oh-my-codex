@@ -45,12 +45,14 @@ function runNotifyHook(
   lastAssistantMessage: string,
   turnId: string,
   envOverrides: Record<string, string> = {},
+  payloadSessionId: string = SESSION_ID,
 ) {
   const payload = {
     cwd,
     type: 'agent-turn-complete',
     thread_id: 'thread-session-idle',
     turn_id: turnId,
+    session_id: payloadSessionId,
     input_messages: [],
     last_assistant_message: lastAssistantMessage,
   };
@@ -146,7 +148,7 @@ describe('notify-hook session-idle dedupe', () => {
 
       const result = runNotifyHook(repoRoot, wd, 'Waiting on forked review.', 'turn-idle-fork', {
         OMX_SESSION_ID: forkSessionId,
-      });
+      }, canonicalSessionId);
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
       assert.equal(existsSync(join(stateDir, 'sessions', forkSessionId, 'session-idle-hook-state.json')), true);

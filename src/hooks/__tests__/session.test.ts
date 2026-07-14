@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   __createDefaultPidProbeForTests,
+  appendPromptSessionProvenanceRejection,
   __resetSessionPointerTransactionDependenciesForTests,
   __setSessionPointerTransactionDependenciesForTests,
   isSessionPointerLaunchAbort,
@@ -1138,6 +1139,34 @@ describe('session pointer transaction', () => {
       );
       assert.equal(await readFile(context.sessionPath, 'utf-8'), '{ malformed');
       assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('prompt provenance diagnostics', () => {
+  it('writes exactly one redacted record at the supplied selected root', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-provenance-log-'));
+    try {
+      const stateDir = join(cwd, 'selected', '.omx', 'state');
+      await appendPromptSessionProvenanceRejection({
+        cwd,
+        baseStateDir: stateDir,
+        rootSource: 'cwd-default',
+        sessionPath: join(stateDir, 'session.json'),
+        lockPath: join(stateDir, 'session.json.lock'),
+      }, {
+        reason: 'payload_session_invalid',
+        producer: 'native',
+        selectedRootStatus: 'malformed',
+        timestamp: '2026-07-14T00:00:00.000Z',
+      });
+      const log = await readFile(join(cwd, 'selected', '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`), 'utf-8');
+      assert.equal(log.trim().split('\n').length, 1);
+      assert.match(log, /"event":"prompt_session_provenance_rejected"/);
+      assert.equal(log.includes(cwd), false);
+      assert.equal(existsSync(join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`)), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

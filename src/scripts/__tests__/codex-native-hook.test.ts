@@ -2229,8 +2229,8 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(beforeAlias.skillState, null);
-      assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "deep-interview-state.json")), false);
+      assert.equal(beforeAlias.skillState?.session_id, canonicalSessionId);
+      assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "deep-interview-state.json")), true);
       assert.equal(existsSync(join(stateDir, "sessions", ownerSessionId, "deep-interview-state.json")), false);
 
       await dispatchCodexNativeHook(
@@ -2346,7 +2346,7 @@ PY`,
         },
         { cwd: conflictingCwd },
       );
-      assert.equal(conflictingActivation.skillState, null);
+      assert.equal(conflictingActivation.skillState?.session_id, "native-conflicting-3138");
 
       const staleCwd = join(root, "stale");
       const staleStatePath = join(staleCwd, ".omx", "state", "session.json");
@@ -2396,8 +2396,8 @@ PY`,
         session_id: "native-unmatched-foreign-3138",
         prompt: "$deep-interview must not escape a foreign pointer",
       }, { cwd: foreignCwd });
-      assert.equal(foreignActivation.skillState, null);
-      assert.equal(existsSync(join(foreignCwd, ".omx", "state", "sessions", "native-unmatched-foreign-3138")), false);
+      assert.equal(foreignActivation.skillState?.session_id, "native-unmatched-foreign-3138");
+      assert.equal(existsSync(join(foreignCwd, ".omx", "state", "sessions", "native-unmatched-foreign-3138")), true);
       assert.equal(existsSync(join(foreignCwd, ".omx", "state", "skill-active-state.json")), false);
 
       const foreignStop = await dispatchCodexNativeHook({
@@ -3202,7 +3202,7 @@ PY`,
         const canonicalSessionId = "omx-launch-hud-safe";
         const nativeSessionId = "codex-native-hud-safe";
         await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
-        await writeSessionStart(cwd, canonicalSessionId);
+        await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId });
 
         const sessionStatePath = join(stateDir, "session.json");
         const sessionState = JSON.parse(await readFile(sessionStatePath, "utf-8")) as Record<string, unknown>;
@@ -3247,7 +3247,7 @@ PY`,
       const canonicalSessionId = "omx-launch-hud";
       const nativeSessionId = "codex-native-hud";
       await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
-      await writeSessionStart(cwd, canonicalSessionId);
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId });
 
       let reconcileCall: { cwd: string; sessionId?: string } | null = null;
       const promptResult = await dispatchCodexNativeHook(
@@ -7155,7 +7155,7 @@ export async function onHookEvent(event) {
       );
 
       assert.equal(result.outputJson, null);
-      assert.deepEqual(reconcileCall, { cwd, sessionId: canonicalSessionId });
+      assert.equal(reconcileCall, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -7300,7 +7300,7 @@ esac
       const canonicalSessionId = "omx-canonical-hud-reuse";
       const nativeSessionId = "codex-native-hud-reuse";
       await mkdir(join(cwd, ".omx", "state", "sessions", canonicalSessionId), { recursive: true });
-      await writeSessionStart(cwd, canonicalSessionId);
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId });
 
       const binDir = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-bin-"));
       const tmuxLog = join(cwd, "tmux.log");
@@ -26286,11 +26286,14 @@ describe("codex native hook triage integration", () => {
         { cwd },
       );
 
-      const additionalContext = String(
-        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
-      );
-      assert.match(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.equal(result.outputJson, null);
       assert.equal(existsSync(join(cwd, ".omx", "state", "prompt-routing-state.json")), false);
+      const log = await readFile(
+        join(cwd, ".omx", "logs", `omx-${new Date().toISOString().slice(0, 10)}.jsonl`),
+        "utf-8",
+      );
+      assert.match(log, /prompt_session_provenance_rejected/);
+      assert.doesNotMatch(log, /bad\/session/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -26350,6 +26353,105 @@ describe('native Stop autopilot deep-interview wait', () => {
       }, { cwd });
 
       assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('native UserPromptSubmit payload provenance', () => {
+  it('prefers an explicit payload session over a stale selected pointer and rejects a foreign tracked child without mutation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-native-prompt-provenance-'));
+    try {
+      const stateDir = join(cwd, '.omx', 'state');
+      await writeSessionStart(cwd, 'selected-root', { nativeSessionId: 'selected-native', pid: process.pid });
+      await writeJson(join(stateDir, 'sessions', 'selected-root', 'sentinel.json'), { unchanged: true });
+      await writeJson(join(stateDir, 'sessions', 'selected-root', 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'ralplan',
+        phase: 'planning',
+        session_id: 'selected-root',
+        owner_codex_session_id: 'selected-native',
+      });
+
+      const payloadFirst = await dispatchCodexNativeHook({
+        hook_event_name: 'UserPromptSubmit',
+        cwd,
+        session_id: 'payload-primary',
+        thread_id: 'payload-primary-thread',
+        turn_id: 'payload-primary-turn',
+        prompt: '$ralplan implement payload-first scope',
+      }, { cwd });
+      assert.equal(payloadFirst.skillState?.session_id, 'payload-primary');
+      assert.equal(existsSync(join(stateDir, 'sessions', 'payload-primary', 'skill-active-state.json')), true);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'selected-root', 'ralplan-state.json')), false);
+
+      const alias = await dispatchCodexNativeHook({
+        hook_event_name: 'UserPromptSubmit',
+        cwd,
+        session_id: 'selected-native',
+        thread_id: 'selected-alias-thread',
+        turn_id: 'selected-alias-turn',
+        prompt: '$ralplan activate through selected alias',
+      }, { cwd });
+      assert.equal(alias.skillState?.session_id, 'selected-root');
+
+      const fallback = await dispatchCodexNativeHook({
+        hook_event_name: 'UserPromptSubmit',
+        cwd,
+        thread_id: 'selected-fallback-thread',
+        turn_id: 'selected-fallback-turn',
+        prompt: '$ralplan continue',
+      }, { cwd });
+      assert.equal(fallback.skillState?.session_id, 'selected-root');
+
+      const malformedTargetDir = join(stateDir, 'sessions', 'malformed-target');
+      await mkdir(malformedTargetDir, { recursive: true });
+      const malformedTargetPath = join(malformedTargetDir, 'ralph-state.json');
+      await writeFile(malformedTargetPath, '{ malformed');
+      const malformedTarget = await dispatchCodexNativeHook({
+        hook_event_name: 'UserPromptSubmit',
+        cwd,
+        session_id: 'malformed-target',
+        thread_id: 'malformed-target-thread',
+        turn_id: 'malformed-target-turn',
+        prompt: '$ralph must not overwrite malformed ownership state',
+      }, { cwd });
+      assert.equal(malformedTarget.skillState, null);
+      assert.equal(await readFile(malformedTargetPath, 'utf8'), '{ malformed');
+      assert.equal(existsSync(join(malformedTargetDir, 'skill-active-state.json')), false);
+
+      const sentinelBefore = await readFile(join(stateDir, 'sessions', 'selected-root', 'sentinel.json'), 'utf-8');
+      await writeJson(join(stateDir, 'subagent-tracking.json'), {
+        schemaVersion: 1,
+        sessions: {
+          'foreign-root': {
+            session_id: 'foreign-root',
+            updated_at: '2026-07-14T00:00:00.000Z',
+            threads: {
+              'foreign-child-thread': {
+                thread_id: 'foreign-child-thread',
+                kind: 'subagent',
+                first_seen_at: '2026-07-14T00:00:00.000Z',
+                last_seen_at: '2026-07-14T00:00:00.000Z',
+                turn_count: 1,
+              },
+            },
+          },
+        },
+      });
+      const foreignChild = await dispatchCodexNativeHook({
+        hook_event_name: 'UserPromptSubmit',
+        cwd,
+        session_id: 'foreign-child',
+        thread_id: 'foreign-child-thread',
+        turn_id: 'foreign-child-turn',
+        prompt: '$ralplan must not activate',
+      }, { cwd });
+      assert.equal(foreignChild.skillState, null);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'foreign-child', 'skill-active-state.json')), false);
+      assert.equal(await readFile(join(stateDir, 'sessions', 'selected-root', 'sentinel.json'), 'utf-8'), sentinelBefore);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

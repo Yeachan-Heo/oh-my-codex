@@ -26,6 +26,7 @@ import {
   resolveWorkingDirectoryForState,
   type StateRootSource,
 } from '../mcp/state-paths.js';
+import type { PromptDiagnosticDescriptor } from './prompt-session-provenance.js';
 
 export interface SessionState {
   session_id: string;
@@ -34,6 +35,7 @@ export interface SessionState {
   native_session_switched_at?: string;
   owner_omx_session_id?: string;
   owner_codex_session_id?: string;
+  codex_session_id?: string;
   started_at: string;
   cwd: string;
   pid: number;
@@ -1682,6 +1684,25 @@ async function appendToLogAtContext(
   await nodeMkdir(logsDir, { recursive: true });
   const logFile = join(logsDir, `omx-${new Date().toISOString().slice(0, 10)}.jsonl`);
   await appendFile(logFile, `${JSON.stringify({ ...entry, _ts: new Date().toISOString() })}\n`);
+}
+
+/**
+ * Append one redacted provenance rejection to the already-selected state root.
+ * This deliberately accepts a resolved context rather than cwd, and never falls
+ * back to the ambient root when that exact write fails.
+ */
+export async function appendPromptSessionProvenanceRejection(
+  context: SessionPointerContext,
+  descriptor: PromptDiagnosticDescriptor,
+): Promise<void> {
+  await appendToLogAtContext(context, {
+    event: 'prompt_session_provenance_rejected',
+    reason: descriptor.reason,
+    producer: descriptor.producer,
+    selected_root_status: descriptor.selectedRootStatus,
+    ...(descriptor.relation ? { relation: descriptor.relation } : {}),
+    timestamp: descriptor.timestamp,
+  });
 }
 
 /**

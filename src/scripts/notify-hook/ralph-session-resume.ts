@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 import { captureTmuxPaneFromEnv } from '../../state/mode-state-context.js';
 import { resolveCodexPane } from '../tmux-hook-engine.js';
 import { safeString } from './utils.js';
+import type { PromptMutationAuthorization } from '../../hooks/prompt-session-provenance.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const RALPH_TERMINAL_PHASES = new Set(['blocked_on_user', 'complete', 'failed', 'cancelled', 'interrupted']);
@@ -19,7 +20,9 @@ interface RalphSessionResumeHooks {
 
 interface RalphSessionResumeParams {
   stateDir: string;
-  payloadSessionId: string;
+  authorization?: PromptMutationAuthorization;
+  /** Worker-only legacy identity; leader resume requires authorization. */
+  payloadSessionId?: string;
   payloadThreadId?: string;
   env?: NodeJS.ProcessEnv;
   hooks?: RalphSessionResumeHooks;
@@ -210,25 +213,6 @@ async function markRalphStateAbandoned(
   });
 }
 
-function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): string {
-  const candidates = [env.OMX_SESSION_ID, env.CODEX_SESSION_ID, env.SESSION_ID];
-  for (const candidate of candidates) {
-    const sessionId = safeString(candidate).trim();
-    if (SESSION_ID_PATTERN.test(sessionId)) return sessionId;
-  }
-  return '';
-}
-
-async function readCurrentOmxSessionId(stateDir: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
-  const envSessionId = readSessionIdFromEnvironment(env);
-  if (envSessionId) return envSessionId;
-
-  const session = await readJson(join(stateDir, 'session.json'));
-  if (!session || typeof session !== 'object') return '';
-  const sessionId = safeString(session?.session_id).trim();
-  return SESSION_ID_PATTERN.test(sessionId) ? sessionId : '';
-}
-
 function resolveResumePane(env: NodeJS.ProcessEnv = process.env): string {
   const injectedPane = captureTmuxPaneFromEnv(env);
   if (env !== process.env && injectedPane) return injectedPane;
@@ -249,8 +233,9 @@ function bindCurrentPane(state: Record<string, unknown>, nowIso: string, env: No
 async function scanMatchingRalphCandidates(
   stateDir: string,
   currentOmxSessionId: string,
-  payloadSessionId: string,
+  ownerCodexSessionId: string,
   payloadThreadId: string,
+  allowedStorageSessionIds: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ candidates: RalphStateCandidate[]; abandonedCount: number }> {
   const sessionsRoot = join(stateDir, 'sessions');
@@ -260,18 +245,15 @@ async function scanMatchingRalphCandidates(
   const matches: RalphStateCandidate[] = [];
   let abandonedCount = 0;
   for (const entry of entries) {
-    if (!entry.isDirectory() || !SESSION_ID_PATTERN.test(entry.name) || entry.name === currentOmxSessionId) continue;
+    if (!entry.isDirectory() || !SESSION_ID_PATTERN.test(entry.name) || entry.name === currentOmxSessionId || !allowedStorageSessionIds.includes(entry.name)) continue;
     const path = join(sessionsRoot, entry.name, 'ralph-state.json');
     if (!existsSync(path)) continue;
     const state = await readJson(path);
     if (!isActiveRalphCandidate(state)) continue;
     const ownerSessionId = safeString(state.owner_codex_session_id).trim();
     const ownerThreadId = safeString(state.owner_codex_thread_id).trim();
-    if (ownerSessionId) {
-      if (!payloadSessionId || ownerSessionId !== payloadSessionId) continue;
-    } else if (!payloadThreadId || !ownerThreadId || ownerThreadId !== payloadThreadId) {
-      continue;
-    }
+    if (ownerSessionId !== ownerCodexSessionId) continue;
+    if (ownerThreadId && payloadThreadId && ownerThreadId !== payloadThreadId) continue;
     const freshness = await readRalphStateFreshness(path, state, env);
     if (freshness.stale) {
       await markRalphStateAbandoned(path, state, freshness);
@@ -289,21 +271,29 @@ async function scanMatchingRalphCandidates(
 
 export async function reconcileRalphSessionResume({
   stateDir,
-  payloadSessionId,
+  authorization,
   payloadThreadId = '',
   env = process.env,
   hooks,
 }: RalphSessionResumeParams): Promise<RalphSessionResumeResult> {
+  if (!authorization) {
+    return {
+      currentOmxSessionId: '',
+      resumed: false,
+      updatedCurrentOwner: false,
+      reason: 'authorization_missing',
+    };
+  }
   const lockedResult = await withRalphResumeLock(stateDir, async () => {
     await hooks?.afterLockAcquired?.();
 
-    const currentOmxSessionId = await readCurrentOmxSessionId(stateDir, env);
-    if (!currentOmxSessionId) {
+    const currentOmxSessionId = authorization.targetSessionId;
+    if (!SESSION_ID_PATTERN.test(currentOmxSessionId) || !authorization.allowedStorageSessionIds.includes(currentOmxSessionId)) {
       return {
         currentOmxSessionId: '',
         resumed: false,
         updatedCurrentOwner: false,
-        reason: 'current_omx_session_missing',
+        reason: 'current_omx_session_unauthorized',
       };
     }
 
@@ -315,6 +305,16 @@ export async function reconcileRalphSessionResume({
       : null;
     const nowIso = new Date().toISOString();
 
+    const currentOwnerCodexSessionId = safeString(currentRalphState?.owner_codex_session_id).trim();
+    if (currentRalphState && currentOwnerCodexSessionId && currentOwnerCodexSessionId !== authorization.ownerCodexSessionId) {
+      return {
+        currentOmxSessionId,
+        resumed: false,
+        updatedCurrentOwner: false,
+        reason: 'current_ralph_owner_unauthorized',
+        targetPath: currentRalphPath,
+      };
+    }
     if (currentRalphState && currentRalphState.active === true) {
       const freshness = await readRalphStateFreshness(currentRalphPath, currentRalphState, env);
       if (freshness.stale) {
@@ -335,8 +335,8 @@ export async function reconcileRalphSessionResume({
         updated.owner_omx_session_id = currentOmxSessionId;
         changed = true;
       }
-      if (payloadSessionId && !safeString(updated.owner_codex_session_id).trim()) {
-        updated.owner_codex_session_id = payloadSessionId;
+      if (!safeString(updated.owner_codex_session_id).trim()) {
+        updated.owner_codex_session_id = authorization.ownerCodexSessionId;
         changed = true;
       }
       if (
@@ -382,14 +382,14 @@ export async function reconcileRalphSessionResume({
       };
     }
 
-    const normalizedPayloadSessionId = safeString(payloadSessionId).trim();
+    const normalizedPayloadSessionId = authorization.ownerCodexSessionId;
     const normalizedPayloadThreadId = safeString(payloadThreadId).trim();
-    if (!normalizedPayloadSessionId && !normalizedPayloadThreadId) {
+    if (!normalizedPayloadSessionId) {
       return {
         currentOmxSessionId,
         resumed: false,
         updatedCurrentOwner: false,
-        reason: 'payload_codex_identity_missing',
+        reason: 'authorized_owner_missing',
       };
     }
 
@@ -398,6 +398,7 @@ export async function reconcileRalphSessionResume({
       currentOmxSessionId,
       normalizedPayloadSessionId,
       normalizedPayloadThreadId,
+      authorization.allowedStorageSessionIds,
       env,
     );
     if (candidates.length !== 1) {

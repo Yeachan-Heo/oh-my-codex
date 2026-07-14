@@ -19,7 +19,14 @@ import {
 } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
-import { resolveInvocationSessionId, resolveManagedCurrentPane, resolveManagedSessionContext, verifyManagedPaneTarget } from './managed-tmux.js';
+import {
+  resolveInvocationSessionId,
+  resolveManagedCurrentPane,
+  resolveManagedCurrentPaneAtPromptContext,
+  resolveManagedSessionContext,
+  verifyManagedPaneTarget,
+  verifyManagedPaneTargetAtPromptContext,
+} from './managed-tmux.js';
 import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
 import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../../state/skill-active.js';
 import {
@@ -28,6 +35,7 @@ import {
   evaluateInjectionGuards,
   buildSendKeysArgv,
 } from '../tmux-hook-engine.js';
+import type { ResolvedPromptTurnContext } from '../../hooks/prompt-session-provenance.js';
 
 function isHudPaneStartCommand(startCommand: any): boolean {
   return /\bomx\b.*\bhud\b.*--watch/i.test(safeString(startCommand));
@@ -404,16 +412,21 @@ export async function resolvePaneTarget(target: any, expectedCwd: any, modePane:
   }
 }
 
-export async function handleTmuxInjection({
-  payload,
-  cwd,
-  stateDir,
-  logsDir,
-}: any): Promise<void> {
+export async function handleTmuxInjection({ payload, cwd, stateDir, logsDir, context = null }: {
+  payload: any;
+  cwd: string;
+  stateDir: string;
+  logsDir: string;
+  context?: ResolvedPromptTurnContext | null;
+}): Promise<void> {
   const omxDir = join(cwd, '.omx');
   const configPath = join(omxDir, 'tmux-hook.json');
   const hookStatePath = join(stateDir, 'tmux-hook-state.json');
   const nowIso = new Date().toISOString();
+  if (context && context.status !== 'authorized') return;
+  const ownershipPayload = context?.status === 'authorized'
+    ? { ...payload, session_id: context.authorization.ownerCodexSessionId, 'session-id': context.authorization.ownerCodexSessionId }
+    : payload;
   const now = Date.now();
 
   const rawConfig = await readJsonIfExists(configPath, null);
@@ -429,7 +442,7 @@ export async function handleTmuxInjection({
   const sourceText = inputMessages.join('\n');
   const state = normalizeTmuxState(await readJsonIfExists(hookStatePath, null));
   state.recent_keys = pruneRecentKeys(state.recent_keys, now);
-  const canonicalModeState = await readVisibleAllowedModes(cwd, stateDir, payload, config.allowed_modes).catch(() => ({
+  const canonicalModeState = await readVisibleAllowedModes(cwd, stateDir, ownershipPayload, config.allowed_modes).catch(() => ({
     canonicalPresent: false,
     activeSkillCount: 0,
     allowedSet: null,
@@ -547,7 +560,9 @@ export async function handleTmuxInjection({
     turnId,
     timestamp: nowIso,
   }), sourceText);
-  const managedCurrentPane = await resolveManagedCurrentPane(cwd, payload, { allowTeamWorker: false });
+  const managedCurrentPane = context
+    ? await resolveManagedCurrentPaneAtPromptContext(cwd, context)
+    : await resolveManagedCurrentPane(cwd, payload, { allowTeamWorker: false });
   if (modePane && managedCurrentPane && modePane !== managedCurrentPane) {
     state.last_reason = 'mode_pane_current_pane_mismatch';
     state.last_event_at = nowIso;
@@ -564,12 +579,12 @@ export async function handleTmuxInjection({
 
   const preferredPaneTarget = modePane || managedCurrentPane;
   let resolution = preferredModePane
-    ? await resolvePaneTarget({ type: 'pane', value: preferredModePane.pane }, cwd, preferredModePane.pane, cwd, payload)
+    ? await resolvePaneTarget({ type: 'pane', value: preferredModePane.pane }, cwd, preferredModePane.pane, cwd, ownershipPayload)
     : preferredPaneTarget
-      ? await resolvePaneTarget({ type: 'pane', value: preferredPaneTarget }, cwd, '', cwd, payload)
-      : await resolvePaneTarget(config.target, cwd, modePane, cwd, payload);
+      ? await resolvePaneTarget({ type: 'pane', value: preferredPaneTarget }, cwd, '', cwd, ownershipPayload)
+      : await resolvePaneTarget(config.target, cwd, modePane, cwd, ownershipPayload);
   if (!resolution.paneTarget && preferredPaneTarget) {
-    resolution = await resolvePaneTarget(config.target, cwd, modePane, cwd, payload);
+    resolution = await resolvePaneTarget(config.target, cwd, modePane, cwd, ownershipPayload);
   }
   if (!resolution.paneTarget) {
     state.last_reason = resolution.reason;
@@ -586,14 +601,16 @@ export async function handleTmuxInjection({
   }
   const paneTarget = resolution.paneTarget;
 
-  const ownership = await validateResolvedInjectionOwnership({
-    paneTarget,
-    cwd,
-    payload,
-    modeState,
-    modePane,
-    managedCurrentPane,
-  });
+  const ownership = context
+    ? await verifyManagedPaneTargetAtPromptContext(paneTarget, cwd, context)
+    : await validateResolvedInjectionOwnership({
+      paneTarget,
+      cwd,
+      payload,
+      modeState,
+      modePane,
+      managedCurrentPane,
+    });
   if (!ownership.ok) {
     state.last_reason = ownership.reason;
     state.last_event_at = nowIso;

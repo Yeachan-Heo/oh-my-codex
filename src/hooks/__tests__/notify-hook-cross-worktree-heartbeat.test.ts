@@ -57,11 +57,13 @@ describe('notify-hook cross-worktree heartbeat resolution', () => {
       await mkdir(join(cwd, '.omx', 'logs'), { recursive: true });
       await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
       await writeFile(join(cwd, '.omx', 'managed'), 'test fixture managed workspace');
+      await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: 'thread-latest-preview' }));
 
       const payload = {
         cwd,
         type: 'agent-turn-complete',
         'thread-id': 'thread-latest-preview',
+        session_id: 'thread-latest-preview',
         'turn-id': 'turn-latest-preview',
         'input-messages': ['上一轮 query', '本轮 query'],
         'last-assistant-message': 'ok',

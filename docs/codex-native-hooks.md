@@ -206,6 +206,14 @@ operator to clear incompatible state explicitly via `omx state ...` or the
 `omx_state.*` MCP tools before retrying. See
 `docs/contracts/multi-state-transition-contract.md`.
 
+## UserPromptSubmit: session provenance
+
+`UserPromptSubmit` resolves session authority from the explicit native payload before consulting the workspace pointer. A valid `payload.session_id` selects that Codex logical owner directly; the singleton `.omx/state/session.json` pointer may supply a canonical storage alias only when its recorded native/owner aliases prove the same logical session. When the payload identity is absent, pointer fallback uses the selected pointer's validated owner/native aliases and canonical session. Cwd, directory existence, and last-writer pointer state are not ownership proof.
+
+Native and notify leader turns classify provenance once and pass an immutable authorization context to activation, continuation, HUD, auto-nudge, pane injection, and Ralph helpers. Notify's compatibility fork keeps Codex owner P separate from an already-existing OMX storage scope F; only the notify resolver may authorize that relation. Trusted child provenance is compared to the Codex owner, never the storage directory: a proven child of the current owner is silently suppressed, while foreign or ambiguous child evidence rejects the turn before workflow reads or writes.
+
+Rejected turns perform no activation, continuation, steering, plugin, HUD, pane, timestamp, or neighboring-session mutation. They may append one redacted `prompt_session_provenance_rejected` diagnostic under the already-selected state root; the record contains the reason and producer but no raw session/thread identifiers, prompt text, environment value, or foreign path. `PreToolUse`, `Stop`, SessionStart reconciliation, and authoritative-root selection retain their existing contracts.
+
 ## UserPromptSubmit: triage advisory context
 
 `UserPromptSubmit` can now emit triage advisory context alongside keyword context. When no keyword matches, the triage layer classifies the prompt and may inject an advisory prompt-routing context string — this is advisory prompt-routing context that does not activate a skill or workflow by itself; it adds a developer-context hint the model may follow. Light advisory destinations include repo-local `explore`, narrow-edit `executor`, visual `designer`, and external documentation/reference `researcher`; researcher routing is for official-doc, version-compatibility, source-backed, or external lookup requests, does not override local anchors or implementation-shaped prompts, and still writes only prompt-routing state. Keywords remain the deterministic control surface: a matched keyword always takes precedence over triage output, and users can suppress triage injection per prompt with phrases such as `no workflow`, `just chat`, or `plain answer`.

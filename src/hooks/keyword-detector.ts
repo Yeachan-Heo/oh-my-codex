@@ -11,7 +11,7 @@
  */
 
 import { constants as fsConstants } from 'node:fs';
-import { access, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
@@ -49,6 +49,12 @@ import { deriveAutopilotChildPhase, AUTOPILOT_CHILD_PHASES } from '../autopilot/
 import { canAdvanceAutopilotDeepInterviewToRalplan } from '../autopilot/deep-interview-gate.js';
 import { canAdvanceAutopilotRalplanToUltragoal } from '../autopilot/ralplan-gate.js';
 import { validateAutopilotCompletionTransition } from '../autopilot/completion-gate.js';
+import {
+  preflightSelectedTargetOwner,
+  extractSelectedTargetOwnerEvidence,
+  type PromptDiagnosticDescriptor,
+  type ResolvedPromptTurnContext,
+} from './prompt-session-provenance.js';
 
 export interface KeywordMatch {
   keyword: string;
@@ -111,6 +117,8 @@ export interface RecordSkillActivationInput {
   threadId?: string;
   turnId?: string;
   nowIso?: string;
+  resolvedPromptTurnContext?: ResolvedPromptTurnContext;
+  onProvenanceRejected?: (diagnostic: PromptDiagnosticDescriptor) => void | Promise<void>;
 }
 
 export interface DeepInterviewModeStatePersistenceInput {
@@ -533,6 +541,7 @@ export async function persistDeepInterviewModeState(
         started_at: previousModeState?.active ? previousModeState.started_at || nowIso : nowIso,
         updated_at: nowIso,
         session_id: input.sessionId ?? previousModeState?.session_id,
+        owner_codex_session_id: nextSkill.owner_codex_session_id ?? previousModeState?.owner_codex_session_id,
         thread_id: input.threadId ?? previousModeState?.thread_id,
         turn_id: input.turnId ?? previousModeState?.turn_id,
         ...configStateFields,
@@ -562,6 +571,7 @@ export async function persistDeepInterviewModeState(
     updated_at: nowIso,
     completed_at: nowIso,
     session_id: input.sessionId ?? previousModeState?.session_id ?? previousSkill?.session_id,
+    owner_codex_session_id: nextSkill?.owner_codex_session_id ?? previousModeState?.owner_codex_session_id ?? previousSkill?.owner_codex_session_id,
     thread_id: input.threadId ?? previousModeState?.thread_id ?? previousSkill?.thread_id,
     turn_id: input.turnId ?? previousModeState?.turn_id ?? previousSkill?.turn_id,
     ...(releasedInputLock ? { input_lock: releasedInputLock } : {}),
@@ -625,7 +635,7 @@ async function persistStatefulSkillSeedState(
   previousSkill: SkillActiveState | null,
   activationText: string,
   sourceCwd: string,
-  options: { activeContinuation?: boolean } = {},
+  options: { activeContinuation?: boolean; forceSessionScope?: boolean } = {},
 ): Promise<SkillActiveState> {
   const config = STATEFUL_SKILL_SEED_CONFIG[nextSkill.skill as StatefulSkillMode];
   if (!config) return nextSkill;
@@ -634,7 +644,7 @@ async function persistStatefulSkillSeedState(
     stateDir,
     config.mode,
     nextSkill.session_id,
-    config.scope,
+    options.forceSessionScope ? 'session' : config.scope,
   );
   const existingModeStateResult = await readJsonStateWithStatus(absolutePath);
   const existingModeState = existingModeStateResult.state;
@@ -670,6 +680,7 @@ async function persistStatefulSkillSeedState(
       started_at: startedAt,
       updated_at: nowIso,
       session_id: nextSkill.session_id || safeString(existingModeState?.session_id).trim() || undefined,
+      owner_codex_session_id: nextSkill.owner_codex_session_id || safeString(existingModeState?.owner_codex_session_id).trim() || undefined,
       thread_id: nextSkill.thread_id || safeString(existingModeState?.thread_id).trim() || undefined,
       turn_id: nextSkill.turn_id || safeString(existingModeState?.turn_id).trim() || undefined,
     },
@@ -1348,19 +1359,74 @@ function selectRootSkillStateCopy(
   previousRoot: SkillActiveState | null,
   nextState: SkillActiveState,
   sessionId?: string,
+  suppressRootMutation = false,
 ): SkillActiveState | null | undefined {
+  if (suppressRootMutation) return null;
   if (!sessionId) return nextState;
   if (previousRoot) return previousRoot;
   return null;
 }
 
+async function preflightKeywordTargetState(
+  stateDir: string,
+  sessionId: string,
+  context: ResolvedPromptTurnContext,
+  nowIso: string,
+): Promise<ResolvedPromptTurnContext> {
+  const targetDir = join(stateDir, 'sessions', sessionId);
+  const evidence: Array<{ ownerCodexSessionId?: unknown; targetSessionId?: unknown }> = [];
+  let filenames: string[];
+  try {
+    filenames = await readdir(targetDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return context;
+    return preflightSelectedTargetOwner(context, [{ ownerCodexSessionId: {} }], 'native', nowIso);
+  }
+  for (const filename of filenames) {
+    if (!filename.endsWith('-state.json') && filename !== SKILL_ACTIVE_STATE_FILE) continue;
+    try {
+      const value = JSON.parse(await readFile(join(targetDir, filename), 'utf8')) as unknown;
+      evidence.push(...extractSelectedTargetOwnerEvidence(value));
+    } catch {
+      evidence.push({ ownerCodexSessionId: {} });
+    }
+  }
+  return preflightSelectedTargetOwner(context, evidence, 'native', nowIso);
+}
+
 export async function recordSkillActivation(input: RecordSkillActivationInput): Promise<SkillActiveState | null> {
+  const resolvedPromptTurnContext = input.resolvedPromptTurnContext;
+  if (resolvedPromptTurnContext && resolvedPromptTurnContext.status !== 'authorized') return null;
+  if (resolvedPromptTurnContext && input.sessionId !== resolvedPromptTurnContext.authorization.targetSessionId) return null;
+  const suppressRootMutation = resolvedPromptTurnContext?.authorization.globalSideEffects === 'suppress';
+  const provenanceOwnerCodexSessionId = resolvedPromptTurnContext?.authorization.ownerCodexSessionId;
+  const applyProvenanceOwner = (state: SkillActiveState): SkillActiveState => (
+    provenanceOwnerCodexSessionId
+      ? {
+        ...state,
+        owner_codex_session_id: provenanceOwnerCodexSessionId,
+        active_skills: state.active_skills?.map((entry) => ({ ...entry, owner_codex_session_id: provenanceOwnerCodexSessionId })),
+      }
+      : state
+  );
   const sourceCwd = input.sourceCwd ?? dirname(dirname(input.stateDir));
   const rootStatePath = join(input.stateDir, SKILL_ACTIVE_STATE_FILE);
   const sessionStatePath = input.sessionId
     ? join(input.stateDir, 'sessions', input.sessionId, SKILL_ACTIVE_STATE_FILE)
     : null;
-  const previousRoot = await readExistingSkillState(rootStatePath);
+  if (resolvedPromptTurnContext && input.sessionId) {
+    const preflight = await preflightKeywordTargetState(
+      input.stateDir,
+      input.sessionId,
+      resolvedPromptTurnContext,
+      input.nowIso ?? new Date().toISOString(),
+    );
+    if (preflight.status === 'rejected') {
+      await input.onProvenanceRejected?.(preflight.diagnostic);
+      return null;
+    }
+  }
+  const previousRoot = suppressRootMutation ? null : await readExistingSkillState(rootStatePath);
   const previousSession = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
   const previous = input.sessionId ? previousSession : previousRoot;
   const teamMode = readTeamModeConfig(sourceCwd);
@@ -1396,16 +1462,16 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     try {
       await writeSkillActiveStateCopiesForStateDir(
         input.stateDir,
-        state,
+        applyProvenanceOwner(state),
         input.sessionId,
-        selectRootSkillStateCopy(previousRoot, state, input.sessionId),
+        selectRootSkillStateCopy(previousRoot, state, input.sessionId, suppressRootMutation),
       );
-      await persistDeepInterviewModeState(input.stateDir, state, nowIso, previous, input);
+      await persistDeepInterviewModeState(input.stateDir, applyProvenanceOwner(state), nowIso, previous, input);
     } catch (error) {
       console.warn('[omx] warning: failed to persist keyword activation state', error);
     }
 
-    return state;
+    return applyProvenanceOwner(state);
   }
 
   const sameSkill = previous?.active === true && previous.skill === match.skill;
@@ -1507,11 +1573,11 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       };
       await writeSkillActiveStateCopiesForStateDir(
         input.stateDir,
-        nextState,
+        applyProvenanceOwner(nextState),
         input.sessionId,
-        selectRootSkillStateCopy(previousRoot, nextState, input.sessionId),
+        selectRootSkillStateCopy(previousRoot, nextState, input.sessionId, suppressRootMutation),
       );
-      return nextState;
+      return applyProvenanceOwner(nextState);
     } catch (error) {
       return {
         ...previous,
@@ -1660,12 +1726,13 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     };
 
     try {
-      let nextState: SkillActiveState = { ...workflowState };
+      const ownedWorkflowState = applyProvenanceOwner(workflowState);
+      let nextState: SkillActiveState = { ...ownedWorkflowState };
       for (const requestedEntry of nextWorkflowEntries) {
         const seeded = await persistStatefulSkillSeedState(
           input.stateDir,
           {
-            ...workflowState,
+            ...ownedWorkflowState,
             skill: requestedEntry.skill,
             keyword: requestedEntry.skill === workflowState.skill ? workflowState.keyword : `$${requestedEntry.skill}`,
             phase: requestedEntry.phase || workflowState.phase,
@@ -1677,22 +1744,26 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           previous,
           input.text,
           sourceCwd,
-          { activeContinuation: requestedEntry.skill === 'autopilot' && sameSkillContinuation },
+          {
+            activeContinuation: requestedEntry.skill === 'autopilot' && sameSkillContinuation,
+            forceSessionScope: suppressRootMutation,
+          },
         );
         if (requestedEntry.skill === workflowState.skill) {
           nextState = {
-            ...workflowState,
+            ...ownedWorkflowState,
             initialized_mode: seeded.initialized_mode,
             initialized_state_path: seeded.initialized_state_path,
           };
         }
       }
+      nextState = applyProvenanceOwner(nextState);
       nextState.active_skills = buildActiveSkills(nextState);
       await writeSkillActiveStateCopiesForStateDir(
         input.stateDir,
         nextState,
         input.sessionId,
-        selectRootSkillStateCopy(previousRoot, nextState, input.sessionId),
+        selectRootSkillStateCopy(previousRoot, nextState, input.sessionId, suppressRootMutation),
       );
       await persistDeepInterviewModeState(input.stateDir, nextState, nowIso, previous, input);
       return nextState;
@@ -1730,24 +1801,29 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   };
 
   try {
+    const ownedState = applyProvenanceOwner(state);
     const nextState = await persistStatefulSkillSeedState(
       input.stateDir,
-      state,
+      ownedState,
       nowIso,
       previous,
       input.text,
       sourceCwd,
-      { activeContinuation: match.skill === 'autopilot' && sameSkillContinuation },
+      {
+        activeContinuation: match.skill === 'autopilot' && sameSkillContinuation,
+        forceSessionScope: suppressRootMutation,
+      },
     );
-    nextState.active_skills = buildActiveSkills(nextState);
+    const ownedNextState = applyProvenanceOwner(nextState);
+    ownedNextState.active_skills = buildActiveSkills(ownedNextState);
     await writeSkillActiveStateCopiesForStateDir(
       input.stateDir,
-      nextState,
+      ownedNextState,
       input.sessionId,
-      selectRootSkillStateCopy(previousRoot, nextState, input.sessionId),
+      selectRootSkillStateCopy(previousRoot, ownedNextState, input.sessionId, suppressRootMutation),
     );
-    await persistDeepInterviewModeState(input.stateDir, nextState, nowIso, previous, input);
-    return nextState;
+    await persistDeepInterviewModeState(input.stateDir, ownedNextState, nowIso, previous, input);
+    return ownedNextState;
   } catch (error) {
     console.warn('[omx] warning: failed to persist keyword activation state', error);
   }

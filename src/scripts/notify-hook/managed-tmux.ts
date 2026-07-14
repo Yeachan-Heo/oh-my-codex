@@ -5,6 +5,8 @@ import { readSessionState, isSessionStale } from '../../hooks/session.js';
 import { runProcess } from './process-runner.js';
 import { safeString } from './utils.js';
 import { sameFilePath } from '../../utils/paths.js';
+import type { ResolvedPromptTurnContext } from '../../hooks/prompt-session-provenance.js';
+
 
 const OMX_INSTANCE_OPTION = '@omx_instance_id';
 const OMX_PANE_INSTANCE_OPTION = '@omx_pane_instance_id';
@@ -452,6 +454,39 @@ export async function resolveManagedSessionContext(
 export async function isManagedOmxSession(cwd: string, payload: any, options: { allowTeamWorker?: boolean } = {}): Promise<boolean> {
   const context = await resolveManagedSessionContext(cwd, payload, options);
   return context.managed === true;
+}
+
+/**
+ * Leader-only adapter: tmux ownership is derived from the immutable provenance
+ * owner instead of re-reading payload or environment session identity.
+ */
+export async function isManagedOmxSessionAtPromptContext(
+  cwd: string,
+  context: ResolvedPromptTurnContext,
+  options: { allowTeamWorker?: boolean } = {},
+): Promise<boolean> {
+  if (context.status !== 'authorized') return false;
+  return isManagedOmxSession(cwd, { session_id: context.authorization.ownerCodexSessionId }, options);
+}
+
+export async function verifyManagedPaneTargetAtPromptContext(paneId: string, cwd: string, context: ResolvedPromptTurnContext): Promise<any> {
+  if (context.status !== 'authorized') return { ok: false, reason: 'prompt_context_unauthorized', paneTarget: safeString(paneId).trim() };
+  return verifyManagedPaneTarget(paneId, cwd, { session_id: context.authorization.ownerCodexSessionId }, { allowTeamWorker: false });
+}
+
+export async function resolveManagedCurrentPaneAtPromptContext(cwd: string, context: ResolvedPromptTurnContext): Promise<string> {
+  if (context.status !== 'authorized') return '';
+  return resolveManagedCurrentPane(cwd, { session_id: context.authorization.ownerCodexSessionId }, { allowTeamWorker: false });
+}
+
+export async function resolveManagedSessionPaneAtPromptContext(cwd: string, context: ResolvedPromptTurnContext): Promise<string> {
+  if (context.status !== 'authorized') return '';
+  return resolveManagedSessionPane(cwd, { session_id: context.authorization.ownerCodexSessionId });
+}
+
+export async function resolveManagedPaneFromAnchorAtPromptContext(anchorPane: string, cwd: string, context: ResolvedPromptTurnContext): Promise<string> {
+  if (context.status !== 'authorized') return '';
+  return resolveManagedPaneFromAnchor(anchorPane, cwd, { session_id: context.authorization.ownerCodexSessionId }, { allowTeamWorker: false });
 }
 
 export async function verifyManagedPaneTarget(paneId: string, cwd: string, payload: any, { allowTeamWorker = true } = {}): Promise<any> {
