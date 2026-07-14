@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildTmuxSessionName } from '../../cli/index.js';
 import {
+  probeActualTmuxInstanceEvidence,
+  tmuxEvidenceBindsCandidate,
   resolveManagedPaneFromAnchor,
   resolveManagedSessionContext,
   resolveManagedSessionPane,
@@ -68,6 +70,150 @@ describe('notify-hook managed tmux windows fallback', () => {
     else delete process.env.TMUX_PANE;
     if (originalTeamWorker !== undefined) process.env.OMX_TEAM_WORKER = originalTeamWorker;
     else delete process.env.OMX_TEAM_WORKER;
+  });
+
+  it('uses the actual pane instance tag without reading a conflicting session tag', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-evidence-pane-'));
+    try {
+      await withFakeTmux(cwd, `#!/usr/bin/env bash
+set -eu
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  echo "shared-session"
+  exit 0
+fi
+if [[ "$cmd" == "show-option" ]]; then
+  pane_scope=0
+  target=""
+  option=""
+  while (($#)); do
+    case "$1" in
+      -qv) shift ;;
+      -p) pane_scope=1; shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) option="$1"; shift ;;
+    esac
+  done
+  if [[ "$pane_scope" == "1" && "$target" == "%42" && "$option" == "@omx_pane_instance_id" ]]; then
+    echo "omx-pane-owner"
+    exit 0
+  fi
+  echo "session fallback must not be read when the pane is tagged" >&2
+  exit 1
+fi
+exit 1
+`, async () => {
+        process.env.TMUX = '1';
+        process.env.TMUX_PANE = '%42';
+
+        const evidence = await probeActualTmuxInstanceEvidence();
+        assert.equal(evidence.source, 'pane');
+        assert.equal(evidence.instanceId, 'omx-pane-owner');
+        assert.equal(evidence.paneInstanceId, 'omx-pane-owner');
+        assert.equal(evidence.sessionInstanceId, '');
+        assert.equal(evidence.sessionName, 'shared-session');
+        assert.equal(evidence.paneTagStatus, 'present');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the actual pane session tag only when the pane tag is absent', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-evidence-session-'));
+    try {
+      await withFakeTmux(cwd, `#!/usr/bin/env bash
+set -eu
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  echo "shared-session"
+  exit 0
+fi
+if [[ "$cmd" == "show-option" ]]; then
+  pane_scope=0
+  target=""
+  option=""
+  while (($#)); do
+    case "$1" in
+      -qv) shift ;;
+      -p) pane_scope=1; shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) option="$1"; shift ;;
+    esac
+  done
+  if [[ "$pane_scope" == "1" && "$target" == "%42" && "$option" == "@omx_pane_instance_id" ]]; then
+    exit 0
+  fi
+  if [[ "$pane_scope" == "0" && "$target" == "shared-session" && "$option" == "@omx_instance_id" ]]; then
+    echo "omx-session-owner"
+    exit 0
+  fi
+fi
+exit 1
+`, async () => {
+        process.env.TMUX = '1';
+        process.env.TMUX_PANE = '%42';
+
+        const evidence = await probeActualTmuxInstanceEvidence();
+        assert.equal(evidence.source, 'session');
+        assert.equal(evidence.instanceId, 'omx-session-owner');
+        assert.equal(evidence.paneInstanceId, '');
+        assert.equal(evidence.sessionInstanceId, 'omx-session-owner');
+        assert.equal(evidence.sessionName, 'shared-session');
+        assert.equal(evidence.paneTagStatus, 'absent');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects session-tag fallback when the pane-tag lookup errors', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-evidence-error-'));
+    try {
+      await withFakeTmux(cwd, `#!/usr/bin/env bash
+set -eu
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  echo "shared-session"
+  exit 0
+fi
+if [[ "$cmd" == "show-option" ]]; then
+  pane_scope=0
+  target=""
+  option=""
+  while (($#)); do
+    case "$1" in
+      -qv) shift ;;
+      -p) pane_scope=1; shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) option="$1"; shift ;;
+    esac
+  done
+  if [[ "$pane_scope" == "1" && "$target" == "%42" && "$option" == "@omx_pane_instance_id" ]]; then
+    exit 1
+  fi
+  if [[ "$pane_scope" == "0" && "$target" == "shared-session" && "$option" == "@omx_instance_id" ]]; then
+    echo "omx-session-owner"
+    exit 0
+  fi
+fi
+exit 1
+`, async () => {
+        process.env.TMUX = '1';
+        process.env.TMUX_PANE = '%42';
+
+        const evidence = await probeActualTmuxInstanceEvidence();
+        assert.equal(evidence.source, 'none');
+        assert.equal(evidence.paneTagStatus, 'error');
+        assert.equal(evidence.instanceId, '');
+        assert.equal(tmuxEvidenceBindsCandidate(evidence, 'omx-session-owner'), false);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('does not rely on ps ancestry checks on native Windows', async () => {

@@ -8,6 +8,7 @@ import { redactAuthSecrets } from "./redact.js";
 import { buildRotationPlan, nextSlotAfter } from "./rotation.js";
 import { findLatestRolloutSession } from "./sessions.js";
 import { listSlots, markSlotQuota, readAuthMetadata, useSlot } from "./storage.js";
+import { isSessionPointerLaunchAbort } from "../hooks/session.js";
 
 export interface PreparedHotswapCodexHome {
   codexHomeOverride?: string;
@@ -163,9 +164,18 @@ export async function runAuthHotswap(options: HotswapOptions): Promise<number> {
 
   const exhausted = new Set<string>();
   let resumeArgs: string[] | null = null;
+  let skipPostLaunch = false;
   try {
+    try {
+      await lifecycle.preLaunch(cwd, sessionId, notifyTempResult.contract, prepared.codexHomeOverride, true, false);
+    } catch (err) {
+      if (isSessionPointerLaunchAbort(err)) {
+        skipPostLaunch = true;
+        process.stderr.write(`[omx auth] session pointer launch aborted: ${err.code}\n`);
+      }
+      throw err;
+    }
     await useSlot(currentSlot, liveAuthPath, home);
-    await lifecycle.preLaunch(cwd, sessionId, notifyTempResult.contract, prepared.codexHomeOverride, true, false);
     const baseEnv: NodeJS.ProcessEnv = {
       ...env,
       ...(prepared.codexHomeOverride ? { CODEX_HOME: prepared.codexHomeOverride } : {}),
@@ -230,9 +240,11 @@ export async function runAuthHotswap(options: HotswapOptions): Promise<number> {
     process.stderr.write(`[omx auth] ${redactAuthSecrets(err)}\n`);
     return 1;
   } finally {
-    await lifecycle.postLaunch(cwd, sessionId, prepared.codexHomeOverride, true, prepared.projectLocalCodexHomeForCleanup).catch((err) => {
-      process.stderr.write(`[omx auth] postLaunch warning: ${redactAuthSecrets(err)}\n`);
-    });
+    if (!skipPostLaunch) {
+      await lifecycle.postLaunch(cwd, sessionId, prepared.codexHomeOverride, true, prepared.projectLocalCodexHomeForCleanup).catch((err) => {
+        process.stderr.write(`[omx auth] postLaunch warning: ${redactAuthSecrets(err)}\n`);
+      });
+    }
     await lifecycle.cleanupRuntimeCodexHome(prepared.runtimeCodexHomeForCleanup, prepared.projectLocalCodexHomeForCleanup).catch((err) => {
       process.stderr.write(`[omx auth] cleanup warning: ${redactAuthSecrets(err)}\n`);
     });

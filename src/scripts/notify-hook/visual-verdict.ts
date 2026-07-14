@@ -84,7 +84,15 @@ export function parseVisualVerdict(text: any): { verdict: string; raw: string } 
  *
  * Module import failure is handled by the caller in notify-hook.ts.
  */
-export async function maybePersistVisualVerdict({ cwd, payload, stateDir, logsDir, sessionId, turnId }: any): Promise<void> {
+export async function maybePersistVisualVerdict({
+  cwd,
+  payload,
+  stateDir,
+  logsDir,
+  sessionId,
+  turnId,
+  persistRuntimeFeedback = true,
+}: any): Promise<void> {
   const output = safeString(
     payload?.['last-assistant-message'] || payload?.last_assistant_message || '',
   );
@@ -92,17 +100,19 @@ export async function maybePersistVisualVerdict({ cwd, payload, stateDir, logsDi
 
   // Runtime visual feedback (JSON/fenced JSON) for ralph-progress persistence.
   // Non-fatal and observable via warn-level structured logging.
-  try {
-    await maybePersistRuntimeVisualFeedback({ cwd, output, sessionId, stateDir });
-  } catch (err: any) {
-    await logNotifyHookEvent(logsDir, {
-      timestamp: new Date().toISOString(),
-      level: 'warn',
-      type: 'visual_runtime_feedback_persist_failure',
-      error: err?.message || String(err),
-      session_id: sessionId,
-      turn_id: turnId,
-    });
+  if (persistRuntimeFeedback) {
+    try {
+      await maybePersistRuntimeVisualFeedback({ cwd, output, sessionId, stateDir });
+    } catch (err: any) {
+      await logNotifyHookEvent(logsDir, {
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        type: 'visual_runtime_feedback_persist_failure',
+        error: err?.message || String(err),
+        session_id: sessionId,
+        turn_id: turnId,
+      });
+    }
   }
 
   const parsed = parseVisualVerdict(output);
