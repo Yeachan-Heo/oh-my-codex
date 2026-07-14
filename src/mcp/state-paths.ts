@@ -15,6 +15,13 @@ const WORKDIR_ALLOWLIST_ENV = 'OMX_MCP_WORKDIR_ROOTS';
 const OMX_ROOT_ENV = 'OMX_ROOT';
 const OMX_STATE_ROOT_ENV = 'OMX_STATE_ROOT';
 const OMX_TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
+const OMX_SESSION_ID_ENV = 'OMX_SESSION_ID';
+
+export const WRITABLE_STATE_SCOPE_ERRORS = {
+  unusableSession: 'Cannot resolve writable state scope: session.json is present but unusable.',
+  unboundEnvironment: 'Cannot resolve writable state scope: OMX_SESSION_ID is not bound to session.json.',
+} as const;
+
 
 export type StateRootSource = 'team-env' | 'omx-root-env' | 'omx-state-root-env' | 'cwd-default';
 export type SessionScopeSource = 'explicit' | 'env' | 'session-json' | 'native-alias' | 'root';
@@ -54,6 +61,12 @@ export interface ModeStateFileRef {
   scope: StateFileScope;
 }
 
+export function normalizeSessionId(sessionId: unknown): string | undefined {
+  if (typeof sessionId !== 'string') return undefined;
+  const normalized = sessionId.trim();
+  return SESSION_ID_PATTERN.test(normalized) ? normalized : undefined;
+}
+
 export function validateSessionId(sessionId: unknown): string | undefined {
   if (sessionId == null) return undefined;
   if (typeof sessionId !== 'string') {
@@ -64,6 +77,7 @@ export function validateSessionId(sessionId: unknown): string | undefined {
   }
   return sessionId;
 }
+
 
 export function validateStateModeSegment(mode: unknown): string {
   if (typeof mode !== 'string') {
@@ -270,15 +284,14 @@ export interface ResolvedStateScope {
 }
 
 function readSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const candidates = [env.OMX_SESSION_ID, env.CODEX_SESSION_ID, env.SESSION_ID];
+  const candidates = [env[OMX_SESSION_ID_ENV], env.CODEX_SESSION_ID, env.SESSION_ID];
   for (const candidate of candidates) {
-    if (typeof candidate !== 'string') continue;
-    const trimmed = candidate.trim();
-    if (!trimmed) continue;
-    return validateSessionId(trimmed);
+    const sessionId = normalizeSessionId(candidate);
+    if (sessionId) return sessionId;
   }
   return undefined;
 }
+
 
 function resolveCanonicalSessionId(candidate: string | undefined, metadata: ResolvedSessionMetadata | undefined): string | undefined {
   if (!candidate) return undefined;
@@ -304,32 +317,46 @@ async function readUsableSessionStateFromBaseStateDir(
   }
 }
 function normalizeSessionMetadata(state: SessionState | null, sourcePath?: string): ResolvedSessionMetadata | undefined {
-  if (!state?.session_id) return undefined;
+  const sessionId = normalizeSessionId(state?.session_id);
+  if (!state || !sessionId) return undefined;
   const raw = state as SessionState & Record<string, unknown>;
-  const nativeSessionId = typeof state.native_session_id === 'string' && state.native_session_id.trim()
-    ? state.native_session_id.trim()
-    : undefined;
+  const nativeSessionId = normalizeSessionId(state.native_session_id);
   const nativeSessionAliases = [...new Set([
     raw.native_session_id,
     raw.codex_session_id,
     raw.previous_native_session_id,
   ]
-    .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
-    .map((value) => value.trim()))];
+    .map(normalizeSessionId)
+    .filter((value): value is string => Boolean(value)))];
+  const ownerOmxSessionId = normalizeSessionId(raw.owner_omx_session_id);
+  const ownerCodexSessionId = normalizeSessionId(raw.owner_codex_session_id);
+  const ownerCodexThreadId = typeof raw.owner_codex_thread_id === 'string' && raw.owner_codex_thread_id.trim()
+    ? raw.owner_codex_thread_id.trim()
+    : undefined;
+  const leaderPaneId = typeof raw.tmux_pane_id === 'string' && raw.tmux_pane_id.trim()
+    ? raw.tmux_pane_id.trim()
+    : undefined;
+  const tmuxSessionName = typeof raw.tmux_session_name === 'string' && raw.tmux_session_name.trim()
+    ? raw.tmux_session_name.trim()
+    : undefined;
+  const displayName = typeof raw.display_name === 'string' && raw.display_name.trim()
+    ? raw.display_name.trim()
+    : undefined;
   return {
-    sessionId: state.session_id,
+    sessionId,
     ...(nativeSessionId ? { nativeSessionId } : {}),
     nativeSessionAliases,
-    ...(typeof raw.owner_omx_session_id === 'string' && raw.owner_omx_session_id.trim() ? { ownerOmxSessionId: raw.owner_omx_session_id.trim() } : {}),
-    ...(typeof raw.owner_codex_session_id === 'string' && raw.owner_codex_session_id.trim() ? { ownerCodexSessionId: raw.owner_codex_session_id.trim() } : {}),
-    ...(typeof raw.owner_codex_thread_id === 'string' && raw.owner_codex_thread_id.trim() ? { ownerCodexThreadId: raw.owner_codex_thread_id.trim() } : {}),
-    ...(typeof raw.tmux_pane_id === 'string' && raw.tmux_pane_id.trim() ? { leaderPaneId: raw.tmux_pane_id.trim() } : {}),
-    ...(typeof raw.tmux_session_name === 'string' && raw.tmux_session_name.trim() ? { tmuxSessionName: raw.tmux_session_name.trim() } : {}),
-    ...(typeof raw.display_name === 'string' && raw.display_name.trim() ? { displayName: raw.display_name.trim() } : {}),
+    ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
+    ...(ownerCodexSessionId ? { ownerCodexSessionId } : {}),
+    ...(ownerCodexThreadId ? { ownerCodexThreadId } : {}),
+    ...(leaderPaneId ? { leaderPaneId } : {}),
+    ...(tmuxSessionName ? { tmuxSessionName } : {}),
+    ...(displayName ? { displayName } : {}),
     raw: state,
     ...(sourcePath ? { sourcePath } : {}),
   };
 }
+
 
 async function readSessionMetadataFromBaseStateDir(
   cwd: string,
@@ -355,6 +382,70 @@ export async function readCurrentSessionId(workingDirectory?: string): Promise<s
   }
 
   return (await readUsableSessionState(cwd))?.session_id;
+}
+
+function isKnownSessionAlias(sessionId: string, metadata: ResolvedSessionMetadata): boolean {
+  return metadata.nativeSessionAliases.includes(sessionId)
+    || metadata.ownerOmxSessionId === sessionId
+    || metadata.ownerCodexSessionId === sessionId;
+}
+
+
+/**
+ * Writable scope precedence:
+ * - explicit session_id preserves explicit fork writes;
+ * - a usable session.json supplies the only implicit session scope;
+ * - OMX_SESSION_ID may bind a known alias only when the live tmux pane proves
+ *   the canonical session tag;
+ * - root writes are allowed only when session.json is absent.
+ */
+export async function resolveWritableStateScope(
+  workingDirectory?: string,
+  explicitSessionId?: string,
+): Promise<ResolvedStateScope> {
+  const cwd = resolveWorkingDirectoryForState(workingDirectory);
+  const baseStateDir = getBaseStateDir(cwd);
+  const metadata = await readSessionMetadataFromBaseStateDir(cwd, baseStateDir);
+  const validatedExplicit = validateSessionId(explicitSessionId);
+  if (validatedExplicit) {
+    const sessionId = resolveCanonicalSessionId(validatedExplicit, metadata) ?? validatedExplicit;
+    return {
+      source: 'explicit',
+      sessionId,
+      stateDir: join(baseStateDir, 'sessions', sessionId),
+    };
+  }
+
+  if (!metadata) {
+    if (existsSync(join(baseStateDir, 'session.json'))) {
+      throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+    }
+    if (normalizeSessionId(process.env[OMX_SESSION_ID_ENV])) {
+      throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment);
+    }
+    return {
+      source: 'root',
+      stateDir: baseStateDir,
+    };
+  }
+
+  const envSessionId = normalizeSessionId(process.env[OMX_SESSION_ID_ENV]);
+  if (!envSessionId || envSessionId === metadata.sessionId) {
+    return {
+      source: 'session',
+      sessionId: metadata.sessionId,
+      stateDir: join(baseStateDir, 'sessions', metadata.sessionId),
+    };
+  }
+
+  if (!isKnownSessionAlias(envSessionId, metadata)) {
+    throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment);
+  }
+  return {
+    source: 'session',
+    sessionId: metadata.sessionId,
+    stateDir: join(baseStateDir, 'sessions', metadata.sessionId),
+  };
 }
 
 export async function resolveStateScope(

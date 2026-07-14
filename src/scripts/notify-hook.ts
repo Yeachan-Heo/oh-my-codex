@@ -21,7 +21,7 @@
 import { writeFile, appendFile, mkdir, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { isSessionStateUsable } from '../hooks/session.js';
+import { isSessionStateUsable, normalizeSessionId } from '../hooks/session.js';
 
 import { safeString, asNumber } from './notify-hook/utils.js';
 import {
@@ -31,8 +31,12 @@ import {
 } from './notify-hook/payload-parser.js';
 import { getBaseStateDir } from '../mcp/state-paths.js';
 import {
+  getOmxSessionIdFromEnvironment,
   getScopedStatePath,
+  hasExistingScopedSessionDir,
+  isExplicitNotifySessionFork,
   readCurrentSessionId,
+  readNotifySessionMetadata,
   readScopedJsonIfExists,
   getScopedStateDirsForCurrentSession,
   normalizeNotifyState,
@@ -357,6 +361,58 @@ function isNotifyFallbackTaskCompletePayload(payload: Record<string, unknown>): 
   ));
 }
 
+interface LeaderNotifyWriteDecision {
+  allowScopedWrites: boolean;
+  sessionId: string;
+  reason: string;
+}
+
+async function resolveLeaderNotifyWriteDecision(
+  stateDir: string,
+  payloadSessionId: string,
+): Promise<LeaderNotifyWriteDecision> {
+  const metadata = await readNotifySessionMetadata(stateDir);
+  const canonicalSessionId = metadata.sessionId || '';
+  const configuredOmxSessionId = safeString(process.env.OMX_SESSION_ID).trim();
+  const omxSessionId = getOmxSessionIdFromEnvironment();
+  const normalizedPayloadSessionId = payloadSessionId
+    ? normalizeSessionId(payloadSessionId)
+    : undefined;
+
+  if (configuredOmxSessionId && !omxSessionId) {
+    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'omx_session_id_invalid' };
+  }
+  if (payloadSessionId && !normalizedPayloadSessionId) {
+    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'payload_session_id_invalid' };
+  }
+
+  if (metadata.status === 'missing') {
+    if (normalizedPayloadSessionId) {
+      if (omxSessionId && omxSessionId !== normalizedPayloadSessionId) {
+        return { allowScopedWrites: false, sessionId: '', reason: 'session_pointer_missing' };
+      }
+      return { allowScopedWrites: true, sessionId: normalizedPayloadSessionId, reason: 'native_payload_session' };
+    }
+    return { allowScopedWrites: true, sessionId: '', reason: 'root_without_session_pointer' };
+  }
+  if (metadata.status !== 'usable' || !canonicalSessionId) {
+    return { allowScopedWrites: false, sessionId: '', reason: 'session_pointer_unusable' };
+  }
+
+  if (omxSessionId && isExplicitNotifySessionFork(omxSessionId, metadata)) {
+    if (await hasExistingScopedSessionDir(stateDir, omxSessionId)) {
+      return { allowScopedWrites: true, sessionId: omxSessionId, reason: 'explicit_existing_fork' };
+    }
+    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'explicit_fork_scope_missing' };
+  }
+
+  if (omxSessionId && omxSessionId !== canonicalSessionId && !metadata.aliases.includes(omxSessionId)) {
+    return { allowScopedWrites: false, sessionId: canonicalSessionId, reason: 'managed_session_unmatched' };
+  }
+
+  return { allowScopedWrites: true, sessionId: canonicalSessionId, reason: 'canonical_session_pointer' };
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -396,46 +452,62 @@ async function main() {
   const stateDir = resolvedWorkerStateDir || getBaseStateDir(cwd);
   const logsDir = join(cwd, '.omx', 'logs');
   const omxDir = join(cwd, '.omx');
-  let currentOmxSessionId = '';
+  const leaderWriteDecision = isTeamWorker
+    ? null
+    : await resolveLeaderNotifyWriteDecision(stateDir, payloadSessionId);
+  const canWriteLeaderScopedState = leaderWriteDecision?.allowScopedWrites === true;
+  let currentOmxSessionId = isTeamWorker ? '' : leaderWriteDecision?.sessionId || '';
   const getEffectiveSessionId = () => currentOmxSessionId || payloadSessionId;
 
   // Ensure directories exist
   await mkdir(logsDir, { recursive: true }).catch(() => {});
-  if (workerStateRootResolved) {
+  if (isTeamWorker && workerStateRootResolved) {
     await mkdir(stateDir, { recursive: true }).catch(() => {});
     currentOmxSessionId = await readCurrentSessionId(stateDir).catch(() => '') || '';
+  }
+  if (!isTeamWorker && !canWriteLeaderScopedState) {
+    await logNotifyHookEvent(logsDir, {
+      timestamp: new Date().toISOString(),
+      level: 'warn',
+      type: 'notify_scoped_writes_suppressed',
+      reason: leaderWriteDecision?.reason,
+      session_id: currentOmxSessionId || null,
+      payload_session_id: payloadSessionId || null,
+    }).catch(() => {});
   }
 
   // Turn-level dedupe prevents double-processing when native notify and fallback
   // watcher both emit the same completed turn.
-  try {
-    if (!workerStateRootResolved) throw new Error('worker_state_root_unresolved');
-    const turnId = safeString(payload['turn-id'] || payload.turn_id || '');
-    if (turnId) {
-      const now = Date.now();
-      const threadId = safeString(payload['thread-id'] || payload.thread_id || '');
-      const eventType = safeString(payload.type || 'agent-turn-complete');
-      const key = `${threadId || 'no-thread'}|${turnId}|${eventType}`;
-      const dedupeSessionId = getEffectiveSessionId();
-      const dedupeStatePath = await getScopedStatePath(stateDir, 'notify-hook-state.json', dedupeSessionId);
-      const dedupeState = normalizeNotifyState(
-        await readScopedJsonIfExists(stateDir, 'notify-hook-state.json', dedupeSessionId, null),
-      );
-      dedupeState.recent_turns = pruneRecentTurns(dedupeState.recent_turns, now);
-      if (dedupeState.recent_turns[key]) {
-        process.exit(0);
+  if (isTeamWorker || canWriteLeaderScopedState) {
+    try {
+      if (!workerStateRootResolved) throw new Error('worker_state_root_unresolved');
+      const turnId = safeString(payload['turn-id'] || payload.turn_id || '');
+      if (turnId) {
+        const now = Date.now();
+        const threadId = safeString(payload['thread-id'] || payload.thread_id || '');
+        const eventType = safeString(payload.type || 'agent-turn-complete');
+        const key = `${threadId || 'no-thread'}|${turnId}|${eventType}`;
+        const dedupeSessionId = getEffectiveSessionId();
+        const dedupeStatePath = await getScopedStatePath(stateDir, 'notify-hook-state.json', dedupeSessionId);
+        const dedupeState = normalizeNotifyState(
+          await readScopedJsonIfExists(stateDir, 'notify-hook-state.json', dedupeSessionId, null),
+        );
+        dedupeState.recent_turns = pruneRecentTurns(dedupeState.recent_turns, now);
+        if (dedupeState.recent_turns[key]) {
+          process.exit(0);
+        }
+        dedupeState.recent_turns[key] = now;
+        dedupeState.last_event_at = new Date().toISOString();
+        await mkdir(dirname(dedupeStatePath), { recursive: true }).catch(() => {});
+        await writeFile(dedupeStatePath, JSON.stringify(dedupeState, null, 2)).catch(() => {});
       }
-      dedupeState.recent_turns[key] = now;
-      dedupeState.last_event_at = new Date().toISOString();
-      await mkdir(dirname(dedupeStatePath), { recursive: true }).catch(() => {});
-      await writeFile(dedupeStatePath, JSON.stringify(dedupeState, null, 2)).catch(() => {});
+    } catch {
+      // Non-critical
     }
-  } catch {
-    // Non-critical
   }
 
   // 0.5. Track leader + native subagent thread activity (lead session only)
-  if (!isTeamWorker) {
+  if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
       const threadId = safeString(payload['thread-id'] || payload.thread_id || '');
       const turnId = safeString(payload['turn-id'] || payload.turn_id || '');
@@ -513,14 +585,20 @@ async function main() {
 
   // Reconcile Ralph ownership for same-Codex-session continuation before
   // lifecycle counters or injection read the active scope.
-  if (!isTeamWorker) {
+  if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
       const resumeResult = await reconcileRalphSessionResume({
         stateDir,
         payloadSessionId,
+        env: {
+          ...process.env,
+          OMX_SESSION_ID: getEffectiveSessionId(),
+          CODEX_SESSION_ID: '',
+          SESSION_ID: '',
+        },
         payloadThreadId,
       });
-      currentOmxSessionId = resumeResult.currentOmxSessionId;
+      if (resumeResult.currentOmxSessionId) currentOmxSessionId = resumeResult.currentOmxSessionId;
       if (resumeResult.resumed || resumeResult.updatedCurrentOwner) {
         await logNotifyHookEvent(logsDir, {
           timestamp: new Date().toISOString(),
@@ -547,9 +625,9 @@ async function main() {
 
   // 2. Update active mode state (increment iteration)
   // GUARD: Skip when running inside a team worker to prevent state corruption
-  if (!isTeamWorker) {
+  if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
-      const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
+      const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir, getEffectiveSessionId());
       for (const scopedDir of scopedDirs) {
         const stateFiles = await readdir(scopedDir).catch(() => []);
         for (const f of stateFiles) {
@@ -678,7 +756,7 @@ async function main() {
   }
 
   // 4. Write HUD state summary for `omx hud` (lead session only)
-  if (!isTeamWorker) {
+  if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
       const scopedSessionId = getEffectiveSessionId();
       const hudStatePath = await getScopedStatePath(stateDir, 'hud-state.json', scopedSessionId);
@@ -712,38 +790,40 @@ async function main() {
   }
 
   // 4.45. Skill activation tracking: update skill-active-state.json before any nudge logic.
-  try {
-    const { detectKeywords, recordSkillActivation } = await import('../hooks/keyword-detector.js');
-    if (latestUserInput) {
-      const activationSessionId = getEffectiveSessionId();
-      const isAutopilotActivation = detectKeywords(latestUserInput)
-        .some((match) => match.skill === 'autopilot')
-        || isExplicitAutopilotActivationText(latestUserInput);
-      const suppressTerminalReplay = await shouldSuppressAutopilotTerminalReplayActivation(
-        stateDir,
-        payload,
-        isAutopilotActivation,
-        activationSessionId,
-      );
-      if (!suppressTerminalReplay) {
-        await recordSkillActivation({
+  if (isTeamWorker || canWriteLeaderScopedState) {
+    try {
+      const { detectKeywords, recordSkillActivation } = await import('../hooks/keyword-detector.js');
+      if (latestUserInput) {
+        const activationSessionId = getEffectiveSessionId();
+        const isAutopilotActivation = detectKeywords(latestUserInput)
+          .some((match) => match.skill === 'autopilot')
+          || isExplicitAutopilotActivationText(latestUserInput);
+        const suppressTerminalReplay = await shouldSuppressAutopilotTerminalReplayActivation(
           stateDir,
-          sourceCwd: cwd,
-          text: latestUserInput,
-          sessionId: activationSessionId,
-          threadId: payloadThreadId,
-          turnId: safeString(payload['turn-id'] || payload.turn_id || ''),
-        });
+          payload,
+          isAutopilotActivation,
+          activationSessionId,
+        );
+        if (!suppressTerminalReplay) {
+          await recordSkillActivation({
+            stateDir,
+            sourceCwd: cwd,
+            text: latestUserInput,
+            sessionId: activationSessionId,
+            threadId: payloadThreadId,
+            turnId: safeString(payload['turn-id'] || payload.turn_id || ''),
+          });
+        }
       }
+    } catch {
+      // Non-fatal: keyword detector module may not be built yet
     }
-  } catch {
-    // Non-fatal: keyword detector module may not be built yet
-  }
 
-  try {
-    await syncSkillStateFromTurn(stateDir, payload);
-  } catch {
-    // Non-fatal: lifecycle sync should not block the hook
+    try {
+      await syncSkillStateFromTurn(stateDir, payload);
+    } catch {
+      // Non-fatal: lifecycle sync should not block the hook
+    }
   }
 
   const effectiveSessionId = getEffectiveSessionId();
@@ -772,7 +852,7 @@ async function main() {
 
   // 5. Optional tmux prompt injection workaround (non-fatal, opt-in)
   // Skip for team workers - only the lead should inject prompts
-  if (!isTeamWorker) {
+  if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
       await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
     } catch {
@@ -781,7 +861,7 @@ async function main() {
   }
 
   // 5.5. Opportunistic team dispatch drain (leader session only).
-  if (!isTeamWorker) {
+  if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
       await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: 5 } as any);
     } catch {
@@ -790,7 +870,7 @@ async function main() {
   }
 
   // 6. Team leader nudge (lead session only): remind the leader to check teammate/mailbox state.
-  if (!isTeamWorker && !deepInterviewStateActive) {
+  if (!isTeamWorker && canWriteLeaderScopedState && !deepInterviewStateActive) {
     try {
       await maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale });
     } catch {
@@ -866,9 +946,12 @@ async function main() {
       const idleFingerprint = buildIdleNotificationFingerprint(payload);
       const notifySessionId = getEffectiveSessionId();
 
-      const shouldNotifyLifecycle = notifySessionId
-        && shouldSendIdleNotification(stateDir, notifySessionId, idleFingerprint);
-      const shouldDispatchSessionIdleHookEvent = notifySessionId
+      const shouldNotifyLifecycle = notifySessionId && (
+        !canWriteLeaderScopedState
+        || shouldSendIdleNotification(stateDir, notifySessionId, idleFingerprint)
+      );
+      const shouldDispatchSessionIdleHookEvent = canWriteLeaderScopedState
+        && notifySessionId
         && shouldSendSessionIdleHookEvent(stateDir, notifySessionId, idleFingerprint);
 
       if (shouldNotifyLifecycle || shouldDispatchSessionIdleHookEvent) {
@@ -876,8 +959,10 @@ async function main() {
           const idleResult = await notifyLifecycle('session-idle', {
             sessionId: notifySessionId,
             projectPath: cwd,
+          }, undefined, {
+            persistScopedReceipts: canWriteLeaderScopedState,
           });
-          if (idleResult && idleResult.anySuccess) {
+          if (canWriteLeaderScopedState && idleResult && idleResult.anySuccess) {
             recordIdleNotificationSent(stateDir, notifySessionId, idleFingerprint);
           }
         }
@@ -919,7 +1004,7 @@ async function main() {
 
   // 9. Auto-nudge: detect Codex stall patterns and automatically send a continuation prompt.
   //    Works for both leader and worker contexts.
-  if (!deepInterviewStateActive || deepInterviewInputLockActive) {
+  if ((isTeamWorker || canWriteLeaderScopedState) && (!deepInterviewStateActive || deepInterviewInputLockActive)) {
     try {
       await maybeAutoNudge({ cwd, stateDir, logsDir, payload });
     } catch {
@@ -938,6 +1023,7 @@ async function main() {
         logsDir,
         sessionId: getEffectiveSessionId(),
         turnId: safeString(payload['turn-id'] || payload.turn_id || ''),
+        persistRuntimeFeedback: canWriteLeaderScopedState,
       });
     } catch (err) {
       // Structured warning for module import failure (issue #421)
@@ -956,7 +1042,7 @@ async function main() {
 
   // 10. Code simplifier: delegate recently modified files for simplification.
   //     Opt-in via ~/.omx/config.json: { "codeSimplifier": { "enabled": true } }
-  if (!isTeamWorker) {
+  if (!isTeamWorker && canWriteLeaderScopedState) {
     try {
       const { processCodeSimplifier } = await import('../hooks/code-simplifier/index.js');
       const csResult = processCodeSimplifier(cwd, stateDir);

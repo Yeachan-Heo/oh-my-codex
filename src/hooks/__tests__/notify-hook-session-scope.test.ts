@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -327,6 +327,73 @@ describe('notify-hook session-scoped iteration updates', () => {
         (progress.visual_feedback?.[0]?.qualitative_feedback?.next_actions?.length || 0) <= VISUAL_NEXT_ACTIONS_LIMIT,
         true,
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('suppresses managed unmatched owner sidefiles without creating either an owner or canonical receipt scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-managed-unmatched-'));
+    const home = join(wd, 'home');
+    const fakeBinDir = join(wd, 'bin');
+    const canonicalSessionId = 'omx-canonical';
+    const ownerSessionId = 'omx-unmatched-owner';
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const canonicalDir = join(stateDir, 'sessions', canonicalSessionId);
+      await mkdir(canonicalDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(wd, '.omx', 'managed'), 'test fixture managed workspace');
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: canonicalSessionId,
+        cwd: wd,
+      }, null, 2));
+      await writeFile(join(canonicalDir, 'hud-state.json'), JSON.stringify({ turn_count: 7 }, null, 2));
+      const fakeTmux = join(fakeBinDir, 'tmux');
+      await writeFile(fakeTmux, `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *"display-message -p -t %owner-pane #S") printf 'managed-session\\n' ;;
+  *"show-option -qv -p -t %owner-pane @omx_pane_instance_id") printf '${ownerSessionId}\\n' ;;
+  *) exit 0 ;;
+esac
+`);
+      await chmod(fakeTmux, 0o755);
+
+      const result = spawnSync(process.execPath, ['dist/scripts/notify-hook.js', JSON.stringify({
+        cwd: wd,
+        session_id: canonicalSessionId,
+        type: 'agent-turn-complete',
+        thread_id: 'th-managed-unmatched',
+        turn_id: 'tu-managed-unmatched',
+        input_messages: [],
+        last_assistant_message: 'Waiting for user input.',
+      })], {
+        cwd: join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'),
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          HOME: home,
+          CODEX_HOME: join(home, '.codex'),
+          OMX_SESSION_ID: ownerSessionId,
+          OMX_TEAM_WORKER: '',
+          TMUX: '/tmp/tmux-1000/default,1,0',
+          TMUX_PANE: '%owner-pane',
+          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      assert.deepEqual(
+        JSON.parse(await readFile(join(canonicalDir, 'hud-state.json'), 'utf-8')),
+        { turn_count: 7 },
+      );
+      assert.equal(existsSync(join(canonicalDir, 'notify-hook-state.json')), false);
+      assert.equal(existsSync(join(canonicalDir, 'idle-notif-cooldown.json')), false);
+      assert.equal(existsSync(join(canonicalDir, 'session-idle-hook-state.json')), false);
+      assert.equal(existsSync(join(canonicalDir, 'lifecycle-notif-state.json')), false);
+      assert.equal(existsSync(join(stateDir, 'sessions', ownerSessionId)), false);
+      assert.equal(existsSync(join(home, '.omx', 'state', 'reply-session-registry.jsonl')), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
