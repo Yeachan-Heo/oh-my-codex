@@ -150,6 +150,30 @@ describe('scope normalization and parsing', () => {
     }
   });
 
+  it('preserves a leading UTF-8 BOM as path identity instead of collapsing it', async () => {
+    const api = await loadScopeApi();
+    const bomPath = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('a')]);
+    const nameStatus = Buffer.concat([
+      Buffer.from('A\0a\0A\0'),
+      bomPath,
+      Buffer.from('\0'),
+    ]);
+    const numStat = Buffer.concat([
+      Buffer.from('1\t0\ta\0' + '1\t0\t'),
+      bomPath,
+      Buffer.from('\0'),
+    ]);
+
+    assert.deepEqual(
+      api.parseNameStatus(nameStatus, 'UNTRACKED').map((entry) => entry.path),
+      ['a', '\uFEFFa'],
+    );
+    assert.deepEqual(
+      api.parseNumStat(numStat).map((entry) => entry.path),
+      ['a', '\uFEFFa'],
+    );
+  });
+
   it('classifies symlink and submodule modes without following their targets', async () => {
     const api = await loadScopeApi();
     assert.equal(api.classifyGitMode('120000'), 'SYMLINK');

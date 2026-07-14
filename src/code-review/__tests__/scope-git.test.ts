@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  readlink,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, it } from 'node:test';
 import type { ScopeManifest, ScopeSelector } from '../contract.js';
@@ -16,6 +27,7 @@ interface ResolveOptions {
   selector?: ScopeSelector;
   effectiveConfig?: Readonly<Record<string, unknown>>;
   gitExecutor?: GitExecutor;
+  fileSystem?: unknown;
 }
 
 interface ScopeApi {
@@ -112,6 +124,32 @@ describe('real Git scope discovery', () => {
     });
   });
 
+  it('keeps plain and leading-BOM Git paths as distinct byte-stable identities', async () => {
+    await withRepository(async (repository, api) => {
+      const bomPath = '\uFEFFa';
+      await writeFile(join(repository, 'a'), 'plain\n');
+      await writeFile(join(repository, bomPath), 'bom\n');
+
+      const manifest = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: [] },
+      });
+      assert.deepEqual(manifest.files.map((entry) => entry.path), ['a', bomPath]);
+
+      const plain = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: ['a'] },
+      });
+      const bom = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: [bomPath] },
+      });
+      assert.deepEqual(plain.files.map((entry) => entry.path), ['a']);
+      assert.deepEqual(bom.files.map((entry) => entry.path), [bomPath]);
+      assert.notEqual(plain.scope_hash, bom.scope_hash);
+    });
+  });
+
   it('uses an explicit base for committed changes and keeps it in detached HEAD state', async () => {
     await withRepository(async (repository, api) => {
       const base = await git(repository, 'rev-parse', 'HEAD');
@@ -130,6 +168,10 @@ describe('real Git scope discovery', () => {
       assert.equal(manifest.base_sha, base);
       assert.deepEqual(manifest.files.map((entry) => entry.path), ['committed.txt']);
       assert.deepEqual(manifest.files[0]?.sources, ['BASE']);
+
+      const unresolved = await api.resolveGitScope({ workingDirectory: repository });
+      assert.equal(unresolved.status, 'PARTIAL_SCOPE');
+      assert.deepEqual(unresolved.reasons, ['BASE_UNRESOLVED']);
     });
   });
 
@@ -173,7 +215,9 @@ describe('real Git scope discovery', () => {
       await git(repository, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
 
       const upstream = await api.resolveGitScope({ workingDirectory: repository });
-      assert.equal(upstream.base_ref, 'upstream-target');
+      // ASSERTION-CHANGE-JUSTIFIED: the fail-closed for-each-ref probe returns the canonical
+      // configured upstream ref, whereas the removed rev-parse probe abbreviated local refs.
+      assert.equal(upstream.base_ref, 'refs/heads/upstream-target');
       assert.equal(upstream.base_sha, current);
       assert.deepEqual(upstream.files, []);
 
@@ -407,11 +451,45 @@ describe('real Git scope discovery', () => {
       );
 
       const failedUpstreamProbe: GitExecutor = async (workingDirectory, args) => {
-        if (args.includes('@{upstream}')) throw new Error('injected upstream probe failure');
+        if (
+          args.includes('@{upstream}') ||
+          (args[0] === 'for-each-ref' && args.includes('--format=%(upstream)'))
+        ) {
+          throw new Error('injected upstream probe failure');
+        }
         return api.runGitCommand(workingDirectory, args);
       };
       await assert.rejects(
         api.resolveGitScope({ workingDirectory: repository, gitExecutor: failedUpstreamProbe }),
+        (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED',
+      );
+
+      const exit128 = (): Error & { code: number } =>
+        Object.assign(new Error('injected Git exit 128'), { code: 128 });
+      const fatalUpstreamProbe: GitExecutor = async (workingDirectory, args) => {
+        if (
+          args.includes('@{upstream}') ||
+          (args[0] === 'for-each-ref' && args.includes('--format=%(upstream)'))
+        ) {
+          throw exit128();
+        }
+        return api.runGitCommand(workingDirectory, args);
+      };
+      await assert.rejects(
+        api.resolveGitScope({ workingDirectory: repository, gitExecutor: fatalUpstreamProbe }),
+        (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED',
+      );
+
+      const fatalMergeBase: GitExecutor = async (workingDirectory, args) => {
+        if (args[0] === 'merge-base') throw exit128();
+        return api.runGitCommand(workingDirectory, args);
+      };
+      await assert.rejects(
+        api.resolveGitScope({
+          workingDirectory: repository,
+          selector: { requested_base: 'HEAD', explicit_paths: [] },
+          gitExecutor: fatalMergeBase,
+        }),
         (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED',
       );
 
@@ -448,6 +526,157 @@ describe('real Git scope discovery', () => {
       assert.equal(drifted.matches, false);
       assert.notEqual(drifted.current_scope_hash, manifest.scope_hash);
       assert.equal(JSON.stringify(manifest).includes('version one'), false);
+    });
+  });
+
+  it('rejects a regular file replaced by a symlink between lstat and open without reading its target', async () => {
+    await withRepository(async (repository, api) => {
+      const external = await mkdtemp(join(tmpdir(), 'omx-code-review-external-secret-'));
+      const secret = join(external, 'secret.txt');
+      const reviewed = join(repository, 'race.txt');
+      await writeFile(secret, 'external secret must not be read\n');
+      await writeFile(reviewed, 'base\n');
+      await git(repository, 'add', '--', 'race.txt');
+      await git(repository, 'commit', '-qm', 'race base');
+      await writeFile(reviewed, 'changed\n');
+      let swapped = false;
+
+      try {
+        await assert.rejects(
+          api.resolveGitScope({
+            workingDirectory: repository,
+            selector: { requested_base: 'HEAD', explicit_paths: ['race.txt'] },
+            fileSystem: {
+              lstat: async (path: string) => {
+                const stat = await lstat(path, { bigint: true });
+                if (basename(path) === 'race.txt' && !swapped) {
+                  await rename(path, `${path}.original`);
+                  await symlink(secret, path);
+                  swapped = true;
+                }
+                return stat;
+              },
+              open: (path: string, flags: number) => open(path, flags),
+              readlink: (path: string) => readlink(path, { encoding: 'buffer' }),
+            },
+          }),
+          (error: unknown) => (error as { code?: unknown }).code === 'SCOPE_DRIFT',
+        );
+        assert.equal(swapped, true);
+        assert.equal(await readFile(secret, 'utf8'), 'external secret must not be read\n');
+      } finally {
+        await rm(external, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('closes an opened handle when file identity changes before streaming', async () => {
+    await withRepository(async (repository, api) => {
+      const reviewed = join(repository, 'identity.txt');
+      await writeFile(reviewed, 'base\n');
+      await git(repository, 'add', '--', 'identity.txt');
+      await git(repository, 'commit', '-qm', 'identity base');
+      await writeFile(reviewed, 'changed\n');
+      let closeCalls = 0;
+      let streamCalls = 0;
+
+      await assert.rejects(
+        api.resolveGitScope({
+          workingDirectory: repository,
+          selector: { requested_base: 'HEAD', explicit_paths: ['identity.txt'] },
+          fileSystem: {
+            lstat: async (path: string) => {
+              const stat = await lstat(path, { bigint: true });
+              return new Proxy(stat, {
+                get(target, property, receiver) {
+                  if (property === 'ino') return target.ino + 1n;
+                  const value = Reflect.get(target, property, receiver) as unknown;
+                  return typeof value === 'function' ? value.bind(target) : value;
+                },
+              });
+            },
+            open: async (path: string, flags: number) => {
+              const handle = await open(path, flags);
+              return new Proxy(handle, {
+                get(target, property, receiver) {
+                  if (property === 'close') {
+                    return async () => {
+                      closeCalls += 1;
+                      await target.close();
+                    };
+                  }
+                  if (property === 'createReadStream') {
+                    return (...args: Parameters<typeof target.createReadStream>) => {
+                      streamCalls += 1;
+                      return target.createReadStream(...args);
+                    };
+                  }
+                  const value = Reflect.get(target, property, receiver) as unknown;
+                  return typeof value === 'function' ? value.bind(target) : value;
+                },
+              });
+            },
+            readlink: (path: string) => readlink(path, { encoding: 'buffer' }),
+          },
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'SCOPE_DRIFT',
+      );
+      assert.equal(closeCalls, 1);
+      assert.equal(streamCalls, 0);
+    });
+  });
+
+  it('uses literal pathspecs for metacharacter filenames while directories still include descendants', async () => {
+    await withRepository(async (repository, api) => {
+      const paths = [
+        'a1.txt',
+        'a[1].txt',
+        'star*.txt',
+        'starX.txt',
+        'question?.txt',
+        'questionX.txt',
+        'dir[1]/inside.ts',
+        'dir1/outside.ts',
+      ];
+      await mkdir(join(repository, 'dir[1]'));
+      await mkdir(join(repository, 'dir1'));
+      for (const [index, path] of paths.entries()) {
+        await writeFile(join(repository, path), `base ${index}\n`);
+      }
+      await git(repository, 'add', '--', ...paths);
+      await git(repository, 'commit', '-qm', 'literal pathspec fixtures');
+      for (const [index, path] of paths.entries()) {
+        await writeFile(join(repository, path), `changed ${index}\n`);
+      }
+      await git(repository, 'add', '--', ...paths);
+
+      const calls: string[][] = [];
+      const manifest = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: {
+          requested_base: 'HEAD',
+          explicit_paths: ['a[1].txt', 'star*.txt', 'question?.txt', 'dir[1]'],
+        },
+        gitExecutor: async (workingDirectory, args) => {
+          calls.push([...args]);
+          return api.runGitCommand(workingDirectory, args);
+        },
+      });
+      assert.deepEqual(manifest.files.map((entry) => entry.path), [
+        'a[1].txt',
+        'dir[1]/inside.ts',
+        'question?.txt',
+        'star*.txt',
+      ]);
+
+      const suppliedPathspecs = calls.flatMap((args) => {
+        const separator = args.indexOf('--');
+        return separator < 0 ? [] : args.slice(separator + 1);
+      });
+      assert.ok(suppliedPathspecs.length > 0);
+      for (const pathspec of suppliedPathspecs) {
+        assert.ok(pathspec.startsWith(':(literal)'), pathspec);
+      }
     });
   });
 

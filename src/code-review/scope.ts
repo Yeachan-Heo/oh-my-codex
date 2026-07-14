@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { lstat, readlink } from 'node:fs/promises';
+import { constants, type BigIntStats } from 'node:fs';
+import { type FileHandle, lstat, open, readlink } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { TextDecoder } from 'node:util';
 import type {
@@ -17,6 +17,7 @@ export type ScopeResolutionErrorCode =
   | 'INVALID_BASE'
   | 'INVALID_PATH'
   | 'UNMERGED'
+  | 'SCOPE_DRIFT'
   | 'GIT_COMMAND_FAILED';
 
 export class ScopeResolutionError extends Error {
@@ -36,6 +37,13 @@ export interface ResolveGitScopeOptions {
   selector?: ScopeSelector;
   effectiveConfig?: Readonly<Record<string, unknown>>;
   gitExecutor?: GitExecutor;
+  fileSystem?: ScopeFileSystem;
+}
+
+export interface ScopeFileSystem {
+  lstat(path: string): Promise<BigIntStats>;
+  open(path: string, flags: number): Promise<FileHandle>;
+  readlink(path: string): Promise<Buffer>;
 }
 
 export interface ScopeDriftResult {
@@ -83,6 +91,11 @@ interface ScopeHashMaterial {
 
 const SOURCE_ORDER: ScopeFileSource[] = ['BASE', 'INDEX', 'WORKTREE', 'UNTRACKED'];
 const MAX_GIT_OUTPUT_BYTES = 32 * 1024 * 1024;
+const DEFAULT_SCOPE_FILE_SYSTEM: ScopeFileSystem = {
+  lstat: (path) => lstat(path, { bigint: true }),
+  open: (path, flags) => open(path, flags),
+  readlink: (path) => readlink(path, { encoding: 'buffer' }),
+};
 
 function byteCompare(left: string, right: string): number {
   return Buffer.from(left).compare(Buffer.from(right));
@@ -92,9 +105,13 @@ function posixPath(path: string): string {
   return path.split(sep).join('/');
 }
 
+function literalPathspec(path: string): string {
+  return `:(literal)${path}`;
+}
+
 function decodeUtf8Strict(output: Buffer, context: string): string {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(output);
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(output);
   } catch (error) {
     throw new ScopeResolutionError(
       'GIT_COMMAND_FAILED',
@@ -182,16 +199,17 @@ async function requiredGit(
   }
 }
 
-async function optionalGit(
+async function gitAllowingExitCodes(
   git: GitExecutor,
   workingDirectory: string,
   args: readonly string[],
+  allowedExitCodes: readonly number[],
 ): Promise<Buffer | undefined> {
   try {
     return await git(workingDirectory, args);
   } catch (error) {
     const exitCode = errorExitCode(error);
-    if (exitCode === 1 || exitCode === 128) return undefined;
+    if (exitCode !== undefined && allowedExitCodes.includes(exitCode)) return undefined;
     if (isScopeError(error)) throw error;
     throw new ScopeResolutionError(
       'GIT_COMMAND_FAILED',
@@ -421,45 +439,74 @@ interface InspectedWorktreeValue {
 }
 
 async function inspectChangedWorktreeValue(
+  fileSystem: ScopeFileSystem,
   repositoryRoot: string,
   path: string,
 ): Promise<InspectedWorktreeValue> {
   const absolutePath = resolve(repositoryRoot, path);
+  let initial: BigIntStats;
   try {
-    const stat = await lstat(absolutePath);
-    if (stat.isSymbolicLink()) {
-      const target = Buffer.from(await readlink(absolutePath));
-      return { kind: 'SYMLINK', digest: sha256(target), binary: false, lines: 0 };
-    }
-    if (stat.isFile()) {
-      const hash = createHash('sha256');
-      let containsNull = false;
-      let inspectedBytes = 0;
-      let lineBreaks = 0;
-      let totalBytes = 0;
-      let lastByte: number | undefined;
-      for await (const value of createReadStream(absolutePath)) {
-        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-        hash.update(chunk);
-        totalBytes += chunk.length;
-        for (const byte of chunk) {
-          if (inspectedBytes < 8_000 && byte === 0) containsNull = true;
-          if (byte === 10) lineBreaks += 1;
-          inspectedBytes += 1;
-          lastByte = byte;
-        }
-      }
-      return {
-        kind: 'REGULAR',
-        digest: hash.digest('hex'),
-        binary: containsNull,
-        lines: totalBytes === 0 ? 0 : lineBreaks + (lastByte === 10 ? 0 : 1),
-      };
-    }
-    return { kind: 'MISSING' };
+    initial = await fileSystem.lstat(absolutePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'MISSING' };
-    throw error;
+    throw new ScopeResolutionError('SCOPE_DRIFT', `Unable to inspect changed path: ${path}`, {
+      cause: error,
+    });
+  }
+
+  if (initial.isSymbolicLink()) {
+    try {
+      const target = await fileSystem.readlink(absolutePath);
+      return { kind: 'SYMLINK', digest: sha256(target), binary: false, lines: 0 };
+    } catch (error) {
+      throw new ScopeResolutionError('SCOPE_DRIFT', `Symlink changed while freezing: ${path}`, {
+        cause: error,
+      });
+    }
+  }
+  if (!initial.isFile()) return { kind: 'MISSING' };
+
+  let handle: FileHandle;
+  try {
+    const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+    handle = await fileSystem.open(absolutePath, constants.O_RDONLY | noFollow);
+  } catch (error) {
+    throw new ScopeResolutionError('SCOPE_DRIFT', `File changed before it could be opened: ${path}`, {
+      cause: error,
+    });
+  }
+
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.dev !== initial.dev || opened.ino !== initial.ino) {
+      throw new ScopeResolutionError('SCOPE_DRIFT', `File identity changed while freezing: ${path}`);
+    }
+
+    const hash = createHash('sha256');
+    let containsNull = false;
+    let inspectedBytes = 0;
+    let lineBreaks = 0;
+    let totalBytes = 0;
+    let lastByte: number | undefined;
+    for await (const value of handle.createReadStream({ autoClose: false })) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      hash.update(chunk);
+      totalBytes += chunk.length;
+      for (const byte of chunk) {
+        if (inspectedBytes < 8_000 && byte === 0) containsNull = true;
+        if (byte === 10) lineBreaks += 1;
+        inspectedBytes += 1;
+        lastByte = byte;
+      }
+    }
+    return {
+      kind: 'REGULAR',
+      digest: hash.digest('hex'),
+      binary: containsNull,
+      lines: totalBytes === 0 ? 0 : lineBreaks + (lastByte === 10 ? 0 : 1),
+    };
+  } finally {
+    await handle.close();
   }
 }
 
@@ -473,20 +520,21 @@ async function resolveBase(
     if (requestedBase.startsWith('-') || requestedBase.includes('\0')) {
       throw new ScopeResolutionError('INVALID_BASE', `Invalid explicit base: ${requestedBase}`);
     }
-    const verified = await optionalGit(git, repositoryRoot, [
-      'rev-parse',
-      '--verify',
-      '--end-of-options',
-      `${requestedBase}^{commit}`,
-    ]);
+    const verified = await gitAllowingExitCodes(
+      git,
+      repositoryRoot,
+      ['rev-parse', '--verify', '--end-of-options', `${requestedBase}^{commit}`],
+      [1, 128],
+    );
     if (!verified) {
       throw new ScopeResolutionError('INVALID_BASE', `Invalid explicit base: ${requestedBase}`);
     }
-    const mergeBase = await optionalGit(git, repositoryRoot, [
-      'merge-base',
-      requestedBase,
-      headSha,
-    ]);
+    const mergeBase = await gitAllowingExitCodes(
+      git,
+      repositoryRoot,
+      ['merge-base', requestedBase, headSha],
+      [1],
+    );
     if (!mergeBase || trimTextOutput(mergeBase, 'explicit merge-base').length === 0) {
       throw new ScopeResolutionError('INVALID_BASE', `Explicit base has no merge-base: ${requestedBase}`);
     }
@@ -497,19 +545,29 @@ async function resolveBase(
     };
   }
 
-  const upstream = await optionalGit(git, repositoryRoot, [
-    'rev-parse',
-    '--abbrev-ref',
-    '--symbolic-full-name',
-    '@{upstream}',
-  ]);
+  const branch = await gitAllowingExitCodes(
+    git,
+    repositoryRoot,
+    ['symbolic-ref', '-q', '--short', 'HEAD'],
+    [1],
+  );
+  const branchName = branch ? trimTextOutput(branch, 'current branch') : '';
+  const upstream =
+    branchName.length === 0
+      ? undefined
+      : await requiredGit(git, repositoryRoot, [
+          'for-each-ref',
+          '--format=%(upstream)',
+          `refs/heads/${branchName}`,
+        ]);
   const upstreamRef = upstream ? trimTextOutput(upstream, 'configured upstream') : '';
   if (upstreamRef.length > 0) {
-    const mergeBase = await optionalGit(git, repositoryRoot, [
-      'merge-base',
-      upstreamRef,
-      headSha,
-    ]);
+    const mergeBase = await gitAllowingExitCodes(
+      git,
+      repositoryRoot,
+      ['merge-base', upstreamRef, headSha],
+      [1],
+    );
     if (mergeBase && trimTextOutput(mergeBase, 'upstream merge-base').length > 0) {
       return {
         baseRef: upstreamRef,
@@ -534,7 +592,12 @@ async function resolveBase(
   ].sort(byteCompare);
   if (targets.length === 1) {
     const target = targets[0] as string;
-    const mergeBase = await optionalGit(git, repositoryRoot, ['merge-base', target, headSha]);
+    const mergeBase = await gitAllowingExitCodes(
+      git,
+      repositoryRoot,
+      ['merge-base', target, headSha],
+      [1],
+    );
     if (mergeBase && trimTextOutput(mergeBase, 'remote merge-base').length > 0) {
       return {
         baseRef: target,
@@ -545,24 +608,6 @@ async function resolveBase(
   }
 
   return { resolved: false };
-}
-
-async function isIgnoredExplicitPath(
-  git: GitExecutor,
-  repositoryRoot: string,
-  path: string,
-): Promise<boolean> {
-  try {
-    await git(repositoryRoot, ['check-ignore', '-q', '--', path]);
-    return true;
-  } catch (error) {
-    if (errorExitCode(error) === 1) return false;
-    throw new ScopeResolutionError(
-      'GIT_COMMAND_FAILED',
-      `Git check-ignore failed for ${path}`,
-      { cause: error },
-    );
-  }
 }
 
 function canonicalize(value: unknown): unknown {
@@ -579,6 +624,7 @@ function canonicalize(value: unknown): unknown {
 
 async function buildFrozenFile(
   git: GitExecutor,
+  fileSystem: ScopeFileSystem,
   repositoryRoot: string,
   mutable: MutableScopeFile,
   baseSha: string | undefined,
@@ -586,12 +632,30 @@ async function buildFrozenFile(
   stat: ParsedNumStat | undefined,
 ): Promise<{ file: ScopeFile; material: ScopeHashMaterial }> {
   const [indexOutput, headOutput, baseOutput, worktree] = await Promise.all([
-    requiredGit(git, repositoryRoot, ['ls-files', '--stage', '-z', '--', mutable.path]),
-    requiredGit(git, repositoryRoot, ['ls-tree', '-z', headSha, '--', mutable.path]),
+    requiredGit(git, repositoryRoot, [
+      'ls-files',
+      '--stage',
+      '-z',
+      '--',
+      literalPathspec(mutable.path),
+    ]),
+    requiredGit(git, repositoryRoot, [
+      'ls-tree',
+      '-z',
+      headSha,
+      '--',
+      literalPathspec(mutable.path),
+    ]),
     baseSha
-      ? requiredGit(git, repositoryRoot, ['ls-tree', '-z', baseSha, '--', mutable.path])
+      ? requiredGit(git, repositoryRoot, [
+          'ls-tree',
+          '-z',
+          baseSha,
+          '--',
+          literalPathspec(mutable.path),
+        ])
       : Promise.resolve(Buffer.alloc(0)),
-    inspectChangedWorktreeValue(repositoryRoot, mutable.path),
+    inspectChangedWorktreeValue(fileSystem, repositoryRoot, mutable.path),
   ]);
   const indexEntry = parseIndexEntry(indexOutput);
   const headEntry = parseTreeEntry(headOutput);
@@ -646,6 +710,7 @@ async function buildFrozenFile(
 
 export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<ScopeManifest> {
   const git = options.gitExecutor ?? runGitCommand;
+  const fileSystem = options.fileSystem ?? DEFAULT_SCOPE_FILE_SYSTEM;
   let repositoryRootOutput: Buffer;
   try {
     repositoryRootOutput = await git(options.workingDirectory, ['rev-parse', '--show-toplevel']);
@@ -744,12 +809,6 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
     ]);
   }
 
-  const ignoredPaths = new Set<string>();
-  for (const explicitPath of selector.explicit_paths) {
-    if (explicitPath !== '' && (await isIgnoredExplicitPath(git, repositoryRoot, explicitPath))) {
-      ignoredPaths.add(explicitPath);
-    }
-  }
   let hasIgnoredDescendant = false;
   if (selector.explicit_paths.length > 0) {
     const ignoredInventory = await requiredGit(git, repositoryRoot, [
@@ -759,15 +818,17 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
       '--exclude-standard',
       '-z',
       '--',
-      ...selector.explicit_paths.filter((path) => path.length > 0),
+      ...selector.explicit_paths
+        .filter((path) => path.length > 0)
+        .map(literalPathspec),
     ]);
     hasIgnoredDescendant =
       decodeNulSegments(ignoredInventory, 'ignored path inventory').length > 0;
   }
-  if (ignoredPaths.size > 0 || hasIgnoredDescendant) {
+  if (hasIgnoredDescendant) {
     reasons.push('IGNORED_PATH_EXCLUDED');
   }
-  const effectiveExplicitPaths = selector.explicit_paths.filter((path) => !ignoredPaths.has(path));
+  const effectiveExplicitPaths = selector.explicit_paths;
   const selected = [...discovered.values()]
     .filter(
       (entry) =>
@@ -803,7 +864,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
             '--find-renames',
             diffReference,
             '--',
-            ...statPathspecs,
+            ...statPathspecs.map(literalPathspec),
           ]),
         );
   const statsByPath = new Map(stats.map((stat) => [stat.path, stat]));
@@ -812,6 +873,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
     frozen.push(
       await buildFrozenFile(
         git,
+        fileSystem,
         repositoryRoot,
         entry,
         base.baseSha,
