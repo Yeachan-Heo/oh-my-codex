@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type {
   LaneActivityEvent,
   LaneRecord,
@@ -8,16 +11,28 @@ import type {
   ReviewRecordLaneEvent,
   ScopeManifest,
 } from './contract.js';
+import type { BatchPlan } from './batching.js';
 import { buildCapabilityPlan } from './capabilities.js';
 import {
   canonicalLanePayloadDigest,
+  parseDiagnosticToolEvents,
+  parseLaneActivityEvent,
   validateLaneIndependence,
   validateLaneResultEvidence,
   validateLaneStart,
   validatePostToolPublication,
-  type NativeTrackerSnapshot,
 } from './evidence.js';
+import {
+  recoverPendingReviewTransactions,
+  resolveReviewPersistencePaths,
+  runDurableTransaction,
+  type DurableTransactionBoundary,
+  type DurableTransactionEffect,
+  type ReviewPersistenceContext,
+  type ReviewPersistencePaths,
+} from './persistence.js';
 import { synthesizeVerdict } from './verdict.js';
+import { projectFinalReviewArtifact } from './render.js';
 
 export const DEFAULT_LANE_TIMEOUT_MS = 600_000;
 export const MIN_LANE_TIMEOUT_MS = 30_000;
@@ -38,8 +53,9 @@ export class ReviewCoordinatorError extends Error {
 
 export interface ActivitySnapshot {
   cutoff_at: string;
-  events: LaneActivityEvent[];
-  publications: ResultPostToolPublication[];
+  events: unknown[];
+  publications: unknown[];
+  diagnostic_events?: unknown[];
 }
 
 function parseTimestamp(value: string, name: string): number {
@@ -75,13 +91,54 @@ export function resolveLaneTimeoutMs(env: NodeJS.ProcessEnv = process.env): numb
   return boundedTimeout(Number(raw));
 }
 
-function assertUniqueLanePlan(lanes: Array<Pick<LaneRecord, 'lane_id' | 'role' | 'batch_id'>>): void {
-  if (new Set(lanes.map((lane) => lane.lane_id)).size !== lanes.length) {
+function validateBatchPlan(scope: ScopeManifest, plan: BatchPlan): BatchPlan {
+  if (!Array.isArray(plan.review_flags)
+    || plan.review_flags.some((flag) => flag !== 'BATCHED_REVIEW')
+    || new Set(plan.review_flags).size !== plan.review_flags.length
+    || !Array.isArray(plan.batches)
+    || !Array.isArray(plan.required_lanes)) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'batch plan collections or flags are invalid');
+  }
+  const batchIds = plan.batches.map((batch) => batch.batch_id);
+  if (new Set(batchIds).size !== batchIds.length || batchIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'batch ids must be unique and non-empty');
+  }
+  const expectedFiles = scope.files.map((file) => file.path).sort();
+  const actualFiles = plan.batches.flatMap((batch) => {
+    if (typeof batch.module_root !== 'string' || batch.module_root.length === 0
+      || !Array.isArray(batch.files) || new Set(batch.files).size !== batch.files.length
+      || !Number.isSafeInteger(batch.changed_lines) || batch.changed_lines < 0
+      || typeof batch.oversized_single_file !== 'boolean') {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', `batch ${batch.batch_id} is malformed`);
+    }
+    return batch.files;
+  }).sort();
+  if (expectedFiles.length !== actualFiles.length
+    || expectedFiles.some((path, index) => path !== actualFiles[index])) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'batch plan must exactly cover the frozen scope');
+  }
+  const laneIds = plan.required_lanes.map((lane) => lane.lane_id);
+  if (new Set(laneIds).size !== laneIds.length) {
     throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'required lane ids must be unique');
   }
-  if (lanes.some((lane) => (lane.role === 'architect') !== (lane.batch_id === 'global'))) {
-    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'lane role and batch plan conflict');
+  const reviewers = plan.required_lanes.filter((lane) => lane.role === 'code-reviewer');
+  const architects = plan.required_lanes.filter((lane) => lane.role === 'architect');
+  const reviewerBatchIds = reviewers.map((lane) => lane.batch_id);
+  if (reviewers.length !== plan.batches.length
+    || new Set(reviewerBatchIds).size !== reviewerBatchIds.length
+    || reviewerBatchIds.some((batchId) => batchId === 'global' || !batchIds.includes(batchId))
+    || batchIds.some((batchId) => !reviewerBatchIds.includes(batchId))) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'reviewer lanes must match planned batches exactly once');
   }
+  if (architects.length !== 1
+    || architects.some((lane) => lane.batch_id !== 'global')) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'batch plan requires exactly one global architect lane');
+  }
+  if (plan.required_lanes.some((lane) => typeof lane.lane_id !== 'string' || lane.lane_id.length === 0
+    || (lane.role !== 'code-reviewer' && lane.role !== 'architect'))) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'required lane plan is malformed');
+  }
+  return structuredClone(plan);
 }
 
 export function createInitialReviewRecord(input: {
@@ -93,15 +150,14 @@ export function createInitialReviewRecord(input: {
   lane_timeout_ms?: number;
   max_files_per_review?: number;
   max_changed_lines_per_review?: number;
-  batches: ReviewRecord['batches'];
-  required_lanes: Array<Pick<LaneRecord, 'lane_id' | 'role' | 'batch_id'>>;
+  batch_plan: BatchPlan;
   now: Date;
 }): ReviewRecord {
-  assertUniqueLanePlan(input.required_lanes);
+  const plan = validateBatchPlan(input.scope, input.batch_plan);
   const timeout = boundedTimeout(input.lane_timeout_ms ?? DEFAULT_LANE_TIMEOUT_MS);
   const now = input.now.toISOString();
   const deadline = new Date(input.now.getTime() + timeout).toISOString();
-  const lanes: LaneRecord[] = input.required_lanes.map((planned) => ({
+  const lanes: LaneRecord[] = plan.required_lanes.map((planned) => ({
     ...planned,
     scope_hash: input.scope.scope_hash,
     status: 'PENDING',
@@ -152,8 +208,8 @@ export function createInitialReviewRecord(input: {
       accepted_equivalents: [],
     },
     scope: structuredClone(input.scope),
-    review_flags: input.batches.length > 1 ? ['BATCHED_REVIEW'] : [],
-    batches: structuredClone(input.batches),
+    review_flags: structuredClone(plan.review_flags),
+    batches: structuredClone(plan.batches),
     lanes,
     attempt_history: [attempt],
     diagnostics: [],
@@ -189,7 +245,7 @@ function advanceRevision(record: ReviewRecord, now: string): void {
 export function applyLaneStart(input: {
   review: ReviewRecord;
   event: Extract<ReviewRecordLaneEvent, { event: 'START' }>;
-  tracker: NativeTrackerSnapshot | undefined;
+  tracker: unknown;
   now: Date;
 }): ReviewRecord {
   const { event } = input;
@@ -330,6 +386,9 @@ function foldLaneEvents(lane: LaneRecord, record: ReviewRecord, events: LaneActi
       || event.child_thread_id !== lane.provenance.thread_id
       || observed < parseTimestamp(lane.provenance.first_seen_at, 'first_seen_at')
       || observed > cutoff
+      || (lane.last_processed_activity_ref === event.event_ref
+        && lane.last_processed_activity_at !== undefined
+        && observed > parseTimestamp(lane.last_processed_activity_at, 'last activity'))
       || seen.has(event.event_ref);
     if (invalid) {
       invalidLane(lane);
@@ -361,10 +420,16 @@ export function foldActivitySnapshot(input: {
   snapshot: ActivitySnapshot;
 }): ReviewRecord {
   const cutoff = parseTimestamp(input.snapshot.cutoff_at, 'snapshot cutoff');
+  let events: LaneActivityEvent[];
+  try {
+    events = input.snapshot.events.map(parseLaneActivityEvent);
+  } catch (error) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
+  }
   const output = cloneRecord(input.review);
   let changed = false;
   for (const lane of output.lanes.filter((candidate) => candidate.attempt === output.current_attempt)) {
-    if (foldLaneEvents(lane, output, input.snapshot.events, cutoff)) changed = true;
+    if (foldLaneEvents(lane, output, events, cutoff)) changed = true;
   }
   if (changed) advanceRevision(output, input.snapshot.cutoff_at);
   return changed ? output : input.review;
@@ -403,59 +468,112 @@ export function reconcileResultPublications(input: {
   review: ReviewRecord;
   proposals: readonly LaneResultProposal[];
   snapshot: ActivitySnapshot;
-  consumedToolEventRefs: ReadonlySet<string>;
+  consumedToolEventRefs?: ReadonlySet<string>;
   now: Date;
 }): ReviewRecord {
-  const publicationEvents = input.snapshot.publications.map((publication) => {
-    if (publication === null || typeof publication !== 'object' || publication.activity === undefined) {
-      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'atomic publication is missing activity or attestation');
+  const cutoff = parseTimestamp(input.snapshot.cutoff_at, 'snapshot cutoff');
+  let ordinaryEvents: LaneActivityEvent[];
+  let diagnosticEvents;
+  try {
+    ordinaryEvents = input.snapshot.events.map(parseLaneActivityEvent);
+    diagnosticEvents = parseDiagnosticToolEvents(input.snapshot.diagnostic_events ?? []);
+  } catch (error) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
+  }
+  const attemptStartedAt = parseTimestamp(currentAttempt(input.review).started_at, 'attempt start');
+  for (const event of diagnosticEvents) {
+    const observed = parseTimestamp(event.observed_at, 'diagnostic event');
+    const claimedLane = input.review.lanes.find((lane) =>
+      lane.lane_id === event.lane_id && lane.attempt === event.attempt);
+    if (observed > cutoff || observed < attemptStartedAt
+      || (claimedLane?.provenance !== undefined
+        && observed < parseTimestamp(claimedLane.provenance.first_seen_at, 'lane first_seen_at'))) {
+      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'diagnostic event is future or stale for the frozen snapshot');
     }
-    return publication.activity;
+  }
+
+  const proposalsById = new Map<string, LaneResultProposal>();
+  for (const proposal of input.proposals) {
+    if (proposalsById.has(proposal.idempotency_key)) {
+      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'duplicate RESULT proposal identity');
+    }
+    proposalsById.set(proposal.idempotency_key, proposal);
+  }
+  const matchedRaw = input.snapshot.publications.flatMap((publication) => {
+    if (publication === null || typeof publication !== 'object' || Array.isArray(publication)) return [];
+    const publicationId = (publication as { publication_id?: unknown }).publication_id;
+    return typeof publicationId === 'string' && proposalsById.has(publicationId)
+      ? [{ publication, proposal: proposalsById.get(publicationId)! }]
+      : [];
   });
-  let output = foldActivitySnapshot({
-    review: input.review,
-    snapshot: { ...input.snapshot, events: [...input.snapshot.events, ...publicationEvents] },
-  });
-  const activityChanged = output !== input.review;
-  output = cloneRecord(output);
-  const consumed = new Set(input.consumedToolEventRefs);
-  const publicationIds = input.snapshot.publications.map((publication) => publication.publication_id);
-  if (new Set(publicationIds).size !== publicationIds.length) {
+  if (new Set(matchedRaw.map((pair) => pair.proposal.idempotency_key)).size !== matchedRaw.length) {
     throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'duplicate atomic PostTool publication');
   }
-  let changed = activityChanged;
-  for (const publication of input.snapshot.publications) {
-    const proposals = input.proposals.filter((proposal) => proposal.idempotency_key === publication.publication_id);
-    if (proposals.length !== 1) continue;
-    const proposal = proposals[0]!;
-    const lane = currentLane(output, proposal.lane_id);
-    if (lane.status === 'TIMED_OUT' || lane.status === 'FAILED' || lane.status === 'INVALID') continue;
-    let validatedPublication;
+
+  const consumed = new Set(input.review.lanes.flatMap((lane) =>
+    lane.last_processed_activity_ref === undefined ? [] : [lane.last_processed_activity_ref]));
+  const nonceSet = new Set<string>();
+  const validatedPairs: Array<{
+    proposal: LaneResultProposal;
+    publication: ResultPostToolPublication;
+  }> = [];
+  const lateLaneIds = new Set<string>();
+  for (const pair of matchedRaw) {
+    const lane = currentLane(input.review, pair.proposal.lane_id);
+    if (lane.status === 'COMPLETE') continue;
+    if (lane.status !== 'RUNNING') continue;
     try {
-      validatedPublication = validatePostToolPublication({
-        review: output,
+      const publication = validatePostToolPublication({
+        review: input.review,
         lane,
-        proposal,
-        publication,
+        proposal: pair.proposal,
+        publication: pair.publication,
         consumedToolEventRefs: consumed,
       });
+      if (nonceSet.has(publication.attestation.nonce)) {
+        throw new Error('attestation nonce is reused');
+      }
+      nonceSet.add(publication.attestation.nonce);
+      consumed.add(publication.attestation.tool_event_ref);
+      validatedPairs.push({ proposal: pair.proposal, publication });
     } catch (error) {
       if ((error as Error).message.includes('after the idle deadline')) {
-        lane.status = 'TIMED_OUT';
-        lane.failure_code = 'LANE_TIMED_OUT';
-        changed = true;
+        lateLaneIds.add(lane.lane_id);
         continue;
       }
       throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', (error as Error).message);
     }
+  }
+
+  const output = cloneRecord(input.review);
+  const publicationEvents = validatedPairs.map((pair) => pair.publication.activity);
+  let changed = false;
+  for (const lane of output.lanes.filter((candidate) => candidate.attempt === output.current_attempt)) {
+    if (lateLaneIds.has(lane.lane_id)) {
+      lane.status = 'TIMED_OUT';
+      lane.failure_code = 'LANE_TIMED_OUT';
+      changed = true;
+      continue;
+    }
+    if (foldLaneEvents(lane, output, [...ordinaryEvents, ...publicationEvents], cutoff)) changed = true;
+  }
+
+  for (const { proposal, publication } of validatedPairs) {
+    const lane = currentLane(output, proposal.lane_id);
+    if (lane.status !== 'RUNNING') continue;
     const evidence = validateLaneResultEvidence({
       review: output,
       lane,
       result: proposal.result,
       ...(lane.role === 'code-reviewer' ? { capabilityPlan: buildCapabilityPlan(filesForLane(output, lane)) } : {}),
-      toolEvents: [],
+      toolEvents: diagnosticEvents,
     });
     if (!evidence.valid || evidence.result === undefined) {
+      invalidLane(lane);
+      changed = true;
+      continue;
+    }
+    if (evidence.evidence_status === 'DEGRADED_EVIDENCE') {
       invalidLane(lane);
       changed = true;
       continue;
@@ -463,20 +581,21 @@ export function reconcileResultPublications(input: {
     lane.status = 'COMPLETE';
     lane.findings = evidence.result.findings;
     lane.diagnostic_ids = evidence.diagnostics.map((diagnostic) => diagnostic.diagnostic_id);
+    lane.last_processed_activity_ref = publication.activity.event_ref;
+    lane.last_processed_activity_at = publication.activity.observed_at;
     if (evidence.result.role === 'code-reviewer') lane.recommendation = evidence.result.recommendation;
     else lane.architectural_status = evidence.result.architectural_status;
-    if (evidence.evidence_status === 'DEGRADED_EVIDENCE') lane.failure_code = 'DIAGNOSTIC_DEGRADED';
-    if (lane.provenance !== undefined) lane.provenance.completed_at = validatedPublication.published_at;
+    if (lane.provenance !== undefined) lane.provenance.completed_at = publication.published_at;
     output.diagnostics.push(...evidence.diagnostics);
-    consumed.add(validatedPublication.attestation.tool_event_ref);
     changed = true;
   }
-  const currentLanes = output.lanes.filter((lane) => lane.attempt === output.current_attempt
-    || (lane.status === 'COMPLETE' && currentAttempt(output).lane_ids.includes(lane.lane_id)));
-  if (currentLanes.length === currentAttempt(output).lane_ids.length
-    && currentLanes.every((lane) => lane.status === 'COMPLETE')) {
+  const attempt = currentAttempt(output);
+  const frozenLanes = attempt.lane_ids.map((laneId) => currentLane(output, laneId));
+  if (frozenLanes.length === attempt.lane_ids.length
+    && frozenLanes.every((lane) => lane.status === 'COMPLETE')
+    && output.status !== 'READY_TO_SYNTHESIZE') {
     output.status = 'READY_TO_SYNTHESIZE';
-    currentAttempt(output).status = 'READY_TO_SYNTHESIZE';
+    attempt.status = 'READY_TO_SYNTHESIZE';
     changed = true;
   }
   if (changed) advanceRevision(output, input.now.toISOString());
@@ -491,39 +610,60 @@ export function resumeReview(input: {
   if (input.review.scope?.scope_hash !== input.current_scope_hash) {
     throw new ReviewCoordinatorError('SCOPE_DRIFT', 'scope hash changed before resume');
   }
+  if (input.review.status === 'FINALIZED') {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'finalized reviews cannot be resumed');
+  }
   if (input.review.status !== 'BLOCKED' || !input.review.resumable || input.review.resumable_reason === undefined) {
     throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'review is not explicitly resumable');
   }
   const output = cloneRecord(input.review);
+  const priorAttempt = currentAttempt(output);
   const nextAttempt = output.current_attempt + 1;
   const now = input.now.toISOString();
-  const replaceStatuses = new Set(['FAILED', 'TIMED_OUT', 'INVALID', 'PENDING', 'RUNNING']);
-  output.lanes = output.lanes.map((lane) => {
-    if (!replaceStatuses.has(lane.status)) return lane;
-    return {
-      lane_id: lane.lane_id,
-      role: lane.role,
-      batch_id: lane.batch_id,
-      scope_hash: lane.scope_hash,
+  const usedIds = new Set(output.lanes.map((lane) => lane.lane_id));
+  const bindings: ReviewAttempt['bindings'] = [];
+  const laneIds: string[] = [];
+  for (const binding of priorAttempt.bindings) {
+    const existing = output.lanes.find((lane) => lane.lane_id === binding.lane_id && lane.attempt === binding.attempt);
+    if (existing?.status === 'COMPLETE') {
+      bindings.push(structuredClone(binding));
+      laneIds.push(existing.lane_id);
+      continue;
+    }
+    let replacementId = `${binding.lane_id}-resume-${nextAttempt}`;
+    let suffix = 2;
+    while (usedIds.has(replacementId)) {
+      replacementId = `${binding.lane_id}-resume-${nextAttempt}-${suffix}`;
+      suffix += 1;
+    }
+    usedIds.add(replacementId);
+    const timeout = existing?.timeout_ms ?? output.effective_config.lane_timeout_ms;
+    const replacement: LaneRecord = {
+      lane_id: replacementId,
+      role: binding.role,
+      batch_id: binding.batch_id,
+      scope_hash: input.current_scope_hash,
       status: 'PENDING',
       attempt: nextAttempt,
-      timeout_ms: lane.timeout_ms,
-      idle_deadline_at: new Date(input.now.getTime() + lane.timeout_ms).toISOString(),
+      timeout_ms: timeout,
+      idle_deadline_at: new Date(input.now.getTime() + timeout).toISOString(),
       findings: [],
       diagnostic_ids: [],
     };
-  });
+    output.lanes.push(replacement);
+    bindings.push({
+      lane_id: replacementId,
+      attempt: nextAttempt,
+      role: binding.role,
+      batch_id: binding.batch_id,
+    });
+    laneIds.push(replacementId);
+  }
   const attempt: ReviewAttempt = {
     attempt: nextAttempt,
     status: 'REVIEWING',
-    bindings: output.lanes.map((lane) => ({
-      lane_id: lane.lane_id,
-      attempt: lane.attempt,
-      role: lane.role,
-      batch_id: lane.batch_id,
-      ...(lane.provenance === undefined ? {} : { thread_id: lane.provenance.thread_id }),
-    })),
-    lane_ids: output.lanes.map((lane) => lane.lane_id),
+    bindings,
+    lane_ids: laneIds,
     started_at: now,
     updated_at: now,
     resumable: false,
@@ -545,17 +685,24 @@ export function finalizeReview(input: {
   if (input.review.scope?.scope_hash !== input.current_scope_hash) {
     throw new ReviewCoordinatorError('SCOPE_DRIFT', 'scope hash changed before finalization');
   }
-  if (input.review.status === 'FINALIZED') return input.review;
-  const attempt = currentAttempt(input.review);
-  const lanes = attempt.lane_ids.map((laneId) => currentLane(input.review, laneId));
-  if (lanes.some((lane) => lane.status === 'PENDING' || lane.status === 'RUNNING')) {
-    throw new ReviewCoordinatorError('MISSING_LANE', 'every planned lane must reach a terminal state before finalization');
+  if (input.review.status === 'FINALIZED'
+    || (input.review.status === 'BLOCKED' && input.review.verdict !== undefined && input.review.finalized_at !== undefined)) {
+    return input.review;
   }
+  const attempt = currentAttempt(input.review);
+  const laneByBinding = attempt.bindings.map((binding) => input.review.lanes.find((lane) =>
+    lane.lane_id === binding.lane_id && lane.attempt === binding.attempt));
+  const lanes = laneByBinding.filter((lane): lane is LaneRecord => lane !== undefined);
+  const missingBindings = attempt.bindings.filter((_binding, index) => {
+    const lane = laneByBinding[index];
+    return lane === undefined || lane.status === 'PENDING' || lane.status === 'RUNNING';
+  });
   const reviewers = lanes.filter((lane) => lane.role === 'code-reviewer');
   const architect = lanes.find((lane) => lane.role === 'architect');
   const failures = [
+    ...missingBindings.map((binding) => `MISSING_LANE:${binding.lane_id}`),
     ...lanes
-      .filter((lane) => lane.status !== 'COMPLETE')
+      .filter((lane) => lane.status !== 'COMPLETE' && lane.status !== 'PENDING' && lane.status !== 'RUNNING')
       .map((lane) => lane.failure_code ?? `MISSING_LANE:${lane.lane_id}`),
     ...validateLaneIndependence({
       lanes: lanes.filter((lane) => lane.status === 'COMPLETE'),
@@ -569,7 +716,7 @@ export function finalizeReview(input: {
   const verdict = synthesizeVerdict({
     scope_status: input.review.scope?.status ?? 'PARTIAL_SCOPE',
     evidence_status: evidenceStatus,
-    expected_reviewer_lane_ids: lanes.filter((lane) => lane.role === 'code-reviewer').map((lane) => lane.lane_id),
+    expected_reviewer_lane_ids: attempt.bindings.filter((binding) => binding.role === 'code-reviewer').map((binding) => binding.lane_id),
     reviewer_lanes: reviewers,
     architect_lane: architect,
     failures,
@@ -585,12 +732,14 @@ export function finalizeReview(input: {
   outputAttempt.verdict = verdict;
   outputAttempt.finalized_at = now;
   const resumableLane = lanes.find((lane) => lane.status === 'FAILED' || lane.status === 'TIMED_OUT' || lane.status === 'INVALID');
-  output.resumable = output.status === 'BLOCKED' && resumableLane !== undefined;
+  output.resumable = output.status === 'BLOCKED' && (missingBindings.length > 0 || resumableLane !== undefined);
   outputAttempt.resumable = output.resumable;
-  if (resumableLane !== undefined) {
-    const reason = resumableLane.status === 'FAILED'
+  if (output.resumable) {
+    const reason = missingBindings.length > 0
+      ? 'MISSING_LANE'
+      : resumableLane!.status === 'FAILED'
       ? 'LANE_FAILED'
-      : resumableLane.status === 'TIMED_OUT'
+      : resumableLane!.status === 'TIMED_OUT'
         ? 'LANE_TIMED_OUT'
         : 'LANE_EVIDENCE_INVALID';
     output.resumable_reason = reason;
@@ -598,4 +747,299 @@ export function finalizeReview(input: {
   }
   advanceRevision(output, now);
   return output;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+async function readJson(path: string): Promise<unknown | undefined> {
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as unknown;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', `persisted review JSON is malformed: ${path}`);
+  }
+}
+
+function parsePersistedProposal(value: unknown, review: ReviewRecord): LaneResultProposal {
+  if (!isObject(value)) throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'persisted RESULT proposal is malformed');
+  const expected = [
+    'schema_version', 'state', 'review_id', 'attempt', 'lane_id', 'scope_hash',
+    'idempotency_key', 'payload_digest', 'result', 'proposed_at',
+  ];
+  if (Object.keys(value).length !== expected.length || Object.keys(value).some((key) => !expected.includes(key))
+    || value.schema_version !== 1 || value.state !== 'PENDING_HOST_ATTESTATION'
+    || value.review_id !== review.review_id || !Number.isSafeInteger(value.attempt) || (value.attempt as number) <= 0
+    || typeof value.lane_id !== 'string' || value.lane_id.length === 0 || value.lane_id.length > 160
+    || typeof value.scope_hash !== 'string' || !/^[0-9a-f]{64}$/u.test(value.scope_hash)
+    || typeof value.idempotency_key !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value.idempotency_key)
+    || typeof value.payload_digest !== 'string' || !/^[0-9a-f]{64}$/u.test(value.payload_digest)
+    || typeof value.proposed_at !== 'string' || !Number.isFinite(Date.parse(value.proposed_at))) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'persisted RESULT proposal schema or identity is invalid');
+  }
+  if (canonicalLanePayloadDigest(value.result) !== value.payload_digest) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'persisted RESULT proposal digest is invalid');
+  }
+  return value as unknown as LaneResultProposal;
+}
+
+function deterministicTransactionId(value: unknown): string {
+  const characters = createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex').slice(0, 32).split('');
+  characters[12] = '4';
+  characters[16] = '8';
+  const hex = characters.join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function reviewEffect(record: ReviewRecord): DurableTransactionEffect {
+  return {
+    name: 'review',
+    mode: 'APPLY_REVIEW_REVISION',
+    target: { area: 'REVIEW_STATE', path: `${record.review_id}/review.json` },
+    payload: record,
+  };
+}
+
+async function readPersistedReview(paths: ReviewPersistencePaths, reviewId: string): Promise<ReviewRecord> {
+  const value = await readJson(join(paths.reviewRoot, reviewId, 'review.json'));
+  if (!isObject(value) || value.review_id !== reviewId || !Number.isSafeInteger(value.revision)) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'persisted review record is missing or malformed');
+  }
+  if (paths.session_id !== undefined && value.session_id !== paths.session_id) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'persisted review ownership conflicts');
+  }
+  return value as unknown as ReviewRecord;
+}
+
+export interface DurableReviewCoordinator {
+  start(input: { record: ReviewRecord; idempotency_key: string; crashAt?: DurableTransactionBoundary }): Promise<ReviewRecord>;
+  get(reviewId: string): Promise<ReviewRecord>;
+  recordStart(input: {
+    event: Extract<ReviewRecordLaneEvent, { event: 'START' }>;
+    tracker: unknown;
+    now: Date;
+  }): Promise<ReviewRecord>;
+  recordResult(input: {
+    event: Extract<ReviewRecordLaneEvent, { event: 'RESULT' }>;
+    source: 'MCP' | 'CLI';
+    now: Date;
+  }): Promise<LaneResultProposal>;
+  reconcile(input: {
+    review_id: string;
+    snapshot: ActivitySnapshot;
+    now: Date;
+    crashAt?: DurableTransactionBoundary;
+  }): Promise<ReviewRecord>;
+  resume(input: { review_id: string; current_scope_hash: string; now: Date; idempotency_key: string }): Promise<ReviewRecord>;
+  finalize(input: { review_id: string; current_scope_hash: string; now: Date; idempotency_key: string }): Promise<ReviewRecord>;
+}
+
+export function createDurableReviewCoordinator(context: ReviewPersistenceContext): DurableReviewCoordinator {
+  let pathsPromise: Promise<ReviewPersistencePaths> | undefined;
+  const paths = (): Promise<ReviewPersistencePaths> => {
+    pathsPromise ??= resolveReviewPersistencePaths(context);
+    return pathsPromise;
+  };
+  const recoverAndRead = async (reviewId: string): Promise<ReviewRecord> => {
+    const resolved = await paths();
+    await recoverPendingReviewTransactions(resolved);
+    return await readPersistedReview(resolved, reviewId);
+  };
+
+  return {
+    async start({ record, idempotency_key: idempotencyKey, crashAt }) {
+      const resolved = await paths();
+      // START-scoped journals are retained and Task 2 revalidates their revision-one
+      // review effect on every root scan. A locator-backed REVIEW transaction provides
+      // the same create-once allocation and root recovery without becoming stale after
+      // the first lane mutation.
+      await runDurableTransaction(resolved, {
+        idempotency_key: idempotencyKey,
+        review_id: record.review_id,
+        operation: 'START_REVIEW',
+        input: { review_id: record.review_id, scope_hash: record.scope?.scope_hash },
+        expected_revision: 0,
+        effects: [
+          reviewEffect(record),
+          {
+            name: 'active-overlay',
+            mode: 'CREATE_ONCE_JSON',
+            target: { area: 'REVIEW_STATE', path: 'active.json' },
+            payload: { schema_version: 1, review_id: record.review_id, status: record.status },
+          },
+        ],
+        response: record,
+      }, crashAt === undefined ? {} : { crashAt });
+      return await readPersistedReview(resolved, record.review_id);
+    },
+
+    async get(reviewId) {
+      return await recoverAndRead(reviewId);
+    },
+
+    async recordStart({ event, tracker, now }) {
+      const resolved = await paths();
+      const current = await recoverAndRead(event.review_id);
+      const output = applyLaneStart({ review: current, event, tracker, now });
+      if (output === current) return current;
+      await runDurableTransaction(resolved, {
+        idempotency_key: event.idempotency_key,
+        review_id: event.review_id,
+        operation: 'START_LANE',
+        input: event,
+        expected_revision: current.revision,
+        effects: [
+          {
+            name: 'lane', mode: 'CREATE_ONCE_JSON',
+            target: { area: 'REVIEW_STATE', path: `${event.review_id}/lanes/${event.lane_id}-attempt-${event.attempt}/start` },
+            payload: event,
+          },
+          reviewEffect(output),
+        ],
+        response: output,
+      });
+      return await readPersistedReview(resolved, event.review_id);
+    },
+
+    async recordResult({ event, source, now }) {
+      const resolved = await paths();
+      const current = await recoverAndRead(event.review_id);
+      const proposalPath = join(resolved.reviewRoot, event.review_id, 'submissions', event.idempotency_key, 'proposal');
+      const persisted = await readJson(proposalPath);
+      const existingProposal = persisted === undefined ? undefined : parsePersistedProposal(persisted, current);
+      const proposal = createLaneResultProposal({
+        review: current,
+        event,
+        source,
+        now,
+        ...(existingProposal === undefined ? {} : { existingProposal }),
+      });
+      if (existingProposal !== undefined) return proposal;
+      await runDurableTransaction(resolved, {
+        idempotency_key: event.idempotency_key,
+        review_id: event.review_id,
+        operation: 'PROPOSE_LANE_RESULT',
+        input: event,
+        expected_revision: current.revision,
+        effects: [{
+          name: 'proposal', mode: 'CREATE_ONCE_JSON',
+          target: { area: 'REVIEW_STATE', path: `${event.review_id}/submissions/${event.idempotency_key}/proposal` },
+          payload: proposal,
+        }],
+        response: proposal,
+      });
+      return proposal;
+    },
+
+    async reconcile({ review_id: reviewId, snapshot, now, crashAt }) {
+      const resolved = await paths();
+      await recoverPendingReviewTransactions(resolved);
+      const current = await readPersistedReview(resolved, reviewId);
+      const persistedProposals: LaneResultProposal[] = [];
+      const persistedPublications: unknown[] = [];
+      const notifiedIds = new Set(snapshot.publications.flatMap((publication) => {
+        if (!isObject(publication) || typeof publication.publication_id !== 'string'
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(publication.publication_id)) return [];
+        return [publication.publication_id];
+      }));
+      for (const id of [...notifiedIds].sort()) {
+        const proposalValue = await readJson(join(resolved.reviewRoot, reviewId, 'submissions', id, 'proposal'));
+        const publicationValue = await readJson(join(resolved.reviewRoot, reviewId, 'submissions', id, 'post-tool'));
+        if (proposalValue === undefined || publicationValue === undefined) continue;
+        persistedProposals.push(parsePersistedProposal(proposalValue, current));
+        persistedPublications.push(publicationValue);
+      }
+      const persistedSnapshot: ActivitySnapshot = { ...snapshot, publications: persistedPublications };
+      const output = reconcileResultPublications({
+        review: current,
+        proposals: persistedProposals,
+        snapshot: persistedSnapshot,
+        now,
+      });
+      if (output === current) return current;
+      const accepted = output.lanes.filter((lane) => {
+        const before = current.lanes.find((candidate) => candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
+        return lane.status === 'COMPLETE' && before?.status !== 'COMPLETE';
+      });
+      const key = deterministicTransactionId({
+        review_id: reviewId,
+        attempt: current.current_attempt,
+        cutoff_at: snapshot.cutoff_at,
+        publication_refs: accepted.map((lane) => lane.last_processed_activity_ref).sort(),
+        revision: current.revision,
+      });
+      const effects: DurableTransactionEffect[] = [];
+      if (accepted.length > 0) {
+        effects.push({
+          name: 'consume', mode: 'CREATE_ONCE_JSON',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/submissions/${key}/consumed` },
+          payload: { schema_version: 1, state: 'CONSUMED', review_id: reviewId, idempotency_key: key, consumed_at: snapshot.cutoff_at },
+        });
+      }
+      for (const lane of accepted) {
+        const proposal = persistedProposals.find((candidate) => candidate.lane_id === lane.lane_id && candidate.attempt === lane.attempt);
+        if (proposal === undefined) throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'terminal lane has no durable proposal');
+        effects.push({
+          name: 'lane', mode: 'CREATE_ONCE_JSON',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/lanes/${lane.lane_id}-attempt-${lane.attempt}/terminal` },
+          payload: {
+            event: 'RESULT', review_id: reviewId, attempt: lane.attempt, lane_id: lane.lane_id,
+            scope_hash: lane.scope_hash, result: proposal.result, idempotency_key: key,
+          },
+        });
+      }
+      effects.push(reviewEffect(output));
+      await runDurableTransaction(resolved, {
+        idempotency_key: key,
+        review_id: reviewId,
+        operation: 'RECONCILE_RESULT_PUBLICATIONS',
+        input: { cutoff_at: snapshot.cutoff_at, publication_ids: persistedProposals.map((proposal) => proposal.idempotency_key).sort() },
+        expected_revision: current.revision,
+        effects,
+        response: output,
+      }, crashAt === undefined ? {} : { crashAt });
+      return await readPersistedReview(resolved, reviewId);
+    },
+
+    async resume({ review_id: reviewId, current_scope_hash: currentScopeHash, now, idempotency_key: key }) {
+      const resolved = await paths();
+      const current = await recoverAndRead(reviewId);
+      const output = resumeReview({ review: current, current_scope_hash: currentScopeHash, now });
+      await runDurableTransaction(resolved, {
+        idempotency_key: key, review_id: reviewId, operation: 'RESUME_REVIEW',
+        input: { current_scope_hash: currentScopeHash }, expected_revision: current.revision,
+        effects: [
+          reviewEffect(output),
+          {
+            name: 'active-overlay', mode: 'CREATE_ONCE_JSON', target: { area: 'REVIEW_STATE', path: 'active.json' },
+            payload: { schema_version: 1, review_id: reviewId, status: 'REVIEWING' },
+          },
+        ],
+        response: output,
+      });
+      return await readPersistedReview(resolved, reviewId);
+    },
+
+    async finalize({ review_id: reviewId, current_scope_hash: currentScopeHash, now, idempotency_key: key }) {
+      const resolved = await paths();
+      const current = await recoverAndRead(reviewId);
+      const output = finalizeReview({ review: current, current_scope_hash: currentScopeHash, now });
+      if (output === current) return current;
+      await runDurableTransaction(resolved, {
+        idempotency_key: key, review_id: reviewId, operation: 'FINALIZE_REVIEW',
+        input: { current_scope_hash: currentScopeHash }, expected_revision: current.revision,
+        effects: [
+          reviewEffect(output),
+          { name: 'report', mode: 'CREATE_ONCE_JSON', target: { area: 'FINAL_REVIEWS', path: `${reviewId}.json` }, payload: projectFinalReviewArtifact(output) },
+          { name: 'active-overlay', mode: 'REMOVE_MATCHING_ACTIVE', target: { area: 'REVIEW_STATE', path: 'active.json' }, review_id: reviewId },
+        ],
+        response: output,
+      });
+      return await readPersistedReview(resolved, reviewId);
+    },
+  };
 }

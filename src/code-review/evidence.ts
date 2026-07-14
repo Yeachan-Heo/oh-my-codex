@@ -20,6 +20,7 @@ import {
 import { validateReviewDiagnostics, validateReviewFinding } from './redaction.js';
 
 export interface NativeTrackerSnapshot {
+  schema_version: 1;
   session_id: string;
   thread_id: string;
   tracker_lane_id: string;
@@ -31,8 +32,14 @@ export interface NativeTrackerSnapshot {
 }
 
 export interface DiagnosticToolEvent {
+  schema_version: 1;
+  session_id: string;
+  review_id: string;
+  attempt: number;
+  lane_id: string;
+  child_thread_id: string;
   event_ref: string;
-  thread_id: string;
+  observed_at: string;
   tool_name?: string;
   program?: string;
   args?: string[];
@@ -58,6 +65,79 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   const expected = new Set(keys);
   return Object.keys(value).length === expected.size
     && Object.keys(value).every((key) => expected.has(key));
+}
+
+function hasStructuredKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
+  return required.every((key) => Object.hasOwn(value, key))
+    && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+}
+
+function boundedString(value: unknown, name: string, maximum = 160): string {
+  if (typeof value !== 'string' || value.length === 0 || [...value].length > maximum
+    || value.includes('\0') || /[\r\n]/u.test(value)) {
+    throw new Error(`${name} must be a bounded string`);
+  }
+  return value;
+}
+
+function positiveInteger(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error(`${name} must be a positive integer`);
+  return value as number;
+}
+
+function hash(value: unknown, name: string): string {
+  const parsed = boundedString(value, name, 64);
+  if (!/^[0-9a-f]{64}$/u.test(parsed)) throw new Error(`${name} must be a lower-case SHA-256 digest`);
+  return parsed;
+}
+
+function uuid(value: unknown, name: string): string {
+  const parsed = boundedString(value, name, 36);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(parsed)) {
+    throw new Error(`${name} must be a cryptographic UUID`);
+  }
+  return parsed.toLowerCase();
+}
+
+function timestampString(value: unknown, name: string): string {
+  const parsed = boundedString(value, name, 64);
+  if (!Number.isFinite(Date.parse(parsed))) throw new Error(`${name} timestamp is invalid`);
+  return parsed;
+}
+
+function boundedArgs(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.length > 128) throw new Error(`${name} must be a bounded array`);
+  return value.map((item) => boundedString(item, name, REVIEW_LIMITS.path));
+}
+
+function parseNativeTracker(value: unknown): NativeTrackerSnapshot {
+  if (!isPlainObject(value) || !hasStructuredKeys(value, [
+    'schema_version', 'session_id', 'thread_id', 'tracker_lane_id', 'tracker_path', 'first_seen_at',
+  ], ['last_seen_at', 'completed_at', 'agent_id']) || value.schema_version !== 1) {
+    throw new Error('hook-owned tracker schema or fields are invalid');
+  }
+  const firstSeen = timestampString(value.first_seen_at, 'tracker first_seen_at');
+  const lastSeen = value.last_seen_at === undefined ? undefined : timestampString(value.last_seen_at, 'tracker last_seen_at');
+  const completed = value.completed_at === undefined ? undefined : timestampString(value.completed_at, 'tracker completed_at');
+  if ((lastSeen !== undefined && Date.parse(lastSeen) < Date.parse(firstSeen))
+    || (completed !== undefined && Date.parse(completed) < Date.parse(firstSeen))) {
+    throw new Error('tracker timestamps are stale');
+  }
+  return {
+    schema_version: 1,
+    session_id: boundedString(value.session_id, 'tracker session_id'),
+    thread_id: boundedString(value.thread_id, 'tracker thread_id'),
+    tracker_lane_id: boundedString(value.tracker_lane_id, 'tracker lane_id'),
+    tracker_path: boundedString(value.tracker_path, 'tracker path', REVIEW_LIMITS.path),
+    first_seen_at: firstSeen,
+    ...(lastSeen === undefined ? {} : { last_seen_at: lastSeen }),
+    ...(completed === undefined ? {} : { completed_at: completed }),
+    ...(value.agent_id === undefined ? {} : { agent_id: boundedString(value.agent_id, 'tracker agent_id') }),
+  };
 }
 
 function canonicalize(value: unknown): unknown {
@@ -102,11 +182,12 @@ export function validateLaneStart(input: {
   review: ReviewRecord;
   lane: LaneRecord;
   thread_id: string;
-  tracker: NativeTrackerSnapshot | undefined;
+  tracker: unknown;
   alreadyBoundThreadIds: ReadonlySet<string>;
 }): LaneProvenance {
-  const { review, lane, tracker } = input;
-  if (tracker === undefined) throw new Error('hook-owned tracker provenance is missing');
+  const { review, lane } = input;
+  if (input.tracker === undefined) throw new Error('hook-owned tracker provenance is missing');
+  const tracker = parseNativeTracker(input.tracker);
   if (review.status !== 'REVIEWING' || lane.attempt !== review.current_attempt || lane.status !== 'PENDING') {
     throw new Error('lane is not pending in the current review attempt');
   }
@@ -238,12 +319,58 @@ function sameArgs(left: readonly string[] | undefined, right: readonly string[] 
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
+export function parseDiagnosticToolEvents(value: unknown): DiagnosticToolEvent[] {
+  if (!Array.isArray(value) || value.length > 1_024) throw new Error('diagnostic tool events must be a bounded array');
+  const seen = new Set<string>();
+  return value.map((candidate): DiagnosticToolEvent => {
+    if (!isPlainObject(candidate) || !hasStructuredKeys(candidate, [
+      'schema_version', 'session_id', 'review_id', 'attempt', 'lane_id', 'child_thread_id',
+      'event_ref', 'observed_at',
+    ], ['tool_name', 'program', 'args']) || candidate.schema_version !== 1) {
+      throw new Error('diagnostic tool event schema or fields are malformed');
+    }
+    const toolName = candidate.tool_name === undefined
+      ? undefined
+      : boundedString(candidate.tool_name, 'diagnostic tool_name');
+    const program = candidate.program === undefined
+      ? undefined
+      : boundedString(candidate.program, 'diagnostic program', REVIEW_LIMITS.path);
+    const args = candidate.args === undefined ? undefined : boundedArgs(candidate.args, 'diagnostic args');
+    if ((toolName === undefined) === (program === undefined) || (toolName !== undefined && args !== undefined)) {
+      throw new Error('diagnostic tool event must contain exactly one provenance form');
+    }
+    const eventRef = boundedString(candidate.event_ref, 'diagnostic event_ref', REVIEW_LIMITS.path);
+    if (seen.has(eventRef)) throw new Error('diagnostic event_ref is duplicated');
+    seen.add(eventRef);
+    return {
+      schema_version: 1,
+      session_id: boundedString(candidate.session_id, 'diagnostic session_id'),
+      review_id: uuid(candidate.review_id, 'diagnostic review_id'),
+      attempt: positiveInteger(candidate.attempt, 'diagnostic attempt'),
+      lane_id: boundedString(candidate.lane_id, 'diagnostic lane_id'),
+      child_thread_id: boundedString(candidate.child_thread_id, 'diagnostic child_thread_id'),
+      event_ref: eventRef,
+      observed_at: timestampString(candidate.observed_at, 'diagnostic observed_at'),
+      ...(toolName === undefined ? {} : { tool_name: toolName }),
+      ...(program === undefined ? {} : { program }),
+      ...(args === undefined ? {} : { args }),
+    };
+  });
+}
+
 function diagnosticProvenanceMatches(
   diagnostic: DiagnosticSubmission,
   event: DiagnosticToolEvent,
-  threadId: string,
+  review: ReviewRecord,
+  lane: LaneRecord,
 ): boolean {
-  if (event.thread_id !== threadId) return false;
+  if (event.session_id !== review.session_id
+    || event.review_id !== review.review_id
+    || event.attempt !== review.current_attempt
+    || event.lane_id !== lane.lane_id
+    || event.child_thread_id !== lane.provenance?.thread_id
+    || Date.parse(event.observed_at) < Date.parse(lane.provenance.first_seen_at)
+    || Date.parse(event.observed_at) > Date.parse(lane.idle_deadline_at)) return false;
   if (diagnostic.tool_name !== undefined) {
     return event.tool_name === diagnostic.tool_name
       && diagnostic.program === undefined
@@ -308,14 +435,20 @@ export function validateLaneResultEvidence(input: {
 
   const evaluation = evaluateCapabilityEvidence(
     plan,
-    result.diagnostics.map((diagnostic) => ({
-      capability: diagnostic.capability,
-      execution: diagnostic.execution,
-      outcome: diagnostic.outcome,
-      ...(diagnostic.source_ref === undefined ? {} : { source_ref: diagnostic.source_ref }),
-      ...(diagnostic.program === undefined ? {} : { program: diagnostic.program }),
-      ...(diagnostic.args === undefined ? {} : { args: diagnostic.args }),
-    })),
+    result.diagnostics.map((diagnostic) => diagnostic.execution === 'ACCEPTED_EQUIVALENT'
+      ? {
+          capability: diagnostic.capability,
+          execution: diagnostic.execution,
+          outcome: diagnostic.outcome,
+          source_ref: diagnostic.source_ref,
+          program: diagnostic.program,
+          args: diagnostic.args,
+        }
+      : {
+          capability: diagnostic.capability,
+          execution: diagnostic.execution,
+          outcome: diagnostic.outcome,
+        }),
     input.review.effective_config.accepted_equivalents,
   );
   if (evaluation.maximum_recommendation === 'REQUEST CHANGES') {
@@ -327,7 +460,7 @@ export function validateLaneResultEvidence(input: {
   const diagnostics: DiagnosticSummary[] = result.diagnostics.map((diagnostic) => {
     const matches = events.filter((event) => event.event_ref === diagnostic.event_ref);
     if (matches.length !== 1
-      || !diagnosticProvenanceMatches(diagnostic, matches[0]!, input.lane.provenance!.thread_id)) {
+      || !diagnosticProvenanceMatches(diagnostic, matches[0]!, input.review, input.lane)) {
       provenanceReasons.push(`DIAGNOSTIC_EVENT_PROVENANCE_UNVERIFIED:${diagnostic.capability}`);
     }
     return { ...diagnostic, thread_id: input.lane.provenance!.thread_id };
@@ -343,17 +476,62 @@ export function validateLaneResultEvidence(input: {
   };
 }
 
-function exactPublication(value: unknown): value is ResultPostToolPublication {
+export function parseLaneActivityEvent(value: unknown): import('./contract.js').LaneActivityEvent {
   if (!isPlainObject(value) || !hasExactKeys(value, [
-    'schema_version', 'publication_id', 'published_at', 'activity', 'attestation',
-  ]) || value.schema_version !== 1 || !isPlainObject(value.activity) || !isPlainObject(value.attestation)) return false;
-  return hasExactKeys(value.activity, [
     'schema_version', 'session_id', 'review_id', 'attempt', 'lane_id', 'child_thread_id',
     'event_ref', 'event_kind', 'observed_at',
-  ]) && hasExactKeys(value.attestation, [
+  ]) || value.schema_version !== 1
+    || !(['TOOL_START', 'TOOL_END', 'AGENT_PROGRESS', 'RESULT_POST_TOOL'] as const).includes(value.event_kind as never)) {
+    throw new Error('activity event schema or fields are malformed');
+  }
+  return {
+    schema_version: 1,
+    session_id: boundedString(value.session_id, 'activity session_id'),
+    review_id: uuid(value.review_id, 'activity review_id'),
+    attempt: positiveInteger(value.attempt, 'activity attempt'),
+    lane_id: boundedString(value.lane_id, 'activity lane_id'),
+    child_thread_id: boundedString(value.child_thread_id, 'activity child_thread_id'),
+    event_ref: boundedString(value.event_ref, 'activity event_ref', REVIEW_LIMITS.path),
+    event_kind: value.event_kind as import('./contract.js').LaneActivityEvent['event_kind'],
+    observed_at: timestampString(value.observed_at, 'activity observed_at'),
+  };
+}
+
+function parsePublication(value: unknown): ResultPostToolPublication {
+  if (!isPlainObject(value) || !hasExactKeys(value, [
+    'schema_version', 'publication_id', 'published_at', 'activity', 'attestation',
+  ]) || value.schema_version !== 1 || !isPlainObject(value.attestation)) {
+    throw new Error('atomic PostTool publication or attestation is malformed');
+  }
+  const activity = parseLaneActivityEvent(value.activity);
+  if (activity.event_kind !== 'RESULT_POST_TOOL' || !hasExactKeys(value.attestation, [
     'schema_version', 'session_id', 'root_thread_id', 'review_id', 'attempt', 'lane_id',
     'child_thread_id', 'scope_hash', 'payload_digest', 'tool_event_ref', 'nonce', 'published_at',
-  ]);
+  ]) || value.attestation.schema_version !== 1) {
+    throw new Error('atomic PostTool publication activity or attestation is malformed');
+  }
+  const nonce = boundedString(value.attestation.nonce, 'attestation nonce', 160);
+  if (!/^[A-Za-z0-9_-]{8,160}$/u.test(nonce)) throw new Error('attestation nonce format is invalid');
+  return {
+    schema_version: 1,
+    publication_id: uuid(value.publication_id, 'publication_id'),
+    published_at: timestampString(value.published_at, 'publication published_at'),
+    activity: { ...activity, event_kind: 'RESULT_POST_TOOL' },
+    attestation: {
+      schema_version: 1,
+      session_id: boundedString(value.attestation.session_id, 'attestation session_id'),
+      root_thread_id: boundedString(value.attestation.root_thread_id, 'attestation root_thread_id'),
+      review_id: uuid(value.attestation.review_id, 'attestation review_id'),
+      attempt: positiveInteger(value.attestation.attempt, 'attestation attempt'),
+      lane_id: boundedString(value.attestation.lane_id, 'attestation lane_id'),
+      child_thread_id: boundedString(value.attestation.child_thread_id, 'attestation child_thread_id'),
+      scope_hash: hash(value.attestation.scope_hash, 'attestation scope_hash'),
+      payload_digest: hash(value.attestation.payload_digest, 'attestation payload_digest'),
+      tool_event_ref: boundedString(value.attestation.tool_event_ref, 'attestation tool_event_ref', REVIEW_LIMITS.path),
+      nonce,
+      published_at: timestampString(value.attestation.published_at, 'attestation published_at'),
+    },
+  };
 }
 
 export function validatePostToolPublication(input: {
@@ -363,8 +541,7 @@ export function validatePostToolPublication(input: {
   publication: unknown;
   consumedToolEventRefs: ReadonlySet<string>;
 }): ResultPostToolPublication {
-  if (!exactPublication(input.publication)) throw new Error('atomic PostTool publication or attestation is malformed');
-  const publication = input.publication;
+  const publication = parsePublication(input.publication);
   const activity = publication.activity;
   const attestation = publication.attestation;
   const provenance = input.lane.provenance;
@@ -376,6 +553,13 @@ export function validatePostToolPublication(input: {
     || input.consumedToolEventRefs.has(attestation.tool_event_ref)) {
     throw new Error('publication identity is reused or does not match the proposal');
   }
+  uuid(input.proposal.idempotency_key, 'proposal idempotency_key');
+  uuid(input.proposal.review_id, 'proposal review_id');
+  positiveInteger(input.proposal.attempt, 'proposal attempt');
+  boundedString(input.proposal.lane_id, 'proposal lane_id');
+  hash(input.proposal.scope_hash, 'proposal scope_hash');
+  hash(input.proposal.payload_digest, 'proposal payload_digest');
+  timestampString(input.proposal.proposed_at, 'proposal proposed_at');
   if (activity.session_id !== input.review.session_id
     || attestation.session_id !== input.review.session_id
     || attestation.root_thread_id !== input.review.root_thread_id

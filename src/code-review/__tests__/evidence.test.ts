@@ -127,6 +127,20 @@ function reviewerResult(overrides: Record<string, unknown> = {}): Record<string,
   };
 }
 
+function toolEvent(eventRef: string, childThreadId: string, toolName: string) {
+  return {
+    schema_version: 1 as const,
+    session_id: 'session-1',
+    review_id: REVIEW_ID,
+    attempt: 1,
+    lane_id: 'reviewer-batch-1',
+    child_thread_id: childThreadId,
+    event_ref: eventRef,
+    observed_at: '2026-07-14T00:04:00.000Z',
+    tool_name: toolName,
+  };
+}
+
 describe('lane evidence validation', () => {
   it('binds START only to the hook-derived current-session tracker lane', () => {
     const pending = lane({ status: 'PENDING', provenance: undefined });
@@ -136,6 +150,7 @@ describe('lane evidence validation', () => {
       lane: current.lanes[0]!,
       thread_id: 'child-reviewer',
       tracker: {
+        schema_version: 1,
         session_id: 'session-1',
         thread_id: 'child-reviewer',
         tracker_lane_id: 'reviewer-batch-1',
@@ -159,16 +174,44 @@ describe('lane evidence validation', () => {
     };
     assert.throws(() => validateLaneStart({ ...base, tracker: undefined }), /tracker|provenance/i);
     for (const tracker of [
-      { session_id: 'other', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
-      { session_id: 'session-1', thread_id: 'other-child', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
-      { session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'architect-global', tracker_path: 'tracker', first_seen_at: NOW },
-      { session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: '2026-07-13T23:59:59.999Z' },
+      { schema_version: 1, session_id: 'other', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
+      { schema_version: 1, session_id: 'session-1', thread_id: 'other-child', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
+      { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'architect-global', tracker_path: 'tracker', first_seen_at: NOW },
+      { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: '2026-07-13T23:59:59.999Z' },
     ]) assert.throws(() => validateLaneStart({ ...base, tracker }), /tracker|attempt|lane|session|thread/i);
     assert.throws(() => validateLaneStart({
       ...base,
-      tracker: { session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
+      tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
       alreadyBoundThreadIds: new Set(['child-reviewer']),
     }), /bound|reuse/i);
+  });
+
+  it('parses hook trackers as strict unknown data with exact bounded fields', () => {
+    const pending = lane({ status: 'PENDING', provenance: undefined });
+    const current = review([pending]);
+    const base = {
+      review: current,
+      lane: pending,
+      thread_id: 'child-reviewer',
+      alreadyBoundThreadIds: new Set<string>(),
+    };
+    const trusted = {
+      schema_version: 1,
+      session_id: 'session-1',
+      thread_id: 'child-reviewer',
+      tracker_lane_id: 'reviewer-batch-1',
+      tracker_path: '.omx/tracker/child-reviewer.json',
+      first_seen_at: NOW,
+    };
+    assert.equal(validateLaneStart({ ...base, tracker: trusted as never }).thread_id, 'child-reviewer');
+    for (const candidate of [
+      { ...trusted, schema_version: 2 },
+      { ...trusted, unexpected: true },
+      { ...trusted, first_seen_at: 'not-a-time' },
+      { ...trusted, tracker_path: 'x'.repeat(1_025) },
+    ]) {
+      assert.throws(() => validateLaneStart({ ...base, tracker: candidate as never }), /tracker|schema|field|timestamp|path/i);
+    }
   });
 
   it('requires exact reviewer capability coverage and lane-owned tool provenance', () => {
@@ -180,8 +223,8 @@ describe('lane evidence validation', () => {
       result: reviewerResult(),
       capabilityPlan: plan,
       toolEvents: [
-        { event_ref: 'tool-lsp-1', thread_id: 'child-reviewer', tool_name: 'mcp__code_intel__diagnostics' },
-        { event_ref: 'tool-ast-1', thread_id: 'child-reviewer', tool_name: 'mcp__code_intel__ast' },
+        toolEvent('tool-lsp-1', 'child-reviewer', 'mcp__code_intel__diagnostics'),
+        toolEvent('tool-ast-1', 'child-reviewer', 'mcp__code_intel__ast'),
       ],
     });
     assert.equal(valid.valid, true);
@@ -212,8 +255,8 @@ describe('lane evidence validation', () => {
       result: reviewerResult(),
       capabilityPlan: buildCapabilityPlan(current.scope!.files),
       toolEvents: [
-        { event_ref: 'tool-lsp-1', thread_id: 'other-child', tool_name: 'mcp__code_intel__diagnostics' },
-        { event_ref: 'tool-ast-1', thread_id: 'child-reviewer', tool_name: 'wrong-tool' },
+        toolEvent('tool-lsp-1', 'other-child', 'mcp__code_intel__diagnostics'),
+        toolEvent('tool-ast-1', 'child-reviewer', 'wrong-tool'),
       ],
     });
     assert.equal(result.valid, true);
@@ -285,7 +328,7 @@ describe('lane evidence validation', () => {
         scope_hash: HASH,
         payload_digest: proposal.payload_digest,
         tool_event_ref: 'result-tool-1',
-        nonce: 'nonce-1',
+        nonce: 'nonce_123',
         published_at: '2026-07-14T00:04:00.000Z',
       },
     };
@@ -305,6 +348,55 @@ describe('lane evidence validation', () => {
       { ...publication, attestation: { ...publication.attestation, scope_hash: 'b'.repeat(64) } },
     ]) assert.throws(() => validatePostToolPublication({ review: current, lane: current.lanes[0]!, proposal, publication: mutated, consumedToolEventRefs: new Set() }), /publication|attestation|identity|digest|child|scope/i);
     assert.throws(() => validatePostToolPublication({ review: current, lane: current.lanes[0]!, proposal, publication, consumedToolEventRefs: new Set(['result-tool-1']) }), /consum|reuse/i);
+  });
+
+  it('strictly rejects malformed publication fields, nonce formats, oversized refs, and unknown keys', () => {
+    const current = review();
+    const result = reviewerResult();
+    const proposal: LaneResultProposal = {
+      schema_version: 1,
+      state: 'PENDING_HOST_ATTESTATION',
+      review_id: REVIEW_ID,
+      attempt: 1,
+      lane_id: 'reviewer-batch-1',
+      scope_hash: HASH,
+      idempotency_key: RESULT_KEY,
+      payload_digest: canonicalLanePayloadDigest(result),
+      result: result as never,
+      proposed_at: NOW,
+    };
+    const valid: ResultPostToolPublication = {
+      schema_version: 1,
+      publication_id: RESULT_KEY,
+      published_at: '2026-07-14T00:04:00.000Z',
+      activity: {
+        schema_version: 1, session_id: 'session-1', review_id: REVIEW_ID, attempt: 1,
+        lane_id: 'reviewer-batch-1', child_thread_id: 'child-reviewer', event_ref: 'result-tool-1',
+        event_kind: 'RESULT_POST_TOOL', observed_at: '2026-07-14T00:04:00.000Z',
+      },
+      attestation: {
+        schema_version: 1, session_id: 'session-1', root_thread_id: 'root-1', review_id: REVIEW_ID,
+        attempt: 1, lane_id: 'reviewer-batch-1', child_thread_id: 'child-reviewer', scope_hash: HASH,
+        payload_digest: proposal.payload_digest, tool_event_ref: 'result-tool-1', nonce: 'nonce_123',
+        published_at: '2026-07-14T00:04:00.000Z',
+      },
+    };
+    const malformed: unknown[] = [
+      { ...valid, extra: true },
+      { ...valid, attestation: { ...valid.attestation, nonce: 'bad nonce!' } },
+      { ...valid, activity: { ...valid.activity, event_kind: 'TOOL_END' } },
+      { ...valid, activity: { ...valid.activity, event_ref: 'x'.repeat(1_025) }, attestation: { ...valid.attestation, tool_event_ref: 'x'.repeat(1_025) } },
+      { ...valid, published_at: 'not-a-time' },
+    ];
+    for (const publication of malformed) {
+      assert.throws(() => validatePostToolPublication({
+        review: current,
+        lane: current.lanes[0]!,
+        proposal,
+        publication,
+        consumedToolEventRefs: new Set(),
+      }), /publication|attestation|nonce|event|timestamp|bounded|malformed/i);
+    }
   });
 
   it('enforces distinct overlapping initial lanes and only exempts explicit resume overlap', () => {
