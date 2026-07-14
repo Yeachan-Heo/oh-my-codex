@@ -16,7 +16,6 @@ import {
   type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
-  bindPendingRoleIntentUnderLock,
   isTrustedSubagentThread,
   OMX_ADAPTED_PROVENANCE,
   readSubagentSessionSummary,
@@ -26,6 +25,11 @@ import {
   recordSubagentTurnForSession,
   resolveInstalledRoleName,
 } from "../subagents/tracker.js";
+import {
+  bindAndPublishAdaptedRole,
+  NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS,
+  recoverAdaptedRoleBindings,
+} from "../subagents/adapted-role-binding.js";
 import { readRoleRoutingMarker, writeRoleRoutingMarker } from "../subagents/role-routing-marker.js";
 import { resolveCanonicalTeamStateRoot, resolveWorkerNotifyTeamStateRootPath } from "../team/state-root.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
@@ -130,7 +134,6 @@ import {
   isUnsupportedNativeSubagentEvidence,
   resolveNativeSubagentSupportStatus,
   type NativeSubagentUnsupportedReason,
-  type RoleRoutingUnavailableMarker,
 } from "../leader/contract.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
@@ -199,7 +202,6 @@ const LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor golden rule: delegate 
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
-const NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS = 60 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
 const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
@@ -464,7 +466,7 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
 
 function reportRoleRoutingBindingFailure(error: unknown): void {
   console.error(
-    `[omx] SECURITY: native adapted role binding was not durably persisted; pending role intent remains unconsumed: ${error instanceof Error ? error.message : String(error)}`,
+    `[omx] SECURITY: native adapted role binding did not complete; retained binding will be recovered: ${error instanceof Error ? error.message : String(error)}`,
   );
 }
 
@@ -489,10 +491,11 @@ async function recordNativeSubagentSessionStart(
 
   if (!metadata.agentRole && correlationSessionId && parentThreadId) {
     try {
-      adaptedRoleIntent = bindPendingRoleIntentUnderLock(
+      const bound = bindAndPublishAdaptedRole(
         cwd,
+        getBaseStateDir(cwd),
         {
-          sessionId: correlationSessionId,
+          correlationSessionId,
           parentThreadId,
           correlationToken: metadata.correlationToken,
         },
@@ -519,17 +522,10 @@ async function recordNativeSubagentSessionStart(
           return next;
         },
       );
+      adaptedRoleIntent = bound ? { role: bound.role, provenanceKind: OMX_ADAPTED_PROVENANCE } : null;
     } catch (error) {
       reportRoleRoutingBindingFailure(error);
       throw error;
-    }
-    if (adaptedRoleIntent) {
-      recordNativeSubagentRoleRoutingMarker(
-        cwd,
-        getBaseStateDir(cwd),
-        correlationSessionId,
-        parentThreadId,
-      );
     }
   }
 
@@ -3462,24 +3458,6 @@ async function recordNativeSubagentSupportBlocker(
   }, null, 2));
 }
 
-function recordNativeSubagentRoleRoutingMarker(
-  cwd: string,
-  stateDir: string,
-  sessionId: string,
-  parentThreadId: string,
-): void {
-  const nowMs = Date.now();
-  const marker: RoleRoutingUnavailableMarker = {
-    schema_version: 1,
-    cwd,
-    session_id: sessionId,
-    parent_thread_id: parentThreadId,
-    observed_at: new Date(nowMs).toISOString(),
-    expires_at: new Date(nowMs + NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS).toISOString(),
-    evidence: "validated OMX adapted role intent correlated to an untyped native child",
-  };
-  writeRoleRoutingMarker(stateDir, marker);
-}
 
 function refreshNativeSubagentRoleRoutingMarker(
   cwd: string,
@@ -9967,6 +9945,12 @@ export async function dispatchCodexNativeHook(
       skillState: null,
       outputJson: null,
     };
+  }
+  try {
+    recoverAdaptedRoleBindings(cwd, getBaseStateDir(cwd));
+  } catch {
+    // Recovery is best-effort for unrelated hook events.
+  }
   }
   if (hookEventName === "Stop" && !hasNativeStopRuntimeSurface(cwd)) {
     return {

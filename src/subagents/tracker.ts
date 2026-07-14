@@ -82,6 +82,9 @@ export interface PendingRoleIntent {
   correlation_token: string;
   created_at: string;
   expires_at: string;
+  binding_state?: 'bound';
+  binding_claimant_token?: string;
+  bound_at?: string;
 }
 
 export interface SubagentSessionSummary {
@@ -241,6 +244,11 @@ function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
   const expiresAt = readOptionalTrimmedString(candidate.expires_at);
   if (!role || !sessionId || !parentThreadId || !correlationToken || !createdAt || !expiresAt) return null;
   if (!Number.isFinite(Date.parse(createdAt)) || !Number.isFinite(Date.parse(expiresAt))) return null;
+
+  const bindingState = candidate.binding_state === 'bound' ? 'bound' : undefined;
+  const claimantToken = readOptionalTrimmedString(candidate.binding_claimant_token);
+  const boundAt = readOptionalTrimmedString(candidate.bound_at);
+  const hasValidBoundAt = Boolean(boundAt && Number.isFinite(Date.parse(boundAt)));
   return {
     role,
     session_id: sessionId,
@@ -248,6 +256,9 @@ function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
     correlation_token: correlationToken,
     created_at: createdAt,
     expires_at: expiresAt,
+    ...(bindingState ? { binding_state: bindingState } : {}),
+    ...(bindingState && claimantToken && hasValidBoundAt ? { binding_claimant_token: claimantToken } : {}),
+    ...(bindingState && hasValidBoundAt ? { bound_at: boundAt } : {}),
   };
 }
 
@@ -509,7 +520,10 @@ function restoreQuarantinedCrossProcessLock(lockPath: string, quarantinedPath: s
   try {
     linkSync(quarantinedPath, lockPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      removeCrossProcessLockFile(quarantinedPath);
+      return;
+    }
     throw error;
   }
   removeCrossProcessLockFile(quarantinedPath);
@@ -519,13 +533,16 @@ function recoverCrossProcessFileLock(lockPath: string, observed: CrossProcessLoc
   if (observed.kind === 'missing') return true;
   if (observed.kind === 'claim' && !isCrossProcessLockReclaimable(observed.claim)) return false;
 
-  const quarantinedPath = `${lockPath}.${randomUUID()}.quarantine`;
+  const quarantinedPath = `${lockPath}.${Date.now()}.${randomUUID()}.quarantine`;
   try {
     renameSync(lockPath, quarantinedPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw error;
   }
+  const barrier = crossProcessQuarantineBarrier;
+  crossProcessQuarantineBarrier = null;
+  barrier?.(lockPath, quarantinedPath);
 
   const captured = readCrossProcessLockState(quarantinedPath);
   const capturedExpectedClaim = observed.kind === 'claim'
@@ -552,13 +569,16 @@ function releaseCrossProcessFileLock(lockPath: string, token: string): void {
   const observed = readCrossProcessLockState(lockPath);
   if (observed.kind !== 'claim' || observed.claim.token !== token) return;
 
-  const quarantinedPath = `${lockPath}.${randomUUID()}.release`;
+  const quarantinedPath = `${lockPath}.${Date.now()}.${randomUUID()}.release`;
   try {
     renameSync(lockPath, quarantinedPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
+  const barrier = crossProcessQuarantineBarrier;
+  crossProcessQuarantineBarrier = null;
+  barrier?.(lockPath, quarantinedPath);
 
   const captured = readCrossProcessLockState(quarantinedPath);
   if (captured.kind === 'claim' && captured.claim.token === token) {
@@ -587,10 +607,31 @@ function sweepForeignCrossProcessLockStages(resourcePath: string, token: string)
   }
 }
 
+function sweepAbandonedCrossProcessLockArtifacts(resourcePath: string): void {
+  const directory = dirname(resourcePath);
+  const lockName = basename(crossProcessLockPath(resourcePath));
+  const escapedLockName = lockName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const artifactPattern = new RegExp(`^${escapedLockName}\\.([^.]+)\\.[^.]+\\.(?:quarantine|release)$`);
+  for (const entry of readdirSync(directory)) {
+    const match = artifactPattern.exec(entry);
+    if (!match) continue;
+    const displacedAtMs = Number(match[1]);
+    if (!Number.isFinite(displacedAtMs) || Date.now() - displacedAtMs <= CROSS_PROCESS_LOCK_LEASE_MS) continue;
+    removeCrossProcessLockFile(join(directory, entry));
+  }
+}
+
 let crossProcessPublishBarrier: (() => void) | null = null;
+let crossProcessQuarantineBarrier: ((lockPath: string, quarantinedPath: string) => void) | null = null;
 
 export function __setCrossProcessPublishBarrierForTest(barrier: (() => void) | null): void {
   crossProcessPublishBarrier = barrier;
+}
+
+export function __setCrossProcessQuarantineBarrierForTest(
+  barrier: ((lockPath: string, quarantinedPath: string) => void) | null,
+): void {
+  crossProcessQuarantineBarrier = barrier;
 }
 
 export function withCrossProcessFileLockSync<T>(
@@ -635,6 +676,7 @@ export function withCrossProcessFileLockSync<T>(
 
   try {
     sweepForeignCrossProcessLockStages(resourcePath, token);
+    sweepAbandonedCrossProcessLockArtifacts(resourcePath);
     createCrossProcessLockStage(stagePath);
     return operation({
       assertOwnership: () => assertCrossProcessFileLockOwnership(lockPath, token),
@@ -725,6 +767,7 @@ function normalizeNowMs(nowMs: number | undefined): number {
 }
 
 function isExpiredPendingRoleIntent(intent: PendingRoleIntent, nowMs: number): boolean {
+  if (intent.binding_state === 'bound') return false;
   const expiresAtMs = Date.parse(intent.expires_at);
   return !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs;
 }
@@ -775,6 +818,62 @@ export function bindPendingRoleIntentUnderLock(
   cwd: string,
   input: { sessionId: string; parentThreadId: string; correlationToken?: string; nowMs?: number },
   bind: (state: SubagentTrackingState, intent: { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE }) => SubagentTrackingState,
+): { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE; claimantToken: string | undefined; alreadyBound: boolean } | null {
+  const nowMs = normalizeNowMs(input.nowMs);
+  const sessionId = input.sessionId.trim();
+  const parentThreadId = input.parentThreadId.trim();
+  const correlationToken = readOptionalTrimmedString(input.correlationToken);
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const state = readSubagentTrackingStateSync(cwd);
+    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
+    const matchedIntent = pendingRoleIntents.find((intent) => (
+      intent.session_id === sessionId
+      && intent.parent_thread_id === parentThreadId
+      && intent.correlation_token === correlationToken
+    )) ?? null;
+
+    if (!matchedIntent) {
+      if (pendingRoleIntents.length !== state.pending_role_intents.length) {
+        state.pending_role_intents = pendingRoleIntents;
+        context.assertOwnership();
+        writeSubagentTrackingStateSync(cwd, state, context.publish);
+      }
+      return null;
+    }
+
+    const adaptedIntent = {
+      role: matchedIntent.role,
+      provenanceKind: OMX_ADAPTED_PROVENANCE,
+    } as const;
+    if (matchedIntent.binding_state === 'bound') {
+      return {
+        ...adaptedIntent,
+        claimantToken: matchedIntent.binding_claimant_token,
+        alreadyBound: true,
+      };
+    }
+
+    const claimantToken = randomUUID();
+    const boundState = bind(state, adaptedIntent);
+    boundState.pending_role_intents = pendingRoleIntents.map((intent) => (
+      intent === matchedIntent
+        ? {
+          ...intent,
+          binding_state: 'bound',
+          binding_claimant_token: claimantToken,
+          bound_at: new Date(nowMs).toISOString(),
+        }
+        : intent
+    ));
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, boundState, context.publish);
+    return { ...adaptedIntent, claimantToken, alreadyBound: false };
+  });
+}
+
+export function consumePendingRoleIntent(
+  cwd: string,
+  input: { sessionId: string; parentThreadId: string; correlationToken?: string; nowMs?: number },
 ): { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE } | null {
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
@@ -784,7 +883,8 @@ export function bindPendingRoleIntentUnderLock(
     const state = readSubagentTrackingStateSync(cwd);
     const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
     const consumed = pendingRoleIntents.find((intent) => (
-      intent.session_id === sessionId
+      intent.binding_state !== 'bound'
+      && intent.session_id === sessionId
       && intent.parent_thread_id === parentThreadId
       && intent.correlation_token === correlationToken
     )) ?? null;
@@ -798,23 +898,52 @@ export function bindPendingRoleIntentUnderLock(
       return null;
     }
 
-    const adaptedIntent = {
-      role: consumed.role,
-      provenanceKind: OMX_ADAPTED_PROVENANCE,
-    } as const;
-    const boundState = bind(state, adaptedIntent);
-    boundState.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== consumed);
+    state.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== consumed);
     context.assertOwnership();
-    writeSubagentTrackingStateSync(cwd, boundState, context.publish);
-    return adaptedIntent;
+    writeSubagentTrackingStateSync(cwd, state, context.publish);
+    return { role: consumed.role, provenanceKind: OMX_ADAPTED_PROVENANCE };
   });
 }
 
-export function consumePendingRoleIntent(
+export function completeAdaptedRoleBinding(
   cwd: string,
-  input: { sessionId: string; parentThreadId: string; correlationToken?: string; nowMs?: number },
-): { role: string; provenanceKind: 'omx_adapted' } | null {
-  return bindPendingRoleIntentUnderLock(cwd, input, (state) => state);
+  input: { sessionId: string; parentThreadId: string; correlationToken?: string; claimantToken?: string; nowMs?: number },
+): 'completed' | 'not_found' | 'claimant_mismatch' {
+  const nowMs = normalizeNowMs(input.nowMs);
+  const sessionId = input.sessionId.trim();
+  const parentThreadId = input.parentThreadId.trim();
+  const correlationToken = input.correlationToken === undefined ? undefined : input.correlationToken.trim();
+  const claimantToken = input.claimantToken === undefined ? undefined : input.claimantToken.trim();
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const state = readSubagentTrackingStateSync(cwd);
+    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
+    const boundIntent = pendingRoleIntents.find((intent) => (
+      intent.binding_state === 'bound'
+      && intent.session_id === sessionId
+      && intent.parent_thread_id === parentThreadId
+      && (correlationToken === undefined || intent.correlation_token === correlationToken)
+    )) ?? null;
+    if (!boundIntent) {
+      if (pendingRoleIntents.length !== state.pending_role_intents.length) {
+        state.pending_role_intents = pendingRoleIntents;
+        context.assertOwnership();
+        writeSubagentTrackingStateSync(cwd, state, context.publish);
+      }
+      return 'not_found';
+    }
+    if (claimantToken !== undefined && boundIntent.binding_claimant_token && boundIntent.binding_claimant_token !== claimantToken) {
+      return 'claimant_mismatch';
+    }
+
+    state.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== boundIntent);
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, state, context.publish);
+    return 'completed';
+  });
+}
+
+export function listBoundAdaptedRoleIntents(cwd: string, _nowMs?: number): PendingRoleIntent[] {
+  return readSubagentTrackingStateSync(cwd).pending_role_intents.filter((intent) => intent.binding_state === 'bound');
 }
 
 export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSubagentTurnInput): SubagentTrackingState {

@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { __setCrossProcessPublishBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 interface PendingRoleIntentRecordWorkerInput {
@@ -856,6 +856,57 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('removes displaced quarantine and release artifacts when a replacement wins restoration', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    try {
+      writeFileSync(lockPath, crossProcessLockClaim('stale-remote-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1, 'remote-test-host'));
+      __setCrossProcessQuarantineBarrierForTest((replacementPath, quarantinedPath) => {
+        writeFileSync(quarantinedPath, crossProcessLockClaim('fresh-replacement-token', process.pid, Date.now()));
+        writeFileSync(replacementPath, crossProcessLockClaim('fresh-successor-token', process.pid, Date.now()));
+      });
+      assert.throws(
+        () => withCrossProcessFileLockSync(resourcePath, () => 'must not acquire', { maxAttempts: 1, retryMs: 1 }),
+        /Timed out waiting for cross-process lock/,
+      );
+      assert.deepEqual(readdirSync(cwd).filter((entry) => entry.endsWith('.quarantine') || entry.endsWith('.release')), []);
+      await rm(lockPath, { force: true });
+
+      __setCrossProcessQuarantineBarrierForTest((replacementPath, quarantinedPath) => {
+        writeFileSync(quarantinedPath, crossProcessLockClaim('release-replacement-token', process.pid, Date.now()));
+        writeFileSync(replacementPath, crossProcessLockClaim('release-successor-token', process.pid, Date.now()));
+      });
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'released'), 'released');
+      assert.deepEqual(readdirSync(cwd).filter((entry) => entry.endsWith('.quarantine') || entry.endsWith('.release')), []);
+    } finally {
+      __setCrossProcessQuarantineBarrierForTest(null);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('sweeps only lease-aged parseable lock displacement artifacts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const oldQuarantinePath = `${lockPath}.${Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1}.fixture.quarantine`;
+    const freshReleasePath = `${lockPath}.${Date.now()}.fixture.release`;
+    const malformedTimestampPath = `${lockPath}.notanumber.fixture.quarantine`;
+    try {
+      writeFileSync(oldQuarantinePath, 'old\n');
+      writeFileSync(freshReleasePath, 'fresh\n');
+      writeFileSync(malformedTimestampPath, 'malformed\n');
+
+      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'swept'), 'swept');
+
+      assert.equal(existsSync(oldQuarantinePath), false);
+      assert.equal(existsSync(freshReleasePath), true);
+      assert.equal(existsSync(malformedTimestampPath), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('reclaims a dead-owner cross-process lock', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const resourcePath = join(cwd, 'lock-resource');
@@ -1329,12 +1380,24 @@ describe('subagents/tracker', () => {
       assert.equal(bindPendingRoleIntentUnderLock(cwd, input, bind), null);
       assert.equal(bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'wrong-token' }, bind), null);
       assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, 'expected-token');
+      const firstBinding = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expected-token' }, bind);
+      assert.equal(firstBinding?.role, 'architect');
+      assert.equal(firstBinding?.provenanceKind, OMX_ADAPTED_PROVENANCE);
+      assert.equal(firstBinding?.alreadyBound, false);
+      assert.ok(firstBinding?.claimantToken);
+      const retainedIntent = (await readSubagentTrackingState(cwd)).pending_role_intents[0];
+      assert.equal(retainedIntent?.binding_state, 'bound');
+      assert.equal(retainedIntent?.binding_claimant_token, firstBinding?.claimantToken);
       assert.deepEqual(
         bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expected-token' }, bind),
-        { role: 'architect', provenanceKind: OMX_ADAPTED_PROVENANCE },
+        {
+          role: 'architect',
+          provenanceKind: OMX_ADAPTED_PROVENANCE,
+          claimantToken: firstBinding?.claimantToken,
+          alreadyBound: true,
+        },
       );
       assert.equal(bindCount, 1);
-      assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1370,6 +1433,42 @@ describe('subagents/tracker', () => {
           nowMs: 1_002,
         }),
         null,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('completes retained adapted bindings only for the claimant that began them', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const input = {
+      sessionId: 'sess-complete-binding',
+      parentThreadId: 'thread-parent',
+      correlationToken: 'complete-token',
+      nowMs: 1_001,
+    };
+    try {
+      assert.equal(recordPendingRoleIntent(cwd, {
+        role: 'architect',
+        sessionId: input.sessionId,
+        parentThreadId: input.parentThreadId,
+        correlationToken: input.correlationToken,
+        nowMs: 1_000,
+      }).ok, true);
+      const binding = bindPendingRoleIntentUnderLock(cwd, input, (state) => state);
+      assert.ok(binding?.claimantToken);
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, { ...input, claimantToken: 'wrong-claimant' }),
+        'claimant_mismatch',
+      );
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, { ...input, claimantToken: binding.claimantToken }),
+        'completed',
+      );
+      assert.equal(
+        completeAdaptedRoleBinding(cwd, { ...input, claimantToken: binding.claimantToken }),
+        'not_found',
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });
