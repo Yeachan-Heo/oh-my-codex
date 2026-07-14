@@ -112,7 +112,11 @@ function spawnEntrypoint(entrypoint: EntryPoint): {
 } {
   const child = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
     cwd: process.cwd(),
-    env: { ...process.env, OMX_MCP_LIFECYCLE_LOG: 'off' },
+    env: {
+      ...process.env,
+      OMX_MCP_DUPLICATE_SIBLING_INITIAL_DELAY_MS: '5000',
+      OMX_MCP_LIFECYCLE_LOG: 'off',
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -301,7 +305,16 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       await waitForSpawn(older, entrypoint, stderr, stdout);
       await assertChildAliveBeforeTeardown(older, entrypoint, stderr, stdout);
 
-      older.stdin?.write('leader-initialize-traffic');
+      older.stdin?.write(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'server-lifecycle-test', version: '1.0.0' },
+        },
+      })}\n`);
       await delay(100);
 
       newer = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {

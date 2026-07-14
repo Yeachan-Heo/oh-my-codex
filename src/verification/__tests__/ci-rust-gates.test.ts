@@ -269,7 +269,7 @@ describe('CI Rust gates', () => {
     for (const jobName of ['lint', 'typecheck', 'build-dist', 'test', 'coverage-team-critical', 'ralph-persistence-gate', 'build']) {
       const job = jobBlock(workflow, jobName);
 
-      assert.match(job, /uses:\s*actions\/setup-node@v6/);
+      assert.match(job, /uses:\s*actions\/setup-node@v7/);
       assert.match(job, /cache:\s*npm/);
       assert.match(job, /run:\s*npm ci/);
       assert.doesNotMatch(job, /uses:\s*actions\/cache@v4/);
