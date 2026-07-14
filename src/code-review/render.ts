@@ -1,17 +1,23 @@
 import { isAbsolute, posix, win32 } from 'node:path';
 import {
   REVIEW_LIMITS,
-  type DiagnosticSummary,
   type FinalLaneRecord,
   type FinalReviewArtifact,
   type FinalVerdict,
+  type LaneStatus,
+  type ReviewFinding,
   type ReviewBatch,
   type ReviewRecord,
   type ScopeFile,
   type ScopeManifest,
   type ScopeSelector,
 } from './contract.js';
-import { sanitizeForPersistence, validateReviewFinding } from './redaction.js';
+import {
+  sanitizeForPersistence,
+  validateReviewDiagnostics,
+  validateReviewFinding,
+  validateReviewReason,
+} from './redaction.js';
 
 export class FinalArtifactValidationError extends Error {
   readonly code = 'PERSISTENCE_FAILED' as const;
@@ -170,7 +176,13 @@ function validateScope(value: unknown): ScopeManifest {
     scope_hash: hash(scope.scope_hash, 'scope_hash'),
     files: scope.files.map(validateScopeFile),
     changed_lines: integer(scope.changed_lines, 'changed_lines'),
-    reasons: scope.reasons.map((reason) => boundedString(reason, 'scope reason', REVIEW_LIMITS.reason, true)),
+    reasons: scope.reasons.map((reason) => {
+      try {
+        return validateReviewReason(reason);
+      } catch {
+        return invalid('scope reason is invalid');
+      }
+    }),
   };
 }
 
@@ -229,39 +241,6 @@ function validateFinalLane(value: unknown): FinalLaneRecord {
   };
 }
 
-type FinalDiagnostic = Omit<DiagnosticSummary, 'thread_id'>;
-
-function validateDiagnostic(value: unknown): FinalDiagnostic {
-  const diagnostic = object(value, 'diagnostic', [
-    'diagnostic_id', 'capability', 'applicability', 'execution', 'outcome', 'tool_name',
-    'program', 'args', 'event_ref', 'source_ref', 'summary',
-  ]);
-  if (diagnostic.args !== undefined && (!Array.isArray(diagnostic.args) || diagnostic.args.length > 128)) {
-    invalid('diagnostic args must be bounded');
-  }
-  const toolName = optionalString(diagnostic.tool_name, 'tool_name', 160);
-  const program = optionalString(diagnostic.program, 'program', REVIEW_LIMITS.path);
-  const sourceRef = optionalString(diagnostic.source_ref, 'source_ref', REVIEW_LIMITS.path);
-  const args = diagnostic.args === undefined
-    ? undefined
-    : diagnostic.args.map((arg) => boundedString(arg, 'diagnostic arg', REVIEW_LIMITS.path, true));
-  const summary = boundedString(diagnostic.summary, 'diagnostic summary', REVIEW_LIMITS.diagnostic, true);
-  if (Buffer.byteLength(summary, 'utf8') > REVIEW_LIMITS.diagnostic) invalid('diagnostic summary exceeds two KiB');
-  return {
-    diagnostic_id: boundedString(diagnostic.diagnostic_id, 'diagnostic_id', 160),
-    capability: enumeration(diagnostic.capability, 'diagnostic capability', ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK'] as const),
-    applicability: enumeration(diagnostic.applicability, 'diagnostic applicability', ['APPLICABLE', 'NOT_APPLICABLE'] as const),
-    execution: enumeration(diagnostic.execution, 'diagnostic execution', ['NATIVE', 'ACCEPTED_EQUIVALENT', 'FALLBACK', 'UNAVAILABLE', 'SKIPPED'] as const),
-    outcome: enumeration(diagnostic.outcome, 'diagnostic outcome', ['PASS', 'FAIL', 'TIMED_OUT', 'MALFORMED', 'NOT_RUN'] as const),
-    ...(toolName === undefined ? {} : { tool_name: toolName }),
-    ...(program === undefined ? {} : { program }),
-    ...(args === undefined ? {} : { args }),
-    event_ref: boundedString(diagnostic.event_ref, 'event_ref', REVIEW_LIMITS.path),
-    ...(sourceRef === undefined ? {} : { source_ref: sourceRef }),
-    summary,
-  };
-}
-
 function validateVerdict(value: unknown): FinalVerdict {
   const verdict = object(value, 'verdict', [
     'recommendation', 'architectural_status', 'scope_status', 'evidence_status', 'rule_id', 'reasons', 'clean',
@@ -275,9 +254,89 @@ function validateVerdict(value: unknown): FinalVerdict {
     scope_status: enumeration(verdict.scope_status, 'verdict scope status', ['FULL_SCOPE', 'PARTIAL_SCOPE'] as const),
     evidence_status: enumeration(verdict.evidence_status, 'verdict evidence status', ['FULL_EVIDENCE', 'DEGRADED_EVIDENCE'] as const),
     rule_id: boundedString(verdict.rule_id, 'verdict rule_id', 160),
-    reasons: verdict.reasons.map((reason) => boundedString(reason, 'verdict reason', REVIEW_LIMITS.reason, true)),
+    reasons: verdict.reasons.map((reason) => {
+      try {
+        return validateReviewReason(reason);
+      } catch {
+        return invalid('verdict reason is invalid');
+      }
+    }),
     clean: boolean(verdict.clean, 'verdict clean'),
   };
+}
+
+interface ReviewTopologyLane {
+  lane_id: string;
+  role: 'code-reviewer' | 'architect';
+  batch_id: string | 'global';
+  scope_hash: string;
+  status: LaneStatus;
+  recommendation?: 'APPROVE' | 'COMMENT' | 'REQUEST CHANGES';
+  architectural_status?: 'CLEAR' | 'WATCH' | 'BLOCK';
+  findings: ReviewFinding[];
+  diagnostic_ids: string[];
+}
+
+/** Internal cross-binding validation shared by persisted records and final projections. */
+export function validateReviewTopology(
+  value: {
+    scope?: ScopeManifest;
+    batches: ReviewBatch[];
+    lanes: ReviewTopologyLane[];
+    diagnostics: Array<{ diagnostic_id: string }>;
+  },
+  options: { requireRoleResults?: boolean } = {},
+): void {
+  const { scope, batches, lanes, diagnostics } = value;
+  const batchIds = new Set(batches.map((batch) => batch.batch_id));
+  if (batchIds.size !== batches.length) invalid('review batch ids must be unique');
+  const laneIds = new Set(lanes.map((lane) => lane.lane_id));
+  if (laneIds.size !== lanes.length) invalid('review lane ids must be unique');
+  const diagnosticIds = new Set(diagnostics.map((diagnostic) => diagnostic.diagnostic_id));
+  if (diagnosticIds.size !== diagnostics.length) invalid('diagnostic ids must be unique');
+
+  if (lanes.length > 0 && scope === undefined) invalid('review lanes require a frozen scope');
+  const scopeFiles = new Set(scope?.files.map((file) => file.path) ?? []);
+  const batchFiles = new Map(batches.map((batch) => [batch.batch_id, new Set(batch.files)]));
+  for (const batch of batches) {
+    if (new Set(batch.files).size !== batch.files.length) invalid('batch files must be unique');
+    if (scope && batch.files.some((path) => !scopeFiles.has(path))) {
+      invalid('batch contains a file outside the frozen scope');
+    }
+  }
+  for (const lane of lanes) {
+    if (scope && lane.scope_hash !== scope.scope_hash) {
+      invalid('lane scope hash contradicts the frozen scope');
+    }
+    const requireRoleResult = options.requireRoleResults === true || lane.status === 'COMPLETE';
+    if (lane.role === 'architect') {
+      if (lane.batch_id !== 'global') invalid('architect lane must use the global batch');
+      if (lane.recommendation !== undefined
+        || (requireRoleResult && lane.architectural_status === undefined)) {
+        invalid('architect lane has fields for the wrong role');
+      }
+      if (lane.diagnostic_ids.length !== 0) invalid('architect lane must not reference diagnostics');
+      if (lane.findings.some((finding) => !scopeFiles.has(finding.file))) {
+        invalid('architect finding is outside the frozen scope');
+      }
+    } else {
+      if (!batchIds.has(lane.batch_id)) invalid('reviewer lane references an unknown batch');
+      if (lane.architectural_status !== undefined
+        || (requireRoleResult && lane.recommendation === undefined)) {
+        invalid('reviewer lane has fields for the wrong role');
+      }
+      const files = batchFiles.get(lane.batch_id)!;
+      if (lane.findings.some((finding) => !scopeFiles.has(finding.file) || !files.has(finding.file))) {
+        invalid('reviewer finding is outside its frozen batch');
+      }
+    }
+    if (new Set(lane.diagnostic_ids).size !== lane.diagnostic_ids.length) {
+      invalid('lane diagnostic references must be unique');
+    }
+    if (lane.diagnostic_ids.some((id) => !diagnosticIds.has(id))) {
+      invalid('lane references an unknown diagnostic');
+    }
+  }
 }
 
 export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact {
@@ -300,55 +359,16 @@ export function validateFinalReviewArtifact(value: unknown): FinalReviewArtifact
   if (lanes.reduce((total, lane) => total + lane.findings.length, 0) > REVIEW_LIMITS.findingsPerReview) {
     invalid('final review findings exceed the review limit');
   }
-  const diagnostics = artifact.diagnostics.map(validateDiagnostic);
-  if (Buffer.byteLength(JSON.stringify(diagnostics), 'utf8') > REVIEW_LIMITS.diagnosticsTotalBytes) {
-    invalid('final review diagnostics exceed sixteen KiB');
+  let diagnostics: FinalReviewArtifact['diagnostics'];
+  try {
+    diagnostics = validateReviewDiagnostics(artifact.diagnostics, { includeThreadId: false });
+  } catch {
+    invalid('final review diagnostics are invalid');
   }
   const verdict = validateVerdict(artifact.verdict);
   if (scope && verdict.scope_status !== scope.status) invalid('verdict scope status contradicts the manifest');
 
-  const batchIds = new Set(batches.map((batch) => batch.batch_id));
-  if (batchIds.size !== batches.length) invalid('review batch ids must be unique');
-  const laneIds = new Set(lanes.map((lane) => lane.lane_id));
-  if (laneIds.size !== lanes.length) invalid('final lane ids must be unique');
-  const diagnosticIds = new Set(diagnostics.map((diagnostic) => diagnostic.diagnostic_id));
-  if (diagnosticIds.size !== diagnostics.length) invalid('diagnostic ids must be unique');
-
-  if (lanes.length > 0 && scope === undefined) invalid('final lanes require a frozen scope');
-  const scopeFiles = new Set(scope?.files.map((file) => file.path) ?? []);
-  const batchFiles = new Map(batches.map((batch) => [batch.batch_id, new Set(batch.files)]));
-  for (const batch of batches) {
-    if (new Set(batch.files).size !== batch.files.length) invalid('batch files must be unique');
-    if (scope && batch.files.some((path) => !scopeFiles.has(path))) invalid('batch contains a file outside the frozen scope');
-  }
-  for (const lane of lanes) {
-    if (scope && lane.scope_hash !== scope.scope_hash) invalid('lane scope hash contradicts the frozen scope');
-    if (lane.role === 'architect') {
-      if (lane.batch_id !== 'global') invalid('architect lane must use the global batch');
-      if (lane.recommendation !== undefined || lane.architectural_status === undefined) {
-        invalid('architect lane has fields for the wrong role');
-      }
-      if (lane.diagnostic_ids.length !== 0) invalid('architect lane must not reference diagnostics');
-      if (lane.findings.some((finding) => !scopeFiles.has(finding.file))) {
-        invalid('architect finding is outside the frozen scope');
-      }
-    } else {
-      if (!batchIds.has(lane.batch_id)) invalid('reviewer lane references an unknown batch');
-      if (lane.recommendation === undefined || lane.architectural_status !== undefined) {
-        invalid('reviewer lane has fields for the wrong role');
-      }
-      const files = batchFiles.get(lane.batch_id)!;
-      if (lane.findings.some((finding) => !scopeFiles.has(finding.file) || !files.has(finding.file))) {
-        invalid('reviewer finding is outside its frozen batch');
-      }
-    }
-    if (new Set(lane.diagnostic_ids).size !== lane.diagnostic_ids.length) {
-      invalid('lane diagnostic references must be unique');
-    }
-    if (lane.diagnostic_ids.some((id) => !diagnosticIds.has(id))) {
-      invalid('lane references an unknown diagnostic');
-    }
-  }
+  validateReviewTopology({ scope, batches, lanes, diagnostics }, { requireRoleResults: true });
   const supersedesReviewId = artifact.supersedes_review_id === undefined
     ? undefined
     : uuid(artifact.supersedes_review_id, 'supersedes_review_id');

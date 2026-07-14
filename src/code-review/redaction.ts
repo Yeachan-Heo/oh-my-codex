@@ -1,6 +1,11 @@
 import { isAbsolute, posix, win32 } from 'node:path';
 import { redactAuthSecrets } from '../auth/redact.js';
-import { REVIEW_LIMITS, type ReviewFinding } from './contract.js';
+import {
+  REVIEW_LIMITS,
+  type DiagnosticSubmission,
+  type DiagnosticSummary,
+  type ReviewFinding,
+} from './contract.js';
 
 const PROVIDER_TOKEN_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/giu;
 const GENERIC_SECRET_PATTERN = /\b([A-Za-z0-9_.-]*(?:api[-_]?key|password|passwd|client[-_]?secret|private[-_]?key|github[-_]?token|secret|credential)[A-Za-z0-9_.-]*)(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\r\n]+)/giu;
@@ -120,7 +125,8 @@ export function validateReviewFinding(value: unknown): ReviewFinding {
   assertExactKeys(finding, [
     'severity', 'title', 'body', 'file', 'start_line', 'end_line', 'fix', 'evidence',
   ]);
-  if (!['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(String(finding.severity))) {
+  if (typeof finding.severity !== 'string'
+    || !(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] as const).includes(finding.severity as ReviewFinding['severity'])) {
     throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'finding severity is invalid');
   }
   const startLine = optionalPositiveInteger(finding.start_line, 'start_line');
@@ -149,6 +155,132 @@ export function validateReviewFinding(value: unknown): ReviewFinding {
     fix: boundedReviewString(finding.fix, 'fix', REVIEW_LIMITS.fix),
     ...(evidence === undefined ? {} : { evidence }),
   };
+}
+
+export function validateReviewReason(value: unknown): string {
+  const reason = boundedReviewString(value, 'reason', REVIEW_LIMITS.reason, { allowEmpty: true });
+  if (reason.includes('\0')) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'reason contains a NUL byte');
+  }
+  return reason;
+}
+
+type ReviewDiagnostic = DiagnosticSummary | DiagnosticSubmission;
+
+function validateDiagnosticObject(
+  value: unknown,
+  options: { includeThreadId: boolean },
+): ReviewDiagnostic {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'diagnostic must be an object');
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'diagnostic must be plain JSON');
+  }
+  const diagnostic = value as Record<string, unknown>;
+  const required = [
+    'diagnostic_id', 'capability', 'applicability', 'execution', 'outcome',
+    ...(options.includeThreadId ? ['thread_id'] : []),
+    'event_ref', 'summary',
+  ];
+  const optional = ['tool_name', 'program', 'args', 'source_ref'];
+  const allowed = new Set([...required, ...optional]);
+  if (Object.keys(diagnostic).some((key) => !allowed.has(key))
+    || required.some((key) => !Object.hasOwn(diagnostic, key))) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'diagnostic has missing or unknown fields');
+  }
+
+  const enumeration = <T extends string>(
+    item: unknown,
+    field: string,
+    allowedValues: readonly T[],
+  ): T => {
+    if (typeof item !== 'string' || !allowedValues.includes(item as T)) {
+      throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', `${field} is invalid`);
+    }
+    return item as T;
+  };
+  const string = (item: unknown, field: string, maximum: number, allowEmpty = false): string => {
+    const validated = boundedReviewString(item, field, maximum, { allowEmpty });
+    if (validated.includes('\0')) {
+      throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', `${field} contains a NUL byte`);
+    }
+    return validated;
+  };
+  const optionalString = (item: unknown, field: string, maximum: number): string | undefined => (
+    item === undefined ? undefined : string(item, field, maximum)
+  );
+  if (diagnostic.args !== undefined
+    && (!Array.isArray(diagnostic.args) || diagnostic.args.length > 128)) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'diagnostic args must be bounded');
+  }
+
+  const summary = string(diagnostic.summary, 'diagnostic summary', REVIEW_LIMITS.diagnostic, true);
+  if (Buffer.byteLength(summary, 'utf8') > REVIEW_LIMITS.diagnostic) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'diagnostic summary exceeds two KiB');
+  }
+  const threadId = options.includeThreadId
+    ? string(diagnostic.thread_id, 'diagnostic thread_id', 160)
+    : undefined;
+  const toolName = optionalString(diagnostic.tool_name, 'diagnostic tool_name', 160);
+  const program = optionalString(diagnostic.program, 'diagnostic program', REVIEW_LIMITS.path);
+  const sourceRef = optionalString(diagnostic.source_ref, 'diagnostic source_ref', REVIEW_LIMITS.path);
+  const args = diagnostic.args === undefined
+    ? undefined
+    : diagnostic.args.map((arg) => string(arg, 'diagnostic arg', REVIEW_LIMITS.path, true));
+  return {
+    diagnostic_id: string(diagnostic.diagnostic_id, 'diagnostic_id', 160),
+    capability: enumeration(
+      diagnostic.capability,
+      'diagnostic capability',
+      ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK'] as const,
+    ),
+    applicability: enumeration(
+      diagnostic.applicability,
+      'diagnostic applicability',
+      ['APPLICABLE', 'NOT_APPLICABLE'] as const,
+    ),
+    execution: enumeration(
+      diagnostic.execution,
+      'diagnostic execution',
+      ['NATIVE', 'ACCEPTED_EQUIVALENT', 'FALLBACK', 'UNAVAILABLE', 'SKIPPED'] as const,
+    ),
+    outcome: enumeration(
+      diagnostic.outcome,
+      'diagnostic outcome',
+      ['PASS', 'FAIL', 'TIMED_OUT', 'MALFORMED', 'NOT_RUN'] as const,
+    ),
+    ...(threadId === undefined ? {} : { thread_id: threadId }),
+    ...(toolName === undefined ? {} : { tool_name: toolName }),
+    ...(program === undefined ? {} : { program }),
+    ...(args === undefined ? {} : { args }),
+    event_ref: string(diagnostic.event_ref, 'diagnostic event_ref', REVIEW_LIMITS.path),
+    ...(sourceRef === undefined ? {} : { source_ref: sourceRef }),
+    summary,
+  } as ReviewDiagnostic;
+}
+
+export function validateReviewDiagnostics(
+  value: unknown,
+  options: { includeThreadId: true },
+): DiagnosticSummary[];
+export function validateReviewDiagnostics(
+  value: unknown,
+  options: { includeThreadId: false },
+): DiagnosticSubmission[];
+export function validateReviewDiagnostics(
+  value: unknown,
+  options: { includeThreadId: boolean },
+): ReviewDiagnostic[] {
+  if (!Array.isArray(value)) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'diagnostics must be an array');
+  }
+  const diagnostics = value.map((diagnostic) => validateDiagnosticObject(diagnostic, options));
+  if (Buffer.byteLength(JSON.stringify(diagnostics), 'utf8') > REVIEW_LIMITS.diagnosticsTotalBytes) {
+    throw new ReviewDataValidationError('LANE_EVIDENCE_INVALID', 'diagnostics exceed sixteen KiB');
+  }
+  return diagnostics;
 }
 
 function sanitizeValue(

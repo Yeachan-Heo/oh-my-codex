@@ -186,6 +186,33 @@ describe('code-review redaction and validation', () => {
     }
   });
 
+  it('rejects every non-string severity without coercing or returning it', async () => {
+    const api = await loadRedactionApi();
+    const invalidSeverities: Array<readonly [string, unknown]> = [
+      ['array', ['HIGH']],
+      ['object', { toString: () => 'HIGH' }],
+      ['number', 1],
+    ];
+    const accepted: Array<{ label: string; severity: unknown }> = [];
+
+    for (const [label, severity] of invalidSeverities) {
+      try {
+        const finding = api.validateReviewFinding({
+          severity,
+          title: 'Invalid severity',
+          body: 'Severity must be a primitive enum.',
+          file: 'src/a.ts',
+          fix: 'Use a primitive severity string.',
+        }) as { severity?: unknown };
+        accepted.push({ label, severity: finding.severity });
+      } catch (error) {
+        assert.equal((error as { code?: unknown }).code, 'LANE_EVIDENCE_INVALID', label);
+      }
+    }
+
+    assert.deepEqual(accepted, []);
+  });
+
   it('recursively redacts bounded persisted metadata without mutating the caller value', async () => {
     const api = await loadRedactionApi();
     const input = {

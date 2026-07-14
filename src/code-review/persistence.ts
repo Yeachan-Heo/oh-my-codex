@@ -17,8 +17,17 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } 
 import { performance } from 'node:perf_hooks';
 import { resolveStateScope } from '../state/paths.js';
 import type { ReviewRecord, ReviewRunStatus } from './contract.js';
-import { sanitizeForPersistence, validateReviewFinding } from './redaction.js';
-import { renderFinalReviewMarkdown, validateFinalReviewArtifact } from './render.js';
+import {
+  sanitizeForPersistence,
+  validateReviewDiagnostics,
+  validateReviewFinding,
+  validateReviewReason,
+} from './redaction.js';
+import {
+  renderFinalReviewMarkdown,
+  validateFinalReviewArtifact,
+  validateReviewTopology,
+} from './render.js';
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
@@ -727,7 +736,9 @@ function validateDurableEffect(value: unknown): DurableTransactionEffect {
   if (!allowedNames.includes(value.name as DurableEffectName)) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effect name is invalid');
   }
-  if (!['CREATE_ONCE_JSON', 'APPLY_REVIEW_REVISION', 'REMOVE_MATCHING_ACTIVE'].includes(String(value.mode))) {
+  if (typeof value.mode !== 'string'
+    || !(['CREATE_ONCE_JSON', 'APPLY_REVIEW_REVISION', 'REMOVE_MATCHING_ACTIVE'] as const)
+      .includes(value.mode as DurableTransactionEffect['mode'])) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effect mode is invalid');
   }
   if (value.target.area !== 'REVIEW_STATE' && value.target.area !== 'FINAL_REVIEWS') {
@@ -842,6 +853,17 @@ function requirePayloadStringArray(value: unknown, name: string, maximum = 5_000
   return value.map((item) => requirePayloadString(item, name));
 }
 
+function validateReasonArray(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.length > 5_000) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} is invalid`);
+  }
+  try {
+    return value.map(validateReviewReason);
+  } catch {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} is invalid`);
+  }
+}
+
 function validateReviewVerdictPayload(value: unknown): void {
   const verdict = requireExactPayload(value, [
     'recommendation', 'architectural_status', 'scope_status', 'evidence_status',
@@ -852,7 +874,7 @@ function validateReviewVerdictPayload(value: unknown): void {
   requirePayloadEnum(verdict.scope_status, 'review verdict scope', ['FULL_SCOPE', 'PARTIAL_SCOPE'] as const);
   requirePayloadEnum(verdict.evidence_status, 'review verdict evidence', ['FULL_EVIDENCE', 'DEGRADED_EVIDENCE'] as const);
   requirePayloadString(verdict.rule_id, 'review verdict rule_id', 160);
-  requirePayloadStringArray(verdict.reasons, 'review verdict reasons');
+  validateReasonArray(verdict.reasons, 'review verdict reasons');
   requirePayloadBoolean(verdict.clean, 'review verdict clean');
 }
 
@@ -887,7 +909,7 @@ function validateScopePayload(value: unknown): void {
     if (file.deletions !== undefined) requireNonNegativeInteger(file.deletions, 'scope deletions');
   }
   requireNonNegativeInteger(scope.changed_lines, 'scope changed_lines');
-  requirePayloadStringArray(scope.reasons, 'scope reasons');
+  validateReasonArray(scope.reasons, 'scope reasons');
   for (const key of ['base_ref', 'base_sha', 'head_sha'] as const) {
     if (scope[key] !== undefined) requirePayloadString(scope[key], `scope ${key}`);
   }
@@ -902,28 +924,6 @@ function validateBatchPayload(value: unknown): void {
   requirePayloadStringArray(batch.files, 'review batch files');
   requireNonNegativeInteger(batch.changed_lines, 'review batch changed_lines');
   requirePayloadBoolean(batch.oversized_single_file, 'review batch oversized_single_file');
-}
-
-function validateDiagnosticPayload(value: unknown): void {
-  const diagnostic = requireStructuredPayload(value, [
-    'diagnostic_id', 'capability', 'applicability', 'execution', 'outcome',
-    'thread_id', 'event_ref', 'summary',
-  ], ['tool_name', 'program', 'args', 'source_ref'], 'review diagnostic');
-  requirePayloadString(diagnostic.diagnostic_id, 'diagnostic_id', 160);
-  requirePayloadEnum(diagnostic.capability, 'diagnostic capability', ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK'] as const);
-  requirePayloadEnum(diagnostic.applicability, 'diagnostic applicability', ['APPLICABLE', 'NOT_APPLICABLE'] as const);
-  requirePayloadEnum(diagnostic.execution, 'diagnostic execution', ['NATIVE', 'ACCEPTED_EQUIVALENT', 'FALLBACK', 'UNAVAILABLE', 'SKIPPED'] as const);
-  requirePayloadEnum(diagnostic.outcome, 'diagnostic outcome', ['PASS', 'FAIL', 'TIMED_OUT', 'MALFORMED', 'NOT_RUN'] as const);
-  requirePayloadString(diagnostic.thread_id, 'diagnostic thread_id', 160);
-  requirePayloadString(diagnostic.event_ref, 'diagnostic event_ref');
-  const summary = requirePayloadString(diagnostic.summary, 'diagnostic summary', 2_048);
-  if (Buffer.byteLength(summary, 'utf8') > 2_048) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'diagnostic summary is invalid');
-  }
-  for (const key of ['tool_name', 'program', 'source_ref'] as const) {
-    if (diagnostic[key] !== undefined) requirePayloadString(diagnostic[key], `diagnostic ${key}`);
-  }
-  if (diagnostic.args !== undefined) requirePayloadStringArray(diagnostic.args, 'diagnostic args', 128);
 }
 
 function validateLanePayload(value: unknown): void {
@@ -1023,7 +1023,7 @@ function validateAttemptPayload(value: unknown): void {
 function validateReviewRecordPayload(
   value: unknown,
   reviewId: string,
-  expectedRevision: number,
+  revision: number,
 ): ReviewRecord {
   const record = requireStructuredPayload(value, [
     'schema_version', 'revision', 'review_id', 'status', 'current_attempt',
@@ -1035,7 +1035,7 @@ function validateReviewRecordPayload(
   ], 'review record');
   if (record.schema_version !== 1
     || validateUuid(record.review_id, 'review record review_id') !== reviewId
-    || requirePositiveInteger(record.revision, 'review record revision') !== expectedRevision + 1) {
+    || requirePositiveInteger(record.revision, 'review record revision') !== revision) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review record identity or revision conflicts');
   }
   requirePayloadEnum(record.status, 'review record status', REVIEW_RUN_STATUSES);
@@ -1071,7 +1071,11 @@ function validateReviewRecordPayload(
   record.batches.forEach(validateBatchPayload);
   record.lanes.forEach(validateLanePayload);
   record.attempt_history.forEach(validateAttemptPayload);
-  record.diagnostics.forEach(validateDiagnosticPayload);
+  try {
+    record.diagnostics = validateReviewDiagnostics(record.diagnostics, { includeThreadId: true });
+  } catch {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review diagnostics are invalid');
+  }
   if (record.scope !== undefined) validateScopePayload(record.scope);
   if (record.verdict !== undefined) validateReviewVerdictPayload(record.verdict);
   requirePayloadBoolean(record.resumable, 'review resumable');
@@ -1089,7 +1093,18 @@ function validateReviewRecordPayload(
   for (const key of ['last_applied_transaction_id', 'supersedes_review_id'] as const) {
     if (record[key] !== undefined) validateUuid(record[key], `review ${key}`);
   }
-  return record as unknown as ReviewRecord;
+  const validated = record as unknown as ReviewRecord;
+  try {
+    validateReviewTopology({
+      scope: validated.scope,
+      batches: validated.batches,
+      lanes: validated.lanes,
+      diagnostics: validated.diagnostics,
+    });
+  } catch {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review topology is invalid');
+  }
+  return validated;
 }
 
 function validateLaneResultPayload(
@@ -1118,12 +1133,25 @@ function validateLaneResultPayload(
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'lane result finding is invalid');
   }
   if (base.role === 'architect') {
-    if (!['CLEAR', 'WATCH', 'BLOCK'].includes(String(base.architectural_status)) || base.batch_id !== 'global') {
+    if (base.batch_id !== 'global') {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'architect lane result is invalid');
     }
-  } else if (!['APPROVE', 'COMMENT', 'REQUEST CHANGES'].includes(String(base.recommendation))
-    || !Array.isArray(base.diagnostics)) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'reviewer lane result is invalid');
+    requirePayloadEnum(
+      base.architectural_status,
+      'architectural_status',
+      ['CLEAR', 'WATCH', 'BLOCK'] as const,
+    );
+  } else {
+    requirePayloadEnum(
+      base.recommendation,
+      'recommendation',
+      ['APPROVE', 'COMMENT', 'REQUEST CHANGES'] as const,
+    );
+    try {
+      base.diagnostics = validateReviewDiagnostics(base.diagnostics, { includeThreadId: false });
+    } catch {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'reviewer lane diagnostics are invalid');
+    }
   }
 }
 
@@ -1140,7 +1168,7 @@ function validateTypedEffectPayload(
       || effect.review_id !== undefined) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review effect target is invalid');
     }
-    effect.payload = validateReviewRecordPayload(effect.payload, reviewId, expectedRevision);
+    effect.payload = validateReviewRecordPayload(effect.payload, reviewId, expectedRevision + 1);
     return;
   }
   if (effect.name === 'active-overlay') {
@@ -1469,6 +1497,20 @@ function parseCommitted(value: unknown): CommittedDurableTransaction {
   };
 }
 
+function validateCommittedAgainstPrepared(
+  value: unknown,
+  prepared: PreparedDurableTransaction,
+): CommittedDurableTransaction {
+  const committed = parseCommitted(value);
+  if (committed.transaction_id !== prepared.transaction_id
+    || committed.idempotency_key !== prepared.idempotency_key
+    || committed.input_digest !== prepared.input_digest
+    || canonicalDigest(committed.response) !== canonicalDigest(prepared.response)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed transaction conflicts with its intent');
+  }
+  return committed;
+}
+
 function parseLocator(value: unknown): DurableTransactionLocator {
   if (!isPlainObject(value) || !hasExactKeys(value, [
     'schema_version', 'transaction_id', 'review_id', 'idempotency_key', 'input_digest',
@@ -1523,14 +1565,61 @@ async function createOnceMatching(path: string, payload: unknown): Promise<void>
   }
 }
 
+async function validateCurrentReviewState(
+  path: string,
+  reviewId: string,
+  expectedRevision: number,
+  appliedTransactionId?: string,
+): Promise<ReviewRecord | undefined> {
+  const current = await readJsonIfPresent(path);
+  if (current === undefined) {
+    if (expectedRevision !== 0) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review record is missing');
+    }
+    return undefined;
+  }
+  if (!isPlainObject(current) || !Number.isSafeInteger(current.revision)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review record is malformed');
+  }
+  const revision = current.revision as number;
+  const validated = validateReviewRecordPayload(current, reviewId, revision);
+  if (revision === expectedRevision) return validated;
+  if (appliedTransactionId !== undefined
+    && revision === expectedRevision + 1
+    && validated.last_applied_transaction_id === appliedTransactionId) {
+    return validated;
+  }
+  throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review revision is ambiguous');
+}
+
+async function validateReviewEffectCurrentState(
+  paths: ReviewPersistencePaths,
+  intent: Pick<DurableTransactionPlan, 'review_id' | 'expected_revision' | 'effects'>,
+  appliedTransactionId?: string,
+): Promise<void> {
+  const effect = intent.effects.find((candidate) => candidate.mode === 'APPLY_REVIEW_REVISION');
+  if (!effect) return;
+  await validateCurrentReviewState(
+    targetPath(paths, effect),
+    intent.review_id,
+    intent.expected_revision,
+    appliedTransactionId,
+  );
+}
+
 async function applyReviewRevision(
   path: string,
   payload: unknown,
   prepared: PreparedDurableTransaction,
 ): Promise<void> {
   if (!isPlainObject(payload)) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review payload is malformed');
-  const current = await readJsonIfPresent(path);
-  if (current === undefined && prepared.expected_revision === 0) {
+  const current = await validateCurrentReviewState(
+    path,
+    prepared.review_id,
+    prepared.expected_revision,
+    prepared.transaction_id,
+  );
+  if (current === undefined) {
     await atomicCreatePrivateJson(path, {
       ...payload,
       revision: 1,
@@ -1538,16 +1627,10 @@ async function applyReviewRevision(
     });
     return;
   }
-  if (!isPlainObject(current) || !Number.isSafeInteger(current.revision)) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review record is missing or malformed');
-  }
   if (
     current.revision === prepared.expected_revision + 1
     && current.last_applied_transaction_id === prepared.transaction_id
   ) return;
-  if (current.revision !== prepared.expected_revision) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review revision is ambiguous');
-  }
   await atomicWritePrivateJson(path, {
     ...payload,
     revision: prepared.expected_revision + 1,
@@ -1626,12 +1709,10 @@ async function executePrepared(
   options: RunDurableTransactionOptions,
 ): Promise<DurableTransactionResult> {
   const files = transactionPaths(paths, prepared.review_id, prepared.idempotency_key, prepared.journal_scope);
+  await validateReviewEffectCurrentState(paths, prepared, prepared.transaction_id);
   const committedValue = await readJsonIfPresent(files.committed);
   if (committedValue !== undefined) {
-    const committed = parseCommitted(committedValue);
-    if (committed.input_digest !== prepared.input_digest || committed.transaction_id !== prepared.transaction_id) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed transaction conflicts with its intent');
-    }
+    const committed = validateCommittedAgainstPrepared(committedValue, prepared);
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
@@ -1684,13 +1765,14 @@ async function runDurableTransactionLocked(
   const files = transactionPaths(paths, plan.review_id, plan.idempotency_key, journalScope);
   const existingCommitted = await readJsonIfPresent(files.committed);
   if (existingCommitted !== undefined) {
-    const committed = parseCommitted(existingCommitted);
-    if (committed.input_digest !== digest) {
-      throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
-    }
     const preparedValue = await readJsonIfPresent(files.prepared);
     if (preparedValue === undefined) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed transaction has no intent');
     const prepared = parsePrepared(preparedValue);
+    const committed = validateCommittedAgainstPrepared(existingCommitted, prepared);
+    if (prepared.input_digest !== digest) {
+      throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
+    }
+    await validateReviewEffectCurrentState(paths, prepared, prepared.transaction_id);
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
@@ -1718,6 +1800,7 @@ async function runDurableTransactionLocked(
       response: plan.response,
       prepared_at: new Date().toISOString(),
     };
+    await validateReviewEffectCurrentState(paths, plan);
     maybeCrash('before:prepared', options);
     await atomicCreatePrivateJson(files.prepared, prepared);
     await publishLocator(paths, prepared);
