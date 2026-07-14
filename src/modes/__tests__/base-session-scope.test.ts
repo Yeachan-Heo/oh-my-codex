@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readModeState, startMode, updateModeState } from '../base.js';
+import { assertModeStartAllowed, readModeState, startMode, updateModeState } from '../base.js';
+
 
 describe('modes/base session-scoped persistence', () => {
   it('writes mode state into the current session scope when session.json exists', async () => {
@@ -159,4 +160,55 @@ describe('modes/base session-scoped persistence', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it('fails closed before mode assertion or start can create an unmatched OMX_SESSION_ID scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-unmatched-session-'));
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-canonical', cwd: wd }));
+      process.env.OMX_SESSION_ID = 'sess-unmatched';
+
+      await assert.rejects(() => assertModeStartAllowed('ralplan', wd), /OMX_SESSION_ID is not bound to session\.json/);
+      await assert.rejects(() => startMode('ralplan', 'must not write', 5, wd), /OMX_SESSION_ID is not bound to session\.json/);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-unmatched')), false);
+      assert.equal(existsSync(join(stateDir, 'ralplan-state.json')), false);
+    } finally {
+      if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves explicit fork updates when the implicit OMX_SESSION_ID is unmatched', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-explicit-fork-'));
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const forkSessionId = 'explicit-fork';
+      const forkStatePath = join(stateDir, 'sessions', forkSessionId, 'ralplan-state.json');
+      await mkdir(join(stateDir, 'sessions', forkSessionId), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-canonical', cwd: wd }));
+      await writeFile(forkStatePath, JSON.stringify({
+        active: true,
+        mode: 'ralplan',
+        iteration: 0,
+        max_iterations: 5,
+        current_phase: 'starting',
+      }));
+      process.env.OMX_SESSION_ID = 'sess-unmatched';
+
+      await updateModeState('ralplan', { current_phase: 'planning', iteration: 1 }, wd, forkSessionId);
+
+      const updated = JSON.parse(await readFile(forkStatePath, 'utf-8')) as Record<string, unknown>;
+      assert.equal(updated.current_phase, 'planning');
+      assert.equal(updated.iteration, 1);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-unmatched')), false);
+    } finally {
+      if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });
