@@ -16,7 +16,12 @@ import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { resolveStateScope } from '../state/paths.js';
-import type { ReviewRecord, ReviewRunStatus } from './contract.js';
+import type {
+  ReviewConsumptionKind,
+  ReviewConsumptionMarker,
+  ReviewRecord,
+  ReviewRunStatus,
+} from './contract.js';
 import {
   sanitizeForPersistence,
   validateReviewDiagnostics,
@@ -277,6 +282,15 @@ export async function atomicCreatePrivateJson(
 const REVIEW_RUN_STATUSES: readonly ReviewRunStatus[] = [
   'CREATED', 'SCOPE_FROZEN', 'REVIEWING', 'READY_TO_SYNTHESIZE', 'FINALIZED', 'BLOCKED',
 ];
+const TERMINAL_REVIEW_STATUSES: readonly ReviewRunStatus[] = ['FINALIZED', 'BLOCKED'];
+const REVIEW_CONSUMPTION_KINDS: readonly ReviewConsumptionKind[] = [
+  'PROPOSAL_KEY', 'TOOL_EVENT_REF', 'NONCE',
+];
+const REVIEW_CONSUMPTION_DIRECTORIES: Readonly<Record<ReviewConsumptionKind, string>> = {
+  PROPOSAL_KEY: 'proposal-key',
+  TOOL_EVENT_REF: 'tool-event-ref',
+  NONCE: 'nonce',
+};
 
 function validateActivePointer(value: unknown): ActiveReviewPointer {
   if (!isPlainObject(value)
@@ -626,13 +640,28 @@ export type DurableEffectName = Exclude<
 
 export interface DurableTransactionEffect {
   name: DurableEffectName;
-  mode: 'CREATE_ONCE_JSON' | 'APPLY_REVIEW_REVISION' | 'REMOVE_MATCHING_ACTIVE';
+  mode:
+    | 'CREATE_ONCE_JSON'
+    | 'APPLY_REVIEW_REVISION'
+    | 'UPDATE_MATCHING_ACTIVE'
+    | 'RESTORE_MISSING_ACTIVE'
+    | 'REMOVE_MATCHING_ACTIVE';
   target: {
     area: 'REVIEW_STATE' | 'FINAL_REVIEWS';
     path: string;
   };
   payload?: unknown;
   review_id?: string;
+  expected_status?: ReviewRunStatus;
+  expected_revision?: number;
+}
+
+export interface CreateReviewConsumptionEffectInput {
+  review_id: string;
+  idempotency_key: string;
+  kind: ReviewConsumptionKind;
+  value: string;
+  consumed_at: string;
 }
 
 export interface DurableTransactionPlan {
@@ -732,12 +761,26 @@ function validateDurableEffect(value: unknown): DurableTransactionEffect {
   if (!isPlainObject(value) || !isPlainObject(value.target)) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effect is malformed');
   }
+  const allowedKeys = new Set([
+    'name', 'mode', 'target', 'payload', 'review_id', 'expected_status', 'expected_revision',
+  ]);
+  if (!['name', 'mode', 'target'].every((key) => Object.hasOwn(value, key))
+    || Object.keys(value).some((key) => !allowedKeys.has(key))
+    || !hasExactKeys(value.target, ['area', 'path'])) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effect fields are malformed');
+  }
   const allowedNames: readonly DurableEffectName[] = DURABLE_EFFECT_ORDER;
   if (!allowedNames.includes(value.name as DurableEffectName)) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effect name is invalid');
   }
   if (typeof value.mode !== 'string'
-    || !(['CREATE_ONCE_JSON', 'APPLY_REVIEW_REVISION', 'REMOVE_MATCHING_ACTIVE'] as const)
+    || !([
+      'CREATE_ONCE_JSON',
+      'APPLY_REVIEW_REVISION',
+      'UPDATE_MATCHING_ACTIVE',
+      'RESTORE_MISSING_ACTIVE',
+      'REMOVE_MATCHING_ACTIVE',
+    ] as const)
       .includes(value.mode as DurableTransactionEffect['mode'])) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effect mode is invalid');
   }
@@ -753,14 +796,45 @@ function validateDurableEffect(value: unknown): DurableTransactionEffect {
     },
     ...(value.payload === undefined ? {} : { payload: sanitizeForPersistence(value.payload) }),
     ...(value.review_id === undefined ? {} : { review_id: validateUuid(value.review_id, 'effect review_id') }),
+    ...(value.expected_status === undefined ? {} : {
+      expected_status: requirePayloadEnum(
+        value.expected_status,
+        'effect expected_status',
+        REVIEW_RUN_STATUSES,
+      ),
+    }),
+    ...(value.expected_revision === undefined ? {} : {
+      expected_revision: requireNonNegativeInteger(value.expected_revision, 'effect expected_revision'),
+    }),
   };
-  if (effect.mode === 'APPLY_REVIEW_REVISION' && (effect.name !== 'review' || !isPlainObject(effect.payload))) {
+  if (effect.mode === 'APPLY_REVIEW_REVISION' && (
+    effect.name !== 'review'
+    || !isPlainObject(effect.payload)
+    || effect.review_id !== undefined
+    || effect.expected_status !== undefined
+    || effect.expected_revision !== undefined
+  )) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review revision effect is invalid');
   }
-  if (effect.mode === 'REMOVE_MATCHING_ACTIVE' && !effect.review_id) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active removal requires a review id');
+  if ((effect.mode === 'UPDATE_MATCHING_ACTIVE'
+      || effect.mode === 'RESTORE_MISSING_ACTIVE'
+      || effect.mode === 'REMOVE_MATCHING_ACTIVE') && (
+    effect.name !== 'active-overlay'
+    || !effect.review_id
+    || effect.expected_status === undefined
+    || effect.expected_revision === undefined
+    || ((effect.mode === 'UPDATE_MATCHING_ACTIVE' || effect.mode === 'RESTORE_MISSING_ACTIVE')
+      && !isPlainObject(effect.payload))
+    || (effect.mode === 'REMOVE_MATCHING_ACTIVE' && effect.payload !== undefined)
+  )) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active transition requires an exact expected state');
   }
-  if (effect.mode === 'CREATE_ONCE_JSON' && effect.payload === undefined) {
+  if (effect.mode === 'CREATE_ONCE_JSON' && (
+    effect.payload === undefined
+    || effect.review_id !== undefined
+    || effect.expected_status !== undefined
+    || effect.expected_revision !== undefined
+  )) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'create-once effect requires a payload');
   }
   return effect;
@@ -830,6 +904,81 @@ function requirePayloadEnum<T extends string>(
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${name} is invalid`);
   }
   return value as T;
+}
+
+function reviewConsumptionDigest(kind: ReviewConsumptionKind, value: string): string {
+  return createHash('sha256')
+    .update('omx-code-review-consumption\0', 'utf8')
+    .update(kind, 'utf8')
+    .update('\0', 'utf8')
+    .update(value, 'utf8')
+    .digest('hex');
+}
+
+export function createReviewConsumptionEffect(
+  input: CreateReviewConsumptionEffectInput,
+): DurableTransactionEffect {
+  if (!isPlainObject(input) || !hasExactKeys(input, [
+    'review_id', 'idempotency_key', 'kind', 'value', 'consumed_at',
+  ])) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption input is malformed');
+  }
+  const reviewId = validateUuid(input.review_id, 'consumption review_id');
+  const idempotencyKey = validateUuid(input.idempotency_key, 'consumption idempotency_key');
+  const kind = requirePayloadEnum(input.kind, 'consumption kind', REVIEW_CONSUMPTION_KINDS);
+  const value = requirePayloadString(input.value, 'consumption value');
+  if (/[\r\n]/u.test(value)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumption value is invalid');
+  }
+  const consumedAt = requirePayloadTimestamp(input.consumed_at, 'consumption consumed_at');
+  const valueSha256 = reviewConsumptionDigest(kind, value);
+  return {
+    name: 'consume',
+    mode: 'CREATE_ONCE_JSON',
+    target: {
+      area: 'REVIEW_STATE',
+      path: `${reviewId}/consumptions/${REVIEW_CONSUMPTION_DIRECTORIES[kind]}/${valueSha256}.json`,
+    },
+    payload: {
+      schema_version: 1,
+      state: 'CONSUMED',
+      review_id: reviewId,
+      kind,
+      value_sha256: valueSha256,
+      idempotency_key: idempotencyKey,
+      consumed_at: consumedAt,
+    } satisfies ReviewConsumptionMarker,
+  };
+}
+
+function validateReviewConsumptionMarker(
+  value: unknown,
+  expectedReviewId?: string,
+  expectedIdempotencyKey?: string,
+): ReviewConsumptionMarker {
+  const marker = requireExactPayload(value, [
+    'schema_version', 'state', 'review_id', 'kind', 'value_sha256',
+    'idempotency_key', 'consumed_at',
+  ], 'review consumption');
+  const reviewId = validateUuid(marker.review_id, 'consumption review_id');
+  const idempotencyKey = validateUuid(marker.idempotency_key, 'consumption idempotency_key');
+  const kind = requirePayloadEnum(marker.kind, 'consumption kind', REVIEW_CONSUMPTION_KINDS);
+  const valueSha256 = requirePayloadHash(marker.value_sha256, 'consumption value_sha256');
+  const consumedAt = requirePayloadTimestamp(marker.consumed_at, 'consumption consumed_at');
+  if (marker.schema_version !== 1 || marker.state !== 'CONSUMED'
+    || (expectedReviewId !== undefined && reviewId !== expectedReviewId)
+    || (expectedIdempotencyKey !== undefined && idempotencyKey !== expectedIdempotencyKey)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption identity conflicts');
+  }
+  return {
+    schema_version: 1,
+    state: 'CONSUMED',
+    review_id: reviewId,
+    kind,
+    value_sha256: valueSha256,
+    idempotency_key: idempotencyKey,
+    consumed_at: consumedAt,
+  };
 }
 
 function requireStructuredPayload(
@@ -1176,13 +1325,21 @@ function validateTypedEffectPayload(
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay target is invalid');
     }
     if (effect.mode === 'REMOVE_MATCHING_ACTIVE') {
-      if (effect.payload !== undefined || effect.review_id !== reviewId) {
+      if (effect.payload !== undefined || effect.review_id !== reviewId
+        || effect.expected_revision !== expectedRevision) {
         throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active cleanup identity conflicts');
       }
       return;
     }
-    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.review_id !== undefined) {
+    if (effect.mode !== 'CREATE_ONCE_JSON'
+      && effect.mode !== 'UPDATE_MATCHING_ACTIVE'
+      && effect.mode !== 'RESTORE_MISSING_ACTIVE') {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay effect is invalid');
+    }
+    if ((effect.mode === 'UPDATE_MATCHING_ACTIVE' || effect.mode === 'RESTORE_MISSING_ACTIVE') && (
+      effect.review_id !== reviewId || effect.expected_revision !== expectedRevision
+    )) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active update identity conflicts');
     }
     const pointer = validateActivePointer(effect.payload);
     if (pointer.review_id !== reviewId) {
@@ -1192,8 +1349,7 @@ function validateTypedEffectPayload(
     return;
   }
   if (effect.name === 'proposal') {
-    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
-      || effect.target.path !== `${reviewId}/submissions/${idempotencyKey}/proposal`) {
+    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE') {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'proposal effect target is invalid');
     }
     const proposal = requireExactPayload(effect.payload, [
@@ -1203,9 +1359,10 @@ function validateTypedEffectPayload(
     const attempt = requirePositiveInteger(proposal.attempt, 'proposal attempt');
     const laneId = requirePayloadString(proposal.lane_id, 'proposal lane_id', 160);
     const scopeHash = requirePayloadHash(proposal.scope_hash, 'proposal scope_hash');
+    const proposalId = validateUuid(proposal.idempotency_key, 'proposal idempotency_key');
     if (proposal.schema_version !== 1 || proposal.state !== 'PENDING_HOST_ATTESTATION'
       || validateUuid(proposal.review_id, 'proposal review_id') !== reviewId
-      || validateUuid(proposal.idempotency_key, 'proposal idempotency_key') !== idempotencyKey) {
+      || effect.target.path !== `${reviewId}/submissions/${proposalId}/proposal`) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'proposal identity conflicts');
     }
     requirePayloadHash(proposal.payload_digest, 'proposal payload_digest');
@@ -1214,8 +1371,7 @@ function validateTypedEffectPayload(
     return;
   }
   if (effect.name === 'post-tool') {
-    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
-      || effect.target.path !== `${reviewId}/submissions/${idempotencyKey}/post-tool`) {
+    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE') {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool effect target is invalid');
     }
     const publication = requireExactPayload(effect.payload, [
@@ -1248,7 +1404,7 @@ function validateTypedEffectPayload(
     requirePayloadString(attestation.nonce, 'attestation nonce', 160);
     if (publication.schema_version !== 1 || activity.schema_version !== 1 || attestation.schema_version !== 1
       || activity.event_kind !== 'RESULT_POST_TOOL'
-      || publicationId !== idempotencyKey
+      || effect.target.path !== `${reviewId}/submissions/${publicationId}/post-tool`
       || validateUuid(activity.review_id, 'activity review_id') !== reviewId
       || validateUuid(attestation.review_id, 'attestation review_id') !== reviewId
       || activitySessionId !== attestationSessionId
@@ -1264,23 +1420,45 @@ function validateTypedEffectPayload(
     requirePayloadTimestamp(attestation.published_at, 'attestation published_at');
     return;
   }
-  if (effect.name === 'consume' || effect.name === 'approval') {
-    const expectedPath = effect.name === 'consume'
-      ? `${reviewId}/submissions/${idempotencyKey}/consumed`
-      : `approvals/${idempotencyKey}/consumed`;
+  if (effect.name === 'consume') {
+    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE') {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consume effect target is invalid');
+    }
+    if (effect.target.path === `${reviewId}/submissions/${idempotencyKey}/consumed`) {
+      const consumed = requireExactPayload(effect.payload, [
+        'schema_version', 'state', 'review_id', 'idempotency_key', 'consumed_at',
+      ], effect.name);
+      if (consumed.schema_version !== 1 || consumed.state !== 'CONSUMED'
+        || validateUuid(consumed.review_id, 'consume review_id') !== reviewId
+        || validateUuid(consumed.idempotency_key, 'consume idempotency_key') !== idempotencyKey) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consume identity conflicts');
+      }
+      requirePayloadTimestamp(consumed.consumed_at, 'consume consumed_at');
+      return;
+    }
+    const marker = validateReviewConsumptionMarker(effect.payload, reviewId, idempotencyKey);
+    const expectedPath = `${reviewId}/consumptions/${REVIEW_CONSUMPTION_DIRECTORIES[marker.kind]}/${marker.value_sha256}.json`;
+    if (effect.target.path !== expectedPath) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption target conflicts');
+    }
+    effect.payload = marker;
+    return;
+  }
+  if (effect.name === 'approval') {
+    const expectedPath = `approvals/${idempotencyKey}/consumed`;
     if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
       || effect.target.path !== expectedPath) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${effect.name} effect target is invalid`);
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'approval effect target is invalid');
     }
     const consumed = requireExactPayload(effect.payload, [
       'schema_version', 'state', 'review_id', 'idempotency_key', 'consumed_at',
-    ], effect.name);
+    ], 'approval');
     if (consumed.schema_version !== 1 || consumed.state !== 'CONSUMED'
-      || validateUuid(consumed.review_id, `${effect.name} review_id`) !== reviewId
-      || validateUuid(consumed.idempotency_key, `${effect.name} idempotency_key`) !== idempotencyKey) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', `${effect.name} identity conflicts`);
+      || validateUuid(consumed.review_id, 'approval review_id') !== reviewId
+      || validateUuid(consumed.idempotency_key, 'approval idempotency_key') !== idempotencyKey) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'approval identity conflicts');
     }
-    requirePayloadTimestamp(consumed.consumed_at, `${effect.name} consumed_at`);
+    requirePayloadTimestamp(consumed.consumed_at, 'approval consumed_at');
     return;
   }
   if (effect.name === 'lane') {
@@ -1326,21 +1504,128 @@ function validateTypedEffectPayload(
   }
 }
 
-function validatePostToolProposalBinding(effects: DurableTransactionEffect[]): void {
-  const postTool = effects.find((effect) => effect.name === 'post-tool');
-  if (!postTool) return;
-  const proposal = effects.find((effect) => effect.name === 'proposal');
-  if (!proposal || !isPlainObject(postTool.payload) || !isPlainObject(proposal.payload)
-    || !isPlainObject(postTool.payload.activity) || !isPlainObject(postTool.payload.attestation)) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool publication has no proposal binding');
+function validatePostToolProposalBinding(
+  effects: DurableTransactionEffect[],
+  transactionIdempotencyKey: string,
+): void {
+  const postTools = effects.filter((effect) => effect.name === 'post-tool');
+  const proposals = effects.filter((effect) => effect.name === 'proposal');
+  if (postTools.length === 0) {
+    if (proposals.length > 1
+      || (proposals.length === 1
+        && (proposals[0]!.payload as { idempotency_key?: unknown }).idempotency_key !== transactionIdempotencyKey)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'proposal-only transaction identity conflicts');
+    }
+    return;
   }
-  const activity = postTool.payload.activity;
-  const attestation = postTool.payload.attestation;
-  if (activity.attempt !== proposal.payload.attempt
-    || activity.lane_id !== proposal.payload.lane_id
-    || attestation.scope_hash !== proposal.payload.scope_hash
-    || attestation.payload_digest !== proposal.payload.payload_digest) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool publication conflicts with its proposal');
+  if (postTools.length > 16 || proposals.length !== postTools.length) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool proposal topology is invalid');
+  }
+  const proposalsById = new Map<string, DurableTransactionEffect>();
+  for (const proposal of proposals) {
+    if (!isPlainObject(proposal.payload) || typeof proposal.payload.idempotency_key !== 'string'
+      || proposalsById.has(proposal.payload.idempotency_key)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool proposal identity is duplicated');
+    }
+    proposalsById.set(proposal.payload.idempotency_key, proposal);
+  }
+  const seenPublications = new Set<string>();
+  for (const postTool of postTools) {
+    if (!isPlainObject(postTool.payload) || typeof postTool.payload.publication_id !== 'string'
+      || seenPublications.has(postTool.payload.publication_id)
+      || !isPlainObject(postTool.payload.activity)
+      || !isPlainObject(postTool.payload.attestation)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool publication has no unique proposal binding');
+    }
+    seenPublications.add(postTool.payload.publication_id);
+    const proposal = proposalsById.get(postTool.payload.publication_id);
+    if (!proposal || !isPlainObject(proposal.payload)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool publication has no proposal binding');
+    }
+    const activity = postTool.payload.activity;
+    const attestation = postTool.payload.attestation;
+    if (activity.attempt !== proposal.payload.attempt
+      || activity.lane_id !== proposal.payload.lane_id
+      || attestation.scope_hash !== proposal.payload.scope_hash
+      || attestation.payload_digest !== proposal.payload.payload_digest) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool publication conflicts with its proposal');
+    }
+  }
+}
+
+function validateActiveOverlayBinding(
+  effects: DurableTransactionEffect[],
+  journalScope: 'START' | 'REVIEW',
+  expectedRevision: number,
+): void {
+  const activeEffects = effects.filter((effect) => effect.name === 'active-overlay');
+  if (activeEffects.length === 0) return;
+  if (activeEffects.length !== 1) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction has multiple active overlay effects');
+  }
+  const reviewEffects = effects.filter((effect) => effect.name === 'review');
+  if (reviewEffects.length !== 1) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay transition requires one review effect');
+  }
+  const activeEffect = activeEffects[0]!;
+  const review = reviewEffects[0]!.payload as ReviewRecord;
+  if (activeEffect.mode === 'CREATE_ONCE_JSON') {
+    const pointer = activeEffect.payload as ActiveReviewPointer;
+    if (journalScope !== 'START' || expectedRevision !== 0
+      || pointer.status !== review.status
+      || TERMINAL_REVIEW_STATUSES.includes(review.status)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'initial active overlay does not match its review');
+    }
+    return;
+  }
+  if (journalScope !== 'REVIEW'
+    || activeEffect.expected_revision !== expectedRevision
+    || activeEffect.expected_status === undefined) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay expected state is invalid');
+  }
+  if (activeEffect.mode === 'RESTORE_MISSING_ACTIVE') {
+    const pointer = activeEffect.payload as ActiveReviewPointer;
+    if (activeEffect.expected_status !== 'BLOCKED'
+      || pointer.status !== review.status
+      || TERMINAL_REVIEW_STATUSES.includes(pointer.status)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay restoration does not match its review');
+    }
+    return;
+  }
+  if (TERMINAL_REVIEW_STATUSES.includes(activeEffect.expected_status)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay expected state is terminal');
+  }
+  if (activeEffect.mode === 'UPDATE_MATCHING_ACTIVE') {
+    const pointer = activeEffect.payload as ActiveReviewPointer;
+    if (pointer.status !== review.status
+      || pointer.status === activeEffect.expected_status
+      || TERMINAL_REVIEW_STATUSES.includes(pointer.status)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay update does not match its review');
+    }
+    return;
+  }
+  if (activeEffect.mode !== 'REMOVE_MATCHING_ACTIVE'
+    || !TERMINAL_REVIEW_STATUSES.includes(review.status)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay removal requires a terminal review');
+  }
+}
+
+function validateConsumptionTopology(effects: DurableTransactionEffect[]): void {
+  const typedMarkers = effects
+    .filter((effect) => effect.name === 'consume')
+    .map((effect) => effect.payload)
+    .filter((payload): payload is ReviewConsumptionMarker => (
+      isPlainObject(payload) && Object.hasOwn(payload, 'kind')
+    ));
+  if (typedMarkers.length === 0) return;
+  const counts = REVIEW_CONSUMPTION_KINDS.map((kind) => (
+    typedMarkers.filter((marker) => marker.kind === kind).length
+  ));
+  if (typedMarkers.length > REVIEW_CONSUMPTION_KINDS.length * 16
+    || counts[0] === 0
+    || !counts.every((count) => count === counts[0])
+    || effects.filter((effect) => effect.name === 'review').length !== 1) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption topology is invalid');
   }
 }
 
@@ -1365,13 +1650,15 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
   const effects = value.effects.map(validateDurableEffect);
   for (const effect of effects) {
     validateTypedEffectPayload(effect, reviewId, idempotencyKey, expectedRevision);
-    if (effect.mode === 'REMOVE_MATCHING_ACTIVE' && (
+    if ((effect.mode === 'UPDATE_MATCHING_ACTIVE'
+        || effect.mode === 'RESTORE_MISSING_ACTIVE'
+        || effect.mode === 'REMOVE_MATCHING_ACTIVE') && (
       effect.name !== 'active-overlay'
       || effect.target.area !== 'REVIEW_STATE'
       || effect.target.path !== 'active.json'
       || effect.review_id !== reviewId
     )) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active cleanup must match the transaction review identity');
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active transition must match the transaction review identity');
     }
     if (effect.mode === 'APPLY_REVIEW_REVISION' && (
       effect.target.area !== 'REVIEW_STATE'
@@ -1393,7 +1680,9 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
       effect.payload = artifact;
     }
   }
-  validatePostToolProposalBinding(effects);
+  validatePostToolProposalBinding(effects, idempotencyKey);
+  validateActiveOverlayBinding(effects, journalScope, expectedRevision);
+  validateConsumptionTopology(effects);
   const targets = effects.map((effect) => `${effect.target.area}:${effect.target.path}`);
   if (new Set(targets).size !== targets.length) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction targets must be unique');
@@ -1649,14 +1938,99 @@ async function validateReviewEffectCurrentState(
     ))) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review ownership conflicts');
   }
-  const postTool = intent.effects.find((candidate) => candidate.name === 'post-tool');
-  if (postTool && isPlainObject(postTool.payload)
-    && isPlainObject(postTool.payload.activity) && isPlainObject(postTool.payload.attestation)
-    && (proposed.session_id !== postTool.payload.activity.session_id
-      || proposed.session_id !== postTool.payload.attestation.session_id
-      || proposed.root_thread_id !== postTool.payload.attestation.root_thread_id)) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review ownership conflicts with post-tool publication');
+  for (const postTool of intent.effects.filter((candidate) => candidate.name === 'post-tool')) {
+    if (isPlainObject(postTool.payload)
+      && isPlainObject(postTool.payload.activity) && isPlainObject(postTool.payload.attestation)
+      && (proposed.session_id !== postTool.payload.activity.session_id
+        || proposed.session_id !== postTool.payload.attestation.session_id
+        || proposed.root_thread_id !== postTool.payload.attestation.root_thread_id)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review ownership conflicts with post-tool publication');
+    }
   }
+}
+
+async function validateActiveEffectCurrentState(
+  paths: ReviewPersistencePaths,
+  intent: Pick<DurableTransactionPlan, 'review_id' | 'expected_revision' | 'effects'>,
+  options: { appliedTransactionId?: string; requireApplied: boolean },
+): Promise<ActiveReviewPointer | null> {
+  const effect = intent.effects.find((candidate) => candidate.name === 'active-overlay');
+  if (!effect) return null;
+  const reviewEffect = intent.effects.find((candidate) => candidate.name === 'review')!;
+  const review = await validateCurrentReviewState(
+    targetPath(paths, reviewEffect),
+    intent.review_id,
+    intent.expected_revision,
+    { appliedTransactionId: options.appliedTransactionId, requireApplied: options.requireApplied },
+  );
+  const reviewApplied = review !== undefined
+    && options.appliedTransactionId !== undefined
+    && review.revision === intent.expected_revision + 1
+    && review.last_applied_transaction_id === options.appliedTransactionId;
+  const active = await readActiveReview(paths);
+  const matches = (pointer: ActiveReviewPointer | null, expected: ActiveReviewPointer): boolean => (
+    pointer?.schema_version === expected.schema_version
+    && pointer.review_id === expected.review_id
+    && pointer.status === expected.status
+  );
+
+  if (effect.mode === 'CREATE_ONCE_JSON') {
+    const next = effect.payload as ActiveReviewPointer;
+    if ((!reviewApplied && active !== null)
+      || (reviewApplied && options.requireApplied && !matches(active, next))
+      || (reviewApplied && !options.requireApplied && active !== null && !matches(active, next))) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'initial active overlay conflicts with durable state');
+    }
+    return active;
+  }
+
+  if (effect.mode === 'RESTORE_MISSING_ACTIVE') {
+    const next = effect.payload as ActiveReviewPointer;
+    const matchesNext = matches(active, next);
+    if (!reviewApplied) {
+      if (active !== null || review === undefined
+        || review.status !== effect.expected_status
+        || review.revision !== effect.expected_revision) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay restoration precondition conflicts');
+      }
+      return active;
+    }
+    if ((options.requireApplied && !matchesNext)
+      || (!options.requireApplied && active !== null && !matchesNext)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay restoration is ambiguous');
+    }
+    return active;
+  }
+
+  const matchesExpected = active !== null
+    && active.review_id === effect.review_id
+    && active.status === effect.expected_status;
+  if (!reviewApplied) {
+    if (!matchesExpected) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay expected state conflicts');
+    }
+    if (review === undefined
+      || review.status !== effect.expected_status
+      || review.revision !== effect.expected_revision) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay revision binding conflicts');
+    }
+    return active;
+  }
+
+  if (effect.mode === 'UPDATE_MATCHING_ACTIVE') {
+    const next = effect.payload as ActiveReviewPointer;
+    const matchesNext = matches(active, next);
+    if ((options.requireApplied && !matchesNext)
+      || (!options.requireApplied && !matchesExpected && !matchesNext)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay update is ambiguous');
+    }
+    return active;
+  }
+  if ((options.requireApplied && active !== null)
+    || (!options.requireApplied && active !== null && !matchesExpected)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay removal is ambiguous');
+  }
+  return active;
 }
 
 async function validatePostToolTrustContext(
@@ -1664,26 +2038,32 @@ async function validatePostToolTrustContext(
   intent: Pick<DurableTransactionPlan, 'review_id' | 'expected_revision' | 'effects'>,
   appliedTransactionId?: string,
 ): Promise<void> {
-  const effect = intent.effects.find((candidate) => candidate.name === 'post-tool');
-  if (!effect || !isPlainObject(effect.payload)
-    || !isPlainObject(effect.payload.activity) || !isPlainObject(effect.payload.attestation)) return;
-  const activity = effect.payload.activity;
-  const attestation = effect.payload.attestation;
+  const effects = intent.effects.filter((candidate) => candidate.name === 'post-tool');
+  if (effects.length === 0) return;
   const current = await validateCurrentReviewState(
     join(paths.reviewRoot, intent.review_id, 'review.json'),
     intent.review_id,
     intent.expected_revision,
     { appliedTransactionId, requireApplied: false },
   );
-  const activitySessionId = activity.session_id as string;
-  const attestationSessionId = attestation.session_id as string;
-  if ((paths.session_id !== undefined
-      && (activitySessionId !== paths.session_id || attestationSessionId !== paths.session_id))
-    || (current?.session_id !== undefined
-      && (activitySessionId !== current.session_id || attestationSessionId !== current.session_id))
-    || (current?.root_thread_id !== undefined
-      && attestation.root_thread_id !== current.root_thread_id)) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool trust context conflicts');
+  for (const effect of effects) {
+    if (!isPlainObject(effect.payload)
+      || !isPlainObject(effect.payload.activity)
+      || !isPlainObject(effect.payload.attestation)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool trust context is malformed');
+    }
+    const activity = effect.payload.activity;
+    const attestation = effect.payload.attestation;
+    const activitySessionId = activity.session_id as string;
+    const attestationSessionId = attestation.session_id as string;
+    if ((paths.session_id !== undefined
+        && (activitySessionId !== paths.session_id || attestationSessionId !== paths.session_id))
+      || (current?.session_id !== undefined
+        && (activitySessionId !== current.session_id || attestationSessionId !== current.session_id))
+      || (current?.root_thread_id !== undefined
+        && attestation.root_thread_id !== current.root_thread_id)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'post-tool trust context conflicts');
+    }
   }
 }
 
@@ -1716,15 +2096,6 @@ async function applyReviewRevision(
     revision: prepared.expected_revision + 1,
     last_applied_transaction_id: prepared.transaction_id,
   });
-}
-
-async function removeMatchingActive(path: string, reviewId: string): Promise<void> {
-  const value = await readJsonIfPresent(path);
-  if (value === undefined) return;
-  if (!isPlainObject(value) || typeof value.review_id !== 'string') {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active pointer is malformed');
-  }
-  if (value.review_id === reviewId) await rm(path, { force: true });
 }
 
 function locatorValue(prepared: PreparedDurableTransaction): DurableTransactionLocator {
@@ -1771,11 +2142,30 @@ async function applyEffect(
     await applyReviewRevision(path, effect.payload, prepared);
     return;
   }
-  await removeMatchingActive(path, effect.review_id!);
+  const active = await validateActiveEffectCurrentState(paths, prepared, {
+    appliedTransactionId: prepared.transaction_id,
+    requireApplied: false,
+  });
+  if (effect.mode === 'UPDATE_MATCHING_ACTIVE' || effect.mode === 'RESTORE_MISSING_ACTIVE') {
+    const next = effect.payload as ActiveReviewPointer;
+    if (active?.review_id === next.review_id && active.status === next.status) return;
+    await atomicWritePrivateJson(path, next);
+    return;
+  }
+  if (active !== null) await rm(path, { force: true });
 }
 
 async function cleanupLocator(paths: ReviewPersistencePaths, prepared: PreparedDurableTransaction): Promise<void> {
-  if (prepared.journal_scope === 'START') return;
+  if (prepared.journal_scope === 'START') {
+    const files = transactionPaths(
+      paths,
+      prepared.review_id,
+      prepared.idempotency_key,
+      prepared.journal_scope,
+    );
+    await rm(dirname(files.prepared), { recursive: true, force: true });
+    return;
+  }
   const path = join(paths.pendingReviewTransactionsRoot, prepared.transaction_id);
   const locator = await readJsonIfPresent(path);
   if (locator === undefined) return;
@@ -1797,10 +2187,18 @@ async function executePrepared(
       appliedTransactionId: prepared.transaction_id,
       requireApplied: true,
     });
+    await validateActiveEffectCurrentState(paths, prepared, {
+      appliedTransactionId: prepared.transaction_id,
+      requireApplied: true,
+    });
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
   await validateReviewEffectCurrentState(paths, prepared, {
+    appliedTransactionId: prepared.transaction_id,
+    requireApplied: false,
+  });
+  await validateActiveEffectCurrentState(paths, prepared, {
     appliedTransactionId: prepared.transaction_id,
     requireApplied: false,
   });
@@ -1865,6 +2263,10 @@ async function runDurableTransactionLocked(
       appliedTransactionId: prepared.transaction_id,
       requireApplied: true,
     });
+    await validateActiveEffectCurrentState(paths, prepared, {
+      appliedTransactionId: prepared.transaction_id,
+      requireApplied: true,
+    });
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
@@ -1894,6 +2296,7 @@ async function runDurableTransactionLocked(
     };
     await validatePostToolTrustContext(paths, plan);
     await validateReviewEffectCurrentState(paths, plan, { requireApplied: false });
+    await validateActiveEffectCurrentState(paths, plan, { requireApplied: false });
     maybeCrash('before:prepared', options);
     await atomicCreatePrivateJson(files.prepared, prepared);
     maybeCrash('after:prepared', options);
@@ -1981,6 +2384,47 @@ async function readDirectoryEntries(path: string): Promise<Dirent[]> {
     if (isMissing(error)) return [];
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', `could not scan transaction recovery root: ${path}`);
   }
+}
+
+export async function readReviewConsumptionMarkers(
+  paths: ReviewPersistencePaths,
+  reviewIdValue: string,
+): Promise<ReviewConsumptionMarker[]> {
+  const reviewId = validateUuid(reviewIdValue, 'review_id');
+  const root = join(paths.reviewRoot, reviewId, 'consumptions');
+  const directoryToKind = new Map(
+    REVIEW_CONSUMPTION_KINDS.map((kind) => [REVIEW_CONSUMPTION_DIRECTORIES[kind], kind] as const),
+  );
+  const rootEntries = await readDirectoryEntries(root);
+  const markers: ReviewConsumptionMarker[] = [];
+  for (const directory of [...rootEntries].sort((left, right) => left.name.localeCompare(right.name))) {
+    if (directory.name.startsWith('.')) continue;
+    const kind = directoryToKind.get(directory.name);
+    if (!directory.isDirectory() || kind === undefined) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption directory is invalid');
+    }
+    const entries = await readDirectoryEntries(join(root, directory.name));
+    for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.name.startsWith('.')) continue;
+      const match = /^([0-9a-f]{64})\.json$/u.exec(entry.name);
+      if (!entry.isFile() || match === null) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption entry is invalid');
+      }
+      const value = await readJsonIfPresent(join(root, directory.name, entry.name));
+      if (value === undefined) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption entry disappeared');
+      }
+      const marker = validateReviewConsumptionMarker(value, reviewId);
+      if (marker.kind !== kind || marker.value_sha256 !== match[1]) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review consumption path conflicts with its marker');
+      }
+      markers.push(marker);
+    }
+  }
+  return markers.sort((left, right) => (
+    REVIEW_CONSUMPTION_KINDS.indexOf(left.kind) - REVIEW_CONSUMPTION_KINDS.indexOf(right.kind)
+    || left.value_sha256.localeCompare(right.value_sha256)
+  ));
 }
 
 async function recoverActiveReviewWithoutLocators(
@@ -2073,6 +2517,11 @@ async function recoverPendingReviewTransactionsLocked(
         appliedTransactionId: prepared.transaction_id,
         requireApplied: true,
       });
+      await validateActiveEffectCurrentState(paths, prepared, {
+        appliedTransactionId: prepared.transaction_id,
+        requireApplied: true,
+      });
+      await cleanupLocator(paths, prepared);
       continue;
     }
     const result = await recoverDurableTransactionLocked(paths, prepared.review_id, key, 'START');

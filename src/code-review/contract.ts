@@ -35,6 +35,18 @@ export type ReviewRunStatus =
   | 'BLOCKED';
 export type LaneStatus = 'PENDING' | 'RUNNING' | 'COMPLETE' | 'FAILED' | 'TIMED_OUT' | 'INVALID';
 
+export type ReviewConsumptionKind = 'PROPOSAL_KEY' | 'TOOL_EVENT_REF' | 'NONCE';
+
+export interface ReviewConsumptionMarker {
+  schema_version: 1;
+  state: 'CONSUMED';
+  review_id: string;
+  kind: ReviewConsumptionKind;
+  value_sha256: string;
+  idempotency_key: string;
+  consumed_at: string;
+}
+
 export interface ScopeSelector {
   requested_base?: string;
   explicit_paths: string[];
