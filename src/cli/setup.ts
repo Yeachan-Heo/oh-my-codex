@@ -103,6 +103,8 @@ import {
 	SETUP_SCOPES,
 	getSetupScopeFilePath,
 	readPersistedSetupPreferences,
+	resolvePersistedSetupMergeAgents,
+	writePersistedSetupPreferences,
 	type PersistedSetupScope,
 	type SetupInstallMode,
 	type SetupMcpMode,
@@ -161,6 +163,7 @@ interface SetupOptions {
 	codexVersionProbe?: () => string | null;
 	force?: boolean;
 	mergeAgents?: boolean;
+	mergeAgentsPolicy?: { kind: "set"; value: boolean } | { kind: "clear" };
 	dryRun?: boolean;
 	installMode?: SetupInstallMode;
 	mcpMode?: SetupMcpMode;
@@ -842,7 +845,12 @@ async function promptForFirstPartyMcpRemoval(
 function hasPersistedSetupPreferences(
 	preferences: Partial<PersistedSetupScope> | undefined,
 ): preferences is Partial<PersistedSetupScope> {
-	return Boolean(preferences?.scope || preferences?.installMode || preferences?.teamMode);
+	return Boolean(
+		preferences?.scope ||
+		preferences?.installMode ||
+		preferences?.teamMode ||
+		typeof preferences?.mergeAgents === "boolean",
+	);
 }
 
 function formatPersistedSetupPreferenceSummary(
@@ -854,6 +862,9 @@ function formatPersistedSetupPreferenceSummary(
 		`mcpMode=${preferences.mcpMode ?? "not recorded"}`,
 	];
 	if (preferences.teamMode) summary.push(`teamMode=${preferences.teamMode}`);
+	if (typeof preferences.mergeAgents === "boolean") {
+		summary.push(`mergeAgents=${preferences.mergeAgents}`);
+	}
 	return summary.join(", ");
 }
 
@@ -1545,8 +1556,7 @@ async function persistSetupPreferences(
 		if (options.verbose) console.log(`  dry-run: skip persisting ${scopePath}`);
 		return;
 	}
-	await mkdir(dirname(scopePath), { recursive: true });
-	await writeFile(scopePath, JSON.stringify(preferences, null, 2) + "\n");
+	await writePersistedSetupPreferences(projectRoot, preferences);
 	if (options.verbose) console.log(`  Wrote ${scopePath}`);
 }
 
@@ -2088,9 +2098,20 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		Boolean(persistedPreferences?.teamMode) &&
 		(!persistedPreferences?.scope ||
 			persistedPreferences.scope === effectiveScopeForInstallMode);
+	const wouldUsePersistedMergeAgents =
+		!options.mergeAgentsPolicy &&
+		typeof options.mergeAgents !== "boolean" &&
+		resolvePersistedSetupMergeAgents(
+			persistedPreferences,
+			effectiveScopeForInstallMode,
+		) !== undefined;
 	const shouldReviewPersistedSetup =
 		hasPersistedSetupPreferences(persistedPreferences) &&
-		(wouldUsePersistedScope || wouldUsePersistedInstallMode || wouldUsePersistedMcpMode || wouldUsePersistedTeamMode) &&
+		(wouldUsePersistedScope ||
+			wouldUsePersistedInstallMode ||
+			wouldUsePersistedMcpMode ||
+			wouldUsePersistedTeamMode ||
+			wouldUsePersistedMergeAgents) &&
 		(typeof persistedSetupReviewPrompt === "function" ||
 			(process.stdin.isTTY && process.stdout.isTTY));
 	if (shouldReviewPersistedSetup) {
@@ -2108,6 +2129,24 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		persistedPreferences,
 		setupScopePrompt,
 	);
+	const requestedMergeAgentsPolicy =
+		options.mergeAgentsPolicy ??
+		(typeof options.mergeAgents === "boolean"
+			? { kind: "set" as const, value: options.mergeAgents }
+			: undefined);
+	const inheritedMergeAgents =
+		persistedReviewDecision === "reset"
+			? undefined
+			: resolvePersistedSetupMergeAgents(
+				persistedPreferences,
+				resolvedScope.scope,
+			);
+	const effectiveMergeAgents =
+		requestedMergeAgentsPolicy?.kind === "set"
+			? requestedMergeAgentsPolicy.value
+			: requestedMergeAgentsPolicy?.kind === "clear"
+				? undefined
+				: inheritedMergeAgents;
 	const resolvedInstallMode = await resolveSetupInstallMode(
 		projectRoot,
 		resolvedScope.scope,
@@ -2197,7 +2236,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		pluginAgentsMdIsSymlink = false;
 	}
 	const usePluginAgentsMdDefault = isPluginInstallMode
-		? options.mergeAgents || pluginAgentsMdIsSymlink
+		? effectiveMergeAgents || pluginAgentsMdIsSymlink
 			? false
 			: force
 				? true
@@ -2276,11 +2315,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			resolvedInstallMode.installMode === "plugin")
 			? { installMode: resolvedInstallMode.installMode }
 			: {}),
+		...(effectiveMergeAgents !== undefined ? { mergeAgents: effectiveMergeAgents } : {}),
 	};
-	await persistSetupPreferences(projectRoot, setupPreferencesToPersist, {
-		dryRun,
-		verbose,
-	});
 	console.log("  Done.\n");
 
 	if (resolvedScope.scope === "project") {
@@ -2764,7 +2800,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				modelTableDefinitions,
 				{ codexHomeOverride: scopeDirs.codexHomeDir },
 			);
-			if (options.mergeAgents && pluginAgentsMdExists) {
+			if (effectiveMergeAgents && pluginAgentsMdExists) {
 				if (pluginAgentsMdIsSymlink) {
 					summary.agentsMd.skipped += 1;
 					console.log(
@@ -2926,7 +2962,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 						`  Repair safely with "omx setup ${scopeFlag} --merge-agents" to preserve local guidance, or "omx setup ${scopeFlag} --force" to replace it after backup.`,
 					);
 				}
-				if (options.mergeAgents) {
+				if (effectiveMergeAgents) {
 					mergedAgentsContent = upsertManagedAgentsBlock(existing, rewritten);
 					canApplyManagedAgentsMerge = mergedAgentsContent !== existing;
 				} else {
@@ -2969,7 +3005,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				);
 				console.log("  Stop the active session first, then re-run setup.");
 			} else if (
-				options.mergeAgents &&
+				effectiveMergeAgents &&
 				agentsMdExists &&
 				!canApplyManagedAgentsMerge
 			) {
@@ -3098,6 +3134,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		);
 		console.log();
 	}
+
+	await persistSetupPreferences(projectRoot, setupPreferencesToPersist, {
+		dryRun,
+		verbose,
+	});
 
 	console.log('Setup complete! Run "omx doctor" to verify installation.');
 	console.log("\nNext steps:");

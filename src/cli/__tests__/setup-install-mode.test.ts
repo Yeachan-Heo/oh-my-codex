@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseToml } from "@iarna/toml";
 import { setup } from "../setup.js";
+import { resolveSetupRefreshArgs } from "../update.js";
 import { uninstall } from "../uninstall.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../../config/omx-first-party-mcp.js";
 import {
@@ -3043,6 +3044,107 @@ describe("omx setup install mode behavior", () => {
 						"# customized ask\n",
 					);
 					assert.equal(existsSync(wikiSkillDir), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("persisted merge policy lifecycle", () => {
+	it("preserves matching policy through review and lets explicit sets override reset or a scope change", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-merge-policy-lifecycle-"));
+		try {
+			await withIsolatedUserHome(wd, async () => {
+				await withTempCwd(wd, async () => {
+					await mkdir(join(wd, ".omx"), { recursive: true });
+					const statePath = join(wd, ".omx", "setup-scope.json");
+					await writeFile(statePath, JSON.stringify({ scope: "user", installMode: "legacy", mergeAgents: true }));
+
+					await setup({ persistedSetupReviewPrompt: async () => "review", setupScopePrompt: async () => "user", installModePrompt: async () => "legacy" });
+					assert.equal((JSON.parse(await readFile(statePath, "utf-8")) as { mergeAgents?: boolean }).mergeAgents, true);
+
+					await setup({ persistedSetupReviewPrompt: async () => "reset", scope: "user", mergeAgents: false });
+					assert.equal((JSON.parse(await readFile(statePath, "utf-8")) as { mergeAgents?: boolean }).mergeAgents, false);
+
+					await setup({ persistedSetupReviewPrompt: async () => "review", scope: "project", installMode: "legacy", mergeAgents: true });
+					const changedScope = JSON.parse(await readFile(statePath, "utf-8")) as { scope: string; mergeAgents?: boolean };
+					assert.equal(changedScope.scope, "project");
+					assert.equal(changedScope.mergeAgents, true);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("removes an explicit policy when clear succeeds", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-merge-policy-clear-"));
+		try {
+			await withIsolatedUserHome(wd, async () => {
+				await withTempCwd(wd, async () => {
+					await mkdir(join(wd, ".omx"), { recursive: true });
+					const statePath = join(wd, ".omx", "setup-scope.json");
+					await writeFile(statePath, JSON.stringify({ scope: "project", mergeAgents: true }));
+
+					await setup({
+						scope: "project",
+						installMode: "legacy",
+						mergeAgentsPolicy: { kind: "clear" },
+					});
+
+					assert.equal(Object.hasOwn(JSON.parse(await readFile(statePath, "utf-8")), "mergeAgents"), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("covers persisted and explicit merge policy precedence across force", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-merge-policy-force-"));
+		try {
+			await withIsolatedUserHome(wd, async () => {
+				await withTempCwd(wd, async () => {
+					const statePath = join(wd, ".omx", "setup-scope.json");
+					const agentsPath = join(wd, "AGENTS.md");
+					const rows = [
+						{ name: "persisted true + force", stored: true, policy: undefined, keepsCustom: true, persisted: true, refresh: "--merge-agents" },
+						{ name: "persisted false + force", stored: false, policy: undefined, keepsCustom: false, persisted: false, refresh: "--no-merge-agents" },
+						{ name: "absent + force", stored: undefined, policy: undefined, keepsCustom: false, persisted: undefined, refresh: undefined },
+						{ name: "force + explicit true", stored: false, policy: { kind: "set", value: true } as const, keepsCustom: true, persisted: true, refresh: "--merge-agents" },
+						{ name: "force + explicit false", stored: true, policy: { kind: "set", value: false } as const, keepsCustom: false, persisted: false, refresh: "--no-merge-agents" },
+						{ name: "force + explicit clear", stored: true, policy: { kind: "clear" } as const, keepsCustom: false, persisted: undefined, refresh: undefined },
+					];
+
+					for (const row of rows) {
+						await rm(join(wd, ".omx"), { recursive: true, force: true });
+						await rm(join(wd, ".codex"), { recursive: true, force: true });
+						await mkdir(join(wd, ".omx"), { recursive: true });
+						await writeFile(
+							statePath,
+							JSON.stringify({ scope: "project", ...(row.stored === undefined ? {} : { mergeAgents: row.stored }) }),
+						);
+						await writeFile(agentsPath, `# custom ${row.name}\n`);
+
+						await setup({
+							scope: "project",
+							installMode: "legacy",
+							force: true,
+							mergeAgentsPolicy: row.policy,
+						});
+
+						const agents = await readFile(agentsPath, "utf-8");
+						assert.equal(agents.includes(`# custom ${row.name}`), row.keepsCustom, row.name);
+						const persisted = JSON.parse(await readFile(statePath, "utf-8")) as { force?: boolean; mergeAgents?: boolean };
+						assert.equal(persisted.mergeAgents, row.persisted, row.name);
+						assert.equal(Object.hasOwn(persisted, "force"), false, row.name);
+						const refreshArgs = resolveSetupRefreshArgs(wd);
+						assert.equal(refreshArgs.includes("--force"), false, row.name);
+						if (row.refresh) assert.equal(refreshArgs.includes(row.refresh), true, row.name);
+						else assert.equal(refreshArgs.some((arg) => arg === "--merge-agents" || arg === "--no-merge-agents"), false, row.name);
+					}
 				});
 			});
 		} finally {
