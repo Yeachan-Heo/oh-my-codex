@@ -26,9 +26,10 @@ import {
   getReadScopedStateDirs,
   getReadScopedStatePaths,
   getStatePath,
-  resolveStateScope,
+  resolveWritableStateScope,
 } from '../mcp/state-paths.js';
 import { completeRalplanSession, validateRalplanTerminalConsensus } from '../state/operations.js';
+
 
 export interface ModeState {
   active: boolean;
@@ -144,7 +145,8 @@ export async function assertModeStartAllowed(
   projectRoot?: string,
 ): Promise<void> {
   if (!isTrackedWorkflowMode(mode)) return;
-  const scope = await resolveStateScope(projectRoot);
+  const scope = await resolveWritableStateScope(projectRoot);
+
   const activeModes = await readActiveWorkflowModes(projectRoot ?? process.cwd(), scope.sessionId);
   assertWorkflowTransitionAllowed(activeModes, mode, 'start');
 }
@@ -158,10 +160,10 @@ export async function startMode(
   maxIterations: number = 50,
   projectRoot?: string
 ): Promise<ModeState> {
+  const scope = await resolveWritableStateScope(projectRoot);
   const dir = stateDir(projectRoot);
   await mkdir(dir, { recursive: true });
 
-  const scope = await resolveStateScope(projectRoot);
   const baseStateDir = getBaseStateDir(projectRoot);
   let transitionMessage: string | undefined;
   if (isTrackedWorkflowMode(mode)) {
@@ -280,7 +282,7 @@ export async function updateModeState(
   explicitSessionId?: string,
   options: UpdateModeStateOptions = {},
 ): Promise<ModeState> {
-  const scope = await resolveStateScope(projectRoot, explicitSessionId);
+  const scope = await resolveWritableStateScope(projectRoot, explicitSessionId);
   const baseStateDir = getBaseStateDir(projectRoot);
   const current = mode === 'ralph' && scope.sessionId
     ? await readModeStateForActiveDecision(mode, scope.sessionId, projectRoot)
@@ -372,7 +374,7 @@ export async function updateModeState(
       cwd,
       baseStateDir,
       state: updated as Record<string, unknown>,
-      explicitSessionId: scope.sessionId,
+      explicitSessionId,
     });
     if (!ralplanCompletionHandled) {
       await syncCanonicalSkillStateForMode({

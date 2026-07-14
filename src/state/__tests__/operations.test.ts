@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { executeStateOperation } from '../operations.js';
 import { subagentTrackingPath } from '../../subagents/tracker.js';
 import { updateModeState } from '../../modes/base.js';
+import { WRITABLE_STATE_SCOPE_ERRORS } from '../../mcp/state-paths.js';
 
 async function withAmbientTmuxEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>): Promise<T> {
   const previousTmux = process.env.TMUX;
@@ -1764,7 +1765,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('does not promote stale session metadata when ralplan terminalizes from root scope', async () => {
+  it('fails closed without mutating root state when ralplan terminalization sees a foreign session pointer', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-stale-session-'));
     try {
       const staleSessionId = 'sess-ralplan-stale';
@@ -1816,23 +1817,23 @@ describe('state operations directory initialization', () => {
         },
       });
 
-      assert.equal(response.isError, undefined);
+      assert.equal(response.isError, true);
+      assert.deepEqual(response.payload, { error: WRITABLE_STATE_SCOPE_ERRORS.unusableSession });
       const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(rootRalplan.active, false);
-      assert.equal(rootRalplan.current_phase, 'complete');
-      assert.equal(rootRalplan.status, 'complete');
-      assert.equal(rootRalplan.session_id, undefined);
+      assert.equal(rootRalplan.active, true);
+      assert.equal(rootRalplan.current_phase, 'planning');
+      assert.equal(rootRalplan.session_id, staleSessionId);
       const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(rootSkill.active, false);
-      assert.equal(rootSkill.phase, 'complete');
-      assert.deepEqual(rootSkill.active_skills, []);
+      assert.equal(rootSkill.active, true);
+      assert.equal(rootSkill.phase, 'planning');
+      assert.equal(Array.isArray(rootSkill.active_skills), true);
       assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), false);
       assert.equal(existsSync(join(sessionDir, 'skill-active-state.json')), false);
 
       const listed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
       });
-      assert.deepEqual(listed.payload, { active_modes: [] });
+      assert.deepEqual(listed.payload, { active_modes: ['ralplan'] });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
