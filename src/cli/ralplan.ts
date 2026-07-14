@@ -85,6 +85,7 @@ export async function ralplanCommand(
     return;
   }
 
+  const spawnTaskName = `omx-role-intent:${result.intent.correlation_token}`;
   const receipt = {
     ok: true,
     intent: {
@@ -94,12 +95,13 @@ export async function ralplanCommand(
       correlation_token: result.intent.correlation_token,
       expires_at: result.intent.expires_at,
     },
+    spawn_task_name: spawnTaskName,
   };
   if (parsed.json) {
     stdout(JSON.stringify(receipt));
     return;
   }
-  stdout(`role-intent recorded: role=${receipt.intent.role} session=${receipt.intent.session_id} parent-thread=${receipt.intent.parent_thread_id} correlation-token=${receipt.intent.correlation_token} expires-at=${receipt.intent.expires_at}`);
+  stdout(`role-intent recorded: role=${receipt.intent.role} session=${receipt.intent.session_id} parent-thread=${receipt.intent.parent_thread_id} correlation-token=${receipt.intent.correlation_token} spawn-task-name=${receipt.spawn_task_name} expires-at=${receipt.intent.expires_at}`);
 }
 
 function parseRoleIntentWriteArgs(args: string[]): ParsedRoleIntentWriteArgs {

@@ -362,7 +362,9 @@ interface NativeSubagentSessionStartMetadata {
   parentThreadId: string;
   agentNickname?: string;
   agentRole?: string;
+  correlationToken?: string;
 }
+
 
 function readBoundedFirstLineSync(path: string): string {
   const fd = openSync(path, "r");
@@ -392,6 +394,15 @@ function readBoundedFirstLineSync(path: string): string {
   }
 }
 
+function readRoleIntentCorrelationToken(...carrierValues: unknown[]): string | undefined {
+  for (const carrierValue of carrierValues) {
+    const match = safeString(carrierValue).trim().match(/^omx-role-intent:(\S+)$/);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+
 function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeSubagentSessionStartMetadata | null {
   const normalizedPath = transcriptPath.trim();
   if (!normalizedPath) return null;
@@ -409,12 +420,18 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
     const parentThreadId = safeString(threadSpawn.parent_thread_id).trim();
     if (!parentThreadId) return null;
 
-    const agentNickname = safeString(
-      threadSpawn.agent_nickname
-        ?? threadSpawn.agentNickname
-        ?? payload.agent_nickname
-        ?? payload.agentNickname,
-    ).trim();
+    const agentNicknameCarrierValues = [
+      threadSpawn.agent_nickname ?? threadSpawn.agentNickname,
+      subagent.agent_nickname ?? subagent.agentNickname,
+      payload.agent_nickname ?? payload.agentNickname,
+    ];
+    const agentNickname = safeString(agentNicknameCarrierValues[0]).trim();
+    const correlationToken = readRoleIntentCorrelationToken(
+      threadSpawn.task_name ?? threadSpawn.taskName,
+      subagent.task_name ?? subagent.taskName,
+      payload.task_name ?? payload.taskName,
+      ...agentNicknameCarrierValues,
+    );
     const agentRole = safeString(
       threadSpawn.agent_role
         ?? threadSpawn.agentRole
@@ -429,7 +446,9 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
       parentThreadId,
       ...(agentNickname ? { agentNickname } : {}),
       ...(agentRole ? { agentRole } : {}),
+      ...(correlationToken ? { correlationToken } : {}),
     };
+
   } catch {
     return null;
   }
@@ -467,7 +486,7 @@ async function recordNativeSubagentSessionStart(
         {
           sessionId: correlationSessionId,
           parentThreadId,
-          correlationToken: metadata.agentNickname,
+          correlationToken: metadata.correlationToken,
         },
         (state, intent) => {
           let next = state;

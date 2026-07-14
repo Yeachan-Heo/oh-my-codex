@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +150,70 @@ function isSingleFlightConflict(result: PendingRoleIntentWorkerResult): result i
 
 function isConsumedRoleIntent(result: PendingRoleIntentWorkerResult): result is { role: string; provenanceKind: string } {
   return result !== null && 'role' in result;
+}
+
+const CROSS_PROCESS_LOCK_HOLDER_SOURCE = `
+  const tracker = await import(process.env.OMX_TRACKER_MODULE_URL ?? '');
+  const { existsSync, writeFileSync } = await import('node:fs');
+  const resourcePath = process.env.OMX_LOCK_RESOURCE_PATH ?? '';
+  const readyPath = process.env.OMX_LOCK_READY_PATH ?? '';
+  const releasePath = process.env.OMX_LOCK_RELEASE_PATH ?? '';
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+
+  tracker.withCrossProcessFileLockSync(resourcePath, () => {
+    writeFileSync(readyPath, 'ready\\n');
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(releasePath)) {
+      if (Date.now() >= deadline) throw new Error('Timed out waiting to release successor lock');
+      Atomics.wait(waitArray, 0, 0, 5);
+    }
+  });
+`;
+
+function crossProcessLockClaim(token: string, pid: number, acquiredAtMs: number): string {
+  return `${JSON.stringify({
+    token,
+    pid,
+    host: 'test-host',
+    acquired_at: new Date(acquiredAtMs).toISOString(),
+  })}\n`;
+}
+
+function spawnCrossProcessLockHolder(resourcePath: string, readyPath: string, releasePath: string) {
+  return spawn(process.execPath, ['--input-type=module', '--eval', CROSS_PROCESS_LOCK_HOLDER_SOURCE], {
+    env: {
+      ...process.env,
+      OMX_TRACKER_MODULE_URL: new URL('../tracker.js', import.meta.url).href,
+      OMX_LOCK_RESOURCE_PATH: resourcePath,
+      OMX_LOCK_READY_PATH: readyPath,
+      OMX_LOCK_RELEASE_PATH: releasePath,
+    },
+  });
+}
+
+function waitForFileSync(path: string, timeoutMs = 1_000): void {
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
+    Atomics.wait(waitArray, 0, 0, 5);
+  }
+}
+
+async function waitForChildExit(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Lock-owner child exited with code ${code}`)));
+  });
+}
+
+async function stopChild(child: ReturnType<typeof spawn> | undefined): Promise<void> {
+  if (!child || child.exitCode !== null) return;
+  await new Promise<void>((resolve) => {
+    child.once('exit', resolve);
+    child.kill();
+  });
 }
 
 describe('subagents/tracker', () => {
@@ -747,30 +812,97 @@ describe('subagents/tracker', () => {
     );
   });
 
-  it('reclaims stale or dead cross-process lock owners', async () => {
+  it('does not let a stale owner release a successor lock', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const successorReadyPath = join(cwd, 'successor-ready');
+    const successorReleasePath = join(cwd, 'successor-release');
+    let successor: ReturnType<typeof spawn> | undefined;
+    try {
+      withCrossProcessFileLockSync(resourcePath, () => {
+        writeFileSync(lockPath, crossProcessLockClaim('expired-owner-token', process.pid, Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1));
+        successor = spawnCrossProcessLockHolder(resourcePath, successorReadyPath, successorReleasePath);
+        waitForFileSync(successorReadyPath);
+      });
+
+      assert.ok(successor);
+      const successorClaim = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token?: unknown; pid?: unknown };
+      assert.equal(successorClaim.pid, successor.pid);
+      assert.notEqual(successorClaim.token, 'expired-owner-token');
+      assert.ok(existsSync(lockPath));
+
+      writeFileSync(successorReleasePath, 'release\n');
+      await waitForChildExit(successor);
+      assert.equal(existsSync(lockPath), false);
+    } finally {
+      await stopChild(successor);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a dead-owner cross-process lock', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const resourcePath = join(cwd, 'lock-resource');
     try {
-      await writeFile(crossProcessLockPath(resourcePath), `${JSON.stringify({
-        pid: process.pid,
-        host: 'test-host',
-        acquired_at: new Date(Date.now() - CROSS_PROCESS_LOCK_LEASE_MS - 1).toISOString(),
-      })}\n`);
-      assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'stale lock recovered'), 'stale lock recovered');
-
       const child = spawn(process.execPath, ['--eval', '']);
       const deadOwnerPid = child.pid;
-      await new Promise<void>((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Lock-owner child exited with code ${code}`)));
-      });
+      await waitForChildExit(child);
       assert.ok(deadOwnerPid);
-      await writeFile(crossProcessLockPath(resourcePath), `${JSON.stringify({
-        pid: deadOwnerPid,
-        host: 'test-host',
-        acquired_at: new Date().toISOString(),
-      })}\n`);
+      await writeFile(
+        crossProcessLockPath(resourcePath),
+        crossProcessLockClaim('dead-owner-token', deadOwnerPid, Date.now()),
+      );
+
       assert.equal(withCrossProcessFileLockSync(resourcePath, () => 'dead lock recovered'), 'dead lock recovered');
+      assert.equal(existsSync(crossProcessLockPath(resourcePath)), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not steal a live different-pid lock within its lease', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const liveOwner = spawn(process.execPath, ['--eval', 'setInterval(() => {}, 1_000)']);
+    let operationRan = false;
+    try {
+      assert.ok(liveOwner.pid);
+      const claim = crossProcessLockClaim('live-owner-token', liveOwner.pid, Date.now());
+      await writeFile(lockPath, claim);
+
+      assert.throws(
+        () => withCrossProcessFileLockSync(resourcePath, () => {
+          operationRan = true;
+        }, { maxAttempts: 2, retryMs: 1 }),
+        /Timed out waiting for cross-process lock/,
+      );
+      assert.equal(operationRan, false);
+      assert.equal(readFileSync(lockPath, 'utf-8'), claim);
+    } finally {
+      await stopChild(liveOwner);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for a malformed cross-process lockfile', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
+    const resourcePath = join(cwd, 'lock-resource');
+    const lockPath = crossProcessLockPath(resourcePath);
+    const malformedLock = 'not valid json\n';
+    let operationRan = false;
+    try {
+      await writeFile(lockPath, malformedLock);
+
+      assert.throws(
+        () => withCrossProcessFileLockSync(resourcePath, () => {
+          operationRan = true;
+        }, { maxAttempts: 2, retryMs: 1 }),
+        /Timed out waiting for cross-process lock/,
+      );
+      assert.equal(operationRan, false);
+      assert.equal(readFileSync(lockPath, 'utf-8'), malformedLock);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -780,11 +912,10 @@ describe('subagents/tracker', () => {
     const baseStateDir = await mkdtemp(join(tmpdir(), 'omx-role-routing-marker-'));
     const nowMs = Date.now();
     try {
-      await writeFile(crossProcessLockPath(join(baseStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), `${JSON.stringify({
-        pid: process.pid,
-        host: 'test-host',
-        acquired_at: new Date(nowMs - CROSS_PROCESS_LOCK_LEASE_MS - 1).toISOString(),
-      })}\n`);
+      await writeFile(
+        crossProcessLockPath(join(baseStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)),
+        crossProcessLockClaim('expired-marker-token', process.pid, nowMs - CROSS_PROCESS_LOCK_LEASE_MS - 1),
+      );
       writeRoleRoutingMarker(baseStateDir, {
         schema_version: 1,
         cwd: '/workspace/project',

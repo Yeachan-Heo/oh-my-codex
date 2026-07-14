@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -355,39 +355,77 @@ export const CROSS_PROCESS_LOCK_LEASE_MS = 60_000;
 
 const crossProcessLockWaitArray = new Int32Array(new SharedArrayBuffer(4));
 
-type CrossProcessLockOwner = {
-  pid?: number;
-  acquiredAtMs?: number;
+type CrossProcessLockClaim = {
+  token: string;
+  pid: number;
+  host: string;
+  acquiredAtMs: number;
 };
+
+type CrossProcessLockState =
+  | { kind: 'missing' }
+  | { kind: 'claim'; claim: CrossProcessLockClaim }
+  | { kind: 'malformed' };
+
+type CrossProcessLockRecovery =
+  | { kind: 'not_recovered' }
+  | { kind: 'retry' }
+  | { kind: 'recovered'; descriptor: number };
 
 export function crossProcessLockPath(resourcePath: string): string {
   return `${resourcePath}.lock`;
+}
+
+function crossProcessLockGuardPath(lockPath: string): string {
+  return `${lockPath}.guard`;
 }
 
 function sleepForCrossProcessLockSync(durationMs: number): void {
   Atomics.wait(crossProcessLockWaitArray, 0, 0, durationMs);
 }
 
-function readCrossProcessLockOwner(lockPath: string): CrossProcessLockOwner | null {
+function createCrossProcessLockClaim(token: string): CrossProcessLockClaim {
+  return {
+    token,
+    pid: process.pid,
+    host: hostname(),
+    acquiredAtMs: Date.now(),
+  };
+}
+
+function serializeCrossProcessLockClaim(claim: CrossProcessLockClaim): string {
+  return `${JSON.stringify({
+    token: claim.token,
+    pid: claim.pid,
+    host: claim.host,
+    acquired_at: new Date(claim.acquiredAtMs).toISOString(),
+  })}\n`;
+}
+
+function readCrossProcessLockState(lockPath: string): CrossProcessLockState {
   try {
     const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as {
+      token?: unknown;
       pid?: unknown;
+      host?: unknown;
       acquired_at?: unknown;
     };
+    const token = typeof parsed.token === 'string' && parsed.token === parsed.token.trim() && parsed.token ? parsed.token : undefined;
     const pid = typeof parsed.pid === 'number' && Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
+    const host = typeof parsed.host === 'string' && parsed.host.trim() ? parsed.host : undefined;
     const acquiredAtMs = typeof parsed.acquired_at === 'string' ? Date.parse(parsed.acquired_at) : Number.NaN;
+    if (!token || !pid || !host || !Number.isFinite(acquiredAtMs)) return { kind: 'malformed' };
     return {
-      ...(pid ? { pid } : {}),
-      ...(Number.isFinite(acquiredAtMs) ? { acquiredAtMs } : {}),
+      kind: 'claim',
+      claim: { token, pid, host, acquiredAtMs },
     };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    return {};
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
+    return { kind: 'malformed' };
   }
 }
 
-function isCrossProcessLockOwnerDead(pid: number | undefined): boolean {
-  if (!pid) return false;
+function isCrossProcessLockOwnerDead(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return false;
@@ -396,30 +434,91 @@ function isCrossProcessLockOwnerDead(pid: number | undefined): boolean {
   }
 }
 
-function isCrossProcessLockOlderThanLease(lockPath: string, acquiredAtMs: number | undefined, nowMs: number): boolean {
-  if (typeof acquiredAtMs === 'number') return acquiredAtMs < nowMs - CROSS_PROCESS_LOCK_LEASE_MS;
+function isCrossProcessLockOlderThanLease(acquiredAtMs: number, nowMs: number): boolean {
+  return acquiredAtMs < nowMs - CROSS_PROCESS_LOCK_LEASE_MS;
+}
+
+function writeCrossProcessLockClaimAtomically(lockPath: string, claim: CrossProcessLockClaim): void {
+  const temporaryPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    return statSync(lockPath).mtimeMs < nowMs - CROSS_PROCESS_LOCK_LEASE_MS;
+    writeFileSync(temporaryPath, serializeCrossProcessLockClaim(claim));
+    renameSync(temporaryPath, lockPath);
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+    try {
+      unlinkSync(temporaryPath);
+    } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanupError;
+    }
+    throw error;
   }
 }
 
-function recoverCrossProcessFileLock(lockPath: string): boolean {
-  const owner = readCrossProcessLockOwner(lockPath);
-  if (owner === null) return true;
-
-  const nowMs = Date.now();
-  if (!isCrossProcessLockOwnerDead(owner.pid) && !isCrossProcessLockOlderThanLease(lockPath, owner.acquiredAtMs, nowMs)) {
-    return false;
-  }
-
+function tryAcquireCrossProcessLockGuard(lockPath: string): boolean {
   try {
-    unlinkSync(lockPath);
+    mkdirSync(crossProcessLockGuardPath(lockPath));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+}
+
+function releaseCrossProcessLockGuard(lockPath: string): void {
+  try {
+    rmdirSync(crossProcessLockGuardPath(lockPath));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  return true;
+}
+
+function recoverCrossProcessFileLock(lockPath: string, token: string): CrossProcessLockRecovery {
+  if (!tryAcquireCrossProcessLockGuard(lockPath)) return { kind: 'not_recovered' };
+
+  try {
+    const state = readCrossProcessLockState(lockPath);
+    if (state.kind === 'missing') return { kind: 'retry' };
+    if (state.kind === 'malformed') return { kind: 'not_recovered' };
+
+    const { claim } = state;
+    const nowMs = Date.now();
+    if (!isCrossProcessLockOwnerDead(claim.pid) && !isCrossProcessLockOlderThanLease(claim.acquiredAtMs, nowMs)) {
+      return { kind: 'not_recovered' };
+    }
+
+    writeCrossProcessLockClaimAtomically(lockPath, createCrossProcessLockClaim(token));
+    const descriptor = openSync(lockPath, 'r');
+    const successorState = readCrossProcessLockState(lockPath);
+    if (successorState.kind === 'claim' && successorState.claim.token === token) {
+      return { kind: 'recovered', descriptor };
+    }
+    closeSync(descriptor);
+    return { kind: 'not_recovered' };
+  } finally {
+    releaseCrossProcessLockGuard(lockPath);
+  }
+}
+
+function releaseCrossProcessFileLock(lockPath: string, token: string, maxAttempts: number, retryMs: number): void {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (tryAcquireCrossProcessLockGuard(lockPath)) {
+      try {
+        const state = readCrossProcessLockState(lockPath);
+        if (state.kind === 'claim' && state.claim.token === token) {
+          try {
+            unlinkSync(lockPath);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          }
+        }
+      } finally {
+        releaseCrossProcessLockGuard(lockPath);
+      }
+      return;
+    }
+    if (attempt < maxAttempts - 1) {
+      sleepForCrossProcessLockSync(Math.min(25, retryMs * 2 ** Math.min(attempt, 4)));
+    }
+  }
 }
 
 export function withCrossProcessFileLockSync<T>(
@@ -438,13 +537,14 @@ export function withCrossProcessFileLockSync<T>(
       : DEFAULT_CROSS_PROCESS_LOCK_RETRY_MS;
 
   mkdirSync(dirname(lockPath), { recursive: true });
+  const token = randomUUID();
   let descriptor: number | undefined;
   let contentionAttempts = 0;
   while (contentionAttempts < maxAttempts) {
     try {
       descriptor = openSync(lockPath, 'wx');
       try {
-        writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, host: hostname(), acquired_at: new Date().toISOString() })}\n`);
+        writeFileSync(descriptor, serializeCrossProcessLockClaim(createCrossProcessLockClaim(token)));
       } catch (error) {
         try {
           closeSync(descriptor);
@@ -456,7 +556,12 @@ export function withCrossProcessFileLockSync<T>(
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (recoverCrossProcessFileLock(lockPath)) continue;
+      const recovery = recoverCrossProcessFileLock(lockPath, token);
+      if (recovery.kind === 'recovered') {
+        descriptor = recovery.descriptor;
+        break;
+      }
+      if (recovery.kind === 'retry') continue;
       if (contentionAttempts === maxAttempts - 1) {
         throw new Error(`Timed out waiting for cross-process lock at ${lockPath}`);
       }
@@ -475,7 +580,7 @@ export function withCrossProcessFileLockSync<T>(
     try {
       closeSync(descriptor);
     } finally {
-      unlinkSync(lockPath);
+      releaseCrossProcessFileLock(lockPath, token, maxAttempts, retryMs);
     }
   }
 }
