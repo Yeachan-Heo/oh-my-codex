@@ -90,6 +90,7 @@ interface LockPersistenceApi extends PersistenceApi {
       }) => 'live' | 'absent' | 'reused' | 'unknown' | Promise<'live' | 'absent' | 'reused' | 'unknown'>;
       waitForChange?: (lockPath: string, remainingMs: number) => void | Promise<void>;
       onAcquired?: (name: ReviewLockName) => void;
+      afterReclaimRename?: (lockPath: string, quarantinePath: string) => void | Promise<void>;
     },
   ): Promise<ReviewLockHandle[]>;
   releaseReviewLocks(
@@ -494,7 +495,7 @@ describe('code-review persistence locks', () => {
       });
 
       const handles = await api.acquireReviewLocks(paths, undefined, ['start'], {
-        timeoutMs: 0,
+        timeoutMs: 5_000,
         ownerProbe: () => 'absent',
       });
       assert.equal(handles.length, 1);
@@ -568,6 +569,104 @@ describe('code-review persistence locks', () => {
       );
       assert.equal(monotonicNow, 5_000);
       assert.equal(waits, 5);
+    });
+  });
+
+  it('does not publish a lock after its monotonic deadline expires during the final wait', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadLockPersistenceApi();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      await api.atomicWritePrivateJson(paths.startLockPath, {
+        pid: process.pid,
+        hostname: hostname(),
+        process_start_marker: 'live',
+        nonce: api.generateReviewId(),
+        acquired_at: '2026-07-14T00:00:00.000Z',
+      });
+      let monotonicNow = 0;
+      let acquired = 0;
+
+      await assert.rejects(
+        api.acquireReviewLocks(paths, undefined, ['start'], {
+          timeoutMs: 5_000,
+          now: () => monotonicNow,
+          ownerProbe: () => 'live',
+          waitForChange: async () => {
+            monotonicNow = 5_001;
+            await rm(paths.startLockPath, { force: true });
+          },
+          onAcquired: () => { acquired += 1; },
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_LOCKED',
+      );
+      assert.equal(acquired, 0);
+      await assert.rejects(
+        stat(paths.startLockPath),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+      );
+    });
+  });
+
+  it('cleans a restored nonce-mismatch quarantine but preserves it when a new owner blocks restoration', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadLockPersistenceApi();
+      for (const restoration of ['SUCCEEDS', 'BLOCKED'] as const) {
+        const sessionId = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+        const staleOwner = {
+          pid: 999_999,
+          hostname: hostname(),
+          process_start_marker: 'stale',
+          nonce: api.generateReviewId(),
+          acquired_at: '2026-07-14T00:00:00.000Z',
+        };
+        const replacementOwner = {
+          ...staleOwner,
+          pid: process.pid,
+          process_start_marker: 'replacement',
+          nonce: api.generateReviewId(),
+        };
+        const winnerOwner = {
+          ...replacementOwner,
+          process_start_marker: 'winner',
+          nonce: api.generateReviewId(),
+        };
+        await api.atomicWritePrivateJson(paths.startLockPath, staleOwner);
+        let probeCalls = 0;
+
+        await assert.rejects(
+          api.acquireReviewLocks(paths, undefined, ['start'], {
+            timeoutMs: 0,
+            ownerProbe: async () => {
+              probeCalls += 1;
+              await api.atomicWritePrivateJson(paths.startLockPath, replacementOwner);
+              return 'absent' as const;
+            },
+            ...(restoration === 'BLOCKED' ? {
+              afterReclaimRename: async () => {
+                await api.atomicWritePrivateJson(paths.startLockPath, winnerOwner);
+              },
+            } : {}),
+          }),
+          (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_LOCKED',
+          restoration,
+        );
+        assert.equal(probeCalls, 1, restoration);
+        const published = JSON.parse(await readFile(paths.startLockPath, 'utf8')) as { nonce: string };
+        assert.equal(
+          published.nonce,
+          restoration === 'SUCCEEDS' ? replacementOwner.nonce : winnerOwner.nonce,
+          restoration,
+        );
+        const quarantines = (await readdir(paths.reviewRoot)).filter((name) => name.includes('.reap-'));
+        assert.equal(quarantines.length, restoration === 'SUCCEEDS' ? 0 : 1, restoration);
+        if (restoration === 'BLOCKED') {
+          const quarantined = JSON.parse(
+            await readFile(join(paths.reviewRoot, quarantines[0]!), 'utf8'),
+          ) as { nonce: string };
+          assert.equal(quarantined.nonce, replacementOwner.nonce);
+        }
+      }
     });
   });
 
@@ -714,7 +813,7 @@ describe('code-review persistence locks', () => {
         '--input-type=module', '-e', childProgram, moduleUrl, workingDirectory, sessionId, 'abandon',
       ]);
       assert.equal(abandoned.stdout, 'ACQUIRED');
-      const recovered = await api.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 0 });
+      const recovered = await api.acquireReviewLocks(paths, undefined, ['start'], { timeoutMs: 5_000 });
       assert.equal(recovered.length, 1);
       await api.releaseReviewLocks(recovered);
     });

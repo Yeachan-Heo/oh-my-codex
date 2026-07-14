@@ -130,6 +130,7 @@ export interface AcquireReviewLocksOptions {
   ownerProbe?: (owner: ReviewLockOwner) => ReviewLockOwnerStatus | Promise<ReviewLockOwnerStatus>;
   waitForChange?: (lockPath: string, remainingMs: number) => void | Promise<void>;
   onAcquired?: (name: ReviewLockName) => void;
+  afterReclaimRename?: (lockPath: string, quarantinePath: string) => void | Promise<void>;
 }
 
 export interface ReleaseReviewLocksOptions {
@@ -503,7 +504,11 @@ async function publishLock(path: string, owner: ReviewLockOwner): Promise<boolea
   }
 }
 
-async function reclaimAbsentOwner(path: string, expectedNonce: string): Promise<boolean> {
+async function reclaimAbsentOwner(
+  path: string,
+  expectedNonce: string,
+  afterRename?: (lockPath: string, quarantinePath: string) => void | Promise<void>,
+): Promise<boolean> {
   const quarantinePath = `${path}.reap-${process.pid}-${randomUUID()}`;
   try {
     await rename(path, quarantinePath);
@@ -511,6 +516,7 @@ async function reclaimAbsentOwner(path: string, expectedNonce: string): Promise<
     if (isMissing(error)) return true;
     return false;
   }
+  await afterRename?.(path, quarantinePath);
   const movedOwner = await readLockOwner(quarantinePath);
   if (movedOwner?.nonce === expectedNonce) {
     await rm(quarantinePath, { force: true });
@@ -521,7 +527,9 @@ async function reclaimAbsentOwner(path: string, expectedNonce: string): Promise<
     await link(quarantinePath, path);
   } catch {
     // A new owner won the empty path. Leaving the quarantined evidence is safer than replacing it.
+    return false;
   }
+  await rm(quarantinePath, { force: true });
   return false;
 }
 
@@ -541,7 +549,16 @@ async function acquireSingleLock(
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'current process start identity is unavailable');
   }
   let observedStatus: ReviewLockOwnerStatus | undefined;
+  let publicationAttempted = false;
   while (true) {
+    if (publicationAttempted && deadline - now() <= 0) {
+      throw new ReviewPersistenceError(
+        'PERSISTENCE_LOCKED',
+        `review ${name} lock is held`,
+        { owner_status: observedStatus ?? 'unknown' },
+      );
+    }
+    publicationAttempted = true;
     const nonce = randomUUID();
     const owner: ReviewLockOwner = {
       pid: process.pid,
@@ -556,7 +573,8 @@ async function acquireSingleLock(
     if (currentOwner?.hostname === hostname()) {
       const status = await ownerProbe(currentOwner);
       observedStatus = status;
-      if (status === 'absent' && await reclaimAbsentOwner(path, currentOwner.nonce)) continue;
+      if (status === 'absent'
+        && await reclaimAbsentOwner(path, currentOwner.nonce, options.afterReclaimRename)) continue;
     }
 
     const remaining = deadline - now();
