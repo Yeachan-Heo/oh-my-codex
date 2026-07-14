@@ -25,6 +25,7 @@ interface CapabilityPlanEntry {
   capability: Capability;
   applicability: 'APPLICABLE' | 'NOT_APPLICABLE';
   file_kinds: FileKind[];
+  required_for: FileKind[];
   fallback_for: Array<'LSP' | 'AST'>;
 }
 
@@ -45,6 +46,28 @@ interface CapabilityEvaluation {
   evidence_status: EvidenceStatus;
   maximum_recommendation: ReviewRecommendation;
   reasons: string[];
+}
+
+interface FrozenCapabilityConfig {
+  schema_version: 1;
+  typescript_javascript: {
+    compiler_or_typecheck: boolean;
+    lint: boolean;
+  };
+  rust: {
+    ast_backend: boolean;
+    clippy: boolean;
+  };
+  shell: {
+    parser: boolean;
+    lint: boolean;
+    rg: boolean;
+  };
+  structured_data: {
+    parser: boolean;
+    schema: boolean;
+    lint: boolean;
+  };
 }
 
 interface HookApprovalLedgerEntry {
@@ -79,7 +102,11 @@ interface TrustedResolution {
 
 interface CapabilitiesApi {
   classifyReviewFile(file: ScopeFile): FileKind;
-  buildCapabilityPlan(files: readonly ScopeFile[], options?: { rustAstSupported?: boolean }): CapabilityPlan;
+  parseFrozenCapabilityConfig(value: unknown): FrozenCapabilityConfig;
+  buildCapabilityPlan(
+    files: readonly ScopeFile[],
+    options?: { trustedFrozenConfig?: FrozenCapabilityConfig },
+  ): CapabilityPlan;
   evaluateCapabilityEvidence(
     plan: CapabilityPlan,
     observations: readonly CapabilityObservation[],
@@ -149,11 +176,46 @@ function applicable(plan: CapabilityPlan): Capability[] {
 }
 
 function passingObservations(plan: CapabilityPlan): CapabilityObservation[] {
-  return applicable(plan).map((capability) => ({
-    capability,
+  return plan.capabilities.filter((entry) => entry.required_for?.length > 0).map((entry) => ({
+    capability: entry.capability,
     execution: 'NATIVE',
     outcome: 'PASS',
   }));
+}
+
+function frozenConfig(overrides: {
+  typescriptCompiler?: boolean;
+  typescriptLint?: boolean;
+  rustAst?: boolean;
+  rustClippy?: boolean;
+  shellParser?: boolean;
+  shellLint?: boolean;
+  shellRg?: boolean;
+  structuredParser?: boolean;
+  structuredSchema?: boolean;
+  structuredLint?: boolean;
+} = {}): FrozenCapabilityConfig {
+  return {
+    schema_version: 1,
+    typescript_javascript: {
+      compiler_or_typecheck: overrides.typescriptCompiler ?? false,
+      lint: overrides.typescriptLint ?? false,
+    },
+    rust: {
+      ast_backend: overrides.rustAst ?? false,
+      clippy: overrides.rustClippy ?? false,
+    },
+    shell: {
+      parser: overrides.shellParser ?? false,
+      lint: overrides.shellLint ?? false,
+      rg: overrides.shellRg ?? false,
+    },
+    structured_data: {
+      parser: overrides.structuredParser ?? false,
+      schema: overrides.structuredSchema ?? false,
+      lint: overrides.structuredLint ?? false,
+    },
+  };
 }
 
 const NOW = new Date('2026-07-15T01:00:00.000Z');
@@ -213,35 +275,87 @@ describe('file-kind capability planning', () => {
     assert.deepEqual(cases.map(([value]) => api.classifyReviewFile(value)), cases.map(([, kind]) => kind));
   });
 
-  it('builds the complete TypeScript/JavaScript native and fallback union', async () => {
+  it('separates inherent TypeScript requirements from absent, partial, and full frozen-base tools', async () => {
     const api = await loadCapabilitiesApi();
-    const plan = api.buildCapabilityPlan([file('src/a.ts'), file('src/b.js')]);
-    assert.deepEqual(applicable(plan), ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK']);
+    const files = [file('src/a.ts'), file('src/b.js')];
+    const absent = api.buildCapabilityPlan(files);
+    const partial = api.buildCapabilityPlan(files, {
+      trustedFrozenConfig: frozenConfig({ typescriptCompiler: true }),
+    });
+    const full = api.buildCapabilityPlan(files, {
+      trustedFrozenConfig: frozenConfig({ typescriptCompiler: true, typescriptLint: true }),
+    });
+
+    assert.deepEqual(applicable(absent), ['LSP', 'AST', 'RG_FALLBACK']);
     assert.deepEqual(
-      plan.capabilities.filter((entry) => entry.fallback_for.length > 0).map((entry) => [entry.capability, entry.fallback_for]),
+      absent.capabilities.filter((entry) => entry.required_for?.length > 0)
+        .map((entry) => entry.capability),
+      ['LSP', 'AST'],
+    );
+    assert.deepEqual(applicable(partial), ['LSP', 'AST', 'COMPILER', 'RG_FALLBACK']);
+    assert.deepEqual(applicable(full), ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK']);
+    assert.deepEqual(
+      full.capabilities.filter((entry) => entry.fallback_for.length > 0)
+        .map((entry) => [entry.capability, entry.fallback_for]),
       [
         ['COMPILER', ['LSP', 'AST']],
         ['LINT', ['LSP', 'AST']],
         ['RG_FALLBACK', ['LSP', 'AST']],
       ],
     );
-    assert.equal(plan.inherently_degraded, false);
   });
 
-  it('makes Rust AST conditional while retaining LSP and cargo/lint fallback evidence', async () => {
+  it('always requires Rust LSP and cargo check while gating AST and Clippy on frozen-base support', async () => {
     const api = await loadCapabilitiesApi();
-    assert.deepEqual(applicable(api.buildCapabilityPlan([file('src/lib.rs')])), ['LSP', 'LINT', 'RG_FALLBACK']);
+    const absent = api.buildCapabilityPlan([file('src/lib.rs')]);
+    const full = api.buildCapabilityPlan([file('src/lib.rs')], {
+      trustedFrozenConfig: frozenConfig({ rustAst: true, rustClippy: true }),
+    });
+    assert.deepEqual(applicable(absent), ['LSP', 'COMPILER']);
     assert.deepEqual(
-      applicable(api.buildCapabilityPlan([file('src/lib.rs')], { rustAstSupported: true })),
-      ['LSP', 'AST', 'LINT', 'RG_FALLBACK'],
+      absent.capabilities.filter((entry) => entry.required_for?.length > 0)
+        .map((entry) => entry.capability),
+      ['LSP', 'COMPILER'],
+    );
+    assert.deepEqual(applicable(full), ['LSP', 'AST', 'COMPILER', 'LINT']);
+  });
+
+  it('derives shell and structured-data applicability only from trusted frozen-base ownership', async () => {
+    const api = await loadCapabilitiesApi();
+    assert.deepEqual(applicable(api.buildCapabilityPlan([file('run.sh')])), []);
+    assert.deepEqual(applicable(api.buildCapabilityPlan([file('config.json')])), []);
+
+    const partial = frozenConfig({ shellParser: true, shellRg: true, structuredSchema: true });
+    assert.deepEqual(
+      applicable(api.buildCapabilityPlan([file('run.sh')], { trustedFrozenConfig: partial })),
+      ['COMPILER', 'RG_FALLBACK'],
+    );
+    assert.deepEqual(
+      applicable(api.buildCapabilityPlan([file('config.json')], { trustedFrozenConfig: partial })),
+      ['COMPILER'],
+    );
+
+    const full = frozenConfig({
+      shellParser: true,
+      shellLint: true,
+      shellRg: true,
+      structuredParser: true,
+      structuredSchema: true,
+      structuredLint: true,
+    });
+    assert.deepEqual(
+      applicable(api.buildCapabilityPlan([file('run.sh')], { trustedFrozenConfig: full })),
+      ['COMPILER', 'LINT', 'RG_FALLBACK'],
+    );
+    assert.deepEqual(
+      applicable(api.buildCapabilityPlan([file('config.json')], { trustedFrozenConfig: full })),
+      ['COMPILER', 'LINT'],
     );
   });
 
-  it('applies shell, structured-data, docs, assets, links, and unknown-kind rules exactly', async () => {
+  it('keeps docs, assets, links, and binary files diagnostic-free while degrading unknown text', async () => {
     const api = await loadCapabilitiesApi();
     const cases: Array<[ScopeFile, Capability[], boolean]> = [
-      [file('run.sh'), ['LINT', 'RG_FALLBACK'], false],
-      [file('config.json'), ['COMPILER', 'LINT'], false],
       [file('README.md'), [], false],
       [file('logo.png', { binary: true }), [], false],
       [file('link', { change: 'SYMLINK' }), [], false],
@@ -253,26 +367,53 @@ describe('file-kind capability planning', () => {
       const plan = api.buildCapabilityPlan([value]);
       assert.deepEqual(applicable(plan), expected, value.path);
       assert.equal(plan.inherently_degraded, degraded, value.path);
-      for (const capability of ['LSP', 'AST'] as const) {
-        if (!expected.includes(capability)) {
-          assert.equal(
-            plan.capabilities.find((entry) => entry.capability === capability)?.applicability,
-            'NOT_APPLICABLE',
-          );
-        }
-      }
     }
   });
 
-  it('uses a stable union for mixed scopes without duplicate requirements', async () => {
+  it('strictly validates the bounded frozen applicability schema and defaults absent config closed', async () => {
+    const api = await loadCapabilitiesApi();
+    assert.equal(typeof api.parseFrozenCapabilityConfig, 'function');
+    assert.deepEqual(api.parseFrozenCapabilityConfig(undefined), frozenConfig());
+    assert.deepEqual(api.parseFrozenCapabilityConfig(frozenConfig({ rustClippy: true })),
+      frozenConfig({ rustClippy: true }));
+    for (const value of [
+      null,
+      {},
+      { ...frozenConfig(), schema_version: 2 },
+      { ...frozenConfig(), extra: true },
+      { ...frozenConfig(), rust: { ast_backend: false, clippy: false, extra: true } },
+      { ...frozenConfig(), shell: { parser: false, lint: 'yes', rg: false } },
+    ]) {
+      assert.throws(
+        () => api.parseFrozenCapabilityConfig(value),
+        (error: unknown) => (error as { code?: unknown }).code === 'INVALID_CAPABILITY_CONFIG',
+      );
+    }
+  });
+
+  it('uses a stable mixed-scope union without duplicate requirements', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([
       file('README.md'),
       file('src/lib.rs'),
       file('src/a.ts'),
       file('run.sh'),
+      file('config.json'),
       file('unknown.custom'),
-    ], { rustAstSupported: true });
+    ], {
+      trustedFrozenConfig: frozenConfig({
+        typescriptCompiler: true,
+        typescriptLint: true,
+        rustAst: true,
+        rustClippy: true,
+        shellParser: true,
+        shellLint: true,
+        shellRg: true,
+        structuredParser: true,
+        structuredSchema: true,
+        structuredLint: true,
+      }),
+    });
     assert.deepEqual(applicable(plan), ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK']);
     assert.equal(new Set(plan.capabilities.map((entry) => entry.capability)).size, 5);
     assert.equal(plan.inherently_degraded, true);
@@ -293,11 +434,11 @@ describe('capability evidence degradation', () => {
   it('caps successful LSP/AST fallback at COMMENT', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
-    const observations = passingObservations(plan).map((observation) =>
-      observation.capability === 'LSP' || observation.capability === 'AST'
-        ? { ...observation, execution: 'UNAVAILABLE' as const, outcome: 'NOT_RUN' as const }
-        : { ...observation, execution: 'FALLBACK' as const },
-    );
+    const observations: CapabilityObservation[] = [
+      { capability: 'LSP', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+      { capability: 'AST', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+      { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome: 'PASS' },
+    ];
     const result = api.evaluateCapabilityEvidence(plan, observations);
     assert.equal(result.evidence_status, 'DEGRADED_EVIDENCE');
     assert.equal(result.maximum_recommendation, 'COMMENT');
@@ -308,13 +449,11 @@ describe('capability evidence degradation', () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
     for (const outcome of ['FAIL', 'TIMED_OUT', 'MALFORMED'] as const) {
-      const observations = passingObservations(plan).map((observation) =>
-        observation.capability === 'LSP'
-          ? { ...observation, execution: 'UNAVAILABLE' as const, outcome: 'NOT_RUN' as const }
-          : observation.capability === 'COMPILER'
-            ? { ...observation, execution: 'FALLBACK' as const, outcome }
-            : observation,
-      );
+      const observations: CapabilityObservation[] = [
+        { capability: 'LSP', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+        { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+        { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome },
+      ];
       assert.equal(
         api.evaluateCapabilityEvidence(plan, observations).maximum_recommendation,
         'REQUEST CHANGES',
@@ -322,11 +461,10 @@ describe('capability evidence degradation', () => {
       );
     }
 
-    const missingFallback = passingObservations(plan)
-      .filter((observation) => observation.capability !== 'RG_FALLBACK')
-      .map((observation) => observation.capability === 'AST'
-        ? { ...observation, execution: 'UNAVAILABLE' as const, outcome: 'NOT_RUN' as const }
-        : observation);
+    const missingFallback: CapabilityObservation[] = [
+      { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'AST', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+    ];
     assert.equal(
       api.evaluateCapabilityEvidence(plan, missingFallback).maximum_recommendation,
       'REQUEST CHANGES',
@@ -336,9 +474,11 @@ describe('capability evidence degradation', () => {
   it('does not treat unavailable AST with an empty result as successful evidence', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
-    const observations = passingObservations(plan).map((observation) => observation.capability === 'AST'
-      ? { ...observation, execution: 'UNAVAILABLE' as const, outcome: 'PASS' as const, empty_result: true }
-      : { ...observation, execution: observation.capability === 'LSP' ? observation.execution : 'FALLBACK' as const });
+    const observations: CapabilityObservation[] = [
+      { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'AST', execution: 'UNAVAILABLE', outcome: 'PASS', empty_result: true },
+      { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome: 'PASS' },
+    ];
     const result = api.evaluateCapabilityEvidence(plan, observations);
     assert.equal(result.evidence_status, 'DEGRADED_EVIDENCE');
     assert.equal(result.maximum_recommendation, 'COMMENT');
@@ -347,10 +487,32 @@ describe('capability evidence degradation', () => {
   it('accepts a successful trusted equivalent as full evidence', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
-    const observations = passingObservations(plan).map((observation) => observation.capability === 'LSP'
-      ? { ...observation, execution: 'ACCEPTED_EQUIVALENT' as const }
-      : observation);
+    const observations: CapabilityObservation[] = [
+      { capability: 'LSP', execution: 'ACCEPTED_EQUIVALENT', outcome: 'PASS' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ];
     assert.equal(api.evaluateCapabilityEvidence(plan, observations).evidence_status, 'FULL_EVIDENCE');
+  });
+
+  it('cannot approve Rust evidence when the mandatory cargo-check capability is absent', async () => {
+    const api = await loadCapabilitiesApi();
+    const plan = api.buildCapabilityPlan([file('src/lib.rs')]);
+    const withoutCompiler = applicable(plan)
+      .filter((capability) => capability !== 'COMPILER')
+      .map((capability): CapabilityObservation => ({
+        capability,
+        execution: 'NATIVE',
+        outcome: 'PASS',
+      }));
+    assert.equal(
+      api.evaluateCapabilityEvidence(plan, withoutCompiler).maximum_recommendation,
+      'REQUEST CHANGES',
+    );
+    assert.deepEqual(api.evaluateCapabilityEvidence(plan, passingObservations(plan)), {
+      evidence_status: 'FULL_EVIDENCE',
+      maximum_recommendation: 'APPROVE',
+      reasons: [],
+    });
   });
 
   it('never improves evidence or recommendation when a capability observation is removed', async () => {
@@ -552,6 +714,45 @@ describe('trusted diagnostic equivalents', () => {
       source_ref: `${baseSha}:code-review-equivalents.json#typescript-ast`,
     }]);
     assert.deepEqual(result.prepared_consumptions, []);
+  });
+
+  it('rejects non-object base revisions before invoking the base-contract reader', async () => {
+    const api = await loadCapabilitiesApi();
+    let reads = 0;
+    for (const base of [
+      'HEAD',
+      'main',
+      'abc1234',
+      `${'a'.repeat(40)}^`,
+      `${'b'.repeat(40)}:nested`,
+      'c'.repeat(39),
+      'd'.repeat(41),
+      'e'.repeat(63),
+      'f'.repeat(65),
+    ]) {
+      const result = await api.resolveTrustedEquivalents({
+        requests: [{
+          capability: 'LSP',
+          source_ref: `${base}:code-review-equivalents.json#typescript-lsp`,
+        }],
+        context: { ...explicitContext(), base_sha: base },
+        readBaseContract: async () => {
+          reads += 1;
+          return JSON.stringify({
+            schema_version: 1,
+            equivalents: [{
+              capability: 'LSP',
+              program: 'npm',
+              args: ['run', 'typecheck'],
+              rule_id: 'typescript-lsp',
+            }],
+          });
+        },
+        now: NOW,
+      });
+      assert.deepEqual(result.accepted_equivalents, [], base);
+    }
+    assert.equal(reads, 0);
   });
 
   it('cannot self-authorize from a worktree contract, an unresolved base, a mismatched rule, or malformed base data', async () => {

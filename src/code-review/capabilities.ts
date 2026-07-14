@@ -24,6 +24,7 @@ export interface CapabilityPlanEntry {
   capability: Capability;
   applicability: 'APPLICABLE' | 'NOT_APPLICABLE';
   file_kinds: FileKind[];
+  required_for: FileKind[];
   fallback_for: Array<'LSP' | 'AST'>;
 }
 
@@ -44,6 +45,33 @@ export interface CapabilityEvaluation {
   evidence_status: EvidenceStatus;
   maximum_recommendation: ReviewRecommendation;
   reasons: string[];
+}
+
+/** Applicability derived by the coordinator from repository configuration at the frozen base commit. */
+export interface FrozenCapabilityConfig {
+  schema_version: 1;
+  typescript_javascript: {
+    compiler_or_typecheck: boolean;
+    lint: boolean;
+  };
+  rust: {
+    ast_backend: boolean;
+    clippy: boolean;
+  };
+  shell: {
+    parser: boolean;
+    lint: boolean;
+    rg: boolean;
+  };
+  structured_data: {
+    parser: boolean;
+    schema: boolean;
+    lint: boolean;
+  };
+}
+
+export interface BuildCapabilityPlanOptions {
+  trustedFrozenConfig?: FrozenCapabilityConfig;
 }
 
 export interface HookApprovalLedgerEntry {
@@ -97,6 +125,7 @@ export interface ResolveTrustedEquivalentsOptions {
 }
 
 export type CapabilitiesErrorCode =
+  | 'INVALID_CAPABILITY_CONFIG'
   | 'INVALID_EQUIVALENT_REQUEST'
   | 'EQUIVALENT_CONSUMPTION_CONFLICT';
 
@@ -132,6 +161,14 @@ const ASSET_EXTENSIONS = new Set([
   '.tif', '.tiff', '.ttf', '.webm', '.webp', '.woff', '.woff2', '.mp3', '.mp4', '.mov', '.wav',
 ]);
 const DEFAULT_APPROVAL_TTL_MS = 5 * 60_000;
+const FULL_GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
+const EMPTY_FROZEN_CAPABILITY_CONFIG: FrozenCapabilityConfig = {
+  schema_version: 1,
+  typescript_javascript: { compiler_or_typecheck: false, lint: false },
+  rust: { ast_backend: false, clippy: false },
+  shell: { parser: false, lint: false, rg: false },
+  structured_data: { parser: false, schema: false, lint: false },
+};
 
 function byteCompare(left: string, right: string): number {
   return Buffer.from(left).compare(Buffer.from(right));
@@ -147,6 +184,67 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   const expected = new Set(keys);
   return Object.keys(value).length === expected.size
     && Object.keys(value).every((key) => expected.has(key));
+}
+
+function isExactBooleanRecord(
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, boolean> {
+  return isPlainObject(value)
+    && hasExactKeys(value, keys)
+    && keys.every((key) => typeof value[key] === 'boolean');
+}
+
+function emptyFrozenCapabilityConfig(): FrozenCapabilityConfig {
+  return {
+    schema_version: 1,
+    typescript_javascript: { ...EMPTY_FROZEN_CAPABILITY_CONFIG.typescript_javascript },
+    rust: { ...EMPTY_FROZEN_CAPABILITY_CONFIG.rust },
+    shell: { ...EMPTY_FROZEN_CAPABILITY_CONFIG.shell },
+    structured_data: { ...EMPTY_FROZEN_CAPABILITY_CONFIG.structured_data },
+  };
+}
+
+export function parseFrozenCapabilityConfig(value: unknown): FrozenCapabilityConfig {
+  if (value === undefined) return emptyFrozenCapabilityConfig();
+  if (!isPlainObject(value)
+    || !hasExactKeys(value, [
+      'schema_version', 'typescript_javascript', 'rust', 'shell', 'structured_data',
+    ])
+    || value.schema_version !== 1
+    || !isExactBooleanRecord(
+      value.typescript_javascript,
+      ['compiler_or_typecheck', 'lint'],
+    )
+    || !isExactBooleanRecord(value.rust, ['ast_backend', 'clippy'])
+    || !isExactBooleanRecord(value.shell, ['parser', 'lint', 'rg'])
+    || !isExactBooleanRecord(value.structured_data, ['parser', 'schema', 'lint'])) {
+    throw new CapabilitiesError(
+      'INVALID_CAPABILITY_CONFIG',
+      'frozen capability applicability configuration is malformed',
+    );
+  }
+  return {
+    schema_version: 1,
+    typescript_javascript: {
+      compiler_or_typecheck: value.typescript_javascript.compiler_or_typecheck,
+      lint: value.typescript_javascript.lint,
+    },
+    rust: {
+      ast_backend: value.rust.ast_backend,
+      clippy: value.rust.clippy,
+    },
+    shell: {
+      parser: value.shell.parser,
+      lint: value.shell.lint,
+      rg: value.shell.rg,
+    },
+    structured_data: {
+      parser: value.structured_data.parser,
+      schema: value.structured_data.schema,
+      lint: value.structured_data.lint,
+    },
+  };
 }
 
 function boundedString(value: unknown, maximum = 1_024): string | null {
@@ -204,18 +302,38 @@ export function classifyReviewFile(file: ScopeFile): FileKind {
   return 'UNKNOWN_TEXT';
 }
 
-function requiredCapabilities(kind: FileKind, rustAstSupported: boolean): Capability[] {
+function requiredCapabilities(
+  kind: FileKind,
+  config: FrozenCapabilityConfig,
+): Capability[] {
   switch (kind) {
-    case 'TYPESCRIPT_JAVASCRIPT':
-      return ['LSP', 'AST', 'COMPILER', 'LINT', 'RG_FALLBACK'];
-    case 'RUST':
-      return rustAstSupported
-        ? ['LSP', 'AST', 'LINT', 'RG_FALLBACK']
-        : ['LSP', 'LINT', 'RG_FALLBACK'];
-    case 'SHELL':
-      return ['LINT', 'RG_FALLBACK'];
-    case 'STRUCTURED_DATA':
-      return ['COMPILER', 'LINT'];
+    case 'TYPESCRIPT_JAVASCRIPT': {
+      const required: Capability[] = ['LSP', 'AST'];
+      if (config.typescript_javascript.compiler_or_typecheck) required.push('COMPILER');
+      if (config.typescript_javascript.lint) required.push('LINT');
+      return required;
+    }
+    case 'RUST': {
+      const required: Capability[] = ['LSP', 'COMPILER'];
+      if (config.rust.ast_backend) required.push('AST');
+      if (config.rust.clippy) required.push('LINT');
+      return required;
+    }
+    case 'SHELL': {
+      const required: Capability[] = [];
+      if (config.shell.parser) required.push('COMPILER');
+      if (config.shell.lint) required.push('LINT');
+      if (config.shell.rg) required.push('RG_FALLBACK');
+      return required;
+    }
+    case 'STRUCTURED_DATA': {
+      const required: Capability[] = [];
+      if (config.structured_data.parser || config.structured_data.schema) {
+        required.push('COMPILER');
+      }
+      if (config.structured_data.lint) required.push('LINT');
+      return required;
+    }
     case 'UNKNOWN_TEXT':
       return ['RG_FALLBACK'];
     default:
@@ -226,39 +344,45 @@ function requiredCapabilities(kind: FileKind, rustAstSupported: boolean): Capabi
 function fallbackTargets(
   capability: Capability,
   applicableKinds: ReadonlySet<FileKind>,
-  rustAstSupported: boolean,
+  config: FrozenCapabilityConfig,
 ): Array<'LSP' | 'AST'> {
   if (capability !== 'COMPILER' && capability !== 'LINT' && capability !== 'RG_FALLBACK') return [];
   const targets = new Set<'LSP' | 'AST'>();
-  if (applicableKinds.has('TYPESCRIPT_JAVASCRIPT')) {
+  const typescriptFallback = capability === 'RG_FALLBACK'
+    || (capability === 'COMPILER' && config.typescript_javascript.compiler_or_typecheck)
+    || (capability === 'LINT' && config.typescript_javascript.lint);
+  if (applicableKinds.has('TYPESCRIPT_JAVASCRIPT') && typescriptFallback) {
     targets.add('LSP');
     targets.add('AST');
-  }
-  if (applicableKinds.has('RUST') && (capability === 'LINT' || capability === 'RG_FALLBACK')) {
-    targets.add('LSP');
-    if (rustAstSupported) targets.add('AST');
   }
   return ['LSP', 'AST'].filter((target): target is 'LSP' | 'AST' => targets.has(target as 'LSP' | 'AST'));
 }
 
 export function buildCapabilityPlan(
   files: readonly ScopeFile[],
-  options: { rustAstSupported?: boolean } = {},
+  options: BuildCapabilityPlanOptions = {},
 ): CapabilityPlan {
-  const rustAstSupported = options.rustAstSupported === true;
+  const config = parseFrozenCapabilityConfig(options.trustedFrozenConfig);
   const fileKinds = files
     .map((file) => ({ path: file.path, kind: classifyReviewFile(file) }))
     .sort((left, right) => byteCompare(left.path, right.path));
   const kindSet = new Set(fileKinds.map((entry) => entry.kind));
   const capabilities = CAPABILITY_ORDER.map((capability): CapabilityPlanEntry => {
-    const kinds = FILE_KIND_ORDER.filter((kind) =>
-      kindSet.has(kind) && requiredCapabilities(kind, rustAstSupported).includes(capability),
+    const requiredKinds = FILE_KIND_ORDER.filter((kind) =>
+      kindSet.has(kind) && requiredCapabilities(kind, config).includes(capability),
     );
+    const fallbacks = fallbackTargets(capability, kindSet, config);
+    const coveredKinds = new Set(requiredKinds);
+    if (fallbacks.length > 0 && kindSet.has('TYPESCRIPT_JAVASCRIPT')) {
+      coveredKinds.add('TYPESCRIPT_JAVASCRIPT');
+    }
+    const kinds = FILE_KIND_ORDER.filter((kind) => coveredKinds.has(kind));
     return {
       capability,
       applicability: kinds.length > 0 ? 'APPLICABLE' : 'NOT_APPLICABLE',
       file_kinds: kinds,
-      fallback_for: fallbackTargets(capability, kindSet, rustAstSupported),
+      required_for: requiredKinds,
+      fallback_for: fallbacks,
     };
   });
   return {
@@ -280,12 +404,12 @@ export function evaluateCapabilityEvidence(
   plan: CapabilityPlan,
   observations: readonly CapabilityObservation[],
 ): CapabilityEvaluation {
-  const required = plan.capabilities.filter((entry) => entry.applicability === 'APPLICABLE');
-  const requiredNames = new Set(required.map((entry) => entry.capability));
+  const applicable = plan.capabilities.filter((entry) => entry.applicability === 'APPLICABLE');
+  const applicableNames = new Set(applicable.map((entry) => entry.capability));
   const byCapability = new Map<Capability, CapabilityObservation>();
   const invalid: string[] = [];
   for (const observation of observations) {
-    if (!requiredNames.has(observation.capability)) {
+    if (!applicableNames.has(observation.capability)) {
       invalid.push(`UNEXPECTED_CAPABILITY:${observation.capability}`);
       continue;
     }
@@ -295,16 +419,39 @@ export function evaluateCapabilityEvidence(
     }
     byCapability.set(observation.capability, observation);
   }
-  for (const entry of required) {
-    if (!byCapability.has(entry.capability)) invalid.push(`MISSING_CAPABILITY:${entry.capability}`);
+  for (const entry of applicable) {
+    if (entry.required_for.length > 0 && !byCapability.has(entry.capability)) {
+      invalid.push(`MISSING_CAPABILITY:${entry.capability}`);
+    }
+  }
+
+  const unavailableCapabilities = applicable
+    .filter((entry): entry is CapabilityPlanEntry & { capability: 'LSP' | 'AST' } =>
+      (entry.capability === 'LSP' || entry.capability === 'AST')
+      && byCapability.get(entry.capability)?.execution === 'UNAVAILABLE',
+    );
+  for (const unavailable of unavailableCapabilities) {
+    const fallbacks = applicable.filter((entry) =>
+      entry.fallback_for.includes(unavailable.capability),
+    );
+    if (fallbacks.length === 0) {
+      invalid.push(`${unavailable.capability}_FALLBACK_UNAVAILABLE`);
+      continue;
+    }
+    for (const fallback of fallbacks) {
+      if (!byCapability.has(fallback.capability)) {
+        invalid.push(`MISSING_FALLBACK:${fallback.capability}`);
+      }
+    }
   }
   if (invalid.length > 0) return failedEvaluation(invalid);
 
   let degraded = plan.inherently_degraded;
   let hardFailure = false;
   const reasons: string[] = plan.inherently_degraded ? ['UNKNOWN_TEXT_REQUIRES_MANUAL_REVIEW'] : [];
-  for (const entry of required) {
-    const observation = byCapability.get(entry.capability) as CapabilityObservation;
+  for (const entry of applicable) {
+    const observation = byCapability.get(entry.capability);
+    if (observation === undefined) continue;
     const unavailable = (entry.capability === 'LSP' || entry.capability === 'AST')
       && observation.execution === 'UNAVAILABLE';
     if (unavailable) {
@@ -316,10 +463,10 @@ export function evaluateCapabilityEvidence(
         hardFailure = true;
         reasons.push(`${entry.capability}_UNAVAILABLE_RESULT_INVALID`);
       }
-      const fallbacks = required.filter((candidate) =>
+      const fallbacks = applicable.filter((candidate) =>
         candidate.fallback_for.includes(unavailableCapability),
       );
-      if (fallbacks.length === 0 || fallbacks.some((fallback) => {
+      if (fallbacks.some((fallback) => {
         const result = byCapability.get(fallback.capability);
         return result?.execution !== 'FALLBACK' || result.outcome !== 'PASS';
       })) {
@@ -673,10 +820,12 @@ export async function resolveTrustedEquivalents(
     }
 
     const baseSha = options.context.base_sha;
-    const prefix = baseSha === undefined
-      ? undefined
-      : `${baseSha}:code-review-equivalents.json#`;
-    if (prefix === undefined || !request.source_ref.startsWith(prefix)) {
+    if (baseSha === undefined || !FULL_GIT_OBJECT_ID.test(baseSha)) {
+      reasons.push(reason(request.capability, 'TRUSTED_SOURCE_UNAVAILABLE'));
+      continue;
+    }
+    const prefix = `${baseSha}:code-review-equivalents.json#`;
+    if (!request.source_ref.startsWith(prefix)) {
       reasons.push(reason(request.capability, 'TRUSTED_SOURCE_UNAVAILABLE'));
       continue;
     }
