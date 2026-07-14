@@ -5341,33 +5341,6 @@ async function runCodex(
           inheritedWorkerModel,
         );
         for (const step of bootstrapSteps) {
-          const output = execTmuxFileSync(step.args, {
-            stdio: "pipe",
-            encoding: "utf-8",
-          });
-          if (step.name === "new-session") {
-            createdDetachedSession = true;
-            const leaderPaneId = parsePaneIdFromTmuxOutput(output || "");
-            if (leaderPaneId) {
-              detachedLeaderPaneId = leaderPaneId;
-              setDetachedTmuxSessionHistoryLimit(sessionName, leaderPaneId);
-              if (activeRecordPath && contextKey) {
-                writeMadmaxDetachedActiveRecord(activeRecordPath, {
-                  version: 1,
-                  context_key: contextKey,
-                  created_at: new Date().toISOString(),
-                  source_cwd: runtimeContext?.sourceCwd ?? process.env.OMX_SOURCE_CWD ?? cwd,
-                  ...(runtimeContext?.worktreeCwd ? { worktree_cwd: runtimeContext.worktreeCwd } : {}),
-                  argv: args,
-                  run_dir: runtimeContext?.omxRoot ?? process.env.OMX_ROOT ?? cwd,
-                  tmux_session_name: sessionName,
-                  session_id: sessionId,
-                  tmux_pane_id: leaderPaneId,
-                });
-              }
-              writeDetachedSessionBinding(leaderPaneId);
-            }
-          }
           if (step.name === "reconcile-managed-hud") {
             // The persisted session binding and tmux instance tag are both in
             // place before the shared reconciler is permitted to mutate panes.
@@ -5407,6 +5380,35 @@ async function runCodex(
                 logCliOperationFailure(err);
                 if (finalizeStep.name === "attach-session") throw new Error("failed to attach detached tmux session");
               }
+            }
+            continue;
+          }
+
+          const output = execTmuxFileSync(step.args, {
+            stdio: "pipe",
+            encoding: "utf-8",
+          });
+          if (step.name === "new-session") {
+            createdDetachedSession = true;
+            const leaderPaneId = parsePaneIdFromTmuxOutput(output || "");
+            if (leaderPaneId) {
+              detachedLeaderPaneId = leaderPaneId;
+              setDetachedTmuxSessionHistoryLimit(sessionName, leaderPaneId);
+              if (activeRecordPath && contextKey) {
+                writeMadmaxDetachedActiveRecord(activeRecordPath, {
+                  version: 1,
+                  context_key: contextKey,
+                  created_at: new Date().toISOString(),
+                  source_cwd: runtimeContext?.sourceCwd ?? process.env.OMX_SOURCE_CWD ?? cwd,
+                  ...(runtimeContext?.worktreeCwd ? { worktree_cwd: runtimeContext.worktreeCwd } : {}),
+                  argv: args,
+                  run_dir: runtimeContext?.omxRoot ?? process.env.OMX_ROOT ?? cwd,
+                  tmux_session_name: sessionName,
+                  session_id: sessionId,
+                  tmux_pane_id: leaderPaneId,
+                });
+              }
+              writeDetachedSessionBinding(leaderPaneId);
             }
           }
         }

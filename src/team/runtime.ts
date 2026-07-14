@@ -36,6 +36,7 @@ import {
   listPaneIds,
   listTeamSessions,
   resolveSharedSessionShutdownTopology,
+  establishExactTeamHudCandidate,
 } from './tmux-session.js';
 import { acquireHudLifecycleLock, releaseHudLifecycleLock } from '../hud/lifecycle-lock.js';
 import { normalizeSessionId, resolveHudControlPlaneDomain } from '../mcp/state-paths.js';
@@ -3030,18 +3031,11 @@ export async function startTeam(
             ownerSessionId: hudDomain.claimant.sessionId,
             teamPaneOwnerId: config.tmux_pane_owner_id,
             hudRuntime,
-            hudExactCandidate: hudDomain.claimant.sessionId
-              && hudDomain.claimant.leaderPaneId
-              && hudDomain.claimant.tmuxSessionInstanceId
-              && hudDomain.claimant.tmuxPaneInstanceId
-              ? {
-                sessionId: hudDomain.claimant.sessionId,
-                sessionIds: hudDomain.session?.equivalentIds ?? [hudDomain.claimant.sessionId],
-                leaderPaneId: hudDomain.claimant.leaderPaneId,
-                tmuxSessionInstanceId: hudDomain.claimant.tmuxSessionInstanceId,
-                tmuxPaneInstanceId: hudDomain.claimant.tmuxPaneInstanceId,
-              }
-              : null,
+            hudExactCandidate: establishExactTeamHudCandidate({
+              sessionId: hudDomain.claimant.sessionId,
+              sessionIds: hudDomain.session?.equivalentIds,
+              expectedLeaderPaneId: hudDomain.claimant.leaderPaneId,
+            }),
           },
         );
       } finally {

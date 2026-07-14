@@ -2291,11 +2291,14 @@ case "\${1:-}" in
     esac
     exit 0
     ;;
+  show-options)
+    printf 'live-session-instance\n'
+    exit 0
+    ;;
   show-option)
     case "$*" in
-      *)
-        exit 1
-        ;;
+      *"@omx_pane_instance_id"*) printf 'live-pane-instance\n' ;;
+      *) exit 1 ;;
     esac
     exit 0
     ;;
@@ -2311,6 +2314,10 @@ esac
             name: 'gemini',
             content: '#!/bin/sh\nexit 0\n',
           }],
+          env: {
+            OMX_TMUX_SESSION_INSTANCE_ID: undefined,
+            OMX_TMUX_PANE_INSTANCE_ID: undefined,
+          },
         },
         async ({ tmuxLogPath }) => {
           process.env.TMUX = 'leader-session,stub,0';
@@ -2336,10 +2343,12 @@ esac
           assert.equal(manifest.leader?.session_id, 'logical-session-from-env');
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /set-option -t leader @omx_instance_id fixture-omx-runtime-pane-owner-env-isolated-bin-/);
-          assert.match(tmuxLog, /set-option -p -t %1 @omx_pane_instance_id fixture-omx-runtime-pane-owner-env-isolated-bin-/);
+          assert.match(tmuxLog, /show-options -qv -t leader @omx_instance_id/);
+          assert.match(tmuxLog, /show-option -qv -p -t %1 @omx_pane_instance_id/);
+          assert.doesNotMatch(tmuxLog, /set-option -t leader @omx_instance_id live-session-instance/);
+          assert.doesNotMatch(tmuxLog, /set-option -p -t %1 @omx_pane_instance_id live-pane-instance/);
           assert.match(tmuxLog, /set-option -p -t %2 @omx_pane_instance_id logical-session-from-env/);
-          assert.match(tmuxLog, /set-option -p -t %3 @omx_pane_instance_id fixture-omx-runtime-pane-owner-env-isolated-bin-/);
+          assert.match(tmuxLog, /set-option -p -t %3 @omx_pane_instance_id live-pane-instance/);
 
           assert.match(tmuxLog, /set-option -p -t %1 @omx_team_pane_owner_id team:pane-owner-env-isolat-[a-f0-9]{8}/);
           assert.match(tmuxLog, /set-option -p -t %2 @omx_team_pane_owner_id team:pane-owner-env-isolat-[a-f0-9]{8}/);
@@ -4636,8 +4645,15 @@ case "\${1:-}" in
     esac
     exit 0
     ;;
+  show-options)
+    echo "live-session-instance"
+    exit 0
+    ;;
   show-option)
     case "$*" in
+      *"@omx_pane_instance_id"*)
+        echo "live-pane-instance"
+        ;;
       *"-p -t %1 @omx_team_pane_owner_id"*)
         echo "team:team-rerun-hud-6aa4d480"
         ;;

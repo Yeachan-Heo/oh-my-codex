@@ -902,6 +902,7 @@ exit 0
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /^tmux:\s*$/m, "detached bootstrap must not invoke bare tmux");
       assert.doesNotMatch(tmuxLog, /tmux:show-options -gv history-limit/);
       assert.doesNotMatch(tmuxLog, /tmux:set-option -g[q ]+history-limit/);
       assert.match(tmuxLog, /tmux:new-session .* -s /);

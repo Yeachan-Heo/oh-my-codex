@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
@@ -86,6 +87,77 @@ export interface ExactTeamHudCandidate {
   leaderPaneId: string;
   tmuxSessionInstanceId: string;
   tmuxPaneInstanceId: string;
+  /** Live tmux context captured alongside the tags, used to reject ABA races before HUD mutation. */
+  tmuxSessionName?: string;
+  tmuxWindowIndex?: string;
+}
+
+export interface EstablishExactTeamHudCandidateOptions {
+  sessionId?: string | null;
+  sessionIds?: string[] | null;
+  expectedLeaderPaneId?: string | null;
+}
+
+interface ExactTeamHudCandidateContext extends ExactTeamHudCandidate {
+  tmuxSessionName: string;
+  tmuxWindowIndex: string;
+}
+
+/**
+ * Obtains live tmux identity evidence for a managed Team HUD. This deliberately
+ * never trusts process environment instance IDs: each tag is read from tmux,
+ * established only when absent, then read back before use.
+ */
+export function establishExactTeamHudCandidate(
+  options: EstablishExactTeamHudCandidateOptions,
+): ExactTeamHudCandidateContext | null {
+  const sessionId = options.sessionId?.trim() ?? '';
+  const sessionIds = [...new Set([sessionId, ...(options.sessionIds ?? [])]
+    .map((value) => value.trim())
+    .filter(Boolean))];
+  const expectedLeaderPaneId = normalizePaneTarget(options.expectedLeaderPaneId);
+  if (!sessionId || sessionIds.length === 0) return null;
+
+  const paneTarget = normalizePaneTarget(process.env.TMUX_PANE);
+  const displayArgs = paneTarget
+    ? ['display-message', '-p', '-t', paneTarget, '#{session_name}:#{window_index} #{pane_id}']
+    : ['display-message', '-p', '#{session_name}:#{window_index} #{pane_id}'];
+  const readContext = (): { sessionName: string; windowIndex: string; leaderPaneId: string } | null => {
+    const context = runTmux(displayArgs);
+    if (!context.ok) return null;
+    const [sessionAndWindow = '', leaderPaneId = ''] = context.stdout.split(' ').map((value) => value.trim());
+    const [sessionName = '', windowIndex = ''] = sessionAndWindow.split(':').map((value) => value.trim());
+    if (!sessionName || !windowIndex || !normalizePaneTarget(leaderPaneId)) return null;
+    return { sessionName, windowIndex, leaderPaneId };
+  };
+
+  const before = readContext();
+  if (!before || (expectedLeaderPaneId && before.leaderPaneId !== expectedLeaderPaneId)) return null;
+  const sessionTag = runTmux(['show-options', '-qv', '-t', before.sessionName, OMX_INSTANCE_OPTION]);
+  if (!sessionTag.ok) return null;
+  const tmuxSessionInstanceId = sessionTag.stdout.trim() || randomUUID();
+  if (!sessionTag.stdout.trim() && !runTmux(['set-option', '-t', before.sessionName, OMX_INSTANCE_OPTION, tmuxSessionInstanceId]).ok) return null;
+  const verifiedSessionTag = runTmux(['show-options', '-qv', '-t', before.sessionName, OMX_INSTANCE_OPTION]);
+  if (!verifiedSessionTag.ok || verifiedSessionTag.stdout.trim() !== tmuxSessionInstanceId) return null;
+
+  const paneTag = runTmux(['show-option', '-qv', '-p', '-t', before.leaderPaneId, OMX_PANE_INSTANCE_OPTION]);
+  if (!paneTag.ok) return null;
+  const tmuxPaneInstanceId = paneTag.stdout.trim() || randomUUID();
+  if (!paneTag.stdout.trim() && !runTmux(['set-option', '-p', '-t', before.leaderPaneId, OMX_PANE_INSTANCE_OPTION, tmuxPaneInstanceId]).ok) return null;
+  const verifiedPaneTag = runTmux(['show-option', '-qv', '-p', '-t', before.leaderPaneId, OMX_PANE_INSTANCE_OPTION]);
+  if (!verifiedPaneTag.ok || verifiedPaneTag.stdout.trim() !== tmuxPaneInstanceId) return null;
+
+  const after = readContext();
+  if (!after || after.sessionName !== before.sessionName || after.windowIndex !== before.windowIndex || after.leaderPaneId !== before.leaderPaneId) return null;
+  return {
+    sessionId,
+    sessionIds,
+    leaderPaneId: before.leaderPaneId,
+    tmuxSessionInstanceId,
+    tmuxPaneInstanceId,
+    tmuxSessionName: before.sessionName,
+    tmuxWindowIndex: before.windowIndex,
+  };
 }
 
 export interface RestoreStandaloneHudPaneOptions {
@@ -398,8 +470,18 @@ function normalizeExactTeamHudCandidate(candidate: ExactTeamHudCandidate | null 
   const tmuxSessionInstanceId = candidate?.tmuxSessionInstanceId?.trim() ?? '';
   const tmuxPaneInstanceId = candidate?.tmuxPaneInstanceId?.trim() ?? '';
   const sessionIds = [...new Set([sessionId, ...(candidate?.sessionIds ?? [])].map((id) => id.trim()).filter(Boolean))];
+  const tmuxSessionName = candidate?.tmuxSessionName?.trim() || undefined;
+  const tmuxWindowIndex = candidate?.tmuxWindowIndex?.trim() || undefined;
   if (!sessionId || !leaderPaneId || !tmuxSessionInstanceId || !tmuxPaneInstanceId || sessionIds.length === 0) return null;
-  return { sessionId, sessionIds, leaderPaneId, tmuxSessionInstanceId, tmuxPaneInstanceId };
+  return {
+    sessionId,
+    sessionIds,
+    leaderPaneId,
+    tmuxSessionInstanceId,
+    tmuxPaneInstanceId,
+    ...(tmuxSessionName ? { tmuxSessionName } : {}),
+    ...(tmuxWindowIndex ? { tmuxWindowIndex } : {}),
+  };
 }
 function readPaneCurrentPath(paneId: string): string | null {
   if (!paneId.startsWith('%')) return null;
@@ -1677,14 +1759,25 @@ export function createTeamSession(
     const panes = listPanes(teamTarget);
     const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
     const hudExactCandidate = normalizeExactTeamHudCandidate(options.hudExactCandidate);
-    const hasExactHudAuthority = Boolean(hudExactCandidate && hudExactCandidate.leaderPaneId === leaderPaneId);
-    if (hudExactCandidate?.tmuxSessionInstanceId) {
-      const tagResult = runTmux(['set-option', '-t', sessionName, OMX_INSTANCE_OPTION, hudExactCandidate.tmuxSessionInstanceId]);
-      if (!tagResult.ok) {
-        throw new Error(`failed to tag tmux session ${sessionName}: ${tagResult.stderr}`);
-      }
+    const recheckedSessionTag = hudExactCandidate?.tmuxSessionName
+      ? runTmux(['show-options', '-qv', '-t', sessionName, OMX_INSTANCE_OPTION])
+      : null;
+    const hudEvidenceStillMatches = !hudExactCandidate?.tmuxSessionName
+      || (
+        hudExactCandidate.tmuxSessionName === sessionName
+        && hudExactCandidate.tmuxWindowIndex === windowIndex
+        && recheckedSessionTag?.ok
+        && recheckedSessionTag.stdout.trim() === hudExactCandidate.tmuxSessionInstanceId
+        && paneHasOmxInstanceTag(leaderPaneId, hudExactCandidate.tmuxPaneInstanceId)
+      );
+    const hasExactHudAuthority = Boolean(
+      hudExactCandidate
+      && hudExactCandidate.leaderPaneId === leaderPaneId
+      && hudEvidenceStillMatches,
+    );
+    if (!hudExactCandidate) {
+      tagPaneInstance(leaderPaneId, ownerSessionId);
     }
-    tagPaneInstance(leaderPaneId, hudExactCandidate?.tmuxPaneInstanceId ?? ownerSessionId);
     tagPaneTeamOwner(leaderPaneId, teamPaneOwnerId);
     const [retainedHudPaneId, ...duplicateHudPaneIds] = hasExactHudAuthority
       ? findExactTeamHudPaneIds(teamTarget, hudExactCandidate)
