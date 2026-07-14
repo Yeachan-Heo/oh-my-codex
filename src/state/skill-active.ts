@@ -402,6 +402,57 @@ export function mergeSessionAwareSkillOverlay(
   };
 }
 
+const SKILL_ACTIVE_STATE_STRING_FIELDS = [
+  'skill',
+  'keyword',
+  'phase',
+  'activated_at',
+  'updated_at',
+  'source',
+  'session_id',
+  'thread_id',
+  'turn_id',
+] as const;
+
+const SKILL_ACTIVE_ENTRY_STRING_FIELDS = [
+  'phase',
+  'activated_at',
+  'updated_at',
+  'session_id',
+  'thread_id',
+  'turn_id',
+] as const;
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function hasOnlyTypedStringFields(
+  record: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  return fields.every((field) => !hasOwn(record, field) || typeof record[field] === 'string');
+}
+
+export function isValidExplicitSkillActiveStateShape(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const state = raw as Record<string, unknown>;
+
+  if (hasOwn(state, 'version') && typeof state.version !== 'number') return false;
+  if (hasOwn(state, 'active') && typeof state.active !== 'boolean') return false;
+  if (!hasOnlyTypedStringFields(state, SKILL_ACTIVE_STATE_STRING_FIELDS)) return false;
+  if (!hasOwn(state, 'active_skills')) return true;
+  if (!Array.isArray(state.active_skills)) return false;
+
+  return state.active_skills.every((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    const entry = candidate as Record<string, unknown>;
+    if (typeof entry.skill !== 'string' || entry.skill.trim().length === 0) return false;
+    if (hasOwn(entry, 'active') && typeof entry.active !== 'boolean') return false;
+    return hasOnlyTypedStringFields(entry, SKILL_ACTIVE_ENTRY_STRING_FIELDS);
+  });
+}
+
 export function normalizeSkillActiveState(raw: unknown): SkillActiveStateLike | null {
   if (!raw || typeof raw !== 'object') return null;
   const state = raw as SkillActiveStateLike;

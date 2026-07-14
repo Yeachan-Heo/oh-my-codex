@@ -22,6 +22,7 @@ import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-re
 import { readTeamModeConfig } from '../config/team-mode.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
+  isValidExplicitSkillActiveStateShape,
   listActiveSkills,
   mergeSessionAwareSkillOverlay,
   normalizeSkillActiveState,
@@ -468,7 +469,9 @@ async function readExistingSkillState(statePath: string): Promise<ExistingSkillS
   }
 
   try {
-    const normalized = normalizeSkillActiveState(JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    if (!isValidExplicitSkillActiveStateShape(parsed)) return { state: null, status: 'malformed' };
+    const normalized = normalizeSkillActiveState(parsed);
     if (!normalized) return { state: null, status: 'malformed' };
     return { state: normalized as SkillActiveState, status: 'ok' };
   } catch {

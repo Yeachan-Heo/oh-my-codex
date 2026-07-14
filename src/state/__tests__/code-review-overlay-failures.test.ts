@@ -167,60 +167,107 @@ describe('code-review overlay failure handling', () => {
     }
   });
 
-  it('fails Stop closed when canonical JSON is schema-invalid', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-overlay-invalid-schema-stop-'));
-    const stateDir = join(cwd, '.omx', 'state');
-    const sessionDir = join(stateDir, 'sessions', SESSION_ID);
-    const canonicalPath = join(sessionDir, 'skill-active-state.json');
-    const invalidCanonical = '{"active":true,"skill":123,"active_skills":"bad"}';
-    try {
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID, cwd }, null, 2));
-      await writeFile(canonicalPath, invalidCanonical);
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: SESSION_ID,
-        thread_id: THREAD_ID,
-        cwd,
-      }, null, 2));
+  it('fails Stop closed for every explicitly invalid canonical core field', async () => {
+    const validEntry = {
+      skill: 'ralplan',
+      phase: 'planning',
+      active: true,
+      activated_at: NOW,
+      updated_at: NOW,
+      session_id: SESSION_ID,
+      thread_id: THREAD_ID,
+      turn_id: 'turn-canonical',
+    };
+    const validCanonical = {
+      version: 1,
+      active: true,
+      skill: 'ralplan',
+      keyword: '$ralplan',
+      phase: 'planning',
+      activated_at: NOW,
+      updated_at: NOW,
+      source: 'keyword-detector',
+      session_id: SESSION_ID,
+      thread_id: THREAD_ID,
+      turn_id: 'turn-canonical',
+      active_skills: [validEntry],
+    };
+    const cases: Array<{ name: string; canonical: Record<string, unknown> }> = [
+      { name: 'version non-number', canonical: { ...validCanonical, version: '1' } },
+      { name: 'active non-boolean', canonical: { ...validCanonical, active: 'yes' } },
+      { name: 'skill non-string', canonical: { ...validCanonical, skill: 123 } },
+      { name: 'keyword non-string', canonical: { ...validCanonical, keyword: 123 } },
+      { name: 'updated_at non-string', canonical: { ...validCanonical, updated_at: 123 } },
+      { name: 'active_skills non-array', canonical: { active: true, skill: 'ralplan', active_skills: 'bad' } },
+      { name: 'active_skills entry non-object', canonical: { ...validCanonical, active_skills: ['ralplan'] } },
+      { name: 'entry skill non-string', canonical: { ...validCanonical, active_skills: [{ ...validEntry, skill: 123 }] } },
+      { name: 'entry skill empty', canonical: { ...validCanonical, active_skills: [{ ...validEntry, skill: '' }] } },
+      { name: 'entry active non-boolean', canonical: { ...validCanonical, active_skills: [{ ...validEntry, active: 'yes' }] } },
+      { name: 'entry phase non-string', canonical: { ...validCanonical, active_skills: [{ ...validEntry, phase: 123 }] } },
+      { name: 'entry updated_at non-string', canonical: { ...validCanonical, active_skills: [{ ...validEntry, updated_at: 123 }] } },
+    ];
+    const outcomes: Array<Record<string, unknown>> = [];
 
-      const activation = await recordSkillActivation({
-        stateDir,
-        sourceCwd: cwd,
-        text: '$code-review inspect the current diff',
-        sessionId: SESSION_ID,
-        threadId: THREAD_ID,
-        nowIso: NOW,
-      });
-      const canonicalAfterActivation = await readFile(canonicalPath, 'utf-8');
-      const stop = await dispatchCodexNativeHook({
-        hook_event_name: 'Stop',
-        cwd,
-        session_id: SESSION_ID,
-        thread_id: THREAD_ID,
-        turn_id: 'turn-invalid-schema-stop',
-      }, { cwd });
+    for (const testCase of cases) {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-overlay-invalid-${testCase.name.replaceAll(/[^a-z]+/g, '-')}-`));
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', SESSION_ID);
+      const canonicalPath = join(sessionDir, 'skill-active-state.json');
+      const invalidCanonical = JSON.stringify(testCase.canonical);
+      try {
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID, cwd }, null, 2));
+        await writeFile(canonicalPath, invalidCanonical);
+        await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
+          mode: 'ralplan',
+          active: true,
+          current_phase: 'planning',
+          session_id: SESSION_ID,
+          thread_id: THREAD_ID,
+          cwd,
+        }, null, 2));
 
-      assert.deepEqual({
-        activationSkills: listActiveSkills(activation ?? {}).map((entry) => entry.skill),
-        canonicalAfterActivation,
-        diagnosticCount: activation?.transition_error ? 1 : 0,
-        stopDecision: stop.outputJson?.decision ?? null,
-        stopReason: stop.outputJson?.stopReason ?? null,
-      }, {
-        activationSkills: [],
-        canonicalAfterActivation: invalidCanonical,
-        diagnosticCount: 1,
-        stopDecision: 'block',
-        stopReason: 'skill_ralplan_planning_continue_artifact',
-      });
-      assert.match(String(activation?.transition_error), /canonical skill state.*malformed.*repair or clear/i);
-      assert.match(String(stop.outputJson?.reason), /continue from the current ralplan artifact/i);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
+        const activation = await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$code-review inspect the current diff',
+          sessionId: SESSION_ID,
+          threadId: THREAD_ID,
+          nowIso: NOW,
+        });
+        const canonicalAfterActivation = await readFile(canonicalPath, 'utf-8');
+        const stop = await dispatchCodexNativeHook({
+          hook_event_name: 'Stop',
+          cwd,
+          session_id: SESSION_ID,
+          thread_id: THREAD_ID,
+          turn_id: `turn-invalid-${testCase.name}`,
+        }, { cwd });
+        const transitionError = String(activation?.transition_error ?? '');
+
+        outcomes.push({
+          name: testCase.name,
+          activationRejected: listActiveSkills(activation ?? {}).length === 0,
+          canonicalUnchanged: canonicalAfterActivation === invalidCanonical,
+          diagnosticCount: activation?.transition_error ? 1 : 0,
+          actionableMalformed: /canonical skill state.*malformed.*repair or clear/i.test(transitionError),
+          stopDecision: stop.outputJson?.decision ?? null,
+          stopReason: stop.outputJson?.stopReason ?? null,
+        });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
     }
+
+    assert.deepEqual(outcomes, cases.map((testCase) => ({
+      name: testCase.name,
+      activationRejected: true,
+      canonicalUnchanged: true,
+      diagnosticCount: 1,
+      actionableMalformed: true,
+      stopDecision: 'block',
+      stopReason: 'skill_ralplan_planning_continue_artifact',
+    })));
   });
 
   it('accepts valid terminal and legacy top-level canonical shapes', async () => {
