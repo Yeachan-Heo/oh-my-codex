@@ -14,7 +14,10 @@ import { spawn, spawnSync } from 'child_process';
 import { createInterface } from 'readline/promises';
 import { getPackageRoot } from '../utils/package.js';
 import { omxUserInstallStampPath } from '../utils/paths.js';
-import { readPersistedSetupPreferencesSync } from './setup-preferences.js';
+import {
+  readPersistedSetupPreferencesSync,
+  resolvePersistedSetupMergeAgents,
+} from './setup-preferences.js';
 
 export interface UpdateState {
   last_checked_at: string;
@@ -421,6 +424,12 @@ export function resolveSetupRefreshArgs(cwd: string): string[] {
     args.push('--disable-team');
   } else if (preferences?.teamMode === 'enabled') {
     args.push('--enable-team');
+  }
+  const mergeAgents = resolvePersistedSetupMergeAgents(preferences, preferences?.scope ?? 'user');
+  if (mergeAgents === true) {
+    args.push('--merge-agents');
+  } else if (mergeAgents === false) {
+    args.push('--no-merge-agents');
   }
   return args;
 }

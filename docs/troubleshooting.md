@@ -31,7 +31,11 @@ To preserve local guidance and restore the OMX-managed contract sections, run:
 omx setup --scope user --merge-agents
 ```
 
-Use `--scope project` for project-scoped setup. If you intentionally want to replace the existing file, use `omx setup --scope <user|project> --force`; setup backs up the old file before replacement.
+Use `--scope project` for project-scoped setup. The exact bare policy selectors are `--merge-agents`, `--no-merge-agents`, and `--clear-merge-agents-policy`; equals/value spellings are not supported. An explicit set overrides saved policy, while conflicting set/clear choices fail before setup mutations. Successful explicit sets are saved in the current working root's `./.omx/setup-scope.json`, including with user scope, and valid matching choices are replayed by immediate and deferred updates. They are not global user preferences.
+
+`--no-merge-agents` only suppresses the current merge branch; it does not guarantee preservation or replacement, so normal prompt, skip, managed-refresh, plugin-default, and force behavior remains. Review retains a matching policy while unrelated settings change. Reset or a scope change removes the inherited policy unless the same run explicitly sets it; clear always removes the policy and cannot combine with a set selector. Malformed, unknown, nonboolean, or wrong-scope records are ignored. `--force` is transient and never stored or replayed.
+
+If an active-session or plugin-symlink safeguard skips the current AGENTS write but all other setup work succeeds, an explicit set or clear is atomically committed as future intent. This does not make merging the default or adopt the rejected #2892 behavior. Older OMX versions safely ignore the field but may erase it when rewriting preferences. If you intentionally want to replace the existing file, use `omx setup --scope <user|project> --force`; setup backs up the old file before replacement.
 
 ## Green doctor, but `omx exec` fails with auth errors
 

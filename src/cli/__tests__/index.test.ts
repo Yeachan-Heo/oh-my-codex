@@ -37,6 +37,7 @@ import {
   resolveSetupMcpModeArg,
   resolveSetupScopeArg,
   resolveSetupTeamModeArg,
+  resolveSetupAgentsMergePolicyArg,
   resolveLaunchConfigRepairOptions,
   readPersistedSetupPreferences,
   readPersistedSetupScope,
@@ -2108,6 +2109,30 @@ describe("resolveSetupTeamModeArg", () => {
       () => resolveSetupTeamModeArg(["--team-mode=enabled", "--no-team"]),
       /Conflicting setup Team mode flags/,
     );
+  });
+});
+describe("resolveSetupAgentsMergePolicyArg", () => {
+  it("accepts only the explicit bare set and clear selectors", () => {
+    assert.deepEqual(resolveSetupAgentsMergePolicyArg([]), undefined);
+    assert.deepEqual(resolveSetupAgentsMergePolicyArg(["--merge-agents"]), { kind: "set", value: true });
+    assert.deepEqual(resolveSetupAgentsMergePolicyArg(["--no-merge-agents"]), { kind: "set", value: false });
+    assert.deepEqual(resolveSetupAgentsMergePolicyArg(["--clear-merge-agents-policy"]), { kind: "clear" });
+    assert.deepEqual(resolveSetupAgentsMergePolicyArg(["--merge-agents", "--merge-agents"]), { kind: "set", value: true });
+    assert.deepEqual(resolveSetupAgentsMergePolicyArg(["--clear-merge-agents-policy", "--clear-merge-agents-policy"]), { kind: "clear" });
+  });
+
+  it("rejects values, equals spellings, and conflicting policy selectors", () => {
+    for (const argv of [
+      ["--merge-agents=true"],
+      ["--no-merge-agents=false"],
+      ["--clear-merge-agents-policy=true"],
+      ["--merge-agents", "true"],
+      ["--no-merge-agents", "false"],
+    ]) {
+      assert.throws(() => resolveSetupAgentsMergePolicyArg(argv), /merge.*policy|merge-agents/i);
+    }
+    assert.throws(() => resolveSetupAgentsMergePolicyArg(["--merge-agents", "--no-merge-agents"]), /Conflicting.*merge.*policy/i);
+    assert.throws(() => resolveSetupAgentsMergePolicyArg(["--clear-merge-agents-policy", "--merge-agents"]), /Conflicting.*merge.*policy/i);
   });
 });
 
