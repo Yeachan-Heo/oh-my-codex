@@ -228,7 +228,7 @@ const NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN = /(?:^|\.)spawn_agent$/;
 // `spawn_agent`, and namespaced forms such as `multi_agent_v1.spawn_agent` and
 // the current Codex App `collaboration.spawn_agent`, plus the legacy `task`
 // alias. The suffix anchor keeps `respawn_agent`/`spawn_agentx` from matching.
-function isNativeSubagentSpawnToolName(name: string): boolean {
+export function isNativeSubagentSpawnToolName(name: string): boolean {
   return NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN.test(name) || name === 'task';
 }
 

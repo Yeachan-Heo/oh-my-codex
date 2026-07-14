@@ -2,7 +2,7 @@
  * State file I/O helpers for notify-hook modules.
  */
 
-import { mkdir, readFile, readdir, writeFile } from 'fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { validateSessionId } from '../../mcp/state-paths.js';
 import { asNumber, safeString } from './utils.js';
@@ -23,27 +23,87 @@ function isSafeStateFileName(fileName: string): boolean {
     && !fileName.includes('\\');
 }
 
-interface SessionMetadata {
+export interface SessionMetadata {
   sessionId?: string;
-  nativeAliases: string[];
+  aliases: string[];
+  status: 'missing' | 'unusable' | 'usable';
 }
 
 async function readSessionMetadataFromBaseStateDir(baseStateDir: string): Promise<SessionMetadata> {
-  const session = await readJsonIfExists(join(baseStateDir, 'session.json'), null);
+  let session: any;
+  try {
+    session = JSON.parse(await readFile(join(baseStateDir, 'session.json'), 'utf-8'));
+  } catch (error: any) {
+    return { aliases: [], status: error?.code === 'ENOENT' ? 'missing' : 'unusable' };
+  }
+  if (!session || typeof session !== 'object' || Array.isArray(session)) {
+    return { aliases: [], status: 'unusable' };
+  }
+
   let sessionId: string | undefined;
   try {
-    sessionId = validateSessionId(session?.session_id);
+    sessionId = validateSessionId(session.session_id);
   } catch {
-    sessionId = undefined;
+    return { aliases: [], status: 'unusable' };
   }
-  const nativeAliases = [
-    session?.native_session_id,
-    session?.codex_session_id,
-    session?.previous_native_session_id,
+  if (!sessionId) return { aliases: [], status: 'unusable' };
+
+  const aliases = [
+    session.native_session_id,
+    session.codex_session_id,
+    session.previous_native_session_id,
+    session.owner_omx_session_id,
   ]
     .map((value) => safeString(value).trim())
-    .filter(Boolean);
-  return { sessionId, nativeAliases: [...new Set(nativeAliases)] };
+    .filter((value) => {
+      try {
+        return Boolean(validateSessionId(value));
+      } catch {
+        return false;
+      }
+    });
+  return { sessionId, aliases: [...new Set(aliases)], status: 'usable' };
+}
+
+export async function readNotifySessionMetadata(baseStateDir: string): Promise<SessionMetadata> {
+  return readSessionMetadataFromBaseStateDir(baseStateDir);
+}
+
+function readOmxSessionIdFromEnvironment(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidate = safeString(env.OMX_SESSION_ID).trim();
+  if (!candidate) return undefined;
+  try {
+    return validateSessionId(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+export function isExplicitNotifySessionFork(
+  candidateSessionId: string | undefined,
+  metadata: Pick<SessionMetadata, 'sessionId' | 'aliases'>,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const explicitOmxSessionId = readOmxSessionIdFromEnvironment(env);
+  return Boolean(
+    candidateSessionId
+    && explicitOmxSessionId === candidateSessionId
+    && metadata.sessionId
+    && candidateSessionId !== metadata.sessionId
+    && !metadata.aliases.includes(candidateSessionId),
+  );
+}
+
+export async function hasExistingScopedSessionDir(baseStateDir: string, sessionId: string): Promise<boolean> {
+  try {
+    return (await stat(join(baseStateDir, 'sessions', sessionId))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export function getOmxSessionIdFromEnvironment(): string | undefined {
+  return readOmxSessionIdFromEnvironment();
 }
 
 function readSessionIdFromEnvironment(): string | undefined {
@@ -63,7 +123,7 @@ function readSessionIdFromEnvironment(): string | undefined {
 
 function resolveCanonicalSessionId(candidate: string | undefined, metadata: SessionMetadata): string | undefined {
   if (!candidate) return undefined;
-  return metadata.sessionId && metadata.nativeAliases.includes(candidate)
+  return metadata.sessionId && metadata.aliases.includes(candidate)
     ? metadata.sessionId
     : candidate;
 }

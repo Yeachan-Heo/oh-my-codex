@@ -70,6 +70,7 @@ import {
   getBaseStateDir,
   getStateDir,
   listModeStateFilesWithScopePreference,
+  resolveWritableStateScope,
   type ModeStateFileRef,
 } from "../mcp/state-paths.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
@@ -124,11 +125,14 @@ import {
   writeSessionModelInstructionsFile,
 } from "../hooks/agents-overlay.js";
 import {
+  isSessionPointerLaunchAbort,
+  normalizeSessionId,
   readSessionState,
   writeSessionStart,
   writeSessionEnd,
   resetSessionMetrics,
 } from "../hooks/session.js";
+import { probeActualTmuxInstanceEvidence, tmuxEvidenceBindsCandidate } from "../scripts/notify-hook/managed-tmux.js";
 import {
   buildClientAttachedReconcileHookName,
   buildReconcileHudResizeArgs,
@@ -3278,7 +3282,19 @@ export async function launchWithHud(args: string[]): Promise<void> {
   try {
     await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, enableNotifyFallbackAuthority, worktreeDirty);
   } catch (err) {
-    // preLaunch errors must NOT prevent Codex from starting
+    if (isSessionPointerLaunchAbort(err)) {
+      console.error(`[omx] session pointer launch aborted: ${err.code}`);
+      await cleanupRuntimeCodexHome(
+        preparedCodexHome.runtimeCodexHomeForCleanup,
+        projectLocalCodexHomeForCleanup,
+      ).catch((cleanupErr) => {
+        console.error(
+          `[omx] preLaunch abort cleanup warning: ${cleanupErr instanceof Error ? cleanupErr.message : cleanupErr}`,
+        );
+      });
+      throw err;
+    }
+    // preLaunch errors after pointer commit must not prevent Codex from starting.
     console.error(
       `[omx] preLaunch warning: ${err instanceof Error ? err.message : err}`,
     );
@@ -3393,6 +3409,18 @@ export async function execWithOverlay(args: string[]): Promise<void> {
   try {
     await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, true, worktreeDirty);
   } catch (err) {
+    if (isSessionPointerLaunchAbort(err)) {
+      console.error(`[omx] session pointer launch aborted: ${err.code}`);
+      await cleanupRuntimeCodexHome(
+        preparedCodexHome.runtimeCodexHomeForCleanup,
+        projectLocalCodexHomeForCleanup,
+      ).catch((cleanupErr) => {
+        console.error(
+          `[omx] preLaunch abort cleanup warning: ${cleanupErr instanceof Error ? cleanupErr.message : cleanupErr}`,
+        );
+      });
+      throw err;
+    }
     console.error(
       `[omx] preLaunch warning: ${err instanceof Error ? err.message : err}`,
     );
@@ -3595,6 +3623,24 @@ export function resolveNativeSessionName(
     }
   }
   return buildTmuxSessionName(cwd, sessionId);
+}
+
+async function resolvePreLaunchSessionPointerOptions(): Promise<{
+  ownerAliasVerified?: true;
+  tmuxSessionName?: string;
+  tmuxPaneId?: string;
+}> {
+  const ownerCandidate = normalizeSessionId(process.env.OMX_SESSION_ID);
+  if (!ownerCandidate) return {};
+
+  const evidence = await probeActualTmuxInstanceEvidence(process.env.TMUX_PANE);
+  if (!tmuxEvidenceBindsCandidate(evidence, ownerCandidate)) return {};
+
+  return {
+    ownerAliasVerified: true,
+    ...(evidence.sessionName ? { tmuxSessionName: evidence.sessionName } : {}),
+    ...(evidence.paneTarget ? { tmuxPaneId: evidence.paneTarget } : {}),
+  };
 }
 
 function tagTmuxSessionWithInstance(sessionName: string, sessionId: string): void {
@@ -5010,8 +5056,8 @@ export async function reapPostLaunchOrphanedMcpProcesses(
 /**
  * preLaunch: Prepare environment before Codex starts.
  * 1. Best-effort launch-safe orphan cleanup for detached OMX MCP processes
- * 2. Generate runtime overlay + write session-scoped model instructions file
- * 3. Write session.json
+ * 2. Establish the canonical session pointer
+ * 3. Generate session-scoped launch artifacts and start best-effort helpers
  *
  * Automatic broad stale-session cleanup remains disabled here. Only detached
  * OMX MCP processes without a live Codex ancestor are reaped so new launches
@@ -5043,7 +5089,10 @@ export async function preLaunch(
     // Non-fatal
   }
 
-  // 2. Generate runtime overlay + write session-scoped model instructions file
+  // 2. Establish the canonical pointer before any session-scoped launch artifact.
+  await writeSessionStart(cwd, sessionId, await resolvePreLaunchSessionPointerOptions());
+
+  // 3. Generate runtime overlay + write session-scoped model instructions file
   const orchestrationMode = await resolveSessionOrchestrationMode(
     cwd,
     sessionId,
@@ -5061,12 +5110,11 @@ ${launchAppendix}${dirtyWorktreeGuidance}`
       : `${overlay}${dirtyWorktreeGuidance}`;
   await writeSessionModelInstructionsFile(cwd, sessionId, sessionInstructions);
 
-  // 3. Write session state
+  // 4. Reset session metrics and tag the established session.
   await resetSessionMetrics(cwd, sessionId);
-  await writeSessionStart(cwd, sessionId);
   tagCurrentTmuxSessionWithInstance(sessionId);
 
-  // 4. Start notify fallback watcher (best effort)
+  // 5. Start notify fallback watcher (best effort)
   try {
     await startNotifyFallbackWatcher(cwd, { codexHomeOverride, enableAuthority: enableNotifyFallbackAuthority, sessionId });
   } catch (err) {
@@ -5074,7 +5122,7 @@ ${launchAppendix}${dirtyWorktreeGuidance}`
     // Non-fatal
   }
 
-  // 5. Start derived watcher (best effort, opt-in)
+  // 6. Start derived watcher (best effort, opt-in)
   try {
     await startHookDerivedWatcher(cwd);
   } catch (err) {
@@ -5082,7 +5130,7 @@ ${launchAppendix}${dirtyWorktreeGuidance}`
     // Non-fatal
   }
 
-  // 6. Emit temp notification startup summary + warnings, then send session-start lifecycle notification (best effort)
+  // 7. Emit temp notification startup summary + warnings, then send session-start lifecycle notification (best effort)
   try {
     if (notifyTempContract?.active) {
       process.env[OMX_NOTIFY_TEMP_CONTRACT_ENV] =
@@ -5114,7 +5162,7 @@ ${launchAppendix}${dirtyWorktreeGuidance}`
     // Non-fatal: notification failures must never block launch
   }
 
-  // 7. Dispatch native hook event (best effort)
+  // 8. Dispatch native hook event (best effort)
   try {
     await emitNativeHookEvent(cwd, "session-start", {
       session_id: sessionId,
@@ -6636,6 +6684,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
   const nowIso = new Date().toISOString();
   const force = args.includes("--force");
   try {
+    const writableScope = await resolveWritableStateScope(cwd);
     const loadStates = async (refs: ModeStateFileRef[]) => {
       const loaded = new Map<
       string,
@@ -6674,8 +6723,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
       if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
     }
 
-    const currentSession = await readSessionState(cwd).catch(() => null);
-    const currentSessionId = typeof currentSession?.session_id === "string" ? currentSession.session_id.trim() : "";
+    const currentSessionId = writableScope.sessionId ?? "";
     const changed = new Set<string>();
     const reported = new Set<string>();
 

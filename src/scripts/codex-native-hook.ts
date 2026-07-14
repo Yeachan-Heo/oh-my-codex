@@ -1,241 +1,195 @@
 import { execFileSync } from "child_process";
-import {
-	closeSync,
-	existsSync,
-	openSync,
-	readFileSync,
-	readSync,
-	readdirSync,
-	statSync,
-} from "fs";
-import {
-	appendFile,
-	mkdir,
-	readFile,
-	readdir,
-	stat,
-	writeFile,
-} from "fs/promises";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "fs";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
 import { extname, isAbsolute, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
-import {
-	readModeStateForActiveDecision,
-	readModeStateForSession,
-	updateModeState,
-} from "../modes/base.js";
+import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import { redactAuthSecrets } from "../auth/redact.js";
 import {
-	SKILL_ACTIVE_STATE_FILE,
-	extractSessionIdFromInitializedStatePath,
-	getSkillActiveStatePathsForStateDir,
-	listActiveSkills,
-	readSkillActiveState,
-	readVisibleSkillActiveStateForStateDir,
-	type SkillActiveStateLike,
-	type SkillActiveEntry,
+  SKILL_ACTIVE_STATE_FILE,
+  extractSessionIdFromInitializedStatePath,
+  getSkillActiveStatePathsForStateDir,
+  listActiveSkills,
+  readSkillActiveState,
+  readVisibleSkillActiveStateForStateDir,
+  type SkillActiveStateLike,
+  type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
-	bindPendingRoleIntentUnderLock,
-	isTrustedSubagentThread,
-	OMX_ADAPTED_PROVENANCE,
-	readSubagentSessionSummary,
-	readSubagentSessionLedger,
-	readSubagentTrackingState,
-	recordSubagentTurn,
-	recordSubagentTurnForSession,
-	resolveInstalledRoleName,
+  bindPendingRoleIntentUnderLock,
+  isTrustedSubagentThread,
+  OMX_ADAPTED_PROVENANCE,
+  readSubagentSessionSummary,
+  readSubagentSessionLedger,
+  readSubagentTrackingState,
+  recordSubagentTurn,
+  recordSubagentTurnForSession,
+  resolveInstalledRoleName,
 } from "../subagents/tracker.js";
-import {
-	readRoleRoutingMarker,
-	writeRoleRoutingMarker,
-} from "../subagents/role-routing-marker.js";
-import {
-	resolveCanonicalTeamStateRoot,
-	resolveWorkerNotifyTeamStateRootPath,
-} from "../team/state-root.js";
+import { readRoleRoutingMarker, writeRoleRoutingMarker } from "../subagents/role-routing-marker.js";
+import { resolveCanonicalTeamStateRoot, resolveWorkerNotifyTeamStateRootPath } from "../team/state-root.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
 import {
-	appendToLog,
-	isSessionStale,
-	isSessionStateUsable,
-	readSessionState,
-	readUsableSessionState,
-	reconcileNativeSessionStart,
-	type SessionState,
+  appendToLog,
+  isSessionPointerLaunchAbort,
+  isSessionStale,
+  isSessionStateUsable,
+  normalizeSessionId,
+  readSessionPointer,
+  readSessionState,
+  readUsableSessionState,
+  reconcileNativeSessionStart,
+  resolveSessionPointerContext,
+  type SessionState,
 } from "../hooks/session.js";
 import {
-	appendTeamEvent,
-	readTeamLeaderAttention,
-	readTeamConfig,
-	readTeamManifestV2,
-	readTeamPhase,
-	writeTeamLeaderAttention,
-	writeTeamPhase,
+  appendTeamEvent,
+  readTeamLeaderAttention,
+  readTeamConfig,
+  readTeamManifestV2,
+  readTeamPhase,
+  writeTeamLeaderAttention,
+  writeTeamPhase,
 } from "../team/state.js";
 import { omxNotepadPath, resolveProjectMemoryPath } from "../utils/paths.js";
 import { findGitLayout } from "../utils/git-layout.js";
 import {
-	getBaseStateDir,
-	getStateFilePath,
-	getStatePath,
-	getAuthoritativeActiveStatePaths,
+  getAuthoritativeActiveStatePaths,
+  getBaseStateDir,
+  getStateFilePath,
+  getStatePath,
+  resolveWritableStateScope,
+  WRITABLE_STATE_SCOPE_ERRORS,
 } from "../mcp/state-paths.js";
 import {
-	detectKeywords,
-	detectPrimaryKeyword,
-	recordSkillActivation,
-	type SkillActiveState,
+  detectKeywords,
+  detectPrimaryKeyword,
+  recordSkillActivation,
+  type SkillActiveState,
 } from "../hooks/keyword-detector.js";
 import { buildDeepInterviewConfigInstruction } from "../hooks/deep-interview-config-instruction.js";
 import { readTeamModeConfig } from "../config/team-mode.js";
 import {
-	detectNativeStopStallPattern,
-	loadAutoNudgeConfig,
-	normalizeAutoNudgeSignatureText,
-	resolveEffectiveAutoNudgeResponse,
+  detectNativeStopStallPattern,
+  loadAutoNudgeConfig,
+  normalizeAutoNudgeSignatureText,
+  resolveEffectiveAutoNudgeResponse,
 } from "./notify-hook/auto-nudge.js";
+import { probeActualTmuxInstanceEvidence, tmuxEvidenceBindsCandidate } from "./notify-hook/managed-tmux.js";
 import {
-	SLOPPY_FALLBACK_GROUNDING_PATTERNS,
-	SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS,
-	SLOPPY_FALLBACK_PHRASE_PATTERNS,
-	buildNativePostToolUseOutput,
-	buildNativePreToolUseOutput,
-	commandInvokesApplyPatch,
-	detectMcpTransportFailure,
-	hasAnyPattern,
+  SLOPPY_FALLBACK_GROUNDING_PATTERNS,
+  SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS,
+  SLOPPY_FALLBACK_PHRASE_PATTERNS,
+  buildNativePostToolUseOutput,
+  buildNativePreToolUseOutput,
+  commandInvokesApplyPatch,
+  detectMcpTransportFailure,
+  hasAnyPattern,
 } from "./codex-native-pre-post.js";
 import { handleTeamWorkerPostToolUseSuccess } from "./notify-hook/team-worker-posttooluse.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "./notify-hook/team-worker-stop.js";
 import {
-	resolveCodexExecutionSurface,
-	type CodexLauncherKind,
-	type CodexTransportKind,
+  resolveCodexExecutionSurface,
+  type CodexLauncherKind,
+  type CodexTransportKind,
 } from "./codex-execution-surface.js";
-import { buildNativeHookEvent } from "../hooks/extensibility/events.js";
+import {
+  buildNativeHookEvent,
+} from "../hooks/extensibility/events.js";
 import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
 import { dispatchHookEventRuntime } from "../hooks/extensibility/runtime.js";
-import {
-	getNotificationConfig,
-	getVerbosity,
-} from "../notifications/config.js";
+import { getNotificationConfig, getVerbosity } from "../notifications/config.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import {
-	onPreCompact as buildWikiPreCompactContext,
-	onSessionStart as buildWikiSessionStartContext,
+  onPreCompact as buildWikiPreCompactContext,
+  onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
+import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
+import { deriveAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import {
-	readAutoresearchCompletionStatus,
-	readAutoresearchModeStateForActiveDecision,
-} from "../autoresearch/skill-validation.js";
-import {
-	deriveAutopilotChildPhase,
-	normalizeAutopilotPhase,
-} from "../autopilot/fsm.js";
-import {
-	CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES,
-	LEADER_CONDUCTOR_BLOCK,
-	LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
-	NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
-	actionKindForConductorArtifact,
-	authorizeConductorAction,
-	buildRoleRoutingUnavailableGuidance,
-	buildUnsupportedNativeSubagentGuidance,
-	classifyConductorArtifactKind,
-	isRoleRoutingUnavailableEvidence,
-	isUnsupportedNativeSubagentEvidence,
-	resolveNativeSubagentSupportStatus,
-	type NativeSubagentUnsupportedReason,
-	type RoleRoutingUnavailableMarker,
+  CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES,
+  LEADER_CONDUCTOR_BLOCK,
+  LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE,
+  NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
+  actionKindForConductorArtifact,
+  authorizeConductorAction,
+  buildRoleRoutingUnavailableGuidance,
+  buildUnsupportedNativeSubagentGuidance,
+  classifyConductorArtifactKind,
+  isNativeSubagentSpawnToolName,
+  isRoleRoutingUnavailableEvidence,
+  isUnsupportedNativeSubagentEvidence,
+  resolveNativeSubagentSupportStatus,
+  type NativeSubagentUnsupportedReason,
+  type RoleRoutingUnavailableMarker,
 } from "../leader/contract.js";
 import { readRunState } from "../runtime/run-state.js";
+import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
-	evaluateRalphCompletionAuditEvidence,
-	isRalphCompletePhase,
-} from "../ralph/completion-audit.js";
-import { buildCodexGoalTerminalCleanupNotice } from "../goal-workflows/codex-goal-snapshot.js";
+  buildCodexGoalTerminalCleanupNotice,
+} from "../goal-workflows/codex-goal-snapshot.js";
+import { getRunContinuationSnapshot, shouldContinueRun } from "../runtime/run-loop.js";
 import {
-	getRunContinuationSnapshot,
-	shouldContinueRun,
-} from "../runtime/run-loop.js";
-import {
-	parseUltragoalSteeringDirective,
-	steerUltragoal,
-	type UltragoalSteeringProposal,
+  parseUltragoalSteeringDirective,
+  steerUltragoal,
+  type UltragoalSteeringProposal,
 } from "../ultragoal/artifacts.js";
 import { triagePrompt } from "../hooks/triage-heuristic.js";
 import { readTriageConfig } from "../hooks/triage-config.js";
 import {
-	readTriageState,
-	writeTriageState,
-	shouldSuppressFollowup,
-	promptSignature,
-	type TriageStateFile,
+  readTriageState,
+  writeTriageState,
+  shouldSuppressFollowup,
+  promptSignature,
+  type TriageStateFile,
 } from "../hooks/triage-state.js";
 import {
-	isPendingDeepInterviewQuestionEnforcement,
-	reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords,
+  isPendingDeepInterviewQuestionEnforcement,
+  reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords,
 } from "../question/deep-interview.js";
 import { readAutopilotDeepInterviewQuestionWaitState } from "../question/autopilot-wait.js";
 import {
-	evaluateFinalHandoffDocumentRefresh,
-	isFinalHandoffDocumentRefreshCandidate,
+  evaluateFinalHandoffDocumentRefresh,
+  isFinalHandoffDocumentRefreshCandidate,
 } from "../document-refresh/enforcer.js";
 import { buildExecFollowupStopOutput } from "../exec/followup.js";
 import {
-	MAX_NATIVE_STDIN_JSON_BYTES,
-	extractRawCodexHookEventName,
+  MAX_NATIVE_STDIN_JSON_BYTES,
+  extractRawCodexHookEventName,
 } from "./hook-payload-guard.js";
 
 type CodexHookEventName =
-	| "SessionStart"
-	| "PreToolUse"
-	| "PostToolUse"
-	| "UserPromptSubmit"
-	| "PreCompact"
-	| "PostCompact"
-	| "Stop";
+  | "SessionStart"
+  | "PreToolUse"
+  | "PostToolUse"
+  | "UserPromptSubmit"
+  | "PreCompact"
+  | "PostCompact"
+  | "Stop";
 
 type CodexHookPayload = Record<string, unknown>;
 
 interface NativeHookDispatchOptions {
-	cwd?: string;
-	sessionOwnerPid?: number;
-	reconcileHudForPromptSubmitFn?: typeof reconcileHudForPromptSubmit;
+  cwd?: string;
+  sessionOwnerPid?: number;
+  reconcileHudForPromptSubmitFn?: typeof reconcileHudForPromptSubmit;
 }
 
 export interface NativeHookDispatchResult {
-	hookEventName: CodexHookEventName | null;
-	omxEventName: string | null;
-	skillState: SkillActiveState | null;
-	outputJson: Record<string, unknown> | null;
+  hookEventName: CodexHookEventName | null;
+  omxEventName: string | null;
+  skillState: SkillActiveState | null;
+  outputJson: Record<string, unknown> | null;
 }
 
-const TERMINAL_MODE_PHASES = new Set([
-	"complete",
-	"completed",
-	"failed",
-	"cancelled",
-]);
+const TERMINAL_MODE_PHASES = new Set(["complete", "completed", "failed", "cancelled"]);
 const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
-const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set([
-	"pending",
-	"in_progress",
-	"blocked",
-]);
-const TEAM_WORKER_TERMINAL_RUN_STATES = new Set([
-	"done",
-	"complete",
-	"completed",
-	"failed",
-	"stopped",
-	"cancelled",
-]);
-const LEADER_CONDUCTOR_GOLDEN_RULE =
-	"Main-root Conductor golden rule: delegate implementation work; do not self-execute source or plan edits.";
+const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blocked"]);
+const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
+const LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor golden rule: delegate implementation work; do not self-execute source or plan edits.";
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
-const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE =
-	"native-subagent-capacity-blocker.json";
+const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
 const NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS = 60 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
@@ -244,4874 +198,3845 @@ const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH = 240;
 const OMX_OWNER_SESSION_ID_PATTERN = /^omx-[A-Za-z0-9_-]{1,60}$/;
 const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
-	/^\s*(?:launch|release|ship)-?ready\s*:\s*(?:yes|no)\b[^\n\r]*/im,
-	/^\s*ready to release\s*:\s*(?:yes|no)\b[^\n\r]*/im,
-	/^\s*(?:final\s+)?recommendation\s*:\s*(?:yes|no|ship|hold|release|do not release|proceed|do not proceed)\b[^\n\r]*/im,
-	/^\s*decision\s*:\s*(?:yes|no|ship|hold|release|do not release|proceed|do not proceed)\b[^\n\r]*/im,
+  /^\s*(?:launch|release|ship)-?ready\s*:\s*(?:yes|no)\b[^\n\r]*/im,
+  /^\s*ready to release\s*:\s*(?:yes|no)\b[^\n\r]*/im,
+  /^\s*(?:final\s+)?recommendation\s*:\s*(?:yes|no|ship|hold|release|do not release|proceed|do not proceed)\b[^\n\r]*/im,
+  /^\s*decision\s*:\s*(?:yes|no|ship|hold|release|do not release|proceed|do not proceed)\b[^\n\r]*/im,
 ] as const;
 const RELEASE_READINESS_FINALIZE_SYSTEM_MESSAGE =
-	"OMX release-readiness detected a stable final recommendation with no active worker tasks; emit one concise final decision summary and finalize.";
+  "OMX release-readiness detected a stable final recommendation with no active worker tasks; emit one concise final decision summary and finalize.";
 const EXECUTION_HANDOFF_PATTERNS = [
-	/^(?:好|好的|行|可以|那就|那现在)?[，,\s]*(?:开始|继续|直接)\s*(?:执行|优化|实现|修改|修复)(?=$|\s|[，,。.!！?？])/u,
-	/(?:按照|按|基于)(?:这个|上述|当前)?\s*(?:plan|计划|方案).{0,16}(?:开始|继续|直接)?\s*(?:执行|优化|实现|修改|修复)/u,
-	/(?:不用|别|不要).{0,6}讨论/u,
-	/\b(?:start|begin|go ahead(?: and)?|proceed(?: now)?)\s+(?:to\s+)?(?:implement|execute|apply|fix)\b/i,
-	/\b(?:according to|based on)\s+(?:the|this|that)\s+plan\b.{0,20}\b(?:start|begin|proceed(?: now)?|go ahead(?: and)?)\b/i,
+  /^(?:好|好的|行|可以|那就|那现在)?[，,\s]*(?:开始|继续|直接)\s*(?:执行|优化|实现|修改|修复)(?=$|\s|[，,。.!！?？])/u,
+  /(?:按照|按|基于)(?:这个|上述|当前)?\s*(?:plan|计划|方案).{0,16}(?:开始|继续|直接)?\s*(?:执行|优化|实现|修改|修复)/u,
+  /(?:不用|别|不要).{0,6}讨论/u,
+  /\b(?:start|begin|go ahead(?: and)?|proceed(?: now)?)\s+(?:to\s+)?(?:implement|execute|apply|fix)\b/i,
+  /\b(?:according to|based on)\s+(?:the|this|that)\s+plan\b.{0,20}\b(?:start|begin|proceed(?: now)?|go ahead(?: and)?)\b/i,
 ] as const;
 const SHORT_FOLLOWUP_PRIORITY_PATTERNS = [
-	/^(?:继续|接着|然后|那就|那现在|还有(?:一个)?问题|这些优化都做了么|这些都做了么|现在呢|本轮|当前轮|这一轮)/u,
-	/(?:按照|按|基于)(?:这个|上述|当前)?(?:plan|计划|方案)/u,
-	/\b(?:follow up|latest request|this turn|current turn|newest request)\b/i,
+  /^(?:继续|接着|然后|那就|那现在|还有(?:一个)?问题|这些优化都做了么|这些都做了么|现在呢|本轮|当前轮|这一轮)/u,
+  /(?:按照|按|基于)(?:这个|上述|当前)?(?:plan|计划|方案)/u,
+  /\b(?:follow up|latest request|this turn|current turn|newest request)\b/i,
 ] as const;
 const RALPH_CONTINUATION_INTENT_PATTERNS = [
-	/\b(?:continue|resume|keep going|carry on|proceed|finish|complete)\b/i,
-	/\b(?:same|current|active|that|this)\s+(?:ralph|task|work|job|workflow)\b/i,
-	/\b(?:ralph)\b.{0,40}\b(?:continue|resume|finish|complete)\b/i,
-	/\b(?:continue|resume|finish|complete)\b.{0,40}\b(?:ralph)\b/i,
+  /\b(?:continue|resume|keep going|carry on|proceed|finish|complete)\b/i,
+  /\b(?:same|current|active|that|this)\s+(?:ralph|task|work|job|workflow)\b/i,
+  /\b(?:ralph)\b.{0,40}\b(?:continue|resume|finish|complete)\b/i,
+  /\b(?:continue|resume|finish|complete)\b.{0,40}\b(?:ralph)\b/i,
 ] as const;
 const RALPH_LIVE_RISK_PATTERNS = [
-	/\b(?:prod|production|live|customer|user\s+data|billing|payment|credential|secret|token|key)\b/i,
-	/\b(?:deploy|release|publish|merge|push|delete|remove|drop|destroy|migrate|migration)\b/i,
-	/\b(?:database|db|terraform|kubectl|kubernetes|aws|gcp|azure|external|destructive)\b/i,
-	/\b(?:telegram|vps|service|restart|send|notify|notification|notifications|cron)\b/i,
+  /\b(?:prod|production|live|customer|user\s+data|billing|payment|credential|secret|token|key)\b/i,
+  /\b(?:deploy|release|publish|merge|push|delete|remove|drop|destroy|migrate|migration)\b/i,
+  /\b(?:database|db|terraform|kubectl|kubernetes|aws|gcp|azure|external|destructive)\b/i,
+  /\b(?:telegram|vps|service|restart|send|notify|notification|notifications|cron)\b/i,
 ] as const;
 const RALPH_TASK_TEXT_FIELDS = [
-	"task_description",
-	"taskDescription",
-	"objective",
-	"task",
-	"prompt",
-	"initial_prompt",
-	"initialPrompt",
-	"user_prompt",
-	"userPrompt",
-	"last_user_message",
-	"lastUserMessage",
-	"task_slug",
+  "task_description",
+  "taskDescription",
+  "objective",
+  "task",
+  "prompt",
+  "initial_prompt",
+  "initialPrompt",
+  "user_prompt",
+  "userPrompt",
+  "last_user_message",
+  "lastUserMessage",
+  "task_slug",
 ] as const;
 const RALPH_INTENT_STOPWORDS = new Set([
-	"a",
-	"an",
-	"and",
-	"are",
-	"as",
-	"at",
-	"be",
-	"by",
-	"for",
-	"from",
-	"in",
-	"is",
-	"it",
-	"of",
-	"on",
-	"or",
-	"that",
-	"the",
-	"this",
-	"to",
-	"with",
-	"you",
-	"your",
-	"task",
-	"work",
-	"ralph",
-	"continue",
-	"resume",
-	"finish",
-	"complete",
-	"fix",
-	"issue",
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it",
+  "of", "on", "or", "that", "the", "this", "to", "with", "you", "your", "task", "work",
+  "ralph", "continue", "resume", "finish", "complete", "fix", "issue",
 ]);
 const MAX_SESSION_META_LINE_BYTES = 256 * 1024;
 
 function safeString(value: unknown): string {
-	return typeof value === "string" ? value : "";
+  return typeof value === "string" ? value : "";
+}
+
+async function resolveVerifiedOwnerOmxSessionId(): Promise<string | undefined> {
+  const candidate = normalizeSessionId(process.env.OMX_SESSION_ID);
+  if (!candidate) return undefined;
+  const evidence = await probeActualTmuxInstanceEvidence(process.env.TMUX_PANE);
+  return tmuxEvidenceBindsCandidate(evidence, candidate) ? candidate : undefined;
+}
+
+function isImplicitWritableScopeFailure(error: unknown): boolean {
+  return error instanceof Error
+    && (error.message === WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment
+      || error.message === WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
 }
 
 function safeObject(value: unknown): Record<string, unknown> {
-	return value && typeof value === "object"
-		? (value as Record<string, unknown>)
-		: {};
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
+
 function resolveHudReconcileSessionId(
-	currentSessionState: SessionState | null,
-	canonicalSessionId: string | null,
-	sessionIdForState: string | null,
+  currentSessionState: SessionState | null,
+  canonicalSessionId: string | null,
+  sessionIdForState: string | null,
 ): string | undefined {
-	const ownerOmxSessionId = safeString(
-		currentSessionState?.owner_omx_session_id,
-	).trim();
-	if (OMX_OWNER_SESSION_ID_PATTERN.test(ownerOmxSessionId))
-		return ownerOmxSessionId;
-	return canonicalSessionId || sessionIdForState || undefined;
+  const ownerOmxSessionId = safeString(currentSessionState?.owner_omx_session_id).trim();
+  if (OMX_OWNER_SESSION_ID_PATTERN.test(ownerOmxSessionId)) return ownerOmxSessionId;
+  return canonicalSessionId || sessionIdForState || undefined;
 }
 
 function resolveHudReconcileSessionIds(
-	currentSessionState: SessionState | null,
-	canonicalSessionId: string | null,
-	sessionIdForState: string | null,
-	nativeSessionId: string | null,
+  currentSessionState: SessionState | null,
+  canonicalSessionId: string | null,
+  sessionIdForState: string | null,
+  nativeSessionId: string | null,
 ): string[] {
-	const ownerOmxSessionId = safeString(
-		currentSessionState?.owner_omx_session_id,
-	).trim();
-	return uniqueNonEmpty([
-		resolveHudReconcileSessionId(
-			currentSessionState,
-			canonicalSessionId,
-			sessionIdForState,
-		),
-		canonicalSessionId ?? undefined,
-		sessionIdForState ?? undefined,
-		nativeSessionId ?? undefined,
-		safeString(currentSessionState?.session_id),
-		safeString(currentSessionState?.native_session_id),
-		OMX_OWNER_SESSION_ID_PATTERN.test(ownerOmxSessionId)
-			? ownerOmxSessionId
-			: undefined,
-		safeString(currentSessionState?.owner_codex_session_id),
-	]);
+  const ownerOmxSessionId = safeString(currentSessionState?.owner_omx_session_id).trim();
+  return uniqueNonEmpty([
+    resolveHudReconcileSessionId(currentSessionState, canonicalSessionId, sessionIdForState),
+    canonicalSessionId ?? undefined,
+    sessionIdForState ?? undefined,
+    nativeSessionId ?? undefined,
+    safeString(currentSessionState?.session_id),
+    safeString(currentSessionState?.native_session_id),
+    OMX_OWNER_SESSION_ID_PATTERN.test(ownerOmxSessionId) ? ownerOmxSessionId : undefined,
+    safeString(currentSessionState?.owner_codex_session_id),
+  ]);
 }
 
 function safeContextSnippet(value: unknown, maxLength = 300): string {
-	const text = safeString(value).replace(/\s+/g, " ").trim();
-	if (text.length <= maxLength) return text;
-	return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+  const text = safeString(value).replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
 const SIDE_CONVERSATION_BOUNDARY_PATTERNS = [
-	/side conversation boundary/i,
-	/inherited history from the parent thread/i,
-	/reference context only/i,
-	/only messages submitted after this boundary are active/i,
-	/side-conversation assistant/i,
+  /side conversation boundary/i,
+  /inherited history from the parent thread/i,
+  /reference context only/i,
+  /only messages submitted after this boundary are active/i,
+  /side-conversation assistant/i,
 ] as const;
 
 function textHasSideConversationBoundary(text: string): boolean {
-	return SIDE_CONVERSATION_BOUNDARY_PATTERNS.some((pattern) =>
-		pattern.test(text),
-	);
+  return SIDE_CONVERSATION_BOUNDARY_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function isLikelySideConversationStopPayload(
-	payload: CodexHookPayload,
-): boolean {
-	const payloadText = [
-		payload.prompt,
-		payload.user_prompt,
-		payload.userPrompt,
-		payload.input,
-		payload.last_user_message,
-		payload.lastUserMessage,
-		payload.last_assistant_message,
-		payload.lastAssistantMessage,
-	]
-		.map(safeString)
-		.join("\n");
-	if (textHasSideConversationBoundary(payloadText)) return true;
+function isLikelySideConversationStopPayload(payload: CodexHookPayload): boolean {
+  const payloadText = [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+    payload.input,
+    payload.last_user_message,
+    payload.lastUserMessage,
+    payload.last_assistant_message,
+    payload.lastAssistantMessage,
+  ].map(safeString).join("\n");
+  if (textHasSideConversationBoundary(payloadText)) return true;
 
-	const transcriptPath = safeString(
-		payload.transcript_path ?? payload.transcriptPath,
-	).trim();
-	if (!transcriptPath || !existsSync(transcriptPath)) return false;
+  const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
+  if (!transcriptPath || !existsSync(transcriptPath)) return false;
 
-	try {
-		const maxBytes = 256 * 1024;
-		const stats = statSync(transcriptPath);
-		const fd = openSync(transcriptPath, "r");
-		try {
-			const bytesToRead = Math.min(maxBytes, Math.max(0, stats.size));
-			const buffer = Buffer.alloc(bytesToRead);
-			const position = Math.max(0, stats.size - bytesToRead);
-			const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
-			return textHasSideConversationBoundary(
-				buffer.toString("utf-8", 0, bytesRead),
-			);
-		} finally {
-			closeSync(fd);
-		}
-	} catch {
-		return false;
-	}
+  try {
+    const maxBytes = 256 * 1024;
+    const stats = statSync(transcriptPath);
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const bytesToRead = Math.min(maxBytes, Math.max(0, stats.size));
+      const buffer = Buffer.alloc(bytesToRead);
+      const position = Math.max(0, stats.size - bytesToRead);
+      const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
+      return textHasSideConversationBoundary(buffer.toString("utf-8", 0, bytesRead));
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
 }
 
-function shouldSuppressParentWorkflowStopForSideConversation(
-	payload: CodexHookPayload,
-): boolean {
-	if (
-		safeString(payload.hook_event_name ?? payload.hookEventName).trim() !==
-		"Stop"
-	)
-		return false;
-	return isLikelySideConversationStopPayload(payload);
+function shouldSuppressParentWorkflowStopForSideConversation(payload: CodexHookPayload): boolean {
+  if (safeString(payload.hook_event_name ?? payload.hookEventName).trim() !== "Stop") return false;
+  return isLikelySideConversationStopPayload(payload);
 }
 
 interface NativeSubagentSessionStartMetadata {
-	parentThreadId: string;
-	agentNickname?: string;
-	agentRole?: string;
+  parentThreadId: string;
+  agentNickname?: string;
+  agentRole?: string;
 }
 
 function readBoundedFirstLineSync(path: string): string {
-	const fd = openSync(path, "r");
-	try {
-		const chunks: Buffer[] = [];
-		const buffer = Buffer.alloc(Math.min(8192, MAX_SESSION_META_LINE_BYTES));
-		let totalBytesRead = 0;
+  const fd = openSync(path, "r");
+  try {
+    const chunks: Buffer[] = [];
+    const buffer = Buffer.alloc(Math.min(8192, MAX_SESSION_META_LINE_BYTES));
+    let totalBytesRead = 0;
 
-		while (totalBytesRead < MAX_SESSION_META_LINE_BYTES) {
-			const bytesToRead = Math.min(
-				buffer.length,
-				MAX_SESSION_META_LINE_BYTES - totalBytesRead,
-			);
-			const bytesRead = readSync(fd, buffer, 0, bytesToRead, totalBytesRead);
-			if (bytesRead <= 0) break;
+    while (totalBytesRead < MAX_SESSION_META_LINE_BYTES) {
+      const bytesToRead = Math.min(buffer.length, MAX_SESSION_META_LINE_BYTES - totalBytesRead);
+      const bytesRead = readSync(fd, buffer, 0, bytesToRead, totalBytesRead);
+      if (bytesRead <= 0) break;
 
-			totalBytesRead += bytesRead;
-			const chunk = buffer.subarray(0, bytesRead);
-			const newlineOffset = chunk.indexOf(0x0a);
-			if (newlineOffset >= 0) {
-				chunks.push(Buffer.from(chunk.subarray(0, newlineOffset)));
-				break;
-			}
-			chunks.push(Buffer.from(chunk));
-		}
+      totalBytesRead += bytesRead;
+      const chunk = buffer.subarray(0, bytesRead);
+      const newlineOffset = chunk.indexOf(0x0a);
+      if (newlineOffset >= 0) {
+        chunks.push(Buffer.from(chunk.subarray(0, newlineOffset)));
+        break;
+      }
+      chunks.push(Buffer.from(chunk));
+    }
 
-		return Buffer.concat(chunks).toString("utf-8").replace(/\r$/, "");
-	} finally {
-		closeSync(fd);
-	}
+    return Buffer.concat(chunks).toString("utf-8").replace(/\r$/, "");
+  } finally {
+    closeSync(fd);
+  }
 }
 
-function readNativeSubagentSessionStartMetadata(
-	transcriptPath: string,
-): NativeSubagentSessionStartMetadata | null {
-	const normalizedPath = transcriptPath.trim();
-	if (!normalizedPath) return null;
+function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeSubagentSessionStartMetadata | null {
+  const normalizedPath = transcriptPath.trim();
+  if (!normalizedPath) return null;
 
-	try {
-		const firstLine = readBoundedFirstLineSync(normalizedPath).trim();
-		if (!firstLine) return null;
-		const firstRecord = safeObject(JSON.parse(firstLine));
-		if (safeString(firstRecord.type) !== "session_meta") return null;
+  try {
+    const firstLine = readBoundedFirstLineSync(normalizedPath).trim();
+    if (!firstLine) return null;
+    const firstRecord = safeObject(JSON.parse(firstLine));
+    if (safeString(firstRecord.type) !== "session_meta") return null;
 
-		const payload = safeObject(firstRecord.payload);
-		const source = safeObject(payload.source);
-		const subagent = safeObject(source.subagent);
-		const threadSpawn = safeObject(subagent.thread_spawn);
-		const parentThreadId = safeString(threadSpawn.parent_thread_id).trim();
-		if (!parentThreadId) return null;
+    const payload = safeObject(firstRecord.payload);
+    const source = safeObject(payload.source);
+    const subagent = safeObject(source.subagent);
+    const threadSpawn = safeObject(subagent.thread_spawn);
+    const parentThreadId = safeString(threadSpawn.parent_thread_id).trim();
+    if (!parentThreadId) return null;
 
-		const agentNickname = safeString(
-			threadSpawn.agent_nickname ??
-				threadSpawn.agentNickname ??
-				payload.agent_nickname ??
-				payload.agentNickname,
-		).trim();
-		const agentRole = safeString(
-			threadSpawn.agent_role ??
-				threadSpawn.agentRole ??
-				threadSpawn.agent_type ??
-				threadSpawn.agentType ??
-				payload.agent_role ??
-				payload.agentRole ??
-				payload.agent_type ??
-				payload.agentType,
-		).trim();
-		return {
-			parentThreadId,
-			...(agentNickname ? { agentNickname } : {}),
-			...(agentRole ? { agentRole } : {}),
-		};
-	} catch {
-		return null;
-	}
+    const agentNickname = safeString(
+      threadSpawn.agent_nickname
+        ?? threadSpawn.agentNickname
+        ?? payload.agent_nickname
+        ?? payload.agentNickname,
+    ).trim();
+    const agentRole = safeString(
+      threadSpawn.agent_role
+        ?? threadSpawn.agentRole
+        ?? threadSpawn.agent_type
+        ?? threadSpawn.agentType
+        ?? payload.agent_role
+        ?? payload.agentRole
+        ?? payload.agent_type
+        ?? payload.agentType,
+    ).trim();
+    return {
+      parentThreadId,
+      ...(agentNickname ? { agentNickname } : {}),
+      ...(agentRole ? { agentRole } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function reportRoleRoutingBindingFailure(error: unknown): void {
-	console.error(
-		`[omx] SECURITY: native adapted role binding was not durably persisted; pending role intent remains unconsumed: ${error instanceof Error ? error.message : String(error)}`,
-	);
+  console.error(
+    `[omx] SECURITY: native adapted role binding was not durably persisted; pending role intent remains unconsumed: ${error instanceof Error ? error.message : String(error)}`,
+  );
 }
 
 async function recordNativeSubagentSessionStart(
-	cwd: string,
-	canonicalSessionId: string,
-	childSessionId: string,
-	metadata: NativeSubagentSessionStartMetadata,
-	transcriptPath: string,
+  cwd: string,
+  canonicalSessionId: string,
+  childSessionId: string,
+  metadata: NativeSubagentSessionStartMetadata,
+  transcriptPath: string,
 ): Promise<void> {
-	const parentThreadId = metadata.parentThreadId.trim();
-	const childThreadId = childSessionId.trim();
-	const correlationSessionId = canonicalSessionId.trim() || parentThreadId;
-	const trackingSessionIds = [
-		...new Set([canonicalSessionId.trim(), parentThreadId].filter(Boolean)),
-	];
-	let adaptedRoleIntent: {
-		role: string;
-		provenanceKind: "omx_adapted";
-	} | null = null;
+  const parentThreadId = metadata.parentThreadId.trim();
+  const childThreadId = childSessionId.trim();
+  const correlationSessionId = canonicalSessionId.trim() || parentThreadId;
+  const trackingSessionIds = [...new Set([
+    canonicalSessionId.trim(),
+    parentThreadId,
+  ].filter(Boolean))];
+  let adaptedRoleIntent: {
+    role: string;
+    provenanceKind: typeof OMX_ADAPTED_PROVENANCE;
+  } | null = null;
 
-	if (!metadata.agentRole && correlationSessionId && parentThreadId) {
-		try {
-			adaptedRoleIntent = bindPendingRoleIntentUnderLock(
-				cwd,
-				{
-					sessionId: correlationSessionId,
-					parentThreadId,
-					correlationToken: metadata.agentNickname,
-				},
-				(state, intent) => {
-					let next = state;
-					for (const sessionId of trackingSessionIds) {
-						if (parentThreadId && parentThreadId !== childThreadId) {
-							next = recordSubagentTurn(next, {
-								sessionId,
-								threadId: parentThreadId,
-								kind: "leader",
-							});
-						}
-						next = recordSubagentTurn(next, {
-							sessionId,
-							threadId: childThreadId,
-							kind: "subagent",
-							...(parentThreadId && parentThreadId !== childThreadId
-								? { leaderThreadId: parentThreadId }
-								: {}),
-							mode: intent.role,
-							role: intent.role,
-							provenanceKind: intent.provenanceKind,
-						});
-					}
-					return next;
-				},
-			);
-		} catch (error) {
-			reportRoleRoutingBindingFailure(error);
-			throw error;
-		}
-		if (adaptedRoleIntent) {
-			recordNativeSubagentRoleRoutingMarker(
-				cwd,
-				getBaseStateDir(cwd),
-				correlationSessionId,
-				parentThreadId,
-			);
-		}
-	}
+  if (!metadata.agentRole && correlationSessionId && parentThreadId) {
+    try {
+      adaptedRoleIntent = bindPendingRoleIntentUnderLock(
+        cwd,
+        {
+          sessionId: correlationSessionId,
+          parentThreadId,
+          correlationToken: metadata.agentNickname,
+        },
+        (state, intent) => {
+          let next = state;
+          for (const sessionId of trackingSessionIds) {
+            if (parentThreadId && parentThreadId !== childThreadId) {
+              next = recordSubagentTurn(next, {
+                sessionId,
+                threadId: parentThreadId,
+                kind: "leader",
+              });
+            }
+            next = recordSubagentTurn(next, {
+              sessionId,
+              threadId: childThreadId,
+              kind: "subagent",
+              ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
+              mode: intent.role,
+              role: intent.role,
+              provenanceKind: intent.provenanceKind,
+            });
+          }
+          return next;
+        },
+      );
+    } catch (error) {
+      reportRoleRoutingBindingFailure(error);
+      throw error;
+    }
+    if (adaptedRoleIntent) {
+      recordNativeSubagentRoleRoutingMarker(
+        cwd,
+        getBaseStateDir(cwd),
+        correlationSessionId,
+        parentThreadId,
+      );
+    }
+  }
 
-	if (!adaptedRoleIntent) {
-		for (const sessionId of trackingSessionIds) {
-			if (parentThreadId && parentThreadId !== childThreadId) {
-				await recordSubagentTurnForSession(cwd, {
-					sessionId,
-					threadId: parentThreadId,
-					kind: "leader",
-				});
-			}
-			await recordSubagentTurnForSession(cwd, {
-				sessionId,
-				threadId: childThreadId,
-				kind: "subagent",
-				...(parentThreadId && parentThreadId !== childThreadId
-					? { leaderThreadId: parentThreadId }
-					: {}),
-				mode: metadata.agentRole,
-			});
-		}
-		refreshNativeSubagentRoleRoutingMarker(
-			cwd,
-			getBaseStateDir(cwd),
-			correlationSessionId,
-			parentThreadId,
-		);
-	}
-
-	await appendToLog(cwd, {
-		event: "subagent_session_start",
-		session_id: canonicalSessionId,
-		native_owner_session_id: metadata.parentThreadId,
-		native_session_id: childSessionId,
-		parent_thread_id: metadata.parentThreadId,
-		...(metadata.agentNickname
-			? { agent_nickname: metadata.agentNickname }
-			: {}),
-		...(metadata.agentRole ? { agent_role: metadata.agentRole } : {}),
-		...(transcriptPath ? { transcript_path: transcriptPath } : {}),
-		timestamp: new Date().toISOString(),
-	});
+  if (!adaptedRoleIntent) {
+    for (const sessionId of trackingSessionIds) {
+      if (parentThreadId && parentThreadId !== childThreadId) {
+        await recordSubagentTurnForSession(cwd, {
+          sessionId,
+          threadId: parentThreadId,
+          kind: "leader",
+        }).catch(() => {});
+      }
+      await recordSubagentTurnForSession(cwd, {
+        sessionId,
+        threadId: childThreadId,
+        kind: "subagent",
+        ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
+        mode: metadata.agentRole,
+      }).catch(() => {});
+    }
+    refreshNativeSubagentRoleRoutingMarker(
+      cwd,
+      getBaseStateDir(cwd),
+      correlationSessionId,
+      parentThreadId,
+    );
+  }
+  await appendToLog(cwd, {
+    event: "subagent_session_start",
+    session_id: canonicalSessionId,
+    native_owner_session_id: metadata.parentThreadId,
+    native_session_id: childSessionId,
+    parent_thread_id: metadata.parentThreadId,
+    ...(metadata.agentNickname ? { agent_nickname: metadata.agentNickname } : {}),
+    ...(metadata.agentRole ? { agent_role: metadata.agentRole } : {}),
+    ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
+    timestamp: new Date().toISOString(),
+  }).catch(() => {});
 }
 
 async function nativeSubagentSessionStartBelongsToCanonicalSession(
-	cwd: string,
-	canonicalSessionId: string,
-	currentSessionState: SessionState | null,
-	metadata: NativeSubagentSessionStartMetadata,
+  cwd: string,
+  canonicalSessionId: string,
+  currentSessionState: SessionState | null,
+  metadata: NativeSubagentSessionStartMetadata,
 ): Promise<boolean> {
-	const parentThreadId = metadata.parentThreadId.trim();
-	if (!parentThreadId) return false;
+  const parentThreadId = metadata.parentThreadId.trim();
+  if (!parentThreadId) return false;
 
-	const currentNativeSessionId = safeString(
-		currentSessionState?.native_session_id,
-	).trim();
-	if (currentNativeSessionId && currentNativeSessionId === parentThreadId) {
-		return true;
-	}
+  const currentNativeSessionId = safeString(currentSessionState?.native_session_id).trim();
+  if (currentNativeSessionId && currentNativeSessionId === parentThreadId) {
+    return true;
+  }
 
-	const summary = await readSubagentSessionSummary(
-		cwd,
-		canonicalSessionId,
-	).catch(() => null);
-	if (!summary) return false;
-	if (summary.leaderThreadId === parentThreadId) return true;
-	return summary.allThreadIds.includes(parentThreadId);
+  const summary = await readSubagentSessionSummary(cwd, canonicalSessionId).catch(() => null);
+  if (!summary) return false;
+  if (summary.leaderThreadId === parentThreadId) return true;
+  return summary.allThreadIds.includes(parentThreadId);
 }
 
 async function isNativeSubagentHook(
-	cwd: string,
-	canonicalSessionId: string,
-	nativeSessionId: string,
-	threadId: string,
-	canonicalLeaderNativeSessionId = "",
+  cwd: string,
+  canonicalSessionId: string,
+  nativeSessionId: string,
+  threadId: string,
+  canonicalLeaderNativeSessionId = "",
 ): Promise<boolean> {
-	const nativeId = nativeSessionId.trim();
-	const promptThreadId = threadId.trim();
-	const candidateIds = [nativeId, promptThreadId]
-		.map((value) => value.trim())
-		.filter(Boolean);
-	if (candidateIds.length === 0) return false;
+  const nativeId = nativeSessionId.trim();
+  const promptThreadId = threadId.trim();
+  const candidateIds = [nativeId, promptThreadId]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (candidateIds.length === 0) return false;
 
-	const sessionId = canonicalSessionId.trim();
-	const currentLeaderNativeSessionId = canonicalLeaderNativeSessionId.trim();
-	const summary = sessionId
-		? await readSubagentSessionSummary(cwd, sessionId).catch(() => null)
-		: null;
-	const currentLeaderIds = new Set(
-		[currentLeaderNativeSessionId, summary?.leaderThreadId?.trim()].filter(
-			Boolean,
-		),
-	);
-	if (
-		summary &&
-		candidateIds.some(
-			(id) =>
-				!currentLeaderIds.has(id) && summary.allSubagentThreadIds.includes(id),
-		)
-	) {
-		return true;
-	}
-	// Native UserPromptSubmit can carry a per-turn thread_id that differs from
-	// the long-lived native session id.  Treat the current canonical native
-	// session as the leader before consulting stale/global tracker state.
-	if (
-		sessionId &&
-		currentLeaderNativeSessionId &&
-		(nativeId === currentLeaderNativeSessionId ||
-			(!nativeId && promptThreadId === currentLeaderNativeSessionId))
-	) {
-		return false;
-	}
+  const sessionId = canonicalSessionId.trim();
+  const currentLeaderNativeSessionId = canonicalLeaderNativeSessionId.trim();
+  const summary = sessionId
+    ? await readSubagentSessionSummary(cwd, sessionId).catch(() => null)
+    : null;
+  const currentLeaderIds = new Set([
+    currentLeaderNativeSessionId,
+    summary?.leaderThreadId?.trim(),
+  ].filter(Boolean));
+  if (
+    summary
+    && candidateIds.some((id) => !currentLeaderIds.has(id) && summary.allSubagentThreadIds.includes(id))
+  ) {
+    return true;
+  }
+  // Native UserPromptSubmit can carry a per-turn thread_id that differs from
+  // the long-lived native session id.  Treat the current canonical native
+  // session as the leader before consulting stale/global tracker state.
+  if (
+    sessionId
+    && currentLeaderNativeSessionId
+    && (
+      nativeId === currentLeaderNativeSessionId
+      || (!nativeId && promptThreadId === currentLeaderNativeSessionId)
+    )
+  ) {
+    return false;
+  }
 
-	if (summary) {
-		const leaderThreadId = summary.leaderThreadId?.trim();
-		if (
-			leaderThreadId &&
-			(nativeId === leaderThreadId ||
-				(!nativeId && promptThreadId === leaderThreadId))
-		) {
-			return false;
-		}
-	}
+  if (summary) {
+    const leaderThreadId = summary.leaderThreadId?.trim();
+    if (
+      leaderThreadId
+      && (
+        nativeId === leaderThreadId
+        || (!nativeId && promptThreadId === leaderThreadId)
+      )
+    ) {
+      return false;
+    }
+  }
 
-	// Native Codex resume can report the child native session as the canonical
-	// session id before OMX reconciles it back to the owning session.  In that
-	// window the per-session summary lookup above misses the child and a
-	// subagent UserPromptSubmit can accidentally activate workflow keywords from
-	// quoted review context.  Fall back to the global tracking index so any known
-	// subagent thread is treated as subagent-scoped, regardless of the current
-	// hook payload's session-id mapping.
-	const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
-	if (!trackingState) return false;
+  // Native Codex resume can report the child native session as the canonical
+  // session id before OMX reconciles it back to the owning session.  In that
+  // window the per-session summary lookup above misses the child and a
+  // subagent UserPromptSubmit can accidentally activate workflow keywords from
+  // quoted review context.  Fall back to the global tracking index so any known
+  // subagent thread is treated as subagent-scoped, regardless of the current
+  // hook payload's session-id mapping.
+  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
+  if (!trackingState) return false;
 
-	return Object.values(trackingState.sessions).some((session) =>
-		candidateIds.some((id) => isTrustedSubagentThread(session, id)),
-	);
+  return Object.values(trackingState.sessions).some((session) => (
+    candidateIds.some((id) => isTrustedSubagentThread(session, id))
+  ));
 }
 
 function shouldSuppressSubagentLifecycleHookDispatch(): boolean {
-	const config = getNotificationConfig();
-	if (config?.includeChildAgents === true) return false;
-	const verbosity = getVerbosity(config);
-	return verbosity !== "agent" && verbosity !== "verbose";
+  const config = getNotificationConfig();
+  if (config?.includeChildAgents === true) return false;
+  const verbosity = getVerbosity(config);
+  return verbosity !== "agent" && verbosity !== "verbose";
 }
 
 async function recordIgnoredNativeSubagentSessionStart(
-	cwd: string,
-	canonicalSessionId: string,
-	childSessionId: string,
-	metadata: NativeSubagentSessionStartMetadata,
-	transcriptPath: string,
+  cwd: string,
+  canonicalSessionId: string,
+  childSessionId: string,
+  metadata: NativeSubagentSessionStartMetadata,
+  transcriptPath: string,
 ): Promise<void> {
-	await appendToLog(cwd, {
-		event: "subagent_session_start_ignored",
-		reason: "parent_not_in_canonical_session",
-		session_id: canonicalSessionId,
-		native_session_id: childSessionId,
-		parent_thread_id: metadata.parentThreadId,
-		...(metadata.agentNickname
-			? { agent_nickname: metadata.agentNickname }
-			: {}),
-		...(metadata.agentRole ? { agent_role: metadata.agentRole } : {}),
-		...(transcriptPath ? { transcript_path: transcriptPath } : {}),
-		timestamp: new Date().toISOString(),
-	}).catch(() => {});
+  await appendToLog(cwd, {
+    event: "subagent_session_start_ignored",
+    reason: "parent_not_in_canonical_session",
+    session_id: canonicalSessionId,
+    native_session_id: childSessionId,
+    parent_thread_id: metadata.parentThreadId,
+    ...(metadata.agentNickname ? { agent_nickname: metadata.agentNickname } : {}),
+    ...(metadata.agentRole ? { agent_role: metadata.agentRole } : {}),
+    ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
+    timestamp: new Date().toISOString(),
+  }).catch(() => {});
 }
 
 function safePositiveInteger(value: unknown): number | null {
-	if (typeof value === "number" && Number.isInteger(value) && value > 0)
-		return value;
-	if (typeof value === "string" && value.trim() !== "") {
-		const parsed = Number.parseInt(value.trim(), 10);
-		if (Number.isInteger(parsed) && parsed > 0) return parsed;
-	}
-	return null;
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return null;
 }
 
 function normalizePromptSignalText(text: string): string {
-	return text.trim().replace(/\s+/g, " ");
+  return text.trim().replace(/\s+/g, " ");
 }
 
 function looksLikeExecutionHandoffPrompt(prompt: string): boolean {
-	const normalized = normalizePromptSignalText(prompt);
-	if (!normalized) return false;
-	return EXECUTION_HANDOFF_PATTERNS.some((pattern) => pattern.test(normalized));
+  const normalized = normalizePromptSignalText(prompt);
+  if (!normalized) return false;
+  return EXECUTION_HANDOFF_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function looksLikeShortFollowupPrompt(prompt: string): boolean {
-	const normalized = normalizePromptSignalText(prompt);
-	if (!normalized) return false;
-	if (looksLikeExecutionHandoffPrompt(normalized)) return true;
-	if (normalized.length > 240) return false;
-	return SHORT_FOLLOWUP_PRIORITY_PATTERNS.some((pattern) =>
-		pattern.test(normalized),
-	);
+  const normalized = normalizePromptSignalText(prompt);
+  if (!normalized) return false;
+  if (looksLikeExecutionHandoffPrompt(normalized)) return true;
+  if (normalized.length > 240) return false;
+  return SHORT_FOLLOWUP_PRIORITY_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function buildPromptPriorityMessage(prompt: string): string | null {
-	if (looksLikeExecutionHandoffPrompt(prompt)) {
-		return "Newest user input is an execution handoff for the current task. Treat it as authorization to act now against the latest approved plan/request. Do not restate the prior plan unless the user explicitly asks for a recap or status update.";
-	}
-	if (looksLikeShortFollowupPrompt(prompt)) {
-		return "Newest user input is a same-thread follow-up. Answer that latest follow-up directly and prefer it over older unresolved prompts when choosing what to do next.";
-	}
-	return null;
+  if (looksLikeExecutionHandoffPrompt(prompt)) {
+    return "Newest user input is an execution handoff for the current task. Treat it as authorization to act now against the latest approved plan/request. Do not restate the prior plan unless the user explicitly asks for a recap or status update.";
+  }
+  if (looksLikeShortFollowupPrompt(prompt)) {
+    return "Newest user input is a same-thread follow-up. Answer that latest follow-up directly and prefer it over older unresolved prompts when choosing what to do next.";
+  }
+  return null;
 }
 
-function readHookEventName(
-	payload: CodexHookPayload,
-): CodexHookEventName | null {
-	const raw = safeString(
-		payload.hook_event_name ??
-			payload.hookEventName ??
-			payload.event ??
-			payload.name,
-	).trim();
-	if (
-		raw === "SessionStart" ||
-		raw === "PreToolUse" ||
-		raw === "PostToolUse" ||
-		raw === "UserPromptSubmit" ||
-		raw === "PreCompact" ||
-		raw === "PostCompact" ||
-		raw === "Stop"
-	) {
-		return raw;
-	}
-	return null;
+function readHookEventName(payload: CodexHookPayload): CodexHookEventName | null {
+  const raw = safeString(
+    payload.hook_event_name
+    ?? payload.hookEventName
+    ?? payload.event
+    ?? payload.name,
+  ).trim();
+  if (
+    raw === "SessionStart"
+    || raw === "PreToolUse"
+    || raw === "PostToolUse"
+    || raw === "UserPromptSubmit"
+    || raw === "PreCompact"
+    || raw === "PostCompact"
+    || raw === "Stop"
+  ) {
+    return raw;
+  }
+  return null;
 }
 
 function sanitizeCodexHookOutput(
-	hookEventName: CodexHookEventName | null,
-	output: Record<string, unknown> | null,
+  hookEventName: CodexHookEventName | null,
+  output: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
-	if (!output || hookEventName !== "PreToolUse") return output;
-	const preToolUseDenyOutput = toPreToolUseDenyOutput(output);
-	if (preToolUseDenyOutput) return preToolUseDenyOutput;
+  if (!output || hookEventName !== "PreToolUse") return output;
+  const preToolUseDenyOutput = toPreToolUseDenyOutput(output);
+  if (preToolUseDenyOutput) return preToolUseDenyOutput;
 
-	const systemMessage = safeString(output.systemMessage).trim();
-	if (systemMessage) return { systemMessage };
+  const systemMessage = safeString(output.systemMessage).trim();
+  if (systemMessage) return { systemMessage };
 
-	const reason = safeString(output.reason).trim();
-	const hookSpecificOutput = output.hookSpecificOutput;
-	const additionalContext =
-		hookSpecificOutput && typeof hookSpecificOutput === "object"
-			? safeString(
-					(hookSpecificOutput as { additionalContext?: unknown })
-						.additionalContext,
-				).trim()
-			: "";
-	const derivedSystemMessage = [reason, additionalContext]
-		.filter(Boolean)
-		.join("\n\n");
-	return derivedSystemMessage ? { systemMessage: derivedSystemMessage } : {};
+  const reason = safeString(output.reason).trim();
+  const hookSpecificOutput = output.hookSpecificOutput;
+  const additionalContext = hookSpecificOutput && typeof hookSpecificOutput === "object"
+    ? safeString((hookSpecificOutput as { additionalContext?: unknown }).additionalContext).trim()
+    : "";
+  const derivedSystemMessage = [reason, additionalContext].filter(Boolean).join("\n\n");
+  return derivedSystemMessage ? { systemMessage: derivedSystemMessage } : {};
 }
 
-function toPreToolUseDenyOutput(
-	output: Record<string, unknown>,
-): Record<string, unknown> | null {
-	const sourceHookSpecificOutput = safeObject(output.hookSpecificOutput);
-	const legacyBlock = output.decision === "block";
-	const hookSpecificDeny =
-		sourceHookSpecificOutput.permissionDecision === "deny";
-	if (!legacyBlock && !hookSpecificDeny) return null;
+function toPreToolUseDenyOutput(output: Record<string, unknown>): Record<string, unknown> | null {
+  const sourceHookSpecificOutput = safeObject(output.hookSpecificOutput);
+  const legacyBlock = output.decision === "block";
+  const hookSpecificDeny = sourceHookSpecificOutput.permissionDecision === "deny";
+  if (!legacyBlock && !hookSpecificDeny) return null;
 
-	const permissionDecisionReason = safeString(
-		sourceHookSpecificOutput.permissionDecisionReason,
-	).trim();
-	const legacyReason = safeString(output.reason).trim();
-	const additionalContext = safeString(
-		sourceHookSpecificOutput.additionalContext,
-	).trim();
-	const systemMessage = safeString(output.systemMessage).trim();
-	const reason = permissionDecisionReason || legacyReason || systemMessage;
-	if (!reason) {
-		throw new Error(
-			"Malformed PreToolUse block output: explicit deny/block requires non-empty permissionDecisionReason, reason, or systemMessage.",
-		);
-	}
+  const permissionDecisionReason = safeString(sourceHookSpecificOutput.permissionDecisionReason).trim();
+  const legacyReason = safeString(output.reason).trim();
+  const additionalContext = safeString(sourceHookSpecificOutput.additionalContext).trim();
+  const systemMessage = safeString(output.systemMessage).trim();
+  const reason = permissionDecisionReason || legacyReason || systemMessage;
+  if (!reason) {
+    throw new Error(
+      "Malformed PreToolUse block output: explicit deny/block requires non-empty permissionDecisionReason, reason, or systemMessage.",
+    );
+  }
 
-	const hookSpecificOutput: Record<string, unknown> = {
-		hookEventName: "PreToolUse",
-		permissionDecision: "deny",
-		permissionDecisionReason: reason,
-	};
-	if (additionalContext) {
-		hookSpecificOutput.additionalContext = additionalContext;
-	}
+  const hookSpecificOutput: Record<string, unknown> = {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason: reason,
+  };
+  if (additionalContext) {
+    hookSpecificOutput.additionalContext = additionalContext;
+  }
 
-	return {
-		...(systemMessage ? { systemMessage } : {}),
-		hookSpecificOutput,
-	};
+  return {
+    ...(systemMessage ? { systemMessage } : {}),
+    hookSpecificOutput,
+  };
 }
 
 export function mapCodexHookEventToOmxEvent(
-	hookEventName: CodexHookEventName | null,
+  hookEventName: CodexHookEventName | null,
 ): string | null {
-	switch (hookEventName) {
-		case "SessionStart":
-			return "session-start";
-		case "PreToolUse":
-			return "pre-tool-use";
-		case "PostToolUse":
-			return "post-tool-use";
-		case "UserPromptSubmit":
-			return "keyword-detector";
-		case "PreCompact":
-			return "pre-compact";
-		case "PostCompact":
-			return "post-compact";
-		case "Stop":
-			return "stop";
-		default:
-			return null;
-	}
+  switch (hookEventName) {
+    case "SessionStart":
+      return "session-start";
+    case "PreToolUse":
+      return "pre-tool-use";
+    case "PostToolUse":
+      return "post-tool-use";
+    case "UserPromptSubmit":
+      return "keyword-detector";
+    case "PreCompact":
+      return "pre-compact";
+    case "PostCompact":
+      return "post-compact";
+    case "Stop":
+      return "stop";
+    default:
+      return null;
+  }
 }
 
 function readPromptText(payload: CodexHookPayload): string {
-	const candidates = [payload.prompt, payload.user_prompt, payload.userPrompt];
-	for (const candidate of candidates) {
-		const value = safeString(candidate).trim();
-		if (value) return value;
-	}
-	return "";
+  const candidates = [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+  ];
+  for (const candidate of candidates) {
+    const value = safeString(candidate).trim();
+    if (value) return value;
+  }
+  return "";
 }
 
-function extractBalancedJsonObject(
-	text: string,
-	startIndex: number,
-): string | null {
-	let depth = 0;
-	let inString = false;
-	let escaped = false;
-	for (let index = startIndex; index < text.length; index++) {
-		const char = text[index];
-		if (inString) {
-			if (escaped) escaped = false;
-			else if (char === "\\") escaped = true;
-			else if (char === '"') inString = false;
-			continue;
-		}
-		if (char === '"') {
-			inString = true;
-			continue;
-		}
-		if (char === "{") depth += 1;
-		else if (char === "}") {
-			depth -= 1;
-			if (depth === 0) return text.slice(startIndex, index + 1);
-		}
-	}
-	return null;
+
+function extractBalancedJsonObject(text: string, startIndex: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = startIndex; index < text.length; index++) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(startIndex, index + 1);
+    }
+  }
+  return null;
 }
 
-function normalizePromptSteeringProposal(
-	raw: unknown,
-	prompt: string,
-): UltragoalSteeringProposal | null {
-	const candidate = safeObject(raw);
-	const nested =
-		candidate.omx_ultragoal_steer ??
-		candidate.ultragoal_steer ??
-		candidate.steering ??
-		candidate;
-	const proposal = parseUltragoalSteeringDirective(JSON.stringify(nested));
-	if (!proposal) return null;
-	if (proposal.source !== "user_prompt_submit") return null;
-	const normalized = prompt.trim().toLowerCase();
-	return {
-		...proposal,
-		directiveText: proposal.directiveText ?? safeContextSnippet(prompt, 600),
-		promptSignature: proposal.promptSignature ?? promptSignature(normalized),
-		idempotencyKey:
-			proposal.idempotencyKey ??
-			`user_prompt_submit:${promptSignature(normalized)}`,
-	};
+function normalizePromptSteeringProposal(raw: unknown, prompt: string): UltragoalSteeringProposal | null {
+  const candidate = safeObject(raw);
+  const nested = candidate.omx_ultragoal_steer ?? candidate.ultragoal_steer ?? candidate.steering ?? candidate;
+  const proposal = parseUltragoalSteeringDirective(JSON.stringify(nested));
+  if (!proposal) return null;
+  if (proposal.source !== "user_prompt_submit") return null;
+  const normalized = prompt.trim().toLowerCase();
+  return {
+    ...proposal,
+    directiveText: proposal.directiveText ?? safeContextSnippet(prompt, 600),
+    promptSignature: proposal.promptSignature ?? promptSignature(normalized),
+    idempotencyKey: proposal.idempotencyKey ?? `user_prompt_submit:${promptSignature(normalized)}`,
+  };
 }
 
-function parseUserPromptUltragoalSteeringDirective(
-	prompt: string,
-): UltragoalSteeringProposal | null {
-	const trimmed = prompt.trim();
-	if (!trimmed) return null;
-	const fenced = trimmed.match(
-		/```(?:omx-ultragoal-steer|ultragoal-steer)\s*([\s\S]*?)```/i,
-	);
-	if (fenced?.[1]) {
-		try {
-			return normalizePromptSteeringProposal(JSON.parse(fenced[1]), prompt);
-		} catch {
-			return null;
-		}
-	}
+function parseUserPromptUltragoalSteeringDirective(prompt: string): UltragoalSteeringProposal | null {
+  const trimmed = prompt.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:omx-ultragoal-steer|ultragoal-steer)\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    try {
+      return normalizePromptSteeringProposal(JSON.parse(fenced[1]), prompt);
+    } catch {
+      return null;
+    }
+  }
 
-	const label = trimmed.match(
-		/(?:^|\n)\s*(?:OMX_ULTRAGOAL_STEER|omx\.ultragoal\.steer|omx ultragoal steer)\s*:\s*{/i,
-	);
-	if (label?.index !== undefined) {
-		const brace = trimmed.indexOf("{", label.index);
-		const json = brace >= 0 ? extractBalancedJsonObject(trimmed, brace) : null;
-		if (json) {
-			try {
-				return normalizePromptSteeringProposal(JSON.parse(json), prompt);
-			} catch {
-				return null;
-			}
-		}
-	}
+  const label = trimmed.match(/(?:^|\n)\s*(?:OMX_ULTRAGOAL_STEER|omx\.ultragoal\.steer|omx ultragoal steer)\s*:\s*{/i);
+  if (label?.index !== undefined) {
+    const brace = trimmed.indexOf("{", label.index);
+    const json = brace >= 0 ? extractBalancedJsonObject(trimmed, brace) : null;
+    if (json) {
+      try {
+        return normalizePromptSteeringProposal(JSON.parse(json), prompt);
+      } catch {
+        return null;
+      }
+    }
+  }
 
-	if (trimmed.startsWith("{")) {
-		try {
-			const parsed = JSON.parse(trimmed);
-			const object = safeObject(parsed);
-			if ("omx_ultragoal_steer" in object || "ultragoal_steer" in object) {
-				return normalizePromptSteeringProposal(parsed, prompt);
-			}
-		} catch {
-			return null;
-		}
-	}
-	return null;
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const object = safeObject(parsed);
+      if ("omx_ultragoal_steer" in object || "ultragoal_steer" in object) {
+        return normalizePromptSteeringProposal(parsed, prompt);
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
-async function applyUserPromptUltragoalSteering(
-	cwd: string,
-	prompt: string,
-): Promise<string | null> {
-	const proposal = parseUserPromptUltragoalSteeringDirective(prompt);
-	if (!proposal) return null;
-	try {
-		const result = await steerUltragoal(cwd, proposal);
-		const status = result.deduped
-			? "deduped"
-			: result.accepted
-				? "accepted"
-				: "rejected";
-		const reasons =
-			result.rejectedReasons.length > 0
-				? ` rejectedReasons=${result.rejectedReasons.join("; ")}`
-				: "";
-		return [
-			`OMX native UserPromptSubmit applied bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${status}.`,
-			`mutation=${result.audit.kind}; source=${result.audit.source}; targets=${result.audit.targetGoalIds.join(",") || "none"}; idempotencyKey=${result.audit.idempotencyKey ?? "none"}.${reasons}`,
-			"Only explicit structured steering directives are parsed; normal prose is ignored and cannot mutate .omx/ultragoal.",
-		].join(" ");
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return `OMX native UserPromptSubmit rejected bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${message}`;
-	}
+async function applyUserPromptUltragoalSteering(cwd: string, prompt: string): Promise<string | null> {
+  const proposal = parseUserPromptUltragoalSteeringDirective(prompt);
+  if (!proposal) return null;
+  try {
+    const result = await steerUltragoal(cwd, proposal);
+    const status = result.deduped ? "deduped" : result.accepted ? "accepted" : "rejected";
+    const reasons = result.rejectedReasons.length > 0 ? ` rejectedReasons=${result.rejectedReasons.join("; ")}` : "";
+    return [
+      `OMX native UserPromptSubmit applied bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${status}.`,
+      `mutation=${result.audit.kind}; source=${result.audit.source}; targets=${result.audit.targetGoalIds.join(",") || "none"}; idempotencyKey=${result.audit.idempotencyKey ?? "none"}.${reasons}`,
+      "Only explicit structured steering directives are parsed; normal prose is ignored and cannot mutate .omx/ultragoal.",
+    ].join(" ");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `OMX native UserPromptSubmit rejected bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${message}`;
+  }
 }
 
 function sanitizePayloadForHookContext(
-	payload: CodexHookPayload,
-	hookEventName: CodexHookEventName,
-	canonicalSessionId = "",
+  payload: CodexHookPayload,
+  hookEventName: CodexHookEventName,
+  canonicalSessionId = "",
 ): CodexHookPayload {
-	const sanitized = { ...payload };
+  const sanitized = { ...payload };
 
-	if (hookEventName === "UserPromptSubmit") {
-		delete sanitized.prompt;
-		delete sanitized.input;
-		delete sanitized.user_prompt;
-		delete sanitized.userPrompt;
-		delete sanitized.text;
-		return sanitized;
-	}
+  if (hookEventName === "UserPromptSubmit") {
+    delete sanitized.prompt;
+    delete sanitized.input;
+    delete sanitized.user_prompt;
+    delete sanitized.userPrompt;
+    delete sanitized.text;
+    return sanitized;
+  }
 
-	if (hookEventName === "Stop") {
-		delete sanitized.stop_hook_active;
-		delete sanitized.stopHookActive;
-		delete sanitized.sessionId;
-		sanitized.session_id =
-			canonicalSessionId.trim() ||
-			safeString(payload.session_id ?? payload.sessionId).trim();
-	}
+  if (hookEventName === "Stop") {
+    delete sanitized.stop_hook_active;
+    delete sanitized.stopHookActive;
+    delete sanitized.sessionId;
+    sanitized.session_id = canonicalSessionId.trim() || safeString(payload.session_id ?? payload.sessionId).trim();
+  }
 
-	return sanitized;
+  return sanitized;
 }
 
 function buildBaseContext(
-	cwd: string,
-	payload: CodexHookPayload,
-	hookEventName: CodexHookEventName,
-	canonicalSessionId = "",
+  cwd: string,
+  payload: CodexHookPayload,
+  hookEventName: CodexHookEventName,
+  canonicalSessionId = "",
 ): Record<string, unknown> {
-	return {
-		cwd,
-		project_path: cwd,
-		transcript_path:
-			safeString(payload.transcript_path ?? payload.transcriptPath) || null,
-		source: safeString(payload.source),
-		payload: sanitizePayloadForHookContext(
-			payload,
-			hookEventName,
-			canonicalSessionId,
-		),
-	};
+  return {
+    cwd,
+    project_path: cwd,
+    transcript_path: safeString(payload.transcript_path ?? payload.transcriptPath) || null,
+    source: safeString(payload.source),
+    payload: sanitizePayloadForHookContext(payload, hookEventName, canonicalSessionId),
+  };
 }
 
-async function readJsonIfExists(
-	path: string,
-): Promise<Record<string, unknown> | null> {
-	if (!existsSync(path)) return null;
-	try {
-		return JSON.parse(await readFile(path, "utf-8")) as Record<string, unknown>;
-	} catch {
-		return null;
-	}
+async function readJsonIfExists(path: string): Promise<Record<string, unknown> | null> {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(await readFile(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function isNonTerminalPhase(value: unknown): boolean {
-	const phase = safeString(value).trim().toLowerCase();
-	return phase !== "" && !TERMINAL_MODE_PHASES.has(phase);
+  const phase = safeString(value).trim().toLowerCase();
+  return phase !== "" && !TERMINAL_MODE_PHASES.has(phase);
 }
 
 function formatPhase(value: unknown, fallback = "active"): string {
-	const phase = safeString(value).trim();
-	return phase || fallback;
+  const phase = safeString(value).trim();
+  return phase || fallback;
 }
 
 async function readActiveAutoresearchState(
-	cwd: string,
-	sessionId?: string,
+  cwd: string,
+  sessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-	const normalizedSessionId = sessionId?.trim() || undefined;
-	if (!normalizedSessionId) return null;
-	const state = await readAutoresearchModeStateForActiveDecision(
-		cwd,
-		normalizedSessionId,
-	);
-	if (state?.active !== true) return null;
-	if (
-		!isNonTerminalPhase(
-			state.current_phase ?? state.currentPhase ?? "executing",
-		)
-	)
-		return null;
-	return state;
+  const normalizedSessionId = sessionId?.trim() || undefined;
+  if (!normalizedSessionId) return null;
+  const state = await readAutoresearchModeStateForActiveDecision(cwd, normalizedSessionId);
+  if (state?.active !== true) return null;
+  if (!isNonTerminalPhase(state.current_phase ?? state.currentPhase ?? 'executing')) return null;
+  return state;
 }
 
 interface ActiveRalphStopState {
-	state: Record<string, unknown>;
-	path: string;
+  state: Record<string, unknown>;
+  path: string;
 }
 
 interface RalphCompletionAuditBlockState {
-	state: Record<string, unknown>;
-	path: string;
-	reason: string;
+  state: Record<string, unknown>;
+  path: string;
+  reason: string;
 }
 
 interface RalphStopOwnershipContext {
-	sessionId: string;
-	payloadSessionId: string;
-	threadId: string;
-	currentNativeSessionId: string;
-	tmuxPaneId: string;
-	payload?: CodexHookPayload;
+  sessionId: string;
+  payloadSessionId: string;
+  threadId: string;
+  currentNativeSessionId: string;
+  tmuxPaneId: string;
+  payload?: CodexHookPayload;
 }
 
 function isRalphStartingPhase(state: Record<string, unknown>): boolean {
-	return (
-		safeString(state.current_phase ?? state.currentPhase)
-			.trim()
-			.toLowerCase() === "starting"
-	);
+  return safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase() === "starting";
 }
 
+
 function parseTimestampMs(value: unknown): number | null {
-	const text = safeString(value).trim();
-	if (!text) return null;
-	const ms = Date.parse(text);
-	return Number.isFinite(ms) ? ms : null;
+  const text = safeString(value).trim();
+  if (!text) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function numericValue(value: unknown): number | null {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string" && value.trim()) {
-		const parsed = Number(value);
-		return Number.isFinite(parsed) ? parsed : null;
-	}
-	return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function hasRalphOwnerHint(state: Record<string, unknown>): boolean {
-	return [
-		state.owner_omx_session_id,
-		state.owner_codex_session_id,
-		state.owner_codex_thread_id,
-		state.thread_id,
-		state.tmux_pane_id,
-		state.task_slug,
-	].some((value) => safeString(value).trim() !== "");
+  return [
+    state.owner_omx_session_id,
+    state.owner_codex_session_id,
+    state.owner_codex_thread_id,
+    state.thread_id,
+    state.tmux_pane_id,
+    state.task_slug,
+  ].some((value) => safeString(value).trim() !== "");
 }
 
 async function isStaleOrphanedRalphStartingState(
-	state: Record<string, unknown>,
-	path: string,
-	nowMs = Date.now(),
+  state: Record<string, unknown>,
+  path: string,
+  nowMs = Date.now(),
 ): Promise<boolean> {
-	if (!isRalphStartingPhase(state)) return false;
-	if (numericValue(state.iteration) !== 0) return false;
-	if (hasRalphOwnerHint(state)) return false;
+  if (!isRalphStartingPhase(state)) return false;
+  if (numericValue(state.iteration) !== 0) return false;
+  if (hasRalphOwnerHint(state)) return false;
 
-	const timestampMs =
-		parseTimestampMs(state.updated_at) ??
-		parseTimestampMs(state.started_at) ??
-		parseTimestampMs(state.created_at) ??
-		(await stat(path).then(
-			(info) => info.mtimeMs,
-			() => null,
-		));
-	if (timestampMs === null) return false;
+  const timestampMs = parseTimestampMs(state.updated_at)
+    ?? parseTimestampMs(state.started_at)
+    ?? parseTimestampMs(state.created_at)
+    ?? await stat(path).then((info) => info.mtimeMs, () => null);
+  if (timestampMs === null) return false;
 
-	return nowMs - timestampMs > RALPH_ORPHANED_STARTING_STALE_MS;
+  return nowMs - timestampMs > RALPH_ORPHANED_STARTING_STALE_MS;
 }
 
 function hasValue(values: string[], value: string): boolean {
-	return value !== "" && values.some((candidate) => candidate === value);
+  return value !== "" && values.some((candidate) => candidate === value);
 }
 
 function hasPositiveRalphStopOwnerMatch(
-	state: Record<string, unknown>,
-	context: RalphStopOwnershipContext,
+  state: Record<string, unknown>,
+  context: RalphStopOwnershipContext,
 ): boolean {
-	const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
-	if (ownerOmxSessionId && ownerOmxSessionId === context.sessionId) return true;
+  const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
+  if (ownerOmxSessionId && ownerOmxSessionId === context.sessionId) return true;
 
-	const stateSessionId = safeString(state.session_id).trim();
-	if (
-		!ownerOmxSessionId &&
-		stateSessionId &&
-		stateSessionId === context.sessionId
-	)
-		return true;
+  const stateSessionId = safeString(state.session_id).trim();
+  if (!ownerOmxSessionId && stateSessionId && stateSessionId === context.sessionId) return true;
 
-	const codexOwnerSessionId = safeString(state.owner_codex_session_id).trim();
-	if (codexOwnerSessionId) {
-		const stopCodexSessionIds = [
-			context.payloadSessionId,
-			context.currentNativeSessionId,
-			context.sessionId,
-		].filter(Boolean);
-		if (hasValue(stopCodexSessionIds, codexOwnerSessionId)) return true;
-	}
+  const codexOwnerSessionId = safeString(state.owner_codex_session_id).trim();
+  if (codexOwnerSessionId) {
+    const stopCodexSessionIds = [
+      context.payloadSessionId,
+      context.currentNativeSessionId,
+      context.sessionId,
+    ].filter(Boolean);
+    if (hasValue(stopCodexSessionIds, codexOwnerSessionId)) return true;
+  }
 
-	const stateThreadId = safeString(
-		state.owner_codex_thread_id ?? state.thread_id,
-	).trim();
-	if (stateThreadId && context.threadId && stateThreadId === context.threadId)
-		return true;
+  const stateThreadId = safeString(state.owner_codex_thread_id ?? state.thread_id).trim();
+  if (stateThreadId && context.threadId && stateThreadId === context.threadId) return true;
 
-	const statePaneId = safeString(state.tmux_pane_id).trim();
-	return (
-		statePaneId !== "" &&
-		context.tmuxPaneId !== "" &&
-		statePaneId === context.tmuxPaneId
-	);
+  const statePaneId = safeString(state.tmux_pane_id).trim();
+  return statePaneId !== "" && context.tmuxPaneId !== "" && statePaneId === context.tmuxPaneId;
 }
 
 function textMatchesAny(text: string, patterns: readonly RegExp[]): boolean {
-	return patterns.some((pattern) => pattern.test(text));
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 function extractRalphTaskText(state: Record<string, unknown>): string {
-	const values: string[] = [];
-	for (const field of RALPH_TASK_TEXT_FIELDS) {
-		const value = safeString(state[field]).trim();
-		if (value) values.push(value);
-	}
+  const values: string[] = [];
+  for (const field of RALPH_TASK_TEXT_FIELDS) {
+    const value = safeString(state[field]).trim();
+    if (value) values.push(value);
+  }
 
-	const taskMetadata = state.task_metadata ?? state.taskMetadata;
-	if (taskMetadata && typeof taskMetadata === "object") {
-		const metadata = taskMetadata as Record<string, unknown>;
-		for (const field of RALPH_TASK_TEXT_FIELDS) {
-			const value = safeString(metadata[field]).trim();
-			if (value) values.push(value);
-		}
-	}
+  const taskMetadata = state.task_metadata ?? state.taskMetadata;
+  if (taskMetadata && typeof taskMetadata === "object") {
+    const metadata = taskMetadata as Record<string, unknown>;
+    for (const field of RALPH_TASK_TEXT_FIELDS) {
+      const value = safeString(metadata[field]).trim();
+      if (value) values.push(value);
+    }
+  }
 
-	return values.join("\n");
+  return values.join("\n");
 }
 
 function extractRalphStopUserText(payload?: CodexHookPayload): string {
-	if (!payload) return "";
-	return [
-		payload.prompt,
-		payload.user_prompt,
-		payload.userPrompt,
-		payload.input,
-		payload.last_user_message,
-		payload.lastUserMessage,
-	]
-		.map(safeString)
-		.filter(Boolean)
-		.join("\n");
+  if (!payload) return "";
+  return [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+    payload.input,
+    payload.last_user_message,
+    payload.lastUserMessage,
+  ].map(safeString).filter(Boolean).join("\n");
 }
 
 function tokenizeRalphIntentText(text: string): Set<string> {
-	const tokens = new Set<string>();
-	for (const match of text.toLowerCase().matchAll(/[a-z0-9][a-z0-9_-]{2,}/g)) {
-		const token = match[0].replace(/^issue-/, "");
-		if (!token || RALPH_INTENT_STOPWORDS.has(token)) continue;
-		tokens.add(token);
-	}
-	return tokens;
+  const tokens = new Set<string>();
+  for (const match of text.toLowerCase().matchAll(/[a-z0-9][a-z0-9_-]{2,}/g)) {
+    const token = match[0].replace(/^issue-/, "");
+    if (!token || RALPH_INTENT_STOPWORDS.has(token)) continue;
+    tokens.add(token);
+  }
+  return tokens;
 }
 
 function countTokenOverlap(left: Set<string>, right: Set<string>): number {
-	let overlap = 0;
-	for (const token of left) {
-		if (right.has(token)) overlap += 1;
-	}
-	return overlap;
+  let overlap = 0;
+  for (const token of left) {
+    if (right.has(token)) overlap += 1;
+  }
+  return overlap;
 }
 
-function hasCurrentRalphTaskOverlap(
-	state: Record<string, unknown>,
-	userText: string,
-): boolean {
-	const taskText = extractRalphTaskText(state);
-	const taskTokens = tokenizeRalphIntentText(taskText);
-	const userTokens = tokenizeRalphIntentText(userText);
-	if (taskTokens.size === 0) return false;
-	if (userTokens.size === 0) return false;
+function hasCurrentRalphTaskOverlap(state: Record<string, unknown>, userText: string): boolean {
+  const taskText = extractRalphTaskText(state);
+  const taskTokens = tokenizeRalphIntentText(taskText);
+  const userTokens = tokenizeRalphIntentText(userText);
+  if (taskTokens.size === 0) return false;
+  if (userTokens.size === 0) return false;
 
-	const overlap = countTokenOverlap(taskTokens, userTokens);
-	const smallerSide = Math.min(taskTokens.size, userTokens.size);
-	return overlap >= 2 || (smallerSide <= 2 && overlap >= 1);
+  const overlap = countTokenOverlap(taskTokens, userTokens);
+  const smallerSide = Math.min(taskTokens.size, userTokens.size);
+  return overlap >= 2 || (smallerSide <= 2 && overlap >= 1);
 }
 
 function hasMeaningfulRalphTaskText(state: Record<string, unknown>): boolean {
-	return tokenizeRalphIntentText(extractRalphTaskText(state)).size > 0;
+  return tokenizeRalphIntentText(extractRalphTaskText(state)).size > 0;
 }
 
-function isRalphLiveRiskContinuation(
-	state: Record<string, unknown>,
-	userText: string,
-): boolean {
-	return textMatchesAny(
-		`${extractRalphTaskText(state)}\n${userText}`,
-		RALPH_LIVE_RISK_PATTERNS,
-	);
+function isRalphLiveRiskContinuation(state: Record<string, unknown>, userText: string): boolean {
+  return textMatchesAny(`${extractRalphTaskText(state)}\n${userText}`, RALPH_LIVE_RISK_PATTERNS);
 }
 
 function shouldAllowGlobalRalphStopContinuation(
-	state: Record<string, unknown>,
-	context: RalphStopOwnershipContext,
+  state: Record<string, unknown>,
+  context: RalphStopOwnershipContext,
 ): boolean {
-	const userText = extractRalphStopUserText(context.payload);
-	const hasContinuationIntent = textMatchesAny(
-		userText,
-		RALPH_CONTINUATION_INTENT_PATTERNS,
-	);
-	const hasTaskOverlap = hasCurrentRalphTaskOverlap(state, userText);
-	const hasTaskText = hasMeaningfulRalphTaskText(state);
-	const hasUserTaskText = tokenizeRalphIntentText(userText).size > 0;
-	const hasPositiveOwnerMatch = hasPositiveRalphStopOwnerMatch(state, context);
+  const userText = extractRalphStopUserText(context.payload);
+  const hasContinuationIntent = textMatchesAny(userText, RALPH_CONTINUATION_INTENT_PATTERNS);
+  const hasTaskOverlap = hasCurrentRalphTaskOverlap(state, userText);
+  const hasTaskText = hasMeaningfulRalphTaskText(state);
+  const hasUserTaskText = tokenizeRalphIntentText(userText).size > 0;
+  const hasPositiveOwnerMatch = hasPositiveRalphStopOwnerMatch(state, context);
 
-	if (!activeRalphStateMatchesStopOwner(state, context)) return false;
-	if (!userText.trim()) {
-		if (isRalphLiveRiskContinuation(state, userText)) return false;
-		return hasPositiveOwnerMatch || !hasRalphOwnerHint(state);
-	}
-	if (isRalphLiveRiskContinuation(state, userText)) {
-		return hasContinuationIntent && (hasPositiveOwnerMatch || hasTaskOverlap);
-	}
-	if (hasPositiveOwnerMatch && hasContinuationIntent) {
-		return true;
-	}
-	if (hasTaskText && hasUserTaskText) {
-		return hasTaskOverlap;
-	}
+  if (!activeRalphStateMatchesStopOwner(state, context)) return false;
+  if (!userText.trim()) {
+    if (isRalphLiveRiskContinuation(state, userText)) return false;
+    return hasPositiveOwnerMatch || !hasRalphOwnerHint(state);
+  }
+  if (isRalphLiveRiskContinuation(state, userText)) {
+    return hasContinuationIntent && (hasPositiveOwnerMatch || hasTaskOverlap);
+  }
+  if (hasPositiveOwnerMatch && hasContinuationIntent) {
+    return true;
+  }
+  if (hasTaskText && hasUserTaskText) {
+    return hasTaskOverlap;
+  }
 
-	return hasContinuationIntent || hasTaskOverlap;
+  return hasContinuationIntent || hasTaskOverlap;
 }
 
 function activeRalphStateMatchesStopOwner(
-	state: Record<string, unknown>,
-	context: RalphStopOwnershipContext,
+  state: Record<string, unknown>,
+  context: RalphStopOwnershipContext,
 ): boolean {
-	const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
-	if (ownerOmxSessionId && ownerOmxSessionId !== context.sessionId) {
-		return false;
-	}
+  const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
+  if (ownerOmxSessionId && ownerOmxSessionId !== context.sessionId) {
+    return false;
+  }
 
-	const stateSessionId = safeString(state.session_id).trim();
-	if (
-		!ownerOmxSessionId &&
-		stateSessionId &&
-		stateSessionId !== context.sessionId
-	) {
-		return false;
-	}
+  const stateSessionId = safeString(state.session_id).trim();
+  if (!ownerOmxSessionId && stateSessionId && stateSessionId !== context.sessionId) {
+    return false;
+  }
 
-	const codexOwnerSessionId = safeString(state.owner_codex_session_id).trim();
-	if (codexOwnerSessionId) {
-		const stopCodexSessionIds = [
-			context.payloadSessionId,
-			context.currentNativeSessionId,
-			context.sessionId,
-		].filter(Boolean);
-		if (!hasValue(stopCodexSessionIds, codexOwnerSessionId)) return false;
-	}
+  const codexOwnerSessionId = safeString(state.owner_codex_session_id).trim();
+  if (codexOwnerSessionId) {
+    const stopCodexSessionIds = [
+      context.payloadSessionId,
+      context.currentNativeSessionId,
+      context.sessionId,
+    ].filter(Boolean);
+    if (!hasValue(stopCodexSessionIds, codexOwnerSessionId)) return false;
+  }
 
-	const stateThreadId = safeString(
-		state.owner_codex_thread_id ?? state.thread_id,
-	).trim();
-	if (stateThreadId && context.threadId && stateThreadId !== context.threadId) {
-		return false;
-	}
+  const stateThreadId = safeString(state.owner_codex_thread_id ?? state.thread_id).trim();
+  if (stateThreadId && context.threadId && stateThreadId !== context.threadId) {
+    return false;
+  }
 
-	const statePaneId = safeString(state.tmux_pane_id).trim();
-	if (statePaneId && context.tmuxPaneId && statePaneId !== context.tmuxPaneId) {
-		return false;
-	}
+  const statePaneId = safeString(state.tmux_pane_id).trim();
+  if (statePaneId && context.tmuxPaneId && statePaneId !== context.tmuxPaneId) {
+    return false;
+  }
 
-	return true;
+  return true;
 }
 
 function shouldHonorCanonicalTerminalRunState(
-	runState: Record<string, unknown> | null,
-	mode: string,
+  runState: Record<string, unknown> | null,
+  mode: string,
 ): boolean {
-	if (!runState) return false;
-	const runMode = safeString(runState.mode).trim();
-	if (runMode && runMode !== mode) return false;
-	return getRunContinuationSnapshot(runState)?.terminal === true;
+  if (!runState) return false;
+  const runMode = safeString(runState.mode).trim();
+  if (runMode && runMode !== mode) return false;
+  return getRunContinuationSnapshot(runState)?.terminal === true;
 }
 
 async function readCanonicalTerminalRunStateForStop(
-	cwd: string,
-	sessionId: string | undefined,
-	mode: string,
+  cwd: string,
+  sessionId: string | undefined,
+  mode: string,
 ): Promise<Record<string, unknown> | null> {
-	if (!safeString(sessionId).trim()) return null;
-	const runState = await readRunState(cwd, sessionId).catch(() => null);
-	const runRecord = runState as unknown as Record<string, unknown> | null;
-	return shouldHonorCanonicalTerminalRunState(runRecord, mode)
-		? runRecord
-		: null;
+  if (!safeString(sessionId).trim()) return null;
+  const runState = await readRunState(cwd, sessionId).catch(() => null);
+  const runRecord = runState as unknown as Record<string, unknown> | null;
+  return shouldHonorCanonicalTerminalRunState(runRecord, mode) ? runRecord : null;
 }
 
-async function isVisibleRalphActiveForSession(
-	stateDir: string,
-	sessionId: string,
-): Promise<boolean> {
-	const canonicalState = await readVisibleSkillActiveStateForStateDir(
-		stateDir,
-		sessionId,
-	);
-	if (!canonicalState) return false;
-	return listActiveSkills(canonicalState).some(
-		(entry) =>
-			entry.skill === "ralph" &&
-			matchesSkillStopContext(entry, canonicalState, sessionId, ""),
-	);
+async function isVisibleRalphActiveForSession(stateDir: string, sessionId: string): Promise<boolean> {
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  if (!canonicalState) return false;
+  return listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "ralph"
+    && matchesSkillStopContext(entry, canonicalState, sessionId, "")
+  ));
 }
 
-async function hasConsistentRalphSkillActivation(
-	stateDir: string,
-	sessionId: string,
-): Promise<boolean> {
-	const canonicalState = await readVisibleSkillActiveStateForStateDir(
-		stateDir,
-		sessionId,
-	);
-	if (!canonicalState) return true;
+async function hasConsistentRalphSkillActivation(stateDir: string, sessionId: string): Promise<boolean> {
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  if (!canonicalState) return true;
 
-	const initializedMode = safeString(canonicalState.initialized_mode).trim();
-	if (initializedMode && initializedMode !== "ralph") return true;
+  const initializedMode = safeString(canonicalState.initialized_mode).trim();
+  if (initializedMode && initializedMode !== "ralph") return true;
 
-	const initializedPathSessionId = extractSessionIdFromInitializedStatePath(
-		canonicalState.initialized_state_path,
-	);
-	if (initializedPathSessionId && initializedPathSessionId !== sessionId)
-		return false;
+  const initializedPathSessionId = extractSessionIdFromInitializedStatePath(canonicalState.initialized_state_path);
+  if (initializedPathSessionId && initializedPathSessionId !== sessionId) return false;
 
-	return true;
+  return true;
 }
 
-function isShadowableRalphStartingSeed(
-	state: Record<string, unknown>,
-): boolean {
-	if (state.active !== true) return false;
-	if (!isRalphStartingPhase(state)) return false;
-	if (state.completion_audit || state.completionAudit) return false;
-	const iteration = numericValue(state.iteration);
-	return iteration === null || iteration <= 0;
+function isShadowableRalphStartingSeed(state: Record<string, unknown>): boolean {
+  if (state.active !== true) return false;
+  if (!isRalphStartingPhase(state)) return false;
+  if (state.completion_audit || state.completionAudit) return false;
+  const iteration = numericValue(state.iteration);
+  return iteration === null || iteration <= 0;
 }
 
-function hasPassingCompletedRalphAudit(
-	state: Record<string, unknown> | null,
-	cwd: string,
-): boolean {
-	if (!state) return false;
-	if (state.mode && safeString(state.mode) !== "ralph") return false;
-	if (!isRalphCompletePhase(state.current_phase ?? state.currentPhase))
-		return false;
-	if (state.active === true) return false;
-	return evaluateRalphCompletionAuditEvidence(state, cwd).complete === true;
+function hasPassingCompletedRalphAudit(state: Record<string, unknown> | null, cwd: string): boolean {
+  if (!state) return false;
+  if (state.mode && safeString(state.mode) !== "ralph") return false;
+  if (!isRalphCompletePhase(state.current_phase ?? state.currentPhase)) return false;
+  if (state.active === true) return false;
+  return evaluateRalphCompletionAuditEvidence(state, cwd).complete === true;
 }
 
 function shouldRetireShadowedRalphStartingSeed(
-	seedState: Record<string, unknown>,
-	completedState: Record<string, unknown> | null,
-	cwd: string,
-	ownerContext?: {
-		completedSessionId?: string;
-		payloadSessionId?: string;
-		threadId?: string;
-		currentNativeSessionId?: string;
-		tmuxPaneId?: string;
-	},
+  seedState: Record<string, unknown>,
+  completedState: Record<string, unknown> | null,
+  cwd: string,
+  ownerContext?: {
+    completedSessionId?: string;
+    payloadSessionId?: string;
+    threadId?: string;
+    currentNativeSessionId?: string;
+    tmuxPaneId?: string;
+  },
 ): boolean {
-	if (!isShadowableRalphStartingSeed(seedState)) return false;
-	if (!hasPassingCompletedRalphAudit(completedState, cwd)) return false;
-	if (!completedState) return false;
+  if (!isShadowableRalphStartingSeed(seedState)) return false;
+  if (!hasPassingCompletedRalphAudit(completedState, cwd)) return false;
+  if (!completedState) return false;
 
-	const completedSessionId = safeString(
-		ownerContext?.completedSessionId ?? completedState.session_id,
-	).trim();
-	if (
-		completedSessionId &&
-		!activeRalphStateMatchesStopOwner(completedState, {
-			sessionId: completedSessionId,
-			payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
-			threadId: safeString(ownerContext?.threadId).trim(),
-			currentNativeSessionId: safeString(
-				ownerContext?.currentNativeSessionId,
-			).trim(),
-			tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
-		})
-	) {
-		return false;
-	}
+  const completedSessionId = safeString(ownerContext?.completedSessionId ?? completedState.session_id).trim();
+  if (
+    completedSessionId
+    && !activeRalphStateMatchesStopOwner(completedState, {
+      sessionId: completedSessionId,
+      payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      threadId: safeString(ownerContext?.threadId).trim(),
+      currentNativeSessionId: safeString(ownerContext?.currentNativeSessionId).trim(),
+      tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+    })
+  ) {
+    return false;
+  }
 
-	const seedThreadId = safeString(
-		seedState.owner_codex_thread_id ?? seedState.thread_id,
-	).trim();
-	const completedThreadId = safeString(
-		completedState?.owner_codex_thread_id ?? completedState?.thread_id,
-	).trim();
-	const stopThreadId = safeString(ownerContext?.threadId).trim();
-	if (seedThreadId && completedThreadId && seedThreadId !== completedThreadId)
-		return false;
-	if (seedThreadId && stopThreadId && seedThreadId !== stopThreadId)
-		return false;
-	if (completedThreadId && stopThreadId && completedThreadId !== stopThreadId)
-		return false;
+  const seedThreadId = safeString(seedState.owner_codex_thread_id ?? seedState.thread_id).trim();
+  const completedThreadId = safeString(completedState?.owner_codex_thread_id ?? completedState?.thread_id).trim();
+  const stopThreadId = safeString(ownerContext?.threadId).trim();
+  if (seedThreadId && completedThreadId && seedThreadId !== completedThreadId) return false;
+  if (seedThreadId && stopThreadId && seedThreadId !== stopThreadId) return false;
+  if (completedThreadId && stopThreadId && completedThreadId !== stopThreadId) return false;
 
-	const seedPaneId = safeString(seedState.tmux_pane_id).trim();
-	const completedPaneId = safeString(completedState?.tmux_pane_id).trim();
-	const stopPaneId = safeString(ownerContext?.tmuxPaneId).trim();
-	if (seedPaneId && completedPaneId && seedPaneId !== completedPaneId)
-		return false;
-	if (seedPaneId && stopPaneId && seedPaneId !== stopPaneId) return false;
-	if (completedPaneId && stopPaneId && completedPaneId !== stopPaneId)
-		return false;
+  const seedPaneId = safeString(seedState.tmux_pane_id).trim();
+  const completedPaneId = safeString(completedState?.tmux_pane_id).trim();
+  const stopPaneId = safeString(ownerContext?.tmuxPaneId).trim();
+  if (seedPaneId && completedPaneId && seedPaneId !== completedPaneId) return false;
+  if (seedPaneId && stopPaneId && seedPaneId !== stopPaneId) return false;
+  if (completedPaneId && stopPaneId && completedPaneId !== stopPaneId) return false;
 
-	const seedStartedAt = parseTimestampMs(
-		seedState.started_at ?? seedState.startedAt,
-	);
-	const completedAt = parseTimestampMs(
-		completedState?.completed_at ?? completedState?.completedAt,
-	);
-	if (completedAt === null) return false;
-	if (seedStartedAt !== null && seedStartedAt > completedAt) return false;
+  const seedStartedAt = parseTimestampMs(seedState.started_at ?? seedState.startedAt);
+  const completedAt = parseTimestampMs(completedState?.completed_at ?? completedState?.completedAt);
+  if (completedAt === null) return false;
+  if (seedStartedAt !== null && seedStartedAt > completedAt) return false;
 
-	return true;
+  return true;
 }
 
 async function retireShadowedRalphStartingSeed(
-	path: string,
-	seedState: Record<string, unknown>,
-	completedSessionId: string,
-	completedPath: string,
-	completedState: Record<string, unknown>,
+  path: string,
+  seedState: Record<string, unknown>,
+  completedSessionId: string,
+  completedPath: string,
+  completedState: Record<string, unknown>,
 ): Promise<void> {
-	const nowIso = new Date().toISOString();
-	const completedAt =
-		safeString(
-			completedState.completed_at ?? completedState.completedAt,
-		).trim() || nowIso;
-	const next: Record<string, unknown> = {
-		...seedState,
-		active: false,
-		current_phase: "complete",
-		completed_at: completedAt,
-		stop_reason: "shadowed_by_completed_canonical_ralph",
-		shadowed_by_completed_canonical_ralph: {
-			session_id: completedSessionId,
-			state_path: completedPath,
-			completed_at: completedAt,
-			reconciled_at: nowIso,
-		},
-	};
-	await writeFile(path, JSON.stringify(next, null, 2));
+  const nowIso = new Date().toISOString();
+  const completedAt = safeString(completedState.completed_at ?? completedState.completedAt).trim() || nowIso;
+  const next: Record<string, unknown> = {
+    ...seedState,
+    active: false,
+    current_phase: "complete",
+    completed_at: completedAt,
+    stop_reason: "shadowed_by_completed_canonical_ralph",
+    shadowed_by_completed_canonical_ralph: {
+      session_id: completedSessionId,
+      state_path: completedPath,
+      completed_at: completedAt,
+      reconciled_at: nowIso,
+    },
+  };
+  await writeFile(path, JSON.stringify(next, null, 2));
 }
+
 
 async function readRalphCompletionAuditBlockState(
-	cwd: string,
-	stateDir: string,
-	preferredSessionId?: string,
-	ownerContext?: {
-		payloadSessionId?: string;
-		threadId?: string;
-		tmuxPaneId?: string;
-	},
+  cwd: string,
+  stateDir: string,
+  preferredSessionId?: string,
+  ownerContext?: {
+    payloadSessionId?: string;
+    threadId?: string;
+    tmuxPaneId?: string;
+  },
 ): Promise<RalphCompletionAuditBlockState | null> {
-	const [rawSessionInfo, usableSessionInfo] = await Promise.all([
-		readSessionState(cwd),
-		readUsableSessionState(cwd),
-	]);
-	const currentOmxSessionId = safeString(usableSessionInfo?.session_id).trim();
-	const currentNativeSessionId = safeString(
-		usableSessionInfo?.native_session_id,
-	).trim();
-	const staleCurrentSessionId =
-		rawSessionInfo && !isSessionStateUsable(rawSessionInfo, cwd)
-			? safeString(rawSessionInfo.session_id).trim()
-			: "";
-	const sessionCandidates = [
-		...new Set(
-			[safeString(preferredSessionId).trim(), currentOmxSessionId].filter(
-				Boolean,
-			),
-		),
-	];
+  const [rawSessionInfo, usableSessionInfo] = await Promise.all([
+    readSessionState(cwd),
+    readUsableSessionState(cwd),
+  ]);
+  const currentOmxSessionId = safeString(usableSessionInfo?.session_id).trim();
+  const currentNativeSessionId = safeString(usableSessionInfo?.native_session_id).trim();
+  const staleCurrentSessionId = rawSessionInfo && !isSessionStateUsable(rawSessionInfo, cwd)
+    ? safeString(rawSessionInfo.session_id).trim()
+    : "";
+  const sessionCandidates = [...new Set([
+    safeString(preferredSessionId).trim(),
+    currentOmxSessionId,
+  ].filter(Boolean))];
 
-	const evaluateCandidate = (
-		state: Record<string, unknown> | null,
-		path: string,
-		sessionId: string,
-	): RalphCompletionAuditBlockState | null => {
-		if (!state || (state.mode && safeString(state.mode) !== "ralph"))
-			return null;
-		if (!isRalphCompletePhase(state.current_phase ?? state.currentPhase))
-			return null;
-		if (
-			activeRalphStateMatchesStopOwner(state, {
-				sessionId,
-				payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
-				threadId: safeString(ownerContext?.threadId).trim(),
-				currentNativeSessionId,
-				tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
-			}) !== true
-		)
-			return null;
-		const audit = evaluateRalphCompletionAuditEvidence(state, cwd);
-		return audit.complete ? null : { state, path, reason: audit.reason };
-	};
+  const evaluateCandidate = (state: Record<string, unknown> | null, path: string, sessionId: string): RalphCompletionAuditBlockState | null => {
+    if (!state || state.mode && safeString(state.mode) !== "ralph") return null;
+    if (!isRalphCompletePhase(state.current_phase ?? state.currentPhase)) return null;
+    if (activeRalphStateMatchesStopOwner(state, {
+      sessionId,
+      payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      threadId: safeString(ownerContext?.threadId).trim(),
+      currentNativeSessionId,
+      tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+    }) !== true) return null;
+    const audit = evaluateRalphCompletionAuditEvidence(state, cwd);
+    return audit.complete ? null : { state, path, reason: audit.reason };
+  };
 
-	for (const sessionId of sessionCandidates) {
-		if (staleCurrentSessionId && sessionId === staleCurrentSessionId) continue;
-		const sessionScopedPath = getStateFilePath(
-			"ralph-state.json",
-			cwd,
-			sessionId,
-		);
-		const result = evaluateCandidate(
-			await readJsonIfExists(sessionScopedPath),
-			sessionScopedPath,
-			sessionId,
-		);
-		if (result) return result;
-	}
+  for (const sessionId of sessionCandidates) {
+    if (staleCurrentSessionId && sessionId === staleCurrentSessionId) continue;
+    const sessionScopedPath = getStateFilePath("ralph-state.json", cwd, sessionId);
+    const result = evaluateCandidate(await readJsonIfExists(sessionScopedPath), sessionScopedPath, sessionId);
+    if (result) return result;
+  }
 
-	if (sessionCandidates.length > 0) return null;
+  if (sessionCandidates.length > 0) return null;
 
-	const directPath = join(stateDir, "ralph-state.json");
-	return evaluateCandidate(await readJsonIfExists(directPath), directPath, "");
+  const directPath = join(stateDir, "ralph-state.json");
+  return evaluateCandidate(await readJsonIfExists(directPath), directPath, "");
 }
 
-async function reopenRalphCompletionAuditBlock(
-	block: RalphCompletionAuditBlockState,
-): Promise<void> {
-	const nowIso = new Date().toISOString();
-	const next: Record<string, unknown> = {
-		...block.state,
-		active: false,
-		current_phase: "complete",
-		completion_audit_gate: "blocked",
-		completion_audit_missing_reason: block.reason,
-		completion_audit_blocked_at: nowIso,
-	};
-	await writeFile(block.path, JSON.stringify(next, null, 2));
+async function reopenRalphCompletionAuditBlock(block: RalphCompletionAuditBlockState): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const next: Record<string, unknown> = {
+    ...block.state,
+    active: false,
+    current_phase: "complete",
+    completion_audit_gate: "blocked",
+    completion_audit_missing_reason: block.reason,
+    completion_audit_blocked_at: nowIso,
+  };
+  await writeFile(block.path, JSON.stringify(next, null, 2));
 }
 
 async function readActiveRalphState(
-	cwd: string,
-	stateDir: string,
-	preferredSessionId?: string,
-	ownerContext?: {
-		payloadSessionId?: string;
-		threadId?: string;
-		tmuxPaneId?: string;
-		payload?: CodexHookPayload;
-	},
+  cwd: string,
+  stateDir: string,
+  preferredSessionId?: string,
+  ownerContext?: {
+    payloadSessionId?: string;
+    threadId?: string;
+    tmuxPaneId?: string;
+    payload?: CodexHookPayload;
+  },
 ): Promise<ActiveRalphStopState | null> {
-	const [rawSessionInfo, usableSessionInfo] = await Promise.all([
-		readSessionState(cwd),
-		readUsableSessionState(cwd),
-	]);
-	const currentOmxSessionId = safeString(usableSessionInfo?.session_id).trim();
-	const currentNativeSessionId = safeString(
-		usableSessionInfo?.native_session_id,
-	).trim();
-	const staleCurrentSessionId =
-		rawSessionInfo && !isSessionStateUsable(rawSessionInfo, cwd)
-			? safeString(rawSessionInfo.session_id).trim()
-			: "";
-	const sessionCandidates = [
-		...new Set(
-			[safeString(preferredSessionId).trim(), currentOmxSessionId].filter(
-				Boolean,
-			),
-		),
-	];
-	const completedCanonicalPath = currentOmxSessionId
-		? getStateFilePath("ralph-state.json", cwd, currentOmxSessionId)
-		: "";
-	const completedCanonicalState = completedCanonicalPath
-		? await readJsonIfExists(completedCanonicalPath)
-		: null;
+  const [rawSessionInfo, usableSessionInfo] = await Promise.all([
+    readSessionState(cwd),
+    readUsableSessionState(cwd),
+  ]);
+  const currentOmxSessionId = safeString(usableSessionInfo?.session_id).trim();
+  const currentNativeSessionId = safeString(usableSessionInfo?.native_session_id).trim();
+  const staleCurrentSessionId = rawSessionInfo && !isSessionStateUsable(rawSessionInfo, cwd)
+    ? safeString(rawSessionInfo.session_id).trim()
+    : "";
+  const sessionCandidates = [...new Set([
+    safeString(preferredSessionId).trim(),
+    currentOmxSessionId,
+  ].filter(Boolean))];
+  const completedCanonicalPath = currentOmxSessionId
+    ? getStateFilePath("ralph-state.json", cwd, currentOmxSessionId)
+    : "";
+  const completedCanonicalState = completedCanonicalPath
+    ? await readJsonIfExists(completedCanonicalPath)
+    : null;
 
-	// Ralph Stop stays authoritative-scope-only once the Stop payload is session-bound.
-	// That is intentionally stricter than generic state MCP reads: do not scan sibling
-	// session scopes or fall back to root when a current/explicit session is in play.
-	for (const sessionId of sessionCandidates) {
-		if (staleCurrentSessionId && sessionId === staleCurrentSessionId) {
-			continue;
-		}
-		if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "ralph")) {
-			continue;
-		}
-		const sessionScopedPath = getStateFilePath(
-			"ralph-state.json",
-			cwd,
-			sessionId,
-		);
-		const sessionScoped = await readJsonIfExists(sessionScopedPath);
-		if (sessionScoped?.active === true) {
-			if (
-				currentOmxSessionId &&
-				sessionId !== currentOmxSessionId &&
-				completedCanonicalState &&
-				shouldRetireShadowedRalphStartingSeed(
-					sessionScoped,
-					completedCanonicalState,
-					cwd,
-					{
-						completedSessionId: currentOmxSessionId,
-						payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
-						threadId: safeString(ownerContext?.threadId).trim(),
-						currentNativeSessionId,
-						tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
-					},
-				)
-			) {
-				await retireShadowedRalphStartingSeed(
-					sessionScopedPath,
-					sessionScoped,
-					currentOmxSessionId,
-					completedCanonicalPath,
-					completedCanonicalState,
-				);
-				continue;
-			}
-			if (
-				await isStaleOrphanedRalphStartingState(
-					sessionScoped,
-					sessionScopedPath,
-				)
-			) {
-				continue;
-			}
-			if (
-				isRalphStartingPhase(sessionScoped) &&
-				!(await isVisibleRalphActiveForSession(stateDir, sessionId))
-			) {
-				continue;
-			}
-		}
-		if (
-			sessionScoped?.active === true &&
-			shouldContinueRun(sessionScoped) &&
-			activeRalphStateMatchesStopOwner(sessionScoped, {
-				sessionId,
-				payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
-				threadId: safeString(ownerContext?.threadId).trim(),
-				currentNativeSessionId,
-				tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
-			}) &&
-			(await hasConsistentRalphSkillActivation(stateDir, sessionId))
-		) {
-			return { state: sessionScoped, path: sessionScopedPath };
-		}
-	}
+  // Ralph Stop stays authoritative-scope-only once the Stop payload is session-bound.
+  // That is intentionally stricter than generic state MCP reads: do not scan sibling
+  // session scopes or fall back to root when a current/explicit session is in play.
+  for (const sessionId of sessionCandidates) {
+    if (staleCurrentSessionId && sessionId === staleCurrentSessionId) {
+      continue;
+    }
+    if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "ralph")) {
+      continue;
+    }
+    const sessionScopedPath = getStateFilePath("ralph-state.json", cwd, sessionId);
+    const sessionScoped = await readJsonIfExists(sessionScopedPath);
+    if (sessionScoped?.active === true) {
+      if (
+        currentOmxSessionId
+        && sessionId !== currentOmxSessionId
+        && completedCanonicalState
+        && shouldRetireShadowedRalphStartingSeed(sessionScoped, completedCanonicalState, cwd, {
+          completedSessionId: currentOmxSessionId,
+          payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+          threadId: safeString(ownerContext?.threadId).trim(),
+          currentNativeSessionId,
+          tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+        })
+      ) {
+        await retireShadowedRalphStartingSeed(
+          sessionScopedPath,
+          sessionScoped,
+          currentOmxSessionId,
+          completedCanonicalPath,
+          completedCanonicalState,
+        );
+        continue;
+      }
+      if (await isStaleOrphanedRalphStartingState(sessionScoped, sessionScopedPath)) {
+        continue;
+      }
+      if (
+        isRalphStartingPhase(sessionScoped)
+        && !(await isVisibleRalphActiveForSession(stateDir, sessionId))
+      ) {
+        continue;
+      }
+    }
+    if (
+      sessionScoped?.active === true
+      && shouldContinueRun(sessionScoped)
+      && activeRalphStateMatchesStopOwner(sessionScoped, {
+        sessionId,
+        payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+        threadId: safeString(ownerContext?.threadId).trim(),
+        currentNativeSessionId,
+        tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+      })
+      && await hasConsistentRalphSkillActivation(stateDir, sessionId)
+    ) {
+      return { state: sessionScoped, path: sessionScopedPath };
+    }
+  }
 
-	if (sessionCandidates.length > 0) return null;
+  if (sessionCandidates.length > 0) return null;
 
-	const directPath = join(stateDir, "ralph-state.json");
-	const direct = await readJsonIfExists(directPath);
-	if (
-		direct?.active === true &&
-		shouldContinueRun(direct) &&
-		shouldAllowGlobalRalphStopContinuation(direct, {
-			sessionId: safeString(ownerContext?.payloadSessionId).trim(),
-			payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
-			threadId: safeString(ownerContext?.threadId).trim(),
-			currentNativeSessionId,
-			tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
-			payload: ownerContext?.payload,
-		})
-	) {
-		return { state: direct, path: directPath };
-	}
+  const directPath = join(stateDir, "ralph-state.json");
+  const direct = await readJsonIfExists(directPath);
+  if (
+    direct?.active === true
+    && shouldContinueRun(direct)
+    && shouldAllowGlobalRalphStopContinuation(direct, {
+      sessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      threadId: safeString(ownerContext?.threadId).trim(),
+      currentNativeSessionId,
+      tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+      payload: ownerContext?.payload,
+    })
+  ) {
+    return { state: direct, path: directPath };
+  }
 
-	return null;
+  return null;
 }
 
 function readParentPid(pid: number): number | null {
-	try {
-		if (process.platform === "linux") {
-			const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
-			const commandEnd = stat.lastIndexOf(")");
-			if (commandEnd === -1) return null;
-			const remainder = stat.slice(commandEnd + 1).trim();
-			const fields = remainder.split(/\s+/);
-			const ppid = Number(fields[1]);
-			return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
-		}
+  try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd === -1) return null;
+      const remainder = stat.slice(commandEnd + 1).trim();
+      const fields = remainder.split(/\s+/);
+      const ppid = Number(fields[1]);
+      return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
+    }
 
-		const raw = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
-			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "ignore"],
-			windowsHide: true,
-		}).trim();
-		const ppid = Number.parseInt(raw, 10);
-		return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
-	} catch {
-		return null;
-	}
+    const raw = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    }).trim();
+    const ppid = Number.parseInt(raw, 10);
+    return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
+  } catch {
+    return null;
+  }
 }
 
 function readProcessCommand(pid: number): string {
-	try {
-		if (process.platform === "linux") {
-			return readFileSync(`/proc/${pid}/cmdline`, "utf-8")
-				.replace(/\u0000+/g, " ")
-				.trim();
-		}
+  try {
+    if (process.platform === "linux") {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf-8")
+        .replace(/\u0000+/g, " ")
+        .trim();
+    }
 
-		return execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
-			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "ignore"],
-			windowsHide: true,
-		}).trim();
-	} catch {
-		return "";
-	}
+    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    }).trim();
+  } catch {
+    return "";
+  }
 }
 
 function looksLikeShellCommand(command: string): boolean {
-	return /(^|[\/\s])(bash|zsh|sh|dash|fish|ksh)(\s|$)/i.test(command);
+  return /(^|[\/\s])(bash|zsh|sh|dash|fish|ksh)(\s|$)/i.test(command);
 }
 
 function looksLikeCodexCommand(command: string): boolean {
-	if (/codex-native-hook(?:\.js)?/i.test(command)) return false;
-	return /\bcodex(?:\.js)?\b/i.test(command);
+  if (/codex-native-hook(?:\.js)?/i.test(command)) return false;
+  return /\bcodex(?:\.js)?\b/i.test(command);
 }
 
 export function resolveSessionOwnerPidFromAncestry(
-	startPid: number,
-	options: {
-		readParentPid?: (pid: number) => number | null;
-		readProcessCommand?: (pid: number) => string;
-	} = {},
+  startPid: number,
+  options: {
+    readParentPid?: (pid: number) => number | null;
+    readProcessCommand?: (pid: number) => string;
+  } = {},
 ): number | null {
-	const readParent = options.readParentPid ?? readParentPid;
-	const readCommand = options.readProcessCommand ?? readProcessCommand;
-	const lineage: Array<{ pid: number; command: string }> = [];
-	let currentPid = startPid;
+  const readParent = options.readParentPid ?? readParentPid;
+  const readCommand = options.readProcessCommand ?? readProcessCommand;
+  const lineage: Array<{ pid: number; command: string }> = [];
+  let currentPid = startPid;
 
-	for (
-		let i = 0;
-		i < 6 && Number.isInteger(currentPid) && currentPid > 1;
-		i += 1
-	) {
-		const command = readCommand(currentPid);
-		lineage.push({ pid: currentPid, command });
-		const nextPid = readParent(currentPid);
-		if (!nextPid || nextPid === currentPid) break;
-		currentPid = nextPid;
-	}
+  for (let i = 0; i < 6 && Number.isInteger(currentPid) && currentPid > 1; i += 1) {
+    const command = readCommand(currentPid);
+    lineage.push({ pid: currentPid, command });
+    const nextPid = readParent(currentPid);
+    if (!nextPid || nextPid === currentPid) break;
+    currentPid = nextPid;
+  }
 
-	const codexAncestor = lineage.find((entry) =>
-		looksLikeCodexCommand(entry.command),
-	);
-	if (codexAncestor) return codexAncestor.pid;
+  const codexAncestor = lineage.find((entry) => looksLikeCodexCommand(entry.command));
+  if (codexAncestor) return codexAncestor.pid;
 
-	if (lineage.length >= 2 && looksLikeShellCommand(lineage[0]?.command || "")) {
-		return lineage[1].pid;
-	}
+  if (lineage.length >= 2 && looksLikeShellCommand(lineage[0]?.command || "")) {
+    return lineage[1].pid;
+  }
 
-	if (lineage.length >= 1) return lineage[0].pid;
-	return null;
+  if (lineage.length >= 1) return lineage[0].pid;
+  return null;
 }
 
 function resolveSessionOwnerPid(payload: CodexHookPayload): number {
-	const explicitPid = [
-		payload.session_pid,
-		payload.sessionPid,
-		payload.codex_pid,
-		payload.codexPid,
-		payload.parent_pid,
-		payload.parentPid,
-	]
-		.map(safePositiveInteger)
-		.find((value): value is number => value !== null);
-	if (explicitPid) return explicitPid;
+  const explicitPid = [
+    payload.session_pid,
+    payload.sessionPid,
+    payload.codex_pid,
+    payload.codexPid,
+    payload.parent_pid,
+    payload.parentPid,
+  ]
+    .map(safePositiveInteger)
+    .find((value): value is number => value !== null);
+  if (explicitPid) return explicitPid;
 
-	const resolved = resolveSessionOwnerPidFromAncestry(process.ppid);
-	if (resolved) return resolved;
-	return process.pid;
+  const resolved = resolveSessionOwnerPidFromAncestry(process.ppid);
+  if (resolved) return resolved;
+  return process.pid;
 }
 
 function tryReadGitValue(cwd: string, args: string[]): string | null {
-	try {
-		const value = execFileSync("git", args, {
-			cwd,
-			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "ignore"],
-			windowsHide: true,
-		}).trim();
-		return value || null;
-	} catch {
-		return null;
-	}
+  try {
+    const value = execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    }).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
 }
 
 interface SloppyFallbackDiffFinding {
-	path: string;
-	line: string;
-	source: "staged" | "unstaged" | "untracked";
+  path: string;
+  line: string;
+  source: "staged" | "unstaged" | "untracked";
 }
 
 const SOURCE_DIFF_EXTENSIONS = new Set([
-	".c",
-	".cc",
-	".cjs",
-	".cpp",
-	".cs",
-	".cts",
-	".go",
-	".h",
-	".hpp",
-	".java",
-	".js",
-	".jsx",
-	".kt",
-	".mjs",
-	".mts",
-	".php",
-	".py",
-	".rb",
-	".rs",
-	".sh",
-	".swift",
-	".ts",
-	".tsx",
+  ".c",
+  ".cc",
+  ".cjs",
+  ".cpp",
+  ".cs",
+  ".cts",
+  ".go",
+  ".h",
+  ".hpp",
+  ".java",
+  ".js",
+  ".jsx",
+  ".kt",
+  ".mjs",
+  ".mts",
+  ".php",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sh",
+  ".swift",
+  ".ts",
+  ".tsx",
 ]);
 
 const PLANNING_TMP_SCRIPT_LIKE_EXTENSIONS = new Set([
-	".bash",
-	".bat",
-	".cjs",
-	".cmd",
-	".cts",
-	".fish",
-	".js",
-	".jsx",
-	".ksh",
-	".mjs",
-	".mts",
-	".php",
-	".pl",
-	".ps1",
-	".py",
-	".rb",
-	".sh",
-	".ts",
-	".tsx",
-	".zsh",
+  ".bash",
+  ".bat",
+  ".cjs",
+  ".cmd",
+  ".cts",
+  ".fish",
+  ".js",
+  ".jsx",
+  ".ksh",
+  ".mjs",
+  ".mts",
+  ".php",
+  ".pl",
+  ".ps1",
+  ".py",
+  ".rb",
+  ".sh",
+  ".ts",
+  ".tsx",
+  ".zsh",
 ]);
 
+
 function gitOutput(cwd: string, args: string[]): string {
-	try {
-		return execFileSync("git", args, {
-			cwd,
-			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "ignore"],
-			windowsHide: true,
-			maxBuffer: 10 * 1024 * 1024,
-		});
-	} catch {
-		return "";
-	}
+  try {
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch {
+    return "";
+  }
 }
 
 function normalizeGitPath(path: string): string {
-	return path.replace(/\\/g, "/").replace(/^\.\//, "");
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
 function isDiffAuditableSourcePath(path: string): boolean {
-	const normalized = normalizeGitPath(path).toLowerCase();
-	if (
-		!normalized ||
-		normalized.startsWith(".git/") ||
-		normalized.startsWith(".omx/")
-	)
-		return false;
-	if (
-		/(^|\/)(?:docs?|documentation|changelog|changeset|\.github)(?:\/|$)/i.test(
-			normalized,
-		)
-	)
-		return false;
-	if (
-		/(^|\/)(?:__tests__|__test__|test|tests|spec|specs|fixtures?|mocks?)(?:\/|$)/i.test(
-			normalized,
-		)
-	)
-		return false;
-	if (/(?:^|\/)[^\/]+\.(?:test|spec)\.[^.\/]+$/i.test(normalized)) return false;
-	if (
-		/(?:^|\/)(?:readme|changelog|changes|license|notice)(?:\.[^\/]*)?$/i.test(
-			normalized,
-		)
-	)
-		return false;
-	if (/\.(?:md|mdx|markdown|txt|rst|adoc|ya?ml|json|lock)$/i.test(normalized))
-		return false;
-	return SOURCE_DIFF_EXTENSIONS.has(extname(normalized));
+  const normalized = normalizeGitPath(path).toLowerCase();
+  if (!normalized || normalized.startsWith(".git/") || normalized.startsWith(".omx/")) return false;
+  if (/(^|\/)(?:docs?|documentation|changelog|changeset|\.github)(?:\/|$)/i.test(normalized)) return false;
+  if (/(^|\/)(?:__tests__|__test__|test|tests|spec|specs|fixtures?|mocks?)(?:\/|$)/i.test(normalized)) return false;
+  if (/(?:^|\/)[^\/]+\.(?:test|spec)\.[^.\/]+$/i.test(normalized)) return false;
+  if (/(?:^|\/)(?:readme|changelog|changes|license|notice)(?:\.[^\/]*)?$/i.test(normalized)) return false;
+  if (/\.(?:md|mdx|markdown|txt|rst|adoc|ya?ml|json|lock)$/i.test(normalized)) return false;
+  return SOURCE_DIFF_EXTENSIONS.has(extname(normalized));
 }
 
 function isDiffHeaderLine(line: string): boolean {
-	return (
-		line.startsWith("+++") ||
-		line.startsWith("---") ||
-		line.startsWith("@@") ||
-		line.startsWith("diff --git ")
-	);
+  return line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@") || line.startsWith("diff --git ");
 }
 
-function isSuspiciousSloppyFallbackAddedLine(
-	line: string,
-	nearbyContext: string,
-): boolean {
-	const trimmed = line.trim();
-	if (!trimmed) return false;
-	if (!hasAnyPattern(trimmed, SLOPPY_FALLBACK_PHRASE_PATTERNS)) return false;
-	if (!hasAnyPattern(trimmed, SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS))
-		return false;
-	if (hasAnyPattern(nearbyContext, SLOPPY_FALLBACK_GROUNDING_PATTERNS))
-		return false;
-	if (
-		/compatib(?:le|ility)|fail-?safe|tested|regression|coverage|because|issue|PR\s*#?\d|#\d/i.test(
-			nearbyContext,
-		)
-	)
-		return false;
-	return true;
+function isSuspiciousSloppyFallbackAddedLine(line: string, nearbyContext: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (!hasAnyPattern(trimmed, SLOPPY_FALLBACK_PHRASE_PATTERNS)) return false;
+  if (!hasAnyPattern(trimmed, SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS)) return false;
+  if (hasAnyPattern(nearbyContext, SLOPPY_FALLBACK_GROUNDING_PATTERNS)) return false;
+  if (/compatib(?:le|ility)|fail-?safe|tested|regression|coverage|because|issue|PR\s*#?\d|#\d/i.test(nearbyContext)) return false;
+  return true;
 }
 
 interface SloppyFallbackCandidateLine {
-	text: string;
-	added: boolean;
+  text: string;
+  added: boolean;
 }
 
 function collectFindingsFromCandidateLines(
-	path: string,
-	lines: SloppyFallbackCandidateLine[],
-	source: SloppyFallbackDiffFinding["source"],
+  path: string,
+  lines: SloppyFallbackCandidateLine[],
+  source: SloppyFallbackDiffFinding["source"],
 ): SloppyFallbackDiffFinding[] {
-	if (!path || !isDiffAuditableSourcePath(path)) return [];
-	const findings: SloppyFallbackDiffFinding[] = [];
-	for (let index = 0; index < lines.length; index += 1) {
-		const candidate = lines[index];
-		if (!candidate?.added) continue;
-		const nearbyContext = lines
-			.slice(Math.max(0, index - 2), Math.min(lines.length, index + 3))
-			.map((line) => line.text)
-			.join("\n");
-		if (isSuspiciousSloppyFallbackAddedLine(candidate.text, nearbyContext)) {
-			findings.push({ path, line: candidate.text.trim(), source });
-		}
-	}
-	return findings;
+  if (!path || !isDiffAuditableSourcePath(path)) return [];
+  const findings: SloppyFallbackDiffFinding[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const candidate = lines[index];
+    if (!candidate?.added) continue;
+    const nearbyContext = lines
+      .slice(Math.max(0, index - 2), Math.min(lines.length, index + 3))
+      .map((line) => line.text)
+      .join("\n");
+    if (isSuspiciousSloppyFallbackAddedLine(candidate.text, nearbyContext)) {
+      findings.push({ path, line: candidate.text.trim(), source });
+    }
+  }
+  return findings;
 }
 
 function collectSloppyFallbackFindingsFromPatch(
-	patch: string,
-	source: SloppyFallbackDiffFinding["source"],
+  patch: string,
+  source: SloppyFallbackDiffFinding["source"],
 ): SloppyFallbackDiffFinding[] {
-	const findings: SloppyFallbackDiffFinding[] = [];
-	let currentPath = "";
-	let hunkLines: SloppyFallbackCandidateLine[] = [];
+  const findings: SloppyFallbackDiffFinding[] = [];
+  let currentPath = "";
+  let hunkLines: SloppyFallbackCandidateLine[] = [];
 
-	const flushHunk = () => {
-		findings.push(
-			...collectFindingsFromCandidateLines(currentPath, hunkLines, source),
-		);
-		hunkLines = [];
-	};
+  const flushHunk = () => {
+    findings.push(...collectFindingsFromCandidateLines(currentPath, hunkLines, source));
+    hunkLines = [];
+  };
 
-	for (const rawLine of patch.split(/\r?\n/)) {
-		const fileMatch = rawLine.match(/^diff --git a\/(.*?) b\/(.*)$/);
-		if (fileMatch) {
-			flushHunk();
-			currentPath = normalizeGitPath(fileMatch[2] || fileMatch[1] || "");
-			continue;
-		}
-		const renameMatch = rawLine.match(/^\+\+\+ b\/(.*)$/);
-		if (renameMatch) {
-			currentPath = normalizeGitPath(renameMatch[1] || currentPath);
-			continue;
-		}
-		if (rawLine.startsWith("@@")) {
-			flushHunk();
-			continue;
-		}
-		if (
-			!currentPath ||
-			!isDiffAuditableSourcePath(currentPath) ||
-			isDiffHeaderLine(rawLine)
-		)
-			continue;
-		if (rawLine.startsWith("+")) {
-			hunkLines.push({ text: rawLine.slice(1), added: true });
-		} else if (rawLine.startsWith(" ")) {
-			hunkLines.push({ text: rawLine.slice(1), added: false });
-		}
-	}
-	flushHunk();
-	return findings;
+  for (const rawLine of patch.split(/\r?\n/)) {
+    const fileMatch = rawLine.match(/^diff --git a\/(.*?) b\/(.*)$/);
+    if (fileMatch) {
+      flushHunk();
+      currentPath = normalizeGitPath(fileMatch[2] || fileMatch[1] || "");
+      continue;
+    }
+    const renameMatch = rawLine.match(/^\+\+\+ b\/(.*)$/);
+    if (renameMatch) {
+      currentPath = normalizeGitPath(renameMatch[1] || currentPath);
+      continue;
+    }
+    if (rawLine.startsWith("@@")) {
+      flushHunk();
+      continue;
+    }
+    if (!currentPath || !isDiffAuditableSourcePath(currentPath) || isDiffHeaderLine(rawLine)) continue;
+    if (rawLine.startsWith("+")) {
+      hunkLines.push({ text: rawLine.slice(1), added: true });
+    } else if (rawLine.startsWith(" ")) {
+      hunkLines.push({ text: rawLine.slice(1), added: false });
+    }
+  }
+  flushHunk();
+  return findings;
 }
 
-function collectSloppyFallbackFindingsFromUntracked(
-	cwd: string,
-): SloppyFallbackDiffFinding[] {
-	const output = gitOutput(cwd, [
-		"ls-files",
-		"--others",
-		"--exclude-standard",
-		"-z",
-	]);
-	if (!output) return [];
-	const findings: SloppyFallbackDiffFinding[] = [];
-	for (const rawPath of output.split("\0")) {
-		const path = normalizeGitPath(rawPath.trim());
-		if (!path || !isDiffAuditableSourcePath(path)) continue;
-		let content = "";
-		try {
-			content = readFileSync(join(cwd, path), "utf-8");
-		} catch {
-			continue;
-		}
-		findings.push(
-			...collectFindingsFromCandidateLines(
-				path,
-				content.split(/\r?\n/).map((text) => ({ text, added: true })),
-				"untracked",
-			),
-		);
-	}
-	return findings;
+function collectSloppyFallbackFindingsFromUntracked(cwd: string): SloppyFallbackDiffFinding[] {
+  const output = gitOutput(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (!output) return [];
+  const findings: SloppyFallbackDiffFinding[] = [];
+  for (const rawPath of output.split("\0")) {
+    const path = normalizeGitPath(rawPath.trim());
+    if (!path || !isDiffAuditableSourcePath(path)) continue;
+    let content = "";
+    try {
+      content = readFileSync(join(cwd, path), "utf-8");
+    } catch {
+      continue;
+    }
+    findings.push(...collectFindingsFromCandidateLines(path, content.split(/\r?\n/).map((text) => ({ text, added: true })), "untracked"));
+  }
+  return findings;
 }
 
-function findSloppyFallbackDiffFindings(
-	cwd: string,
-): SloppyFallbackDiffFinding[] {
-	const layout = findGitLayout(cwd);
-	if (!layout) return [];
-	const auditRoot = layout.worktreeRoot;
-	return [
-		...collectSloppyFallbackFindingsFromPatch(
-			gitOutput(auditRoot, [
-				"diff",
-				"--cached",
-				"--no-ext-diff",
-				"--unified=3",
-			]),
-			"staged",
-		),
-		...collectSloppyFallbackFindingsFromPatch(
-			gitOutput(auditRoot, ["diff", "--no-ext-diff", "--unified=3"]),
-			"unstaged",
-		),
-		...collectSloppyFallbackFindingsFromUntracked(auditRoot),
-	];
+function findSloppyFallbackDiffFindings(cwd: string): SloppyFallbackDiffFinding[] {
+  const layout = findGitLayout(cwd);
+  if (!layout) return [];
+  const auditRoot = layout.worktreeRoot;
+  return [
+    ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--cached", "--no-ext-diff", "--unified=3"]), "staged"),
+    ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--no-ext-diff", "--unified=3"]), "unstaged"),
+    ...collectSloppyFallbackFindingsFromUntracked(auditRoot),
+  ];
 }
 
-function buildSloppyFallbackDiffStopOutput(
-	findings: SloppyFallbackDiffFinding[],
-): Record<string, unknown> | null {
-	if (findings.length === 0) return null;
-	const preview = findings
-		.slice(0, 3)
-		.map((finding) => `${finding.path} (${finding.source}): ${finding.line}`)
-		.join("; ");
-	const systemMessage =
-		`Sloppy fallback/workaround diff audit detected ungrounded fallback code in added source lines: ${preview}. ` +
-		"Continue by replacing the bypass/workaround with a grounded design, or add explicit compatibility/fail-safe/tested/issue rationale near the code if the fallback is intentional.";
-	return {
-		decision: "block",
-		reason: systemMessage,
-		stopReason: "sloppy_fallback_diff_audit",
-		systemMessage,
-	};
+function buildSloppyFallbackDiffStopOutput(findings: SloppyFallbackDiffFinding[]): Record<string, unknown> | null {
+  if (findings.length === 0) return null;
+  const preview = findings
+    .slice(0, 3)
+    .map((finding) => `${finding.path} (${finding.source}): ${finding.line}`)
+    .join("; ");
+  const systemMessage =
+    `Sloppy fallback/workaround diff audit detected ungrounded fallback code in added source lines: ${preview}. `
+    + "Continue by replacing the bypass/workaround with a grounded design, or add explicit compatibility/fail-safe/tested/issue rationale near the code if the fallback is intentional.";
+  return {
+    decision: "block",
+    reason: systemMessage,
+    stopReason: "sloppy_fallback_diff_audit",
+    systemMessage,
+  };
 }
 
 function localExcludeAlreadyIgnoresOmx(cwd: string): boolean {
-	const layout = findGitLayout(cwd);
-	if (!layout) return false;
-	const excludePath = join(layout.gitDir, "info", "exclude");
-	try {
-		const lines = readFileSync(excludePath, "utf-8")
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line && !line.startsWith("#"));
-		return lines.includes(".omx/") || lines.includes(".omx");
-	} catch {
-		return false;
-	}
+  const layout = findGitLayout(cwd);
+  if (!layout) return false;
+  const excludePath = join(layout.gitDir, "info", "exclude");
+  try {
+    const lines = readFileSync(excludePath, "utf-8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+    return lines.includes(".omx/") || lines.includes(".omx");
+  } catch {
+    return false;
+  }
 }
 
 function isPathIgnoredByGit(cwd: string, path: string): boolean {
-	try {
-		execFileSync("git", ["check-ignore", "-q", path], {
-			cwd,
-			stdio: ["ignore", "ignore", "ignore"],
-			windowsHide: true,
-		});
-		return true;
-	} catch {
-		return false;
-	}
+  try {
+    execFileSync("git", ["check-ignore", "-q", path], {
+      cwd,
+      stdio: ["ignore", "ignore", "ignore"],
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-async function ensureOmxLocalIgnoreEntry(
-	cwd: string,
-): Promise<{ changed: boolean; excludePath?: string }> {
-	const repoRoot = tryReadGitValue(cwd, ["rev-parse", "--show-toplevel"]);
-	if (!repoRoot) return { changed: false };
-	if (
-		localExcludeAlreadyIgnoresOmx(repoRoot) ||
-		isPathIgnoredByGit(repoRoot, ".omx/")
-	) {
-		return { changed: false };
-	}
+async function ensureOmxLocalIgnoreEntry(cwd: string): Promise<{ changed: boolean; excludePath?: string }> {
+  const repoRoot = tryReadGitValue(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!repoRoot) return { changed: false };
+  if (localExcludeAlreadyIgnoresOmx(repoRoot) || isPathIgnoredByGit(repoRoot, ".omx/")) {
+    return { changed: false };
+  }
 
-	const excludePathValue = tryReadGitValue(repoRoot, [
-		"rev-parse",
-		"--git-path",
-		"info/exclude",
-	]);
-	if (!excludePathValue) return { changed: false };
-	const excludePath = resolve(repoRoot, excludePathValue);
+  const excludePathValue = tryReadGitValue(repoRoot, ["rev-parse", "--git-path", "info/exclude"]);
+  if (!excludePathValue) return { changed: false };
+  const excludePath = resolve(repoRoot, excludePathValue);
 
-	const existing = existsSync(excludePath)
-		? await readFile(excludePath, "utf-8")
-		: "";
-	const lines = existing.split(/\r?\n/).map((line) => line.trim());
-	if (lines.includes(".omx/")) {
-		return { changed: false, excludePath };
-	}
+  const existing = existsSync(excludePath)
+    ? await readFile(excludePath, "utf-8")
+    : "";
+  const lines = existing.split(/\r?\n/).map((line) => line.trim());
+  if (lines.includes(".omx/")) {
+    return { changed: false, excludePath };
+  }
 
-	const next = `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}.omx/\n`;
-	await writeFile(excludePath, next);
-	return { changed: true, excludePath };
+  const next = `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}.omx/\n`;
+  await writeFile(excludePath, next);
+  return { changed: true, excludePath };
 }
 
 function readSessionStartSource(payload: CodexHookPayload | undefined): string {
-	return safeString(
-		payload?.source ??
-			payload?.session_start_source ??
-			payload?.sessionStartSource,
-	)
-		.trim()
-		.toLowerCase();
+  return safeString(payload?.source ?? payload?.session_start_source ?? payload?.sessionStartSource).trim().toLowerCase();
 }
 
 function shouldBuildSubagentReopenContext(options: {
-	hookEventName?: CodexHookEventName | null;
-	payload?: CodexHookPayload;
+  hookEventName?: CodexHookEventName | null;
+  payload?: CodexHookPayload;
 }): boolean {
-	if (options.hookEventName !== "SessionStart") return false;
-	const source = readSessionStartSource(options.payload);
-	return source === "startup" || source === "resume";
+  if (options.hookEventName !== "SessionStart") return false;
+  const source = readSessionStartSource(options.payload);
+  return source === "startup" || source === "resume";
 }
 
 function formatSubagentLedgerMetadata(entry: {
-	role?: string;
-	laneId?: string;
-	scope?: string;
-	status?: string;
-	lastHandoffSummary?: string;
-	resumeFailureReason?: string;
+  role?: string;
+  laneId?: string;
+  scope?: string;
+  status?: string;
+  lastHandoffSummary?: string;
+  resumeFailureReason?: string;
 }): string {
-	const metadata = [
-		entry.role ? `role: ${entry.role}` : null,
-		entry.laneId ? `lane: ${entry.laneId}` : null,
-		entry.scope ? `scope: ${entry.scope}` : null,
-		entry.status ? `status: ${entry.status}` : null,
-		entry.lastHandoffSummary
-			? `handoff: ${entry.lastHandoffSummary.slice(0, 120)}`
-			: null,
-		entry.resumeFailureReason
-			? `last failure: ${entry.resumeFailureReason.slice(0, 120)}`
-			: null,
-	].filter((item): item is string => Boolean(item));
-	return metadata.length > 0 ? ` (${metadata.join("; ")})` : "";
+  const metadata = [
+    entry.role ? `role: ${entry.role}` : null,
+    entry.laneId ? `lane: ${entry.laneId}` : null,
+    entry.scope ? `scope: ${entry.scope}` : null,
+    entry.status ? `status: ${entry.status}` : null,
+    entry.lastHandoffSummary ? `handoff: ${entry.lastHandoffSummary.slice(0, 120)}` : null,
+    entry.resumeFailureReason ? `last failure: ${entry.resumeFailureReason.slice(0, 120)}` : null,
+  ].filter((item): item is string => Boolean(item));
+  return metadata.length > 0 ? ` (${metadata.join("; ")})` : "";
 }
 
 async function buildPersistedSubagentReopenContext(
-	cwd: string,
-	sessionId: string,
-	options: {
-		hookEventName?: CodexHookEventName | null;
-		payload?: CodexHookPayload;
-	},
+  cwd: string,
+  sessionId: string,
+  options: {
+    hookEventName?: CodexHookEventName | null;
+    payload?: CodexHookPayload;
+  },
 ): Promise<string | null> {
-	if (!shouldBuildSubagentReopenContext(options)) return null;
+  if (!shouldBuildSubagentReopenContext(options)) return null;
 
-	const ledger = await readSubagentSessionLedger(cwd, sessionId).catch(
-		() => null,
-	);
-	if (!ledger || ledger.savedSubagents.length === 0) return null;
+  const ledger = await readSubagentSessionLedger(cwd, sessionId).catch(() => null);
+  if (!ledger || ledger.savedSubagents.length === 0) return null;
 
-	const source = readSessionStartSource(options.payload);
-	const reopenTargets = ledger.resumeTargets.filter(
-		(entry) => entry.status !== "unavailable",
-	);
-	const unavailableTargets = ledger.unavailableSubagents;
-	const failedTargets = ledger.savedSubagents.filter(
-		(entry) => entry.resumeFailedAt || entry.resumeFailureReason,
-	);
-	const nowIso = new Date().toISOString();
+  const source = readSessionStartSource(options.payload);
+  const reopenTargets = ledger.resumeTargets.filter((entry) => entry.status !== "unavailable");
+  const unavailableTargets = ledger.unavailableSubagents;
+  const failedTargets = ledger.savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
+  const nowIso = new Date().toISOString();
 
-	await Promise.all(
-		reopenTargets.map((entry) =>
-			recordSubagentTurnForSession(cwd, {
-				sessionId,
-				threadId: entry.threadId,
-				kind: "subagent",
-				role: entry.role,
-				laneId: entry.laneId,
-				scope: entry.scope,
-				agentNickname: entry.agentNickname,
-				status: entry.status,
-				resumeRequestedAt: nowIso,
-				preserveCompletionEvidence: true,
-			}).catch(() => null),
-		),
-	);
+  await Promise.all(reopenTargets.map((entry) => recordSubagentTurnForSession(cwd, {
+    sessionId,
+    threadId: entry.threadId,
+    kind: "subagent",
+    role: entry.role,
+    laneId: entry.laneId,
+    scope: entry.scope,
+    agentNickname: entry.agentNickname,
+    status: entry.status,
+    resumeRequestedAt: nowIso,
+    preserveCompletionEvidence: true,
+  }).catch(() => null)));
 
-	const lines = [
-		"[Persisted subagent reopen]",
-		`- SessionStart source: ${source}; saved subagent ids found: ${ledger.savedSubagents.length}.`,
-	];
+  const lines = [
+    "[Persisted subagent reopen]",
+    `- SessionStart source: ${source}; saved subagent ids found: ${ledger.savedSubagents.length}.`,
+  ];
 
-	if (reopenTargets.length > 0) {
-		lines.push(
-			"- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:",
-		);
-		for (const entry of reopenTargets.slice(0, 12)) {
-			lines.push(
-				`  - resume_agent(${JSON.stringify(entry.agentId)})${formatSubagentLedgerMetadata(entry)}`,
-			);
-		}
-		if (reopenTargets.length > 12) {
-			lines.push(
-				`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`,
-			);
-		}
-	} else {
-		lines.push(
-			"- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.",
-		);
-	}
+  if (reopenTargets.length > 0) {
+    lines.push("- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:");
+    for (const entry of reopenTargets.slice(0, 12)) {
+      lines.push(`  - resume_agent(${JSON.stringify(entry.agentId)})${formatSubagentLedgerMetadata(entry)}`);
+    }
+    if (reopenTargets.length > 12) {
+      lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`);
+    }
+  } else {
+    lines.push("- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.");
+  }
 
-	lines.push(
-		"- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.",
-	);
-	lines.push(
-		"- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.",
-	);
+  lines.push("- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.");
+  lines.push("- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.");
 
-	const warningEntries = [
-		...new Map(
-			[...unavailableTargets, ...failedTargets].map((entry) => [
-				entry.agentId,
-				entry,
-			]),
-		).values(),
-	];
-	if (warningEntries.length > 0) {
-		lines.push("- Reopen warnings:");
-		for (const entry of warningEntries.slice(0, 8)) {
-			lines.push(`  - ${entry.agentId}${formatSubagentLedgerMetadata(entry)}`);
-		}
-	}
+  const warningEntries = [...new Map([...unavailableTargets, ...failedTargets].map((entry) => [entry.agentId, entry])).values()];
+  if (warningEntries.length > 0) {
+    lines.push("- Reopen warnings:");
+    for (const entry of warningEntries.slice(0, 8)) {
+      lines.push(`  - ${entry.agentId}${formatSubagentLedgerMetadata(entry)}`);
+    }
+  }
 
-	return lines.join("\n");
+  return lines.join("\n");
 }
 
 async function buildSessionStartContext(
-	cwd: string,
-	sessionId: string,
-	options: {
-		hookEventName?: CodexHookEventName | null;
-		payload?: CodexHookPayload;
-		canonicalSessionId?: string;
-		nativeSessionId?: string;
-	} = {},
+  cwd: string,
+  sessionId: string,
+  options: {
+    hookEventName?: CodexHookEventName | null;
+    payload?: CodexHookPayload;
+    canonicalSessionId?: string;
+    nativeSessionId?: string;
+  } = {},
 ): Promise<string | null> {
-	const sections: string[] = [];
+  const sections: string[] = [];
 
-	sections.push(
-		buildExecutionEnvironmentSection(cwd, {
-			hookEventName: options.hookEventName,
-			payload: options.payload,
-			canonicalSessionId: options.canonicalSessionId,
-			nativeSessionId: options.nativeSessionId,
-		}),
-	);
+  sections.push(buildExecutionEnvironmentSection(cwd, {
+    hookEventName: options.hookEventName,
+    payload: options.payload,
+    canonicalSessionId: options.canonicalSessionId,
+    nativeSessionId: options.nativeSessionId,
+  }));
 
-	const localIgnoreResult = await ensureOmxLocalIgnoreEntry(cwd);
-	if (localIgnoreResult.changed) {
-		sections.push(
-			`Added .omx/ to ${localIgnoreResult.excludePath} to keep local OMX state out of source control without mutating tracked repo ignores.`,
-		);
-	}
+  const localIgnoreResult = await ensureOmxLocalIgnoreEntry(cwd);
+  if (localIgnoreResult.changed) {
+    sections.push(`Added .omx/ to ${localIgnoreResult.excludePath} to keep local OMX state out of source control without mutating tracked repo ignores.`);
+  }
 
-	const modeSummaries: string[] = [];
-	for (const mode of [
-		"ralph",
-		"autopilot",
-		"ultrawork",
-		"ultraqa",
-		"ralplan",
-		"deep-interview",
-		"team",
-	] as const) {
-		const state = await readJsonIfExists(getStatePath(mode, cwd, sessionId));
-		if (state?.active !== true || !isNonTerminalPhase(state.current_phase))
-			continue;
-		if (mode === "team") {
-			const teamName = safeString(state.team_name).trim();
-			if (teamName) {
-				const phase = await readTeamPhase(teamName, cwd);
-				const canonicalPhase = phase?.current_phase ?? state.current_phase;
-				if (isNonTerminalPhase(canonicalPhase)) {
-					modeSummaries.push(
-						`- team (${teamName}) phase: ${formatPhase(canonicalPhase)}`,
-					);
-				}
-				continue;
-			}
-		}
-		modeSummaries.push(`- ${mode} phase: ${formatPhase(state.current_phase)}`);
-	}
-	if (modeSummaries.length > 0) {
-		sections.push(["[Active OMX modes]", ...modeSummaries].join("\n"));
-	}
+  const modeSummaries: string[] = [];
+  for (const mode of ["ralph", "autopilot", "ultrawork", "ultraqa", "ralplan", "deep-interview", "team"] as const) {
+    const state = await readJsonIfExists(getStatePath(mode, cwd, sessionId));
+    if (state?.active !== true || !isNonTerminalPhase(state.current_phase)) continue;
+    if (mode === "team") {
+      const teamName = safeString(state.team_name).trim();
+      if (teamName) {
+        const phase = await readTeamPhase(teamName, cwd);
+        const canonicalPhase = phase?.current_phase ?? state.current_phase;
+        if (isNonTerminalPhase(canonicalPhase)) {
+          modeSummaries.push(`- team (${teamName}) phase: ${formatPhase(canonicalPhase)}`);
+        }
+        continue;
+      }
+    }
+    modeSummaries.push(`- ${mode} phase: ${formatPhase(state.current_phase)}`);
+  }
+  if (modeSummaries.length > 0) {
+    sections.push(["[Active OMX modes]", ...modeSummaries].join("\n"));
+  }
 
-	const projectMemoryPath = resolveProjectMemoryPath(cwd);
-	const projectMemory = projectMemoryPath
-		? await readJsonIfExists(projectMemoryPath)
-		: null;
-	if (projectMemory && projectMemoryPath) {
-		const directives = Array.isArray(projectMemory.directives)
-			? projectMemory.directives
-			: [];
-		const notes = Array.isArray(projectMemory.notes) ? projectMemory.notes : [];
-		const techStack = safeContextSnippet(projectMemory.techStack);
-		const conventions = safeContextSnippet(projectMemory.conventions);
-		const build = safeContextSnippet(projectMemory.build);
-		const summary: string[] = [];
-		const relativeMemoryPath = relative(cwd, projectMemoryPath).replace(
-			/\\/g,
-			"/",
-		);
-		summary.push(
-			`- source: ${relativeMemoryPath === "project-memory.json" ? "project-memory.json" : ".omx/project-memory.json"}`,
-		);
-		if (techStack) summary.push(`- stack: ${techStack}`);
-		if (conventions) summary.push(`- conventions: ${conventions}`);
-		if (build) summary.push(`- build: ${build}`);
-		if (directives.length > 0) {
-			const firstDirective = directives[0] as Record<string, unknown>;
-			const directive = safeContextSnippet(firstDirective.directive);
-			if (directive) summary.push(`- directive: ${directive}`);
-		}
-		if (notes.length > 0) {
-			const firstNote = notes[0] as Record<string, unknown>;
-			const note = safeContextSnippet(firstNote.content);
-			if (note) summary.push(`- note: ${note}`);
-		}
-		if (summary.length > 1) {
-			sections.push(["[Project memory]", ...summary].join("\n"));
-		}
-	}
+  const projectMemoryPath = resolveProjectMemoryPath(cwd);
+  const projectMemory = projectMemoryPath ? await readJsonIfExists(projectMemoryPath) : null;
+  if (projectMemory && projectMemoryPath) {
+    const directives = Array.isArray(projectMemory.directives) ? projectMemory.directives : [];
+    const notes = Array.isArray(projectMemory.notes) ? projectMemory.notes : [];
+    const techStack = safeContextSnippet(projectMemory.techStack);
+    const conventions = safeContextSnippet(projectMemory.conventions);
+    const build = safeContextSnippet(projectMemory.build);
+    const summary: string[] = [];
+    const relativeMemoryPath = relative(cwd, projectMemoryPath).replace(/\\/g, "/");
+    summary.push(`- source: ${relativeMemoryPath === "project-memory.json" ? "project-memory.json" : ".omx/project-memory.json"}`);
+    if (techStack) summary.push(`- stack: ${techStack}`);
+    if (conventions) summary.push(`- conventions: ${conventions}`);
+    if (build) summary.push(`- build: ${build}`);
+    if (directives.length > 0) {
+      const firstDirective = directives[0] as Record<string, unknown>;
+      const directive = safeContextSnippet(firstDirective.directive);
+      if (directive) summary.push(`- directive: ${directive}`);
+    }
+    if (notes.length > 0) {
+      const firstNote = notes[0] as Record<string, unknown>;
+      const note = safeContextSnippet(firstNote.content);
+      if (note) summary.push(`- note: ${note}`);
+    }
+    if (summary.length > 1) {
+      sections.push(["[Project memory]", ...summary].join("\n"));
+    }
+  }
 
-	if (existsSync(omxNotepadPath(cwd))) {
-		try {
-			const notepad = await readFile(omxNotepadPath(cwd), "utf-8");
-			const header = "## PRIORITY";
-			const idx = notepad.indexOf(header);
-			if (idx >= 0) {
-				const nextHeader = notepad.indexOf("\n## ", idx + header.length);
-				const section = (
-					nextHeader < 0
-						? notepad.slice(idx + header.length)
-						: notepad.slice(idx + header.length, nextHeader)
-				)
-					.split(/\r?\n/)
-					.map((line) => line.trim())
-					.filter(Boolean)
-					.join(" ");
-				if (section) {
-					sections.push(`[Priority notes]\n- ${section.slice(0, 220)}`);
-				}
-			}
-		} catch {
-			// best effort only
-		}
-	}
+  if (existsSync(omxNotepadPath(cwd))) {
+    try {
+      const notepad = await readFile(omxNotepadPath(cwd), "utf-8");
+      const header = "## PRIORITY";
+      const idx = notepad.indexOf(header);
+      if (idx >= 0) {
+        const nextHeader = notepad.indexOf("\n## ", idx + header.length);
+        const section = (
+          nextHeader < 0
+            ? notepad.slice(idx + header.length)
+            : notepad.slice(idx + header.length, nextHeader)
+        )
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .join(" ");
+        if (section) {
+          sections.push(`[Priority notes]\n- ${section.slice(0, 220)}`);
+        }
+      }
+    } catch {
+      // best effort only
+    }
+  }
 
-	const wikiContext = buildWikiSessionStartContext({ cwd });
-	if (wikiContext.additionalContext) {
-		sections.push(wikiContext.additionalContext);
-	}
+  const wikiContext = buildWikiSessionStartContext({ cwd });
+  if (wikiContext.additionalContext) {
+    sections.push(wikiContext.additionalContext);
+  }
 
-	const subagentSummary = await readSubagentSessionSummary(
-		cwd,
-		sessionId,
-	).catch(() => null);
-	if (subagentSummary && subagentSummary.activeSubagentThreadIds.length > 0) {
-		sections.push(
-			`[Subagents]\n- active subagent threads: ${subagentSummary.activeSubagentThreadIds.length}`,
-		);
-	}
+  const subagentSummary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
+  if (subagentSummary && subagentSummary.activeSubagentThreadIds.length > 0) {
+    sections.push(`[Subagents]\n- active subagent threads: ${subagentSummary.activeSubagentThreadIds.length}`);
+  }
 
-	const persistedSubagentReopenContext =
-		await buildPersistedSubagentReopenContext(cwd, sessionId, {
-			hookEventName: options.hookEventName,
-			payload: options.payload,
-		});
-	if (persistedSubagentReopenContext) {
-		sections.push(persistedSubagentReopenContext);
-	}
+  const persistedSubagentReopenContext = await buildPersistedSubagentReopenContext(cwd, sessionId, {
+    hookEventName: options.hookEventName,
+    payload: options.payload,
+  });
+  if (persistedSubagentReopenContext) {
+    sections.push(persistedSubagentReopenContext);
+  }
 
-	return sections.length > 0 ? sections.join("\n\n") : null;
+  return sections.length > 0 ? sections.join("\n\n") : null;
 }
 
 type ExecutionEnvironmentKind =
-	| "attached-tmux-runtime"
-	| "outside-tmux-with-bridge"
-	| "native-outside-tmux"
-	| "direct-cli-outside-tmux";
+  | "attached-tmux-runtime"
+  | "outside-tmux-with-bridge"
+  | "native-outside-tmux"
+  | "direct-cli-outside-tmux";
 
 interface ExecutionEnvironmentInfo {
-	kind: ExecutionEnvironmentKind;
-	launcher: CodexLauncherKind;
-	transport: CodexTransportKind;
-	surface: string;
-	tmuxWorkflowGuidance: string;
-	questionGuidance: string;
-	teamRuntimeInstruction: string;
-	teamHelpInstruction: string;
-	deepInterviewInstruction: string;
-	leaderPaneHint: string;
+  kind: ExecutionEnvironmentKind;
+  launcher: CodexLauncherKind;
+  transport: CodexTransportKind;
+  surface: string;
+  tmuxWorkflowGuidance: string;
+  questionGuidance: string;
+  teamRuntimeInstruction: string;
+  teamHelpInstruction: string;
+  deepInterviewInstruction: string;
+  leaderPaneHint: string;
 }
 
 function resolveExecutionEnvironment(
-	cwd: string,
-	options: {
-		hookEventName?: CodexHookEventName | null;
-		payload?: CodexHookPayload;
-		canonicalSessionId?: string;
-		nativeSessionId?: string;
-	} = {},
+  cwd: string,
+  options: {
+    hookEventName?: CodexHookEventName | null;
+    payload?: CodexHookPayload;
+    canonicalSessionId?: string;
+    nativeSessionId?: string;
+  } = {},
 ): ExecutionEnvironmentInfo {
-	const executionSurface = resolveCodexExecutionSurface(cwd, options);
-	const leaderPaneHint = resolveQuestionLeaderPaneHint(cwd, options.payload);
-	const questionBridgeHint = leaderPaneHint
-		? `tmux return bridge recorded at ${leaderPaneHint}, but this process is not attached to tmux; prefer native/user-input fallback unless running from an attached tmux pane`
-		: "not available from this outside-tmux surface; use native structured input when available or ask one concise plain-text question";
+  const executionSurface = resolveCodexExecutionSurface(cwd, options);
+  const leaderPaneHint = resolveQuestionLeaderPaneHint(cwd, options.payload);
+  const questionBridgeHint = leaderPaneHint
+    ? `tmux return bridge recorded at ${leaderPaneHint}, but this process is not attached to tmux; prefer native/user-input fallback unless running from an attached tmux pane`
+    : "not available from this outside-tmux surface; use native structured input when available or ask one concise plain-text question";
 
-	if (executionSurface.transport === "attached-tmux") {
-		return {
-			kind: "attached-tmux-runtime",
-			launcher: executionSurface.launcher,
-			transport: executionSurface.transport,
-			surface: "attached tmux runtime - tmux",
-			tmuxWorkflowGuidance:
-				"omx team, omx hud, and omx question are directly usable in this session",
-			questionGuidance:
-				"visible temporary renderer available from the current pane; primary success JSON is answers[]",
-			teamRuntimeInstruction:
-				"Use the durable OMX team runtime via `omx team ...` for coordinated execution; do not replace it with in-process fanout.",
-			teamHelpInstruction:
-				"If you need runtime syntax, run `omx team --help` yourself.",
-			deepInterviewInstruction:
-				"Deep-interview must ask each interview round via `omx question`; do not fall back to `request_user_input` or plain-text questioning. This session is already attached to tmux, so `omx question` can open its temporary renderer directly over the leader pane. After starting `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing the interview. Prefer `answers[0].answer` / `answers[]`; use legacy `answer` only as fallback. Deep-interview remains one question per round, so do not batch multiple interview rounds into one `questions[]` form. Stop remains blocked while a deep-interview question obligation is pending.",
-			leaderPaneHint,
-		};
-	}
+  if (executionSurface.transport === "attached-tmux") {
+    return {
+      kind: "attached-tmux-runtime",
+      launcher: executionSurface.launcher,
+      transport: executionSurface.transport,
+      surface: "attached tmux runtime - tmux",
+      tmuxWorkflowGuidance: "omx team, omx hud, and omx question are directly usable in this session",
+      questionGuidance: "visible temporary renderer available from the current pane; primary success JSON is answers[]",
+      teamRuntimeInstruction: "Use the durable OMX team runtime via `omx team ...` for coordinated execution; do not replace it with in-process fanout.",
+      teamHelpInstruction: "If you need runtime syntax, run `omx team --help` yourself.",
+      deepInterviewInstruction: "Deep-interview must ask each interview round via `omx question`; do not fall back to `request_user_input` or plain-text questioning. This session is already attached to tmux, so `omx question` can open its temporary renderer directly over the leader pane. After starting `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing the interview. Prefer `answers[0].answer` / `answers[]`; use legacy `answer` only as fallback. Deep-interview remains one question per round, so do not batch multiple interview rounds into one `questions[]` form. Stop remains blocked while a deep-interview question obligation is pending.",
+      leaderPaneHint,
+    };
+  }
 
-	if (leaderPaneHint) {
-		const isNativeOutsideTmux = executionSurface.launcher === "native";
-		return {
-			kind: "outside-tmux-with-bridge",
-			launcher: executionSurface.launcher,
-			transport: executionSurface.transport,
-			surface: isNativeOutsideTmux
-				? "native-hook / Codex App outside tmux with tmux return bridge"
-				: "direct CLI outside tmux with tmux return bridge",
-			tmuxWorkflowGuidance:
-				"omx team and omx hud need an attached tmux OMX CLI shell from this surface; omx question can use the detected bridge",
-			questionGuidance: questionBridgeHint,
-			teamRuntimeInstruction: isNativeOutsideTmux
-				? "This session is native-hook / Codex App outside tmux; `omx team` is a CLI/tmux runtime surface, not directly available here. Launch OMX CLI from an attached tmux shell first; do not replace it with in-process fanout."
-				: "This session is direct CLI outside tmux with a tmux return bridge for `omx question`; prompt-side `$team` does not auto-start the durable tmux team runtime here. If you intentionally want the runtime, run `omx team ...` yourself from shell instead of replacing it with in-process fanout.",
-			teamHelpInstruction: isNativeOutsideTmux
-				? "If you need runtime syntax, run `omx team --help` from an attached tmux OMX CLI shell."
-				: "If you need runtime syntax, run `omx team --help` yourself from shell.",
-			deepInterviewInstruction: `Deep-interview is active, but this session is not attached to tmux. Do not invoke \`omx question\`, \`omx hud\`, or \`omx team\` from this surface. Ask each interview round through the native structured question tool when available; otherwise ask exactly one concise plain-text question and wait for the answer. A tmux return bridge (${leaderPaneHint}) is recorded for explicit attached-tmux recovery only, not for default Codex App/native fallback.`,
-			leaderPaneHint,
-		};
-	}
+  if (leaderPaneHint) {
+    const isNativeOutsideTmux = executionSurface.launcher === "native";
+    return {
+      kind: "outside-tmux-with-bridge",
+      launcher: executionSurface.launcher,
+      transport: executionSurface.transport,
+      surface: isNativeOutsideTmux
+        ? "native-hook / Codex App outside tmux with tmux return bridge"
+        : "direct CLI outside tmux with tmux return bridge",
+      tmuxWorkflowGuidance: "omx team and omx hud need an attached tmux OMX CLI shell from this surface; omx question can use the detected bridge",
+      questionGuidance: questionBridgeHint,
+      teamRuntimeInstruction: isNativeOutsideTmux
+        ? "This session is native-hook / Codex App outside tmux; `omx team` is a CLI/tmux runtime surface, not directly available here. Launch OMX CLI from an attached tmux shell first; do not replace it with in-process fanout."
+        : "This session is direct CLI outside tmux with a tmux return bridge for `omx question`; prompt-side `$team` does not auto-start the durable tmux team runtime here. If you intentionally want the runtime, run `omx team ...` yourself from shell instead of replacing it with in-process fanout.",
+      teamHelpInstruction: isNativeOutsideTmux
+        ? "If you need runtime syntax, run `omx team --help` from an attached tmux OMX CLI shell."
+        : "If you need runtime syntax, run `omx team --help` yourself from shell.",
+      deepInterviewInstruction: `Deep-interview is active, but this session is not attached to tmux. Do not invoke \`omx question\`, \`omx hud\`, or \`omx team\` from this surface. Ask each interview round through the native structured question tool when available; otherwise ask exactly one concise plain-text question and wait for the answer. A tmux return bridge (${leaderPaneHint}) is recorded for explicit attached-tmux recovery only, not for default Codex App/native fallback.`,
+      leaderPaneHint,
+    };
+  }
 
-	const isNativeOutsideTmux =
-		executionSurface.launcher === "native" &&
-		executionSurface.transport === "outside-tmux";
-	const surface = isNativeOutsideTmux
-		? "native-hook / Codex App outside tmux"
-		: "direct CLI outside tmux";
-	const teamRuntimeInstruction = isNativeOutsideTmux
-		? "This session is native-hook / Codex App outside tmux; `omx team` is a CLI/tmux runtime surface, not directly available here. Launch OMX CLI from an attached tmux shell first; do not replace it with in-process fanout."
-		: "This session is direct CLI outside tmux; prompt-side `$team` does not auto-start the durable tmux team runtime here. If you intentionally want the runtime, run `omx team ...` yourself from shell instead of replacing it with in-process fanout.";
-	const teamHelpInstruction = isNativeOutsideTmux
-		? "If you need runtime syntax, run `omx team --help` from an attached tmux OMX CLI shell rather than from Codex App/native outside-tmux context."
-		: "If you need runtime syntax, run `omx team --help` yourself from shell.";
-	return {
-		kind: isNativeOutsideTmux
-			? "native-outside-tmux"
-			: "direct-cli-outside-tmux",
-		launcher: executionSurface.launcher,
-		transport: executionSurface.transport,
-		surface,
-		tmuxWorkflowGuidance:
-			"omx team, omx hud, and omx question need an attached tmux OMX CLI shell or preserved question bridge from this surface",
-		questionGuidance: questionBridgeHint,
-		teamRuntimeInstruction,
-		teamHelpInstruction,
-		deepInterviewInstruction:
-			"Deep-interview is active, but this session is not attached to tmux. Do not invoke `omx question`, `omx hud`, or `omx team` from this surface. Ask each interview round through the native structured question tool when available; otherwise ask exactly one concise plain-text question and wait for the answer. Stop gating still applies to the interview, but no tmux question obligation should be created outside tmux.",
-		leaderPaneHint: "",
-	};
+  const isNativeOutsideTmux = executionSurface.launcher === "native" && executionSurface.transport === "outside-tmux";
+  const surface = isNativeOutsideTmux
+    ? "native-hook / Codex App outside tmux"
+    : "direct CLI outside tmux";
+  const teamRuntimeInstruction = isNativeOutsideTmux
+    ? "This session is native-hook / Codex App outside tmux; `omx team` is a CLI/tmux runtime surface, not directly available here. Launch OMX CLI from an attached tmux shell first; do not replace it with in-process fanout."
+    : "This session is direct CLI outside tmux; prompt-side `$team` does not auto-start the durable tmux team runtime here. If you intentionally want the runtime, run `omx team ...` yourself from shell instead of replacing it with in-process fanout.";
+  const teamHelpInstruction = isNativeOutsideTmux
+    ? "If you need runtime syntax, run `omx team --help` from an attached tmux OMX CLI shell rather than from Codex App/native outside-tmux context."
+    : "If you need runtime syntax, run `omx team --help` yourself from shell.";
+  return {
+    kind: isNativeOutsideTmux ? "native-outside-tmux" : "direct-cli-outside-tmux",
+    launcher: executionSurface.launcher,
+    transport: executionSurface.transport,
+    surface,
+    tmuxWorkflowGuidance: "omx team, omx hud, and omx question need an attached tmux OMX CLI shell or preserved question bridge from this surface",
+    questionGuidance: questionBridgeHint,
+    teamRuntimeInstruction,
+    teamHelpInstruction,
+    deepInterviewInstruction: "Deep-interview is active, but this session is not attached to tmux. Do not invoke `omx question`, `omx hud`, or `omx team` from this surface. Ask each interview round through the native structured question tool when available; otherwise ask exactly one concise plain-text question and wait for the answer. Stop gating still applies to the interview, but no tmux question obligation should be created outside tmux.",
+    leaderPaneHint: "",
+  };
 }
 
 function buildExecutionEnvironmentSection(
-	cwd: string,
-	options: {
-		hookEventName?: CodexHookEventName | null;
-		payload?: CodexHookPayload;
-		canonicalSessionId?: string;
-		nativeSessionId?: string;
-	} = {},
+  cwd: string,
+  options: {
+    hookEventName?: CodexHookEventName | null;
+    payload?: CodexHookPayload;
+    canonicalSessionId?: string;
+    nativeSessionId?: string;
+  } = {},
 ): string {
-	const environment = resolveExecutionEnvironment(cwd, options);
-	return [
-		"[Execution environment]",
-		`- surface: ${environment.surface}`,
-		`- omx runtime surfaces: ${environment.tmuxWorkflowGuidance}`,
-		`- omx question: ${environment.questionGuidance}`,
-	].join("\n");
+  const environment = resolveExecutionEnvironment(cwd, options);
+  return [
+    "[Execution environment]",
+    `- surface: ${environment.surface}`,
+    `- omx runtime surfaces: ${environment.tmuxWorkflowGuidance}`,
+    `- omx question: ${environment.questionGuidance}`,
+  ].join("\n");
 }
 
-function resolveQuestionLeaderPaneHint(
-	cwd: string,
-	payload?: CodexHookPayload,
-): string {
-	const payloadSessionId = safeString(payload?.session_id).trim();
-	const envSessionId = safeString(
-		process.env.OMX_SESSION_ID ||
-			process.env.CODEX_SESSION_ID ||
-			process.env.SESSION_ID,
-	).trim();
-	const sessionId = payloadSessionId || envSessionId;
-	const candidatePaths = [
-		...(sessionId
-			? [
-					getStatePath("deep-interview", cwd, sessionId),
-					getStatePath("ralplan", cwd, sessionId),
-					getStatePath("ralph", cwd, sessionId),
-				]
-			: []),
-		getStatePath("deep-interview", cwd),
-		getStatePath("ralplan", cwd),
-		getStatePath("ralph", cwd),
-	];
+function resolveQuestionLeaderPaneHint(cwd: string, payload?: CodexHookPayload): string {
+  const payloadSessionId = safeString(payload?.session_id).trim();
+  const envSessionId = safeString(process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID || process.env.SESSION_ID).trim();
+  const sessionId = payloadSessionId || envSessionId;
+  const candidatePaths = [
+    ...(sessionId ? [getStatePath('deep-interview', cwd, sessionId), getStatePath('ralplan', cwd, sessionId), getStatePath('ralph', cwd, sessionId)] : []),
+    getStatePath('deep-interview', cwd),
+    getStatePath('ralplan', cwd),
+    getStatePath('ralph', cwd),
+  ];
 
-	for (const path of candidatePaths) {
-		try {
-			if (!existsSync(path)) continue;
-			const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<
-				string,
-				unknown
-			>;
-			const pane = safeString(parsed?.tmux_pane_id).trim();
-			if (/^%\d+$/.test(pane)) return pane;
-		} catch {
-			// best effort only
-		}
-	}
+  for (const path of candidatePaths) {
+    try {
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      const pane = safeString(parsed?.tmux_pane_id).trim();
+      if (/^%\d+$/.test(pane)) return pane;
+    } catch {
+      // best effort only
+    }
+  }
 
-	const envPane = safeString(process.env.TMUX_PANE).trim();
-	return /^%\d+$/.test(envPane) ? envPane : "";
+  const envPane = safeString(process.env.TMUX_PANE).trim();
+  return /^%\d+$/.test(envPane) ? envPane : '';
 }
 
-function buildDeepInterviewQuestionBridgeInstruction(
-	cwd: string,
-	payload?: CodexHookPayload,
-): string {
-	return resolveExecutionEnvironment(cwd, {
-		hookEventName: "UserPromptSubmit",
-		payload,
-		nativeSessionId: safeString(
-			payload?.session_id ?? payload?.sessionId,
-		).trim(),
-	}).deepInterviewInstruction;
+function buildDeepInterviewQuestionBridgeInstruction(cwd: string, payload?: CodexHookPayload): string {
+  return resolveExecutionEnvironment(cwd, {
+    hookEventName: "UserPromptSubmit",
+    payload,
+    nativeSessionId: safeString(payload?.session_id ?? payload?.sessionId).trim(),
+  }).deepInterviewInstruction;
 }
 
-function buildTeamRuntimeInstruction(
-	cwd: string,
-	payload?: CodexHookPayload,
-): string {
-	return resolveExecutionEnvironment(cwd, {
-		hookEventName: "UserPromptSubmit",
-		payload,
-		nativeSessionId: safeString(
-			payload?.session_id ?? payload?.sessionId,
-		).trim(),
-	}).teamRuntimeInstruction;
+function buildTeamRuntimeInstruction(cwd: string, payload?: CodexHookPayload): string {
+  return resolveExecutionEnvironment(cwd, {
+    hookEventName: "UserPromptSubmit",
+    payload,
+    nativeSessionId: safeString(payload?.session_id ?? payload?.sessionId).trim(),
+  }).teamRuntimeInstruction;
 }
 
-function buildTeamHelpInstruction(
-	cwd: string,
-	payload?: CodexHookPayload,
-): string {
-	return resolveExecutionEnvironment(cwd, {
-		hookEventName: "UserPromptSubmit",
-		payload,
-		nativeSessionId: safeString(
-			payload?.session_id ?? payload?.sessionId,
-		).trim(),
-	}).teamHelpInstruction;
+function buildTeamHelpInstruction(cwd: string, payload?: CodexHookPayload): string {
+  return resolveExecutionEnvironment(cwd, {
+    hookEventName: "UserPromptSubmit",
+    payload,
+    nativeSessionId: safeString(payload?.session_id ?? payload?.sessionId).trim(),
+  }).teamHelpInstruction;
 }
 
 function buildNativeOutsideTmuxTeamPromptBlockState(
-	prompt: string,
-	cwd: string,
-	payload: CodexHookPayload,
-	sessionId?: string,
-	threadId?: string,
-	turnId?: string,
+  prompt: string,
+  cwd: string,
+  payload: CodexHookPayload,
+  sessionId?: string,
+  threadId?: string,
+  turnId?: string,
 ): SkillActiveState | null {
-	if (!readTeamModeConfig(cwd).enabled) return null;
-	const match = detectPrimaryKeyword(prompt);
-	if (match?.skill !== "team") return null;
+  if (!readTeamModeConfig(cwd).enabled) return null;
+  const match = detectPrimaryKeyword(prompt);
+  if (match?.skill !== "team") return null;
 
-	const environment = resolveExecutionEnvironment(cwd, {
-		hookEventName: "UserPromptSubmit",
-		payload,
-		canonicalSessionId: sessionId ?? "",
-		nativeSessionId: safeString(payload.session_id ?? payload.sessionId).trim(),
-	});
-	if (
-		!(
-			environment.launcher === "native" &&
-			environment.transport === "outside-tmux"
-		)
-	)
-		return null;
+  const environment = resolveExecutionEnvironment(cwd, {
+    hookEventName: "UserPromptSubmit",
+    payload,
+    canonicalSessionId: sessionId ?? "",
+    nativeSessionId: safeString(payload.session_id ?? payload.sessionId).trim(),
+  });
+  if (!(environment.launcher === "native" && environment.transport === "outside-tmux")) return null;
 
-	const nowIso = new Date().toISOString();
-	return {
-		version: 1,
-		active: false,
-		skill: "team",
-		keyword: match.keyword,
-		phase: "planning",
-		activated_at: nowIso,
-		updated_at: nowIso,
-		source: "keyword-detector",
-		session_id: sessionId,
-		thread_id: threadId,
-		turn_id: turnId,
-		active_skills: [],
-		transition_error:
-			"Codex App/native outside-tmux sessions cannot activate the tmux-only `team` workflow directly. Launch OMX CLI from an attached tmux shell first, then run `omx team ...` there.",
-	};
+  const nowIso = new Date().toISOString();
+  return {
+    version: 1,
+    active: false,
+    skill: "team",
+    keyword: match.keyword,
+    phase: "planning",
+    activated_at: nowIso,
+    updated_at: nowIso,
+    source: "keyword-detector",
+    session_id: sessionId,
+    thread_id: threadId,
+    turn_id: turnId,
+    active_skills: [],
+    transition_error: "Codex App/native outside-tmux sessions cannot activate the tmux-only `team` workflow directly. Launch OMX CLI from an attached tmux shell first, then run `omx team ...` there.",
+  };
 }
 
-function buildSkillStateCliInstruction(
-	mode: string,
-	statePath: string,
-): string {
-	return `skill: ${mode} activated and initial state initialized at ${statePath}; use CLI-first state updates via \`omx state write/read/clear --input '<json>' --json\`; use omx_state MCP only when explicit MCP compatibility is enabled.`;
+function buildSkillStateCliInstruction(mode: string, statePath: string): string {
+  return `skill: ${mode} activated and initial state initialized at ${statePath}; use CLI-first state updates via \`omx state write/read/clear --input '<json>' --json\`; use omx_state MCP only when explicit MCP compatibility is enabled.`;
 }
 
 function buildAutopilotPromptActivationNote(
-	skillState?: SkillActiveState | null,
-	options: {
-		markedQuestionAnswer?: boolean;
-		cwd?: string;
-		payload?: CodexHookPayload;
-		sessionId?: string;
-	} = {},
+  skillState?: SkillActiveState | null,
+  options: { markedQuestionAnswer?: boolean; cwd?: string; payload?: CodexHookPayload; sessionId?: string } = {},
 ): string | null {
-	if (skillState?.initialized_mode !== "autopilot") return null;
-	const teamHandoff = readTeamModeConfig(options.cwd).enabled
-		? " (+ $team if needed)"
-		: "";
-	const stateDir = getBaseStateDir(options.cwd);
-	const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
-		payload: options.payload,
-		persistedSupportBlocker: readJsonSyncIfExists(
-			nativeSubagentSupportBlockerPath(stateDir),
-		),
-		persistedRoleRoutingMarker: readRoleRoutingMarker(stateDir, {
-			cwd: options.cwd,
-			sessionId: options.sessionId ?? "",
-		}),
-		persistedCapacityBlocker: readJsonSyncIfExists(
-			nativeSubagentCapacityBlockerPath(stateDir),
-		),
-		cwd: options.cwd,
-		sessionId: options.sessionId,
-	});
-	const conductorGuidance =
-		nativeSubagentSupport.status === "unsupported"
-			? buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)
-			: nativeSubagentSupport.status === "role_routing_unavailable"
-				? buildRoleRoutingUnavailableGuidance(nativeSubagentSupport)
-				: `${LEADER_CONDUCTOR_BLOCK} ${LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE}`;
-	return [
-		`Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal${teamHandoff} -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).`,
-		"Start/resume at current_phase=deep-interview unless the task is clear and bounded; if deep-interview is intentionally skipped, persist and state an explicit deep_interview_gate.skip_reason before moving to ralplan.",
-		"Deep-interview is a structured question chain, not a one-question gate: after an omx question answer, re-score ambiguity against the active threshold, treat max_rounds as a cap, and crystallize once ambiguity is at or below threshold and readiness gates pass.",
-		options.markedQuestionAnswer
-			? "This turn is a marked omx question answer. Treat ordinary selected option/freeform answer text as interview input, then re-score. Do not close merely because the first question was answered; if ambiguity is at or below threshold and readiness gates pass, write interview_complete evidence and hand off. Ask another deep-interview follow-up only when a readiness gate remains unresolved and the answer would materially change execution."
-			: null,
-		"Do not advance from deep-interview to ralplan merely because the first question was answered; persist explicit interview_complete evidence before setting current_phase=ralplan, and do advance when threshold plus readiness gates are satisfied.",
-		"The ralplan phase is not complete until Planner output has been reviewed sequentially by Architect and then Critic; do not hand off to Ultragoal or implementation until the ralplan state/artifact records both ralplan_architect_review and ralplan_critic_review with approval or an explicit blocker.",
-		"Do not silently fall back to ordinary $plan/ralplan-only handling; keep autopilot-state.json, skill-active-state.json, HUD/statusline, and Codex goal-mode handoff guidance visible while the workflow is active.",
-		"When Codex goal tools are available, call get_goal/create_goal only from the active thread handoff and treat the active goal as the completion contract until code-review and ultraqa are clean.",
-		conductorGuidance,
-	]
-		.filter(Boolean)
-		.join(" ");
+  if (skillState?.initialized_mode !== "autopilot") return null;
+  const teamHandoff = readTeamModeConfig(options.cwd).enabled
+    ? " (+ $team if needed)"
+    : "";
+  const stateDir = getBaseStateDir(options.cwd);
+  const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
+    payload: options.payload,
+    persistedSupportBlocker: readJsonSyncIfExists(nativeSubagentSupportBlockerPath(stateDir)),
+    persistedRoleRoutingMarker: readRoleRoutingMarker(stateDir, {
+      cwd: options.cwd,
+      sessionId: options.sessionId ?? "",
+    }),
+    persistedCapacityBlocker: readJsonSyncIfExists(nativeSubagentCapacityBlockerPath(stateDir)),
+    cwd: options.cwd,
+    sessionId: options.sessionId,
+  });
+  const conductorGuidance = nativeSubagentSupport.status === "unsupported"
+    ? buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)
+    : nativeSubagentSupport.status === "role_routing_unavailable"
+      ? buildRoleRoutingUnavailableGuidance(nativeSubagentSupport)
+      : `${LEADER_CONDUCTOR_BLOCK} ${LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE}`;
+  return [
+    `Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal${teamHandoff} -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).`,
+    "Start/resume at current_phase=deep-interview unless the task is clear and bounded; if deep-interview is intentionally skipped, persist and state an explicit deep_interview_gate.skip_reason before moving to ralplan.",
+    "Deep-interview is a structured question chain, not a one-question gate: after an omx question answer, re-score ambiguity against the active threshold, treat max_rounds as a cap, and crystallize once ambiguity is at or below threshold and readiness gates pass.",
+    options.markedQuestionAnswer
+      ? "This turn is a marked omx question answer. Treat ordinary selected option/freeform answer text as interview input, then re-score. Do not close merely because the first question was answered; if ambiguity is at or below threshold and readiness gates pass, write interview_complete evidence and hand off. Ask another deep-interview follow-up only when a readiness gate remains unresolved and the answer would materially change execution."
+      : null,
+    "Do not advance from deep-interview to ralplan merely because the first question was answered; persist explicit interview_complete evidence before setting current_phase=ralplan, and do advance when threshold plus readiness gates are satisfied.",
+    "The ralplan phase is not complete until Planner output has been reviewed sequentially by Architect and then Critic; do not hand off to Ultragoal or implementation until the ralplan state/artifact records both ralplan_architect_review and ralplan_critic_review with approval or an explicit blocker.",
+    "Do not silently fall back to ordinary $plan/ralplan-only handling; keep autopilot-state.json, skill-active-state.json, HUD/statusline, and Codex goal-mode handoff guidance visible while the workflow is active.",
+    "When Codex goal tools are available, call get_goal/create_goal only from the active thread handoff and treat the active goal as the completion contract until code-review and ultraqa are clean.",
+    conductorGuidance,
+  ].filter(Boolean).join(" ");
 }
 
 function formatExecutionHandoffList(cwd: string): string {
-	return readTeamModeConfig(cwd).enabled
-		? "`$ultragoal`, `$team`, or `$ralph`"
-		: "`$ultragoal` or `$ralph`";
+  return readTeamModeConfig(cwd).enabled
+    ? "`$ultragoal`, `$team`, or `$ralph`"
+    : "`$ultragoal` or `$ralph`";
 }
 
 function buildAdditionalContextMessage(
-	prompt: string,
-	skillState?: SkillActiveState | null,
-	cwd: string = process.cwd(),
-	payload?: CodexHookPayload,
+  prompt: string,
+  skillState?: SkillActiveState | null,
+  cwd: string = process.cwd(),
+  payload?: CodexHookPayload,
 ): string | null {
-	if (!prompt) return null;
-	const promptPriorityMessage = buildPromptPriorityMessage(prompt);
-	if (payload && isTypedAgentRolePayload(payload)) {
-		return promptPriorityMessage;
-	}
-	const teamMode = readTeamModeConfig(cwd);
-	const matches = detectKeywords(prompt).filter(
-		(entry) => teamMode.enabled || entry.skill !== "team",
-	);
-	const match = matches[0] ?? null;
-	if (!match) {
-		const continuedSkill = safeString(skillState?.skill).trim();
-		if (!continuedSkill) return promptPriorityMessage;
-		const deepInterviewPromptActivationNote =
-			skillState?.initialized_mode === "deep-interview"
-				? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
-				: null;
-		const deepInterviewConfigPromptActivationNote =
-			buildDeepInterviewConfigInstruction(cwd, skillState);
-		const markedQuestionAnswer = /^\s*\[omx question answered\]/i.test(prompt);
-		const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(
-			skillState,
-			{
-				markedQuestionAnswer,
-				cwd,
-				payload,
-				sessionId: safeString(skillState?.session_id).trim(),
-			},
-		);
-		return [
-			`OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
-			promptPriorityMessage,
-			skillState?.initialized_mode && skillState.initialized_state_path
-				? buildSkillStateCliInstruction(
-						skillState.initialized_mode,
-						skillState.initialized_state_path,
-					)
-				: null,
-			deepInterviewPromptActivationNote,
-			deepInterviewConfigPromptActivationNote,
-			autopilotPromptActivationNote,
-			"Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
-		]
-			.filter(Boolean)
-			.join(" ");
-	}
-	const detectedKeywordMessage =
-		matches.length > 1
-			? `OMX native UserPromptSubmit detected workflow keywords ${matches.map((entry) => `"${entry.keyword}" -> ${entry.skill}`).join(", ")}.`
-			: `OMX native UserPromptSubmit detected workflow keyword "${match.keyword}" -> ${match.skill}.`;
-	const continuedSkill = safeString(skillState?.skill).trim();
-	if (
-		continuedSkill &&
-		continuedSkill !== match.skill &&
-		/^\s*\[omx question answered\]/i.test(prompt)
-	) {
-		const deepInterviewPromptActivationNote =
-			skillState?.initialized_mode === "deep-interview"
-				? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
-				: null;
-		const deepInterviewConfigPromptActivationNote =
-			buildDeepInterviewConfigInstruction(cwd, skillState);
-		const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(
-			skillState,
-			{
-				markedQuestionAnswer: true,
-				cwd,
-				payload,
-				sessionId: safeString(skillState?.session_id).trim(),
-			},
-		);
-		return [
-			`OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
-			promptPriorityMessage,
-			skillState?.initialized_mode && skillState.initialized_state_path
-				? buildSkillStateCliInstruction(
-						skillState.initialized_mode,
-						skillState.initialized_state_path,
-					)
-				: null,
-			deepInterviewPromptActivationNote,
-			deepInterviewConfigPromptActivationNote,
-			autopilotPromptActivationNote,
-			"Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
-		]
-			.filter(Boolean)
-			.join(" ");
-	}
-	const activeSkills = Array.isArray(skillState?.active_skills)
-		? skillState.active_skills.map((entry) => entry.skill)
-		: [];
-	const deferredSkills = Array.isArray(skillState?.deferred_skills)
-		? skillState.deferred_skills
-		: [];
-	const teamDetected = activeSkills.includes("team");
-	const ralphPromptActivationNote =
-		skillState?.initialized_mode === "ralph"
-			? "Prompt-side `$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`. Use `omx ralph --prd ...` only when you explicitly want the PRD-gated CLI startup path."
-			: null;
-	const deepInterviewPromptActivationNote =
-		skillState?.initialized_mode === "deep-interview"
-			? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
-			: null;
-	const deepInterviewConfigPromptActivationNote =
-		buildDeepInterviewConfigInstruction(cwd, skillState);
-	const ultraworkPromptActivationNote =
-		skillState?.initialized_mode === "ultrawork"
-			? "Ultrawork protocol: ground the task before editing, define pass/fail acceptance criteria, keep shared-file work local, and use direct-tool plus background evidence lanes only for truly independent work. Direct ultrawork provides lightweight verification only; Ralph owns persistence and the full verified-completion promise."
-			: null;
-	const ultragoalPromptActivationNote =
-		match.skill === "ultragoal"
-			? "Ultragoal protocol: use `omx ultragoal create-goals` / `complete-goals` / `checkpoint` for `.omx/ultragoal` artifacts, then use Codex goal model tools only from the active agent handoff (`get_goal`, `create_goal`, `update_goal`) and never overwrite a different active Codex goal. Ultragoal does not call `/goal clear`; for multiple sequential ultragoal runs in one Codex session/thread, manually clear the completed Codex goal in the UI before creating the next aggregate goal."
-			: null;
-	const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(
-		skillState,
-		{ cwd, payload, sessionId: safeString(skillState?.session_id).trim() },
-	);
-	const combinedTransitionMessage = (() => {
-		if (!skillState?.transition_message) return null;
-		if (matches.length <= 1 || activeSkills.length <= 1)
-			return skillState.transition_message;
-		const source = skillState.transition_message.match(
-			/^mode transiting: (.+?) -> /,
-		)?.[1];
-		if (!source) return skillState.transition_message;
-		return `mode transiting: ${source} -> ${activeSkills.join(" + ")}`;
-	})();
+  if (!prompt) return null;
+  const promptPriorityMessage = buildPromptPriorityMessage(prompt);
+  if (payload && isTypedAgentRolePayload(payload)) {
+    return promptPriorityMessage;
+  }
+  const teamMode = readTeamModeConfig(cwd);
+  const matches = detectKeywords(prompt).filter((entry) => teamMode.enabled || entry.skill !== "team");
+  const match = matches[0] ?? null;
+  if (!match) {
+    const continuedSkill = safeString(skillState?.skill).trim();
+    if (!continuedSkill) return promptPriorityMessage;
+    const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
+      ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
+      : null;
+    const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
+    const markedQuestionAnswer = /^\s*\[omx question answered\]/i.test(prompt);
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer, cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
+    return [
+      `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
+      promptPriorityMessage,
+      skillState?.initialized_mode && skillState.initialized_state_path
+        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        : null,
+      deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
+      autopilotPromptActivationNote,
+      "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
+    ].filter(Boolean).join(" ");
+  }
+  const detectedKeywordMessage = matches.length > 1
+    ? `OMX native UserPromptSubmit detected workflow keywords ${matches.map((entry) => `"${entry.keyword}" -> ${entry.skill}`).join(", ")}.`
+    : `OMX native UserPromptSubmit detected workflow keyword "${match.keyword}" -> ${match.skill}.`;
+  const continuedSkill = safeString(skillState?.skill).trim();
+  if (
+    continuedSkill
+    && continuedSkill !== match.skill
+    && /^\s*\[omx question answered\]/i.test(prompt)
+  ) {
+    const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
+      ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
+      : null;
+    const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true, cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
+    return [
+      `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
+      promptPriorityMessage,
+      skillState?.initialized_mode && skillState.initialized_state_path
+        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        : null,
+      deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
+      autopilotPromptActivationNote,
+      "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
+    ].filter(Boolean).join(" ");
+  }
+  const activeSkills = Array.isArray(skillState?.active_skills)
+    ? skillState.active_skills.map((entry) => entry.skill)
+    : [];
+  const deferredSkills = Array.isArray(skillState?.deferred_skills)
+    ? skillState.deferred_skills
+    : [];
+  const teamDetected = activeSkills.includes("team");
+  const ralphPromptActivationNote = skillState?.initialized_mode === "ralph"
+    ? "Prompt-side `$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`. Use `omx ralph --prd ...` only when you explicitly want the PRD-gated CLI startup path."
+    : null;
+  const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
+    ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
+    : null;
+  const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
+  const ultraworkPromptActivationNote = skillState?.initialized_mode === "ultrawork"
+    ? "Ultrawork protocol: ground the task before editing, define pass/fail acceptance criteria, keep shared-file work local, and use direct-tool plus background evidence lanes only for truly independent work. Direct ultrawork provides lightweight verification only; Ralph owns persistence and the full verified-completion promise."
+    : null;
+  const ultragoalPromptActivationNote = match.skill === "ultragoal"
+    ? "Ultragoal protocol: use `omx ultragoal create-goals` / `complete-goals` / `checkpoint` for `.omx/ultragoal` artifacts, then use Codex goal model tools only from the active agent handoff (`get_goal`, `create_goal`, `update_goal`) and never overwrite a different active Codex goal. Ultragoal does not call `/goal clear`; for multiple sequential ultragoal runs in one Codex session/thread, manually clear the completed Codex goal in the UI before creating the next aggregate goal."
+    : null;
+  const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { cwd, payload, sessionId: safeString(skillState?.session_id).trim() });
+  const combinedTransitionMessage = (() => {
+    if (!skillState?.transition_message) return null;
+    if (matches.length <= 1 || activeSkills.length <= 1) return skillState.transition_message;
+    const source = skillState.transition_message.match(/^mode transiting: (.+?) -> /)?.[1];
+    if (!source) return skillState.transition_message;
+    return `mode transiting: ${source} -> ${activeSkills.join(" + ")}`;
+  })();
 
-	if (skillState?.transition_error) {
-		return [
-			`OMX native UserPromptSubmit denied workflow keyword "${match.keyword}" -> ${match.skill}.`,
-			skillState.transition_error,
-			promptPriorityMessage,
-			"Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
-		].join(" ");
-	}
+  if (skillState?.transition_error) {
+    return [
+      `OMX native UserPromptSubmit denied workflow keyword "${match.keyword}" -> ${match.skill}.`,
+      skillState.transition_error,
+      promptPriorityMessage,
+      'Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.',
+    ].join(' ');
+  }
 
-	if (skillState?.transition_message) {
-		return [
-			detectedKeywordMessage,
-			combinedTransitionMessage,
-			activeSkills.length > 1
-				? `active skills: ${activeSkills.join(", ")}.`
-				: null,
-			deferredSkills.length > 0
-				? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
-				: null,
-			promptPriorityMessage,
-			ultragoalPromptActivationNote,
-			autopilotPromptActivationNote,
-			deepInterviewConfigPromptActivationNote,
-			skillState.initialized_mode && skillState.initialized_state_path
-				? buildSkillStateCliInstruction(
-						skillState.initialized_mode,
-						skillState.initialized_state_path,
-					)
-				: null,
-			teamDetected ? buildTeamRuntimeInstruction(cwd, payload) : null,
-			teamDetected ? buildTeamHelpInstruction(cwd, payload) : null,
-			"Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
-		]
-			.filter(Boolean)
-			.join(" ");
-	}
+  if (skillState?.transition_message) {
+    return [
+      detectedKeywordMessage,
+      combinedTransitionMessage,
+      activeSkills.length > 1 ? `active skills: ${activeSkills.join(", ")}.` : null,
+      deferredSkills.length > 0
+        ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
+        : null,
+      promptPriorityMessage,
+      ultragoalPromptActivationNote,
+      autopilotPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
+      skillState.initialized_mode && skillState.initialized_state_path
+        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        : null,
+      teamDetected
+        ? buildTeamRuntimeInstruction(cwd, payload)
+        : null,
+      teamDetected ? buildTeamHelpInstruction(cwd, payload) : null,
+      'Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.',
+    ].filter(Boolean).join(' ');
+  }
 
-	if (teamDetected) {
-		const initializedStateMessage =
-			skillState?.initialized_mode && skillState.initialized_state_path
-				? buildSkillStateCliInstruction(
-						skillState.initialized_mode,
-						skillState.initialized_state_path,
-					)
-				: null;
-		return [
-			detectedKeywordMessage,
-			activeSkills.length > 1
-				? `active skills: ${activeSkills.join(", ")}.`
-				: null,
-			deferredSkills.length > 0
-				? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
-				: null,
-			promptPriorityMessage,
-			initializedStateMessage,
-			deepInterviewPromptActivationNote,
-			deepInterviewConfigPromptActivationNote,
-			ultraworkPromptActivationNote,
-			ultragoalPromptActivationNote,
-			autopilotPromptActivationNote,
-			buildTeamRuntimeInstruction(cwd, payload),
-			buildTeamHelpInstruction(cwd, payload),
-			"Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
-		]
-			.filter(Boolean)
-			.join(" ");
-	}
+  if (teamDetected) {
+    const initializedStateMessage = skillState?.initialized_mode && skillState.initialized_state_path
+      ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+      : null;
+    return [
+      detectedKeywordMessage,
+      activeSkills.length > 1 ? `active skills: ${activeSkills.join(", ")}.` : null,
+      deferredSkills.length > 0
+        ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
+        : null,
+      promptPriorityMessage,
+      initializedStateMessage,
+      deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
+      ultraworkPromptActivationNote,
+      ultragoalPromptActivationNote,
+      autopilotPromptActivationNote,
+      buildTeamRuntimeInstruction(cwd, payload),
+      buildTeamHelpInstruction(cwd, payload),
+      "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
+    ].filter(Boolean).join(" ");
+  }
 
-	if (skillState?.initialized_mode && skillState.initialized_state_path) {
-		return [
-			detectedKeywordMessage,
-			activeSkills.length > 1
-				? `active skills: ${activeSkills.join(", ")}.`
-				: null,
-			deferredSkills.length > 0
-				? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
-				: null,
-			promptPriorityMessage,
-			buildSkillStateCliInstruction(
-				skillState.initialized_mode,
-				skillState.initialized_state_path,
-			),
-			deepInterviewPromptActivationNote,
-			deepInterviewConfigPromptActivationNote,
-			ultraworkPromptActivationNote,
-			ultragoalPromptActivationNote,
-			autopilotPromptActivationNote,
-			ralphPromptActivationNote,
-			"Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
-		].join(" ");
-	}
+  if (skillState?.initialized_mode && skillState.initialized_state_path) {
+    return [
+      detectedKeywordMessage,
+      activeSkills.length > 1 ? `active skills: ${activeSkills.join(", ")}.` : null,
+      deferredSkills.length > 0
+        ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
+        : null,
+      promptPriorityMessage,
+      buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path),
+      deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
+      ultraworkPromptActivationNote,
+      ultragoalPromptActivationNote,
+      autopilotPromptActivationNote,
+      ralphPromptActivationNote,
+      "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
+    ].join(" ");
+  }
 
-	return [
-		detectedKeywordMessage,
-		promptPriorityMessage,
-		ultragoalPromptActivationNote,
-		autopilotPromptActivationNote,
-		"Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
-	]
-		.filter(Boolean)
-		.join(" ");
+  return [detectedKeywordMessage, promptPriorityMessage, ultragoalPromptActivationNote, autopilotPromptActivationNote, "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules."].filter(Boolean).join(" ");
 }
 
-function parseTeamWorkerEnv(
-	rawValue: string,
-): { teamName: string; workerName: string } | null {
-	const match = /^([a-z0-9][a-z0-9-]{0,29})\/(worker-\d+)$/.exec(
-		rawValue.trim(),
-	);
-	if (!match) return null;
-	return {
-		teamName: match[1] || "",
-		workerName: match[2] || "",
-	};
+function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: string } | null {
+  const match = /^([a-z0-9][a-z0-9-]{0,29})\/(worker-\d+)$/.exec(rawValue.trim());
+  if (!match) return null;
+  return {
+    teamName: match[1] || "",
+    workerName: match[2] || "",
+  };
 }
 
 function hasTeamWorkerEnvironment(): boolean {
-	return (
-		parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER)) !==
-			null ||
-		parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER)) !== null
-	);
+  return parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
+    !== null
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER)) !== null;
 }
 
 async function resolveTeamStateDirForWorkerContext(
-	cwd: string,
-	workerContext: { teamName: string; workerName: string },
+  cwd: string,
+  workerContext: { teamName: string; workerName: string },
 ): Promise<string | null> {
-	const resolved = await resolveWorkerNotifyTeamStateRootPath(
-		cwd,
-		workerContext,
-		process.env,
-	).catch(() => null);
-	if (resolved) return resolved;
-	const explicit = safeString(process.env.OMX_TEAM_STATE_ROOT).trim();
-	if (explicit) {
-		const candidate = resolve(cwd, explicit);
-		const workerRoot = join(
-			candidate,
-			"team",
-			workerContext.teamName,
-			"workers",
-			workerContext.workerName,
-		);
-		if (existsSync(workerRoot)) return candidate;
-		return candidate;
-	}
-	return null;
+  const resolved = await resolveWorkerNotifyTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
+  if (resolved) return resolved;
+  const explicit = safeString(process.env.OMX_TEAM_STATE_ROOT).trim();
+  if (explicit) {
+    const candidate = resolve(cwd, explicit);
+    const workerRoot = join(candidate, "team", workerContext.teamName, "workers", workerContext.workerName);
+    if (existsSync(workerRoot)) return candidate;
+    return candidate;
+  }
+  return null;
 }
 
-async function isConfirmedTeamWorkerPromptSubmitPane(
-	cwd: string,
-): Promise<boolean> {
-	const workerContext =
-		parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER)) ||
-		parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
-	if (!workerContext) return false;
+async function isConfirmedTeamWorkerPromptSubmitPane(cwd: string): Promise<boolean> {
+  const workerContext =
+    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
+  if (!workerContext) return false;
 
-	const currentPaneId = safeString(process.env.TMUX_PANE).trim();
-	if (!currentPaneId) return false;
+  const currentPaneId = safeString(process.env.TMUX_PANE).trim();
+  if (!currentPaneId) return false;
 
-	const config = await readTeamConfig(workerContext.teamName, cwd).catch(
-		() => null,
-	);
-	if (!config) return false;
+  const config = await readTeamConfig(workerContext.teamName, cwd).catch(() => null);
+  if (!config) return false;
 
-	const leaderPaneId = safeString(config.leader_pane_id).trim();
-	if (leaderPaneId && leaderPaneId === currentPaneId) return false;
+  const leaderPaneId = safeString(config.leader_pane_id).trim();
+  if (leaderPaneId && leaderPaneId === currentPaneId) return false;
 
-	const workerPaneId = safeString(
-		config.workers.find((worker) => worker.name === workerContext.workerName)
-			?.pane_id,
-	).trim();
-	return workerPaneId !== "" && workerPaneId === currentPaneId;
+  const workerPaneId = safeString(
+    config.workers.find((worker) => worker.name === workerContext.workerName)?.pane_id,
+  ).trim();
+  return workerPaneId !== "" && workerPaneId === currentPaneId;
 }
+
 
 type TeamWorkerStopDecision =
-	| {
-			kind: "blocked";
-			stateDir: string;
-			workerContext: { teamName: string; workerName: string };
-			output: Record<string, unknown>;
-			allowRepeatDuringStopHook: boolean;
-	  }
-	| {
-			kind: "allowed";
-			stateDir: string;
-			workerContext: { teamName: string; workerName: string };
-	  }
-	| {
-			kind: "unresolved";
-			reason: string;
-	  };
+  | {
+      kind: "blocked";
+      stateDir: string;
+      workerContext: { teamName: string; workerName: string };
+      output: Record<string, unknown>;
+      allowRepeatDuringStopHook: boolean;
+    }
+  | {
+      kind: "allowed";
+      stateDir: string;
+      workerContext: { teamName: string; workerName: string };
+    }
+  | {
+      kind: "unresolved";
+      reason: string;
+    };
 
 async function resolveTeamWorkerStopDecision(
-	cwd: string,
+  cwd: string,
 ): Promise<TeamWorkerStopDecision> {
-	const workerContext =
-		parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER)) ||
-		parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
-	if (!workerContext)
-		return { kind: "unresolved", reason: "missing_worker_context" };
+  const workerContext =
+    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
+  if (!workerContext) return { kind: "unresolved", reason: "missing_worker_context" };
 
-	const blockWorkerStop = (
-		reasonCode: string,
-		detail: string,
-		stateDirForDecision = getBaseStateDir(cwd),
-	): TeamWorkerStopDecision => ({
-		kind: "blocked",
-		stateDir: stateDirForDecision,
-		workerContext,
-		allowRepeatDuringStopHook: false,
-		output: {
-			decision: "block",
-			reason:
-				`OMX team worker ${workerContext.workerName} Stop cannot be allowed for ${reasonCode}: ${detail}. ` +
-				"Continue the assigned task, repair worker state, or report a concrete blocker before stopping.",
-			stopReason: `team_worker_${workerContext.workerName}_${reasonCode}`,
-			systemMessage: `OMX team worker ${workerContext.workerName} Stop lacks completed task evidence (${reasonCode}).`,
-		},
-	});
+  const blockWorkerStop = (
+    reasonCode: string,
+    detail: string,
+    stateDirForDecision = getBaseStateDir(cwd),
+  ): TeamWorkerStopDecision => ({
+    kind: "blocked",
+    stateDir: stateDirForDecision,
+    workerContext,
+    allowRepeatDuringStopHook: false,
+    output: {
+      decision: "block",
+      reason:
+        `OMX team worker ${workerContext.workerName} Stop cannot be allowed for ${reasonCode}: ${detail}. ` +
+        "Continue the assigned task, repair worker state, or report a concrete blocker before stopping.",
+      stopReason: `team_worker_${workerContext.workerName}_${reasonCode}`,
+      systemMessage:
+        `OMX team worker ${workerContext.workerName} Stop lacks completed task evidence (${reasonCode}).`,
+    },
+  });
 
-	const stateDir = await resolveTeamStateDirForWorkerContext(
-		cwd,
-		workerContext,
-	);
-	if (!stateDir) {
-		return blockWorkerStop(
-			"missing_state_dir",
-			"team state root could not be resolved",
-		);
-	}
-	const workerRoot = join(
-		stateDir,
-		"team",
-		workerContext.teamName,
-		"workers",
-		workerContext.workerName,
-	);
-	const [identity, status] = await Promise.all([
-		readJsonIfExists(join(workerRoot, "identity.json")),
-		readJsonIfExists(join(workerRoot, "status.json")),
-	]);
-	const workerRunState = safeString(status?.state).trim().toLowerCase();
-	const workerRunStateIsTerminal =
-		TEAM_WORKER_TERMINAL_RUN_STATES.has(workerRunState);
-	if (!identity && !status && !existsSync(workerRoot)) {
-		return blockWorkerStop(
-			"missing_worker_state",
-			"worker identity/status state is missing",
-			stateDir,
-		);
-	}
+  const stateDir = await resolveTeamStateDirForWorkerContext(cwd, workerContext);
+  if (!stateDir) {
+    return blockWorkerStop("missing_state_dir", "team state root could not be resolved");
+  }
+  const workerRoot = join(stateDir, "team", workerContext.teamName, "workers", workerContext.workerName);
+  const [identity, status] = await Promise.all([
+    readJsonIfExists(join(workerRoot, "identity.json")),
+    readJsonIfExists(join(workerRoot, "status.json")),
+  ]);
+  const workerRunState = safeString(status?.state).trim().toLowerCase();
+  const workerRunStateIsTerminal = TEAM_WORKER_TERMINAL_RUN_STATES.has(workerRunState);
+  if (!identity && !status && !existsSync(workerRoot)) {
+    return blockWorkerStop("missing_worker_state", "worker identity/status state is missing", stateDir);
+  }
 
-	const candidateTaskIds = new Set<string>();
-	const currentTaskId = safeString(status?.current_task_id).trim();
-	if (currentTaskId) candidateTaskIds.add(currentTaskId);
-	const assignedTasks = Array.isArray(identity?.assigned_tasks)
-		? identity?.assigned_tasks
-		: [];
-	for (const taskId of assignedTasks) {
-		const normalized = safeString(taskId).trim();
-		if (normalized) candidateTaskIds.add(normalized);
-	}
+  const candidateTaskIds = new Set<string>();
+  const currentTaskId = safeString(status?.current_task_id).trim();
+  if (currentTaskId) candidateTaskIds.add(currentTaskId);
+  const assignedTasks = Array.isArray(identity?.assigned_tasks) ? identity?.assigned_tasks : [];
+  for (const taskId of assignedTasks) {
+    const normalized = safeString(taskId).trim();
+    if (normalized) candidateTaskIds.add(normalized);
+  }
 
-	const tasksDir = join(stateDir, "team", workerContext.teamName, "tasks");
-	if (existsSync(tasksDir)) {
-		const taskFiles = await readdir(tasksDir).catch(() => []);
-		for (const entry of taskFiles) {
-			if (!/^task-\d+\.json$/.test(entry)) continue;
-			const task = await readJsonIfExists(join(tasksDir, entry));
-			const taskOwner = safeString(task?.owner).trim();
-			const taskClaimOwner = safeString(safeObject(task?.claim).owner).trim();
-			if (
-				taskOwner !== workerContext.workerName &&
-				taskClaimOwner !== workerContext.workerName
-			)
-				continue;
-			const idFromFile = /^task-(\d+)\.json$/.exec(entry)?.[1] ?? "";
-			const taskId = safeString(task?.id).trim() || idFromFile;
-			if (taskId) candidateTaskIds.add(taskId);
-		}
-	}
+  const tasksDir = join(stateDir, "team", workerContext.teamName, "tasks");
+  if (existsSync(tasksDir)) {
+    const taskFiles = await readdir(tasksDir).catch(() => []);
+    for (const entry of taskFiles) {
+      if (!/^task-\d+\.json$/.test(entry)) continue;
+      const task = await readJsonIfExists(join(tasksDir, entry));
+      const taskOwner = safeString(task?.owner).trim();
+      const taskClaimOwner = safeString(safeObject(task?.claim).owner).trim();
+      if (taskOwner !== workerContext.workerName && taskClaimOwner !== workerContext.workerName) continue;
+      const idFromFile = /^task-(\d+)\.json$/.exec(entry)?.[1] ?? "";
+      const taskId = safeString(task?.id).trim() || idFromFile;
+      if (taskId) candidateTaskIds.add(taskId);
+    }
+  }
 
-	if (candidateTaskIds.size === 0) {
-		return blockWorkerStop(
-			"missing_task_assignment",
-			"no current_task_id or assigned_tasks are recorded",
-			stateDir,
-		);
-	}
+  if (candidateTaskIds.size === 0) {
+    return blockWorkerStop("missing_task_assignment", "no current_task_id or assigned_tasks are recorded", stateDir);
+  }
 
-	let completedTaskCount = 0;
-	for (const taskId of candidateTaskIds) {
-		const task = await readJsonIfExists(
-			join(
-				stateDir,
-				"team",
-				workerContext.teamName,
-				"tasks",
-				`task-${taskId}.json`,
-			),
-		);
-		const statusValue = safeString(task?.status).trim().toLowerCase();
-		if (!statusValue) {
-			return blockWorkerStop(
-				`missing_task_state_${taskId}`,
-				`task ${taskId} has no readable status`,
-				stateDir,
-			);
-		}
-		if (statusValue === "completed") {
-			completedTaskCount += 1;
-			continue;
-		}
-		if (!TEAM_STOP_BLOCKING_TASK_STATUSES.has(statusValue)) {
-			return blockWorkerStop(
-				`non_completed_task_${taskId}_${statusValue}`,
-				`task ${taskId} is ${statusValue}, not completed`,
-				stateDir,
-			);
-		}
-		return {
-			kind: "blocked",
-			stateDir,
-			workerContext,
-			allowRepeatDuringStopHook: !workerRunStateIsTerminal,
-			output: {
-				decision: "block",
-				reason: `OMX team worker ${workerContext.workerName} is still assigned non-terminal task ${taskId} (${statusValue}); continue the current assigned task or report a concrete blocker before stopping.`,
-				stopReason: `team_worker_${workerContext.workerName}_${taskId}_${statusValue}`,
-				systemMessage: `OMX team worker ${workerContext.workerName} is still assigned task ${taskId} (${statusValue}).`,
-			},
-		};
-	}
+  let completedTaskCount = 0;
+  for (const taskId of candidateTaskIds) {
+    const task = await readJsonIfExists(
+      join(stateDir, "team", workerContext.teamName, "tasks", `task-${taskId}.json`),
+    );
+    const statusValue = safeString(task?.status).trim().toLowerCase();
+    if (!statusValue) {
+      return blockWorkerStop(`missing_task_state_${taskId}`, `task ${taskId} has no readable status`, stateDir);
+    }
+    if (statusValue === "completed") {
+      completedTaskCount += 1;
+      continue;
+    }
+    if (!TEAM_STOP_BLOCKING_TASK_STATUSES.has(statusValue)) {
+      return blockWorkerStop(
+        `non_completed_task_${taskId}_${statusValue}`,
+        `task ${taskId} is ${statusValue}, not completed`,
+        stateDir,
+      );
+    }
+    return {
+      kind: "blocked",
+      stateDir,
+      workerContext,
+      allowRepeatDuringStopHook: !workerRunStateIsTerminal,
+      output: {
+        decision: "block",
+        reason:
+          `OMX team worker ${workerContext.workerName} is still assigned non-terminal task ${taskId} (${statusValue}); continue the current assigned task or report a concrete blocker before stopping.`,
+        stopReason: `team_worker_${workerContext.workerName}_${taskId}_${statusValue}`,
+        systemMessage:
+          `OMX team worker ${workerContext.workerName} is still assigned task ${taskId} (${statusValue}).`,
+      },
+    };
+  }
 
-	if (completedTaskCount === candidateTaskIds.size) {
-		return { kind: "allowed", stateDir, workerContext };
-	}
+  if (completedTaskCount === candidateTaskIds.size) {
+    return { kind: "allowed", stateDir, workerContext };
+  }
 
-	return blockWorkerStop(
-		"missing_completed_task_evidence",
-		"no referenced worker task is completed",
-		stateDir,
-	);
+  return blockWorkerStop("missing_completed_task_evidence", "no referenced worker task is completed", stateDir);
 }
 
 function isStopExempt(payload: CodexHookPayload): boolean {
-	const candidates = [
-		payload.stop_reason,
-		payload.stopReason,
-		payload.reason,
-		payload.exit_reason,
-		payload.exitReason,
-	]
-		.map((value) => safeString(value).toLowerCase())
-		.filter(Boolean);
-	return candidates.some(
-		(value) =>
-			value.includes("cancel") ||
-			value.includes("abort") ||
-			value.includes("context") ||
-			value.includes("compact") ||
-			value.includes("limit"),
-	);
+  const candidates = [
+    payload.stop_reason,
+    payload.stopReason,
+    payload.reason,
+    payload.exit_reason,
+    payload.exitReason,
+  ]
+    .map((value) => safeString(value).toLowerCase())
+    .filter(Boolean);
+  return candidates.some((value) =>
+    value.includes("cancel")
+    || value.includes("abort")
+    || value.includes("context")
+    || value.includes("compact")
+    || value.includes("limit"),
+  );
 }
 
 async function readModeStateWithStopSource(
-	mode: "autopilot" | "ultrawork" | "ultraqa",
-	cwd: string,
-	sessionId?: string,
+  mode: "autopilot" | "ultrawork" | "ultraqa",
+  cwd: string,
+  sessionId?: string,
 ): Promise<{ state: Record<string, unknown>; path: string } | null> {
-	const paths = await getAuthoritativeActiveStatePaths(
-		mode,
-		cwd,
-		sessionId?.trim() || undefined,
-	).catch(() => [] as string[]);
-	const path = paths[0];
-	if (!path) return null;
-	const state = await readJsonIfExists(path);
-	return state ? { state, path } : null;
+  const paths = await getAuthoritativeActiveStatePaths(mode, cwd, sessionId?.trim() || undefined).catch(() => [] as string[]);
+  const path = paths[0];
+  if (!path) return null;
+  const state = await readJsonIfExists(path);
+  return state ? { state, path } : null;
 }
-async function readRawSkillActiveState(
-	path: string,
-): Promise<SkillActiveStateLike | null> {
-	try {
-		const parsed = JSON.parse(await readFile(path, "utf-8"));
-		return parsed && typeof parsed === "object"
-			? (parsed as SkillActiveStateLike)
-			: null;
-	} catch {
-		return null;
-	}
+async function readRawSkillActiveState(path: string): Promise<SkillActiveStateLike | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf-8"));
+    return parsed && typeof parsed === "object" ? parsed as SkillActiveStateLike : null;
+  } catch {
+    return null;
+  }
 }
 
-function canonicalStopDisagreement(
-	modeState: Record<string, unknown>,
-	canonicalState: SkillActiveStateLike | null,
-	mode: string,
-	sessionId?: string,
-): string {
-	if (!canonicalState) return "canonical_state_missing";
-	const normalizedSessionId = safeString(sessionId).trim();
-	const activeEntry = listRawActiveSkillEntries(canonicalState).find(
-		(entry) => {
-			if (entry.skill !== mode) return false;
-			const entrySessionId = safeString(
-				entry.session_id ?? canonicalState.session_id,
-			).trim();
-			return normalizedSessionId
-				? entrySessionId === normalizedSessionId || entrySessionId === ""
-				: true;
-		},
-	);
-	if (!activeEntry) return "canonical_inactive";
-	if (mode === "autopilot") {
-		const phase = safeString(
-			modeState.current_phase ?? modeState.currentPhase,
-		).trim();
-		const canonicalPhase = safeString(
-			activeEntry.phase ?? canonicalState.phase,
-		).trim();
-		if (
-			phase &&
-			canonicalPhase &&
-			normalizeAutopilotPhase(phase) !== normalizeAutopilotPhase(canonicalPhase)
-		) {
-			return `canonical_phase:${canonicalPhase}`;
-		}
-	}
-	return "canonical_agrees";
+
+function canonicalStopDisagreement(modeState: Record<string, unknown>, canonicalState: SkillActiveStateLike | null, mode: string, sessionId?: string): string {
+  if (!canonicalState) return "canonical_state_missing";
+  const normalizedSessionId = safeString(sessionId).trim();
+  const activeEntry = listRawActiveSkillEntries(canonicalState).find((entry) => {
+    if (entry.skill !== mode) return false;
+    const entrySessionId = safeString(entry.session_id ?? canonicalState.session_id).trim();
+    return normalizedSessionId ? entrySessionId === normalizedSessionId || entrySessionId === "" : true;
+  });
+  if (!activeEntry) return "canonical_inactive";
+  if (mode === "autopilot") {
+    const phase = safeString(modeState.current_phase ?? modeState.currentPhase).trim();
+    const canonicalPhase = safeString(activeEntry.phase ?? canonicalState.phase).trim();
+    if (phase && canonicalPhase && normalizeAutopilotPhase(phase) !== normalizeAutopilotPhase(canonicalPhase)) {
+      return `canonical_phase:${canonicalPhase}`;
+    }
+  }
+  return "canonical_agrees";
 }
 
-function listRawActiveSkillEntries(
-	state: SkillActiveStateLike | null,
-): SkillActiveEntry[] {
-	if (!state) return [];
-	const entries: SkillActiveEntry[] = [];
-	if (Array.isArray(state.active_skills)) {
-		for (const candidate of state.active_skills) {
-			if (!candidate || typeof candidate !== "object") continue;
-			const raw = candidate as unknown as Record<string, unknown>;
-			const skill = safeString(raw.skill).trim();
-			if (!skill || raw.active === false) continue;
-			entries.push({
-				...raw,
-				skill,
-				phase: safeString(raw.phase).trim() || undefined,
-				session_id: safeString(raw.session_id).trim() || undefined,
-				thread_id: safeString(raw.thread_id).trim() || undefined,
-			});
-		}
-	}
-	const topLevelSkill = safeString(state.skill).trim();
-	if (state.active === true && topLevelSkill) {
-		entries.push({
-			skill: topLevelSkill,
-			phase: safeString(state.phase).trim() || undefined,
-			session_id: safeString(state.session_id).trim() || undefined,
-			thread_id: safeString(state.thread_id).trim() || undefined,
-		});
-	}
-	return entries;
+function listRawActiveSkillEntries(state: SkillActiveStateLike | null): SkillActiveEntry[] {
+  if (!state) return [];
+  const entries: SkillActiveEntry[] = [];
+  if (Array.isArray(state.active_skills)) {
+    for (const candidate of state.active_skills) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const raw = candidate as unknown as Record<string, unknown>;
+      const skill = safeString(raw.skill).trim();
+      if (!skill || raw.active === false) continue;
+      entries.push({
+        ...raw,
+        skill,
+        phase: safeString(raw.phase).trim() || undefined,
+        session_id: safeString(raw.session_id).trim() || undefined,
+        thread_id: safeString(raw.thread_id).trim() || undefined,
+      });
+    }
+  }
+  const topLevelSkill = safeString(state.skill).trim();
+  if (state.active === true && topLevelSkill) {
+    entries.push({
+      skill: topLevelSkill,
+      phase: safeString(state.phase).trim() || undefined,
+      session_id: safeString(state.session_id).trim() || undefined,
+      thread_id: safeString(state.thread_id).trim() || undefined,
+    });
+  }
+  return entries;
 }
 
 async function buildModeBasedStopOutput(
-	mode: "autopilot" | "ultrawork" | "ultraqa",
-	cwd: string,
-	sessionId?: string,
+  mode: "autopilot" | "ultrawork" | "ultraqa",
+  cwd: string,
+  sessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-	if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, mode)) {
-		return null;
-	}
-	if (
-		mode === "autopilot" &&
-		(await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId))
-	) {
-		return null;
-	}
-	const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId);
-	const state = sourcedState?.state ?? null;
-	if (!state || !shouldContinueRun(state)) return null;
-	const rootCanonicalState = await readRawSkillActiveState(
-		getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath,
-	);
-	const canonicalDisagreement = rootCanonicalState
-		? canonicalStopDisagreement(state, rootCanonicalState, mode, sessionId)
-		: "canonical_state_missing";
-	if (canonicalDisagreement === "canonical_inactive") return null;
-	const phase = formatPhase(state.current_phase);
-	if (!rootCanonicalState || mode !== "autopilot") {
-		const systemMessage =
-			mode === "autopilot" &&
-			phase.toLowerCase().replace(/_/g, "-") === "code-review"
-				? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
-				: `OMX ${mode} is still active (phase: ${phase}).`;
-		return {
-			decision: "block",
-			reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
-			stopReason: `${mode}_${phase}`,
-			systemMessage,
-		};
-	}
-	const statePath = sourcedState
-		? formatStopStatePath(cwd, sourcedState.path)
-		: "unknown";
-	const diagnostic = `state: ${statePath}; canonical: ${canonicalDisagreement}`;
-	const systemMessage =
-		mode === "autopilot" &&
-		phase.toLowerCase().replace(/_/g, "-") === "code-review"
-			? `OMX autopilot is still active (phase: code-review; ${diagnostic}). Run the required $code-review step before completing or clearing Autopilot state.`
-			: `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}).`;
-	return {
-		decision: "block",
-		reason: `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}); continue the task and gather fresh verification evidence before stopping.`,
-		stopReason: `${mode}_${phase}`,
-		systemMessage,
-	};
+  if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, mode)) {
+    return null;
+  }
+  if (mode === "autopilot" && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
+    return null;
+  }
+  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId);
+  const state = sourcedState?.state ?? null;
+  if (!state || !shouldContinueRun(state)) return null;
+  const rootCanonicalState = await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
+  const canonicalDisagreement = rootCanonicalState
+    ? canonicalStopDisagreement(state, rootCanonicalState, mode, sessionId)
+    : "canonical_state_missing";
+  if (canonicalDisagreement === "canonical_inactive") return null;
+  const phase = formatPhase(state.current_phase);
+  if (!rootCanonicalState || mode !== "autopilot") {
+    const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
+      ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
+      : `OMX ${mode} is still active (phase: ${phase}).`;
+    return {
+      decision: "block",
+      reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
+      stopReason: `${mode}_${phase}`,
+      systemMessage,
+    };
+  }
+  const statePath = sourcedState ? formatStopStatePath(cwd, sourcedState.path) : "unknown";
+  const diagnostic = `state: ${statePath}; canonical: ${canonicalDisagreement}`;
+  const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
+    ? `OMX autopilot is still active (phase: code-review; ${diagnostic}). Run the required $code-review step before completing or clearing Autopilot state.`
+    : `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}).`;
+  return {
+    decision: "block",
+    reason: `OMX ${mode} is still active (phase: ${phase}; ${diagnostic}); continue the task and gather fresh verification evidence before stopping.`,
+    stopReason: `${mode}_${phase}`,
+    systemMessage,
+  };
 }
 
 export function looksLikeGoalCompletionPrompt(text: string): boolean {
-	return (
-		/\bupdate_goal\s*\(/i.test(text) ||
-		/\bomx\s+(?:ultragoal|performance-goal|autoresearch-goal)\s+(?:checkpoint|complete)\b/i.test(
-			text,
-		) ||
-		/\b(?:complete|checkpoint|finish|close|mark)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(
-			text,
-		) ||
-		/\b(?:ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:complete|checkpoint|finish|close|mark)\b/i.test(
-			text,
-		) ||
-		/(?:^|[.!?]\s+)(?:the\s+)?goal\s+(?:is\s+|now\s+|has\s+been\s+)?(?:complete|completed|finished|closed)(?:\s*(?:[.!?]|$)|\s*[:;]\s*\S|\s*[—–-]\s*\S)/i.test(
-			text,
-		)
-	);
+  return /\bupdate_goal\s*\(/i.test(text)
+    || /\bomx\s+(?:ultragoal|performance-goal|autoresearch-goal)\s+(?:checkpoint|complete)\b/i.test(text)
+    || /\b(?:complete|checkpoint|finish|close|mark)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(text)
+    || /\b(?:ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:complete|checkpoint|finish|close|mark)\b/i.test(text)
+    || /(?:^|[.!?]\s+)(?:the\s+)?goal\s+(?:is\s+|now\s+|has\s+been\s+)?(?:complete|completed|finished|closed)(?:\s*(?:[.!?]|$)|\s*[:;]\s*\S|\s*[—–-]\s*\S)/i.test(text);
 }
 
 function reportsAutoresearchGoalObjectiveMismatch(text: string): boolean {
-	return (
-		/\bautoresearch[-\s]goal\b/i.test(text) &&
-		/\b(?:complete|completion|reconciliation)\b/i.test(text) &&
-		/objective mismatch/i.test(text)
-	);
+  return /\bautoresearch[-\s]goal\b/i.test(text)
+    && /\b(?:complete|completion|reconciliation)\b/i.test(text)
+    && /objective mismatch/i.test(text);
 }
 
-function reportsBlockedPerformanceGoalObjectiveMismatch(
-	state: unknown,
-): boolean {
-	const performanceState = safeObject(state);
-	const lastValidation = safeObject(performanceState.lastValidation);
-	if (safeString(performanceState.workflow) !== "performance-goal")
-		return false;
-	if (safeString(performanceState.status) !== "blocked") return false;
-	if (safeString(lastValidation.status) !== "blocked") return false;
+function reportsBlockedPerformanceGoalObjectiveMismatch(state: unknown): boolean {
+  const performanceState = safeObject(state);
+  const lastValidation = safeObject(performanceState.lastValidation);
+  if (safeString(performanceState.workflow) !== "performance-goal") return false;
+  if (safeString(performanceState.status) !== "blocked") return false;
+  if (safeString(lastValidation.status) !== "blocked") return false;
 
-	const evidence = [
-		safeString(lastValidation.evidence),
-		safeString(lastValidation.message),
-		safeString(performanceState.evidence),
-		safeString(performanceState.message),
-	].join(" ");
-	return /objective mismatch/i.test(evidence);
+  const evidence = [
+    safeString(lastValidation.evidence),
+    safeString(lastValidation.message),
+    safeString(performanceState.evidence),
+    safeString(performanceState.message),
+  ].join(" ");
+  return /objective mismatch/i.test(evidence);
 }
 
-function reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(
-	goal: Record<string, unknown>,
-): boolean {
-	const evidence = [
-		safeString(goal.failureReason),
-		safeString(goal.blockedReason),
-		safeString(goal.evidence),
-	].join(" ");
-	return (
-		/aggregate codex goal/i.test(evidence) &&
-		/\bcomplete(?:d)?\b/i.test(evidence) &&
-		/microgoal/i.test(evidence) &&
-		/\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/i.test(
-			evidence,
-		)
-	);
+function reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(goal: Record<string, unknown>): boolean {
+  const evidence = [
+    safeString(goal.failureReason),
+    safeString(goal.blockedReason),
+    safeString(goal.evidence),
+  ].join(" ");
+  return /aggregate codex goal/i.test(evidence)
+    && /\bcomplete(?:d)?\b/i.test(evidence)
+    && /microgoal/i.test(evidence)
+    && /\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/i.test(evidence);
 }
 
-function sentenceWindowAround(
-	text: string,
-	start: number,
-	end: number,
-): string {
-	const rawBefore = text.slice(Math.max(0, start - 80), start);
-	const rawAfter = text.slice(end, Math.min(text.length, end + 80));
-	const before = rawBefore.slice(
-		Math.max(
-			rawBefore.lastIndexOf("\n"),
-			rawBefore.lastIndexOf("."),
-			rawBefore.lastIndexOf("!"),
-			rawBefore.lastIndexOf("?"),
-		) + 1,
-	);
-	const sentenceEndOffsets = [
-		rawAfter.indexOf("\n"),
-		rawAfter.indexOf("."),
-		rawAfter.indexOf("!"),
-		rawAfter.indexOf("?"),
-	].filter((index) => index >= 0);
-	const after =
-		sentenceEndOffsets.length > 0
-			? rawAfter.slice(0, Math.min(...sentenceEndOffsets))
-			: rawAfter;
-	return `${before}${text.slice(start, end)}${after}`;
+
+function sentenceWindowAround(text: string, start: number, end: number): string {
+  const rawBefore = text.slice(Math.max(0, start - 80), start);
+  const rawAfter = text.slice(end, Math.min(text.length, end + 80));
+  const before = rawBefore.slice(Math.max(rawBefore.lastIndexOf("\n"), rawBefore.lastIndexOf("."), rawBefore.lastIndexOf("!"), rawBefore.lastIndexOf("?")) + 1);
+  const sentenceEndOffsets = [rawAfter.indexOf("\n"), rawAfter.indexOf("."), rawAfter.indexOf("!"), rawAfter.indexOf("?")].filter((index) => index >= 0);
+  const after = sentenceEndOffsets.length > 0 ? rawAfter.slice(0, Math.min(...sentenceEndOffsets)) : rawAfter;
+  return `${before}${text.slice(start, end)}${after}`;
 }
 
 function isNegatedGoalAttemptWindow(window: string): boolean {
-	return (
-		/\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not|no)\b.{0,50}\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(
-			window,
-		) ||
-		/\b(?:without|instead\s+of)\b.{0,30}\b(?:start|create|begin|new|another)?\b.{0,30}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(
-			window,
-		) ||
-		/\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,30}\b(?:is|was|already)\b.{0,30}\b(?:documented|complete|completed|done|unavailable|not\s+needed)\b/i.test(
-			window,
-		)
-	);
+  return /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not|no)\b.{0,50}\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(window)
+    || /\b(?:without|instead\s+of)\b.{0,30}\b(?:start|create|begin|new|another)?\b.{0,30}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/i.test(window)
+    || /\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,30}\b(?:is|was|already)\b.{0,30}\b(?:documented|complete|completed|done|unavailable|not\s+needed)\b/i.test(window);
 }
 
 function looksLikeGoalCreationAttempt(text: string): boolean {
-	const candidatePattern =
-		/\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/gi;
-	for (const match of text.matchAll(candidatePattern)) {
-		const start = match.index ?? 0;
-		const end = start + match[0].length;
-		const window = sentenceWindowAround(text, start, end);
-		if (isNegatedGoalAttemptWindow(window)) continue;
-		if (
-			/(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(
-				window,
-			)
-		)
-			return true;
-	}
-	return false;
+  const candidatePattern = /\b(?:start|create|begin|new|another|goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b/gi;
+  for (const match of text.matchAll(candidatePattern)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const window = sentenceWindowAround(text, start, end);
+    if (isNegatedGoalAttemptWindow(window)) continue;
+    if (/(?:\b(?:start|create|begin|new|another)\b.{0,80}\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b|\b(?:goal|ultragoal|performance[-\s]goal|autoresearch[-\s]goal)\b.{0,80}\b(?:start|create|begin|new|another)\b)/i.test(window)) return true;
+  }
+  return false;
 }
 
 function looksLikeCreateGoalAttempt(text: string): boolean {
-	const candidatePattern = /\bcreate_goal\s*(?:\(|\b)/gi;
-	for (const match of text.matchAll(candidatePattern)) {
-		const start = match.index ?? 0;
-		const end = start + match[0].length;
-		const window = sentenceWindowAround(text, start, end);
-		if (
-			/(?:\bno\s+create_goal\s+attempt\b|\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not)\b.{0,40}\bcreate_goal\b|\bwithout\s+create_goal\b|\bfailed\s+to\s+call\s+create_goal\b|\bcreate_goal\s+(?:is|was)\s+(?:unavailable|not\s+available|not\s+called)\b)/i.test(
-				window,
-			)
-		) {
-			continue;
-		}
-		if (
-			/\b(?:call|calling|called|invoke|invoking|start|starting|create|creating|begin|beginning|attempt|attempting|try|trying|continue\s+to|proceed\s+to)\b.{0,80}\bcreate_goal\b/i.test(
-				window,
-			) ||
-			/\bcreate_goal\b.{0,80}\b(?:payload|call|tool|now|next|follows|follow|start|starting|create|creating|begin|beginning|attempt|attempting)\b/i.test(
-				window,
-			) ||
-			/\bcreate_goal\s*\(/i.test(match[0])
-		) {
-			return true;
-		}
-	}
-	return false;
+  const candidatePattern = /\bcreate_goal\s*(?:\(|\b)/gi;
+  for (const match of text.matchAll(candidatePattern)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const window = sentenceWindowAround(text, start, end);
+    if (/(?:\bno\s+create_goal\s+attempt\b|\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not)\b.{0,40}\bcreate_goal\b|\bwithout\s+create_goal\b|\bfailed\s+to\s+call\s+create_goal\b|\bcreate_goal\s+(?:is|was)\s+(?:unavailable|not\s+available|not\s+called)\b)/i.test(window)) {
+      continue;
+    }
+    if (/\b(?:call|calling|called|invoke|invoking|start|starting|create|creating|begin|beginning|attempt|attempting|try|trying|continue\s+to|proceed\s+to)\b.{0,80}\bcreate_goal\b/i.test(window)
+      || /\bcreate_goal\b.{0,80}\b(?:payload|call|tool|now|next|follows|follow|start|starting|create|creating|begin|beginning|attempt|attempting)\b/i.test(window)
+      || /\bcreate_goal\s*\(/i.test(match[0])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function looksLikeCompletedGoalCleanupAttempt(text: string): boolean {
-	return looksLikeGoalCreationAttempt(text) || looksLikeCreateGoalAttempt(text);
+  return looksLikeGoalCreationAttempt(text) || looksLikeCreateGoalAttempt(text);
 }
 function hasFreshNativeGoalCleanupEvidence(text: string): boolean {
-	return (
-		/\b(?:get_goal|Codex goal|native goal|active goal|thread goal)\b.{0,120}\b(?:reports?|returns?|shows?|status|state|still|attached|pending|cleanup|required|requires?)\b.{0,120}\b(?:complete|completed|attached|pending|cleanup|required|clear)\b/i.test(
-			text,
-		) ||
-		/\b(?:complete|completed|attached|pending|cleanup|required|clear)\b.{0,120}\b(?:get_goal|Codex goal|native goal|active goal|thread goal)\b/i.test(
-			text,
-		) ||
-		/\b(?:pending[-_ ]cleanup|native[-_ ]goal[-_ ]cleanup|completed[-_ ]codex[-_ ]goal[-_ ]cleanup)\b/i.test(
-			text,
-		)
-	);
+  return /\b(?:get_goal|Codex goal|native goal|active goal|thread goal)\b.{0,120}\b(?:reports?|returns?|shows?|status|state|still|attached|pending|cleanup|required|requires?)\b.{0,120}\b(?:complete|completed|attached|pending|cleanup|required|clear)\b/i.test(text)
+    || /\b(?:complete|completed|attached|pending|cleanup|required|clear)\b.{0,120}\b(?:get_goal|Codex goal|native goal|active goal|thread goal)\b/i.test(text)
+    || /\b(?:pending[-_ ]cleanup|native[-_ ]goal[-_ ]cleanup|completed[-_ ]codex[-_ ]goal[-_ ]cleanup)\b/i.test(text);
 }
 
-async function findCompletedGoalWorkflowCleanupNotice(
-	cwd: string,
-): Promise<string | null> {
-	const ultragoal = await readJsonIfExists(
-		join(cwd, ".omx", "ultragoal", "goals.json"),
-	);
-	const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
-	const ultragoals = Array.isArray(ultragoal?.goals)
-		? ultragoal.goals.map(safeObject)
-		: [];
-	if (
-		safeString(aggregateCompletion.status) === "complete" ||
-		(ultragoals.length > 0 &&
-			ultragoals.every((goal) => safeString(goal.status) === "complete"))
-	) {
-		return buildCodexGoalTerminalCleanupNotice("Ultragoal completion");
-	}
 
-	const performanceRoot = join(cwd, ".omx", "goals", "performance");
-	for (const entry of await readdir(performanceRoot, {
-		withFileTypes: true,
-	}).catch(() => [])) {
-		if (!entry.isDirectory()) continue;
-		const state = await readJsonIfExists(
-			join(performanceRoot, entry.name, "state.json"),
-		);
-		if (
-			state?.workflow === "performance-goal" &&
-			safeString(state.status) === "complete"
-		) {
-			return buildCodexGoalTerminalCleanupNotice("Performance-goal completion");
-		}
-	}
+async function findCompletedGoalWorkflowCleanupNotice(cwd: string): Promise<string | null> {
+  const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
+  const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
+  const ultragoals = Array.isArray(ultragoal?.goals) ? ultragoal.goals.map(safeObject) : [];
+  if (safeString(aggregateCompletion.status) === "complete" || (ultragoals.length > 0 && ultragoals.every((goal) => safeString(goal.status) === "complete"))) {
+    return buildCodexGoalTerminalCleanupNotice("Ultragoal completion");
+  }
 
-	const autoresearchRoot = join(cwd, ".omx", "goals", "autoresearch");
-	for (const entry of await readdir(autoresearchRoot, {
-		withFileTypes: true,
-	}).catch(() => [])) {
-		if (!entry.isDirectory()) continue;
-		const mission = await readJsonIfExists(
-			join(autoresearchRoot, entry.name, "mission.json"),
-		);
-		if (
-			mission?.workflow === "autoresearch-goal" &&
-			safeString(mission.status) === "complete"
-		) {
-			return buildCodexGoalTerminalCleanupNotice(
-				"Autoresearch-goal completion",
-			);
-		}
-	}
+  const performanceRoot = join(cwd, ".omx", "goals", "performance");
+  for (const entry of await readdir(performanceRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const state = await readJsonIfExists(join(performanceRoot, entry.name, "state.json"));
+    if (state?.workflow === "performance-goal" && safeString(state.status) === "complete") {
+      return buildCodexGoalTerminalCleanupNotice("Performance-goal completion");
+    }
+  }
 
-	return null;
+  const autoresearchRoot = join(cwd, ".omx", "goals", "autoresearch");
+  for (const entry of await readdir(autoresearchRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const mission = await readJsonIfExists(join(autoresearchRoot, entry.name, "mission.json"));
+    if (mission?.workflow === "autoresearch-goal" && safeString(mission.status) === "complete") {
+      return buildCodexGoalTerminalCleanupNotice("Autoresearch-goal completion");
+    }
+  }
+
+  return null;
 }
 
-async function buildCompletedGoalCleanupPromptWarning(
-	cwd: string,
-	prompt: string,
-): Promise<string | null> {
-	if (!looksLikeCompletedGoalCleanupAttempt(prompt)) return null;
-	const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
-	if (!notice) return null;
-	return `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
+async function buildCompletedGoalCleanupPromptWarning(cwd: string, prompt: string): Promise<string | null> {
+  if (!looksLikeCompletedGoalCleanupAttempt(prompt)) return null;
+  const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
+  if (!notice) return null;
+  return `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
 }
 
-async function buildCompletedGoalCleanupStopOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-): Promise<Record<string, unknown> | null> {
-	const text = [
-		safeString(payload.last_user_message ?? payload.lastUserMessage),
-		safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
-	].join("\n");
-	if (!looksLikeCompletedGoalCleanupAttempt(text)) return null;
-	if (!hasFreshNativeGoalCleanupEvidence(text)) return null;
-	const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
-	if (!notice) return null;
-	const systemMessage = `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
-	return {
-		decision: "block",
-		reason: systemMessage,
-		stopReason: "completed_codex_goal_cleanup_required",
-		systemMessage,
-	};
+async function buildCompletedGoalCleanupStopOutput(payload: CodexHookPayload, cwd: string): Promise<Record<string, unknown> | null> {
+  const text = [
+    safeString(payload.last_user_message ?? payload.lastUserMessage),
+    safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
+  ].join("\n");
+  if (!looksLikeCompletedGoalCleanupAttempt(text)) return null;
+  if (!hasFreshNativeGoalCleanupEvidence(text)) return null;
+  const notice = await findCompletedGoalWorkflowCleanupNotice(cwd);
+  if (!notice) return null;
+  const systemMessage = `${notice} Do not continue into create_goal until cleanup is explicit; hooks only nudge and must not mutate Codex goal state.`;
+  return {
+    decision: "block",
+    reason: systemMessage,
+    stopReason: "completed_codex_goal_cleanup_required",
+    systemMessage,
+  };
 }
 
-async function findActiveGoalWorkflowReconciliationRequirement(
-	cwd: string,
-): Promise<{ workflow: string; command: string; remediation?: string } | null> {
-	const ultragoal = await readJsonIfExists(
-		join(cwd, ".omx", "ultragoal", "goals.json"),
-	);
-	const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
-	const aggregateProductComplete =
-		safeString(aggregateCompletion.status) === "complete";
-	const ultragoals = Array.isArray(ultragoal?.goals)
-		? ultragoal.goals.map(safeObject)
-		: [];
-	const activeUltragoal = aggregateProductComplete
-		? undefined
-		: ultragoals.find(
-				(goal) =>
-					safeString(goal.status) === "in_progress" ||
-					safeString(goal.id) === safeString(ultragoal?.activeGoalId),
-			);
-	if (
-		activeUltragoal &&
-		reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(activeUltragoal)
-	) {
-		return null;
-	}
-	if (activeUltragoal) {
-		const goalId = safeString(activeUltragoal.id) || "<goal-id>";
-		return {
-			workflow: "ultragoal",
-			command: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
-			remediation: [
-				`If get_goal returns a completed task-scoped objective for the same aggregate ultragoal plan, checkpoint ${goalId} with evidence naming ${goalId} plus .omx/ultragoal/goals.json or ledger.jsonl and pass final quality-gate JSON; OMX will reconcile the completed planned scope without mutating Codex goal state.`,
-				`If get_goal instead returns a different completed legacy objective and complete checkpointing fails, do not repeat --status complete in this thread.`,
-				`Record the non-terminal blocker with: omx ultragoal checkpoint --goal-id ${goalId} --status blocked --codex-goal-json '<different completed get_goal JSON or path>' --evidence '<completed legacy Codex goal blocks create_goal in this thread>'.`,
-				`If get_goal itself is unavailable with a Codex DB/schema/context error such as "no such table: thread_goals", record an auditable safe-recovery blocker instead: omx ultragoal checkpoint --goal-id ${goalId} --status blocked --codex-goal-json '<unavailable get_goal error JSON or path>' --evidence '<get_goal unavailable due to Codex DB/schema/context error; safe recovery requires a working Codex goal context>'.`,
-				"Then continue only from a Codex goal context with no active/completed conflicting goal in the same repo/worktree and create the intended goal there.",
-			].join(" "),
-		};
-	}
+async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Promise<{ workflow: string; command: string; remediation?: string } | null> {
+  const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
+  const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
+  const aggregateProductComplete = safeString(aggregateCompletion.status) === "complete";
+  const ultragoals = Array.isArray(ultragoal?.goals) ? ultragoal.goals.map(safeObject) : [];
+  const activeUltragoal = aggregateProductComplete
+    ? undefined
+    : ultragoals.find((goal) => safeString(goal.status) === "in_progress" || safeString(goal.id) === safeString(ultragoal?.activeGoalId));
+  if (activeUltragoal && reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(activeUltragoal)) {
+    return null;
+  }
+  if (activeUltragoal) {
+    const goalId = safeString(activeUltragoal.id) || "<goal-id>";
+    return {
+      workflow: "ultragoal",
+      command: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
+      remediation: [
+        `If get_goal returns a completed task-scoped objective for the same aggregate ultragoal plan, checkpoint ${goalId} with evidence naming ${goalId} plus .omx/ultragoal/goals.json or ledger.jsonl and pass final quality-gate JSON; OMX will reconcile the completed planned scope without mutating Codex goal state.`,
+        `If get_goal instead returns a different completed legacy objective and complete checkpointing fails, do not repeat --status complete in this thread.`,
+        `Record the non-terminal blocker with: omx ultragoal checkpoint --goal-id ${goalId} --status blocked --codex-goal-json '<different completed get_goal JSON or path>' --evidence '<completed legacy Codex goal blocks create_goal in this thread>'.`,
+        `If get_goal itself is unavailable with a Codex DB/schema/context error such as "no such table: thread_goals", record an auditable safe-recovery blocker instead: omx ultragoal checkpoint --goal-id ${goalId} --status blocked --codex-goal-json '<unavailable get_goal error JSON or path>' --evidence '<get_goal unavailable due to Codex DB/schema/context error; safe recovery requires a working Codex goal context>'.`,
+        "Then continue only from a Codex goal context with no active/completed conflicting goal in the same repo/worktree and create the intended goal there.",
+      ].join(" "),
+    };
+  }
 
-	const performanceRoot = join(cwd, ".omx", "goals", "performance");
-	for (const entry of await readdir(performanceRoot, {
-		withFileTypes: true,
-	}).catch(() => [])) {
-		if (!entry.isDirectory()) continue;
-		const state = await readJsonIfExists(
-			join(performanceRoot, entry.name, "state.json"),
-		);
-		const status = safeString(state?.status);
-		if (reportsBlockedPerformanceGoalObjectiveMismatch(state)) {
-			continue;
-		}
-		if (
-			state?.workflow === "performance-goal" &&
-			status &&
-			status !== "complete"
-		) {
-			return {
-				workflow: "performance-goal",
-				command: `omx performance-goal complete --slug ${safeString(state.slug) || entry.name} --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
-			};
-		}
-	}
+  const performanceRoot = join(cwd, ".omx", "goals", "performance");
+  for (const entry of await readdir(performanceRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const state = await readJsonIfExists(join(performanceRoot, entry.name, "state.json"));
+    const status = safeString(state?.status);
+    if (reportsBlockedPerformanceGoalObjectiveMismatch(state)) {
+      continue;
+    }
+    if (state?.workflow === "performance-goal" && status && status !== "complete") {
+      return {
+        workflow: "performance-goal",
+        command: `omx performance-goal complete --slug ${safeString(state.slug) || entry.name} --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
+      };
+    }
+  }
 
-	const autoresearchRoot = join(cwd, ".omx", "goals", "autoresearch");
-	for (const entry of await readdir(autoresearchRoot, {
-		withFileTypes: true,
-	}).catch(() => [])) {
-		if (!entry.isDirectory()) continue;
-		const mission = await readJsonIfExists(
-			join(autoresearchRoot, entry.name, "mission.json"),
-		);
-		const status = safeString(mission?.status);
-		const completion = await readJsonIfExists(
-			join(autoresearchRoot, entry.name, "completion.json"),
-		);
-		const completionVerdict = safeString(completion?.verdict);
-		const completionPassed =
-			completion?.passed === true || completionVerdict === "pass";
-		if (
-			mission?.workflow === "autoresearch-goal" &&
-			status &&
-			status !== "complete" &&
-			completionPassed
-		) {
-			return {
-				workflow: "autoresearch-goal",
-				command: `omx autoresearch-goal complete --slug ${safeString(mission.slug) || entry.name} --codex-goal-json '<get_goal JSON or path>'`,
-				remediation: [
-					"If that command fails with a Codex goal objective mismatch after a refreshed get_goal snapshot, do not repeat the same complete command blindly in this thread.",
-					"Either retry with a correct refreshed snapshot or record an explicit blocked verdict for this autoresearch-goal and continue from the explicit blocker path.",
-				].join(" "),
-			};
-		}
-	}
+  const autoresearchRoot = join(cwd, ".omx", "goals", "autoresearch");
+  for (const entry of await readdir(autoresearchRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const mission = await readJsonIfExists(join(autoresearchRoot, entry.name, "mission.json"));
+    const status = safeString(mission?.status);
+    const completion = await readJsonIfExists(join(autoresearchRoot, entry.name, "completion.json"));
+    const completionVerdict = safeString(completion?.verdict);
+    const completionPassed = completion?.passed === true || completionVerdict === "pass";
+    if (
+      mission?.workflow === "autoresearch-goal"
+      && status
+      && status !== "complete"
+      && completionPassed
+    ) {
+      return {
+        workflow: "autoresearch-goal",
+        command: `omx autoresearch-goal complete --slug ${safeString(mission.slug) || entry.name} --codex-goal-json '<get_goal JSON or path>'`,
+        remediation: [
+          "If that command fails with a Codex goal objective mismatch after a refreshed get_goal snapshot, do not repeat the same complete command blindly in this thread.",
+          "Either retry with a correct refreshed snapshot or record an explicit blocked verdict for this autoresearch-goal and continue from the explicit blocker path.",
+        ].join(" "),
+      };
+    }
+  }
 
-	return null;
+  return null;
 }
 
-async function buildGoalWorkflowReconciliationPromptWarning(
-	cwd: string,
-	prompt: string,
-): Promise<string | null> {
-	if (!looksLikeGoalCompletionPrompt(prompt)) return null;
-	const requirement =
-		await findActiveGoalWorkflowReconciliationRequirement(cwd);
-	if (!requirement) return null;
-	return [
-		`OMX ${requirement.workflow} goal workflow requires Codex goal snapshot reconciliation before completion.`,
-		"Call get_goal, pass the resulting JSON or a path with --codex-goal-json, and do not rely on hooks or shell commands to mutate Codex-owned goal state.",
-		`Required command shape: ${requirement.command}.`,
-		requirement.remediation,
-	]
-		.filter(Boolean)
-		.join(" ");
+async function buildGoalWorkflowReconciliationPromptWarning(cwd: string, prompt: string): Promise<string | null> {
+  if (!looksLikeGoalCompletionPrompt(prompt)) return null;
+  const requirement = await findActiveGoalWorkflowReconciliationRequirement(cwd);
+  if (!requirement) return null;
+  return [
+    `OMX ${requirement.workflow} goal workflow requires Codex goal snapshot reconciliation before completion.`,
+    "Call get_goal, pass the resulting JSON or a path with --codex-goal-json, and do not rely on hooks or shell commands to mutate Codex-owned goal state.",
+    `Required command shape: ${requirement.command}.`,
+    requirement.remediation,
+  ].filter(Boolean).join(" ");
 }
 
 async function buildGoalWorkflowReconciliationStopOutput(
-	payload: CodexHookPayload,
-	cwd: string,
+  payload: CodexHookPayload,
+  cwd: string,
 ): Promise<Record<string, unknown> | null> {
-	const lastAssistantMessage = safeString(
-		payload.last_assistant_message ?? payload.lastAssistantMessage,
-	);
-	if (!looksLikeGoalCompletionPrompt(lastAssistantMessage)) return null;
-	const requirement =
-		await findActiveGoalWorkflowReconciliationRequirement(cwd);
-	if (!requirement) return null;
-	if (
-		requirement.workflow === "autoresearch-goal" &&
-		reportsAutoresearchGoalObjectiveMismatch(lastAssistantMessage)
-	) {
-		return null;
-	}
-	const systemMessage = [
-		`OMX ${requirement.workflow} requires get_goal snapshot reconciliation before completion; call get_goal and pass --codex-goal-json to ${requirement.command}.`,
-		requirement.remediation,
-		"Hooks must not mutate Codex goal state.",
-	]
-		.filter(Boolean)
-		.join(" ");
-	return {
-		decision: "block",
-		reason: systemMessage,
-		stopReason: `${requirement.workflow}_codex_goal_snapshot_required`,
-		systemMessage,
-	};
+  const lastAssistantMessage = safeString(payload.last_assistant_message ?? payload.lastAssistantMessage);
+  if (!looksLikeGoalCompletionPrompt(lastAssistantMessage)) return null;
+  const requirement = await findActiveGoalWorkflowReconciliationRequirement(cwd);
+  if (!requirement) return null;
+  if (requirement.workflow === "autoresearch-goal" && reportsAutoresearchGoalObjectiveMismatch(lastAssistantMessage)) {
+    return null;
+  }
+  const systemMessage =
+    [
+      `OMX ${requirement.workflow} requires get_goal snapshot reconciliation before completion; call get_goal and pass --codex-goal-json to ${requirement.command}.`,
+      requirement.remediation,
+      "Hooks must not mutate Codex goal state.",
+    ].filter(Boolean).join(" ");
+  return {
+    decision: "block",
+    reason: systemMessage,
+    stopReason: `${requirement.workflow}_codex_goal_snapshot_required`,
+    systemMessage,
+  };
 }
 
 interface TeamModeStateForStop {
-	state: Record<string, unknown>;
-	scope: "session" | "root";
+  state: Record<string, unknown>;
+  scope: "session" | "root";
 }
 
 function teamStateMatchesThreadForStop(
-	state: Record<string, unknown>,
-	threadId?: string,
-	options: { requireOwnerThread?: boolean } = {},
+  state: Record<string, unknown>,
+  threadId?: string,
+  options: { requireOwnerThread?: boolean } = {},
 ): boolean {
-	const normalizedThreadId = safeString(threadId).trim();
-	if (!normalizedThreadId) return true;
+  const normalizedThreadId = safeString(threadId).trim();
+  if (!normalizedThreadId) return true;
 
-	const ownerThreadId = safeString(
-		state.owner_codex_thread_id ?? state.thread_id,
-	).trim();
-	if (!ownerThreadId) return options.requireOwnerThread !== true;
-	return ownerThreadId === normalizedThreadId;
+  const ownerThreadId = safeString(state.owner_codex_thread_id ?? state.thread_id).trim();
+  if (!ownerThreadId) return options.requireOwnerThread !== true;
+  return ownerThreadId === normalizedThreadId;
 }
 
 async function readTeamModeStateForStop(
-	cwd: string,
-	stateDir: string,
-	sessionId?: string,
-	threadId?: string,
+  cwd: string,
+  stateDir: string,
+  sessionId?: string,
+  threadId?: string,
 ): Promise<TeamModeStateForStop | null> {
-	const normalizedSessionId = safeString(sessionId).trim();
-	if (!normalizedSessionId) return null;
+  const normalizedSessionId = safeString(sessionId).trim();
+  if (!normalizedSessionId) return null;
 
-	const scopedState = await readStopSessionPinnedState(
-		"team-state.json",
-		cwd,
-		normalizedSessionId,
-		stateDir,
-	);
-	if (scopedState) {
-		return teamStateMatchesThreadForStop(scopedState, threadId)
-			? { state: scopedState, scope: "session" }
-			: null;
-	}
+  const scopedState = await readStopSessionPinnedState("team-state.json", cwd, normalizedSessionId, stateDir);
+  if (scopedState) {
+    return teamStateMatchesThreadForStop(scopedState, threadId)
+      ? { state: scopedState, scope: "session" }
+      : null;
+  }
 
-	const rootState = await readJsonIfExists(join(stateDir, "team-state.json"));
-	if (rootState?.active !== true) return null;
+  const rootState = await readJsonIfExists(join(stateDir, "team-state.json"));
+  if (rootState?.active !== true) return null;
 
-	const teamName = safeString(rootState.team_name).trim();
-	if (!teamName) return null;
+  const teamName = safeString(rootState.team_name).trim();
+  if (!teamName) return null;
 
-	const ownerSessionId = safeString(rootState.session_id).trim();
-	if (!ownerSessionId || ownerSessionId !== normalizedSessionId) return null;
-	if (
-		!teamStateMatchesThreadForStop(rootState, threadId, {
-			requireOwnerThread: true,
-		})
-	)
-		return null;
+  const ownerSessionId = safeString(rootState.session_id).trim();
+  if (!ownerSessionId || ownerSessionId !== normalizedSessionId) return null;
+  if (!teamStateMatchesThreadForStop(rootState, threadId, { requireOwnerThread: true })) return null;
 
-	return { state: rootState, scope: "root" };
+  return { state: rootState, scope: "root" };
 }
 
-async function buildTeamStopOutput(
-	cwd: string,
-	sessionId?: string,
-	threadId?: string,
-): Promise<Record<string, unknown> | null> {
-	if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "team")) {
-		return null;
-	}
-	const teamStateForStop = await readTeamModeStateForStop(
-		cwd,
-		getBaseStateDir(cwd),
-		sessionId,
-		threadId,
-	);
-	if (!teamStateForStop || teamStateForStop.state.active !== true) return null;
-	const teamState = teamStateForStop.state;
-	const teamName = safeString(teamState.team_name).trim();
-	if (teamName) {
-		const canonicalTeamDir = join(
-			resolveCanonicalTeamStateRoot(cwd),
-			"team",
-			teamName,
-		);
-		if (!existsSync(canonicalTeamDir)) {
-			return null;
-		}
-	}
-	const coarsePhase = teamState.current_phase;
-	const canonicalPhaseState = teamName
-		? await readTeamPhase(teamName, cwd)
-		: null;
-	if (teamStateForStop.scope === "root" && !canonicalPhaseState) return null;
-	const canonicalPhase = canonicalPhaseState?.current_phase ?? coarsePhase;
-	if (!isNonTerminalPhase(canonicalPhase)) return null;
-	return buildTeamStopOutputForPhase(teamName, formatPhase(canonicalPhase));
+async function buildTeamStopOutput(cwd: string, sessionId?: string, threadId?: string): Promise<Record<string, unknown> | null> {
+  if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "team")) {
+    return null;
+  }
+  const teamStateForStop = await readTeamModeStateForStop(cwd, getBaseStateDir(cwd), sessionId, threadId);
+  if (!teamStateForStop || teamStateForStop.state.active !== true) return null;
+  const teamState = teamStateForStop.state;
+  const teamName = safeString(teamState.team_name).trim();
+  if (teamName) {
+    const canonicalTeamDir = join(resolveCanonicalTeamStateRoot(cwd), "team", teamName);
+    if (!existsSync(canonicalTeamDir)) {
+      return null;
+    }
+  }
+  const coarsePhase = teamState.current_phase;
+  const canonicalPhaseState = teamName ? await readTeamPhase(teamName, cwd) : null;
+  if (teamStateForStop.scope === "root" && !canonicalPhaseState) return null;
+  const canonicalPhase = canonicalPhaseState?.current_phase ?? coarsePhase;
+  if (!isNonTerminalPhase(canonicalPhase)) return null;
+  return buildTeamStopOutputForPhase(teamName, formatPhase(canonicalPhase));
 }
 
 function buildTeamStopReason(teamName: string, phase: string): string {
-	const teamContext = teamName ? ` (${teamName})` : "";
-	return `OMX team pipeline is still active${teamContext} at phase ${phase}; continue coordinating until the team reaches a terminal phase. If system-generated worker auto-checkpoint commits exist, rewrite them into Lore-format final commits before merge/finalization.`;
+  const teamContext = teamName ? ` (${teamName})` : "";
+  return `OMX team pipeline is still active${teamContext} at phase ${phase}; continue coordinating until the team reaches a terminal phase. If system-generated worker auto-checkpoint commits exist, rewrite them into Lore-format final commits before merge/finalization.`;
 }
 
-function buildTeamStopOutputForPhase(
-	teamName: string,
-	phase: string,
-): Record<string, unknown> {
-	return {
-		decision: "block",
-		reason: buildTeamStopReason(teamName, phase),
-		stopReason: `team_${phase}`,
-		systemMessage: `OMX team pipeline is still active at phase ${phase}.`,
-	};
+function buildTeamStopOutputForPhase(teamName: string, phase: string): Record<string, unknown> {
+  return {
+    decision: "block",
+    reason: buildTeamStopReason(teamName, phase),
+    stopReason: `team_${phase}`,
+    systemMessage: `OMX team pipeline is still active at phase ${phase}.`,
+  };
 }
 
 function extractStableFinalRecommendationSummary(message: string): string {
-	for (const pattern of STABLE_FINAL_RECOMMENDATION_PATTERNS) {
-		const match = pattern.exec(message);
-		if (!match) continue;
-		const summary = match[0]?.trim().replace(/\s+/g, " ");
-		if (!summary) continue;
-		return /[.!?]$/.test(summary) ? summary : `${summary}.`;
-	}
-	return "";
+  for (const pattern of STABLE_FINAL_RECOMMENDATION_PATTERNS) {
+    const match = pattern.exec(message);
+    if (!match) continue;
+    const summary = match[0]?.trim().replace(/\s+/g, " ");
+    if (!summary) continue;
+    return /[.!?]$/.test(summary) ? summary : `${summary}.`;
+  }
+  return "";
 }
 
 function buildStableFinalRecommendationStopSignature(
-	payload: CodexHookPayload,
-	teamName: string,
-	summary: string,
+  payload: CodexHookPayload,
+  teamName: string,
+  summary: string,
 ): string {
-	const sessionId = readPayloadSessionId(payload) || "no-session";
-	const threadId = readPayloadThreadId(payload) || "no-thread";
-	const normalizedSummary =
-		normalizeAutoNudgeSignatureText(summary) || summary.toLowerCase();
-	return [
-		"release-readiness-finalize",
-		sessionId,
-		threadId,
-		teamName,
-		normalizedSummary,
-	].join("|");
+  const sessionId = readPayloadSessionId(payload) || "no-session";
+  const threadId = readPayloadThreadId(payload) || "no-thread";
+  const normalizedSummary = normalizeAutoNudgeSignatureText(summary) || summary.toLowerCase();
+  return ["release-readiness-finalize", sessionId, threadId, teamName, normalizedSummary].join("|");
 }
 
 function hasReleaseReadinessMode(payload: CodexHookPayload): boolean {
-	const mode = safeString(payload.mode).trim().toLowerCase();
-	return mode === "release-readiness";
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  return mode === "release-readiness";
 }
 
 async function hasReleaseReadinessStopMarker(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	teamName: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  teamName: string,
 ): Promise<boolean> {
-	if (!sessionId) return false;
+  if (!sessionId) return false;
 
-	const markerState = await readStopSessionPinnedState(
-		"release-readiness-state.json",
-		cwd,
-		sessionId,
-		stateDir,
-	);
-	if (
-		markerState?.active !== true ||
-		markerState.stable_final_recommendation_emitted !== true
-	) {
-		return false;
-	}
+  const markerState = await readStopSessionPinnedState("release-readiness-state.json", cwd, sessionId, stateDir);
+  if (markerState?.active !== true || markerState.stable_final_recommendation_emitted !== true) {
+    return false;
+  }
 
-	const markerTeamName = safeString(markerState.team_name).trim();
-	if (markerTeamName && markerTeamName !== teamName) return false;
+  const markerTeamName = safeString(markerState.team_name).trim();
+  if (markerTeamName && markerTeamName !== teamName) return false;
 
-	const markerSessionId = safeString(markerState.session_id).trim();
-	if (markerSessionId && markerSessionId !== sessionId) return false;
+  const markerSessionId = safeString(markerState.session_id).trim();
+  if (markerSessionId && markerSessionId !== sessionId) return false;
 
-	return true;
+  return true;
 }
 
 function readPayloadSessionId(payload: CodexHookPayload): string {
-	return safeString(payload.session_id ?? payload.sessionId).trim();
+  return safeString(payload.session_id ?? payload.sessionId).trim();
 }
 
 function readPayloadThreadId(payload: CodexHookPayload): string {
-	return safeString(
-		payload.owner_codex_thread_id ?? payload.thread_id ?? payload.threadId,
-	).trim();
+  return safeString(payload.owner_codex_thread_id ?? payload.thread_id ?? payload.threadId).trim();
 }
 
 function readPayloadAgentRole(payload: CodexHookPayload): string {
-	const directRole = safeString(
-		payload.agent_role ??
-			payload.agentRole ??
-			payload.agent_type ??
-			payload.agentType,
-	)
-		.trim()
-		.toLowerCase();
-	if (directRole) return directRole;
+  const directRole = safeString(
+    payload.agent_role
+      ?? payload.agentRole
+      ?? payload.agent_type
+      ?? payload.agentType,
+  ).trim().toLowerCase();
+  if (directRole) return directRole;
 
-	const source = safeObject(payload.source);
-	const subagent = safeObject(source?.subagent);
-	const threadSpawn = safeObject(subagent?.thread_spawn);
-	return safeString(
-		threadSpawn?.agent_role ??
-			threadSpawn?.agentRole ??
-			threadSpawn?.agent_type ??
-			threadSpawn?.agentType,
-	)
-		.trim()
-		.toLowerCase();
+  const source = safeObject(payload.source);
+  const subagent = safeObject(source?.subagent);
+  const threadSpawn = safeObject(subagent?.thread_spawn);
+  return safeString(
+    threadSpawn?.agent_role
+      ?? threadSpawn?.agentRole
+      ?? threadSpawn?.agent_type
+      ?? threadSpawn?.agentType,
+  ).trim().toLowerCase();
 }
 
-const NATIVE_SPAWN_TOOL_NAMES = new Set([
-	"spawn_agent",
-	"multi_agent_v1.spawn_agent",
-	"task",
-]);
-
 function readRequestedSpawnRole(payload: CodexHookPayload): string {
-	const toolName = safeString(payload.tool_name).trim();
-	if (!NATIVE_SPAWN_TOOL_NAMES.has(toolName)) return "";
-	const toolInput = safeObject(payload.tool_input);
-	return safeString(
-		toolInput.agent_role ??
-			toolInput.agentRole ??
-			toolInput.agent_type ??
-			toolInput.agentType,
-	)
-		.trim()
-		.toLowerCase();
+  const toolName = safeString(payload.tool_name).trim();
+  if (!isNativeSubagentSpawnToolName(toolName)) return "";
+  const toolInput = safeObject(payload.tool_input);
+  return safeString(
+    toolInput.agent_role
+      ?? toolInput.agentRole
+      ?? toolInput.agent_type
+      ?? toolInput.agentType,
+  ).trim().toLowerCase();
 }
 
 function isTypedAgentRolePayload(payload: CodexHookPayload): boolean {
-	const agentRole = readPayloadAgentRole(payload);
-	return agentRole !== "" && resolveInstalledRoleName(agentRole) !== null;
+  const agentRole = readPayloadAgentRole(payload);
+  return agentRole !== "" && resolveInstalledRoleName(agentRole) !== null;
 }
 
 function buildNativeUnknownRolePreToolUseOutput(
-	payload: CodexHookPayload,
+  payload: CodexHookPayload,
 ): Record<string, unknown> | null {
-	const requestedRole = readRequestedSpawnRole(payload);
-	if (!requestedRole || resolveInstalledRoleName(requestedRole) !== null)
-		return null;
-	return {
-		decision: "block",
-		reason:
-			"Native typed-subagent dispatch denied: supplied agent_type/agent_role is unknown or not installed.",
-		hookSpecificOutput: {
-			hookEventName: "PreToolUse",
-			additionalContext:
-				"Use an installed OMX role for native agent_type/agent_role dispatch. On a role-routing-unavailable surface, record a validated OMX adapted role intent before spawning without fabricating agent_type.",
-		},
-	};
+  const requestedRole = readRequestedSpawnRole(payload);
+  if (!requestedRole || resolveInstalledRoleName(requestedRole) !== null) return null;
+  return {
+    decision: "block",
+    reason: "Native typed-subagent dispatch denied: supplied agent_type/agent_role is unknown or not installed.",
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        "Use an installed OMX role for native agent_type/agent_role dispatch. On a role-routing-unavailable surface, record a validated OMX adapted role intent before spawning without fabricating agent_type.",
+    },
+  };
 }
 
 function readPayloadTurnId(payload: CodexHookPayload): string {
-	return safeString(payload.turn_id ?? payload.turnId).trim();
+  return safeString(payload.turn_id ?? payload.turnId).trim();
 }
 
 interface NativeSubagentCapacityBlocker {
-	schema_version: 1;
-	reason: "agent_thread_limit_reached";
-	session_id?: string;
-	thread_id?: string;
-	turn_id?: string;
-	tool_name?: string;
-	error_summary: string;
-	observed_at: string;
-	expires_at: string;
+  schema_version: 1;
+  reason: "agent_thread_limit_reached";
+  session_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  tool_name?: string;
+  error_summary: string;
+  observed_at: string;
+  expires_at: string;
 }
 
 function nativeSubagentCapacityBlockerPath(stateDir: string): string {
-	return join(stateDir, NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE);
+  return join(stateDir, NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE);
 }
 
 function nativeSubagentSupportBlockerPath(stateDir: string): string {
-	return join(stateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE);
+  return join(stateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE);
 }
 
 function readJsonSyncIfExists(path: string): Record<string, unknown> | null {
-	try {
-		return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-	} catch {
-		return null;
-	}
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function stringifyUnknown(value: unknown): string {
-	if (typeof value === "string") return value;
-	if (value === undefined || value === null) return "";
-	try {
-		return JSON.stringify(value);
-	} catch {
-		return String(value);
-	}
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function payloadEvidenceText(payload: CodexHookPayload): string {
-	return [
-		safeString(payload.tool_name),
-		stringifyUnknown(payload.tool_response),
-		stringifyUnknown(payload.response),
-		stringifyUnknown(payload.error),
-		stringifyUnknown(payload.message),
-	]
-		.filter(Boolean)
-		.join("\n");
+  return [
+    safeString(payload.tool_name),
+    stringifyUnknown(payload.tool_response),
+    stringifyUnknown(payload.response),
+    stringifyUnknown(payload.error),
+    stringifyUnknown(payload.message),
+  ].filter(Boolean).join("\n");
 }
 
 function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
-	const evidence = payloadEvidenceText(payload);
-	if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
-	const toolName = safeString(payload.tool_name).trim();
-	return (
-		!toolName ||
-		/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)
-	);
+  const evidence = payloadEvidenceText(payload);
+  if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
+  const toolName = safeString(payload.tool_name).trim();
+  return !toolName || /(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName);
 }
 
-function nativeSubagentFailureReason(
-	payload: CodexHookPayload,
-): NativeSubagentUnsupportedReason | null {
-	const evidence = payloadEvidenceText(payload);
-	const toolName = safeString(payload.tool_name).trim();
-	if (
-		toolName &&
-		!/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)
-	)
-		return null;
-	if (/\bagent thread limit reached\b/i.test(evidence)) return null;
-	if (
-		/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(
-			evidence,
-		)
-	)
-		return "native_subagents_unsupported";
-	if (
-		/\bmulti_agent_v1\b/i.test(evidence) &&
-		/\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(
-			evidence,
-		)
-	)
-		return "multi_agent_v1_unavailable";
-	if (
-		/\b(?:unknown tool|tool not found|not enabled|disabled|unavailable|unsupported)\b/i.test(
-			evidence,
-		)
-	)
-		return "multi_agent_v1_unavailable";
-	return null;
+function nativeSubagentFailureReason(payload: CodexHookPayload): NativeSubagentUnsupportedReason | null {
+  const evidence = payloadEvidenceText(payload);
+  const toolName = safeString(payload.tool_name).trim();
+  if (toolName && !/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)) return null;
+  if (/\bagent thread limit reached\b/i.test(evidence)) return null;
+  if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) return "native_subagents_unsupported";
+  if (/\bmulti_agent_v1\b/i.test(evidence) && /\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
+  if (/\b(?:unknown tool|tool not found|not enabled|disabled|unavailable|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
+  return null;
 }
 
 function summarizeNativeSubagentSupportFailure(text: string): string {
-	const normalized = text.replace(/\s+/g, " ").trim();
-	return (normalized || "native subagent support unavailable").slice(0, 500);
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return (normalized || "native subagent support unavailable").slice(0, 500);
 }
 
 async function recordNativeSubagentSupportBlocker(
-	cwd: string,
-	stateDir: string,
-	payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  payload: CodexHookPayload,
 ): Promise<void> {
-	const reason = nativeSubagentFailureReason(payload);
-	if (!reason) return;
-	const nowIso = new Date().toISOString();
-	await mkdir(stateDir, { recursive: true });
-	await writeFile(
-		nativeSubagentSupportBlockerPath(stateDir),
-		JSON.stringify(
-			{
-				schema_version: 1,
-				status: "unsupported",
-				reason,
-				...(readPayloadSessionId(payload)
-					? { session_id: readPayloadSessionId(payload) }
-					: {}),
-				...(readPayloadThreadId(payload)
-					? { thread_id: readPayloadThreadId(payload) }
-					: {}),
-				...(readPayloadTurnId(payload)
-					? { turn_id: readPayloadTurnId(payload) }
-					: {}),
-				...(safeString(payload.tool_name).trim()
-					? { tool_name: safeString(payload.tool_name).trim() }
-					: {}),
-				evidence: summarizeNativeSubagentSupportFailure(
-					payloadEvidenceText(payload),
-				),
-				observed_at: nowIso,
-				cwd,
-			},
-			null,
-			2,
-		),
-	);
+  const reason = nativeSubagentFailureReason(payload);
+  if (!reason) return;
+  const nowIso = new Date().toISOString();
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(nativeSubagentSupportBlockerPath(stateDir), JSON.stringify({
+    schema_version: 1,
+    status: "unsupported",
+    reason,
+    ...(readPayloadSessionId(payload) ? { session_id: readPayloadSessionId(payload) } : {}),
+    ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
+    ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
+    ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
+    evidence: summarizeNativeSubagentSupportFailure(payloadEvidenceText(payload)),
+    observed_at: nowIso,
+    cwd,
+  }, null, 2));
 }
 
 function recordNativeSubagentRoleRoutingMarker(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	parentThreadId: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  parentThreadId: string,
 ): void {
-	const nowMs = Date.now();
-	const marker: RoleRoutingUnavailableMarker = {
-		schema_version: 1,
-		cwd,
-		session_id: sessionId,
-		parent_thread_id: parentThreadId,
-		observed_at: new Date(nowMs).toISOString(),
-		expires_at: new Date(
-			nowMs + NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS,
-		).toISOString(),
-		evidence:
-			"validated OMX adapted role intent correlated to an untyped native child",
-	};
-	writeRoleRoutingMarker(stateDir, marker);
+  const nowMs = Date.now();
+  const marker: RoleRoutingUnavailableMarker = {
+    schema_version: 1,
+    cwd,
+    session_id: sessionId,
+    parent_thread_id: parentThreadId,
+    observed_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS).toISOString(),
+    evidence: "validated OMX adapted role intent correlated to an untyped native child",
+  };
+  writeRoleRoutingMarker(stateDir, marker);
 }
 
 function refreshNativeSubagentRoleRoutingMarker(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	parentThreadId?: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  parentThreadId?: string,
 ): void {
-	const marker = readRoleRoutingMarker(stateDir, {
-		cwd,
-		sessionId,
-		...(parentThreadId ? { parentThreadId } : {}),
-	});
-	if (!marker) return;
-	const nowMs = Date.now();
-	writeRoleRoutingMarker(stateDir, {
-		...marker,
-		observed_at: new Date(nowMs).toISOString(),
-		expires_at: new Date(
-			nowMs + NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS,
-		).toISOString(),
-	});
+  const marker = readRoleRoutingMarker(stateDir, {
+    cwd,
+    sessionId,
+    ...(parentThreadId ? { parentThreadId } : {}),
+  });
+  if (!marker) return;
+  const nowMs = Date.now();
+  writeRoleRoutingMarker(stateDir, {
+    ...marker,
+    observed_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS).toISOString(),
+  });
 }
 
 function summarizeCapacityFailure(text: string): string {
-	const normalized = text.replace(/\s+/g, " ").trim();
-	if (!normalized) return "agent thread limit reached";
-	const match = normalized.match(
-		/[^.?!\n\r]*agent thread limit reached[^.?!\n\r]*/i,
-	);
-	return (match?.[0] ?? normalized).slice(0, 500);
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "agent thread limit reached";
+  const match = normalized.match(/[^.?!\n\r]*agent thread limit reached[^.?!\n\r]*/i);
+  return (match?.[0] ?? normalized).slice(0, 500);
 }
 
 async function recordNativeSubagentCapacityBlocker(
-	cwd: string,
-	stateDir: string,
-	payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  payload: CodexHookPayload,
 ): Promise<void> {
-	if (!isNativeSubagentCapacityFailure(payload)) return;
-	const nowMs = Date.now();
-	const blocker: NativeSubagentCapacityBlocker = {
-		schema_version: 1,
-		reason: "agent_thread_limit_reached",
-		...(readPayloadSessionId(payload)
-			? { session_id: readPayloadSessionId(payload) }
-			: {}),
-		...(readPayloadThreadId(payload)
-			? { thread_id: readPayloadThreadId(payload) }
-			: {}),
-		...(readPayloadTurnId(payload)
-			? { turn_id: readPayloadTurnId(payload) }
-			: {}),
-		...(safeString(payload.tool_name).trim()
-			? { tool_name: safeString(payload.tool_name).trim() }
-			: {}),
-		error_summary: summarizeCapacityFailure(payloadEvidenceText(payload)),
-		observed_at: new Date(nowMs).toISOString(),
-		expires_at: new Date(
-			nowMs + NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS,
-		).toISOString(),
-	};
-	await mkdir(stateDir, { recursive: true });
-	await writeFile(
-		nativeSubagentCapacityBlockerPath(stateDir),
-		JSON.stringify(
-			{
-				...blocker,
-				cwd,
-			},
-			null,
-			2,
-		),
-	);
+  if (!isNativeSubagentCapacityFailure(payload)) return;
+  const nowMs = Date.now();
+  const blocker: NativeSubagentCapacityBlocker = {
+    schema_version: 1,
+    reason: "agent_thread_limit_reached",
+    ...(readPayloadSessionId(payload) ? { session_id: readPayloadSessionId(payload) } : {}),
+    ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
+    ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
+    ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
+    error_summary: summarizeCapacityFailure(payloadEvidenceText(payload)),
+    observed_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS).toISOString(),
+  };
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(nativeSubagentCapacityBlockerPath(stateDir), JSON.stringify({
+    ...blocker,
+    cwd,
+  }, null, 2));
 }
 
 function isFreshNativeSubagentCapacityBlocker(
-	blocker: Record<string, unknown> | null,
-	cwd: string,
-	payload: CodexHookPayload,
-	nowMs = Date.now(),
+  blocker: Record<string, unknown> | null,
+  cwd: string,
+  payload: CodexHookPayload,
+  nowMs = Date.now(),
 ): blocker is NativeSubagentCapacityBlocker & Record<string, unknown> {
-	if (!blocker) return false;
-	if (safeString(blocker.reason) !== "agent_thread_limit_reached") return false;
-	const expiresAtMs = Date.parse(safeString(blocker.expires_at));
-	if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return false;
-	const blockerCwd = safeString(blocker.cwd).trim();
-	if (blockerCwd) {
-		try {
-			if (resolve(blockerCwd) !== resolve(cwd)) return false;
-		} catch {
-			return false;
-		}
-	}
-	const blockerSessionId = safeString(blocker.session_id).trim();
-	const payloadSessionId = readPayloadSessionId(payload);
-	return (
-		!blockerSessionId ||
-		!payloadSessionId ||
-		blockerSessionId === payloadSessionId
-	);
+  if (!blocker) return false;
+  if (safeString(blocker.reason) !== "agent_thread_limit_reached") return false;
+  const expiresAtMs = Date.parse(safeString(blocker.expires_at));
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return false;
+  const blockerCwd = safeString(blocker.cwd).trim();
+  if (blockerCwd) {
+    try {
+      if (resolve(blockerCwd) !== resolve(cwd)) return false;
+    } catch {
+      return false;
+    }
+  }
+  const blockerSessionId = safeString(blocker.session_id).trim();
+  const payloadSessionId = readPayloadSessionId(payload);
+  return !blockerSessionId || !payloadSessionId || blockerSessionId === payloadSessionId;
 }
 
 function inputContainsCloseAgentRequest(value: unknown): boolean {
-	if (typeof value === "string") return /\bclose_agent\b/i.test(value);
-	if (!value || typeof value !== "object") return false;
-	try {
-		return /\bclose_agent\b/i.test(JSON.stringify(value));
-	} catch {
-		return false;
-	}
+  if (typeof value === "string") return /\bclose_agent\b/i.test(value);
+  if (!value || typeof value !== "object") return false;
+  try {
+    return /\bclose_agent\b/i.test(JSON.stringify(value));
+  } catch {
+    return false;
+  }
 }
 
 function isCloseAgentToolUse(payload: CodexHookPayload): boolean {
-	const toolName = safeString(payload.tool_name).trim();
-	if (/\bclose_agent\b/i.test(toolName)) return true;
-	if (
-		/multi_tool_use\.parallel/i.test(toolName) &&
-		inputContainsCloseAgentRequest(payload.tool_input)
-	)
-		return true;
-	return (
-		inputContainsCloseAgentRequest(payload.tool_input) &&
-		/multi_agent|agent|tool_use/i.test(toolName)
-	);
+  const toolName = safeString(payload.tool_name).trim();
+  if (/\bclose_agent\b/i.test(toolName)) return true;
+  if (/multi_tool_use\.parallel/i.test(toolName) && inputContainsCloseAgentRequest(payload.tool_input)) return true;
+  return inputContainsCloseAgentRequest(payload.tool_input) && /multi_agent|agent|tool_use/i.test(toolName);
 }
 
 async function buildNativeSubagentCapacityCloseGuardOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
 ): Promise<Record<string, unknown> | null> {
-	if (!isCloseAgentToolUse(payload)) return null;
-	const blocker = await readJsonIfExists(
-		nativeSubagentCapacityBlockerPath(stateDir),
-	);
-	if (!isFreshNativeSubagentCapacityBlocker(blocker, cwd, payload)) return null;
+  if (!isCloseAgentToolUse(payload)) return null;
+  const blocker = await readJsonIfExists(nativeSubagentCapacityBlockerPath(stateDir));
+  if (!isFreshNativeSubagentCapacityBlocker(blocker, cwd, payload)) return null;
 
-	const evidence =
-		safeString(blocker.error_summary).trim() || "agent thread limit reached";
-	return {
-		decision: "block",
-		reason:
-			"Native subagent capacity was exhausted recently; model-level close_agent cleanup is blocked because close_agent can hang indefinitely on stale handles.",
-		hookSpecificOutput: {
-			hookEventName: "PreToolUse",
-			additionalContext:
-				`OMX blocked ${safeString(payload.tool_name).trim() || "close_agent"} before it could start: a recent native subagent capacity failure was recorded (${evidence}). ` +
-				"Do not call multi_agent_v1.close_agent, and do not batch close_agent through multi_tool_use.parallel, as stale native handles can hang the whole turn. " +
-				"Treat this as a bounded capacity blocker: persist/report the blocker evidence, avoid further native subagent cleanup from the model turn, and recover via runtime-level cleanup or a fresh Codex session.",
-		},
-	};
+  const evidence = safeString(blocker.error_summary).trim() || "agent thread limit reached";
+  return {
+    decision: "block",
+    reason: "Native subagent capacity was exhausted recently; model-level close_agent cleanup is blocked because close_agent can hang indefinitely on stale handles.",
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        `OMX blocked ${safeString(payload.tool_name).trim() || "close_agent"} before it could start: a recent native subagent capacity failure was recorded (${evidence}). `
+        + "Do not call multi_agent_v1.close_agent, and do not batch close_agent through multi_tool_use.parallel, as stale native handles can hang the whole turn. "
+        + "Treat this as a bounded capacity blocker: persist/report the blocker evidence, avoid further native subagent cleanup from the model turn, and recover via runtime-level cleanup or a fresh Codex session.",
+    },
+  };
 }
 
 async function resolveInternalSessionIdForPayload(
-	cwd: string,
-	payloadSessionId: string,
-	stateDir?: string,
+  cwd: string,
+  payloadSessionId: string,
+  stateDir?: string,
+  pointerSessionState?: SessionState | null,
+  allowUnboundPayloadFallback = true,
 ): Promise<string> {
-	const currentSession = stateDir
-		? await readUsableSessionStateFromStateDir(cwd, stateDir)
-		: await readUsableSessionState(cwd);
-	const canonicalSessionId = safeString(currentSession?.session_id).trim();
-	if (!canonicalSessionId) return payloadSessionId;
+  const currentSession = pointerSessionState ?? (stateDir
+    ? await readUsableSessionStateFromStateDir(cwd, stateDir)
+    : await readUsableSessionState(cwd));
+  const canonicalSessionId = safeString(currentSession?.session_id).trim();
+  if (!canonicalSessionId) return allowUnboundPayloadFallback ? payloadSessionId : "";
 
-	const nativeSessionId = safeString(currentSession?.native_session_id).trim();
-	const ownerOmxSessionId = safeString(
-		currentSession?.owner_omx_session_id,
-	).trim();
-	if (!payloadSessionId) return canonicalSessionId;
-	if (payloadSessionId === canonicalSessionId) return canonicalSessionId;
-	if (nativeSessionId && payloadSessionId === nativeSessionId)
-		return canonicalSessionId;
-	if (ownerOmxSessionId && payloadSessionId === ownerOmxSessionId)
-		return canonicalSessionId;
-	return payloadSessionId;
+  const nativeSessionId = safeString(currentSession?.native_session_id).trim();
+  const ownerOmxSessionId = safeString(currentSession?.owner_omx_session_id).trim();
+  if (!payloadSessionId) return canonicalSessionId;
+  if (payloadSessionId === canonicalSessionId) return canonicalSessionId;
+  if (nativeSessionId && payloadSessionId === nativeSessionId) return canonicalSessionId;
+  if (ownerOmxSessionId && payloadSessionId === ownerOmxSessionId) return canonicalSessionId;
+  return allowUnboundPayloadFallback ? payloadSessionId : "";
 }
 
-async function readRootSessionStateFromStateDir(
-	stateDir: string,
-): Promise<SessionState | null> {
-	const sessionPath = join(stateDir, "session.json");
-	if (!existsSync(sessionPath)) return null;
+async function readRootSessionStateFromStateDir(stateDir: string): Promise<SessionState | null> {
+  const sessionPath = join(stateDir, "session.json");
+  if (!existsSync(sessionPath)) return null;
 
-	try {
-		const content = await readFile(sessionPath, "utf-8");
-		return JSON.parse(content) as SessionState;
-	} catch {
-		return null;
-	}
+  try {
+    const content = await readFile(sessionPath, "utf-8");
+    return JSON.parse(content) as SessionState;
+  } catch {
+    return null;
+  }
 }
 
-function payloadMatchesSessionPointer(
-	payloadSessionId: string,
-	state: SessionState,
-): boolean {
-	const canonicalSessionId = safeString(state.session_id).trim();
-	const nativeSessionId = safeString(state.native_session_id).trim();
-	const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
-	if (!payloadSessionId) return true;
-	return (
-		payloadSessionId === canonicalSessionId ||
-		(nativeSessionId !== "" && payloadSessionId === nativeSessionId) ||
-		(ownerOmxSessionId !== "" && payloadSessionId === ownerOmxSessionId)
-	);
+function payloadMatchesSessionPointer(payloadSessionId: string, state: SessionState): boolean {
+  const canonicalSessionId = safeString(state.session_id).trim();
+  const nativeSessionId = safeString(state.native_session_id).trim();
+  const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
+  if (!payloadSessionId) return true;
+  return payloadSessionId === canonicalSessionId
+    || (nativeSessionId !== "" && payloadSessionId === nativeSessionId)
+    || (ownerOmxSessionId !== "" && payloadSessionId === ownerOmxSessionId);
 }
 
 function isRootSessionPointerLive(state: SessionState): boolean {
-	const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
-	if (!hasPidMetadata) return false;
-	return !isSessionStale(state, {
-		...(state.platform ? { platform: state.platform } : {}),
-	});
+  const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
+  if (!hasPidMetadata) return false;
+  return !isSessionStale(state, {
+    ...(state.platform ? { platform: state.platform } : {}),
+  });
 }
 
 async function readLiveRootSessionPointerConflict(
-	stateDir: string,
-	payloadSessionId: string,
+  stateDir: string,
+  payloadSessionId: string,
 ): Promise<SessionState | null> {
-	if (!payloadSessionId) return null;
-	const rootState = await readRootSessionStateFromStateDir(stateDir);
-	if (!rootState) return null;
-	if (payloadMatchesSessionPointer(payloadSessionId, rootState)) return null;
-	if (!isRootSessionPointerLive(rootState)) return null;
-	return rootState;
+  if (!payloadSessionId) return null;
+  const rootState = await readRootSessionStateFromStateDir(stateDir);
+  if (!rootState) return null;
+  if (payloadMatchesSessionPointer(payloadSessionId, rootState)) return null;
+  if (!isRootSessionPointerLive(rootState)) return null;
+  return rootState;
 }
 
 async function readUsableSessionStateFromStateDir(
-	cwd: string,
-	stateDir: string,
+  cwd: string,
+  stateDir: string,
 ): Promise<SessionState | null> {
-	const sessionPath = join(stateDir, "session.json");
-	if (!existsSync(sessionPath)) return null;
+  const sessionPath = join(stateDir, "session.json");
+  if (!existsSync(sessionPath)) return null;
 
-	try {
-		const content = await readFile(sessionPath, "utf-8");
-		const state = JSON.parse(content) as SessionState;
-		return isSessionStateUsable(state, cwd) ? state : null;
-	} catch {
-		return null;
-	}
+  try {
+    const content = await readFile(sessionPath, "utf-8");
+    const state = JSON.parse(content) as SessionState;
+    return isSessionStateUsable(state, cwd) ? state : null;
+  } catch {
+    return null;
+  }
 }
 
 async function readStopSessionPinnedState(
-	fileName: string,
-	cwd: string,
-	sessionId: string,
-	stateDir?: string,
+  fileName: string,
+  cwd: string,
+  sessionId: string,
+  stateDir?: string,
 ): Promise<Record<string, unknown> | null> {
-	const statePath =
-		stateDir && sessionId
-			? join(stateDir, "sessions", sessionId, fileName)
-			: getStateFilePath(fileName, cwd, sessionId || undefined);
-	return readJsonIfExists(statePath);
+  const statePath = stateDir && sessionId
+    ? join(stateDir, "sessions", sessionId, fileName)
+    : getStateFilePath(fileName, cwd, sessionId || undefined);
+  return readJsonIfExists(statePath);
 }
 
 const DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES = [
-	".omx/context",
-	".omx/interviews",
-	".omx/specs",
-	".omx/tmp",
-	".omx/state",
+  ".omx/context",
+  ".omx/interviews",
+  ".omx/specs",
+  ".omx/tmp",
+  ".omx/state",
 ] as const;
 
 const RALPLAN_ALLOWED_WRITE_PREFIXES = [
-	".omx/context",
-	".omx/plans",
-	".omx/specs",
-	".omx/tmp",
-	".omx/state",
-	".beads",
+  ".omx/context",
+  ".omx/plans",
+  ".omx/specs",
+  ".omx/tmp",
+  ".omx/state",
+  ".beads",
 ] as const;
 
 const PROTECTED_PLANNING_STATE_FILE_NAMES = new Set([
-	"autopilot-state.json",
-	"deep-interview-state.json",
-	"ralplan-state.json",
-	"skill-active-state.json",
+  "autopilot-state.json",
+  "deep-interview-state.json",
+  "ralplan-state.json",
+  "skill-active-state.json",
 ]);
 const RUNTIME_SESSION_ID_SEGMENT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+
 const PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES = new Set([
-	"Write",
-	"Edit",
-	"MultiEdit",
-	"NotebookEdit",
-	"apply_patch",
-	"ApplyPatch",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "apply_patch",
+  "ApplyPatch",
 ]);
 
-const DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES =
-	PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES;
+const DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES = PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES;
 
 const RALPLAN_EXECUTION_HANDOFF_SKILLS = new Set([
-	// Autopilot is intentionally excluded: it supervises planning phases such as
-	// ralplan/replan and is not by itself an execution authorization.
-	"autoresearch",
-	"ralph",
-	"team",
-	"ultragoal",
-	"ultrawork",
-	"ultraqa",
+  // Autopilot is intentionally excluded: it supervises planning phases such as
+  // ralplan/replan and is not by itself an execution authorization.
+  "autoresearch",
+  "ralph",
+  "team",
+  "ultragoal",
+  "ultrawork",
+  "ultraqa",
 ]);
 
-function isActiveDeepInterviewPhase(
-	state: Record<string, unknown> | null,
-): boolean {
-	if (!state || state.active !== true) return false;
-	const mode = safeString(state.mode).trim();
-	if (mode && mode !== "deep-interview") return false;
-	const phase = safeString(state.current_phase ?? state.currentPhase)
-		.trim()
-		.toLowerCase();
-	if (phase && (TERMINAL_MODE_PHASES.has(phase) || phase === "completing"))
-		return false;
-	return true;
+function isActiveDeepInterviewPhase(state: Record<string, unknown> | null): boolean {
+  if (!state || state.active !== true) return false;
+  const mode = safeString(state.mode).trim();
+  if (mode && mode !== "deep-interview") return false;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  if (phase && (TERMINAL_MODE_PHASES.has(phase) || phase === "completing")) return false;
+  return true;
 }
 
-function isInactiveCompletedDeepInterviewPhase(
-	state: Record<string, unknown> | null,
-): boolean {
-	if (!state || state.active !== false) return false;
-	const mode = safeString(state.mode).trim();
-	if (mode && mode !== "deep-interview") return false;
-	const phase = safeString(state.current_phase ?? state.currentPhase)
-		.trim()
-		.toLowerCase();
-	return phase === "complete" || phase === "completed";
+function isInactiveCompletedDeepInterviewPhase(state: Record<string, unknown> | null): boolean {
+  if (!state || state.active !== false) return false;
+  const mode = safeString(state.mode).trim();
+  if (mode && mode !== "deep-interview") return false;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  return phase === "complete" || phase === "completed";
 }
 
 function isActiveRalplanPhase(state: Record<string, unknown> | null): boolean {
-	if (!state || state.active !== true) return false;
-	const mode = safeString(state.mode).trim();
-	if (mode && mode !== "ralplan") return false;
-	const phase = safeString(state.current_phase ?? state.currentPhase)
-		.trim()
-		.toLowerCase();
-	if (phase && (TERMINAL_MODE_PHASES.has(phase) || phase === "completing"))
-		return false;
-	return true;
+  if (!state || state.active !== true) return false;
+  const mode = safeString(state.mode).trim();
+  if (mode && mode !== "ralplan") return false;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  if (phase && (TERMINAL_MODE_PHASES.has(phase) || phase === "completing")) return false;
+  return true;
 }
 
 function isAutopilotRalplanLikePhase(phase: string): boolean {
-	return normalizeAutopilotPhase(phase) === "ralplan";
+  return normalizeAutopilotPhase(phase) === "ralplan";
 }
 
 function canAutopilotSkillMirrorSupplyRalplanPhase(phase: string): boolean {
-	return phase === "" || normalizeAutopilotPhase(phase) === "ralplan";
+  return phase === "" || normalizeAutopilotPhase(phase) === "ralplan";
 }
 
 function isAutopilotReviewReworkPhase(phase: string): boolean {
-	return normalizeAutopilotPhase(phase) === "rework";
+  return normalizeAutopilotPhase(phase) === "rework";
 }
 
 function hasExplicitExecutionHandoffSkill(
-	state: SkillActiveStateLike | null,
-	sessionId: string,
-	threadId: string,
+  state: SkillActiveStateLike | null,
+  sessionId: string,
+  threadId: string,
 ): boolean {
-	return listActiveSkills(state ?? {}).some(
-		(entry) =>
-			RALPLAN_EXECUTION_HANDOFF_SKILLS.has(entry.skill) &&
-			matchesSkillStopContext(entry, state ?? {}, sessionId, threadId),
-	);
+  return listActiveSkills(state ?? {}).some((entry) => (
+    RALPLAN_EXECUTION_HANDOFF_SKILLS.has(entry.skill)
+    && matchesSkillStopContext(entry, state ?? {}, sessionId, threadId)
+  ));
 }
 
-function normalizePlanningArtifactRelativePath(
-	cwd: string,
-	rawPath: string,
-): string | null {
-	const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
-	if (!trimmed || trimmed.includes("\0")) return null;
-	try {
-		const absolute = resolve(cwd, trimmed);
-		const relativePath = relative(cwd, absolute).replace(/\\/g, "/");
-		if (
-			!relativePath ||
-			relativePath.startsWith("..") ||
-			relativePath.startsWith("/")
-		)
-			return null;
-		return relativePath;
-	} catch {
-		return null;
-	}
+function normalizePlanningArtifactRelativePath(cwd: string, rawPath: string): string | null {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return null;
+  try {
+    const absolute = resolve(cwd, trimmed);
+    const relativePath = relative(cwd, absolute).replace(/\\/g, "/");
+    if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith("/")) return null;
+    return relativePath;
+  } catch {
+    return null;
+  }
 }
 
 function isProtectedPlanningStatePath(relativePath: string): boolean {
-	if (relativePath !== ".omx/state" && !relativePath.startsWith(".omx/state/"))
-		return false;
-	const fileName = relativePath.split("/").pop() ?? "";
-	return PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
+  if (relativePath !== ".omx/state" && !relativePath.startsWith(".omx/state/")) return false;
+  const fileName = relativePath.split("/").pop() ?? "";
+  return PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
 }
-function isAllowedAuthoritativeRuntimePlanningStatePath(
-	cwd: string,
-	rawPath: string,
-): boolean {
-	const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
-	if (!trimmed || trimmed.includes("\0")) return false;
+function isAllowedAuthoritativeRuntimePlanningStatePath(cwd: string, rawPath: string): boolean {
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
 
-	let targetPath: string;
-	let baseStateDir: string;
-	try {
-		targetPath = resolve(cwd, trimmed);
-		baseStateDir = resolve(getBaseStateDir(cwd));
-	} catch {
-		return false;
-	}
+  let targetPath: string;
+  let baseStateDir: string;
+  try {
+    targetPath = resolve(cwd, trimmed);
+    baseStateDir = resolve(getBaseStateDir(cwd));
+  } catch {
+    return false;
+  }
 
-	const localStateDir = resolve(cwd, ".omx", "state");
-	if (baseStateDir === localStateDir) return false;
+  const localStateDir = resolve(cwd, ".omx", "state");
+  if (baseStateDir === localStateDir) return false;
 
-	const relativeToBase = relative(baseStateDir, targetPath).replace(/\\/g, "/");
-	if (
-		!relativeToBase ||
-		relativeToBase.startsWith("..") ||
-		relativeToBase.startsWith("/")
-	)
-		return false;
+  const relativeToBase = relative(baseStateDir, targetPath).replace(/\\/g, "/");
+  if (!relativeToBase || relativeToBase.startsWith("..") || relativeToBase.startsWith("/")) return false;
 
-	const segments = relativeToBase.split("/");
-	if (segments.length !== 3 || segments[0] !== "sessions") return false;
-	const sessionId = segments[1] ?? "";
-	const fileName = segments[2] ?? "";
-	return (
-		RUNTIME_SESSION_ID_SEGMENT_PATTERN.test(sessionId) &&
-		PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName)
-	);
+  const segments = relativeToBase.split("/");
+  if (segments.length !== 3 || segments[0] !== "sessions") return false;
+  const sessionId = segments[1] ?? "";
+  const fileName = segments[2] ?? "";
+  return RUNTIME_SESSION_ID_SEGMENT_PATTERN.test(sessionId)
+    && PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName);
 }
+
 
 function isPlanningTmpRelativePath(relativePath: string): boolean {
-	return relativePath === ".omx/tmp" || relativePath.startsWith(".omx/tmp/");
+  return relativePath === ".omx/tmp" || relativePath.startsWith(".omx/tmp/");
 }
 
 function isAllowedPlanningTmpScratchPath(relativePath: string): boolean {
-	if (!isPlanningTmpRelativePath(relativePath)) return true;
-	const fileName = relativePath.split("/").pop() ?? "";
-	if (!fileName || fileName === "tmp") return true;
-	const extension = extname(fileName).toLowerCase();
-	return !PLANNING_TMP_SCRIPT_LIKE_EXTENSIONS.has(extension);
+  if (!isPlanningTmpRelativePath(relativePath)) return true;
+  const fileName = relativePath.split("/").pop() ?? "";
+  if (!fileName || fileName === "tmp") return true;
+  const extension = extname(fileName).toLowerCase();
+  return !PLANNING_TMP_SCRIPT_LIKE_EXTENSIONS.has(extension);
 }
+
 
 function isAllowedPlanningArtifactPath(
-	cwd: string,
-	rawPath: string,
-	allowedPrefixes: readonly string[],
+  cwd: string,
+  rawPath: string,
+  allowedPrefixes: readonly string[],
 ): boolean {
-	const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
-	if (!relativePath)
-		return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
-	if (isProtectedPlanningStatePath(relativePath))
-		return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
-	if (isPlanningTmpRelativePath(relativePath)) {
-		return (
-			allowedPrefixes.includes(".omx/tmp") &&
-			isAllowedPlanningTmpScratchPath(relativePath)
-		);
-	}
-	return allowedPrefixes.some(
-		(prefix) =>
-			relativePath === prefix || relativePath.startsWith(`${prefix}/`),
-	);
+  const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
+  if (!relativePath) return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
+  if (isProtectedPlanningStatePath(relativePath)) return isAllowedAuthoritativeRuntimePlanningStatePath(cwd, rawPath);
+  if (isPlanningTmpRelativePath(relativePath)) {
+    return allowedPrefixes.includes(".omx/tmp") && isAllowedPlanningTmpScratchPath(relativePath);
+  }
+  return allowedPrefixes.some((prefix) => (
+    relativePath === prefix || relativePath.startsWith(`${prefix}/`)
+  ));
+
 }
 
-function isAllowedDeepInterviewArtifactPath(
-	cwd: string,
-	rawPath: string,
-): boolean {
-	return isAllowedPlanningArtifactPath(
-		cwd,
-		rawPath,
-		DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES,
-	);
+function isAllowedDeepInterviewArtifactPath(cwd: string, rawPath: string): boolean {
+  return isAllowedPlanningArtifactPath(cwd, rawPath, DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES);
 }
 
 function isAllowedRalplanDraftPath(cwd: string, rawPath: string): boolean {
-	const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
-	return (
-		relativePath !== null && /^\.omx\/drafts\/[^/]+\.md$/.test(relativePath)
-	);
+  const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
+  return relativePath !== null && /^\.omx\/drafts\/[^/]+\.md$/.test(relativePath);
 }
 
 function isAllowedRalplanArtifactPath(cwd: string, rawPath: string): boolean {
-	return (
-		isAllowedRalplanDraftPath(cwd, rawPath) ||
-		isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES)
-	);
+  return isAllowedRalplanDraftPath(cwd, rawPath)
+    || isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
 }
 
 interface RalplanBeadsCommandClassification {
-	present: boolean;
-	allowed: boolean;
-	reason?: string;
+  present: boolean;
+  allowed: boolean;
+  reason?: string;
 }
 
 function shellTokenizeLiteralCommand(command: string): string[] | null {
-	const tokens: string[] = [];
-	let current = "";
-	let quote: "'" | '"' | null = null;
-	let escaping = false;
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
 
-	for (const char of command.trim()) {
-		if (escaping) {
-			current += char;
-			escaping = false;
-			continue;
-		}
-		if (quote === '"' && char === "\\") {
-			escaping = true;
-			continue;
-		}
-		if (quote) {
-			if (char === quote) quote = null;
-			else current += char;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			quote = char;
-			continue;
-		}
-		if (/\s/.test(char)) {
-			if (current) {
-				tokens.push(current);
-				current = "";
-			}
-			continue;
-		}
-		if (/[;&|<>`$(){}\n\r]/.test(char)) return null;
-		current += char;
-	}
+  for (const char of command.trim()) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (/[;&|<>`$(){}\n\r]/.test(char)) return null;
+    current += char;
+  }
 
-	if (escaping || quote) return null;
-	if (current) tokens.push(current);
-	return tokens;
+  if (escaping || quote) return null;
+  if (current) tokens.push(current);
+  return tokens;
 }
 
 function findLiteralBdExecutableIndex(tokens: string[]): number {
-	if (tokens[0] === "bd") return 0;
-	if (
-		tokens[0] === "command" ||
-		tokens[0] === "builtin" ||
-		tokens[0] === "exec" ||
-		tokens[0] === "nohup"
-	) {
-		return tokens[1] === "bd" ? 1 : -1;
-	}
-	if (tokens[0] !== "env") return -1;
+  if (tokens[0] === "bd") return 0;
+  if (tokens[0] === "command" || tokens[0] === "builtin" || tokens[0] === "exec" || tokens[0] === "nohup") {
+    return tokens[1] === "bd" ? 1 : -1;
+  }
+  if (tokens[0] !== "env") return -1;
 
-	for (let index = 1; index < tokens.length; index += 1) {
-		const token = tokens[index] ?? "";
-		if (token === "bd") return index;
-		if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) continue;
-		if (token.startsWith("-")) continue;
-		return -1;
-	}
-	return -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "bd") return index;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return -1;
+  }
+  return -1;
 }
 
 function isAllowedRalplanBeadsDbPath(cwd: string, rawPath: string): boolean {
-	const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
-	if (!trimmed || trimmed.includes("\0")) return false;
-	let relativePath: string;
-	try {
-		const absolute = resolve(cwd, trimmed);
-		relativePath = relative(cwd, absolute).replace(/\\/g, "/");
-	} catch {
-		return false;
-	}
-	return (
-		relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length
-	);
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
+  let relativePath: string;
+  try {
+    const absolute = resolve(cwd, trimmed);
+    relativePath = relative(cwd, absolute).replace(/\\/g, "/");
+  } catch {
+    return false;
+  }
+  return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
 }
 
-function classifyRalplanBeadsMetadataCommand(
-	cwd: string,
-	command: string,
-): RalplanBeadsCommandClassification {
-	const trimmedCommand = command.trim();
-	const startsWithBd =
-		/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(
-			trimmedCommand,
-		);
-	const hasCompoundBd = /[;&|()]\s*bd(?:\s|$)/.test(command);
-	const tokens = shellTokenizeLiteralCommand(command);
-	const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
-	if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1)
-		return { present: false, allowed: false };
+function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): RalplanBeadsCommandClassification {
+  const trimmedCommand = command.trim();
+  const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
+  const hasCompoundBd = /[;&|()]\s*bd(?:\s|$)/.test(command);
+  const tokens = shellTokenizeLiteralCommand(command);
+  const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
+  if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
 
-	if (!tokens || bdExecutableIndex !== 0) {
-		return {
-			present: true,
-			allowed: false,
-			reason: "Beads tracker command must be a single literal bd invocation",
-		};
-	}
+  if (!tokens || bdExecutableIndex !== 0) {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
 
-	let dbPath = "";
-	let dbValueIndex = -1;
-	for (let index = 1; index < tokens.length; index += 1) {
-		const token = tokens[index] ?? "";
-		if (token === "--db") {
-			dbPath = tokens[index + 1] ?? "";
-			dbValueIndex = index + 1;
-			break;
-		}
-		if (token.startsWith("--db=")) {
-			dbPath = token.slice("--db=".length);
-			dbValueIndex = index;
-			break;
-		}
-	}
+  let dbPath = "";
+  let dbValueIndex = -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "--db") {
+      dbPath = tokens[index + 1] ?? "";
+      dbValueIndex = index + 1;
+      break;
+    }
+    if (token.startsWith("--db=")) {
+      dbPath = token.slice("--db=".length);
+      dbValueIndex = index;
+      break;
+    }
+  }
 
-	if (!dbPath) {
-		return {
-			present: true,
-			allowed: false,
-			reason:
-				"Beads tracker command is missing a literal --db .beads/<db> target",
-		};
-	}
-	if (!isAllowedRalplanBeadsDbPath(cwd, dbPath)) {
-		return {
-			present: true,
-			allowed: false,
-			reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata`,
-		};
-	}
+  if (!dbPath) {
+    return { present: true, allowed: false, reason: "Beads tracker command is missing a literal --db .beads/<db> target" };
+  }
+  if (!isAllowedRalplanBeadsDbPath(cwd, dbPath)) {
+    return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
+  }
 
-	const operationTokens = tokens
-		.slice(dbValueIndex + 1)
-		.filter((token) => token && !token.startsWith("-"));
-	const operation = operationTokens[0] ?? "";
-	const suboperation = operationTokens[1] ?? "";
-	if (
-		["create", "update", "edit", "close", "reopen", "status", "dep"].includes(
-			operation,
-		)
-	) {
-		return { present: true, allowed: true };
-	}
-	if (operation === "comments" && suboperation === "add") {
-		return { present: true, allowed: true };
-	}
-	return {
-		present: true,
-		allowed: false,
-		reason: operation
-			? `Beads tracker operation ${operation}${suboperation ? ` ${suboperation}` : ""} is not allowed during planning`
-			: "Beads tracker command is missing an allowed metadata operation",
-	};
+  const operationTokens = tokens
+    .slice(dbValueIndex + 1)
+    .filter((token) => token && !token.startsWith("-"));
+  const operation = operationTokens[0] ?? "";
+  const suboperation = operationTokens[1] ?? "";
+  if (["create", "update", "edit", "close", "reopen", "status", "dep"].includes(operation)) {
+    return { present: true, allowed: true };
+  }
+  if (operation === "comments" && suboperation === "add") {
+    return { present: true, allowed: true };
+  }
+  return {
+    present: true,
+    allowed: false,
+    reason: operation
+      ? `Beads tracker operation ${operation}${suboperation ? ` ${suboperation}` : ""} is not allowed during planning`
+      : "Beads tracker command is missing an allowed metadata operation",
+  };
 }
 
 function readPreToolUseCommand(payload: CodexHookPayload): string {
-	const toolInput = safeObject(payload.tool_input);
-	return safeString(toolInput.command).trim();
+  const toolInput = safeObject(payload.tool_input);
+  return safeString(toolInput.command).trim();
 }
 
 function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
-	const input = safeObject(payload.tool_input);
-	const candidates = [
-		input.file_path,
-		input.filePath,
-		input.path,
-		input.target_path,
-		input.targetPath,
-	];
-	return candidates
-		.map((candidate) => safeString(candidate).trim())
-		.filter(Boolean);
+  const input = safeObject(payload.tool_input);
+  const candidates = [
+    input.file_path,
+    input.filePath,
+    input.path,
+    input.target_path,
+    input.targetPath,
+  ];
+  return candidates.map((candidate) => safeString(candidate).trim()).filter(Boolean);
 }
 
 const APPLY_PATCH_TOOL_NAMES = new Set(["apply_patch", "ApplyPatch"]);
 
 function isApplyPatchToolName(toolName: string): boolean {
-	return APPLY_PATCH_TOOL_NAMES.has(toolName);
+  return APPLY_PATCH_TOOL_NAMES.has(toolName);
 }
 
 function readApplyPatchText(payload: CodexHookPayload): string {
-	const input = safeObject(payload.tool_input);
-	for (const key of ["input", "patch", "content", "text", "command"]) {
-		const value = safeString(input[key]).trim();
-		if (value) return value;
-	}
-	return "";
+  const input = safeObject(payload.tool_input);
+  for (const key of ["input", "patch", "content", "text", "command"]) {
+    const value = safeString(input[key]).trim();
+    if (value) return value;
+  }
+  return "";
 }
 
 function extractApplyPatchTargetPaths(patchText: string): string[] {
-	if (!patchText) return [];
-	const paths: string[] = [];
-	for (const match of patchText.matchAll(
-		/^\s*\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+?)\s*$/gm,
-	)) {
-		const candidate = safeString(match[1]).trim();
-		if (candidate) paths.push(candidate);
-	}
-	for (const match of patchText.matchAll(
-		/^\s*\*\*\*\s+Move\s+to:\s*(.+?)\s*$/gm,
-	)) {
-		const candidate = safeString(match[1]).trim();
-		if (candidate) paths.push(candidate);
-	}
-	return paths;
+  if (!patchText) return [];
+  const paths: string[] = [];
+  for (const match of patchText.matchAll(/^\s*\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+?)\s*$/gm)) {
+    const candidate = safeString(match[1]).trim();
+    if (candidate) paths.push(candidate);
+  }
+  for (const match of patchText.matchAll(/^\s*\*\*\*\s+Move\s+to:\s*(.+?)\s*$/gm)) {
+    const candidate = safeString(match[1]).trim();
+    if (candidate) paths.push(candidate);
+  }
+  return paths;
 }
 
 function collectImplementationToolPathCandidates(
-	payload: CodexHookPayload,
-	toolName: string,
-	structuredCandidates: string[],
+  payload: CodexHookPayload,
+  toolName: string,
+  structuredCandidates: string[],
 ): string[] {
-	if (!isApplyPatchToolName(toolName)) return structuredCandidates;
-	return [
-		...structuredCandidates,
-		...extractApplyPatchTargetPaths(readApplyPatchText(payload)),
-	];
+  if (!isApplyPatchToolName(toolName)) return structuredCandidates;
+  return [...structuredCandidates, ...extractApplyPatchTargetPaths(readApplyPatchText(payload))];
 }
 
 function isNullDeviceRedirectTarget(target: string): boolean {
-	const normalized = target
-		.trim()
-		.replace(/^['"]|['"]$/g, "")
-		.toLowerCase();
-	return normalized === "/dev/null" || normalized === "nul";
+  const normalized = target.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  return normalized === "/dev/null" || normalized === "nul";
 }
 
 // Collects same-command literal variable assignments (`NAME="value"`), skipping
 // any value that involves expansion (`$`, backticks) so unresolved/dynamic
 // targets stay conservatively blocked.
-function extractCommandLiteralAssignments(
-	command: string,
-): Map<string, string> {
-	const assignments = new Map<string, string>();
-	const pattern =
-		/(?:^|[\n;&|(]|&&|\|\|)\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"$`]*)"|'([^']*)'|([^\s"'$`;&|<>]+))/g;
-	for (const match of command.matchAll(pattern)) {
-		const name = safeString(match[1]).trim();
-		if (!name) continue;
-		const value = match[2] ?? match[3] ?? match[4] ?? "";
-		assignments.set(name, value);
-	}
-	return assignments;
+function extractCommandLiteralAssignments(command: string): Map<string, string> {
+  const assignments = new Map<string, string>();
+  const pattern = /(?:^|[\n;&|(]|&&|\|\|)\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"$`]*)"|'([^']*)'|([^\s"'$`;&|<>]+))/g;
+  for (const match of command.matchAll(pattern)) {
+    const name = safeString(match[1]).trim();
+    if (!name) continue;
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    assignments.set(name, value);
+  }
+  return assignments;
 }
 
 // Resolves a redirect/tee target of the form `$NAME`/`${NAME}` against
 // same-command literal assignments; non-variable or unresolved targets are
 // returned unchanged so they remain subject to the allowed-path check.
-function resolveCommandRedirectTarget(
-	target: string,
-	assignments: Map<string, string>,
-): string {
-	const variableMatch = target.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/);
-	if (!variableMatch) return target;
-	const resolved = assignments.get(safeString(variableMatch[1]));
-	return resolved !== undefined ? resolved : target;
+function resolveCommandRedirectTarget(target: string, assignments: Map<string, string>): string {
+  const variableMatch = target.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/);
+  if (!variableMatch) return target;
+  const resolved = assignments.get(safeString(variableMatch[1]));
+  return resolved !== undefined ? resolved : target;
 }
 
 // Masks redirect metacharacters (`<`/`>`) that appear INSIDE shell quotes so a
@@ -5188,158 +4113,92 @@ function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
 }
 
 function commandHasDestructiveGitSubcommand(command: string): boolean {
-	const destructiveSubcommands = new Set([
-		"am",
-		"apply",
-		"checkout",
-		"clean",
-		"merge",
-		"rebase",
-		"reset",
-		"restore",
-		"rm",
-		"switch",
-	]);
+  const destructiveSubcommands = new Set([
+    "am",
+    "apply",
+    "checkout",
+    "clean",
+    "merge",
+    "rebase",
+    "reset",
+    "restore",
+    "rm",
+    "switch",
+  ]);
 
-	for (const segment of splitShellCommandSegments(
-		stripHeredocBodiesForCommandScan(command),
-	)) {
-		const words = tokenizeShellWords(segment);
-		for (let index = 0; index < words.length; index += 1) {
-			if (shellWordBaseName(words[index] ?? "") !== "git") continue;
-			const subcommandIndex = findGitSubcommandIndex(words, index + 1);
-			if (subcommandIndex === null) continue;
-			const subcommand = words[subcommandIndex] ?? "";
-			if (destructiveSubcommands.has(subcommand)) return true;
-			if (subcommand === "worktree") {
-				const worktreeSubcommandIndex = findGitSubcommandIndex(
-					words,
-					subcommandIndex + 1,
-				);
-				if (worktreeSubcommandIndex === null) continue;
-				const worktreeSubcommand = words[worktreeSubcommandIndex] ?? "";
-				if (
-					worktreeSubcommand === "add" ||
-					worktreeSubcommand === "move" ||
-					worktreeSubcommand === "mv" ||
-					worktreeSubcommand === "remove" ||
-					worktreeSubcommand === "rm" ||
-					worktreeSubcommand === "prune" ||
-					worktreeSubcommand === "repair" ||
-					worktreeSubcommand === "clean"
-				)
-					return true;
-			}
-			if (subcommand.startsWith("checkout-")) return true;
-			if (subcommand.startsWith("merge-") && subcommand !== "merge-base")
-				return true;
-		}
-	}
-	return false;
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    for (let index = 0; index < words.length; index += 1) {
+      if (shellWordBaseName(words[index] ?? "") !== "git") continue;
+      const subcommandIndex = findGitSubcommandIndex(words, index + 1);
+      if (subcommandIndex === null) continue;
+      const subcommand = words[subcommandIndex] ?? "";
+      if (destructiveSubcommands.has(subcommand)) return true;
+      if (subcommand === "worktree") {
+        const worktreeSubcommandIndex = findGitSubcommandIndex(words, subcommandIndex + 1);
+        if (worktreeSubcommandIndex === null) continue;
+        const worktreeSubcommand = words[worktreeSubcommandIndex] ?? "";
+        if (worktreeSubcommand === "add" || worktreeSubcommand === "move" || worktreeSubcommand === "mv" || worktreeSubcommand === "remove" || worktreeSubcommand === "rm" || worktreeSubcommand === "prune" || worktreeSubcommand === "repair" || worktreeSubcommand === "clean") return true;
+      }
+      if (subcommand.startsWith("checkout-")) return true;
+      if (subcommand.startsWith("merge-") && subcommand !== "merge-base") return true;
+    }
+  }
+  return false;
 }
 function commandHasPackageInstallIntent(command: string): boolean {
-	for (const segment of splitShellCommandSegments(
-		stripHeredocBodiesForCommandScan(command),
-	)) {
-		const words = tokenizeShellWords(segment);
-		for (let index = 0; index < words.length; index += 1) {
-			const headBase = shellWordBaseName(words[index] ?? "");
-			if (headBase !== "npm" && headBase !== "pnpm" && headBase !== "yarn")
-				continue;
-			const subcommandIndex = findPackageInstallSubcommandIndex(
-				words,
-				index + 1,
-			);
-			if (subcommandIndex === null) continue;
-			const subcommand = words[subcommandIndex] ?? "";
-			if (
-				headBase === "npm" &&
-				(subcommand === "install" || subcommand === "i" || subcommand === "ci")
-			)
-				return true;
-			if (
-				headBase === "pnpm" &&
-				(subcommand === "install" || subcommand === "i" || subcommand === "add")
-			)
-				return true;
-			if (
-				headBase === "yarn" &&
-				(subcommand === "install" || subcommand === "add")
-			)
-				return true;
-		}
-	}
-	return false;
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    for (let index = 0; index < words.length; index += 1) {
+      const headBase = shellWordBaseName(words[index] ?? "");
+      if (headBase !== "npm" && headBase !== "pnpm" && headBase !== "yarn") continue;
+      const subcommandIndex = findPackageInstallSubcommandIndex(words, index + 1);
+      if (subcommandIndex === null) continue;
+      const subcommand = words[subcommandIndex] ?? "";
+      if (headBase === "npm" && (subcommand === "install" || subcommand === "i" || subcommand === "ci")) return true;
+      if (headBase === "pnpm" && (subcommand === "install" || subcommand === "i" || subcommand === "add")) return true;
+      if (headBase === "yarn" && (subcommand === "install" || subcommand === "add")) return true;
+    }
+  }
+  return false;
 }
 
-function findPackageInstallSubcommandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || word === "--") continue;
-		if (isShellAssignmentWord(word)) continue;
-		if (
-			word === "-C" ||
-			word === "--prefix" ||
-			word === "--dir" ||
-			word === "--cwd" ||
-			word === "-w" ||
-			word === "--workspace"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			word.startsWith("--prefix=") ||
-			word.startsWith("--dir=") ||
-			word.startsWith("--cwd=") ||
-			word.startsWith("--workspace=")
-		)
-			continue;
-		if (/^-C.+/.test(word) || /^-w.+/.test(word)) continue;
-		if (word.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findPackageInstallSubcommandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (isShellAssignmentWord(word)) continue;
+    if (word === "-C" || word === "--prefix" || word === "--dir" || word === "--cwd" || word === "-w" || word === "--workspace") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--prefix=") || word.startsWith("--dir=") || word.startsWith("--cwd=") || word.startsWith("--workspace=")) continue;
+    if (/^-C.+/.test(word) || /^-w.+/.test(word)) continue;
+    if (word.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
 function commandHasUntargetedPlanningForbiddenIntent(command: string): boolean {
-	return (
-		commandHasDestructiveGitSubcommand(command) ||
-		commandHasPackageInstallIntent(command)
-	);
+  return commandHasDestructiveGitSubcommand(command) || commandHasPackageInstallIntent(command);
 }
 
-function findGitSubcommandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || word === "--") continue;
-		if (isShellAssignmentWord(word)) continue;
-		if (
-			word === "-C" ||
-			word === "-c" ||
-			word === "--git-dir" ||
-			word === "--work-tree" ||
-			word === "--namespace"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			word.startsWith("--git-dir=") ||
-			word.startsWith("--work-tree=") ||
-			word.startsWith("--namespace=")
-		)
-			continue;
-		if (word.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+
+function findGitSubcommandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (isShellAssignmentWord(word)) continue;
+    if (word === "-C" || word === "-c" || word === "--git-dir" || word === "--work-tree" || word === "--namespace") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--git-dir=") || word.startsWith("--work-tree=") || word.startsWith("--namespace=")) continue;
+    if (word.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
 
@@ -5370,1018 +4229,709 @@ function commandHasDeepInterviewWriteIntent(command: string, depth = 0): boolean
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string): string[] {
-	const assignments = extractCommandLiteralAssignments(command);
-	const targets = extractDeepInterviewCommandRedirectTargets(command).map(
-		(target) => resolveCommandRedirectTarget(target, assignments),
-	);
-	targets.push(...extractConductorEditorWriteTargets(command));
-	for (const mutation of extractConductorBashMutations(command)) {
-		targets.push(...mutation.targets);
-	}
-	for (const write of extractConductorInterpreterWrites(command)) {
-		targets.push(...write.targets);
-	}
-	for (const segment of splitShellCommandSegments(
-		stripHeredocBodiesForCommandScan(command),
-	)) {
-		const words = tokenizeShellWords(segment);
-		for (let index = 0; index < words.length; index += 1) {
-			if (shellWordBaseName(words[index] ?? "") !== "tee") continue;
-			let afterDoubleDash = false;
-			for (
-				let targetIndex = index + 1;
-				targetIndex < words.length;
-				targetIndex += 1
-			) {
-				const word = words[targetIndex] ?? "";
-				if (
-					!word ||
-					word === "|" ||
-					word === "|&" ||
-					word === "&&" ||
-					word === "||" ||
-					word === ";"
-				)
-					break;
-				if (!afterDoubleDash && word === "--") {
-					afterDoubleDash = true;
-					continue;
-				}
-				if (!afterDoubleDash && word.startsWith("-")) continue;
-				if (
-					word === ">" ||
-					word === ">>" ||
-					word === ">&" ||
-					word === "<" ||
-					word === "<<" ||
-					word === "<<<"
-				) {
-					targetIndex += 1;
-					continue;
-				}
-				if (/^(?:>{1,2}|<)\S+/.test(word)) continue;
-				if (!isNullDeviceRedirectTarget(word))
-					targets.push(resolveCommandRedirectTarget(word, assignments));
-			}
-		}
-	}
-	for (const nestedCommand of extractNestedShellCommandStringsForStateScan(
-		command,
-	)) {
-		targets.push(...extractDeepInterviewCommandWriteTargets(nestedCommand));
-	}
-	for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(
-		command,
-	)) {
-		targets.push(...extractDeepInterviewCommandWriteTargets(nestedCommand));
-	}
-	return targets;
+  const assignments = extractCommandLiteralAssignments(command);
+  const targets = extractDeepInterviewCommandRedirectTargets(command)
+    .map((target) => resolveCommandRedirectTarget(target, assignments));
+  targets.push(...extractConductorEditorWriteTargets(command));
+  for (const mutation of extractConductorBashMutations(command)) {
+    targets.push(...mutation.targets);
+  }
+  for (const write of extractConductorInterpreterWrites(command)) {
+    targets.push(...write.targets);
+  }
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    for (let index = 0; index < words.length; index += 1) {
+      if (shellWordBaseName(words[index] ?? "") !== "tee") continue;
+      let afterDoubleDash = false;
+      for (let targetIndex = index + 1; targetIndex < words.length; targetIndex += 1) {
+        const word = words[targetIndex] ?? "";
+        if (!word || word === "|" || word === "|&" || word === "&&" || word === "||" || word === ";") break;
+        if (!afterDoubleDash && word === "--") {
+          afterDoubleDash = true;
+          continue;
+        }
+        if (!afterDoubleDash && word.startsWith("-")) continue;
+        if (word === ">" || word === ">>" || word === ">&" || word === "<" || word === "<<" || word === "<<<") {
+          targetIndex += 1;
+          continue;
+        }
+        if (/^(?:>{1,2}|<)\S+/.test(word)) continue;
+        if (!isNullDeviceRedirectTarget(word)) targets.push(resolveCommandRedirectTarget(word, assignments));
+      }
+    }
+  }
+  for (const nestedCommand of extractNestedShellCommandStringsForStateScan(command)) {
+    targets.push(...extractDeepInterviewCommandWriteTargets(nestedCommand));
+  }
+  for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(command)) {
+    targets.push(...extractDeepInterviewCommandWriteTargets(nestedCommand));
+  }
+  return targets;
 }
 function formatPlanningWriteBlockDetail(
-	operationClass: string,
-	target: string | undefined,
-	allowedPrefixes: readonly string[],
+  operationClass: string,
+  target: string | undefined,
+  allowedPrefixes: readonly string[],
 ): string {
-	const targetDetail = target ? `target ${target}` : "target <unresolved>";
-	return `${operationClass} ${targetDetail} is not under allowed planning artifact paths (${allowedPrefixes.join(", ")})`;
+  const targetDetail = target ? `target ${target}` : "target <unresolved>";
+  return `${operationClass} ${targetDetail} is not under allowed planning artifact paths (${allowedPrefixes.join(", ")})`;
 }
 
 function isUnresolvedVariableTarget(target: string): boolean {
-	const normalized = target.trim().replace(/^['"]|['"]$/g, "");
-	return /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
+  const normalized = target.trim().replace(/^['"]|['"]$/g, "");
+  return /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
 }
 
 function normalizeSameCommandScriptTarget(
-	cwd: string,
-	rawPath: string,
-	assignments: Map<string, string>,
+  cwd: string,
+  rawPath: string,
+  assignments: Map<string, string>,
 ): string | null {
-	const trimmed = resolveCommandRedirectTarget(
-		rawPath.trim().replace(/^['"]|['"]$/g, ""),
-		assignments,
-	);
-	if (!trimmed || trimmed.includes("\0") || isUnresolvedVariableTarget(trimmed))
-		return null;
-	try {
-		return resolve(cwd, trimmed);
-	} catch {
-		return null;
-	}
+  const trimmed = resolveCommandRedirectTarget(
+    rawPath.trim().replace(/^['"]|['"]$/g, ""),
+    assignments,
+  );
+  if (!trimmed || trimmed.includes("\0") || isUnresolvedVariableTarget(trimmed)) return null;
+  try {
+    return resolve(cwd, trimmed);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeCommandDirectoryTarget(rawPath: string): string | null {
-	const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
-	if (
-		!trimmed ||
-		trimmed.includes("\0") ||
-		trimmed.startsWith("~") ||
-		trimmed.startsWith("-") ||
-		isUnresolvedVariableTarget(trimmed) ||
-		/[`$]/.test(trimmed)
-	) {
-		return null;
-	}
-	return trimmed;
+  const trimmed = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (
+    !trimmed
+    || trimmed.includes("\0")
+    || trimmed.startsWith("~")
+    || trimmed.startsWith("-")
+    || isUnresolvedVariableTarget(trimmed)
+    || /[`$]/.test(trimmed)
+  ) {
+    return null;
+  }
+  return trimmed;
 }
 
-function resolveSimpleCdCommandCwd(
-	currentCwd: string,
-	words: string[],
-): string | null {
-	const commandIndex = findWrappedCommandPositionIndex(words, 0);
-	if (
-		commandIndex === null ||
-		shellWordBaseName(words[commandIndex] ?? "") !== "cd"
-	)
-		return null;
+function resolveSimpleCdCommandCwd(currentCwd: string, words: string[]): string | null {
+  const commandIndex = findWrappedCommandPositionIndex(words, 0);
+  if (commandIndex === null || shellWordBaseName(words[commandIndex] ?? "") !== "cd") return null;
 
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || word === "--") continue;
-		if (word === "-L" || word === "-P" || word === "-e") continue;
-		if (word.startsWith("-")) return null;
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (word === "-L" || word === "-P" || word === "-e") continue;
+    if (word.startsWith("-")) return null;
 
-		const normalizedTarget = normalizeCommandDirectoryTarget(word);
-		if (normalizedTarget === null) return null;
-		try {
-			return resolve(currentCwd, normalizedTarget);
-		} catch {
-			return null;
-		}
-	}
+    const normalizedTarget = normalizeCommandDirectoryTarget(word);
+    if (normalizedTarget === null) return null;
+    try {
+      return resolve(currentCwd, normalizedTarget);
+    } catch {
+      return null;
+    }
+  }
 
-	return null;
+  return null;
 }
 
 function isEnvCwdChangingOption(word: string): boolean {
-	return (
-		word === "-C" ||
-		word === "--chdir" ||
-		word.startsWith("--chdir=") ||
-		/^-C.+/.test(word)
-	);
+  return word === "-C"
+    || word === "--chdir"
+    || word.startsWith("--chdir=")
+    || /^-C.+/.test(word);
 }
 
 interface WrappedCommandExecutionContext {
-	index: number;
-	cwd: string;
+  index: number;
+  cwd: string;
 }
 
-function resolveEnvWrappedCommandCwd(
-	currentCwd: string,
-	words: string[],
-	envWordIndex: number,
-	operandIndex: number,
-): string | null {
-	let effectiveCwd = currentCwd;
-	for (let index = envWordIndex + 1; index < operandIndex; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || word === "--" || isShellAssignmentWord(word)) continue;
-		if (
-			word === "-S" ||
-			word === "--split-string" ||
-			word.startsWith("-S") ||
-			word.startsWith("--split-string=")
-		)
-			return null;
-		if (
-			word === "-u" ||
-			word === "--unset" ||
-			word === "-a" ||
-			word === "--argv0"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			word.startsWith("--unset=") ||
-			word.startsWith("--argv0=") ||
-			/^-u.+/.test(word) ||
-			/^-a.+/.test(word)
-		)
-			continue;
-		if (isEnvCwdChangingOption(word)) {
-			let target = "";
-			if (word === "-C" || word === "--chdir") {
-				target = words[index + 1] ?? "";
-				index += 1;
-			} else if (word.startsWith("--chdir=")) {
-				target = word.slice("--chdir=".length);
-			} else if (word.startsWith("-C") && word.length > 2) {
-				target = word.slice(2);
-			}
-			const normalizedTarget = normalizeCommandDirectoryTarget(target);
-			if (normalizedTarget === null) return null;
-			try {
-				effectiveCwd = resolve(effectiveCwd, normalizedTarget);
-			} catch {
-				return null;
-			}
-		}
-	}
-	return effectiveCwd;
+function resolveEnvWrappedCommandCwd(currentCwd: string, words: string[], envWordIndex: number, operandIndex: number): string | null {
+  let effectiveCwd = currentCwd;
+  for (let index = envWordIndex + 1; index < operandIndex; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--" || isShellAssignmentWord(word)) continue;
+    if (word === "-S" || word === "--split-string" || word.startsWith("-S") || word.startsWith("--split-string=")) return null;
+    if (word === "-u" || word === "--unset" || word === "-a" || word === "--argv0") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--unset=") || word.startsWith("--argv0=") || /^-u.+/.test(word) || /^-a.+/.test(word)) continue;
+    if (isEnvCwdChangingOption(word)) {
+      let target = "";
+      if (word === "-C" || word === "--chdir") {
+        target = words[index + 1] ?? "";
+        index += 1;
+      } else if (word.startsWith("--chdir=")) {
+        target = word.slice("--chdir=".length);
+      } else if (word.startsWith("-C") && word.length > 2) {
+        target = word.slice(2);
+      }
+      const normalizedTarget = normalizeCommandDirectoryTarget(target);
+      if (normalizedTarget === null) return null;
+      try {
+        effectiveCwd = resolve(effectiveCwd, normalizedTarget);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return effectiveCwd;
 }
 
-function resolveWrappedCommandExecutionContext(
-	words: string[],
-	currentCwd: string,
-	startIndex = 0,
-): WrappedCommandExecutionContext | null {
-	let commandWordIndex = skipShellCommandPositionPrefixWords(words, startIndex);
-	let effectiveCwd = currentCwd;
-	for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
-		const commandWord = words[commandWordIndex] ?? "";
-		if (!commandWord) return null;
+function resolveWrappedCommandExecutionContext(words: string[], currentCwd: string, startIndex = 0): WrappedCommandExecutionContext | null {
+  let commandWordIndex = skipShellCommandPositionPrefixWords(words, startIndex);
+  let effectiveCwd = currentCwd;
+  for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+    const commandWord = words[commandWordIndex] ?? "";
+    if (!commandWord) return null;
 
-		const commandWordBase = shellWordBaseName(commandWord);
-		const operandIndex =
-			commandWordBase === "env"
-				? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
-				: commandWordBase === "command"
-					? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
-					: commandWordBase === "exec"
-						? findExecDispatchOperandIndex(words, commandWordIndex + 1)
-						: commandWordBase === "time"
-							? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
-							: commandWordBase === "timeout"
-								? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
-								: commandWordBase === "nohup" || commandWordBase === "setsid"
-									? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
-									: commandWordBase === "coproc"
-										? findCoprocDispatchOperandIndex(
-												words,
-												commandWordIndex + 1,
-											)
-										: commandWordBase === "xargs"
-											? findXargsDispatchOperandIndex(
-													words,
-													commandWordIndex + 1,
-												)
-											: commandWordBase === "nice"
-												? findNiceDispatchOperandIndex(
-														words,
-														commandWordIndex + 1,
-													)
-												: commandWordBase === "stdbuf"
-													? findStdbufDispatchOperandIndex(
-															words,
-															commandWordIndex + 1,
-														)
-													: null;
-		if (operandIndex === null)
-			return { index: commandWordIndex, cwd: effectiveCwd };
+    const commandWordBase = shellWordBaseName(commandWord);
+    const operandIndex =
+      commandWordBase === "env"
+        ? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
+        : commandWordBase === "command"
+          ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+          : commandWordBase === "exec"
+            ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
+            : commandWordBase === "time"
+              ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
+              : commandWordBase === "timeout"
+                ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
+                : commandWordBase === "nohup" || commandWordBase === "setsid"
+                  ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+                  : commandWordBase === "coproc"
+                    ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
+                    : commandWordBase === "xargs"
+                      ? findXargsDispatchOperandIndex(words, commandWordIndex + 1)
+                      : commandWordBase === "nice"
+                        ? findNiceDispatchOperandIndex(words, commandWordIndex + 1)
+                        : commandWordBase === "stdbuf"
+                          ? findStdbufDispatchOperandIndex(words, commandWordIndex + 1)
+                          : null;
+    if (operandIndex === null) return { index: commandWordIndex, cwd: effectiveCwd };
 
-		if (commandWordBase === "env") {
-			const envCwd = resolveEnvWrappedCommandCwd(
-				effectiveCwd,
-				words,
-				commandWordIndex,
-				operandIndex,
-			);
-			if (envCwd === null) return null;
-			effectiveCwd = envCwd;
-		}
+    if (commandWordBase === "env") {
+      const envCwd = resolveEnvWrappedCommandCwd(effectiveCwd, words, commandWordIndex, operandIndex);
+      if (envCwd === null) return null;
+      effectiveCwd = envCwd;
+    }
 
-		const nextCommandWordIndex = skipShellCommandPositionPrefixWords(
-			words,
-			operandIndex,
-		);
-		if (nextCommandWordIndex === commandWordIndex)
-			return { index: commandWordIndex, cwd: effectiveCwd };
-		commandWordIndex = nextCommandWordIndex;
-	}
+    const nextCommandWordIndex = skipShellCommandPositionPrefixWords(words, operandIndex);
+    if (nextCommandWordIndex === commandWordIndex) return { index: commandWordIndex, cwd: effectiveCwd };
+    commandWordIndex = nextCommandWordIndex;
+  }
 
-	return null;
+  return null;
 }
 
-function resolveStateWriteInputFileCwd(
-	cwd: string,
-	commandPrefix: string,
-): string | null {
-	const words = tokenizeShellWords(
-		stripHeredocBodiesForCommandScan(commandPrefix),
-	);
-	let effectiveCwd = cwd;
-	let activeWrapper: "env" | "npm" | "pnpm" | "yarn" | null = null;
+function resolveStateWriteInputFileCwd(cwd: string, commandPrefix: string): string | null {
+  const words = tokenizeShellWords(stripHeredocBodiesForCommandScan(commandPrefix));
+  let effectiveCwd = cwd;
+  let activeWrapper: "env" | "npm" | "pnpm" | "yarn" | null = null;
 
-	for (let index = 0; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellAssignmentWord(word)) continue;
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellAssignmentWord(word)) continue;
 
-		const wordBase = shellWordBaseName(word);
-		if (
-			wordBase === "env" ||
-			wordBase === "npm" ||
-			wordBase === "pnpm" ||
-			wordBase === "yarn"
-		) {
-			activeWrapper = wordBase;
-			continue;
-		}
+    const wordBase = shellWordBaseName(word);
+    if (wordBase === "env" || wordBase === "npm" || wordBase === "pnpm" || wordBase === "yarn") {
+      activeWrapper = wordBase;
+      continue;
+    }
 
-		if (!activeWrapper) continue;
+    if (!activeWrapper) continue;
 
-		const isEnvChdirOption =
-			activeWrapper === "env" && isEnvCwdChangingOption(word);
-		const isPackageManagerCwdOption =
-			activeWrapper !== "env" &&
-			(word === "-C" ||
-				word === "--prefix" ||
-				word === "--dir" ||
-				word === "--cwd" ||
-				word.startsWith("--prefix=") ||
-				word.startsWith("--dir=") ||
-				word.startsWith("--cwd=") ||
-				/^-C.+/.test(word));
+    const isEnvChdirOption = activeWrapper === "env" && isEnvCwdChangingOption(word);
+    const isPackageManagerCwdOption =
+      activeWrapper !== "env"
+        && (word === "-C"
+          || word === "--prefix"
+          || word === "--dir"
+          || word === "--cwd"
+          || word.startsWith("--prefix=")
+          || word.startsWith("--dir=")
+          || word.startsWith("--cwd=")
+          || /^-C.+/.test(word));
 
-		if (isEnvChdirOption || isPackageManagerCwdOption) {
-			let target = "";
-			if (
-				word === "-C" ||
-				word === "--chdir" ||
-				word === "--prefix" ||
-				word === "--dir" ||
-				word === "--cwd"
-			) {
-				target = words[index + 1] ?? "";
-			} else if (word.startsWith("--chdir=")) {
-				target = word.slice("--chdir=".length);
-			} else if (word.startsWith("--prefix=")) {
-				target = word.slice("--prefix=".length);
-			} else if (word.startsWith("--dir=")) {
-				target = word.slice("--dir=".length);
-			} else if (word.startsWith("--cwd=")) {
-				target = word.slice("--cwd=".length);
-			} else if (word.startsWith("-C") && word.length > 2) {
-				target = word.slice(2);
-			}
-			const normalizedTarget = normalizeCommandDirectoryTarget(target);
-			if (normalizedTarget === null) return null;
-			effectiveCwd = resolve(effectiveCwd, normalizedTarget);
-			if (
-				word === "-C" ||
-				word === "--chdir" ||
-				word === "--prefix" ||
-				word === "--dir" ||
-				word === "--cwd"
-			) {
-				index += 1;
-			}
-		}
-	}
+    if (isEnvChdirOption || isPackageManagerCwdOption) {
+      let target = "";
+      if (word === "-C" || word === "--chdir" || word === "--prefix" || word === "--dir" || word === "--cwd") {
+        target = words[index + 1] ?? "";
+      } else if (word.startsWith("--chdir=")) {
+        target = word.slice("--chdir=".length);
+      } else if (word.startsWith("--prefix=")) {
+        target = word.slice("--prefix=".length);
+      } else if (word.startsWith("--dir=")) {
+        target = word.slice("--dir=".length);
+      } else if (word.startsWith("--cwd=")) {
+        target = word.slice("--cwd=".length);
+      } else if (word.startsWith("-C") && word.length > 2) {
+        target = word.slice(2);
+      }
+      const normalizedTarget = normalizeCommandDirectoryTarget(target);
+      if (normalizedTarget === null) return null;
+      effectiveCwd = resolve(effectiveCwd, normalizedTarget);
+      if (word === "-C" || word === "--chdir" || word === "--prefix" || word === "--dir" || word === "--cwd") {
+        index += 1;
+      }
+    }
+  }
 
-	return effectiveCwd;
+  return effectiveCwd;
 }
 
-function findShellFunctionDefinitionAt(
-	command: string,
-	index: number,
-): { name: string; openBraceIndex: number; bodyOpenChar: "{" | "(" } | null {
-	if (index > 0) {
-		let previous = index - 1;
-		while (previous >= 0 && /\s/.test(command[previous] ?? "")) previous -= 1;
-		if (previous >= 0 && !/[;&|(){}]/.test(command[previous] ?? ""))
-			return null;
-	}
+function findShellFunctionDefinitionAt(command: string, index: number): { name: string; openBraceIndex: number; bodyOpenChar: "{" | "(" } | null {
+  if (index > 0) {
+    let previous = index - 1;
+    while (previous >= 0 && /\s/.test(command[previous] ?? "")) previous -= 1;
+    if (previous >= 0 && !/[;&|(){}]/.test(command[previous] ?? "")) return null;
+  }
 
-	let cursor = index;
-	while (/\s/.test(command[cursor] ?? "")) cursor += 1;
-	const candidate = command.slice(cursor);
-	const functionKeywordMatch = candidate.match(
-		/^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*([\{(])/,
-	);
-	if (functionKeywordMatch) {
-		return {
-			name: functionKeywordMatch[1],
-			openBraceIndex: cursor + functionKeywordMatch[0].length - 1,
-			bodyOpenChar: functionKeywordMatch[2] === "(" ? "(" : "{",
-		};
-	}
-	const bareFunctionMatch = candidate.match(
-		/^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*([\{(])/,
-	);
-	if (bareFunctionMatch) {
-		return {
-			name: bareFunctionMatch[1],
-			openBraceIndex: cursor + bareFunctionMatch[0].length - 1,
-			bodyOpenChar: bareFunctionMatch[2] === "(" ? "(" : "{",
-		};
-	}
-	return null;
+  let cursor = index;
+  while (/\s/.test(command[cursor] ?? "")) cursor += 1;
+  const candidate = command.slice(cursor);
+  const functionKeywordMatch = candidate.match(/^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*([\{(])/);
+  if (functionKeywordMatch) {
+    return {
+      name: functionKeywordMatch[1],
+      openBraceIndex: cursor + functionKeywordMatch[0].length - 1,
+      bodyOpenChar: functionKeywordMatch[2] === "(" ? "(" : "{",
+    };
+  }
+  const bareFunctionMatch = candidate.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*([\{(])/);
+  if (bareFunctionMatch) {
+    return {
+      name: bareFunctionMatch[1],
+      openBraceIndex: cursor + bareFunctionMatch[0].length - 1,
+      bodyOpenChar: bareFunctionMatch[2] === "(" ? "(" : "{",
+    };
+  }
+  return null;
 }
 
-function findShellFunctionBodyEnd(
-	command: string,
-	openBraceIndex: number,
-	bodyOpenChar: "{" | "(",
-): number {
-	let depth = 1;
-	let quote: "'" | '"' | null = null;
-	for (let index = openBraceIndex + 1; index < command.length; index += 1) {
-		const char = command[index] ?? "";
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			continue;
-		}
-		if (quote) continue;
-		if (bodyOpenChar === "{" && char === "{") {
-			depth += 1;
-			continue;
-		}
-		if (bodyOpenChar === "{" && char === "}") {
-			depth -= 1;
-			if (depth === 0) return index;
-		}
-		if (bodyOpenChar === "(" && char === "(") {
-			depth += 1;
-			continue;
-		}
-		if (bodyOpenChar === "(" && char === ")") {
-			depth -= 1;
-			if (depth === 0) return index;
-		}
-	}
-	return -1;
+function findShellFunctionBodyEnd(command: string, openBraceIndex: number, bodyOpenChar: "{" | "("): number {
+  let depth = 1;
+  let quote: "'" | "\"" | null = null;
+  for (let index = openBraceIndex + 1; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if (bodyOpenChar === "{" && char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (bodyOpenChar === "{" && char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+    if (bodyOpenChar === "(" && char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (bodyOpenChar === "(" && char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
-function isShellFunctionInvokedLater(
-	command: string,
-	functionName: string,
-): boolean {
-	for (const segment of splitShellCommandSegments(command)) {
-		const words = tokenizeShellWords(segment);
-		if (isShellFunctionInvokedFromWords(words, 0, functionName)) return true;
-	}
-	return false;
+function isShellFunctionInvokedLater(command: string, functionName: string): boolean {
+  for (const segment of splitShellCommandSegments(command)) {
+    const words = tokenizeShellWords(segment);
+    if (isShellFunctionInvokedFromWords(words, 0, functionName)) return true;
+  }
+  return false;
 }
 
-function isShellFunctionInvokedFromWords(
-	words: string[],
-	startIndex: number,
-	functionName: string,
-): boolean {
-	const index = skipShellCommandPositionPrefixWords(words, startIndex);
-	const head = words[index] ?? "";
-	if (head === functionName) return true;
+function isShellFunctionInvokedFromWords(words: string[], startIndex: number, functionName: string): boolean {
+  const index = skipShellCommandPositionPrefixWords(words, startIndex);
+  const head = words[index] ?? "";
+  if (head === functionName) return true;
 
-	if (shellWordBaseName(head) === "time") {
-		const timeOperandIndex = findTimeDispatchOperandIndex(words, index + 1);
-		if (timeOperandIndex !== null) {
-			const timeCommandIndex = skipShellCommandPositionPrefixWords(
-				words,
-				timeOperandIndex,
-			);
-			if ((words[timeCommandIndex] ?? "") === functionName) return true;
-		}
-	}
+  if (shellWordBaseName(head) === "time") {
+    const timeOperandIndex = findTimeDispatchOperandIndex(words, index + 1);
+    if (timeOperandIndex !== null) {
+      const timeCommandIndex = skipShellCommandPositionPrefixWords(words, timeOperandIndex);
+      if ((words[timeCommandIndex] ?? "") === functionName) return true;
+    }
+  }
 
-	if (shellWordBaseName(head) === "coproc") {
-		const coprocOperandIndex = findCoprocDispatchOperandIndex(words, index + 1);
-		if (coprocOperandIndex !== null) {
-			return isShellFunctionInvokedFromWords(
-				words,
-				coprocOperandIndex,
-				functionName,
-			);
-		}
-	}
+  if (shellWordBaseName(head) === "coproc") {
+    const coprocOperandIndex = findCoprocDispatchOperandIndex(words, index + 1);
+    if (coprocOperandIndex !== null) {
+      return isShellFunctionInvokedFromWords(words, coprocOperandIndex, functionName);
+    }
+  }
 
-	if (shellWordBaseName(head) === "setsid") {
-		const setsidOperandIndex = findCommandDispatchOperandIndex(
-			words,
-			index + 1,
-		);
-		if (setsidOperandIndex !== null) {
-			return isShellFunctionInvokedFromWords(
-				words,
-				setsidOperandIndex,
-				functionName,
-			);
-		}
-	}
+  if (shellWordBaseName(head) === "setsid") {
+    const setsidOperandIndex = findCommandDispatchOperandIndex(words, index + 1);
+    if (setsidOperandIndex !== null) {
+      return isShellFunctionInvokedFromWords(words, setsidOperandIndex, functionName);
+    }
+  }
 
-	if (shellWordBaseName(head) === "command") {
-		const commandOperandIndex = findCommandDispatchOperandIndex(
-			words,
-			index + 1,
-		);
-		if (
-			commandOperandIndex !== null &&
-			shellWordBaseName(words[commandOperandIndex] ?? "") === "time"
-		) {
-			return isShellFunctionInvokedFromWords(
-				words,
-				commandOperandIndex,
-				functionName,
-			);
-		}
-	}
+  if (shellWordBaseName(head) === "command") {
+    const commandOperandIndex = findCommandDispatchOperandIndex(words, index + 1);
+    if (commandOperandIndex !== null && shellWordBaseName(words[commandOperandIndex] ?? "") === "time") {
+      return isShellFunctionInvokedFromWords(words, commandOperandIndex, functionName);
+    }
+  }
 
-	return false;
+  return false;
 }
 
-function firstNonOptionSourceOperand(
-	words: string[],
-	sourceWordIndex: number,
-): string {
-	for (let index = sourceWordIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || word === "--") continue;
-		if (word.startsWith("-")) continue;
-		return word;
-	}
-	return "";
+function firstNonOptionSourceOperand(words: string[], sourceWordIndex: number): string {
+  for (let index = sourceWordIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (word.startsWith("-")) continue;
+    return word;
+  }
+  return "";
 }
 
 function stdinRedirectOperands(words: string[]): string[] {
-	const operands: string[] = [];
-	for (let index = 0; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (word === "<") {
-			const operand = words[index + 1] ?? "";
-			if (operand) operands.push(operand);
-			index += 1;
-			continue;
-		}
-		if (/^\d*<[^<&].+/.test(word)) {
-			operands.push(word.replace(/^\d*</, ""));
-		}
-	}
-	return operands;
+  const operands: string[] = [];
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (word === "<") {
+      const operand = words[index + 1] ?? "";
+      if (operand) operands.push(operand);
+      index += 1;
+      continue;
+    }
+    if (/^\d*<[^<&].+/.test(word)) {
+      operands.push(word.replace(/^\d*</, ""));
+    }
+  }
+  return operands;
 }
 
-function firstShellScriptOperands(
-	words: string[],
-	shellWordIndex: number,
-): string[] {
-	const operands: string[] = [];
-	for (let index = shellWordIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || word === "--") continue;
-		if (isShellCommandStringOption(word)) return operands;
-		if (isShellOptionWithSeparateValue(word)) {
-			const value = words[index + 1] ?? "";
-			if (value) operands.push(value);
-			index += 1;
-			continue;
-		}
-		if (word.startsWith("--init-file=") || word.startsWith("--rcfile=")) {
-			operands.push(word.slice(word.indexOf("=") + 1));
-			continue;
-		}
-		if (word.startsWith("-")) continue;
-		operands.push(word);
-		return operands;
-	}
-	return operands;
+function firstShellScriptOperands(words: string[], shellWordIndex: number): string[] {
+  const operands: string[] = [];
+  for (let index = shellWordIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (isShellCommandStringOption(word)) return operands;
+    if (isShellOptionWithSeparateValue(word)) {
+      const value = words[index + 1] ?? "";
+      if (value) operands.push(value);
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--init-file=") || word.startsWith("--rcfile=")) {
+      operands.push(word.slice(word.indexOf("=") + 1));
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    operands.push(word);
+    return operands;
+  }
+  return operands;
 }
 
-function firstShellScriptOperand(
-	words: string[],
-	shellWordIndex: number,
-): string {
-	return firstShellScriptOperands(words, shellWordIndex)[0] ?? "";
+function firstShellScriptOperand(words: string[], shellWordIndex: number): string {
+  return firstShellScriptOperands(words, shellWordIndex)[0] ?? "";
 }
 
 function isPythonInterpreterCommandWord(base: string): boolean {
-	return /^python(?:[0-9]+(?:\.[0-9]+)*)?$/.test(base);
+  return /^python(?:[0-9]+(?:\.[0-9]+)*)?$/.test(base);
 }
 
 function isNodeInterpreterCommandWord(base: string): boolean {
-	return /^(?:node|nodejs)$/.test(base);
+  return /^(?:node|nodejs)$/.test(base);
 }
 
 function isPythonRuntimeOptionWithSeparateValue(word: string): boolean {
-	return (
-		word === "-B" ||
-		word === "-b" ||
-		word === "-d" ||
-		word === "-E" ||
-		word === "-i" ||
-		word === "-I" ||
-		word === "-O" ||
-		word === "-OO" ||
-		word === "-P" ||
-		word === "-q" ||
-		word === "-R" ||
-		word === "-s" ||
-		word === "-S" ||
-		word === "-u" ||
-		word === "-v" ||
-		word === "-V" ||
-		word === "--check-hash-based-pycs" ||
-		word === "-W" ||
-		word === "-X"
-	);
+  return word === "-B"
+    || word === "-b"
+    || word === "-d"
+    || word === "-E"
+    || word === "-i"
+    || word === "-I"
+    || word === "-O"
+    || word === "-OO"
+    || word === "-P"
+    || word === "-q"
+    || word === "-R"
+    || word === "-s"
+    || word === "-S"
+    || word === "-u"
+    || word === "-v"
+    || word === "-V"
+    || word === "--check-hash-based-pycs"
+    || word === "-W"
+    || word === "-X";
 }
 
 function isScriptInterpreterCommandWord(word: string): boolean {
-	const base = shellWordBaseName(word);
-	return (
-		isNestedShellCommandWord(base) ||
-		isNodeInterpreterCommandWord(base) ||
-		base === "bun" ||
-		base === "tsx" ||
-		base === "deno" ||
-		isPythonInterpreterCommandWord(base) ||
-		base === "perl" ||
-		base === "ruby" ||
-		base === "php" ||
-		base === "lua" ||
-		base === "go" ||
-		base === "npx" ||
-		base === "npm" ||
-		base === "pnpm" ||
-		base === "yarn"
-	);
+  const base = shellWordBaseName(word);
+  return isNestedShellCommandWord(base)
+    || isNodeInterpreterCommandWord(base)
+    || base === "bun"
+    || base === "tsx"
+    || base === "deno"
+    || isPythonInterpreterCommandWord(base)
+    || base === "perl"
+    || base === "ruby"
+    || base === "php"
+    || base === "lua"
+    || base === "go"
+    || base === "npx"
+    || base === "npm"
+    || base === "pnpm"
+    || base === "yarn";
 }
 
 function isTsxRuntimeOptionWithSeparateValue(word: string): boolean {
-	return word === "--tsconfig";
+  return word === "--tsconfig";
 }
 
 function isTsxRuntimeModeWord(word: string): boolean {
-	return word === "watch";
+  return word === "watch";
 }
 
-function firstInterpreterScriptOperands(
-	words: string[],
-	interpreterWordIndex: number,
-): string[] {
-	const base = shellWordBaseName(words[interpreterWordIndex] ?? "");
-	if (isNestedShellCommandWord(base))
-		return firstShellScriptOperands(words, interpreterWordIndex);
 
-	const operands: string[] = [];
-	let sawGoRun = false;
-	let sawPackageRunner = base === "npx";
-	for (let index = interpreterWordIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || word === "--") continue;
-		if (isPythonInterpreterCommandWord(base)) {
-			if (word === "-c" || word === "-m") return operands;
-			if (isPythonRuntimeOptionWithSeparateValue(word)) {
-				index += 1;
-				continue;
-			}
-			if (word.startsWith("-W") || word.startsWith("-X")) continue;
-			if (word.startsWith("-")) continue;
-			operands.push(word);
-			return operands;
-		}
-		if (
-			isNodeInterpreterCommandWord(base) ||
-			base === "bun" ||
-			base === "tsx"
-		) {
-			if (
-				word === "-e" ||
-				word === "--eval" ||
-				word === "-p" ||
-				word === "--print"
-			)
-				return operands;
-			if (
-				runtimeOptionConsumesNextWord(word) ||
-				(base === "tsx" && isTsxRuntimeOptionWithSeparateValue(word))
-			) {
-				const value = words[index + 1] ?? "";
-				if (
-					value &&
-					(word === "-r" ||
-						word === "--require" ||
-						word === "--import" ||
-						word === "--loader" ||
-						word === "--experimental-loader")
-				) {
-					operands.push(value);
-				}
-				index += 1;
-				continue;
-			}
-			if (
-				word.startsWith("--require=") ||
-				word.startsWith("--import=") ||
-				word.startsWith("--loader=") ||
-				word.startsWith("--experimental-loader=")
-			) {
-				operands.push(word.slice(word.indexOf("=") + 1));
-				continue;
-			}
-			if (word.startsWith("--eval=") || word.startsWith("--print="))
-				return operands;
-			if (base === "tsx" && isTsxRuntimeModeWord(word)) continue;
-			if (word.startsWith("-")) continue;
-			operands.push(word);
-			return operands;
-		}
-		if (base === "deno") {
-			if (word === "eval" || word === "repl") return operands;
-			if (word === "run") continue;
-			if (word.startsWith("-")) continue;
-			operands.push(word);
-			return operands;
-		}
-		if (base === "go") {
-			if (!sawGoRun) {
-				if (word === "run") {
-					sawGoRun = true;
-					continue;
-				}
-				return operands;
-			}
-			if (word.startsWith("-")) continue;
-			operands.push(word);
-			return operands;
-		}
-		if (
-			base === "npm" ||
-			base === "pnpm" ||
-			base === "yarn" ||
-			base === "npx"
-		) {
-			if (!sawPackageRunner) {
-				if (word === "exec" || word === "x" || word === "dlx") {
-					sawPackageRunner = true;
-					continue;
-				}
-				return operands;
-			}
-			if (word.startsWith("-")) continue;
-			if (
-				word === "tsx" ||
-				word === "node" ||
-				word === "bun" ||
-				word === "deno"
-			)
-				continue;
-			operands.push(word);
-			return operands;
-		}
-		if (
-			base === "perl" ||
-			base === "ruby" ||
-			base === "php" ||
-			base === "lua"
-		) {
-			if (word === "-e" || word.startsWith("-e")) return operands;
-			if (word.startsWith("-")) continue;
-			operands.push(word);
-			return operands;
-		}
-	}
-	return operands;
+function firstInterpreterScriptOperands(words: string[], interpreterWordIndex: number): string[] {
+  const base = shellWordBaseName(words[interpreterWordIndex] ?? "");
+  if (isNestedShellCommandWord(base)) return firstShellScriptOperands(words, interpreterWordIndex);
+
+  const operands: string[] = [];
+  let sawGoRun = false;
+  let sawPackageRunner = base === "npx";
+  for (let index = interpreterWordIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || word === "--") continue;
+    if (isPythonInterpreterCommandWord(base)) {
+      if (word === "-c" || word === "-m") return operands;
+      if (isPythonRuntimeOptionWithSeparateValue(word)) {
+        index += 1;
+        continue;
+      }
+      if (word.startsWith("-W") || word.startsWith("-X")) continue;
+      if (word.startsWith("-")) continue;
+      operands.push(word);
+      return operands;
+    }
+    if (isNodeInterpreterCommandWord(base) || base === "bun" || base === "tsx") {
+      if (word === "-e" || word === "--eval" || word === "-p" || word === "--print") return operands;
+      if (runtimeOptionConsumesNextWord(word) || (base === "tsx" && isTsxRuntimeOptionWithSeparateValue(word))) {
+        const value = words[index + 1] ?? "";
+        if (value && (word === "-r" || word === "--require" || word === "--import" || word === "--loader" || word === "--experimental-loader")) {
+          operands.push(value);
+        }
+        index += 1;
+        continue;
+      }
+      if (word.startsWith("--require=") || word.startsWith("--import=") || word.startsWith("--loader=") || word.startsWith("--experimental-loader=")) {
+        operands.push(word.slice(word.indexOf("=") + 1));
+        continue;
+      }
+      if (word.startsWith("--eval=") || word.startsWith("--print=")) return operands;
+      if (base === "tsx" && isTsxRuntimeModeWord(word)) continue;
+      if (word.startsWith("-")) continue;
+      operands.push(word);
+      return operands;
+    }
+    if (base === "deno") {
+      if (word === "eval" || word === "repl") return operands;
+      if (word === "run") continue;
+      if (word.startsWith("-")) continue;
+      operands.push(word);
+      return operands;
+    }
+    if (base === "go") {
+      if (!sawGoRun) {
+        if (word === "run") {
+          sawGoRun = true;
+          continue;
+        }
+        return operands;
+      }
+      if (word.startsWith("-")) continue;
+      operands.push(word);
+      return operands;
+    }
+    if (base === "npm" || base === "pnpm" || base === "yarn" || base === "npx") {
+      if (!sawPackageRunner) {
+        if (word === "exec" || word === "x" || word === "dlx") {
+          sawPackageRunner = true;
+          continue;
+        }
+        return operands;
+      }
+      if (word.startsWith("-")) continue;
+      if (word === "tsx" || word === "node" || word === "bun" || word === "deno") continue;
+      operands.push(word);
+      return operands;
+    }
+    if (base === "perl" || base === "ruby" || base === "php" || base === "lua") {
+      if (word === "-e" || word.startsWith("-e")) return operands;
+      if (word.startsWith("-")) continue;
+      operands.push(word);
+      return operands;
+    }
+  }
+  return operands;
 }
 
-function firstPlanningTmpScriptExecutionTarget(
-	cwd: string,
-	command: string,
-): string | null {
-	const scanCommand = (
-		currentCwd: string,
-		currentCommand: string,
-		activeCommands: Set<string>,
-	): string | null => {
-		const normalizedCommand = stripHeredocBodiesForCommandScan(
-			normalizeShellLineContinuations(currentCommand),
-		);
-		const commandKey = `${currentCwd}\0${normalizedCommand.trim()}`;
-		if (!normalizedCommand.trim() || activeCommands.has(commandKey))
-			return null;
 
-		const assignments = extractCommandLiteralAssignments(normalizedCommand);
-		const nextActiveCommands = new Set(activeCommands);
-		nextActiveCommands.add(commandKey);
-		let effectiveCwd = currentCwd;
-		const normalizeExecutionTarget = (
-			operandCwd: string,
-			rawPath: string,
-		): string | null => {
-			const absoluteTarget = normalizeSameCommandScriptTarget(
-				operandCwd,
-				rawPath,
-				assignments,
-			);
-			if (!absoluteTarget) return null;
-			const relativePath = relative(cwd, absoluteTarget).replace(/\\/g, "/");
-			if (
-				!relativePath ||
-				relativePath.startsWith("..") ||
-				relativePath.startsWith("/")
-			)
-				return null;
-			return relativePath;
-		};
+function firstPlanningTmpScriptExecutionTarget(cwd: string, command: string): string | null {
+  const scanCommand = (currentCwd: string, currentCommand: string, activeCommands: Set<string>): string | null => {
+    const normalizedCommand = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(currentCommand));
+    const commandKey = `${currentCwd}\0${normalizedCommand.trim()}`;
+    if (!normalizedCommand.trim() || activeCommands.has(commandKey)) return null;
 
-		for (const segment of splitShellCommandSegments(normalizedCommand)) {
-			const words = tokenizeShellWords(segment);
-			const cdCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
-			if (cdCwd !== null) {
-				effectiveCwd = cdCwd;
-				continue;
-			}
+    const assignments = extractCommandLiteralAssignments(normalizedCommand);
+    const nextActiveCommands = new Set(activeCommands);
+    nextActiveCommands.add(commandKey);
+    let effectiveCwd = currentCwd;
+    const normalizeExecutionTarget = (operandCwd: string, rawPath: string): string | null => {
+      const absoluteTarget = normalizeSameCommandScriptTarget(operandCwd, rawPath, assignments);
+      if (!absoluteTarget) return null;
+      const relativePath = relative(cwd, absoluteTarget).replace(/\\/g, "/");
+      if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith("/")) return null;
+      return relativePath;
+    };
 
-			const wrappedCommandContext = resolveWrappedCommandExecutionContext(
-				words,
-				effectiveCwd,
-			);
-			for (let index = 0; index < words.length; index += 1) {
-				const word = words[index] ?? "";
-				const operandCwd =
-					wrappedCommandContext && index >= wrappedCommandContext.index
-						? wrappedCommandContext.cwd
-						: effectiveCwd;
-				const operands =
-					word === "source" || word === "."
-						? [firstNonOptionSourceOperand(words, index)].filter(Boolean)
-						: isScriptInterpreterCommandWord(word)
-							? [
-									...firstInterpreterScriptOperands(words, index),
-									...stdinRedirectOperands(words),
-								]
-							: [];
-				for (const operand of operands) {
-					const relativePath = normalizeExecutionTarget(operandCwd, operand);
-					if (relativePath && isPlanningTmpRelativePath(relativePath))
-						return relativePath;
-				}
-			}
 
-			if (wrappedCommandContext !== null) {
-				const directTarget = words[wrappedCommandContext.index] ?? "";
-				const relativePath = normalizeExecutionTarget(
-					wrappedCommandContext.cwd,
-					directTarget,
-				);
-				if (relativePath && isPlanningTmpRelativePath(relativePath))
-					return relativePath;
-			}
+    for (const segment of splitShellCommandSegments(normalizedCommand)) {
+      const words = tokenizeShellWords(segment);
+      const cdCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
+      if (cdCwd !== null) {
+        effectiveCwd = cdCwd;
+        continue;
+      }
 
-			for (const nestedCommand of extractNestedShellCommandStringsForStateScan(
-				segment,
-			)) {
-				const nestedTarget = scanCommand(
-					effectiveCwd,
-					nestedCommand,
-					nextActiveCommands,
-				);
-				if (nestedTarget) return nestedTarget;
-			}
-			for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(
-				segment,
-			)) {
-				const nestedTarget = scanCommand(
-					effectiveCwd,
-					nestedCommand,
-					nextActiveCommands,
-				);
-				if (nestedTarget) return nestedTarget;
-			}
-		}
+      const wrappedCommandContext = resolveWrappedCommandExecutionContext(words, effectiveCwd);
+      for (let index = 0; index < words.length; index += 1) {
+        const word = words[index] ?? "";
+        const operandCwd = wrappedCommandContext && index >= wrappedCommandContext.index ? wrappedCommandContext.cwd : effectiveCwd;
+        const operands = word === "source" || word === "."
+          ? [firstNonOptionSourceOperand(words, index)].filter(Boolean)
+          : isScriptInterpreterCommandWord(word)
+            ? [...firstInterpreterScriptOperands(words, index), ...stdinRedirectOperands(words)]
+            : [];
+        for (const operand of operands) {
+          const relativePath = normalizeExecutionTarget(operandCwd, operand);
+          if (relativePath && isPlanningTmpRelativePath(relativePath)) return relativePath;
+        }
+      }
 
-		return null;
-	};
+      if (wrappedCommandContext !== null) {
+        const directTarget = words[wrappedCommandContext.index] ?? "";
+        const relativePath = normalizeExecutionTarget(
+          wrappedCommandContext.cwd,
+          directTarget,
+        );
+        if (relativePath && isPlanningTmpRelativePath(relativePath)) return relativePath;
+      }
 
-	return scanCommand(cwd, command, new Set());
+      for (const nestedCommand of extractNestedShellCommandStringsForStateScan(segment)) {
+        const nestedTarget = scanCommand(effectiveCwd, nestedCommand, nextActiveCommands);
+        if (nestedTarget) return nestedTarget;
+      }
+      for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(segment)) {
+        const nestedTarget = scanCommand(effectiveCwd, nestedCommand, nextActiveCommands);
+        if (nestedTarget) return nestedTarget;
+      }
+    }
+
+    return null;
+  };
+
+  return scanCommand(cwd, command, new Set());
 }
 
-function sourcesFileWrittenEarlierInSameCommand(
-	cwd: string,
-	command: string,
-): boolean {
-	const scanCommand = (
-		currentCwd: string,
-		currentCommand: string,
-		activeCommands: Set<string>,
-		writtenTargets: Set<string>,
-	): boolean => {
-		const normalizedCommand = stripHeredocBodiesForCommandScan(
-			normalizeShellLineContinuations(currentCommand),
-		);
-		const commandKey = `${currentCwd}\0${normalizedCommand.trim()}`;
-		if (!normalizedCommand.trim() || activeCommands.has(commandKey))
-			return false;
 
-		const assignments = extractCommandLiteralAssignments(normalizedCommand);
-		const nextActiveCommands = new Set(activeCommands);
-		nextActiveCommands.add(commandKey);
+function sourcesFileWrittenEarlierInSameCommand(cwd: string, command: string): boolean {
+  const scanCommand = (currentCwd: string, currentCommand: string, activeCommands: Set<string>, writtenTargets: Set<string>): boolean => {
+    const normalizedCommand = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(currentCommand));
+    const commandKey = `${currentCwd}\0${normalizedCommand.trim()}`;
+    if (!normalizedCommand.trim() || activeCommands.has(commandKey)) return false;
 
-		for (const write of extractConductorInterpreterWrites(currentCommand)) {
-			for (const target of write.targets) {
-				const normalizedTarget = normalizeSameCommandScriptTarget(
-					currentCwd,
-					target,
-					assignments,
-				);
-				if (normalizedTarget) writtenTargets.add(normalizedTarget);
-			}
-		}
-		let effectiveCwd = currentCwd;
+    const assignments = extractCommandLiteralAssignments(normalizedCommand);
+    const nextActiveCommands = new Set(activeCommands);
+    nextActiveCommands.add(commandKey);
 
-		for (const segment of splitShellCommandSegments(normalizedCommand)) {
-			const words = tokenizeShellWords(segment);
-			const cdCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
-			if (cdCwd !== null) {
-				effectiveCwd = cdCwd;
-				continue;
-			}
+    for (const write of extractConductorInterpreterWrites(currentCommand)) {
+      for (const target of write.targets) {
+        const normalizedTarget = normalizeSameCommandScriptTarget(currentCwd, target, assignments);
+        if (normalizedTarget) writtenTargets.add(normalizedTarget);
+      }
+    }
+    let effectiveCwd = currentCwd;
 
-			const wrappedCommandContext = resolveWrappedCommandExecutionContext(
-				words,
-				effectiveCwd,
-			);
+    for (const segment of splitShellCommandSegments(normalizedCommand)) {
+      const words = tokenizeShellWords(segment);
+      const cdCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
+      if (cdCwd !== null) {
+        effectiveCwd = cdCwd;
+        continue;
+      }
 
-			for (let index = 0; index < words.length; index += 1) {
-				const word = words[index] ?? "";
-				const operandCwd =
-					wrappedCommandContext && index >= wrappedCommandContext.index
-						? wrappedCommandContext.cwd
-						: effectiveCwd;
-				const operand =
-					word === "source" || word === "."
-						? normalizeSameCommandScriptTarget(
-								operandCwd,
-								firstNonOptionSourceOperand(words, index),
-								assignments,
-							)
-						: isNestedShellCommandWord(word)
-							? normalizeSameCommandScriptTarget(
-									operandCwd,
-									firstShellScriptOperand(words, index),
-									assignments,
-								)
-							: null;
-				if (operand && writtenTargets.has(operand)) return true;
-			}
+      const wrappedCommandContext = resolveWrappedCommandExecutionContext(words, effectiveCwd);
 
-			const directExecutionTarget =
-				wrappedCommandContext === null
-					? null
-					: normalizeSameCommandScriptTarget(
-							wrappedCommandContext.cwd,
-							words[wrappedCommandContext.index] ?? "",
-							assignments,
-						);
-			if (directExecutionTarget && writtenTargets.has(directExecutionTarget))
-				return true;
+      for (let index = 0; index < words.length; index += 1) {
+        const word = words[index] ?? "";
+        const operandCwd = wrappedCommandContext && index >= wrappedCommandContext.index ? wrappedCommandContext.cwd : effectiveCwd;
+        const operand = word === "source" || word === "."
+          ? normalizeSameCommandScriptTarget(operandCwd, firstNonOptionSourceOperand(words, index), assignments)
+          : isNestedShellCommandWord(word)
+            ? normalizeSameCommandScriptTarget(operandCwd, firstShellScriptOperand(words, index), assignments)
+            : null;
+        if (operand && writtenTargets.has(operand)) return true;
+      }
 
-			for (const nestedCommand of extractNestedShellCommandStringsForStateScan(
-				segment,
-			)) {
-				if (
-					scanCommand(
-						effectiveCwd,
-						nestedCommand,
-						nextActiveCommands,
-						writtenTargets,
-					)
-				)
-					return true;
-			}
+      const directExecutionTarget = wrappedCommandContext === null
+        ? null
+        : normalizeSameCommandScriptTarget(wrappedCommandContext.cwd, words[wrappedCommandContext.index] ?? "", assignments);
+      if (directExecutionTarget && writtenTargets.has(directExecutionTarget)) return true;
 
-			for (const target of extractDeepInterviewCommandWriteTargets(segment)) {
-				const normalizedTarget = normalizeSameCommandScriptTarget(
-					effectiveCwd,
-					target,
-					assignments,
-				);
-				if (normalizedTarget) writtenTargets.add(normalizedTarget);
-			}
-		}
+      for (const nestedCommand of extractNestedShellCommandStringsForStateScan(segment)) {
+        if (scanCommand(effectiveCwd, nestedCommand, nextActiveCommands, writtenTargets)) return true;
+      }
 
-		return false;
-	};
+      for (const target of extractDeepInterviewCommandWriteTargets(segment)) {
+        const normalizedTarget = normalizeSameCommandScriptTarget(effectiveCwd, target, assignments);
+        if (normalizedTarget) writtenTargets.add(normalizedTarget);
+      }
+    }
 
-	return scanCommand(cwd, command, new Set(), new Set());
+    return false;
+  };
+
+  return scanCommand(cwd, command, new Set(), new Set());
 }
+
 
 function describeImplementationToolBlock(
-	toolName: string,
-	blockedPath: string | undefined,
-	pathCount: number,
+  toolName: string,
+  blockedPath: string | undefined,
+  pathCount: number,
 ): string {
-	if (pathCount === 0) {
-		const operationClass = isApplyPatchToolName(toolName)
-			? "apply_patch target extraction failed"
-			: `${toolName} path`;
-		return `${operationClass} target <unresolved>; only planning artifact paths are allowed (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
-	}
-	const operationClass = isApplyPatchToolName(toolName)
-		? "apply_patch target"
-		: `${toolName} path`;
-	return formatPlanningWriteBlockDetail(
-		operationClass,
-		blockedPath,
-		RALPLAN_ALLOWED_WRITE_PREFIXES,
-	);
+  if (pathCount === 0) {
+    const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target extraction failed" : `${toolName} path`;
+    return `${operationClass} target <unresolved>; only planning artifact paths are allowed (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target" : `${toolName} path`;
+  return formatPlanningWriteBlockDetail(operationClass, blockedPath, RALPLAN_ALLOWED_WRITE_PREFIXES);
 }
 
 // `omx state` mutations normally route through the gate-enforcing `state_write`
@@ -6394,2997 +4944,2271 @@ function describeImplementationToolBlock(
 // path that coherently terminalizes root and session state when the payload is a
 // complete consensus-approved terminal state.
 function readStateWriteInputPayload(
-	cwd: string,
-	command: string,
-	sourceCommand: string = command,
+  cwd: string,
+  command: string,
+  sourceCommand: string = command,
 ): Record<string, unknown> | null {
-	const stateWriteOperations = collectOmxStateCommandOperations(
-		command,
-		"write",
-	);
-	if (stateWriteOperations.length === 0) return null;
-	if (stateWriteOperations.length > 1) return null;
+  const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
+  if (stateWriteOperations.length === 0) return null;
+  if (stateWriteOperations.length > 1) return null;
 
-	const stateWriteOperation = stateWriteOperations[0];
-	if (!stateWriteOperation) return null;
-	const stateWriteArgs = stateWriteOperation.args;
+  const stateWriteOperation = stateWriteOperations[0];
+  if (!stateWriteOperation) return null;
+  const stateWriteArgs = stateWriteOperation.args;
 
-	const mergeModeFlag = (
-		payload: Record<string, unknown>,
-	): Record<string, unknown> => {
-		const mode = readStateWriteFlagValue(stateWriteArgs, "--mode");
-		return normalizeStateWriteClassificationPayload(
-			mode ? { ...payload, mode } : payload,
-		);
-	};
+  const mergeModeFlag = (payload: Record<string, unknown>): Record<string, unknown> => {
+    const mode = readStateWriteFlagValue(stateWriteArgs, "--mode");
+    return normalizeStateWriteClassificationPayload(mode ? { ...payload, mode } : payload);
+  };
 
-	const inlineInput = readStateWriteFlagValue(stateWriteArgs, "--input");
-	const inputFile = readStateWriteFlagValue(stateWriteArgs, "--input-file");
-	if (inlineInput !== undefined && inputFile !== undefined) return null;
+  const inlineInput = readStateWriteFlagValue(stateWriteArgs, "--input");
+  const inputFile = readStateWriteFlagValue(stateWriteArgs, "--input-file");
+  if (inlineInput !== undefined && inputFile !== undefined) return null;
 
-	if (inlineInput !== undefined) {
-		try {
-			const parsed = JSON.parse(inlineInput);
-			return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-				? mergeModeFlag(parsed as Record<string, unknown>)
-				: null;
-		} catch {
-			return null;
-		}
-	}
+  if (inlineInput !== undefined) {
+    try {
+      const parsed = JSON.parse(inlineInput);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? mergeModeFlag(parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
 
-	if (inputFile === undefined) return null;
-	if (stateWriteOperation.nested) return null;
-	if (hasPriorExecutableCommand(stateWriteOperation.prefix)) return null;
+  if (inputFile === undefined) return null;
+  if (stateWriteOperation.nested) return null;
+  if (hasPriorExecutableCommand(stateWriteOperation.prefix)) return null;
 
-	const canonicalCommandPrefix =
-		stateWriteOperation.commandPrefix || stateWriteOperation.prefix || "";
-	const rawCommandPrefix =
-		sourceCommand !== command
-			? (() => {
-					const sourceCommandIndex = sourceCommand.lastIndexOf(command);
-					return sourceCommandIndex >= 0
-						? sourceCommand.slice(0, sourceCommandIndex)
-						: "";
-				})()
-			: "";
-	const resolvedInputFileCwd = resolveStateWriteInputFileCwd(
-		cwd,
-		canonicalCommandPrefix || rawCommandPrefix,
-	);
-	if (resolvedInputFileCwd === null) return null;
+  const canonicalCommandPrefix = stateWriteOperation.commandPrefix || stateWriteOperation.prefix || "";
+  const rawCommandPrefix = sourceCommand !== command
+    ? (() => {
+      const sourceCommandIndex = sourceCommand.lastIndexOf(command);
+      return sourceCommandIndex >= 0 ? sourceCommand.slice(0, sourceCommandIndex) : "";
+    })()
+    : "";
+  const resolvedInputFileCwd = resolveStateWriteInputFileCwd(cwd, canonicalCommandPrefix || rawCommandPrefix);
+  if (resolvedInputFileCwd === null) return null;
 
-	try {
-		const raw = readFileSync(
-			resolve(resolvedInputFileCwd, inputFile.trim()),
-			"utf-8",
-		);
-		const parsed = JSON.parse(raw);
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-			? mergeModeFlag(parsed as Record<string, unknown>)
-			: null;
-	} catch {
-		return null;
-	}
+  try {
+    const raw = readFileSync(resolve(resolvedInputFileCwd, inputFile.trim()), "utf-8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? mergeModeFlag(parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
-function envCommandHasCwdChangingOption(
-	words: string[],
-	startIndex: number,
-): boolean {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token || token === "--") continue;
-		if (isShellAssignmentWord(token)) continue;
-		if (isEnvCwdChangingOption(token)) return true;
-		if (
-			token === "-S" ||
-			token === "--split-string" ||
-			token.startsWith("-S") ||
-			token.startsWith("--split-string=")
-		) {
-			return false;
-		}
-		if (
-			token === "-u" ||
-			token === "--unset" ||
-			token === "-a" ||
-			token === "--argv0"
-		) {
-			index += 1;
-			continue;
-		}
-		if (token.startsWith("--unset=") || token.startsWith("--argv0=")) continue;
-		if (/^-u.+/.test(token) || /^-a.+/.test(token)) continue;
-		if (token.startsWith("-")) continue;
-		return false;
-	}
-	return false;
+function envCommandHasCwdChangingOption(words: string[], startIndex: number): boolean {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (isEnvCwdChangingOption(token)) return true;
+    if (token === "-S" || token === "--split-string" || token.startsWith("-S") || token.startsWith("--split-string=")) {
+      return false;
+    }
+    if (token === "-u" || token === "--unset" || token === "-a" || token === "--argv0") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--unset=") || token.startsWith("--argv0=")) continue;
+    if (/^-u.+/.test(token) || /^-a.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return false;
+  }
+  return false;
 }
 
 function hasPriorExecutableCommand(commandPrefix: string): boolean {
-	const words = tokenizeShellWords(
-		stripHeredocBodiesForCommandScan(commandPrefix),
-	);
-	let commandStart = true;
-	for (let index = 0; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word) continue;
-		if (
-			word === "&&" ||
-			word === "||" ||
-			word === ";" ||
-			word === "&" ||
-			word === "|" ||
-			word === "|&"
-		) {
-			commandStart = true;
-			continue;
-		}
-		if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
-		if (commandStart) return true;
-		commandStart = false;
-	}
-	return false;
+  const words = tokenizeShellWords(stripHeredocBodiesForCommandScan(commandPrefix));
+  let commandStart = true;
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word) continue;
+    if (word === "&&" || word === "||" || word === ";" || word === "&" || word === "|" || word === "|&") {
+      commandStart = true;
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
+    if (commandStart) return true;
+    commandStart = false;
+  }
+  return false;
 }
 
 function tokenizeShellWords(segment: string): string[] {
-	segment = normalizeShellLineContinuations(segment);
-	const words: string[] = [];
-	let current = "";
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < segment.length; index += 1) {
-		const char = segment[index];
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			current += segment[index] ?? "";
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			} else {
-				current += char;
-			}
-			continue;
-		}
-		if (!quote && (char === ";" || char === "&")) {
-			if (current) {
-				words.push(current);
-				current = "";
-			}
-			const next = segment[index + 1] ?? "";
-			if (char === "&" && next === "&") {
-				words.push("&&");
-				index += 1;
-			} else {
-				words.push(char);
-			}
-			continue;
-		}
-		if (!quote && /\s/.test(char)) {
-			if (current) {
-				words.push(current);
-				current = "";
-			}
-			continue;
-		}
-		if (
-			!quote &&
-			(char === "(" || char === ")" || char === "{" || char === "}")
-		) {
-			if (current) {
-				words.push(current);
-				current = "";
-			}
-			words.push(char);
-			continue;
-		}
-		if (!quote && char === "|") {
-			if (current) {
-				words.push(current);
-				current = "";
-			}
-			const next = segment[index + 1] ?? "";
-			if (next === "&" || next === "|") {
-				words.push(`${char}${next}`);
-				index += 1;
-			} else {
-				words.push(char);
-			}
-			continue;
-		}
-		if (!quote && (char === "<" || char === ">")) {
-			if (current) {
-				words.push(current);
-				current = "";
-			}
-			const next = segment[index + 1] ?? "";
-			if (next === char) {
-				const third = segment[index + 2] ?? "";
-				if (char === "<" && third === "<") {
-					words.push("<<<");
-					index += 2;
-				} else {
-					words.push(`${char}${next}`);
-					index += 1;
-				}
-			} else if (char === ">" && next === "&") {
-				words.push(">&");
-				index += 1;
-			} else {
-				words.push(char);
-			}
-			continue;
-		}
-		current += char;
-	}
-	if (current) words.push(current);
-	return words;
+  segment = normalizeShellLineContinuations(segment);
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      current += segment[index] ?? "";
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (!quote && (char === ";" || char === "&")) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      const next = segment[index + 1] ?? "";
+      if (char === "&" && next === "&") {
+        words.push("&&");
+        index += 1;
+      } else {
+        words.push(char);
+      }
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (!quote && (char === "(" || char === ")" || char === "{" || char === "}")) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      words.push(char);
+      continue;
+    }
+    if (!quote && char === "|") {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      const next = segment[index + 1] ?? "";
+      if (next === "&" || next === "|") {
+        words.push(`${char}${next}`);
+        index += 1;
+      } else {
+        words.push(char);
+      }
+      continue;
+    }
+    if (!quote && (char === "<" || char === ">")) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      const next = segment[index + 1] ?? "";
+      if (next === char) {
+        const third = segment[index + 2] ?? "";
+        if (char === "<" && third === "<") {
+          words.push("<<<");
+          index += 2;
+        } else {
+          words.push(`${char}${next}`);
+          index += 1;
+        }
+      } else if (char === ">" && next === "&") {
+        words.push(">&");
+        index += 1;
+      } else {
+        words.push(char);
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) words.push(current);
+  return words;
 }
 
-function isOmxCliEntryPath(
-	token: string,
-	runtimeWrapper: string | null,
-): boolean {
-	const trimmed = token.trim().replace(/^['"]|['"]$/g, "");
-	if (!trimmed || trimmed.includes("\0")) return false;
+function isOmxCliEntryPath(token: string, runtimeWrapper: string | null): boolean {
+  const trimmed = token.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || trimmed.includes("\0")) return false;
 
-	const normalized = trimmed.replace(/\\/g, "/");
-	const entryBasename = normalized.split("/").filter(Boolean).pop() ?? "";
-	if (entryBasename === "omx" || entryBasename === "omx.js") return true;
-	if (
-		normalized.endsWith("/node_modules/.bin/omx") ||
-		normalized === "node_modules/.bin/omx"
-	)
-		return true;
-	if (
-		normalized.endsWith("/dist/cli/omx.js") ||
-		normalized === "dist/cli/omx.js"
-	)
-		return true;
-	if (
-		runtimeWrapper === "tsx" &&
-		(normalized.endsWith("/src/cli/omx.ts") || normalized === "src/cli/omx.ts")
-	)
-		return true;
-	if (
-		runtimeWrapper === "tsx" &&
-		(normalized.endsWith("/dist/cli/omx.js") ||
-			normalized === "dist/cli/omx.js")
-	)
-		return true;
-	return false;
+  const normalized = trimmed.replace(/\\/g, "/");
+  const entryBasename = normalized.split("/").filter(Boolean).pop() ?? "";
+  if (entryBasename === "omx" || entryBasename === "omx.js") return true;
+  if (normalized.endsWith("/node_modules/.bin/omx") || normalized === "node_modules/.bin/omx") return true;
+  if (normalized.endsWith("/dist/cli/omx.js") || normalized === "dist/cli/omx.js") return true;
+  if (runtimeWrapper === "tsx" && (normalized.endsWith("/src/cli/omx.ts") || normalized === "src/cli/omx.ts")) return true;
+  if (runtimeWrapper === "tsx" && (normalized.endsWith("/dist/cli/omx.js") || normalized === "dist/cli/omx.js")) return true;
+  return false;
 }
 
-function extractEnvSplitStringCommand(
-	words: string[],
-	startIndex: number,
-): string {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token) continue;
-		if (token === "-S" || token === "--split-string") {
-			const operand = words[index + 1] ?? "";
-			if (!operand) return "";
-			const tail = words.slice(index + 2).join(" ");
-			return tail ? `env ${operand} ${tail}` : `env ${operand}`;
-		}
-		if (
-			token.startsWith("--split-string=") ||
-			(token.startsWith("-S") && token.length > 2)
-		) {
-			const operand = token.startsWith("--split-string=")
-				? token.slice("--split-string=".length)
-				: token.slice(2);
-			if (!operand) return "";
-			const tail = words.slice(index + 1).join(" ");
-			return tail ? `env ${operand} ${tail}` : `env ${operand}`;
-		}
-		if (isShellAssignmentWord(token)) continue;
-		if (
-			token === "-u" ||
-			token === "--unset" ||
-			token === "-C" ||
-			token === "--chdir" ||
-			token === "-a" ||
-			token === "--argv0"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			token.startsWith("--unset=") ||
-			token.startsWith("--chdir=") ||
-			token.startsWith("--argv0=")
-		)
-			continue;
-		if (/^-u.+/.test(token) || /^-C.+/.test(token) || /^-a.+/.test(token))
-			continue;
-		if (token.startsWith("-")) continue;
-		break;
-	}
-	return "";
+function extractEnvSplitStringCommand(words: string[], startIndex: number): string {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token) continue;
+    if (token === "-S" || token === "--split-string") {
+      const operand = words[index + 1] ?? "";
+      if (!operand) return "";
+      const tail = words.slice(index + 2).join(" ");
+      return tail ? `env ${operand} ${tail}` : `env ${operand}`;
+    }
+    if (token.startsWith("--split-string=") || (token.startsWith("-S") && token.length > 2)) {
+      const operand = token.startsWith("--split-string=")
+        ? token.slice("--split-string=".length)
+        : token.slice(2);
+      if (!operand) return "";
+      const tail = words.slice(index + 1).join(" ");
+      return tail ? `env ${operand} ${tail}` : `env ${operand}`;
+    }
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-u" || token === "--unset" || token === "-C" || token === "--chdir" || token === "-a" || token === "--argv0") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--unset=") || token.startsWith("--chdir=") || token.startsWith("--argv0=")) continue;
+    if (/^-u.+/.test(token) || /^-C.+/.test(token) || /^-a.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    break;
+  }
+  return "";
 }
 
-function extractPackageManagerExecCommand(
-	command: string,
-	words: string[],
-	startIndex: number,
-	headBase: string,
-): string {
-	let index = startIndex;
-	if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn") {
-		const subcommandIndex = findPackageManagerExecSubcommandIndex(
-			words,
-			startIndex,
-			headBase,
-		);
-		if (subcommandIndex === null) return "";
-		index = subcommandIndex + 1;
-	} else if (headBase !== "npx" && headBase !== "pnpx") {
-		return "";
-	}
+function extractPackageManagerExecCommand(command: string, words: string[], startIndex: number, headBase: string): string {
+  let index = startIndex;
+  if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn") {
+    const subcommandIndex = findPackageManagerExecSubcommandIndex(words, startIndex, headBase);
+    if (subcommandIndex === null) return "";
+    index = subcommandIndex + 1;
+  } else if (headBase !== "npx" && headBase !== "pnpx") {
+    return "";
+  }
 
-	for (; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token) continue;
-		if (token === "--") {
-			const tail = sliceShellWordsTailPreservingQuoting(command, index + 1);
-			return tail || "";
-		}
-		if (isShellAssignmentWord(token)) continue;
-		if (token === "-c" || token === "--call") {
-			return words[index + 1] ?? "";
-		}
-		if (token.startsWith("-c") && token.length > 2) return token.slice(2);
-		if (token.startsWith("--call=")) return token.slice("--call=".length);
-		if (
-			token === "--package" ||
-			token === "-w" ||
-			token === "--workspace" ||
-			token === "--allow-scripts"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			token.startsWith("--package=") ||
-			token.startsWith("--workspace=") ||
-			token.startsWith("--allow-scripts=")
-		)
-			continue;
-		if (token.startsWith("-w") && token.length > 2) continue;
-		if (token.startsWith("-")) continue;
-		const tail = sliceShellWordsTailPreservingQuoting(command, index);
-		return tail || "";
-	}
-	return "";
+  for (; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token) continue;
+    if (token === "--") {
+      const tail = sliceShellWordsTailPreservingQuoting(command, index + 1);
+      return tail || "";
+    }
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-c" || token === "--call") {
+      return words[index + 1] ?? "";
+    }
+    if (token.startsWith("-c") && token.length > 2) return token.slice(2);
+    if (token.startsWith("--call=")) return token.slice("--call=".length);
+    if (token === "--package" || token === "-w" || token === "--workspace" || token === "--allow-scripts") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--package=") || token.startsWith("--workspace=") || token.startsWith("--allow-scripts=")) continue;
+    if (token.startsWith("-w") && token.length > 2) continue;
+    if (token.startsWith("-")) continue;
+    const tail = sliceShellWordsTailPreservingQuoting(command, index);
+    return tail || "";
+  }
+  return "";
 }
 
-function findPackageManagerExecSubcommandIndex(
-	words: string[],
-	startIndex: number,
-	headBase: string,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token) continue;
-		if (isShellAssignmentWord(token)) continue;
-		if (
-			token === "-C" ||
-			token === "--prefix" ||
-			token === "--dir" ||
-			token === "-w" ||
-			token === "--workspace" ||
-			token === "--package" ||
-			token === "--allow-scripts"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			token.startsWith("--prefix=") ||
-			token.startsWith("--dir=") ||
-			token.startsWith("--workspace=") ||
-			token.startsWith("--package=") ||
-			token.startsWith("--allow-scripts=")
-		)
-			continue;
-		if (/^-C.+/.test(token) || /^-w.+/.test(token)) continue;
-		if (token.startsWith("-")) continue;
-		if (
-			token === "exec" ||
-			(headBase === "npm" && token === "x") ||
-			((headBase === "pnpm" || headBase === "yarn") && token === "dlx")
-		) {
-			return index;
-		}
-		return null;
-	}
-	return null;
+function findPackageManagerExecSubcommandIndex(words: string[], startIndex: number, headBase: string): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token) continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-C" || token === "--prefix" || token === "--dir" || token === "-w" || token === "--workspace" || token === "--package" || token === "--allow-scripts") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--prefix=") || token.startsWith("--dir=") || token.startsWith("--workspace=") || token.startsWith("--package=") || token.startsWith("--allow-scripts=")) continue;
+    if (/^-C.+/.test(token) || /^-w.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    if (token === "exec" || (headBase === "npm" && token === "x") || ((headBase === "pnpm" || headBase === "yarn") && token === "dlx")) {
+      return index;
+    }
+    return null;
+  }
+  return null;
 }
 
 function unwrapOmxStateTransportCommandOnce(command: string): string | null {
-	const words = tokenizeShellWords(
-		normalizeShellLineContinuations(command).trim(),
-	);
-	if (words.length === 0) return null;
+  const words = tokenizeShellWords(normalizeShellLineContinuations(command).trim());
+  if (words.length === 0) return null;
 
-	let index = 0;
-	while (index < words.length && isShellAssignmentWord(words[index] ?? ""))
-		index += 1;
-	if (index >= words.length) return null;
+  let index = 0;
+  while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
+  if (index >= words.length) return null;
 
-	const head = words[index] ?? "";
-	if (!head) return null;
-	const headBase = shellWordBaseName(head);
+  const head = words[index] ?? "";
+  if (!head) return null;
+  const headBase = shellWordBaseName(head);
 
-	if (
-		headBase === "command" ||
-		headBase === "builtin" ||
-		headBase === "exec" ||
-		headBase === "nohup" ||
-		headBase === "setsid"
-	) {
-		let remainderIndex = index + 1;
-		while (remainderIndex < words.length) {
-			const token = words[remainderIndex] ?? "";
-			if (!token) {
-				remainderIndex += 1;
-				continue;
-			}
-			if (token === "--") {
-				remainderIndex += 1;
-				continue;
-			}
-			if (head === "exec" && token === "-a") {
-				remainderIndex += 2;
-				continue;
-			}
-			if (token.startsWith("-")) {
-				remainderIndex += 1;
-				continue;
-			}
-			break;
-		}
-		const remainder = sliceShellWordsTailPreservingQuoting(
-			command,
-			remainderIndex,
-		);
-		return remainder || null;
-	}
+  if (headBase === "command" || headBase === "builtin" || headBase === "exec" || headBase === "nohup" || headBase === "setsid") {
+    let remainderIndex = index + 1;
+    while (remainderIndex < words.length) {
+      const token = words[remainderIndex] ?? "";
+      if (!token) {
+        remainderIndex += 1;
+        continue;
+      }
+      if (token === "--") {
+        remainderIndex += 1;
+        continue;
+      }
+      if (head === "exec" && token === "-a") {
+        remainderIndex += 2;
+        continue;
+      }
+      if (token.startsWith("-")) {
+        remainderIndex += 1;
+        continue;
+      }
+      break;
+    }
+    const remainder = sliceShellWordsTailPreservingQuoting(command, remainderIndex);
+    return remainder || null;
+  }
 
-	if (headBase === "env") {
-		if (envCommandHasCwdChangingOption(words, index + 1)) {
-			return null;
-		}
-		const splitOperand = extractEnvSplitStringCommand(words, index + 1);
-		if (splitOperand) {
-			return splitOperand;
-		}
-		const envCommandIndex = findEnvDispatchOperandIndex(words, index + 1);
-		if (envCommandIndex !== null) {
-			const remainder = sliceShellWordsTailPreservingQuoting(
-				command,
-				envCommandIndex,
-			);
-			return remainder || null;
-		}
-		const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
-		return remainder || null;
-	}
+  if (headBase === "env") {
+    if (envCommandHasCwdChangingOption(words, index + 1)) {
+      return null;
+    }
+    const splitOperand = extractEnvSplitStringCommand(words, index + 1);
+    if (splitOperand) {
+      return splitOperand;
+    }
+    const envCommandIndex = findEnvDispatchOperandIndex(words, index + 1);
+    if (envCommandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, envCommandIndex);
+      return remainder || null;
+    }
+    const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
+    return remainder || null;
+  }
 
-	if (headBase === "time") {
-		const operandIndex = findTimeDispatchOperandIndex(words, index + 1);
-		if (operandIndex !== null) {
-			const remainder = sliceShellWordsTailPreservingQuoting(
-				command,
-				operandIndex,
-			);
-			return remainder || null;
-		}
-		return null;
-	}
+  if (headBase === "time") {
+    const operandIndex = findTimeDispatchOperandIndex(words, index + 1);
+    if (operandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
+      return remainder || null;
+    }
+    return null;
+  }
 
-	if (headBase === "nice") {
-		const operandIndex = findNiceDispatchOperandIndex(words, index + 1);
-		if (operandIndex !== null) {
-			const remainder = sliceShellWordsTailPreservingQuoting(
-				command,
-				operandIndex,
-			);
-			return remainder || null;
-		}
-		return null;
-	}
+  if (headBase === "nice") {
+    const operandIndex = findNiceDispatchOperandIndex(words, index + 1);
+    if (operandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
+      return remainder || null;
+    }
+    return null;
+  }
 
-	if (headBase === "stdbuf") {
-		const operandIndex = findStdbufDispatchOperandIndex(words, index + 1);
-		if (operandIndex !== null) {
-			const remainder = sliceShellWordsTailPreservingQuoting(
-				command,
-				operandIndex,
-			);
-			return remainder || null;
-		}
-		return null;
-	}
+  if (headBase === "stdbuf") {
+    const operandIndex = findStdbufDispatchOperandIndex(words, index + 1);
+    if (operandIndex !== null) {
+      const remainder = sliceShellWordsTailPreservingQuoting(command, operandIndex);
+      return remainder || null;
+    }
+    return null;
+  }
 
-	if (
-		headBase === "npm" ||
-		headBase === "pnpm" ||
-		headBase === "yarn" ||
-		headBase === "npx" ||
-		headBase === "pnpx"
-	) {
-		const packageManagerCommand = extractPackageManagerExecCommand(
-			command,
-			words,
-			index + 1,
-			headBase,
-		);
-		if (packageManagerCommand) {
-			return packageManagerCommand;
-		}
-	}
+  if (headBase === "npm" || headBase === "pnpm" || headBase === "yarn" || headBase === "npx" || headBase === "pnpx") {
+    const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, headBase);
+    if (packageManagerCommand) {
+      return packageManagerCommand;
+    }
+  }
 
-	if (isNestedShellCommandWord(headBase)) {
-		const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
-		if (commandStringIndex !== null) {
-			const nestedCommand = words[commandStringIndex] ?? "";
-			if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) {
-				const remainder = sliceShellWordsTailPreservingQuoting(
-					command,
-					commandStringIndex + 1,
-				);
-				return remainder ? `${nestedCommand} ${remainder}` : nestedCommand;
-			}
-		}
-	}
+  if (isNestedShellCommandWord(headBase)) {
+    const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
+    if (commandStringIndex !== null) {
+      const nestedCommand = words[commandStringIndex] ?? "";
+      if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) {
+        const remainder = sliceShellWordsTailPreservingQuoting(command, commandStringIndex + 1);
+        return remainder ? `${nestedCommand} ${remainder}` : nestedCommand;
+      }
+    }
+  }
 
-	if (headBase === "eval") {
-		const nestedCommand = words.slice(index + 1).join(" ");
-		if (nestedCommand && !isDynamicNestedCommandString(nestedCommand))
-			return nestedCommand;
-	}
+  if (headBase === "eval") {
+    const nestedCommand = words.slice(index + 1).join(" ");
+    if (nestedCommand && !isDynamicNestedCommandString(nestedCommand)) return nestedCommand;
+  }
 
-	if (headBase === "node" || headBase === "bun" || headBase === "tsx") {
-		const entryIndex = (() => {
-			for (
-				let candidateIndex = index + 1;
-				candidateIndex < words.length;
-				candidateIndex += 1
-			) {
-				const candidate = words[candidateIndex] ?? "";
-				if (!candidate) continue;
-				if (candidate.startsWith("-")) continue;
-				return candidateIndex;
-			}
-			return -1;
-		})();
-		if (entryIndex >= 0) {
-			const entryPath = words[entryIndex] ?? "";
-			if (entryPath && isOmxCliEntryPath(entryPath, headBase)) {
-				const remainder = sliceShellWordsTailPreservingQuoting(
-					command,
-					entryIndex + 1,
-				);
-				return remainder ? `omx ${remainder}` : "omx";
-			}
-		}
-		return null;
-	}
+  if (headBase === "node" || headBase === "bun" || headBase === "tsx") {
+    const entryIndex = (() => {
+      for (let candidateIndex = index + 1; candidateIndex < words.length; candidateIndex += 1) {
+        const candidate = words[candidateIndex] ?? "";
+        if (!candidate) continue;
+        if (candidate.startsWith("-")) continue;
+        return candidateIndex;
+      }
+      return -1;
+    })();
+    if (entryIndex >= 0) {
+      const entryPath = words[entryIndex] ?? "";
+      if (entryPath && isOmxCliEntryPath(entryPath, headBase)) {
+        const remainder = sliceShellWordsTailPreservingQuoting(command, entryIndex + 1);
+        return remainder ? `omx ${remainder}` : "omx";
+      }
+    }
+    return null;
+  }
 
-	if (isOmxCliEntryPath(head, null)) {
-		const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
-		return remainder ? `omx ${remainder}` : "omx";
-	}
+  if (isOmxCliEntryPath(head, null)) {
+    const remainder = sliceShellWordsTailPreservingQuoting(command, index + 1);
+    return remainder ? `omx ${remainder}` : "omx";
+  }
 
-	return null;
+  return null;
 }
 
 function canonicalizeOmxStateTransportCommand(command: string): string {
-	let current = normalizeShellLineContinuations(command).trim();
-	for (let passes = 0; passes < 8; passes += 1) {
-		const next = unwrapOmxStateTransportCommandOnce(current);
-		if (!next || next === current) return current;
-		current = next.trim();
-	}
-	return current;
+  let current = normalizeShellLineContinuations(command).trim();
+  for (let passes = 0; passes < 8; passes += 1) {
+    const next = unwrapOmxStateTransportCommandOnce(current);
+    if (!next || next === current) return current;
+    current = next.trim();
+  }
+  return current;
 }
 
-function sliceShellWordsTailPreservingQuoting(
-	command: string,
-	startWordIndex: number,
-): string | null {
-	const normalized = normalizeShellLineContinuations(command);
-	let quote: "'" | '"' | null = null;
-	let wordIndex = 0;
-	let currentWordStart: number | null = null;
+function sliceShellWordsTailPreservingQuoting(command: string, startWordIndex: number): string | null {
+  const normalized = normalizeShellLineContinuations(command);
+  let quote: "'" | "\"" | null = null;
+  let wordIndex = 0;
+  let currentWordStart: number | null = null;
 
-	for (let index = 0; index < normalized.length; index += 1) {
-		const char = normalized[index] ?? "";
-		if (char === "\\" && quote !== "'") {
-			if (currentWordStart === null) currentWordStart = index;
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-				if (currentWordStart === null) currentWordStart = index;
-			} else if (currentWordStart === null) {
-				currentWordStart = index;
-			}
-			continue;
-		}
-		if (!quote && /\s/.test(char)) {
-			if (currentWordStart !== null) {
-				if (wordIndex === startWordIndex)
-					return normalized.slice(currentWordStart);
-				wordIndex += 1;
-				currentWordStart = null;
-			}
-			continue;
-		}
-		if (currentWordStart === null) currentWordStart = index;
-	}
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      if (currentWordStart === null) currentWordStart = index;
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+        if (currentWordStart === null) currentWordStart = index;
+      } else if (currentWordStart === null) {
+        currentWordStart = index;
+      }
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (currentWordStart !== null) {
+        if (wordIndex === startWordIndex) return normalized.slice(currentWordStart);
+        wordIndex += 1;
+        currentWordStart = null;
+      }
+      continue;
+    }
+    if (currentWordStart === null) currentWordStart = index;
+  }
 
-	if (currentWordStart !== null && wordIndex === startWordIndex) {
-		return normalized.slice(currentWordStart);
-	}
-	return null;
+  if (currentWordStart !== null && wordIndex === startWordIndex) {
+    return normalized.slice(currentWordStart);
+  }
+  return null;
 }
 
 function normalizeShellLineContinuations(command: string): string {
-	let normalized = "";
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index] ?? "";
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			normalized += char;
-			continue;
-		}
-		if (char === "\\" && quote !== "'") {
-			const next = command[index + 1] ?? "";
-			if (next === "\r" && command[index + 2] === "\n") {
-				index += 2;
-				continue;
-			}
-			if (next === "\n") {
-				index += 1;
-				continue;
-			}
-		}
-		normalized += char;
-	}
-	return normalized;
+  let normalized = "";
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      normalized += char;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      const next = command[index + 1] ?? "";
+      if (next === "\r" && command[index + 2] === "\n") {
+        index += 2;
+        continue;
+      }
+      if (next === "\n") {
+        index += 1;
+        continue;
+      }
+    }
+    normalized += char;
+  }
+  return normalized;
 }
 
-function readStateWriteFlagValue(
-	args: string[],
-	flagName: "--input" | "--input-file" | "--mode",
-): string | undefined {
-	let value: string | undefined;
-	for (let index = 0; index < args.length; index += 1) {
-		const arg = args[index] ?? "";
-		if (arg === flagName) {
-			value = args[index + 1];
-			index += 1;
-			continue;
-		}
-		if (arg.startsWith(`${flagName}=`)) value = arg.slice(flagName.length + 1);
-	}
-	return value;
+function readStateWriteFlagValue(args: string[], flagName: "--input" | "--input-file" | "--mode"): string | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === flagName) {
+      value = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith(`${flagName}=`)) value = arg.slice(flagName.length + 1);
+  }
+  return value;
 }
 
 interface OmxStateCommandOperation {
-	args: string[];
-	prefix: string;
-	commandPrefix: string;
-	nested: boolean;
+  args: string[];
+  prefix: string;
+  commandPrefix: string;
+  nested: boolean;
 }
 
 interface StateScanSegment {
-	segment: string;
-	prefix: string;
+  segment: string;
+  prefix: string;
 }
 
 function shellWordBaseName(word: string): string {
-	return word.replace(/\\/g, "/").split("/").pop() ?? word;
+  return word.replace(/\\/g, "/").split("/").pop() ?? word;
 }
 
 function isOmxCliWrapperRuntime(word: string): boolean {
-	const base = shellWordBaseName(word);
-	return base === "node" || base === "bun" || base === "tsx";
+  const base = shellWordBaseName(word);
+  return base === "node" || base === "bun" || base === "tsx";
 }
 
 function isOmxCliWrapperScript(word: string): boolean {
-	const base = shellWordBaseName(word);
-	return base === "omx" || base === "omx.js";
+  const base = shellWordBaseName(word);
+  return base === "omx" || base === "omx.js";
 }
 
 function runtimeOptionConsumesNextWord(option: string): boolean {
-	return (
-		option === "-r" ||
-		option === "--require" ||
-		option === "--import" ||
-		option === "--loader" ||
-		option === "--experimental-loader" ||
-		option === "--env-file" ||
-		option === "--conditions" ||
-		option === "--title" ||
-		option === "-C"
-	);
+  return option === "-r"
+    || option === "--require"
+    || option === "--import"
+    || option === "--loader"
+    || option === "--experimental-loader"
+    || option === "--env-file"
+    || option === "--conditions"
+    || option === "--title"
+    || option === "-C";
 }
 
 function runtimeOptionIsInlineCode(option: string): boolean {
-	return (
-		option === "-e" ||
-		option === "--eval" ||
-		option.startsWith("--eval=") ||
-		option === "-p" ||
-		option === "--print" ||
-		option.startsWith("--print=")
-	);
+  return option === "-e"
+    || option === "--eval"
+    || option.startsWith("--eval=")
+    || option === "-p"
+    || option === "--print"
+    || option.startsWith("--print=");
 }
 
 function findOmxCliWrapperRuntimeScriptIndex(words: string[]): number | null {
-	if (!isOmxCliWrapperRuntime(words[0] ?? "")) return null;
-	for (let index = 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word) continue;
-		if (word === "--") continue;
-		if (runtimeOptionIsInlineCode(word)) return null;
-		if (runtimeOptionConsumesNextWord(word)) {
-			index += 1;
-			continue;
-		}
-		if (word.startsWith("-r") && word.length > 2) continue;
-		if (word.startsWith("--") && word.includes("=")) continue;
-		if (word.startsWith("-")) continue;
-		return isOmxCliWrapperScript(word) ? index : null;
-	}
-	return null;
+  if (!isOmxCliWrapperRuntime(words[0] ?? "")) return null;
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word) continue;
+    if (word === "--") continue;
+    if (runtimeOptionIsInlineCode(word)) return null;
+    if (runtimeOptionConsumesNextWord(word)) {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-r") && word.length > 2) continue;
+    if (word.startsWith("--") && word.includes("=")) continue;
+    if (word.startsWith("-")) continue;
+    return isOmxCliWrapperScript(word) ? index : null;
+  }
+  return null;
 }
 
-function readOmxStateCommandArgsFromWords(
-	words: string[],
-	operation: "write" | "clear",
-): string[] | null {
-	if (
-		isOmxCliWrapperScript(words[0] ?? "") &&
-		words[1] === "state" &&
-		words[2] === operation
-	) {
-		return words.slice(3);
-	}
-	const runtimeScriptIndex = findOmxCliWrapperRuntimeScriptIndex(words);
-	if (
-		runtimeScriptIndex !== null &&
-		words[runtimeScriptIndex + 1] === "state" &&
-		words[runtimeScriptIndex + 2] === operation
-	) {
-		return words.slice(runtimeScriptIndex + 3);
-	}
-	return null;
+function readOmxStateCommandArgsFromWords(words: string[], operation: "write" | "clear"): string[] | null {
+  if (isOmxCliWrapperScript(words[0] ?? "") && words[1] === "state" && words[2] === operation) {
+    return words.slice(3);
+  }
+  const runtimeScriptIndex = findOmxCliWrapperRuntimeScriptIndex(words);
+  if (runtimeScriptIndex !== null && words[runtimeScriptIndex + 1] === "state" && words[runtimeScriptIndex + 2] === operation) {
+    return words.slice(runtimeScriptIndex + 3);
+  }
+  return null;
 }
 
 // Shell compound-command introducers can occupy command position after wrappers
 // such as `time`/`command`; skip them before matching the protected `omx state`
 // operation so wrapper-unwrapping keeps scanning the actual command body.
 function isShellCommandPositionPrefixWord(word: string): boolean {
-	return (
-		word === "(" ||
-		word === "{" ||
-		word === "!" ||
-		word === "if" ||
-		word === "then" ||
-		word === "else" ||
-		word === "elif" ||
-		word === "do" ||
-		word === "while" ||
-		word === "until"
-	);
+  return word === "("
+    || word === "{"
+    || word === "!"
+    || word === "if"
+    || word === "then"
+    || word === "else"
+    || word === "elif"
+    || word === "do"
+    || word === "while"
+    || word === "until";
 }
 
-function findEnvDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const option = words[index] ?? "";
-		if (!option || option === "--") continue;
-		if (isShellAssignmentWord(option)) continue;
-		if (
-			option === "-S" ||
-			option === "--split-string" ||
-			option.startsWith("-S") ||
-			option.startsWith("--split-string=")
-		) {
-			return null;
-		}
-		if (
-			option === "-u" ||
-			option === "--unset" ||
-			option === "-C" ||
-			option === "--chdir" ||
-			option === "-a" ||
-			option === "--argv0"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			option.startsWith("--unset=") ||
-			option.startsWith("--chdir=") ||
-			option.startsWith("--argv0=")
-		)
-			continue;
-		if (/^-u.+/.test(option) || /^-C.+/.test(option) || /^-a.+/.test(option))
-			continue;
-		if (option.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findEnvDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option || option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (option === "-S" || option === "--split-string" || option.startsWith("-S") || option.startsWith("--split-string=")) {
+      return null;
+    }
+    if (option === "-u" || option === "--unset" || option === "-C" || option === "--chdir" || option === "-a" || option === "--argv0") {
+      index += 1;
+      continue;
+    }
+    if (option.startsWith("--unset=") || option.startsWith("--chdir=") || option.startsWith("--argv0=")) continue;
+    if (/^-u.+/.test(option) || /^-C.+/.test(option) || /^-a.+/.test(option)) continue;
+    if (option.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
-function findCommandDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const option = words[index] ?? "";
-		if (!option || option === "--") continue;
-		if (isShellAssignmentWord(option)) continue;
-		if (option.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findCommandDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option || option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (option.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
-function findExecDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const option = words[index] ?? "";
-		if (!option || option === "--") continue;
-		if (isShellAssignmentWord(option)) continue;
-		if (option === "-a") {
-			index += 1;
-			continue;
-		}
-		if (option.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findExecDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option || option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (option === "-a") {
+      index += 1;
+      continue;
+    }
+    if (option.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
-function findTimeDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const option = words[index] ?? "";
-		if (!option || option === "--") continue;
-		if (isShellAssignmentWord(option)) continue;
-		if (
-			option === "-f" ||
-			option === "--format" ||
-			option === "-o" ||
-			option === "--output"
-		) {
-			index += 1;
-			continue;
-		}
-		if (option.startsWith("--format=") || option.startsWith("--output="))
-			continue;
-		if (/^-[^-]/.test(option)) {
-			const shortOptions = option.slice(1);
-			const lastValueOptionIndex = Math.max(
-				shortOptions.lastIndexOf("f"),
-				shortOptions.lastIndexOf("o"),
-			);
-			if (
-				lastValueOptionIndex >= 0 &&
-				lastValueOptionIndex === shortOptions.length - 1
-			) {
-				index += 1;
-			}
-			continue;
-		}
-		if (option.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findTimeDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option || option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (option === "-f" || option === "--format" || option === "-o" || option === "--output") {
+      index += 1;
+      continue;
+    }
+    if (option.startsWith("--format=") || option.startsWith("--output=")) continue;
+    if (/^-[^-]/.test(option)) {
+      const shortOptions = option.slice(1);
+      const lastValueOptionIndex = Math.max(shortOptions.lastIndexOf("f"), shortOptions.lastIndexOf("o"));
+      if (lastValueOptionIndex >= 0 && lastValueOptionIndex === shortOptions.length - 1) {
+        index += 1;
+      }
+      continue;
+    }
+    if (option.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
-function findTimeoutDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	let durationSeen = false;
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token || token === "--") continue;
-		if (isShellAssignmentWord(token)) continue;
-		if (!durationSeen) {
-			if (
-				token === "-k" ||
-				token === "--kill-after" ||
-				token === "-s" ||
-				token === "--signal" ||
-				token.startsWith("--kill-after=") ||
-				token.startsWith("--signal=") ||
-				token.startsWith("-k") ||
-				token.startsWith("-s")
-			) {
-				if (
-					token === "-k" ||
-					token === "--kill-after" ||
-					token === "-s" ||
-					token === "--signal"
-				) {
-					index += 1;
-				}
-				continue;
-			}
-			if (
-				token === "-f" ||
-				token === "--foreground" ||
-				token === "-p" ||
-				token === "--preserve-status" ||
-				token === "-v" ||
-				token === "--verbose"
-			) {
-				continue;
-			}
-			if (token.startsWith("-")) continue;
-			durationSeen = true;
-			continue;
-		}
-		return index;
-	}
-	return null;
+function findTimeoutDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  let durationSeen = false;
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (!durationSeen) {
+      if (
+        token === "-k"
+        || token === "--kill-after"
+        || token === "-s"
+        || token === "--signal"
+        || token.startsWith("--kill-after=")
+        || token.startsWith("--signal=")
+        || token.startsWith("-k")
+        || token.startsWith("-s")
+      ) {
+        if (
+          token === "-k"
+          || token === "--kill-after"
+          || token === "-s"
+          || token === "--signal"
+        ) {
+          index += 1;
+        }
+        continue;
+      }
+      if (
+        token === "-f"
+        || token === "--foreground"
+        || token === "-p"
+        || token === "--preserve-status"
+        || token === "-v"
+        || token === "--verbose"
+      ) {
+        continue;
+      }
+      if (token.startsWith("-")) continue;
+      durationSeen = true;
+      continue;
+    }
+    return index;
+  }
+  return null;
 }
 
-function findNiceDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token || token === "--") continue;
-		if (isShellAssignmentWord(token)) continue;
-		if (token === "-n" || token === "--adjustment") {
-			index += 1;
-			continue;
-		}
-		if (token.startsWith("--adjustment=") || /^-n.+/.test(token)) continue;
-		if (token.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findNiceDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-n" || token === "--adjustment") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--adjustment=") || /^-n.+/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
-function findStdbufDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token || token === "--") continue;
-		if (isShellAssignmentWord(token)) continue;
-		if (
-			token === "-i" ||
-			token === "-o" ||
-			token === "-e" ||
-			token === "--input" ||
-			token === "--output" ||
-			token === "--error"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			token.startsWith("--input=") ||
-			token.startsWith("--output=") ||
-			token.startsWith("--error=") ||
-			/^-[ioe].+/.test(token)
-		) {
-			continue;
-		}
-		if (token.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findStdbufDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (token === "-i" || token === "-o" || token === "-e" || token === "--input" || token === "--output" || token === "--error") {
+      index += 1;
+      continue;
+    }
+    if (
+      token.startsWith("--input=")
+      || token.startsWith("--output=")
+      || token.startsWith("--error=")
+      || /^-[ioe].+/.test(token)
+    ) {
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
 function isXargsOptionWithNextValue(option: string): boolean {
-	return (
-		option === "-a" ||
-		option === "--arg-file" ||
-		option === "-d" ||
-		option === "--delimiter" ||
-		option === "-E" ||
-		option === "--eof" ||
-		option === "-I" ||
-		option === "--replace" ||
-		option === "-J" ||
-		option === "-L" ||
-		option === "--max-lines" ||
-		option === "-n" ||
-		option === "--max-args" ||
-		option === "-P" ||
-		option === "--max-procs" ||
-		option === "-s" ||
-		option === "--max-chars"
-	);
+  return option === "-a"
+    || option === "--arg-file"
+    || option === "-d"
+    || option === "--delimiter"
+    || option === "-E"
+    || option === "--eof"
+    || option === "-I"
+    || option === "--replace"
+    || option === "-J"
+    || option === "-L"
+    || option === "--max-lines"
+    || option === "-n"
+    || option === "--max-args"
+    || option === "-P"
+    || option === "--max-procs"
+    || option === "-s"
+    || option === "--max-chars";
 }
 
 function isXargsStandaloneOption(option: string): boolean {
-	return (
-		option === "-0" ||
-		option === "--null" ||
-		option === "-r" ||
-		option === "--no-run-if-empty" ||
-		option === "-t" ||
-		option === "--verbose" ||
-		option === "-p" ||
-		option === "--interactive" ||
-		option === "-x" ||
-		option === "--exit" ||
-		option === "-o" ||
-		option === "--open-tty" ||
-		option === "--show-limits"
-	);
+  return option === "-0"
+    || option === "--null"
+    || option === "-r"
+    || option === "--no-run-if-empty"
+    || option === "-t"
+    || option === "--verbose"
+    || option === "-p"
+    || option === "--interactive"
+    || option === "-x"
+    || option === "--exit"
+    || option === "-o"
+    || option === "--open-tty"
+    || option === "--show-limits";
 }
 
-function findXargsDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const option = words[index] ?? "";
-		if (!option || option === "--") continue;
-		if (isShellAssignmentWord(option)) continue;
-		if (isXargsOptionWithNextValue(option)) {
-			index += 1;
-			continue;
-		}
-		if (
-			option.startsWith("--arg-file=") ||
-			option.startsWith("--delimiter=") ||
-			option.startsWith("--eof=") ||
-			option.startsWith("--replace=") ||
-			option.startsWith("--max-lines=") ||
-			option.startsWith("--max-args=") ||
-			option.startsWith("--max-procs=") ||
-			option.startsWith("--max-chars=") ||
-			/^-[aAdDEIJLnPs][^-\s]*$/.test(option)
-		) {
-			continue;
-		}
-		if (isXargsStandaloneOption(option)) continue;
-		if (option.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findXargsDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option || option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (isXargsOptionWithNextValue(option)) {
+      index += 1;
+      continue;
+    }
+    if (
+      option.startsWith("--arg-file=")
+      || option.startsWith("--delimiter=")
+      || option.startsWith("--eof=")
+      || option.startsWith("--replace=")
+      || option.startsWith("--max-lines=")
+      || option.startsWith("--max-args=")
+      || option.startsWith("--max-procs=")
+      || option.startsWith("--max-chars=")
+      || /^-[aAdDEIJLnPs][^-\s]*$/.test(option)
+    ) {
+      continue;
+    }
+    if (isXargsStandaloneOption(option)) continue;
+    if (option.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
-function findCoprocDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	const firstIndex = findDispatchWordIndex(words, startIndex);
-	if (firstIndex === null) return null;
-	const firstWord = words[firstIndex] ?? "";
-	if (isShellCommandPositionPrefixWord(firstWord)) return firstIndex;
+function findCoprocDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  const firstIndex = findDispatchWordIndex(words, startIndex);
+  if (firstIndex === null) return null;
+  const firstWord = words[firstIndex] ?? "";
+  if (isShellCommandPositionPrefixWord(firstWord)) return firstIndex;
 
-	const secondIndex = findDispatchWordIndex(words, firstIndex + 1);
-	if (
-		secondIndex !== null &&
-		isShellCommandPositionPrefixWord(words[secondIndex] ?? "")
-	) {
-		return secondIndex;
-	}
-	return firstIndex;
+  const secondIndex = findDispatchWordIndex(words, firstIndex + 1);
+  if (secondIndex !== null && isShellCommandPositionPrefixWord(words[secondIndex] ?? "")) {
+    return secondIndex;
+  }
+  return firstIndex;
 }
 
-function findCaseArmCommandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	let index = startIndex;
-	while (index < words.length && isShellAssignmentWord(words[index] ?? ""))
-		index += 1;
-	const head = words[index] ?? "";
-	if (!head) return null;
+function findCaseArmCommandIndex(words: string[], startIndex: number): number | null {
+  let index = startIndex;
+  while (index < words.length && isShellAssignmentWord(words[index] ?? "")) index += 1;
+  const head = words[index] ?? "";
+  if (!head) return null;
 
-	if (head === "case") {
-		let inIndex = -1;
-		for (let scanIndex = index + 1; scanIndex < words.length; scanIndex += 1) {
-			const token = words[scanIndex] ?? "";
-			if (!token) continue;
-			if (token === "in") {
-				inIndex = scanIndex;
-				break;
-			}
-			if (token === "esac") return null;
-		}
-		if (inIndex < 0) return null;
-		for (
-			let scanIndex = inIndex + 1;
-			scanIndex < words.length;
-			scanIndex += 1
-		) {
-			const token = words[scanIndex] ?? "";
-			if (!token) continue;
-			if (token === "esac") return null;
-			if (token === ")" || token.endsWith(")")) return scanIndex + 1;
-		}
-		return null;
-	}
+  if (head === "case") {
+    let inIndex = -1;
+    for (let scanIndex = index + 1; scanIndex < words.length; scanIndex += 1) {
+      const token = words[scanIndex] ?? "";
+      if (!token) continue;
+      if (token === "in") {
+        inIndex = scanIndex;
+        break;
+      }
+      if (token === "esac") return null;
+    }
+    if (inIndex < 0) return null;
+    for (let scanIndex = inIndex + 1; scanIndex < words.length; scanIndex += 1) {
+      const token = words[scanIndex] ?? "";
+      if (!token) continue;
+      if (token === "esac") return null;
+      if (token === ")" || token.endsWith(")")) return scanIndex + 1;
+    }
+    return null;
+  }
 
-	if (head === ")" || head.endsWith(")")) {
-		return index + 1;
-	}
+  if (head === ")" || head.endsWith(")")) {
+    return index + 1;
+  }
 
-	if (words[index + 1] === ")") {
-		return index + 2;
-	}
+  if (words[index + 1] === ")") {
+    return index + 2;
+  }
 
-	return null;
+  return null;
 }
 
 function isShellRedirectionWord(word: string): boolean {
-	return (
-		word === ">" ||
-		word === ">>" ||
-		word === "<" ||
-		word === "<<" ||
-		word === "<<<" ||
-		word === ">&" ||
-		word === "<&"
-	);
+  return word === ">"
+    || word === ">>"
+    || word === "<"
+    || word === "<<"
+    || word === "<<<"
+    || word === ">&"
+    || word === "<&";
 }
 
-function skipShellCommandPositionPrefixWords(
-	words: string[],
-	startIndex: number,
-): number {
-	let commandWordIndex = startIndex;
-	while (
-		isShellAssignmentWord(words[commandWordIndex] ?? "") ||
-		isShellCommandPositionPrefixWord(words[commandWordIndex] ?? "")
-	) {
-		commandWordIndex += 1;
-	}
-	while (commandWordIndex < words.length) {
-		const word = words[commandWordIndex] ?? "";
-		const nextWord = words[commandWordIndex + 1] ?? "";
-		if (isShellRedirectionWord(word)) {
-			commandWordIndex += 2;
-			continue;
-		}
-		if (/^\d+$/.test(word) && isShellRedirectionWord(nextWord)) {
-			commandWordIndex += 3;
-			continue;
-		}
-		break;
-	}
-	return commandWordIndex;
+function skipShellCommandPositionPrefixWords(words: string[], startIndex: number): number {
+  let commandWordIndex = startIndex;
+  while (
+    isShellAssignmentWord(words[commandWordIndex] ?? "")
+    || isShellCommandPositionPrefixWord(words[commandWordIndex] ?? "")
+  ) {
+    commandWordIndex += 1;
+  }
+  while (commandWordIndex < words.length) {
+    const word = words[commandWordIndex] ?? "";
+    const nextWord = words[commandWordIndex + 1] ?? "";
+    if (isShellRedirectionWord(word)) {
+      commandWordIndex += 2;
+      continue;
+    }
+    if (/^\d+$/.test(word) && isShellRedirectionWord(nextWord)) {
+      commandWordIndex += 3;
+      continue;
+    }
+    break;
+  }
+  return commandWordIndex;
 }
 
-function findWrappedCommandPositionIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	let commandWordIndex = skipShellCommandPositionPrefixWords(words, startIndex);
-	for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
-		const commandWord = words[commandWordIndex] ?? "";
-		if (!commandWord) return null;
+function findWrappedCommandPositionIndex(words: string[], startIndex: number): number | null {
+  let commandWordIndex = skipShellCommandPositionPrefixWords(words, startIndex);
+  for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+    const commandWord = words[commandWordIndex] ?? "";
+    if (!commandWord) return null;
 
-		const commandWordBase = shellWordBaseName(commandWord);
-		const operandIndex =
-			commandWordBase === "env"
-				? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
-				: commandWordBase === "command" || commandWordBase === "builtin"
-					? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
-					: commandWordBase === "exec"
-						? findExecDispatchOperandIndex(words, commandWordIndex + 1)
-						: commandWordBase === "time"
-							? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
-							: commandWordBase === "timeout"
-								? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
-								: commandWordBase === "nohup" || commandWordBase === "setsid"
-									? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
-									: commandWordBase === "coproc"
-										? findCoprocDispatchOperandIndex(
-												words,
-												commandWordIndex + 1,
-											)
-										: commandWordBase === "xargs"
-											? findXargsDispatchOperandIndex(
-													words,
-													commandWordIndex + 1,
-												)
-											: commandWordBase === "nice"
-												? findNiceDispatchOperandIndex(
-														words,
-														commandWordIndex + 1,
-													)
-												: commandWordBase === "stdbuf"
-													? findStdbufDispatchOperandIndex(
-															words,
-															commandWordIndex + 1,
-														)
-													: null;
-		if (operandIndex === null) return commandWordIndex;
+    const commandWordBase = shellWordBaseName(commandWord);
+    const operandIndex =
+      commandWordBase === "env"
+        ? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
+        : commandWordBase === "command" || commandWordBase === "builtin"
+          ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+          : commandWordBase === "exec"
+            ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
+            : commandWordBase === "time"
+              ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
+              : commandWordBase === "timeout"
+                ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
+                : commandWordBase === "nohup" || commandWordBase === "setsid"
+                  ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+                  : commandWordBase === "coproc"
+                    ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
+                    : commandWordBase === "xargs"
+                      ? findXargsDispatchOperandIndex(words, commandWordIndex + 1)
+                      : commandWordBase === "nice"
+                        ? findNiceDispatchOperandIndex(words, commandWordIndex + 1)
+                        : commandWordBase === "stdbuf"
+                          ? findStdbufDispatchOperandIndex(words, commandWordIndex + 1)
+                          : null;
+    if (operandIndex === null) return commandWordIndex;
 
-		const nextCommandWordIndex = skipShellCommandPositionPrefixWords(
-			words,
-			operandIndex,
-		);
-		if (nextCommandWordIndex === commandWordIndex) return commandWordIndex;
-		commandWordIndex = nextCommandWordIndex;
-	}
+    const nextCommandWordIndex = skipShellCommandPositionPrefixWords(words, operandIndex);
+    if (nextCommandWordIndex === commandWordIndex) return commandWordIndex;
+    commandWordIndex = nextCommandWordIndex;
+  }
 
-	return null;
+  return null;
 }
 
 function readOmxStateCommandFromSegmentWords(
-	words: string[],
-	operation: "write" | "clear",
+  words: string[],
+  operation: "write" | "clear",
 ): { args: string[]; commandWords: string[]; prefixWords: string[] } | null {
-	let commandWordIndex = skipShellCommandPositionPrefixWords(words, 0);
+  let commandWordIndex = skipShellCommandPositionPrefixWords(words, 0);
 
-	for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
-		commandWordIndex = skipShellCommandPositionPrefixWords(
-			words,
-			commandWordIndex,
-		);
-		const caseArmCommandIndex = findCaseArmCommandIndex(
-			words,
-			commandWordIndex,
-		);
-		if (caseArmCommandIndex !== null) {
-			commandWordIndex = skipShellCommandPositionPrefixWords(
-				words,
-				caseArmCommandIndex,
-			);
-		}
-		const directArgs = readOmxStateCommandArgsFromWords(
-			words.slice(commandWordIndex),
-			operation,
-		);
-		if (directArgs) {
-			return {
-				args: directArgs,
-				commandWords: words.slice(commandWordIndex),
-				prefixWords: words.slice(0, commandWordIndex),
-			};
-		}
+  for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+    commandWordIndex = skipShellCommandPositionPrefixWords(words, commandWordIndex);
+    const caseArmCommandIndex = findCaseArmCommandIndex(words, commandWordIndex);
+    if (caseArmCommandIndex !== null) {
+      commandWordIndex = skipShellCommandPositionPrefixWords(words, caseArmCommandIndex);
+    }
+    const directArgs = readOmxStateCommandArgsFromWords(words.slice(commandWordIndex), operation);
+    if (directArgs) {
+      return {
+        args: directArgs,
+        commandWords: words.slice(commandWordIndex),
+        prefixWords: words.slice(0, commandWordIndex),
+      };
+    }
 
-		const commandWord = words[commandWordIndex] ?? "";
-		const operandIndex =
-			shellWordBaseName(commandWord) === "env"
-				? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
-				: shellWordBaseName(commandWord) === "command"
-					? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
-					: shellWordBaseName(commandWord) === "exec"
-						? findExecDispatchOperandIndex(words, commandWordIndex + 1)
-						: shellWordBaseName(commandWord) === "nohup"
-							? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
-							: shellWordBaseName(commandWord) === "timeout"
-								? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
-								: shellWordBaseName(commandWord) === "coproc"
-									? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
-									: shellWordBaseName(commandWord) === "xargs"
-										? findXargsDispatchOperandIndex(words, commandWordIndex + 1)
-										: shellWordBaseName(commandWord) === "time"
-											? findTimeDispatchOperandIndex(
-													words,
-													commandWordIndex + 1,
-												)
-											: null;
-		if (operandIndex === null) return null;
-		commandWordIndex = operandIndex;
-	}
+    const commandWord = words[commandWordIndex] ?? "";
+    const operandIndex =
+      shellWordBaseName(commandWord) === "env"
+        ? findEnvDispatchOperandIndex(words, commandWordIndex + 1)
+        : shellWordBaseName(commandWord) === "command"
+          ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+          : shellWordBaseName(commandWord) === "exec"
+            ? findExecDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "nohup"
+              ? findCommandDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "timeout"
+              ? findTimeoutDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "coproc"
+              ? findCoprocDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "xargs"
+              ? findXargsDispatchOperandIndex(words, commandWordIndex + 1)
+            : shellWordBaseName(commandWord) === "time"
+              ? findTimeDispatchOperandIndex(words, commandWordIndex + 1)
+              : null;
+    if (operandIndex === null) return null;
+    commandWordIndex = operandIndex;
+  }
 
-	return null;
+  return null;
 }
 
 function splitStateScanSegments(command: string): StateScanSegment[] {
-	const segments: StateScanSegment[] = [];
-	let current = "";
-	let segmentStart = 0;
-	let quote: "'" | '"' | null = null;
-	const pushSegment = (endIndex: number): void => {
-		if (current.trim()) {
-			segments.push({
-				segment: current,
-				prefix: command.slice(0, segmentStart),
-			});
-		}
-		current = "";
-		segmentStart = endIndex;
-	};
+  const segments: StateScanSegment[] = [];
+  let current = "";
+  let segmentStart = 0;
+  let quote: "'" | "\"" | null = null;
+  const pushSegment = (endIndex: number): void => {
+    if (current.trim()) {
+      segments.push({
+        segment: current,
+        prefix: command.slice(0, segmentStart),
+      });
+    }
+    current = "";
+    segmentStart = endIndex;
+  };
 
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index] ?? "";
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			current += char;
-			continue;
-		}
-		if (char === "\\" && quote !== "'") {
-			current += char;
-			index += 1;
-			current += command[index] ?? "";
-			continue;
-		}
-		if (quote) {
-			current += char;
-			continue;
-		}
-		if (char === ";" || char === "\n" || char === "\r") {
-			pushSegment(index + 1);
-			continue;
-		}
-		if (char === "&" && command[index + 1] === "&") {
-			pushSegment(index + 2);
-			index += 1;
-			continue;
-		}
-		if (char === "&") {
-			const previous = command[index - 1] ?? "";
-			const next = command[index + 1] ?? "";
-			if (previous === ">" || previous === "<" || next === ">") {
-				current += char;
-			} else {
-				pushSegment(index + 1);
-			}
-			continue;
-		}
-		if (char === "|" && command[index + 1] === "|") {
-			pushSegment(index + 2);
-			index += 1;
-			continue;
-		}
-		if (char === "|") {
-			const next = command[index + 1] ?? "";
-			if (next === "&") {
-				pushSegment(index + 2);
-				index += 1;
-			} else {
-				pushSegment(index + 1);
-			}
-			continue;
-		}
-		current += char;
-	}
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      current += char;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      current += char;
+      index += 1;
+      current += command[index] ?? "";
+      continue;
+    }
+    if (quote) {
+      current += char;
+      continue;
+    }
+    if (char === ";" || char === "\n" || char === "\r") {
+      pushSegment(index + 1);
+      continue;
+    }
+    if (char === "&" && command[index + 1] === "&") {
+      pushSegment(index + 2);
+      index += 1;
+      continue;
+    }
+    if (char === "&") {
+      const previous = command[index - 1] ?? "";
+      const next = command[index + 1] ?? "";
+      if (previous === ">" || previous === "<" || next === ">") {
+        current += char;
+      } else {
+        pushSegment(index + 1);
+      }
+      continue;
+    }
+    if (char === "|" && command[index + 1] === "|") {
+      pushSegment(index + 2);
+      index += 1;
+      continue;
+    }
+    if (char === "|") {
+      const next = command[index + 1] ?? "";
+      if (next === "&") {
+        pushSegment(index + 2);
+        index += 1;
+      } else {
+        pushSegment(index + 1);
+      }
+      continue;
+    }
+    current += char;
+  }
 
-	if (current.trim()) {
-		segments.push({
-			segment: current,
-			prefix: command.slice(0, segmentStart),
-		});
-	}
-	return segments.length > 0 ? segments : [{ segment: command, prefix: "" }];
+  if (current.trim()) {
+    segments.push({
+      segment: current,
+      prefix: command.slice(0, segmentStart),
+    });
+  }
+  return segments.length > 0 ? segments : [{ segment: command, prefix: "" }];
 }
 
 function collectOmxStateCommandOperations(
-	command: string,
-	operation: "write" | "clear",
-	nested = false,
+  command: string,
+  operation: "write" | "clear",
+  nested = false,
 ): OmxStateCommandOperation[] {
-	command = normalizeShellLineContinuations(
-		stripHeredocBodiesForCommandScan(command),
-	);
-	const operations: OmxStateCommandOperation[] = [];
-	const addOperation = (candidate: OmxStateCommandOperation): void => {
-		operations.push(candidate);
-	};
+  command = normalizeShellLineContinuations(stripHeredocBodiesForCommandScan(command));
+  const operations: OmxStateCommandOperation[] = [];
+  const addOperation = (candidate: OmxStateCommandOperation): void => {
+    operations.push(candidate);
+  };
 
-	const scanNestedSubstitutions = (): void => {
-		let quote: "'" | '"' | null = null;
-		for (let index = 0; index < command.length; index += 1) {
-			const char = command[index];
-			if (char === "\\" && quote !== "'") {
-				index += 1;
-				continue;
-			}
-			if (quote !== "'" && char === "$" && command[index + 1] === "(") {
-				const substitutionEnd = findCommandSubstitutionEnd(command, index + 2);
-				const substitutionBodyEnd =
-					substitutionEnd >= 0 ? substitutionEnd : command.length;
-				const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
-				for (const nestedOperation of collectOmxStateCommandOperations(
-					substitutionBody,
-					operation,
-					true,
-				)) {
-					addOperation(nestedOperation);
-				}
-				index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-				continue;
-			}
-			if (quote !== "'" && char === "<" && command[index + 1] === "(") {
-				const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
-				const substitutionBodyEnd =
-					substitutionEnd >= 0 ? substitutionEnd : command.length;
-				const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
-				for (const nestedOperation of collectOmxStateCommandOperations(
-					substitutionBody,
-					operation,
-					true,
-				)) {
-					addOperation(nestedOperation);
-				}
-				index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-				continue;
-			}
-			if (quote !== "'" && char === ">" && command[index + 1] === "(") {
-				const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
-				const substitutionBodyEnd =
-					substitutionEnd >= 0 ? substitutionEnd : command.length;
-				const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
-				for (const nestedOperation of collectOmxStateCommandOperations(
-					substitutionBody,
-					operation,
-					true,
-				)) {
-					addOperation(nestedOperation);
-				}
-				index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-				continue;
-			}
-			if (quote !== "'" && char === "`") {
-				const substitutionEnd = findBacktickCommandSubstitutionEnd(
-					command,
-					index + 1,
-				);
-				const substitutionBodyEnd =
-					substitutionEnd >= 0 ? substitutionEnd : command.length;
-				const substitutionBody = command.slice(index + 1, substitutionBodyEnd);
-				for (const nestedOperation of collectOmxStateCommandOperations(
-					substitutionBody,
-					operation,
-					true,
-				)) {
-					addOperation(nestedOperation);
-				}
-				index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-				continue;
-			}
-			if (char === "'" || char === '"') {
-				if (quote === char) {
-					quote = null;
-				} else if (!quote) {
-					quote = char;
-				}
-			}
-		}
-	};
+  const scanNestedSubstitutions = (): void => {
+    let quote: "'" | "\"" | null = null;
+    for (let index = 0; index < command.length; index += 1) {
+      const char = command[index];
+      if (char === "\\" && quote !== "'") {
+        index += 1;
+        continue;
+      }
+      if (quote !== "'" && char === "$" && command[index + 1] === "(") {
+        const substitutionEnd = findCommandSubstitutionEnd(command, index + 2);
+        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
+          addOperation(nestedOperation);
+        }
+        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        continue;
+      }
+      if (quote !== "'" && char === "<" && command[index + 1] === "(") {
+        const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
+        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
+          addOperation(nestedOperation);
+        }
+        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        continue;
+      }
+      if (quote !== "'" && char === ">" && command[index + 1] === "(") {
+        const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
+        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
+          addOperation(nestedOperation);
+        }
+        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        continue;
+      }
+      if (quote !== "'" && char === "`") {
+        const substitutionEnd = findBacktickCommandSubstitutionEnd(command, index + 1);
+        const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        const substitutionBody = command.slice(index + 1, substitutionBodyEnd);
+        for (const nestedOperation of collectOmxStateCommandOperations(substitutionBody, operation, true)) {
+          addOperation(nestedOperation);
+        }
+        index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+        continue;
+      }
+      if (char === "'" || char === "\"") {
+        if (quote === char) {
+          quote = null;
+        } else if (!quote) {
+          quote = char;
+        }
+      }
+    }
+  };
 
-	scanNestedSubstitutions();
+  scanNestedSubstitutions();
 
-	for (const functionBody of extractInvokedShellFunctionBodiesForStateScan(
-		command,
-	)) {
-		for (const nestedOperation of collectOmxStateCommandOperations(
-			functionBody,
-			operation,
-			true,
-		)) {
-			addOperation(nestedOperation);
-		}
-	}
+  for (const functionBody of extractInvokedShellFunctionBodiesForStateScan(command)) {
+    for (const nestedOperation of collectOmxStateCommandOperations(functionBody, operation, true)) {
+      addOperation(nestedOperation);
+    }
+  }
 
-	for (const scanSegment of splitStateScanSegments(command)) {
-		const words = tokenizeShellWords(scanSegment.segment);
-		const stateCommand = readOmxStateCommandFromSegmentWords(words, operation);
-		if (stateCommand) {
-			addOperation({
-				args: stateCommand.args,
-				prefix: scanSegment.prefix,
-				commandPrefix: stateCommand.prefixWords.join(" "),
-				nested,
-			});
-		}
-	}
+  for (const scanSegment of splitStateScanSegments(command)) {
+    const words = tokenizeShellWords(scanSegment.segment);
+    const stateCommand = readOmxStateCommandFromSegmentWords(words, operation);
+    if (stateCommand) {
+      addOperation({
+        args: stateCommand.args,
+        prefix: scanSegment.prefix,
+        commandPrefix: stateCommand.prefixWords.join(" "),
+        nested,
+      });
+    }
+  }
 
-	for (const nestedCommand of extractNestedShellCommandStringsForStateScan(
-		command,
-	)) {
-		for (const nestedOperation of collectOmxStateCommandOperations(
-			nestedCommand,
-			operation,
-			true,
-		)) {
-			addOperation(nestedOperation);
-		}
-	}
+  for (const nestedCommand of extractNestedShellCommandStringsForStateScan(command)) {
+    for (const nestedOperation of collectOmxStateCommandOperations(nestedCommand, operation, true)) {
+      addOperation(nestedOperation);
+    }
+  }
 
-	return operations;
+  return operations;
 }
 
-function extractInvokedShellFunctionBodiesForStateScan(
-	command: string,
-): string[] {
-	const bodies: string[] = [];
-	command = stripHeredocBodiesForCommandScan(
-		normalizeShellLineContinuations(command),
-	);
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index] ?? "";
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			continue;
-		}
-		if (quote) continue;
-		const functionDefinition = findShellFunctionDefinitionAt(command, index);
-		if (!functionDefinition) continue;
-		const functionBodyEnd = findShellFunctionBodyEnd(
-			command,
-			functionDefinition.openBraceIndex,
-			functionDefinition.bodyOpenChar,
-		);
-		if (functionBodyEnd < 0) continue;
-		if (
-			isShellFunctionInvokedLater(
-				command.slice(functionBodyEnd + 1),
-				functionDefinition.name,
-			)
-		) {
-			bodies.push(
-				command.slice(functionDefinition.openBraceIndex + 1, functionBodyEnd),
-			);
-		}
-		index = functionBodyEnd;
-	}
-	return bodies;
+function extractInvokedShellFunctionBodiesForStateScan(command: string): string[] {
+  const bodies: string[] = [];
+  command = stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command));
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    const functionDefinition = findShellFunctionDefinitionAt(command, index);
+    if (!functionDefinition) continue;
+    const functionBodyEnd = findShellFunctionBodyEnd(command, functionDefinition.openBraceIndex, functionDefinition.bodyOpenChar);
+    if (functionBodyEnd < 0) continue;
+    if (isShellFunctionInvokedLater(command.slice(functionBodyEnd + 1), functionDefinition.name)) {
+      bodies.push(command.slice(functionDefinition.openBraceIndex + 1, functionBodyEnd));
+    }
+    index = functionBodyEnd;
+  }
+  return bodies;
 }
 
-function findUnquotedOmxStateCommandIndexes(
-	command: string,
-	operation: "write" | "clear",
-): number[] {
-	return collectOmxStateCommandOperations(command, operation).map(
-		(_, index) => index,
-	);
+function findUnquotedOmxStateCommandIndexes(command: string, operation: "write" | "clear"): number[] {
+  return collectOmxStateCommandOperations(command, operation).map((_, index) => index);
 }
 
-function extractNestedShellCommandStringsForStateScan(
-	command: string,
-): string[] {
-	const words = tokenizeShellWords(stripHeredocBodiesForCommandScan(command));
-	const nested: string[] = [];
-	for (let index = 0; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (isNestedShellCommandWord(word)) {
-			const commandStringIndex = findShellCommandStringArgIndex(
-				words,
-				index + 1,
-			);
-			if (commandStringIndex !== null) {
-				const nestedCommand = words[commandStringIndex];
-				if (nestedCommand) {
-					nested.push(nestedCommand);
-					const positionalArgs = words.slice(commandStringIndex + 1);
-					const expandedNestedCommand = expandShellPositionalParameters(
-						nestedCommand,
-						positionalArgs,
-					);
-					if (expandedNestedCommand !== nestedCommand)
-						nested.push(expandedNestedCommand);
-				}
-			}
-		}
-		if (word === "eval") {
-			const nestedCommand = words.slice(index + 1).join(" ");
-			if (nestedCommand) nested.push(nestedCommand);
-		}
-		if (shellWordBaseName(word) === "env") {
-			const splitStringCommand = extractEnvSplitStringCommand(words, index + 1);
-			if (splitStringCommand) {
-				nested.push(splitStringCommand);
-			}
-		} else if (isPackageManagerCommandWord(word)) {
-			const packageManagerCommand = extractPackageManagerExecCommand(
-				command,
-				words,
-				index + 1,
-				shellWordBaseName(word),
-			);
-			if (packageManagerCommand) {
-				nested.push(packageManagerCommand);
-			}
-		}
-	}
-	return nested;
+function extractNestedShellCommandStringsForStateScan(command: string): string[] {
+  const words = tokenizeShellWords(stripHeredocBodiesForCommandScan(command));
+  const nested: string[] = [];
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (isNestedShellCommandWord(word)) {
+      const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
+      if (commandStringIndex !== null) {
+        const nestedCommand = words[commandStringIndex];
+        if (nestedCommand) {
+          nested.push(nestedCommand);
+          const positionalArgs = words.slice(commandStringIndex + 1);
+          const expandedNestedCommand = expandShellPositionalParameters(nestedCommand, positionalArgs);
+          if (expandedNestedCommand !== nestedCommand) nested.push(expandedNestedCommand);
+        }
+      }
+    }
+    if (word === "eval") {
+      const nestedCommand = words.slice(index + 1).join(" ");
+      if (nestedCommand) nested.push(nestedCommand);
+    }
+    if (shellWordBaseName(word) === "env") {
+      const splitStringCommand = extractEnvSplitStringCommand(words, index + 1);
+      if (splitStringCommand) {
+        nested.push(splitStringCommand);
+      }
+    } else if (isPackageManagerCommandWord(word)) {
+      const packageManagerCommand = extractPackageManagerExecCommand(command, words, index + 1, shellWordBaseName(word));
+      if (packageManagerCommand) {
+        nested.push(packageManagerCommand);
+      }
+    }
+  }
+  return nested;
 }
 
-function extractNestedCommandSubstitutionStringsForStateScan(
-	command: string,
-): string[] {
-	const nested: string[] = [];
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index];
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (quote !== "'" && char === "$" && command[index + 1] === "(") {
-			const substitutionEnd = findCommandSubstitutionEnd(command, index + 2);
-			const substitutionBodyEnd =
-				substitutionEnd >= 0 ? substitutionEnd : command.length;
-			const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
-			if (substitutionBody) nested.push(substitutionBody);
-			index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-			continue;
-		}
-		if (quote !== "'" && char === "`") {
-			const substitutionEnd = findBacktickCommandSubstitutionEnd(
-				command,
-				index + 1,
-			);
-			const substitutionBodyEnd =
-				substitutionEnd >= 0 ? substitutionEnd : command.length;
-			const substitutionBody = command.slice(index + 1, substitutionBodyEnd);
-			if (substitutionBody) nested.push(substitutionBody);
-			index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-		}
-	}
-	return nested;
+function extractNestedCommandSubstitutionStringsForStateScan(command: string): string[] {
+  const nested: string[] = [];
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (quote !== "'" && char === "$" && command[index + 1] === "(") {
+      const substitutionEnd = findCommandSubstitutionEnd(command, index + 2);
+      const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+      if (substitutionBody) nested.push(substitutionBody);
+      index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      continue;
+    }
+    if (quote !== "'" && char === "`") {
+      const substitutionEnd = findBacktickCommandSubstitutionEnd(command, index + 1);
+      const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      const substitutionBody = command.slice(index + 1, substitutionBodyEnd);
+      if (substitutionBody) nested.push(substitutionBody);
+      index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+    }
+  }
+  return nested;
 }
 
-function extractNestedProcessSubstitutionStringsForStateScan(
-	command: string,
-): string[] {
-	const nested: string[] = [];
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index];
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (
-			quote !== "'" &&
-			(char === "<" || char === ">") &&
-			command[index + 1] === "("
-		) {
-			const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
-			const substitutionBodyEnd =
-				substitutionEnd >= 0 ? substitutionEnd : command.length;
-			const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
-			if (substitutionBody) nested.push(substitutionBody);
-			index = substitutionEnd >= 0 ? substitutionEnd : command.length;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-		}
-	}
-	return nested;
+function extractNestedProcessSubstitutionStringsForStateScan(command: string): string[] {
+  const nested: string[] = [];
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (quote !== "'" && (char === "<" || char === ">") && command[index + 1] === "(") {
+      const substitutionEnd = findProcessSubstitutionEnd(command, index + 2);
+      const substitutionBodyEnd = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      const substitutionBody = command.slice(index + 2, substitutionBodyEnd);
+      if (substitutionBody) nested.push(substitutionBody);
+      index = substitutionEnd >= 0 ? substitutionEnd : command.length;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+    }
+  }
+  return nested;
 }
 
 function isPackageManagerCommandWord(word: string): boolean {
-	const base = shellWordBaseName(word);
-	return (
-		base === "npm" ||
-		base === "pnpm" ||
-		base === "yarn" ||
-		base === "npx" ||
-		base === "pnpx"
-	);
+  const base = shellWordBaseName(word);
+  return base === "npm" || base === "pnpm" || base === "yarn" || base === "npx" || base === "pnpx";
 }
 
 function isStructuredUltragoalSteeringShellCommand(command: string): boolean {
-	const segments = splitShellCommandSegments(
-		stripHeredocBodiesForCommandScan(command),
-	);
-	let sawStructuredSteer = false;
+  const segments = splitShellCommandSegments(stripHeredocBodiesForCommandScan(command));
+  let sawStructuredSteer = false;
 
-	for (const segment of segments) {
-		const words = tokenizeShellWords(segment);
-		let commandStart = true;
-		let inForHeader = false;
+  for (const segment of segments) {
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    let inForHeader = false;
 
-		for (let index = 0; index < words.length; index += 1) {
-			const word = words[index] ?? "";
-			if (!word) continue;
-			if (isShellCommandSeparator(word)) {
-				commandStart = true;
-				continue;
-			}
-			if (inForHeader) {
-				if (word === "do") {
-					inForHeader = false;
-					commandStart = true;
-				}
-				continue;
-			}
-			if (isShellGroupingSyntaxWord(word)) continue;
-			if (commandStart && isEnvironmentAssignmentWord(word)) continue;
-			if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) {
-				if (word === "for") inForHeader = true;
-				continue;
-			}
-			if (commandStart && word.startsWith("-")) continue;
-			if (!commandStart) continue;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (inForHeader) {
+        if (word === "do") {
+          inForHeader = false;
+          commandStart = true;
+        }
+        continue;
+      }
+      if (isShellGroupingSyntaxWord(word)) continue;
+      if (commandStart && isEnvironmentAssignmentWord(word)) continue;
+      if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) {
+        if (word === "for") inForHeader = true;
+        continue;
+      }
+      if (commandStart && word.startsWith("-")) continue;
+      if (!commandStart) continue;
 
-			const commandName = commandNameFromShellWord(word);
-			if (
-				commandName === "read" ||
-				commandName === "true" ||
-				commandName === ":"
-			) {
-				commandStart = false;
-				continue;
-			}
-			if (
-				commandName === "omx" &&
-				words[index + 1] === "ultragoal" &&
-				words[index + 2] === "steer"
-			) {
-				sawStructuredSteer = true;
-				commandStart = false;
-				continue;
-			}
-			return false;
-		}
-	}
+      const commandName = commandNameFromShellWord(word);
+      if (commandName === "read" || commandName === "true" || commandName === ":") {
+        commandStart = false;
+        continue;
+      }
+      if (commandName === "omx" && words[index + 1] === "ultragoal" && words[index + 2] === "steer") {
+        sawStructuredSteer = true;
+        commandStart = false;
+        continue;
+      }
+      return false;
+    }
+  }
 
-	return sawStructuredSteer;
+  return sawStructuredSteer;
 }
 
 function hasDynamicNestedShellExecution(command: string): boolean {
-	const commands = splitShellCommandSegments(
-		stripHeredocBodiesForCommandScan(command),
-	);
-	for (const segment of commands) {
-		const words = tokenizeShellWords(segment);
-		let sawCommandWord = false;
-		for (let index = 0; index < words.length; index += 1) {
-			const word = words[index] ?? "";
-			if (!sawCommandWord) {
-				if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
-				sawCommandWord = true;
-				if (isDynamicNestedCommandString(word)) return true;
-			}
-			if (isCommandDispatchBuiltin(word)) {
-				const dispatchedCommand = extractDispatchBuiltinOperand(
-					words,
-					index + 1,
-					word,
-				);
-				if (
-					dispatchedCommand &&
-					hasDynamicNestedShellExecution(dispatchedCommand)
-				)
-					return true;
-			}
-			if (
-				containsUnquotedProcessSubstitution(segment) &&
-				(isNestedShellCommandWord(word) || word === "." || word === "source")
-			)
-				return true;
-			if (isNestedShellCommandWord(word)) {
-				const commandStringIndex = findShellCommandStringArgIndex(
-					words,
-					index + 1,
-				);
-				if (
-					commandStringIndex === null &&
-					(hasUnquotedShellStdinFlowAroundShellWord(words, index) ||
-						segment.includes("<<"))
-				)
-					return true;
-				if (commandStringIndex !== null) {
-					const nestedCommand = words[commandStringIndex] ?? "";
-					if (
-						isDynamicNestedCommandString(nestedCommand) &&
-						!isStructuredUltragoalSteeringShellCommand(nestedCommand)
-					)
-						return true;
-				}
-			}
-			if (word === "eval") {
-				const nestedCommand = words.slice(index + 1).join(" ");
-				if (
-					isDynamicNestedCommandString(nestedCommand) &&
-					!isStructuredUltragoalSteeringShellCommand(nestedCommand)
-				)
-					return true;
-			}
-		}
-	}
-	return false;
+  const commands = splitShellCommandSegments(stripHeredocBodiesForCommandScan(command));
+  for (const segment of commands) {
+    const words = tokenizeShellWords(segment);
+    let sawCommandWord = false;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!sawCommandWord) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
+        sawCommandWord = true;
+        if (isDynamicNestedCommandString(word)) return true;
+      }
+      if (isCommandDispatchBuiltin(word)) {
+        const dispatchedCommand = extractDispatchBuiltinOperand(words, index + 1, word);
+        if (dispatchedCommand && hasDynamicNestedShellExecution(dispatchedCommand)) return true;
+      }
+      if (containsUnquotedProcessSubstitution(segment) && (isNestedShellCommandWord(word) || word === "." || word === "source")) return true;
+      if (isNestedShellCommandWord(word)) {
+        const commandStringIndex = findShellCommandStringArgIndex(words, index + 1);
+        if (commandStringIndex === null && (hasUnquotedShellStdinFlowAroundShellWord(words, index) || segment.includes("<<"))) return true;
+        if (commandStringIndex !== null) {
+          const nestedCommand = words[commandStringIndex] ?? "";
+          if (isDynamicNestedCommandString(nestedCommand) && !isStructuredUltragoalSteeringShellCommand(nestedCommand)) return true;
+        }
+      }
+      if (word === "eval") {
+        const nestedCommand = words.slice(index + 1).join(" ");
+        if (isDynamicNestedCommandString(nestedCommand) && !isStructuredUltragoalSteeringShellCommand(nestedCommand)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function isCommandDispatchBuiltin(word: string): boolean {
-	return (
-		word === "exec" ||
-		word === "command" ||
-		word === "." ||
-		word === "source" ||
-		word === "env" ||
-		word === "nohup"
-	);
+  return word === "exec" || word === "command" || word === "." || word === "source" || word === "env" || word === "nohup";
 }
 
-function extractDispatchBuiltinOperand(
-	words: string[],
-	startIndex: number,
-	builtin: string,
-): string {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const option = words[index] ?? "";
-		if (!option) continue;
-		if (option === "--") continue;
-		if (isShellAssignmentWord(option)) continue;
-		if (builtin === "exec" && option === "-a") {
-			index += 1;
-			continue;
-		}
-		if (builtin === "env" && (option === "-S" || option === "--split-string")) {
-			const splitOperand = words[index + 1] ?? "";
-			return splitOperand;
-		}
-		if (builtin === "env" && option.startsWith("--split-string=")) {
-			return option.slice("--split-string=".length);
-		}
-		if (builtin === "env" && option.startsWith("-S") && option.length > 2) {
-			return option.slice(2);
-		}
-		if (option.startsWith("-")) continue;
-		return words.slice(index).join(" ");
-	}
-	return "";
+function extractDispatchBuiltinOperand(words: string[], startIndex: number, builtin: string): string {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (!option) continue;
+    if (option === "--") continue;
+    if (isShellAssignmentWord(option)) continue;
+    if (builtin === "exec" && option === "-a") {
+      index += 1;
+      continue;
+    }
+    if (builtin === "env" && (option === "-S" || option === "--split-string")) {
+      const splitOperand = words[index + 1] ?? "";
+      return splitOperand;
+    }
+    if (builtin === "env" && option.startsWith("--split-string=")) {
+      return option.slice("--split-string=".length);
+    }
+    if (builtin === "env" && option.startsWith("-S") && option.length > 2) {
+      return option.slice(2);
+    }
+    if (option.startsWith("-")) continue;
+    return words.slice(index).join(" ");
+  }
+  return "";
 }
 
 function isNestedShellCommandWord(word: string): boolean {
-	const base = word.split(/[\\/]/).pop() ?? word;
-	return /^(?:bash|sh|zsh|dash|ksh|mksh|ash)$/.test(base);
+  const base = word.split(/[\\/]/).pop() ?? word;
+  return /^(?:bash|sh|zsh|dash|ksh|mksh|ash)$/.test(base);
 }
 
-function findShellCommandStringArgIndex(
-	words: string[],
-	optionStartIndex: number,
-): number | null {
-	for (let index = optionStartIndex; index < words.length; index += 1) {
-		const option = words[index] ?? "";
-		if (option === "--") return null;
-		if (isShellCommandStringOption(option)) return index + 1;
-		if (isShellOptionWithSeparateValue(option)) {
-			index += 1;
-			continue;
-		}
-		if (option.startsWith("-")) continue;
-		return null;
-	}
-	return null;
+function findShellCommandStringArgIndex(words: string[], optionStartIndex: number): number | null {
+  for (let index = optionStartIndex; index < words.length; index += 1) {
+    const option = words[index] ?? "";
+    if (option === "--") return null;
+    if (isShellCommandStringOption(option)) return index + 1;
+    if (isShellOptionWithSeparateValue(option)) {
+      index += 1;
+      continue;
+    }
+    if (option.startsWith("-")) continue;
+    return null;
+  }
+  return null;
 }
 
 function isShellCommandStringOption(option: string): boolean {
-	return /^-[^-]*c[^-]*$/.test(option);
+  return /^-[^-]*c[^-]*$/.test(option);
 }
 
 function isShellOptionWithSeparateValue(option: string): boolean {
-	return (
-		option === "--rcfile" ||
-		option === "--init-file" ||
-		option === "-o" ||
-		option === "-O"
-	);
+  return option === "--rcfile" || option === "--init-file" || option === "-o" || option === "-O";
 }
 
 function isDynamicNestedCommandString(command: string): boolean {
-	return (
-		/(?:^|[^\\])\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|\()/.test(command) ||
-		/(?:^|[^\\])`/.test(command)
-	);
+  return /(?:^|[^\\])\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|\()/.test(command)
+    || /(?:^|[^\\])`/.test(command);
 }
 
 function shellQuoteForStateScan(value: string): string {
-	if (value === "") return "''";
-	return `'${value.replace(/'/g, "'\"'\"'")}'`;
+  if (value === "") return "''";
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
-function expandShellPositionalParameters(
-	command: string,
-	positionalArgs: string[],
-): string {
-	if (!command.includes("$") || positionalArgs.length === 0) return command;
+function expandShellPositionalParameters(command: string, positionalArgs: string[]): string {
+  if (!command.includes("$") || positionalArgs.length === 0) return command;
 
-	let expanded = "";
-	let replaced = false;
+  let expanded = "";
+  let replaced = false;
 
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index] ?? "";
-		if (char === "\\" && index + 1 < command.length) {
-			expanded += char;
-			index += 1;
-			expanded += command[index] ?? "";
-			continue;
-		}
-		if (char !== "$") {
-			expanded += char;
-			continue;
-		}
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && index + 1 < command.length) {
+      expanded += char;
+      index += 1;
+      expanded += command[index] ?? "";
+      continue;
+    }
+    if (char !== "$") {
+      expanded += char;
+      continue;
+    }
 
-		const next = command[index + 1] ?? "";
-		if (next === "{") {
-			let endIndex = index + 2;
-			let digits = "";
-			while (endIndex < command.length) {
-				const bodyChar = command[endIndex] ?? "";
-				if (bodyChar === "}") break;
-				digits += bodyChar;
-				endIndex += 1;
-			}
-			if (command[endIndex] === "}" && /^\d+$/.test(digits)) {
-				const positionalIndex = Number.parseInt(digits, 10);
-				const replacement = positionalArgs[positionalIndex];
-				if (replacement !== undefined) {
-					expanded += shellQuoteForStateScan(replacement);
-					replaced = true;
-					index = endIndex;
-					continue;
-				}
-			}
-			if (command[endIndex] === "}" && (digits === "@" || digits === "*")) {
-				const expansionArgs = positionalArgs.slice(1);
-				const replacement = expansionArgs
-					.map((arg) => shellQuoteForStateScan(arg))
-					.join(" ");
-				expanded += replacement;
-				replaced = true;
-				index = endIndex;
-				continue;
-			}
-		} else if (next === "@" || next === "*") {
-			const replacement = positionalArgs
-				.slice(1)
-				.map((arg) => shellQuoteForStateScan(arg))
-				.join(" ");
-			if (replacement) {
-				expanded += replacement;
-				replaced = true;
-				index += 1;
-				continue;
-			}
-		} else if (/[0-9]/.test(next)) {
-			let endIndex = index + 1;
-			let digits = "";
-			while (
-				endIndex < command.length &&
-				/[0-9]/.test(command[endIndex] ?? "")
-			) {
-				digits += command[endIndex] ?? "";
-				endIndex += 1;
-			}
-			const positionalIndex = Number.parseInt(digits, 10);
-			const replacement = positionalArgs[positionalIndex];
-			if (replacement !== undefined) {
-				expanded += shellQuoteForStateScan(replacement);
-				replaced = true;
-				index = endIndex - 1;
-				continue;
-			}
-		}
+    const next = command[index + 1] ?? "";
+    if (next === "{") {
+      let endIndex = index + 2;
+      let digits = "";
+      while (endIndex < command.length) {
+        const bodyChar = command[endIndex] ?? "";
+        if (bodyChar === "}") break;
+        digits += bodyChar;
+        endIndex += 1;
+      }
+      if (command[endIndex] === "}" && /^\d+$/.test(digits)) {
+        const positionalIndex = Number.parseInt(digits, 10);
+        const replacement = positionalArgs[positionalIndex];
+        if (replacement !== undefined) {
+          expanded += shellQuoteForStateScan(replacement);
+          replaced = true;
+          index = endIndex;
+          continue;
+        }
+      }
+      if (command[endIndex] === "}" && (digits === "@" || digits === "*")) {
+        const expansionArgs = positionalArgs.slice(1);
+        const replacement = expansionArgs.map((arg) => shellQuoteForStateScan(arg)).join(" ");
+        expanded += replacement;
+        replaced = true;
+        index = endIndex;
+        continue;
+      }
+    } else if (next === "@" || next === "*") {
+      const replacement = positionalArgs.slice(1).map((arg) => shellQuoteForStateScan(arg)).join(" ");
+      if (replacement) {
+        expanded += replacement;
+        replaced = true;
+        index += 1;
+        continue;
+      }
+    } else if (/[0-9]/.test(next)) {
+      let endIndex = index + 1;
+      let digits = "";
+      while (endIndex < command.length && /[0-9]/.test(command[endIndex] ?? "")) {
+        digits += command[endIndex] ?? "";
+        endIndex += 1;
+      }
+      const positionalIndex = Number.parseInt(digits, 10);
+      const replacement = positionalArgs[positionalIndex];
+      if (replacement !== undefined) {
+        expanded += shellQuoteForStateScan(replacement);
+        replaced = true;
+        index = endIndex - 1;
+        continue;
+      }
+    }
 
-		expanded += char;
-	}
+    expanded += char;
+  }
 
-	return replaced ? expanded : command;
+  return replaced ? expanded : command;
 }
 
 function splitShellCommandSegments(command: string): string[] {
-	const segments: string[] = [];
-	let current = "";
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index] ?? "";
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			current += char;
-			continue;
-		}
-		if (char === "\\" && quote !== "'") {
-			current += char;
-			index += 1;
-			current += command[index] ?? "";
-			continue;
-		}
-		if (quote) {
-			current += char;
-			continue;
-		}
-		if (char === ";" || char === "\n" || char === "\r") {
-			if (current.trim()) segments.push(current);
-			current = "";
-			continue;
-		}
-		if (char === "&" && command[index - 1] !== "|") {
-			if (current.trim()) segments.push(current);
-			current = "";
-			if (command[index + 1] === "&") index += 1;
-			continue;
-		}
-		if (char === "|" && command[index + 1] === "|") {
-			if (current.trim()) segments.push(current);
-			current = "";
-			index += 1;
-			continue;
-		}
-		current += char;
-	}
-	if (current.trim()) segments.push(current);
-	return segments.length > 0 ? segments : [command];
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      current += char;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      current += char;
+      index += 1;
+      current += command[index] ?? "";
+      continue;
+    }
+    if (quote) {
+      current += char;
+      continue;
+    }
+    if (char === ";" || char === "\n" || char === "\r") {
+      if (current.trim()) segments.push(current);
+      current = "";
+      continue;
+    }
+    if (char === "&" && command[index - 1] !== "|") {
+      if (current.trim()) segments.push(current);
+      current = "";
+      if (command[index + 1] === "&") index += 1;
+      continue;
+    }
+    if (char === "|" && command[index + 1] === "|") {
+      if (current.trim()) segments.push(current);
+      current = "";
+      index += 1;
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) segments.push(current);
+  return segments.length > 0 ? segments : [command];
 }
 
-function findDispatchWordIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token || token === "--") continue;
-		if (isShellAssignmentWord(token)) continue;
-		return index;
-	}
-	return null;
+function findDispatchWordIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    return index;
+  }
+  return null;
 }
 
 function isShellAssignmentWord(word: string): boolean {
-	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
 
-function hasUnquotedShellStdinFlowAroundShellWord(
-	words: string[],
-	wordIndex: number,
-): boolean {
-	for (let index = 0; index < wordIndex; index += 1) {
-		const word = words[index] ?? "";
-		if (word === "|" || word === "|&") return true;
-		if (word === "<" || word === "<<" || word === "<<<" || word.startsWith("<"))
-			return true;
-	}
-	for (let index = wordIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (word === "<" || word === "<<" || word === "<<<" || word.startsWith("<"))
-			return true;
-	}
-	return false;
+function hasUnquotedShellStdinFlowAroundShellWord(words: string[], wordIndex: number): boolean {
+  for (let index = 0; index < wordIndex; index += 1) {
+    const word = words[index] ?? "";
+    if (word === "|" || word === "|&") return true;
+    if (word === "<" || word === "<<" || word === "<<<" || word.startsWith("<")) return true;
+  }
+  for (let index = wordIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (word === "<" || word === "<<" || word === "<<<" || word.startsWith("<")) return true;
+  }
+  return false;
 }
 
-function findCommandSubstitutionEnd(
-	command: string,
-	bodyStartIndex: number,
-): number {
-	let depth = 1;
-	let quote: "'" | '"' | null = null;
-	for (let index = bodyStartIndex; index < command.length; index += 1) {
-		const char = command[index];
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			continue;
-		}
-		if (quote) continue;
-		if (char === "$" && command[index + 1] === "(") {
-			depth += 1;
-			index += 1;
-			continue;
-		}
-		if (char === ")") {
-			depth -= 1;
-			if (depth === 0) return index;
-		}
-	}
-	return -1;
+function findCommandSubstitutionEnd(command: string, bodyStartIndex: number): number {
+  let depth = 1;
+  let quote: "'" | "\"" | null = null;
+  for (let index = bodyStartIndex; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if (char === "$" && command[index + 1] === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
-function findBacktickCommandSubstitutionEnd(
-	command: string,
-	bodyStartIndex: number,
-): number {
-	for (let index = bodyStartIndex; index < command.length; index += 1) {
-		const char = command[index];
-		if (char === "\\") {
-			index += 1;
-			continue;
-		}
-		if (char === "`") return index;
-	}
-	return -1;
+function findBacktickCommandSubstitutionEnd(command: string, bodyStartIndex: number): number {
+  for (let index = bodyStartIndex; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === "`") return index;
+  }
+  return -1;
 }
 
-function findProcessSubstitutionEnd(
-	command: string,
-	bodyStartIndex: number,
-): number {
-	let depth = 1;
-	let quote: "'" | '"' | null = null;
-	for (let index = bodyStartIndex; index < command.length; index += 1) {
-		const char = command[index];
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			continue;
-		}
-		if (quote) continue;
-		if (char === "(") {
-			depth += 1;
-			continue;
-		}
-		if (char === ")") {
-			depth -= 1;
-			if (depth === 0) return index;
-		}
-	}
-	return -1;
+function findProcessSubstitutionEnd(command: string, bodyStartIndex: number): number {
+  let depth = 1;
+  let quote: "'" | "\"" | null = null;
+  for (let index = bodyStartIndex; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
 function containsUnquotedProcessSubstitution(command: string): boolean {
-	command = normalizeShellLineContinuations(command);
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < command.length - 1; index += 1) {
-		const char = command[index];
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			continue;
-		}
-		if (quote) continue;
-		if ((char === "<" || char === ">") && command[index + 1] === "(")
-			return true;
-	}
-	return false;
+  command = normalizeShellLineContinuations(command);
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length - 1; index += 1) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if ((char === "<" || char === ">") && command[index + 1] === "(") return true;
+  }
+  return false;
 }
 
 interface ShellHeredocOpener {
-	delimiter: string;
-	quoted: boolean;
+  delimiter: string;
+  quoted: boolean;
 }
 
-function parseShellHeredocDelimiter(
-	line: string,
-	startIndex: number,
-): ShellHeredocOpener | null {
-	let index = startIndex;
-	while (/\s/.test(line[index] ?? "")) index += 1;
+function parseShellHeredocDelimiter(line: string, startIndex: number): ShellHeredocOpener | null {
+  let index = startIndex;
+  while (/\s/.test(line[index] ?? "")) index += 1;
 
-	let delimiter = "";
-	let quoted = false;
-	let quote: "'" | '"' | null = null;
-	for (; index < line.length; index += 1) {
-		const char = line[index] ?? "";
-		if (char === "\\" && quote !== "'") {
-			quoted = true;
-			index += 1;
-			delimiter += line[index] ?? "";
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-				quoted = true;
-			} else {
-				delimiter += char;
-			}
-			continue;
-		}
-		if (
-			!quote &&
-			(/\s/.test(char) ||
-				char === "|" ||
-				char === ";" ||
-				char === "&" ||
-				char === "<" ||
-				char === ">")
-		)
-			break;
-		delimiter += char;
-	}
+  let delimiter = "";
+  let quoted = false;
+  let quote: "'" | "\"" | null = null;
+  for (; index < line.length; index += 1) {
+    const char = line[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      quoted = true;
+      index += 1;
+      delimiter += line[index] ?? "";
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+        quoted = true;
+      } else {
+        delimiter += char;
+      }
+      continue;
+    }
+    if (!quote && (/\s/.test(char) || char === "|" || char === ";" || char === "&" || char === "<" || char === ">")) break;
+    delimiter += char;
+  }
 
-	return delimiter ? { delimiter, quoted } : null;
+  return delimiter ? { delimiter, quoted } : null;
 }
 
 function extractShellHeredocOpeners(line: string): ShellHeredocOpener[] {
-	const openers: ShellHeredocOpener[] = [];
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < line.length - 1; index += 1) {
-		const char = line[index] ?? "";
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			continue;
-		}
-		if (quote) continue;
-		if (char !== "<" || line[index + 1] !== "<" || line[index + 2] === "<")
-			continue;
-		const delimiterStart = line[index + 2] === "-" ? index + 3 : index + 2;
-		const opener = parseShellHeredocDelimiter(line, delimiterStart);
-		if (opener) openers.push(opener);
-		index = delimiterStart;
-	}
-	return openers;
+  const openers: ShellHeredocOpener[] = [];
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < line.length - 1; index += 1) {
+    const char = line[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote) continue;
+    if (char !== "<" || line[index + 1] !== "<" || line[index + 2] === "<") continue;
+    const delimiterStart = line[index + 2] === "-" ? index + 3 : index + 2;
+    const opener = parseShellHeredocDelimiter(line, delimiterStart);
+    if (opener) openers.push(opener);
+    index = delimiterStart;
+  }
+  return openers;
 }
 
 function stripHeredocBodiesForCommandScan(command: string): string {
-	const lines = command.split("\n");
-	const kept: string[] = [];
-	for (let index = 0; index < lines.length; index += 1) {
-		const line = lines[index] ?? "";
-		kept.push(line);
-		const openers = extractShellHeredocOpeners(line);
-		for (const { delimiter } of openers) {
-			index += 1;
-			while (
-				index < lines.length &&
-				(lines[index] ?? "").trim() !== delimiter
-			) {
-				kept.push("");
-				index += 1;
-			}
-			if (index < lines.length) kept.push(lines[index] ?? "");
-		}
-	}
-	return kept.join("\n");
+  const lines = command.split("\n");
+  const kept: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    kept.push(line);
+    const openers = extractShellHeredocOpeners(line);
+    for (const { delimiter } of openers) {
+      index += 1;
+      while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
+        kept.push("");
+        index += 1;
+      }
+      if (index < lines.length) kept.push(lines[index] ?? "");
+    }
+  }
+  return kept.join("\n");
 }
 
+
 function hasUnsafeUnquotedHeredocExpansion(command: string): boolean {
-	const lines = normalizeShellLineContinuations(command).split("\n");
-	for (let index = 0; index < lines.length; index += 1) {
-		const line = lines[index] ?? "";
-		for (const { delimiter, quoted } of extractShellHeredocOpeners(line)) {
-			index += 1;
-			const bodyLines: string[] = [];
-			while (
-				index < lines.length &&
-				(lines[index] ?? "").trim() !== delimiter
-			) {
-				bodyLines.push(lines[index] ?? "");
-				index += 1;
-			}
-			if (!quoted && isDynamicNestedCommandString(bodyLines.join("\n")))
-				return true;
-		}
-	}
-	return false;
+  const lines = normalizeShellLineContinuations(command).split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    for (const { delimiter, quoted } of extractShellHeredocOpeners(line)) {
+      index += 1;
+      const bodyLines: string[] = [];
+      while (index < lines.length && (lines[index] ?? "").trim() !== delimiter) {
+        bodyLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      if (!quoted && isDynamicNestedCommandString(bodyLines.join("\n"))) return true;
+    }
+  }
+  return false;
 }
 
 function hasUnquotedShellSubstitution(command: string): boolean {
-	command = normalizeShellLineContinuations(command);
-	let quote: "'" | '"' | null = null;
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index] ?? "";
-		if (char === "\\" && quote !== "'") {
-			index += 1;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			if (quote === char) {
-				quote = null;
-			} else if (!quote) {
-				quote = char;
-			}
-			continue;
-		}
-		if (quote === "'") continue;
-		if (char === "$" && command[index + 1] === "(") return true;
-		if (char === "`") return true;
-		if ((char === "<" || char === ">") && command[index + 1] === "(")
-			return true;
-	}
-	return false;
+  command = normalizeShellLineContinuations(command);
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      if (quote === char) {
+        quote = null;
+      } else if (!quote) {
+        quote = char;
+      }
+      continue;
+    }
+    if (quote === "'") continue;
+    if (char === "$" && command[index + 1] === "(") return true;
+    if (char === "`") return true;
+    if ((char === "<" || char === ">") && command[index + 1] === "(") return true;
+  }
+  return false;
 }
 
-function normalizeStateWriteClassificationPayload(
-	payload: Record<string, unknown>,
-): Record<string, unknown> {
-	const targetMode = safeString(payload.mode).trim();
-	const targetSessionId = safeString(payload.session_id).trim();
-	const {
-		mode: _mode,
-		workingDirectory: _workingDirectory,
-		state,
-		...fields
-	} = payload;
-	const normalized: Record<string, unknown> = {
-		...fields,
-		...safeObject(state),
-		...(targetMode ? { mode: targetMode } : {}),
-		...(targetSessionId ? { session_id: targetSessionId } : {}),
-	};
-	if (
-		normalized.current_phase === undefined &&
-		normalized.currentPhase !== undefined
-	) {
-		normalized.current_phase = normalized.currentPhase;
-	}
-	if (
-		normalized.run_outcome === undefined &&
-		normalized.runOutcome !== undefined
-	) {
-		normalized.run_outcome = normalized.runOutcome;
-	}
-	if (
-		normalized.lifecycle_outcome === undefined &&
-		normalized.lifecycleOutcome !== undefined
-	) {
-		normalized.lifecycle_outcome = normalized.lifecycleOutcome;
-	}
-	if (
-		normalized.terminal_outcome === undefined &&
-		normalized.terminalOutcome !== undefined
-	) {
-		normalized.terminal_outcome = normalized.terminalOutcome;
-	}
-	return {
-		...normalized,
-	};
+function normalizeStateWriteClassificationPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const targetMode = safeString(payload.mode).trim();
+  const targetSessionId = safeString(payload.session_id).trim();
+  const {
+    mode: _mode,
+    workingDirectory: _workingDirectory,
+    state,
+    ...fields
+  } = payload;
+  const normalized: Record<string, unknown> = {
+    ...fields,
+    ...safeObject(state),
+    ...(targetMode ? { mode: targetMode } : {}),
+    ...(targetSessionId ? { session_id: targetSessionId } : {}),
+  };
+  if (normalized.current_phase === undefined && normalized.currentPhase !== undefined) {
+    normalized.current_phase = normalized.currentPhase;
+  }
+  if (normalized.run_outcome === undefined && normalized.runOutcome !== undefined) {
+    normalized.run_outcome = normalized.runOutcome;
+  }
+  if (normalized.lifecycle_outcome === undefined && normalized.lifecycleOutcome !== undefined) {
+    normalized.lifecycle_outcome = normalized.lifecycleOutcome;
+  }
+  if (normalized.terminal_outcome === undefined && normalized.terminalOutcome !== undefined) {
+    normalized.terminal_outcome = normalized.terminalOutcome;
+  }
+  return {
+    ...normalized,
+  };
 }
 
-function isPlanningPhaseDeactivationPayload(
-	payload: Record<string, unknown>,
-): boolean {
-	const mode = safeString(payload.mode).trim().toLowerCase();
-	if (!mode) return false;
-	if (mode !== "deep-interview" && mode !== "ralplan") {
-		if (!isTrackedWorkflowMode(mode)) return false;
-		const currentPhase = safeString(
-			payload.current_phase ?? payload.currentPhase,
-		)
-			.trim()
-			.toLowerCase();
-		const normalizedAutopilotPhase = normalizeAutopilotPhase(currentPhase);
-		if (
-			mode === "autopilot" &&
-			(normalizedAutopilotPhase === "deep-interview" ||
-				normalizedAutopilotPhase === "ralplan" ||
-				normalizedAutopilotPhase === "ultragoal")
-		) {
-			return payload.active === false;
-		}
-		if (payload.active === true) return true;
-		return (
-			inferTerminalLifecycleOutcome(payload, {
-				includeQuestionEnforcement: false,
-			}) === undefined
-		);
-	}
+function isPlanningPhaseDeactivationPayload(payload: Record<string, unknown>): boolean {
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  if (!mode) return false;
+  if (mode !== "deep-interview" && mode !== "ralplan") {
+    if (!isTrackedWorkflowMode(mode)) return false;
+    const currentPhase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
+    const normalizedAutopilotPhase = normalizeAutopilotPhase(currentPhase);
+    if (mode === "autopilot" && (normalizedAutopilotPhase === "deep-interview" || normalizedAutopilotPhase === "ralplan" || normalizedAutopilotPhase === "ultragoal")) {
+      return payload.active === false;
+    }
+    if (payload.active === true) return true;
+    return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) === undefined;
+  }
 
-	if (payload.active === false) return true;
-	return (
-		inferTerminalLifecycleOutcome(payload, {
-			includeQuestionEnforcement: false,
-		}) !== undefined
-	);
+  if (payload.active === false) return true;
+  return inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) !== undefined;
 }
 
-function hasCompleteDeepInterviewGateMetadata(
-	state: Record<string, unknown>,
-): boolean {
-	const nestedState = safeObject(state.state);
-	const gate =
-		safeObject(state.deep_interview_gate) ??
-		safeObject(nestedState?.deep_interview_gate);
-	if (!gate) return false;
-	const status = safeString(gate.status)
-		.trim()
-		.toLowerCase()
-		.replace(/_/g, "-");
-	if (status === "complete" || gate.complete === true) {
-		return [
-			"rationale",
-			"completion_rationale",
-			"handoff_summary",
-			"summary",
-			"reason",
-		].some((key) => safeString(gate[key]).trim().length > 0);
-	}
-	if (status !== "skipped") return false;
-	const reason =
-		safeString(gate.reason).trim() ||
-		safeString(gate.skip_reason).trim() ||
-		safeString(gate.rationale).trim();
-	const timestamp =
-		safeString(gate.skipped_at).trim() ||
-		safeString(gate.timestamp).trim() ||
-		safeString(gate.updated_at).trim();
-	const source = safeString(gate.source).trim();
-	return (
-		(gate.skip_authorized_by_user === true ||
-			gate.authorized_by_user === true) &&
-		reason.length > 0 &&
-		timestamp.length > 0 &&
-		source.length > 0
-	);
+function hasCompleteDeepInterviewGateMetadata(state: Record<string, unknown>): boolean {
+  const nestedState = safeObject(state.state);
+  const gate = safeObject(state.deep_interview_gate) ?? safeObject(nestedState?.deep_interview_gate);
+  if (!gate) return false;
+  const status = safeString(gate.status).trim().toLowerCase().replace(/_/g, "-");
+  if (status === "complete" || gate.complete === true) {
+    return ["rationale", "completion_rationale", "handoff_summary", "summary", "reason"]
+      .some((key) => safeString(gate[key]).trim().length > 0);
+  }
+  if (status !== "skipped") return false;
+  const reason = safeString(gate.reason).trim() || safeString(gate.skip_reason).trim() || safeString(gate.rationale).trim();
+  const timestamp = safeString(gate.skipped_at).trim() || safeString(gate.timestamp).trim() || safeString(gate.updated_at).trim();
+  const source = safeString(gate.source).trim();
+  return (gate.skip_authorized_by_user === true || gate.authorized_by_user === true)
+    && reason.length > 0
+    && timestamp.length > 0
+    && source.length > 0;
 }
 
-function isDeepInterviewRalplanHandoffStatePayload(
-	payload: Record<string, unknown>,
-): boolean {
-	const mode = safeString(payload.mode).trim().toLowerCase();
-	if (mode !== "autopilot") return false;
-	const phase = normalizeAutopilotPhase(
-		safeString(payload.current_phase ?? payload.currentPhase)
-			.trim()
-			.toLowerCase(),
-	);
-	if (phase !== "ralplan" || payload.active === false) return false;
-	return hasCompleteDeepInterviewGateMetadata(payload);
+function isDeepInterviewRalplanHandoffStatePayload(payload: Record<string, unknown>): boolean {
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  if (mode !== "autopilot") return false;
+  const phase = normalizeAutopilotPhase(safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase());
+  if (phase !== "ralplan" || payload.active === false) return false;
+  return hasCompleteDeepInterviewGateMetadata(payload);
 }
 
-function hasOnlyAllowedDeepInterviewRalplanHandoffMutations(
-	cwd: string,
-	command: string,
-): boolean {
-	for (const mutation of extractConductorBashMutations(command)) {
-		if (mutation.targets.length === 0) return false;
-		if (
-			mutation.targets.some(
-				(target) => !isAllowedDeepInterviewArtifactPath(cwd, target),
-			)
-		)
-			return false;
-	}
-	for (const write of extractConductorInterpreterWrites(command)) {
-		if (write.unresolved || write.targets.length === 0) return false;
-		if (
-			write.targets.some(
-				(target) => !isAllowedDeepInterviewArtifactPath(cwd, target),
-			)
-		)
-			return false;
-	}
-	return true;
+function hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd: string, command: string): boolean {
+  for (const mutation of extractConductorBashMutations(command)) {
+    if (mutation.targets.length === 0) return false;
+    if (mutation.targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
+  }
+  for (const write of extractConductorInterpreterWrites(command)) {
+    if (write.unresolved || write.targets.length === 0) return false;
+    if (write.targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
+  }
+  return true;
 }
 
-function isDurableDeepInterviewHandoffEvidencePath(
-	cwd: string,
-	rawPath: string,
-): boolean {
-	const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
-	if (!relativePath) return false;
-	return (
-		relativePath === ".omx/context" ||
-		relativePath.startsWith(".omx/context/") ||
-		relativePath === ".omx/interviews" ||
-		relativePath.startsWith(".omx/interviews/") ||
-		relativePath === ".omx/specs" ||
-		relativePath.startsWith(".omx/specs/")
-	);
+function isDurableDeepInterviewHandoffEvidencePath(cwd: string, rawPath: string): boolean {
+  const relativePath = normalizePlanningArtifactRelativePath(cwd, rawPath);
+  if (!relativePath) return false;
+  return relativePath === ".omx/context"
+    || relativePath.startsWith(".omx/context/")
+    || relativePath === ".omx/interviews"
+    || relativePath.startsWith(".omx/interviews/")
+    || relativePath === ".omx/specs"
+    || relativePath.startsWith(".omx/specs/");
 }
 
 function hasExistingDurableDeepInterviewHandoffEvidence(cwd: string): boolean {
-	const roots = [".omx/context", ".omx/interviews", ".omx/specs"] as const;
-	const maxEntries = 2_000;
-	let visited = 0;
+  const roots = [".omx/context", ".omx/interviews", ".omx/specs"] as const;
+  const maxEntries = 2_000;
+  let visited = 0;
 
-	for (const root of roots) {
-		const stack = [resolve(cwd, root)];
-		while (stack.length > 0 && visited < maxEntries) {
-			const current = stack.pop();
-			if (!current) continue;
-			visited += 1;
-			try {
-				const stat = statSync(current);
-				if (stat.isFile()) return true;
-				if (!stat.isDirectory()) continue;
-				for (const entry of readdirSync(current)) {
-					stack.push(join(current, entry));
-				}
-			} catch {
-				// Missing or unreadable roots are not completion evidence.
-			}
-		}
-	}
+  for (const root of roots) {
+    const stack = [resolve(cwd, root)];
+    while (stack.length > 0 && visited < maxEntries) {
+      const current = stack.pop();
+      if (!current) continue;
+      visited += 1;
+      try {
+        const stat = statSync(current);
+        if (stat.isFile()) return true;
+        if (!stat.isDirectory()) continue;
+        for (const entry of readdirSync(current)) {
+          stack.push(join(current, entry));
+        }
+      } catch {
+        // Missing or unreadable roots are not completion evidence.
+      }
+    }
+  }
 
-	return false;
+  return false;
 }
 
-function isAllowedDeepInterviewRalplanHandoffCommand(
-	cwd: string,
-	command: string,
-): boolean {
-	const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
-	if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
-	if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
-	if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0)
-		return false;
-	if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
-	if (commandHasUntargetedPlanningForbiddenIntent(canonicalCommand))
-		return false;
-	if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand))
-		return false;
-	const stateWriteOperations = collectOmxStateCommandOperations(
-		canonicalCommand,
-		"write",
-	);
-	if (stateWriteOperations.length !== 1) return false;
-	const stateWriteOperation = stateWriteOperations[0];
-	if (!stateWriteOperation || stateWriteOperation.nested) return false;
-	const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-	if (!payload || !isDeepInterviewRalplanHandoffStatePayload(payload))
-		return false;
-	const targets = extractDeepInterviewCommandWriteTargets(command);
-	if (targets.length === 0) {
-		return (
-			!hasPriorExecutableCommand(stateWriteOperation.prefix) &&
-			hasExistingDurableDeepInterviewHandoffEvidence(cwd)
-		);
-	}
-	if (
-		!targets.some((target) =>
-			isDurableDeepInterviewHandoffEvidencePath(cwd, target),
-		)
-	)
-		return false;
-	if (!hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd, command))
-		return false;
-	return targets.every((target) =>
-		isAllowedDeepInterviewArtifactPath(cwd, target),
-	);
+function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: string): boolean {
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
+  if (commandHasUntargetedPlanningForbiddenIntent(canonicalCommand)) return false;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
+  const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (stateWriteOperations.length !== 1) return false;
+  const stateWriteOperation = stateWriteOperations[0];
+  if (!stateWriteOperation || stateWriteOperation.nested) return false;
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  if (!payload || !isDeepInterviewRalplanHandoffStatePayload(payload)) return false;
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  if (targets.length === 0) {
+    return !hasPriorExecutableCommand(stateWriteOperation.prefix)
+      && hasExistingDurableDeepInterviewHandoffEvidence(cwd);
+  }
+  if (!targets.some((target) => isDurableDeepInterviewHandoffEvidencePath(cwd, target))) return false;
+  if (!hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd, command)) return false;
+  return targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
 }
 
-function hasDeepInterviewRalplanHandoffStateMutation(
-	cwd: string,
-	command: string,
-): boolean {
-	const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
-	const stateWriteOperations = collectOmxStateCommandOperations(
-		canonicalCommand,
-		"write",
-	);
-	if (stateWriteOperations.length === 0) return false;
-	const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-	return payload ? isDeepInterviewRalplanHandoffStatePayload(payload) : false;
+
+function hasDeepInterviewRalplanHandoffStateMutation(cwd: string, command: string): boolean {
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (stateWriteOperations.length === 0) return false;
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isDeepInterviewRalplanHandoffStatePayload(payload) : false;
 }
 
 function isCompleteRalplanTerminalWritePayload(
-	payload: Record<string, unknown>,
-	activeState: Record<string, unknown>,
-	sessionId: string,
+  payload: Record<string, unknown>,
+  activeState: Record<string, unknown>,
+  sessionId: string,
 ): boolean {
-	if (!sessionId) return false;
-	const mode = safeString(payload.mode).trim().toLowerCase();
-	if (mode !== "ralplan") return false;
-	const phase = safeString(payload.current_phase ?? payload.currentPhase)
-		.trim()
-		.toLowerCase();
-	if (payload.active !== false || phase !== "complete") return false;
+  if (!sessionId) return false;
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  if (mode !== "ralplan") return false;
+  const phase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
+  if (payload.active !== false || phase !== "complete") return false;
 
-	const payloadSessionId = safeString(payload.session_id).trim();
-	const activeSessionId = safeString(
-		activeState.session_id ??
-			activeState.owner_omx_session_id ??
-			activeState.codex_session_id ??
-			activeState.owner_codex_session_id,
-	).trim();
-	if (payloadSessionId && sessionId && payloadSessionId !== sessionId)
-		return false;
-	if (
-		payloadSessionId &&
-		activeSessionId &&
-		payloadSessionId !== activeSessionId
-	)
-		return false;
-	return true;
+  const payloadSessionId = safeString(payload.session_id).trim();
+  const activeSessionId = safeString(
+    activeState.session_id
+      ?? activeState.owner_omx_session_id
+      ?? activeState.codex_session_id
+      ?? activeState.owner_codex_session_id,
+  ).trim();
+  if (payloadSessionId && sessionId && payloadSessionId !== sessionId) return false;
+  if (payloadSessionId && activeSessionId && payloadSessionId !== activeSessionId) return false;
+  return true;
 }
 
 function isAllowedRalplanTerminalStateWriteCommand(
-	cwd: string,
-	command: string,
-	activeState: Record<string, unknown>,
-	sessionId: string,
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
 ): boolean {
-	const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
-	if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
-	if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
-	if (splitStateScanSegments(canonicalCommand).length !== 1) return false;
-	if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand))
-		return false;
-	if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0)
-		return false;
-	if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
-	if (commandHasDeepInterviewWriteIntent(canonicalCommand)) return false;
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
+  if (splitStateScanSegments(canonicalCommand).length !== 1) return false;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
+  if (commandHasDeepInterviewWriteIntent(canonicalCommand)) return false;
 
-	const operations = collectOmxStateCommandOperations(
-		canonicalCommand,
-		"write",
-	);
-	if (operations.length !== 1) return false;
-	const operation = operations[0];
-	if (
-		!operation ||
-		operation.nested ||
-		hasPriorExecutableCommand(operation.prefix)
-	)
-		return false;
+  const operations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (operations.length !== 1) return false;
+  const operation = operations[0];
+  if (!operation || operation.nested || hasPriorExecutableCommand(operation.prefix)) return false;
 
-	const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-	return payload
-		? isCompleteRalplanTerminalWritePayload(payload, activeState, sessionId)
-		: false;
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isCompleteRalplanTerminalWritePayload(payload, activeState, sessionId) : false;
 }
 
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
-	if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0)
-		return true;
-	const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
-	if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return true;
-	if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand))
-		return true;
-	if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0)
-		return true;
-	if (hasDynamicNestedShellExecution(canonicalCommand)) return true;
-	const stateWriteCount = findUnquotedOmxStateCommandIndexes(
-		canonicalCommand,
-		"write",
-	).length;
-	if (stateWriteCount > 1) return true;
-	if (stateWriteCount === 0) return false;
-	const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-	return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
+  if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return true;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return true;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return true;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return true;
+  const stateWriteCount = findUnquotedOmxStateCommandIndexes(canonicalCommand, "write").length;
+  if (stateWriteCount > 1) return true;
+  if (stateWriteCount === 0) return false;
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
 }
 
-function isAllowedDeepInterviewBashWrite(
-	cwd: string,
-	command: string,
-): boolean {
-	if (isAllowedDeepInterviewRalplanHandoffCommand(cwd, command)) return true;
-	if (hasDeepInterviewRalplanHandoffStateMutation(cwd, command)) return false;
-	if (commandEndsPlanningPhase(cwd, command)) return false;
-	if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
-	if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
-	if (!commandHasDeepInterviewWriteIntent(command)) return true;
-	if (hasUnresolvedConductorInterpreterWrite(command)) return false;
-	const targets = extractDeepInterviewCommandWriteTargets(command);
+function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
+  if (isAllowedDeepInterviewRalplanHandoffCommand(cwd, command)) return true;
+  if (hasDeepInterviewRalplanHandoffStateMutation(cwd, command)) return false;
+  if (commandEndsPlanningPhase(cwd, command)) return false;
+  if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
+  if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
+  if (!commandHasDeepInterviewWriteIntent(command)) return true;
+  if (hasUnresolvedConductorInterpreterWrite(command)) return false;
+  const targets = extractDeepInterviewCommandWriteTargets(command);
 
-	if (
-		targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))
-	)
-		return false;
-	return (
-		targets.length > 0 &&
-		targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target))
-	);
+  if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target))) return false;
+  return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target));
 }
 
 async function readActiveDeepInterviewStateForPreToolUse(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	threadId: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId: string,
 ): Promise<Record<string, unknown> | null> {
-	const canonicalState = sessionId
-		? await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)
-		: await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
-	if (!canonicalState) return null;
+  const canonicalState = sessionId
+    ? await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)
+    : await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
+  if (!canonicalState) return null;
 
-	const modeState = sessionId
-		? await readStopSessionPinnedState(
-				"deep-interview-state.json",
-				cwd,
-				sessionId,
-				stateDir,
-			)
-		: await readJsonIfExists(join(stateDir, "deep-interview-state.json"));
-	if (
-		isActiveDeepInterviewPhase(modeState) &&
-		modeState &&
-		modeStateMatchesSkillStopContext(modeState, cwd, sessionId)
-	) {
-		const hasActiveDeepInterviewSkill = listActiveSkills(canonicalState).some(
-			(entry) =>
-				entry.skill === "deep-interview" &&
-				matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-		);
-		if (hasActiveDeepInterviewSkill) return modeState;
-	}
-	if (isInactiveCompletedDeepInterviewPhase(modeState)) return null;
+  const modeState = sessionId
+    ? await readStopSessionPinnedState("deep-interview-state.json", cwd, sessionId, stateDir)
+    : await readJsonIfExists(join(stateDir, "deep-interview-state.json"));
+  if (isActiveDeepInterviewPhase(modeState) && modeState && modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) {
+    const hasActiveDeepInterviewSkill = listActiveSkills(canonicalState).some((entry) => (
+      entry.skill === "deep-interview"
+      && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+    ));
+    if (hasActiveDeepInterviewSkill) return modeState;
+  }
+  if (isInactiveCompletedDeepInterviewPhase(modeState)) return null;
 
-	const autopilotState = sessionId
-		? await readStopSessionPinnedState(
-				"autopilot-state.json",
-				cwd,
-				sessionId,
-				stateDir,
-			)
-		: await readJsonIfExists(join(stateDir, "autopilot-state.json"));
-	if (!autopilotState || autopilotState.active !== true) return null;
-	const autopilotMode = safeString(autopilotState.mode).trim();
-	if (autopilotMode && autopilotMode !== "autopilot") return null;
-	if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId))
-		return null;
-	const autopilotStatePhase = safeString(
-		autopilotState.current_phase ?? autopilotState.currentPhase,
-	)
-		.trim()
-		.toLowerCase();
-	const autopilotIsDeepInterview =
-		normalizeAutopilotPhase(autopilotStatePhase) === "deep-interview";
-	const hasDeepInterviewScopedAutopilotSkill = listActiveSkills(
-		canonicalState,
-	).some(
-		(entry) =>
-			entry.skill === "autopilot" &&
-			normalizeAutopilotPhase(safeString(entry.phase).trim().toLowerCase()) ===
-				"deep-interview" &&
-			matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-	);
-	const hasActiveAutopilotSkill = listActiveSkills(canonicalState).some(
-		(entry) =>
-			entry.skill === "autopilot" &&
-			matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-	);
-	if (!hasActiveAutopilotSkill) return null;
-	if (!autopilotIsDeepInterview && !hasDeepInterviewScopedAutopilotSkill)
-		return null;
-	return autopilotState;
+  const autopilotState = sessionId
+    ? await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir)
+    : await readJsonIfExists(join(stateDir, "autopilot-state.json"));
+  if (!autopilotState || autopilotState.active !== true) return null;
+  const autopilotMode = safeString(autopilotState.mode).trim();
+  if (autopilotMode && autopilotMode !== "autopilot") return null;
+  if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId)) return null;
+  const autopilotStatePhase = safeString(autopilotState.current_phase ?? autopilotState.currentPhase).trim().toLowerCase();
+  const autopilotIsDeepInterview = normalizeAutopilotPhase(autopilotStatePhase) === "deep-interview";
+  const hasDeepInterviewScopedAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "autopilot"
+    && normalizeAutopilotPhase(safeString(entry.phase).trim().toLowerCase()) === "deep-interview"
+    && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  const hasActiveAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "autopilot"
+    && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  if (!hasActiveAutopilotSkill) return null;
+  if (!autopilotIsDeepInterview && !hasDeepInterviewScopedAutopilotSkill) return null;
+  return autopilotState;
 }
 
 async function readActiveRalplanStateForPreToolUse(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	threadId: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId: string,
 ): Promise<Record<string, unknown> | null> {
-	const modeState = sessionId
-		? await readStopSessionPinnedState(
-				"ralplan-state.json",
-				cwd,
-				sessionId,
-				stateDir,
-			)
-		: await readJsonIfExists(join(stateDir, "ralplan-state.json"));
-	const canonicalState = sessionId
-		? await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)
-		: await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
-	if (
-		isActiveRalplanPhase(modeState) &&
-		modeState &&
-		modeStateMatchesSkillStopContext(modeState, cwd, sessionId)
-	) {
-		if (hasExplicitExecutionHandoffSkill(canonicalState, sessionId, threadId))
-			return null;
-		if (!canonicalState) return null;
-		const hasActiveRalplanSkill = listActiveSkills(canonicalState).some(
-			(entry) =>
-				entry.skill === "ralplan" &&
-				matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-		);
-		if (hasActiveRalplanSkill) return modeState;
-	}
+  const modeState = sessionId
+    ? await readStopSessionPinnedState("ralplan-state.json", cwd, sessionId, stateDir)
+    : await readJsonIfExists(join(stateDir, "ralplan-state.json"));
+  const canonicalState = sessionId
+    ? await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)
+    : await readSkillActiveState(join(stateDir, SKILL_ACTIVE_STATE_FILE));
+  if (isActiveRalplanPhase(modeState) && modeState && modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) {
+    if (hasExplicitExecutionHandoffSkill(canonicalState, sessionId, threadId)) return null;
+    if (!canonicalState) return null;
+    const hasActiveRalplanSkill = listActiveSkills(canonicalState).some((entry) => (
+      entry.skill === "ralplan"
+      && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+    ));
+    if (hasActiveRalplanSkill) return modeState;
+  }
 
-	const autopilotState = sessionId
-		? await readStopSessionPinnedState(
-				"autopilot-state.json",
-				cwd,
-				sessionId,
-				stateDir,
-			)
-		: await readJsonIfExists(join(stateDir, "autopilot-state.json"));
-	if (!autopilotState || autopilotState.active !== true) return null;
-	const autopilotMode = safeString(autopilotState.mode).trim();
-	if (autopilotMode && autopilotMode !== "autopilot") return null;
-	if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId))
-		return null;
-	if (!canonicalState) return null;
-	const hasActiveAutopilotSkill = listActiveSkills(canonicalState).some(
-		(entry) =>
-			entry.skill === "autopilot" &&
-			matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-	);
-	if (!hasActiveAutopilotSkill) return null;
-	const autopilotStatePhase = safeString(
-		autopilotState.current_phase ?? autopilotState.currentPhase,
-	)
-		.trim()
-		.toLowerCase();
-	if (isAutopilotReviewReworkPhase(autopilotStatePhase)) return null;
-	if (!canAutopilotSkillMirrorSupplyRalplanPhase(autopilotStatePhase))
-		return null;
-	const hasRalplanScopedAutopilotSkill = listActiveSkills(canonicalState).some(
-		(entry) =>
-			entry.skill === "autopilot" &&
-			isAutopilotRalplanLikePhase(
-				safeString(entry.phase).trim().toLowerCase(),
-			) &&
-			matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-	);
-	if (
-		!isAutopilotRalplanLikePhase(autopilotStatePhase) &&
-		!hasRalplanScopedAutopilotSkill
-	)
-		return null;
-	return hasActiveAutopilotSkill ? autopilotState : null;
+  const autopilotState = sessionId
+    ? await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir)
+    : await readJsonIfExists(join(stateDir, "autopilot-state.json"));
+  if (!autopilotState || autopilotState.active !== true) return null;
+  const autopilotMode = safeString(autopilotState.mode).trim();
+  if (autopilotMode && autopilotMode !== "autopilot") return null;
+  if (!modeStateMatchesSkillStopContext(autopilotState, cwd, sessionId)) return null;
+  if (!canonicalState) return null;
+  const hasActiveAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "autopilot"
+    && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  if (!hasActiveAutopilotSkill) return null;
+  const autopilotStatePhase = safeString(autopilotState.current_phase ?? autopilotState.currentPhase).trim().toLowerCase();
+  if (isAutopilotReviewReworkPhase(autopilotStatePhase)) return null;
+  if (!canAutopilotSkillMirrorSupplyRalplanPhase(autopilotStatePhase)) return null;
+  const hasRalplanScopedAutopilotSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "autopilot"
+    && isAutopilotRalplanLikePhase(safeString(entry.phase).trim().toLowerCase())
+    && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  if (!isAutopilotRalplanLikePhase(autopilotStatePhase) && !hasRalplanScopedAutopilotSkill) return null;
+  return hasActiveAutopilotSkill ? autopilotState : null;
 }
 
 function isAllowedRalplanBashWrite(
-	cwd: string,
-	command: string,
-	activeState: Record<string, unknown>,
-	sessionId: string,
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
 ): boolean {
-	const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
-	const targets = extractDeepInterviewCommandWriteTargets(command);
-	const hasAllowedTargets =
-		targets.length > 0 &&
-		targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  const hasAllowedTargets = targets.length > 0
+    && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target));
 
-	if (beadsCommand.present) {
-		return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
-	}
-	if (commandEndsPlanningPhase(cwd, command)) {
-		return isAllowedRalplanTerminalStateWriteCommand(
-			cwd,
-			command,
-			activeState,
-			sessionId,
-		);
-	}
-	if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
-	if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
-	if (!commandHasDeepInterviewWriteIntent(command)) return true;
-	if (hasUnresolvedConductorInterpreterWrite(command)) return false;
-	if (targets.some((target) => !isAllowedRalplanArtifactPath(cwd, target)))
-		return false;
+  if (beadsCommand.present) {
+    return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
+  }
+  if (commandEndsPlanningPhase(cwd, command)) {
+    return isAllowedRalplanTerminalStateWriteCommand(cwd, command, activeState, sessionId);
+  }
+  if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
+  if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
+  if (!commandHasDeepInterviewWriteIntent(command)) return true;
+  if (hasUnresolvedConductorInterpreterWrite(command)) return false;
+  if (targets.some((target) => !isAllowedRalplanArtifactPath(cwd, target))) return false;
 
-	return hasAllowedTargets;
+  return hasAllowedTargets;
 }
 
 function buildRalplanBashBlockedDetail(cwd: string, command: string): string {
-	const targets = extractDeepInterviewCommandWriteTargets(command);
-	const blockedTarget = targets.find(
-		(target) => !isAllowedRalplanArtifactPath(cwd, target),
-	);
-	if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
-		return `unresolved Bash write target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
-	}
-	if (blockedTarget) {
-		const operationClass = /\btee\s+(?:-a\s+)?/.test(command)
-			? "Bash tee write"
-			: "Bash redirect write";
-		return `${operationClass} target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
-	}
-	const executedTmpTarget = firstPlanningTmpScriptExecutionTarget(cwd, command);
-	if (executedTmpTarget) {
-		return `execution target ${executedTmpTarget} is under .omx/tmp; planning tmp artifacts must not be used as generated-script transport`;
-	}
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  const blockedTarget = targets.find((target) => !isAllowedRalplanArtifactPath(cwd, target));
+  if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
+    return `unresolved Bash write target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  if (blockedTarget) {
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash redirect write";
+    return `${operationClass} target ${blockedTarget} is not under allowed planning artifact paths or metadata paths (${RALPLAN_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const executedTmpTarget = firstPlanningTmpScriptExecutionTarget(cwd, command);
+  if (executedTmpTarget) {
+    return `execution target ${executedTmpTarget} is under .omx/tmp; planning tmp artifacts must not be used as generated-script transport`;
+  }
 
-	if (commandHasPackageInstallIntent(command)) {
-		return "package installation commands are implementation actions and cannot be combined with allowed planning artifact writes";
-	}
-	if (commandHasDestructiveGitSubcommand(command)) {
-		return "destructive git commands are implementation actions and cannot be combined with allowed planning artifact writes";
-	}
-	const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
-	if (beadsCommand.present && !beadsCommand.allowed) {
-		return (
-			beadsCommand.reason ??
-			"Beads tracker command is not an allowed planning metadata mutation"
-		);
-	}
-	if (beadsCommand.present) {
-		return "Beads tracker command also performs an implementation write outside allowed planning metadata";
-	}
-	return "Bash write intent did not identify an allowed planning artifact path or metadata path";
+  if (commandHasPackageInstallIntent(command)) {
+    return "package installation commands are implementation actions and cannot be combined with allowed planning artifact writes";
+  }
+  if (commandHasDestructiveGitSubcommand(command)) {
+    return "destructive git commands are implementation actions and cannot be combined with allowed planning artifact writes";
+  }
+  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  if (beadsCommand.present && !beadsCommand.allowed) {
+    return beadsCommand.reason ?? "Beads tracker command is not an allowed planning metadata mutation";
+  }
+  if (beadsCommand.present) {
+    return "Beads tracker command also performs an implementation write outside allowed planning metadata";
+  }
+  return "Bash write intent did not identify an allowed planning artifact path or metadata path";
 }
 
-function buildDeepInterviewBashBlockedDetail(
-	cwd: string,
-	command: string,
-): string {
-	const targets = extractDeepInterviewCommandWriteTargets(command);
-	const blockedTarget = targets.find(
-		(target) => !isAllowedDeepInterviewArtifactPath(cwd, target),
-	);
-	if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
-		return `unresolved Bash write target ${blockedTarget} is not under allowed deep-interview artifact paths or metadata paths (${DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.join(", ")})`;
-	}
-	if (blockedTarget) {
-		const operationClass = /\btee\s+(?:-a\s+)?/.test(command)
-			? "Bash tee write"
-			: "Bash write";
-		return `${operationClass} target ${blockedTarget} is not under allowed deep-interview artifact paths or metadata paths (${DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.join(", ")})`;
-	}
-	const executedTmpTarget = firstPlanningTmpScriptExecutionTarget(cwd, command);
-	if (executedTmpTarget) {
-		return `execution target ${executedTmpTarget} is under .omx/tmp; deep-interview tmp artifacts must not be used as generated-script transport`;
-	}
-	if (commandHasPackageInstallIntent(command)) {
-		return "package installation commands are implementation actions and cannot be combined with allowed deep-interview artifact writes";
-	}
-	if (commandHasDestructiveGitSubcommand(command)) {
-		return "destructive git commands are implementation actions and cannot be combined with allowed deep-interview artifact writes";
-	}
-	return "Bash write intent did not identify an allowed deep-interview artifact path or metadata path";
+function buildDeepInterviewBashBlockedDetail(cwd: string, command: string): string {
+  const targets = extractDeepInterviewCommandWriteTargets(command);
+  const blockedTarget = targets.find((target) => !isAllowedDeepInterviewArtifactPath(cwd, target));
+  if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
+    return `unresolved Bash write target ${blockedTarget} is not under allowed deep-interview artifact paths or metadata paths (${DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  if (blockedTarget) {
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(command) ? "Bash tee write" : "Bash write";
+    return `${operationClass} target ${blockedTarget} is not under allowed deep-interview artifact paths or metadata paths (${DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES.join(", ")})`;
+  }
+  const executedTmpTarget = firstPlanningTmpScriptExecutionTarget(cwd, command);
+  if (executedTmpTarget) {
+    return `execution target ${executedTmpTarget} is under .omx/tmp; deep-interview tmp artifacts must not be used as generated-script transport`;
+  }
+  if (commandHasPackageInstallIntent(command)) {
+    return "package installation commands are implementation actions and cannot be combined with allowed deep-interview artifact writes";
+  }
+  if (commandHasDestructiveGitSubcommand(command)) {
+    return "destructive git commands are implementation actions and cannot be combined with allowed deep-interview artifact writes";
+  }
+  return "Bash write intent did not identify an allowed deep-interview artifact path or metadata path";
 }
+
 
 async function buildRalplanPreToolUseBoundaryOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
-	resolvedSessionId?: string,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
@@ -9392,89 +7216,67 @@ async function buildRalplanPreToolUseBoundaryOutput(
   const activeState = await readActiveRalplanStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
 
-	const toolName = safeString(payload.tool_name).trim();
-	const command = readPreToolUseCommand(payload);
-	const pathCandidates = readPreToolUsePathCandidates(payload);
-	let blocked = false;
-	let blockedDetail =
-		"implementation/write tools are blocked until an explicit execution handoff workflow is activated";
+  const toolName = safeString(payload.tool_name).trim();
+  const command = readPreToolUseCommand(payload);
+  const pathCandidates = readPreToolUsePathCandidates(payload);
+  let blocked = false;
+  let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
-	if (toolName === "Bash") {
-		blocked = !isAllowedRalplanBashWrite(cwd, command, activeState, sessionId);
-		if (blocked) {
-			blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
-		}
-	} else if (
-		toolName === "mcp__omx_state__state_clear" ||
-		(toolName === "mcp__omx_state__state_write" &&
-			isPlanningPhaseDeactivationPayload(
-				normalizeStateWriteClassificationPayload(
-					safeObject(payload.tool_input),
-				),
-			))
-	) {
-		blocked = true;
-		blockedDetail = `${toolName} would deactivate protected planning state`;
-	} else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-		const toolPathCandidates = collectImplementationToolPathCandidates(
-			payload,
-			toolName,
-			pathCandidates,
-		);
-		if (toolPathCandidates.length === 0) {
-			blocked = true;
-			blockedDetail = describeImplementationToolBlock(
-				toolName,
-				undefined,
-				toolPathCandidates.length,
-			);
-		} else {
-			const blockedPath = toolPathCandidates.find(
-				(candidate) => !isAllowedRalplanArtifactPath(cwd, candidate),
-			);
-			blocked = blockedPath !== undefined;
-			if (blockedPath !== undefined) {
-				blockedDetail = describeImplementationToolBlock(
-					toolName,
-					blockedPath,
-					toolPathCandidates.length,
-				);
-			}
-		}
-	}
+  if (toolName === "Bash") {
+    blocked = !isAllowedRalplanBashWrite(cwd, command, activeState, sessionId);
+    if (blocked) {
+      blockedDetail = buildRalplanBashBlockedDetail(cwd, command);
+    }
+  } else if (
+    toolName === "mcp__omx_state__state_clear"
+    || (
+      toolName === "mcp__omx_state__state_write"
+      && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
+    )
+  ) {
+    blocked = true;
+    blockedDetail = `${toolName} would deactivate protected planning state`;
+  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+    const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    if (toolPathCandidates.length === 0) {
+      blocked = true;
+      blockedDetail = describeImplementationToolBlock(toolName, undefined, toolPathCandidates.length);
+    } else {
+      const blockedPath = toolPathCandidates.find((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+      blocked = blockedPath !== undefined;
+      if (blockedPath !== undefined) {
+        blockedDetail = describeImplementationToolBlock(toolName, blockedPath, toolPathCandidates.length);
+      }
+    }
+  }
 
-	if (!blocked) return null;
+  if (!blocked) return null;
 
-	const phase = formatPhase(
-		activeState.current_phase ?? activeState.currentPhase,
-		"planning",
-	);
-	const activeMode = safeString(activeState.mode).trim().toLowerCase();
-	const planningModeLabel =
-		activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
-	const planningModeDescription =
-		activeMode === "autopilot"
-			? "Autopilot is supervising a planning phase"
-			: "Ralplan is consensus-planning mode";
-	return {
-		decision: "block",
-		reason: `${planningModeLabel} is active (phase: ${phase}); implementation/write tools are blocked until an explicit execution handoff workflow is activated; ${blockedDetail}.`,
-		hookSpecificOutput: {
-			hookEventName: "PreToolUse",
-			additionalContext:
-				`${planningModeDescription}. ` +
-				"Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, `.omx/tmp/`, required `.omx/state/` files, Markdown drafts under `.omx/drafts/*.md`, or tracker metadata under `.beads/`. " +
-				"Do not edit implementation files or run implementation-focused writes from planning phases. " +
-				`To execute, first process an explicit handoff such as ${formatExecutionHandoffList(cwd)}, which must emit terminal planning state before implementation begins.`,
-		},
-	};
+  const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
+  const activeMode = safeString(activeState.mode).trim().toLowerCase();
+  const planningModeLabel = activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
+  const planningModeDescription = activeMode === "autopilot"
+    ? "Autopilot is supervising a planning phase"
+    : "Ralplan is consensus-planning mode";
+  return {
+    decision: "block",
+    reason: `${planningModeLabel} is active (phase: ${phase}); implementation/write tools are blocked until an explicit execution handoff workflow is activated; ${blockedDetail}.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        `${planningModeDescription}. `
+        + "Write only planning artifacts under `.omx/context/`, `.omx/plans/`, `.omx/specs/`, `.omx/tmp/`, required `.omx/state/` files, Markdown drafts under `.omx/drafts/*.md`, or tracker metadata under `.beads/`. "
+        + "Do not edit implementation files or run implementation-focused writes from planning phases. "
+        + `To execute, first process an explicit handoff such as ${formatExecutionHandoffList(cwd)}, which must emit terminal planning state before implementation begins.`,
+    },
+  };
 }
 
 async function buildDeepInterviewPreToolUseBoundaryOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
-	resolvedSessionId?: string,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId)) return null;
@@ -9482,91 +7284,63 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   const activeState = await readActiveDeepInterviewStateForPreToolUse(cwd, stateDir, sessionId, threadId);
   if (!activeState) return null;
 
-	const toolName = safeString(payload.tool_name).trim();
-	const command = readPreToolUseCommand(payload);
-	const pathCandidates = readPreToolUsePathCandidates(payload);
-	let blocked = false;
-	let blockedDetail =
-		"implementation/write tools are blocked until an explicit handoff workflow is activated";
+  const toolName = safeString(payload.tool_name).trim();
+  const command = readPreToolUseCommand(payload);
+  const pathCandidates = readPreToolUsePathCandidates(payload);
+  let blocked = false;
+  let blockedDetail = "implementation/write tools are blocked until an explicit handoff workflow is activated";
 
-	if (toolName === "Bash") {
-		blocked = !isAllowedDeepInterviewBashWrite(cwd, command);
-		if (blocked) {
-			blockedDetail = buildDeepInterviewBashBlockedDetail(cwd, command);
-		}
-	} else if (
-		toolName === "mcp__omx_state__state_clear" ||
-		(toolName === "mcp__omx_state__state_write" &&
-			isPlanningPhaseDeactivationPayload(
-				normalizeStateWriteClassificationPayload(
-					safeObject(payload.tool_input),
-				),
-			))
-	) {
-		blocked = true;
-		blockedDetail = `${toolName} would deactivate protected deep-interview planning state`;
-	} else if (DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-		const candidates = collectImplementationToolPathCandidates(
-			payload,
-			toolName,
-			pathCandidates,
-		);
-		blocked =
-			candidates.length === 0 ||
-			!candidates.every((candidate) =>
-				isAllowedDeepInterviewArtifactPath(cwd, candidate),
-			);
-		if (blocked) {
-			const blockedPath = candidates.find(
-				(candidate) => !isAllowedDeepInterviewArtifactPath(cwd, candidate),
-			);
-			blockedDetail = describeImplementationToolBlock(
-				toolName,
-				blockedPath,
-				candidates.length,
-			);
-		}
-	}
+  if (toolName === "Bash") {
+    blocked = !isAllowedDeepInterviewBashWrite(cwd, command);
+    if (blocked) {
+      blockedDetail = buildDeepInterviewBashBlockedDetail(cwd, command);
+    }
+  } else if (
+    toolName === "mcp__omx_state__state_clear"
+    || (
+      toolName === "mcp__omx_state__state_write"
+      && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
+    )
+  ) {
+    blocked = true;
+    blockedDetail = `${toolName} would deactivate protected deep-interview planning state`;
+  } else if (DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+    const candidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    blocked = candidates.length === 0
+      || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
+    if (blocked) {
+      const blockedPath = candidates.find((candidate) => !isAllowedDeepInterviewArtifactPath(cwd, candidate));
+      blockedDetail = describeImplementationToolBlock(toolName, blockedPath, candidates.length);
+    }
+  }
 
-	if (!blocked) return null;
+  if (!blocked) return null;
 
-	const phase = formatPhase(
-		activeState.current_phase ?? activeState.currentPhase,
-		"planning",
-	);
-	return {
-		decision: "block",
-		reason: `Deep-interview is active (phase: ${phase}); implementation/write tools are blocked until an explicit handoff workflow is activated; ${blockedDetail}.`,
-		hookSpecificOutput: {
-			hookEventName: "PreToolUse",
-			additionalContext: `Deep-interview is requirements/spec mode. Treat detailed user answers as interview/spec material, not implicit implementation authorization. You may write only deep-interview artifacts under \`.omx/context/\`, \`.omx/interviews/\`, \`.omx/specs/\`, \`.omx/tmp/\`, or required \`.omx/state/\` files. To implement, first ask for or process an explicit transition such as \`$ralplan\`, \`$autopilot\`, ${formatExecutionHandoffList(cwd)}.`,
-		},
-	};
+  const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
+  return {
+    decision: "block",
+    reason: `Deep-interview is active (phase: ${phase}); implementation/write tools are blocked until an explicit handoff workflow is activated; ${blockedDetail}.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        `Deep-interview is requirements/spec mode. Treat detailed user answers as interview/spec material, not implicit implementation authorization. You may write only deep-interview artifacts under \`.omx/context/\`, \`.omx/interviews/\`, \`.omx/specs/\`, \`.omx/tmp/\`, or required \`.omx/state/\` files. To implement, first ask for or process an explicit transition such as \`$ralplan\`, \`$autopilot\`, ${formatExecutionHandoffList(cwd)}.`,
+    },
+  };
 }
 
-function blocksDeepInterviewImplementationWrite(
-	payload: CodexHookPayload,
-	cwd: string,
-): boolean {
-	const toolName = safeString(payload.tool_name).trim();
-	if (toolName === "Bash") {
-		return !isAllowedDeepInterviewBashWrite(
-			cwd,
-			readPreToolUseCommand(payload),
-		);
-	}
-	if (!DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) return false;
-	const candidates = collectImplementationToolPathCandidates(
-		payload,
-		toolName,
-		readPreToolUsePathCandidates(payload),
-	);
-	return (
-		candidates.length === 0 ||
-		!candidates.every((candidate) =>
-			isAllowedDeepInterviewArtifactPath(cwd, candidate),
-		)
-	);
+function blocksDeepInterviewImplementationWrite(payload: CodexHookPayload, cwd: string): boolean {
+  const toolName = safeString(payload.tool_name).trim();
+  if (toolName === "Bash") {
+    return !isAllowedDeepInterviewBashWrite(cwd, readPreToolUseCommand(payload));
+  }
+  if (!DEEP_INTERVIEW_IMPLEMENTATION_TOOL_NAMES.has(toolName)) return false;
+  const candidates = collectImplementationToolPathCandidates(
+    payload,
+    toolName,
+    readPreToolUsePathCandidates(payload),
+  );
+  return candidates.length === 0
+    || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate));
 }
 
 // Shared builder for the "live root session pointer owned by another session"
@@ -9574,127 +7348,103 @@ function blocksDeepInterviewImplementationWrite(
 // human-readable mode label and phase-description fragment; the decision,
 // structure, and guidance are identical.
 function buildRootPointerConflictBlock(
-	activeState: Record<string, unknown>,
-	planningModeLabel: string,
-	planningPhaseDescription: string,
+  activeState: Record<string, unknown>,
+  planningModeLabel: string,
+  planningPhaseDescription: string,
 ): Record<string, unknown> {
-	const phase = formatPhase(
-		activeState.current_phase ?? activeState.currentPhase,
-		"planning",
-	);
-	return {
-		decision: "block",
-		reason: `${planningModeLabel} is active in the live root session pointer (phase: ${phase}), but the current native session could not be authoritatively resolved to that owner; failing closed for planning-write protection.`,
-		hookSpecificOutput: {
-			hookEventName: "PreToolUse",
-			additionalContext:
-				`OMX detected a live root session pointer owned by another session while a ${planningPhaseDescription} is active. ` +
-				"This indicates collapsed session-root isolation. Do not perform implementation writes from this unresolved session; use the owning OMX session or restart with an isolated OMX_ROOT.",
-		},
-	};
+  const phase = formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning");
+  return {
+    decision: "block",
+    reason: `${planningModeLabel} is active in the live root session pointer (phase: ${phase}), but the current native session could not be authoritatively resolved to that owner; failing closed for planning-write protection.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        `OMX detected a live root session pointer owned by another session while a ${planningPhaseDescription} is active. `
+        + "This indicates collapsed session-root isolation. Do not perform implementation writes from this unresolved session; use the owning OMX session or restart with an isolated OMX_ROOT.",
+    },
+  };
 }
 
-function buildDeepInterviewRootPointerConflictBlock(
-	activeState: Record<string, unknown>,
-): Record<string, unknown> {
-	return buildRootPointerConflictBlock(
-		activeState,
-		"Deep-interview",
-		"deep-interview planning phase",
-	);
+function buildDeepInterviewRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
+  return buildRootPointerConflictBlock(activeState, "Deep-interview", "deep-interview planning phase");
 }
 
-function buildRalplanRootPointerConflictBlock(
-	activeState: Record<string, unknown>,
-): Record<string, unknown> {
-	const activeMode = safeString(activeState.mode).trim().toLowerCase();
-	const planningModeLabel =
-		activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
-	return buildRootPointerConflictBlock(
-		activeState,
-		planningModeLabel,
-		"ralplan/autopilot planning phase",
-	);
+function buildRalplanRootPointerConflictBlock(activeState: Record<string, unknown>): Record<string, unknown> {
+  const activeMode = safeString(activeState.mode).trim().toLowerCase();
+  const planningModeLabel = activeMode === "autopilot" ? "Autopilot planning" : "Ralplan";
+  return buildRootPointerConflictBlock(activeState, planningModeLabel, "ralplan/autopilot planning phase");
 }
 
 async function buildPlanningRootPointerConflictPreToolUseOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
-	rootState: SessionState | null,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  rootState: SessionState | null,
 ): Promise<Record<string, unknown> | null> {
-	const rootSessionId = safeString(rootState?.session_id).trim();
-	if (!rootSessionId) return null;
-	const ownerCwd = safeString(rootState?.cwd).trim() || cwd;
+  const rootSessionId = safeString(rootState?.session_id).trim();
+  if (!rootSessionId) return null;
+  const ownerCwd = safeString(rootState?.cwd).trim() || cwd;
 
-	const deepInterviewState = await readActiveDeepInterviewStateForPreToolUse(
-		ownerCwd,
-		stateDir,
-		rootSessionId,
-		"",
-	);
-	if (deepInterviewState) {
-		const conflictToolName = safeString(payload.tool_name).trim();
-		if (
-			conflictToolName === "mcp__omx_state__state_clear" ||
-			(conflictToolName === "mcp__omx_state__state_write" &&
-				isPlanningPhaseDeactivationPayload(
-					normalizeStateWriteClassificationPayload(
-						safeObject(payload.tool_input),
-					),
-				))
-		) {
-			return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
-		}
-		if (blocksDeepInterviewImplementationWrite(payload, cwd)) {
-			return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
-		}
-	}
+  const deepInterviewState = await readActiveDeepInterviewStateForPreToolUse(
+    ownerCwd,
+    stateDir,
+    rootSessionId,
+    "",
+  );
+  if (deepInterviewState) {
+    const conflictToolName = safeString(payload.tool_name).trim();
+    if (
+      conflictToolName === "mcp__omx_state__state_clear"
+      || (
+        conflictToolName === "mcp__omx_state__state_write"
+        && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
+      )
+    ) {
+      return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
+    }
+    if (blocksDeepInterviewImplementationWrite(payload, cwd)) {
+      return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
+    }
+  }
 
-	const ralplanState = await readActiveRalplanStateForPreToolUse(
-		ownerCwd,
-		stateDir,
-		rootSessionId,
-		"",
-	);
-	if (!ralplanState) return null;
+  const ralplanState = await readActiveRalplanStateForPreToolUse(
+    ownerCwd,
+    stateDir,
+    rootSessionId,
+    "",
+  );
+  if (!ralplanState) return null;
 
-	const toolName = safeString(payload.tool_name).trim();
-	let blocked = false;
-	if (toolName === "Bash") {
-		const command = readPreToolUseCommand(payload);
-		blocked =
-			commandEndsPlanningPhase(cwd, command) ||
-			!isAllowedRalplanBashWrite(cwd, command, ralplanState, rootSessionId);
-	} else if (
-		toolName === "mcp__omx_state__state_clear" ||
-		(toolName === "mcp__omx_state__state_write" &&
-			isPlanningPhaseDeactivationPayload(
-				normalizeStateWriteClassificationPayload(
-					safeObject(payload.tool_input),
-				),
-			))
-	) {
-		blocked = true;
-	} else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-		const toolPathCandidates = collectImplementationToolPathCandidates(
-			payload,
-			toolName,
-			readPreToolUsePathCandidates(payload),
-		);
-		blocked =
-			toolPathCandidates.length === 0 ||
-			toolPathCandidates.some(
-				(candidate) => !isAllowedRalplanArtifactPath(cwd, candidate),
-			);
-	}
+  const toolName = safeString(payload.tool_name).trim();
+  let blocked = false;
+  if (toolName === "Bash") {
+    const command = readPreToolUseCommand(payload);
+    blocked = commandEndsPlanningPhase(cwd, command)
+      || !isAllowedRalplanBashWrite(cwd, command, ralplanState, rootSessionId);
+  } else if (
+    toolName === "mcp__omx_state__state_clear"
+    || (
+      toolName === "mcp__omx_state__state_write"
+      && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
+    )
+  ) {
+    blocked = true;
+  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+    const toolPathCandidates = collectImplementationToolPathCandidates(
+      payload,
+      toolName,
+      readPreToolUsePathCandidates(payload),
+    );
+    blocked = toolPathCandidates.length === 0
+      || toolPathCandidates.some((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate));
+  }
 
-	return blocked ? buildRalplanRootPointerConflictBlock(ralplanState) : null;
+  return blocked ? buildRalplanRootPointerConflictBlock(ralplanState) : null;
 }
 
 interface ActiveConductorState {
-	mode: string;
-	phase: string;
+  mode: string;
+  phase: string;
 }
 
 async function hasTrustedTypedSubagentProvenanceForPreToolUse(
@@ -9711,8 +7461,7 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
 
   const payloadThreadId = readPayloadThreadId(payload);
   const trackedPayloadThread = payloadThreadId ? session.threads[payloadThreadId] : undefined;
-  const hasTrackedAdaptedTypedRole =
-    payloadThreadId !== ""
+  const hasTrackedAdaptedTypedRole = payloadThreadId !== ""
     && isTrustedSubagentThread(session, payloadThreadId)
     && trackedPayloadThread?.provenance_kind === OMX_ADAPTED_PROVENANCE
     && resolveInstalledRoleName(trackedPayloadThread.role ?? "") !== null;
@@ -9784,24 +7533,20 @@ async function hasTrustedTypedSubagentProvenanceForPreToolUse(
   return leaderIdentityAnchors.has(parentThreadId) || parentThreadId in session.threads;
 }
 
-function isActiveConductorModeState(
-	state: Record<string, unknown> | null,
-	mode: string,
-	sessionId: string,
-): boolean {
-	if (!state || state.active !== true) return false;
-	const stateMode = safeString(state.mode).trim();
-	if (stateMode && stateMode !== mode) return false;
-	const stateSessionId = safeString(state.session_id).trim();
-	if (sessionId && stateSessionId && stateSessionId !== sessionId) return false;
-	return isNonTerminalPhase(state.current_phase ?? state.currentPhase);
+function isActiveConductorModeState(state: Record<string, unknown> | null, mode: string, sessionId: string): boolean {
+  if (!state || state.active !== true) return false;
+  const stateMode = safeString(state.mode).trim();
+  if (stateMode && stateMode !== mode) return false;
+  const stateSessionId = safeString(state.session_id).trim();
+  if (sessionId && stateSessionId && stateSessionId !== sessionId) return false;
+  return isNonTerminalPhase(state.current_phase ?? state.currentPhase);
 }
 
 async function readActiveMainRootConductorStateForPreToolUse(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
-	resolvedSessionId?: string,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  resolvedSessionId?: string,
 ): Promise<ActiveConductorState | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const payloadSessionId = readPayloadSessionId(payload);
@@ -9816,3938 +7561,3070 @@ async function readActiveMainRootConductorStateForPreToolUse(
   if (!sessionId) return null;
   if (await hasTrustedTypedSubagentProvenanceForPreToolUse(payload, cwd, stateDir, sessionId, { allowUntypedProvenance: true })) return null;
 
-	const canonicalState = await readVisibleSkillActiveStateForStateDir(
-		stateDir,
-		sessionId,
-	);
-	if (!canonicalState) return null;
-	const activeEntries = listActiveSkills(canonicalState).filter((entry) =>
-		matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-	);
-	const hasActiveSkill = (skill: string): boolean =>
-		activeEntries.some((entry) => entry.skill === skill);
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  if (!canonicalState) return null;
+  const activeEntries = listActiveSkills(canonicalState).filter((entry) => (
+    matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  const hasActiveSkill = (skill: string): boolean => activeEntries.some((entry) => entry.skill === skill);
 
-	if (hasActiveSkill("autopilot")) {
-		const state = await readStopSessionPinnedState(
-			"autopilot-state.json",
-			cwd,
-			sessionId,
-			stateDir,
-		);
-		const childPhase = deriveAutopilotChildPhase(state);
-		const hasMatchingAutopilotEntry = activeEntries.some(
-			(entry) =>
-				entry.skill === "autopilot" &&
-				normalizeAutopilotPhase(
-					safeString(entry.phase).trim().toLowerCase(),
-				) === childPhase,
-		);
-		if (
-			state &&
-			childPhase &&
-			childPhase !== "deep-interview" &&
-			childPhase !== "ralplan" &&
-			childPhase !== "rework" &&
-			hasMatchingAutopilotEntry &&
-			isActiveConductorModeState(state, "autopilot", sessionId)
-		) {
-			return { mode: "autopilot", phase: childPhase };
-		}
-	}
+  if (hasActiveSkill("autopilot")) {
+    const state = await readStopSessionPinnedState("autopilot-state.json", cwd, sessionId, stateDir);
+    const childPhase = deriveAutopilotChildPhase(state);
+    const hasMatchingAutopilotEntry = activeEntries.some((entry) => (
+      entry.skill === "autopilot"
+      && normalizeAutopilotPhase(safeString(entry.phase).trim().toLowerCase()) === childPhase
+    ));
+    if (
+      state
+      && childPhase
+      && childPhase !== "deep-interview"
+      && childPhase !== "ralplan"
+      && childPhase !== "rework"
+      && hasMatchingAutopilotEntry
+      && isActiveConductorModeState(state, "autopilot", sessionId)
+    ) {
+      return { mode: "autopilot", phase: childPhase };
+    }
+  }
 
-	if (hasActiveSkill("ralph")) {
-		const state = await readStopSessionPinnedState(
-			"ralph-state.json",
-			cwd,
-			sessionId,
-			stateDir,
-		);
-		if (isActiveConductorModeState(state, "ralph", sessionId)) {
-			const phase =
-				safeString(state?.current_phase ?? state?.currentPhase) || "active";
-			if (phase.toLowerCase() !== "starting") return { mode: "ralph", phase };
-		}
-	}
+  if (hasActiveSkill("ralph")) {
+    const state = await readStopSessionPinnedState("ralph-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(state, "ralph", sessionId)) {
+      const phase = safeString(state?.current_phase ?? state?.currentPhase) || "active";
+      if (phase.toLowerCase() !== "starting") return { mode: "ralph", phase };
+    }
+  }
 
-	if (hasActiveSkill("ultragoal")) {
-		const state = await readStopSessionPinnedState(
-			"ultragoal-state.json",
-			cwd,
-			sessionId,
-			stateDir,
-		);
-		if (isActiveConductorModeState(state, "ultragoal", sessionId)) {
-			return {
-				mode: "ultragoal",
-				phase:
-					safeString(state?.current_phase ?? state?.currentPhase) || "active",
-			};
-		}
-	}
+  if (hasActiveSkill("ultragoal")) {
+    const state = await readStopSessionPinnedState("ultragoal-state.json", cwd, sessionId, stateDir);
+    if (isActiveConductorModeState(state, "ultragoal", sessionId)) {
+      return { mode: "ultragoal", phase: safeString(state?.current_phase ?? state?.currentPhase) || "active" };
+    }
+  }
 
-	if (hasActiveSkill("team") && !hasTeamWorkerEnvironment()) {
-		const teamStateForStop = await readTeamModeStateForStop(
-			cwd,
-			stateDir,
-			sessionId,
-			threadId,
-		);
-		const state = teamStateForStop?.state ?? null;
-		if (isActiveConductorModeState(state, "team", sessionId)) {
-			const teamName = safeString(state?.team_name).trim();
-			const phase = teamName
-				? ((await readTeamPhase(teamName, cwd).catch(() => null))
-						?.current_phase ?? state?.current_phase)
-				: state?.current_phase;
-			if (isNonTerminalPhase(phase))
-				return { mode: "team", phase: safeString(phase) || "active" };
-		}
-	}
+  if (hasActiveSkill("team") && !hasTeamWorkerEnvironment()) {
+    const teamStateForStop = await readTeamModeStateForStop(cwd, stateDir, sessionId, threadId);
+    const state = teamStateForStop?.state ?? null;
+    if (isActiveConductorModeState(state, "team", sessionId)) {
+      const teamName = safeString(state?.team_name).trim();
+      const phase = teamName ? (await readTeamPhase(teamName, cwd).catch(() => null))?.current_phase ?? state?.current_phase : state?.current_phase;
+      if (isNonTerminalPhase(phase)) return { mode: "team", phase: safeString(phase) || "active" };
+    }
+  }
 
-	return null;
+  return null;
 }
 
-function normalizeRepoRelativePath(
-	cwd: string,
-	rawPath: string,
-): string | null {
-	const candidate = rawPath.trim().replace(/^['"]|['"]$/g, "");
-	if (!candidate || isUnresolvedVariableTarget(candidate)) return null;
-	const absolute = isAbsolute(candidate)
-		? resolve(candidate)
-		: resolve(cwd, candidate);
-	let relativePath = relative(cwd, absolute).replace(/\\/g, "/");
-	if (!relativePath || relativePath === ".") return null;
-	if (relativePath.startsWith("../") || relativePath === "..") {
-		relativePath = candidate.replace(/\\/g, "/");
-	}
-	return relativePath.replace(/^\.\//, "");
+function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null {
+  const candidate = rawPath.trim().replace(/^['"]|['"]$/g, "");
+  if (!candidate || isUnresolvedVariableTarget(candidate)) return null;
+  const absolute = isAbsolute(candidate) ? resolve(candidate) : resolve(cwd, candidate);
+  let relativePath = relative(cwd, absolute).replace(/\\/g, "/");
+  if (!relativePath || relativePath === ".") return null;
+  if (relativePath.startsWith("../") || relativePath === "..") {
+    relativePath = candidate.replace(/\\/g, "/");
+  }
+  return relativePath.replace(/^\.\//, "");
 }
 
 function isAllowedConductorMetadataPath(cwd: string, rawPath: string): boolean {
-	const relativePath = normalizeRepoRelativePath(cwd, rawPath);
-	if (!relativePath) return false;
-	if (isProtectedPlanningStatePath(relativePath)) return false;
-	const artifactKind = classifyConductorArtifactKind(relativePath);
-	const actionKind = actionKindForConductorArtifact(artifactKind);
-	return authorizeConductorAction({
-		phase: "autopilot-supervision",
-		laneKind: "main-conductor",
-		actionKind,
-		artifactKind,
-	}).allowed;
+  const relativePath = normalizeRepoRelativePath(cwd, rawPath);
+  if (!relativePath) return false;
+  if (isProtectedPlanningStatePath(relativePath)) return false;
+  const artifactKind = classifyConductorArtifactKind(relativePath);
+  const actionKind = actionKindForConductorArtifact(artifactKind);
+  return authorizeConductorAction({
+    phase: "autopilot-supervision",
+    laneKind: "main-conductor",
+    actionKind,
+    artifactKind,
+  }).allowed;
 }
 
-function describeConductorBlockedWrite(
-	toolName: string,
-	blockedPath: string | undefined,
-	pathCount: number,
-): string {
-	if (pathCount === 0) {
-		const operationClass = isApplyPatchToolName(toolName)
-			? "apply_patch target extraction failed"
-			: `${toolName} path`;
-		return `${operationClass} target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata`;
-	}
-	const operationClass = isApplyPatchToolName(toolName)
-		? "apply_patch target"
-		: `${toolName} path`;
-	return `${operationClass} target ${blockedPath ?? "<unresolved>"} is not workflow state/ledger/mailbox/handoff metadata`;
+function describeConductorBlockedWrite(toolName: string, blockedPath: string | undefined, pathCount: number): string {
+  if (pathCount === 0) {
+    const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target extraction failed" : `${toolName} path`;
+    return `${operationClass} target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata`;
+  }
+  const operationClass = isApplyPatchToolName(toolName) ? "apply_patch target" : `${toolName} path`;
+  return `${operationClass} target ${blockedPath ?? "<unresolved>"} is not workflow state/ledger/mailbox/handoff metadata`;
 }
 
 const CONDUCTOR_BASH_MUTATION_COMMANDS = new Set([
-	"cp",
-	"mv",
-	"rm",
-	"touch",
-	"mkdir",
-	"rmdir",
-	"install",
-	"ln",
-	"chmod",
-	"chown",
-	"chgrp",
-	"truncate",
-	"sed",
-	"perl",
-	"dd",
-	"rsync",
+  "cp",
+  "mv",
+  "rm",
+  "touch",
+  "mkdir",
+  "rmdir",
+  "install",
+  "ln",
+  "chmod",
+  "chown",
+  "chgrp",
+  "truncate",
+  "sed",
+  "perl",
+  "dd",
+  "rsync",
 ]);
 
-const CONDUCTOR_BASH_TRANSPARENT_WRAPPERS = new Set(["builtin", "noglob"]);
+const CONDUCTOR_BASH_TRANSPARENT_WRAPPERS = new Set([
+  "builtin",
+  "noglob",
+]);
 
-const CONDUCTOR_BASH_DOWNLOADER_COMMANDS = new Set(["curl", "wget"]);
+const CONDUCTOR_BASH_DOWNLOADER_COMMANDS = new Set([
+  "curl",
+  "wget",
+]);
 
 const CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS = new Set([
-	"if",
-	"then",
-	"else",
-	"elif",
-	"fi",
-	"for",
-	"while",
-	"until",
-	"do",
-	"done",
-	"case",
-	"esac",
-	"in",
-	"{",
-	"}",
-	"(",
-	")",
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "for",
+  "while",
+  "until",
+  "do",
+  "done",
+  "case",
+  "esac",
+  "in",
+  "{",
+  "}",
+  "(",
+  ")",
 ]);
 const CONDUCTOR_BASH_OPTIONS_WITH_VALUES = new Set([
-	"-S",
-	"--suffix",
-	"-t",
-	"--target-directory",
-	"-m",
-	"--mode",
-	"-o",
-	"--owner",
-	"-g",
-	"--group",
-	"--reference",
-	"--preserve",
-	"--size",
-	"-if",
-	"if",
-	"-of",
-	"of",
+  "-S",
+  "--suffix",
+  "-t",
+  "--target-directory",
+  "-m",
+  "--mode",
+  "-o",
+  "--owner",
+  "-g",
+  "--group",
+  "--reference",
+  "--preserve",
+  "--size",
+  "-if",
+  "if",
+  "-of",
+  "of",
 ]);
 
+
 interface ConductorBashMutation {
-	command: string;
-	targets: string[];
+  command: string;
+  targets: string[];
 }
 
 interface ConductorInterpreterWrite {
-	runtime: string;
-	targets: string[];
-	unresolved: boolean;
+  runtime: string;
+  targets: string[];
+  unresolved: boolean;
 }
 
-function extractConductorInterpreterWrites(
-	command: string,
-): ConductorInterpreterWrite[] {
-	const writes: ConductorInterpreterWrite[] = [];
-	const scanCommand = normalizeShellLineContinuations(command);
-	let recognizedPythonOpenWrites = 0;
-	let recognizedPythonPathMutations = 0;
-	let recognizedPythonShutilMutations = 0;
+function extractConductorInterpreterWrites(command: string): ConductorInterpreterWrite[] {
+  const writes: ConductorInterpreterWrite[] = [];
+  const scanCommand = normalizeShellLineContinuations(command);
+  let recognizedPythonOpenWrites = 0;
+  let recognizedPythonPathMutations = 0;
+  let recognizedPythonShutilMutations = 0;
 
-	for (const match of scanCommand.matchAll(
-		/\bnode\b[\s\S]{0,520}\b(?:appendFileSync|writeFileSync|appendFile|writeFile|createWriteStream)\s*\(\s*(["'])([^"']+)\1/g,
-	)) {
-		const target = safeString(match[2]).trim();
-		writes.push({
-			runtime: "node",
-			targets: target ? [target] : [],
-			unresolved: !target,
-		});
-	}
-	if (
-		/\bnode\b[\s\S]{0,520}\b(?:appendFileSync|writeFileSync|appendFile|writeFile|createWriteStream)\s*\(/.test(
-			scanCommand,
-		) &&
-		!writes.some((write) => write.runtime === "node")
-	) {
-		writes.push({ runtime: "node", targets: [], unresolved: true });
-	}
+  for (const match of scanCommand.matchAll(/\bnode\b[\s\S]{0,520}\b(?:appendFileSync|writeFileSync|appendFile|writeFile|createWriteStream)\s*\(\s*(["'])([^"']+)\1/g)) {
+    const target = safeString(match[2]).trim();
+    writes.push({ runtime: "node", targets: target ? [target] : [], unresolved: !target });
+  }
+  if (/\bnode\b[\s\S]{0,520}\b(?:appendFileSync|writeFileSync|appendFile|writeFile|createWriteStream)\s*\(/.test(scanCommand)
+    && !writes.some((write) => write.runtime === "node")) {
+    writes.push({ runtime: "node", targets: [], unresolved: true });
+  }
 
-	for (const match of scanCommand.matchAll(
-		/\bpython3?\b[\s\S]{0,520}\bopen\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']*[wax+][^"']*)\3/g,
-	)) {
-		const target = safeString(match[2]).trim();
-		writes.push({
-			runtime: "python",
-			targets: target ? [target] : [],
-			unresolved: !target,
-		});
-		recognizedPythonOpenWrites += 1;
-	}
-	for (const match of scanCommand.matchAll(
-		/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/g,
-	)) {
-		const target = safeString(match[2]).trim();
-		writes.push({
-			runtime: "python",
-			targets: target ? [target] : [],
-			unresolved: !target,
-		});
-		recognizedPythonPathMutations += 1;
-	}
-	for (const match of scanCommand.matchAll(
-		/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*mkdir\s*\(/g,
-	)) {
-		const target = safeString(match[2]).trim();
-		writes.push({
-			runtime: "python",
-			targets: target ? [target] : [],
-			unresolved: !target,
-		});
-		recognizedPythonPathMutations += 1;
-	}
-	for (const match of scanCommand.matchAll(
-		/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']+)\3/g,
-	)) {
-		const target = safeString(match[4]).trim();
-		writes.push({
-			runtime: "python",
-			targets: target ? [target] : [],
-			unresolved: !target,
-		});
-		recognizedPythonShutilMutations += 1;
-	}
-	const hasPythonRuntime = /\bpython3?\b/.test(scanCommand);
-	const pythonOpenWriteCalls = hasPythonRuntime
-		? [
-				...scanCommand.matchAll(
-					/\bopen\s*\([^\n;)]*,\s*["'][^"']*[wax+][^"']*["']/g,
-				),
-			].length
-		: 0;
-	const pythonPathMutationCalls = hasPythonRuntime
-		? [
-				...scanCommand.matchAll(
-					/(?:^|[\n;])\s*(?:\([^\n;#]*\bPath\s*\([^\n;#]*\)[^\n;#]*\)|\bPath\s*\([^\n;#]*\))\s*\.\s*(?:write_text|write_bytes|mkdir)\s*\(/g,
-				),
-			].length
-		: 0;
-	const pythonShutilMutationCalls = hasPythonRuntime
-		? [
-				...scanCommand.matchAll(
-					/\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(/g,
-				),
-			].length
-		: 0;
-	if (
-		pythonOpenWriteCalls > recognizedPythonOpenWrites ||
-		pythonPathMutationCalls > recognizedPythonPathMutations ||
-		pythonShutilMutationCalls > recognizedPythonShutilMutations
-	) {
-		writes.push({ runtime: "python", targets: [], unresolved: true });
-	}
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bopen\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']*[wax+][^"']*)\3/g)) {
+    const target = safeString(match[2]).trim();
+    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonOpenWrites += 1;
+  }
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/g)) {
+    const target = safeString(match[2]).trim();
+    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonPathMutations += 1;
+  }
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bPath\s*\(\s*(["'])([^"']+)\1\s*\)\s*\.\s*mkdir\s*\(/g)) {
+    const target = safeString(match[2]).trim();
+    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonPathMutations += 1;
+  }
+  for (const match of scanCommand.matchAll(/\bpython3?\b[\s\S]{0,520}\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(\s*(["'])([^"']+)\1\s*,\s*(["'])([^"']+)\3/g)) {
+    const target = safeString(match[4]).trim();
+    writes.push({ runtime: "python", targets: target ? [target] : [], unresolved: !target });
+    recognizedPythonShutilMutations += 1;
+  }
+  const hasPythonRuntime = /\bpython3?\b/.test(scanCommand);
+  const pythonOpenWriteCalls = hasPythonRuntime
+    ? [...scanCommand.matchAll(/\bopen\s*\([^\n;)]*,\s*["'][^"']*[wax+][^"']*["']/g)].length
+    : 0;
+  const pythonPathMutationCalls = hasPythonRuntime
+    ? [...scanCommand.matchAll(/(?:^|[\n;])\s*(?:\([^\n;#]*\bPath\s*\([^\n;#]*\)[^\n;#]*\)|\bPath\s*\([^\n;#]*\))\s*\.\s*(?:write_text|write_bytes|mkdir)\s*\(/g)].length
+    : 0;
+  const pythonShutilMutationCalls = hasPythonRuntime
+    ? [...scanCommand.matchAll(/\bshutil\s*\.\s*(?:copyfile|copy|copy2|copytree|move)\s*\(/g)].length
+    : 0;
+  if (
+    pythonOpenWriteCalls > recognizedPythonOpenWrites
+    || pythonPathMutationCalls > recognizedPythonPathMutations
+    || pythonShutilMutationCalls > recognizedPythonShutilMutations
+  ) {
+    writes.push({ runtime: "python", targets: [], unresolved: true });
+  }
 
-	return writes;
+  return writes;
 }
 
 function hasUnresolvedConductorInterpreterWrite(command: string): boolean {
-	return extractConductorInterpreterWrites(command).some(
-		(write) => write.unresolved || write.targets.length === 0,
-	);
+  return extractConductorInterpreterWrites(command).some((write) => write.unresolved || write.targets.length === 0);
 }
 
 function commandNameFromShellWord(word: string): string {
-	const base = word.trim().split(/[\\/]/).pop() ?? word.trim();
-	return base.toLowerCase();
+  const base = word.trim().split(/[\\/]/).pop() ?? word.trim();
+  return base.toLowerCase();
 }
 
 function isShellCommandSeparator(word: string): boolean {
-	return (
-		word === "&&" ||
-		word === "||" ||
-		word === ";" ||
-		word === "&" ||
-		word === "|" ||
-		word === "|&"
-	);
+  return word === "&&" || word === "||" || word === ";" || word === "&" || word === "|" || word === "|&";
 }
 
 function isShellGroupingSyntaxWord(word: string): boolean {
-	return word === "(" || word === ")" || word === "{" || word === "}";
+  return word === "(" || word === ")" || word === "{" || word === "}";
 }
 
 function isShellCommandTerminatorOrGroupClose(word: string): boolean {
-	return isShellCommandSeparator(word) || word === ")" || word === "}";
+  return isShellCommandSeparator(word) || word === ")" || word === "}";
 }
 
 function commandUsesTargetDirectoryOption(commandName: string): boolean {
-	return (
-		commandName === "cp" ||
-		commandName === "mv" ||
-		commandName === "install" ||
-		commandName === "ln"
-	);
+  return commandName === "cp" || commandName === "mv" || commandName === "install" || commandName === "ln";
 }
 function isEnvironmentAssignmentWord(word: string): boolean {
-	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
 
-function findSudoDispatchOperandIndex(
-	words: string[],
-	startIndex: number,
-): number | null {
-	for (let index = startIndex; index < words.length; index += 1) {
-		const token = words[index] ?? "";
-		if (!token || token === "--") continue;
-		if (isShellAssignmentWord(token)) continue;
-		if (
-			token === "-u" ||
-			token === "--user" ||
-			token === "-g" ||
-			token === "--group" ||
-			token === "-h" ||
-			token === "--host" ||
-			token === "-p" ||
-			token === "--prompt" ||
-			token === "-C" ||
-			token === "--close-from"
-		) {
-			index += 1;
-			continue;
-		}
-		if (
-			token.startsWith("--user=") ||
-			token.startsWith("--group=") ||
-			token.startsWith("--host=") ||
-			token.startsWith("--prompt=") ||
-			token.startsWith("--close-from=") ||
-			/^-[ughpC].+/.test(token)
-		) {
-			continue;
-		}
-		if (token.startsWith("-")) continue;
-		return index;
-	}
-	return null;
+function findSudoDispatchOperandIndex(words: string[], startIndex: number): number | null {
+  for (let index = startIndex; index < words.length; index += 1) {
+    const token = words[index] ?? "";
+    if (!token || token === "--") continue;
+    if (isShellAssignmentWord(token)) continue;
+    if (
+      token === "-u"
+      || token === "--user"
+      || token === "-g"
+      || token === "--group"
+      || token === "-h"
+      || token === "--host"
+      || token === "-p"
+      || token === "--prompt"
+      || token === "-C"
+      || token === "--close-from"
+    ) {
+      index += 1;
+      continue;
+    }
+    if (
+      token.startsWith("--user=")
+      || token.startsWith("--group=")
+      || token.startsWith("--host=")
+      || token.startsWith("--prompt=")
+      || token.startsWith("--close-from=")
+      || /^-[ughpC].+/.test(token)
+    ) {
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    return index;
+  }
+  return null;
 }
 
-function findConductorWrapperOperandIndex(
-	commandName: string,
-	words: string[],
-	startIndex: number,
-): number | null | undefined {
-	switch (commandName) {
-		case "env":
-			return findEnvDispatchOperandIndex(words, startIndex);
-		case "command":
-			return findCommandDispatchOperandIndex(words, startIndex);
-		case "exec":
-			return findExecDispatchOperandIndex(words, startIndex);
-		case "sudo":
-			return findSudoDispatchOperandIndex(words, startIndex);
-		case "nohup":
-			return findCommandDispatchOperandIndex(words, startIndex);
-		case "time":
-			return findTimeDispatchOperandIndex(words, startIndex);
-		case "timeout":
-			return findTimeoutDispatchOperandIndex(words, startIndex);
-		case "nice":
-			return findNiceDispatchOperandIndex(words, startIndex);
-		case "stdbuf":
-			return findStdbufDispatchOperandIndex(words, startIndex);
-		default:
-			return undefined;
-	}
+function findConductorWrapperOperandIndex(commandName: string, words: string[], startIndex: number): number | null | undefined {
+  switch (commandName) {
+    case "env":
+      return findEnvDispatchOperandIndex(words, startIndex);
+    case "command":
+      return findCommandDispatchOperandIndex(words, startIndex);
+    case "exec":
+      return findExecDispatchOperandIndex(words, startIndex);
+    case "sudo":
+      return findSudoDispatchOperandIndex(words, startIndex);
+    case "nohup":
+      return findCommandDispatchOperandIndex(words, startIndex);
+    case "time":
+      return findTimeDispatchOperandIndex(words, startIndex);
+    case "timeout":
+      return findTimeoutDispatchOperandIndex(words, startIndex);
+    case "nice":
+      return findNiceDispatchOperandIndex(words, startIndex);
+    case "stdbuf":
+      return findStdbufDispatchOperandIndex(words, startIndex);
+    default:
+      return undefined;
+  }
 }
 
-function isConductorDestinationOnlyMutationCommand(
-	commandName: string,
-): boolean {
-	return (
-		commandName === "cp" ||
-		commandName === "install" ||
-		commandName === "ln" ||
-		commandName === "rsync"
-	);
+function isConductorDestinationOnlyMutationCommand(commandName: string): boolean {
+  return commandName === "cp" || commandName === "install" || commandName === "ln" || commandName === "rsync";
 }
 
-function isConductorInstallDirectoryMode(
-	words: string[],
-	commandIndex: number,
-): boolean {
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
-		if (word === "-d" || word === "--directory") return true;
-		if (word.startsWith("-") && !word.startsWith("--") && word.includes("d"))
-			return true;
-	}
-	return false;
+function isConductorInstallDirectoryMode(words: string[], commandIndex: number): boolean {
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (word === "-d" || word === "--directory") return true;
+    if (word.startsWith("-") && !word.startsWith("--") && word.includes("d")) return true;
+  }
+  return false;
 }
 function collectConductorDownloaderOutputTargets(
-	commandName: string,
-	words: string[],
-	commandIndex: number,
+  commandName: string,
+  words: string[],
+  commandIndex: number,
 ): { sawOutputFlag: boolean; targets: string[] } {
-	const targets: string[] = [];
-	const explicitCurlTargets: string[] = [];
-	let sawOutputFlag = false;
-	let sawCurlRemoteName = false;
-	const curlOutputDirs: string[] = [];
-	const curlShortOptionsWithArgument = new Set("AbcCdDeEFHhKmMoPQrTuwxXyYz");
+  const targets: string[] = [];
+  const explicitCurlTargets: string[] = [];
+  let sawOutputFlag = false;
+  let sawCurlRemoteName = false;
+  const curlOutputDirs: string[] = [];
+  const curlShortOptionsWithArgument = new Set("AbcCdDeEFHhKmMoPQrTuwxXyYz");
 
-	const isCurlRemoteNameWord = (word: string): boolean => {
-		if (word === "--remote-name" || word === "--remote-name-all") return true;
-		if (!word.startsWith("-") || word.startsWith("--")) return false;
+  const isCurlRemoteNameWord = (word: string): boolean => {
+    if (word === "--remote-name" || word === "--remote-name-all") return true;
+    if (!word.startsWith("-") || word.startsWith("--")) return false;
 
-		for (const option of word.slice(1)) {
-			if (option === "O") return true;
-			if (curlShortOptionsWithArgument.has(option)) return false;
-		}
-		return false;
-	};
+    for (const option of word.slice(1)) {
+      if (option === "O") return true;
+      if (curlShortOptionsWithArgument.has(option)) return false;
+    }
+    return false;
+  };
 
-	const pushTarget = (rawTarget: string): void => {
-		const target = safeString(rawTarget).trim();
-		if (!target) return;
-		if (commandName === "curl") explicitCurlTargets.push(target);
-		else targets.push(target);
-	};
+  const pushTarget = (rawTarget: string): void => {
+    const target = safeString(rawTarget).trim();
+    if (!target) return;
+    if (commandName === "curl") explicitCurlTargets.push(target);
+    else targets.push(target);
+  };
 
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
-		if (isEnvironmentAssignmentWord(word)) continue;
-		if (word === "--") continue;
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
+    if (word === "--") continue;
 
-		const inlineCurlOutput =
-			commandName === "curl" ? word.match(/^--output=(.+)$/) : null;
-		const inlineWgetOutput =
-			commandName === "wget"
-				? word.match(/^--(?:output-document|output-file|append-output)=(.+)$/)
-				: null;
-		const inlineWgetDirectoryPrefix =
-			commandName === "wget" ? word.match(/^--directory-prefix=(.+)$/) : null;
-		const inlineCurlOutputDir =
-			commandName === "curl" ? word.match(/^--output-dir=(.+)$/) : null;
-		const inlineTarget =
-			inlineCurlOutput?.[1] ??
-			inlineWgetOutput?.[1] ??
-			inlineWgetDirectoryPrefix?.[1];
-		if (inlineTarget !== undefined) {
-			sawOutputFlag = true;
-			pushTarget(inlineTarget);
-			continue;
-		}
-		if (inlineCurlOutputDir?.[1] !== undefined) {
-			curlOutputDirs.push(inlineCurlOutputDir[1]);
-			continue;
-		}
+    const inlineCurlOutput = commandName === "curl" ? word.match(/^--output=(.+)$/) : null;
+    const inlineWgetOutput = commandName === "wget" ? word.match(/^--(?:output-document|output-file|append-output)=(.+)$/) : null;
+    const inlineWgetDirectoryPrefix = commandName === "wget" ? word.match(/^--directory-prefix=(.+)$/) : null;
+    const inlineCurlOutputDir = commandName === "curl" ? word.match(/^--output-dir=(.+)$/) : null;
+    const inlineTarget = inlineCurlOutput?.[1] ?? inlineWgetOutput?.[1] ?? inlineWgetDirectoryPrefix?.[1];
+    if (inlineTarget !== undefined) {
+      sawOutputFlag = true;
+      pushTarget(inlineTarget);
+      continue;
+    }
+    if (inlineCurlOutputDir?.[1] !== undefined) {
+      curlOutputDirs.push(inlineCurlOutputDir[1]);
+      continue;
+    }
 
-		if (commandName === "curl" && isCurlRemoteNameWord(word)) {
-			sawCurlRemoteName = true;
-			continue;
-		}
-		if (commandName === "curl" && word.startsWith("-o") && word.length > 2) {
-			sawOutputFlag = true;
-			pushTarget(word.slice(2));
-			continue;
-		}
-		if (
-			commandName === "wget" &&
-			(word.startsWith("-O") ||
-				word.startsWith("-o") ||
-				word.startsWith("-a")) &&
-			word.length > 2
-		) {
-			sawOutputFlag = true;
-			pushTarget(word.slice(2));
-			continue;
-		}
+    if (commandName === "curl" && isCurlRemoteNameWord(word)) {
+      sawCurlRemoteName = true;
+      continue;
+    }
+    if (commandName === "curl" && word.startsWith("-o") && word.length > 2) {
+      sawOutputFlag = true;
+      pushTarget(word.slice(2));
+      continue;
+    }
+    if (commandName === "wget" && (word.startsWith("-O") || word.startsWith("-o") || word.startsWith("-a")) && word.length > 2) {
+      sawOutputFlag = true;
+      pushTarget(word.slice(2));
+      continue;
+    }
 
-		const separateOutputFlag =
-			(commandName === "curl" &&
-				(word === "-o" || word === "--output" || word === "--append-output")) ||
-			(commandName === "wget" &&
-				(word === "-O" ||
-					word === "-o" ||
-					word === "-a" ||
-					word === "--output-document" ||
-					word === "--output-file" ||
-					word === "--append-output" ||
-					word === "-P" ||
-					word === "--directory-prefix"));
-		if (!separateOutputFlag) {
-			if (commandName === "curl" && word === "--output-dir") {
-				const nextWord = words[index + 1] ?? "";
-				if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
-					curlOutputDirs.push(nextWord);
-					index += 1;
-				}
-			}
-			continue;
-		}
+    const separateOutputFlag = (commandName === "curl" && (word === "-o" || word === "--output" || word === "--append-output"))
+      || (commandName === "wget" && (word === "-O" || word === "-o" || word === "-a" || word === "--output-document" || word === "--output-file" || word === "--append-output" || word === "-P" || word === "--directory-prefix"));
+    if (!separateOutputFlag) {
+      if (commandName === "curl" && word === "--output-dir") {
+        const nextWord = words[index + 1] ?? "";
+        if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
+          curlOutputDirs.push(nextWord);
+          index += 1;
+        }
+      }
+      continue;
+    }
 
-		sawOutputFlag = true;
-		const nextWord = words[index + 1] ?? "";
-		if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
-			pushTarget(nextWord);
-			index += 1;
-		}
-	}
+    sawOutputFlag = true;
+    const nextWord = words[index + 1] ?? "";
+    if (nextWord && !isShellCommandTerminatorOrGroupClose(nextWord)) {
+      pushTarget(nextWord);
+      index += 1;
+    }
+  }
 
-	if (commandName === "curl" && sawCurlRemoteName) {
-		sawOutputFlag = true;
-		targets.push(...(curlOutputDirs.length > 0 ? curlOutputDirs : ["."]));
-	}
-	if (commandName === "curl" && explicitCurlTargets.length > 0) {
-		const outputDir = curlOutputDirs[curlOutputDirs.length - 1];
-		const effectiveTargets = outputDir
-			? explicitCurlTargets.map((target) =>
-					isAbsolute(target) ? target : join(outputDir, target),
-				)
-			: explicitCurlTargets;
-		targets.push(...effectiveTargets);
-	}
+  if (commandName === "curl" && sawCurlRemoteName) {
+    sawOutputFlag = true;
+    targets.push(...(curlOutputDirs.length > 0 ? curlOutputDirs : ["."]));
+  }
+  if (commandName === "curl" && explicitCurlTargets.length > 0) {
+    const outputDir = curlOutputDirs[curlOutputDirs.length - 1];
+    const effectiveTargets = outputDir
+      ? explicitCurlTargets.map((target) => (isAbsolute(target) ? target : join(outputDir, target)))
+      : explicitCurlTargets;
+    targets.push(...effectiveTargets);
+  }
 
-	return { sawOutputFlag, targets };
+  return { sawOutputFlag, targets };
 }
 
 function isConductorSedInPlaceOption(word: string): boolean {
-	return (
-		word === "-i" ||
-		word === "--in-place" ||
-		word.startsWith("-i") ||
-		word.startsWith("--in-place=") ||
-		/^-[^-]*i/.test(word)
-	);
+  return word === "-i" || word === "--in-place" || word.startsWith("-i") || word.startsWith("--in-place=") || /^-[^-]*i/.test(word);
 }
 
-function collectConductorSedTargets(
-	words: string[],
-	commandIndex: number,
-): string[] | null {
-	const targets: string[] = [];
-	let sawInPlace = false;
-	let sawExplicitScript = false;
-	let consumedImplicitScript = false;
+function collectConductorSedTargets(words: string[], commandIndex: number): string[] | null {
+  const targets: string[] = [];
+  let sawInPlace = false;
+  let sawExplicitScript = false;
+  let consumedImplicitScript = false;
 
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
-		if (isEnvironmentAssignmentWord(word)) continue;
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
 
-		if (word === "--") {
-			consumedImplicitScript = true;
-			continue;
-		}
-		if (isConductorSedInPlaceOption(word)) {
-			sawInPlace = true;
-			continue;
-		}
-		if (
-			word === "-e" ||
-			word === "--expression" ||
-			word === "-f" ||
-			word === "--file"
-		) {
-			sawExplicitScript = true;
-			index += 1;
-			continue;
-		}
-		if (
-			word.startsWith("-e") ||
-			word.startsWith("--expression=") ||
-			word.startsWith("-f") ||
-			word.startsWith("--file=")
-		) {
-			sawExplicitScript = true;
-			continue;
-		}
-		if (word.startsWith("-")) continue;
+    if (word === "--") {
+      consumedImplicitScript = true;
+      continue;
+    }
+    if (isConductorSedInPlaceOption(word)) {
+      sawInPlace = true;
+      continue;
+    }
+    if (word === "-e" || word === "--expression" || word === "-f" || word === "--file") {
+      sawExplicitScript = true;
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-e") || word.startsWith("--expression=") || word.startsWith("-f") || word.startsWith("--file=")) {
+      sawExplicitScript = true;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
 
-		if (!sawExplicitScript && !consumedImplicitScript) {
-			consumedImplicitScript = true;
-			continue;
-		}
-		targets.push(word);
-	}
+    if (!sawExplicitScript && !consumedImplicitScript) {
+      consumedImplicitScript = true;
+      continue;
+    }
+    targets.push(word);
+  }
 
-	return sawInPlace ? targets : null;
+  return sawInPlace ? targets : null;
 }
 
-function collectConductorPerlTargets(
-	words: string[],
-	commandIndex: number,
-): string[] | null {
-	const targets: string[] = [];
-	let sawInPlace = false;
+function collectConductorPerlTargets(words: string[], commandIndex: number): string[] | null {
+  const targets: string[] = [];
+  let sawInPlace = false;
 
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
-		if (isEnvironmentAssignmentWord(word)) continue;
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (isEnvironmentAssignmentWord(word)) continue;
 
-		if (word === "--") continue;
-		if (word === "-i" || word.startsWith("-i") || /^-[^-]*i/.test(word)) {
-			sawInPlace = true;
-			continue;
-		}
-		if (word === "-e") {
-			index += 1;
-			continue;
-		}
-		if (word.startsWith("-e") || /^-[^-]*e/.test(word)) continue;
-		if (word.startsWith("-")) continue;
+    if (word === "--") continue;
+    if (word === "-i" || word.startsWith("-i") || /^-[^-]*i/.test(word)) {
+      sawInPlace = true;
+      continue;
+    }
+    if (word === "-e") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-e") || /^-[^-]*e/.test(word)) continue;
+    if (word.startsWith("-")) continue;
 
-		targets.push(word);
-	}
+    targets.push(word);
+  }
 
-	return sawInPlace ? targets : null;
+  return sawInPlace ? targets : null;
 }
 
 const CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES = new Set([
-	"--arg-file",
-	"--delimiter",
-	"--max-args",
-	"--max-chars",
-	"--max-lines",
-	"--max-procs",
-	"--process-slot-var",
+  "--arg-file",
+  "--delimiter",
+  "--max-args",
+  "--max-chars",
+  "--max-lines",
+  "--max-procs",
+  "--process-slot-var",
 ]);
 
-const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES = new Set([
-	"a",
-	"d",
-	"E",
-	"I",
-	"L",
-	"n",
-	"P",
-	"s",
-]);
-const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES = new Set([
-	"e",
-	"i",
-	"l",
-]);
+const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES = new Set(["a", "d", "E", "I", "L", "n", "P", "s"]);
+const CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES = new Set(["e", "i", "l"]);
 
-function conductorXargsOptionValueWordCount(
-	words: string[],
-	optionIndex: number,
-): number {
-	const word = words[optionIndex] ?? "";
-	if (!word.startsWith("-") || word === "-") return 0;
+function conductorXargsOptionValueWordCount(words: string[], optionIndex: number): number {
+  const word = words[optionIndex] ?? "";
+  if (!word.startsWith("-") || word === "-") return 0;
 
-	if (word.startsWith("--")) {
-		const [option, inlineValue] = word.split("=", 2);
-		return CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES.has(option) &&
-			inlineValue === undefined
-			? 1
-			: 0;
-	}
+  if (word.startsWith("--")) {
+    const [option, inlineValue] = word.split("=", 2);
+    return CONDUCTOR_XARGS_LONG_OPTIONS_WITH_REQUIRED_VALUES.has(option) && inlineValue === undefined ? 1 : 0;
+  }
 
-	const shortOptions = word.slice(1);
-	for (let offset = 0; offset < shortOptions.length; offset += 1) {
-		const option = shortOptions[offset] ?? "";
-		if (CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES.has(option)) {
-			if (offset < shortOptions.length - 1) return 0;
-			return option === "I" &&
-				(words[optionIndex + 1] ?? "") === "{" &&
-				(words[optionIndex + 2] ?? "") === "}"
-				? 2
-				: 1;
-		}
-		if (CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES.has(option))
-			return 0;
-	}
+  const shortOptions = word.slice(1);
+  for (let offset = 0; offset < shortOptions.length; offset += 1) {
+    const option = shortOptions[offset] ?? "";
+    if (CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_REQUIRED_VALUES.has(option)) {
+      if (offset < shortOptions.length - 1) return 0;
+      return option === "I" && (words[optionIndex + 1] ?? "") === "{" && (words[optionIndex + 2] ?? "") === "}" ? 2 : 1;
+    }
+    if (CONDUCTOR_XARGS_SHORT_OPTIONS_WITH_OPTIONAL_ATTACHED_VALUES.has(option)) return 0;
+  }
 
-	return 0;
+  return 0;
 }
 
-function collectConductorXargsMutationTargets(
-	words: string[],
-	commandIndex: number,
-): string[] | null {
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
-		if (word === "--") continue;
-		if (word.startsWith("-")) {
-			index += conductorXargsOptionValueWordCount(words, index);
-			continue;
-		}
-		let commandWordIndex = index;
-		for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
-			const commandName = commandNameFromShellWord(
-				words[commandWordIndex] ?? "",
-			);
-			if (
-				CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName) ||
-				CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)
-			)
-				return [];
-			const wrapperOperandIndex = findConductorWrapperOperandIndex(
-				commandName,
-				words,
-				commandWordIndex + 1,
-			);
-			if (wrapperOperandIndex === undefined) return null;
-			if (wrapperOperandIndex === null) return [];
-			commandWordIndex = wrapperOperandIndex;
-		}
-		return [];
-	}
-	return null;
+function collectConductorXargsMutationTargets(words: string[], commandIndex: number): string[] | null {
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (word === "--") continue;
+    if (word.startsWith("-")) {
+      index += conductorXargsOptionValueWordCount(words, index);
+      continue;
+    }
+    let commandWordIndex = index;
+    for (let unwrapCount = 0; unwrapCount < 8; unwrapCount += 1) {
+      const commandName = commandNameFromShellWord(words[commandWordIndex] ?? "");
+      if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName) || CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) return [];
+      const wrapperOperandIndex = findConductorWrapperOperandIndex(commandName, words, commandWordIndex + 1);
+      if (wrapperOperandIndex === undefined) return null;
+      if (wrapperOperandIndex === null) return [];
+      commandWordIndex = wrapperOperandIndex;
+    }
+    return [];
+  }
+  return null;
 }
 
-function collectConductorMutationCommandTargets(
-	commandName: string,
-	words: string[],
-	commandIndex: number,
-): string[] | null {
-	const targets: string[] = [];
-	const positionalTargets: string[] = [];
-	const targetDirectoryTargets: string[] = [];
-	let sawTargetDirectory = false;
-	let positionalCount = 0;
-	let rsyncRemovesSourceFiles = false;
-	if (commandName === "sed")
-		return collectConductorSedTargets(words, commandIndex);
-	if (commandName === "perl")
-		return collectConductorPerlTargets(words, commandIndex);
-	const installDirectoryMode =
-		commandName === "install" &&
-		isConductorInstallDirectoryMode(words, commandIndex);
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
-		if (CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
-		if (isEnvironmentAssignmentWord(word)) continue;
-		if (commandName === "dd") {
-			const ofMatch = word.match(/^of=(.+)$/);
-			if (ofMatch) targets.push(safeString(ofMatch[1]).trim());
-			continue;
-		}
+function collectConductorMutationCommandTargets(commandName: string, words: string[], commandIndex: number): string[] | null {
+  const targets: string[] = [];
+  const positionalTargets: string[] = [];
+  const targetDirectoryTargets: string[] = [];
+  let sawTargetDirectory = false;
+  let positionalCount = 0;
+  let rsyncRemovesSourceFiles = false;
+  if (commandName === "sed") return collectConductorSedTargets(words, commandIndex);
+  if (commandName === "perl") return collectConductorPerlTargets(words, commandIndex);
+  const installDirectoryMode = commandName === "install" && isConductorInstallDirectoryMode(words, commandIndex);
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandTerminatorOrGroupClose(word)) break;
+    if (CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
+    if (isEnvironmentAssignmentWord(word)) continue;
+    if (commandName === "dd") {
+      const ofMatch = word.match(/^of=(.+)$/);
+      if (ofMatch) targets.push(safeString(ofMatch[1]).trim());
+      continue;
+    }
 
-		if (word === "--") continue;
-		if (commandName === "rsync" && word === "--remove-source-files") {
-			rsyncRemovesSourceFiles = true;
-			continue;
-		}
-		if (word.startsWith("--")) {
-			const [option, inlineValue] = word.split("=", 2);
-			if (
-				option === "--target-directory" &&
-				commandUsesTargetDirectoryOption(commandName)
-			) {
-				sawTargetDirectory = true;
-				if (inlineValue !== undefined) {
-					const target = safeString(inlineValue).trim();
-					if (target) targetDirectoryTargets.push(target);
-				} else {
-					const target = words[index + 1] ?? "";
-					if (target && !isShellCommandTerminatorOrGroupClose(target))
-						targetDirectoryTargets.push(target);
-					index += 1;
-				}
-				continue;
-			}
-			if (
-				CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(option) &&
-				inlineValue === undefined
-			)
-				index += 1;
-			if (
-				(option === "--backup" ||
-					option === "--suffix" ||
-					option === "--reference") &&
-				inlineValue
-			) {
-				targets.push(inlineValue);
-			}
-			continue;
-		}
-		if (word === "-t" && commandUsesTargetDirectoryOption(commandName)) {
-			sawTargetDirectory = true;
-			const target = words[index + 1] ?? "";
-			if (target && !isShellCommandTerminatorOrGroupClose(target))
-				targetDirectoryTargets.push(target);
-			index += 1;
-			continue;
-		}
-		if (
-			word.startsWith("-t") &&
-			word.length > 2 &&
-			commandUsesTargetDirectoryOption(commandName)
-		) {
-			sawTargetDirectory = true;
-			targetDirectoryTargets.push(word.slice(2));
-			continue;
-		}
-		if (word.startsWith("-") && word.length > 1) {
-			if (CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(word)) index += 1;
-			continue;
-		}
-		positionalCount += 1;
-		if (
-			(commandName === "chmod" ||
-				commandName === "chown" ||
-				commandName === "chgrp") &&
-			positionalCount === 1
-		) {
-			continue;
-		}
-		positionalTargets.push(word);
-	}
-	if (installDirectoryMode) return [...targets, ...positionalTargets];
-	if (sawTargetDirectory) {
-		return commandName === "mv"
-			? [...targets, ...targetDirectoryTargets, ...positionalTargets]
-			: [...targets, ...targetDirectoryTargets];
-	}
-	if (commandName === "rsync" && rsyncRemovesSourceFiles)
-		return [...targets, ...positionalTargets];
-	if (isConductorDestinationOnlyMutationCommand(commandName))
-		return [...targets, ...positionalTargets.slice(-1)];
-	return [...targets, ...positionalTargets];
+    if (word === "--") continue;
+    if (commandName === "rsync" && word === "--remove-source-files") {
+      rsyncRemovesSourceFiles = true;
+      continue;
+    }
+    if (word.startsWith("--")) {
+      const [option, inlineValue] = word.split("=", 2);
+      if (option === "--target-directory" && commandUsesTargetDirectoryOption(commandName)) {
+        sawTargetDirectory = true;
+        if (inlineValue !== undefined) {
+          const target = safeString(inlineValue).trim();
+          if (target) targetDirectoryTargets.push(target);
+        } else {
+          const target = words[index + 1] ?? "";
+          if (target && !isShellCommandTerminatorOrGroupClose(target)) targetDirectoryTargets.push(target);
+          index += 1;
+        }
+        continue;
+      }
+      if (CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(option) && inlineValue === undefined) index += 1;
+      if ((option === "--backup" || option === "--suffix" || option === "--reference") && inlineValue) {
+        targets.push(inlineValue);
+      }
+      continue;
+    }
+    if (word === "-t" && commandUsesTargetDirectoryOption(commandName)) {
+      sawTargetDirectory = true;
+      const target = words[index + 1] ?? "";
+      if (target && !isShellCommandTerminatorOrGroupClose(target)) targetDirectoryTargets.push(target);
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-t") && word.length > 2 && commandUsesTargetDirectoryOption(commandName)) {
+      sawTargetDirectory = true;
+      targetDirectoryTargets.push(word.slice(2));
+      continue;
+    }
+    if (word.startsWith("-") && word.length > 1) {
+      if (CONDUCTOR_BASH_OPTIONS_WITH_VALUES.has(word)) index += 1;
+      continue;
+    }
+    positionalCount += 1;
+    if (
+      (commandName === "chmod" || commandName === "chown" || commandName === "chgrp")
+      && positionalCount === 1
+    ) {
+      continue;
+    }
+    positionalTargets.push(word);
+  }
+  if (installDirectoryMode) return [...targets, ...positionalTargets];
+  if (sawTargetDirectory) {
+    return commandName === "mv"
+      ? [...targets, ...targetDirectoryTargets, ...positionalTargets]
+      : [...targets, ...targetDirectoryTargets];
+  }
+  if (commandName === "rsync" && rsyncRemovesSourceFiles) return [...targets, ...positionalTargets];
+  if (isConductorDestinationOnlyMutationCommand(commandName)) return [...targets, ...positionalTargets.slice(-1)];
+  return [...targets, ...positionalTargets];
 }
 
-function extractConductorBashMutations(
-	command: string,
-): ConductorBashMutation[] {
-	const mutations: ConductorBashMutation[] = [];
-	for (const segment of splitShellCommandSegments(
-		stripHeredocBodiesForCommandScan(command),
-	)) {
-		const words = tokenizeShellWords(segment);
-		let commandStart = true;
-		for (let index = 0; index < words.length; index += 1) {
-			const word = words[index] ?? "";
-			if (!word) continue;
-			if (isShellCommandSeparator(word)) {
-				commandStart = true;
-				continue;
-			}
-			if (isShellGroupingSyntaxWord(word)) {
-				continue;
-			}
-			if (commandStart && isEnvironmentAssignmentWord(word)) continue;
-			if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word))
-				continue;
-			if (commandStart && word.startsWith("-")) continue;
-			if (!commandStart) continue;
+function extractConductorBashMutations(command: string): ConductorBashMutation[] {
+  const mutations: ConductorBashMutation[] = [];
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (isShellGroupingSyntaxWord(word)) {
+        continue;
+      }
+      if (commandStart && isEnvironmentAssignmentWord(word)) continue;
+      if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
+      if (commandStart && word.startsWith("-")) continue;
+      if (!commandStart) continue;
 
-			const commandName = commandNameFromShellWord(word);
-			if (CONDUCTOR_BASH_TRANSPARENT_WRAPPERS.has(commandName)) {
-				continue;
-			}
-			const wrapperOperandIndex = findConductorWrapperOperandIndex(
-				commandName,
-				words,
-				index + 1,
-			);
-			if (wrapperOperandIndex !== undefined) {
-				if (wrapperOperandIndex === null) {
-					mutations.push({ command: commandName, targets: [] });
-					commandStart = false;
-				} else {
-					index = wrapperOperandIndex - 1;
-				}
-				continue;
-			}
-			if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)) {
-				const downloaderTargets = collectConductorDownloaderOutputTargets(
-					commandName,
-					words,
-					index,
-				);
-				if (downloaderTargets.sawOutputFlag) {
-					mutations.push({
-						command: commandName,
-						targets: downloaderTargets.targets,
-					});
-				}
-			} else if (commandName === "xargs") {
-				const xargsTargets = collectConductorXargsMutationTargets(words, index);
-				if (xargsTargets !== null)
-					mutations.push({ command: commandName, targets: xargsTargets });
-			} else if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
-				const mutationTargets = collectConductorMutationCommandTargets(
-					commandName,
-					words,
-					index,
-				);
-				if (mutationTargets !== null)
-					mutations.push({ command: commandName, targets: mutationTargets });
-			}
-			commandStart = false;
-		}
-	}
-	return mutations;
+      const commandName = commandNameFromShellWord(word);
+      if (CONDUCTOR_BASH_TRANSPARENT_WRAPPERS.has(commandName)) {
+        continue;
+      }
+      const wrapperOperandIndex = findConductorWrapperOperandIndex(commandName, words, index + 1);
+      if (wrapperOperandIndex !== undefined) {
+        if (wrapperOperandIndex === null) {
+          mutations.push({ command: commandName, targets: [] });
+          commandStart = false;
+        } else {
+          index = wrapperOperandIndex - 1;
+        }
+        continue;
+      }
+      if (CONDUCTOR_BASH_DOWNLOADER_COMMANDS.has(commandName)) {
+        const downloaderTargets = collectConductorDownloaderOutputTargets(commandName, words, index);
+        if (downloaderTargets.sawOutputFlag) {
+          mutations.push({
+            command: commandName,
+            targets: downloaderTargets.targets,
+          });
+        }
+      } else if (commandName === "xargs") {
+        const xargsTargets = collectConductorXargsMutationTargets(words, index);
+        if (xargsTargets !== null) mutations.push({ command: commandName, targets: xargsTargets });
+      } else if (CONDUCTOR_BASH_MUTATION_COMMANDS.has(commandName)) {
+        const mutationTargets = collectConductorMutationCommandTargets(commandName, words, index);
+        if (mutationTargets !== null) mutations.push({ command: commandName, targets: mutationTargets });
+      }
+      commandStart = false;
+    }
+  }
+  return mutations;
 }
 
 const CONDUCTOR_BASH_MAX_NESTING_DEPTH = 5;
 
 function evaluateConductorBashWrite(
-	cwd: string,
-	command: string,
-	depth = 0,
+  cwd: string,
+  command: string,
+  depth = 0,
 ): { allowed: boolean; blockedDetail?: string } {
-	const commandWithHeredocBodies = normalizeShellLineContinuations(command);
-	const normalizedCommand = stripHeredocBodiesForCommandScan(
-		commandWithHeredocBodies,
-	);
-	if (depth > CONDUCTOR_BASH_MAX_NESTING_DEPTH) {
-		return {
-			allowed: false,
-			blockedDetail:
-				"Bash nested shell depth exceeded Main-root Conductor validation limits",
-		};
-	}
-	if (hasDynamicNestedShellExecution(normalizedCommand)) {
-		return {
-			allowed: false,
-			blockedDetail:
-				"Bash nested shell execution is dynamic and cannot be validated for Main-root Conductor writes",
-		};
-	}
-	if (hasUnsafeUnquotedHeredocExpansion(commandWithHeredocBodies)) {
-		return {
-			allowed: false,
-			blockedDetail:
-				"Bash unquoted heredoc expansion is not workflow state/ledger/mailbox/handoff metadata",
-		};
-	}
+  const commandWithHeredocBodies = normalizeShellLineContinuations(command);
+  const normalizedCommand = stripHeredocBodiesForCommandScan(commandWithHeredocBodies);
+  if (depth > CONDUCTOR_BASH_MAX_NESTING_DEPTH) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash nested shell depth exceeded Main-root Conductor validation limits",
+    };
+  }
+  if (hasDynamicNestedShellExecution(normalizedCommand)) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash nested shell execution is dynamic and cannot be validated for Main-root Conductor writes",
+    };
+  }
+  if (hasUnsafeUnquotedHeredocExpansion(commandWithHeredocBodies)) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash unquoted heredoc expansion is not workflow state/ledger/mailbox/handoff metadata",
+    };
+  }
 
-	const shellMutations = extractConductorBashMutations(normalizedCommand);
-	if (shellMutations.length > 0) {
-		for (const mutation of shellMutations) {
-			if (mutation.targets.length === 0) {
-				return {
-					allowed: false,
-					blockedDetail: `Bash ${mutation.command} mutation target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata`,
-				};
-			}
-			const blockedTarget = mutation.targets.find(
-				(target) => !isAllowedConductorMetadataPath(cwd, target),
-			);
-			if (blockedTarget) {
-				return {
-					allowed: false,
-					blockedDetail: `Bash ${mutation.command} mutation target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
-				};
-			}
-		}
-	}
+  const shellMutations = extractConductorBashMutations(normalizedCommand);
+  if (shellMutations.length > 0) {
+    for (const mutation of shellMutations) {
+      if (mutation.targets.length === 0) {
+        return {
+          allowed: false,
+          blockedDetail: `Bash ${mutation.command} mutation target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata`,
+        };
+      }
+      const blockedTarget = mutation.targets.find((target) => !isAllowedConductorMetadataPath(cwd, target));
+      if (blockedTarget) {
+        return {
+          allowed: false,
+          blockedDetail: `Bash ${mutation.command} mutation target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
+        };
+      }
+    }
+  }
 
-	for (const functionBody of extractInvokedShellFunctionBodiesForStateScan(
-		normalizedCommand,
-	)) {
-		const nestedDecision = evaluateConductorBashWrite(
-			cwd,
-			functionBody,
-			depth + 1,
-		);
-		if (!nestedDecision.allowed) return nestedDecision;
-	}
-	for (const nestedCommand of extractNestedShellCommandStringsForStateScan(
-		normalizedCommand,
-	)) {
-		const nestedDecision = evaluateConductorBashWrite(
-			cwd,
-			nestedCommand,
-			depth + 1,
-		);
-		if (!nestedDecision.allowed) return nestedDecision;
-	}
-	for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(
-		normalizedCommand,
-	)) {
-		const nestedDecision = evaluateConductorBashWrite(
-			cwd,
-			nestedCommand,
-			depth + 1,
-		);
-		if (!nestedDecision.allowed) return nestedDecision;
-	}
-	for (const nestedCommand of extractNestedProcessSubstitutionStringsForStateScan(
-		normalizedCommand,
-	)) {
-		const nestedDecision = evaluateConductorBashWrite(
-			cwd,
-			nestedCommand,
-			depth + 1,
-		);
-		if (!nestedDecision.allowed) return nestedDecision;
-	}
+  for (const functionBody of extractInvokedShellFunctionBodiesForStateScan(normalizedCommand)) {
+    const nestedDecision = evaluateConductorBashWrite(cwd, functionBody, depth + 1);
+    if (!nestedDecision.allowed) return nestedDecision;
+  }
+  for (const nestedCommand of extractNestedShellCommandStringsForStateScan(normalizedCommand)) {
+    const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
+    if (!nestedDecision.allowed) return nestedDecision;
+  }
+  for (const nestedCommand of extractNestedCommandSubstitutionStringsForStateScan(normalizedCommand)) {
+    const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
+    if (!nestedDecision.allowed) return nestedDecision;
+  }
+  for (const nestedCommand of extractNestedProcessSubstitutionStringsForStateScan(normalizedCommand)) {
+    const nestedDecision = evaluateConductorBashWrite(cwd, nestedCommand, depth + 1);
+    if (!nestedDecision.allowed) return nestedDecision;
+  }
 
-	const editorTargets = extractConductorEditorWriteTargets(
-		commandWithHeredocBodies,
-	);
-	if (editorTargets.length > 0) {
-		const blockedTarget = editorTargets.find(
-			(target) => !isAllowedConductorMetadataPath(cwd, target),
-		);
-		if (blockedTarget) {
-			return {
-				allowed: false,
-				blockedDetail: `Bash editor mutation target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
-			};
-		}
-	}
+  const editorTargets = extractConductorEditorWriteTargets(commandWithHeredocBodies);
+  if (editorTargets.length > 0) {
+    const blockedTarget = editorTargets.find((target) => !isAllowedConductorMetadataPath(cwd, target));
+    if (blockedTarget) {
+      return {
+        allowed: false,
+        blockedDetail: `Bash editor mutation target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
+      };
+    }
+  }
 
-	if (commandHasDestructiveGitSubcommand(normalizedCommand)) {
-		return {
-			allowed: false,
-			blockedDetail:
-				"Bash git worktree mutation is not workflow state/ledger/mailbox/handoff metadata",
-		};
-	}
-	if (commandHasPackageInstallIntent(normalizedCommand)) {
-		return {
-			allowed: false,
-			blockedDetail:
-				"Bash package manager install is not workflow state/ledger/mailbox/handoff metadata",
-		};
-	}
+  if (commandHasDestructiveGitSubcommand(normalizedCommand)) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash git worktree mutation is not workflow state/ledger/mailbox/handoff metadata",
+    };
+  }
+  if (commandHasPackageInstallIntent(normalizedCommand)) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash package manager install is not workflow state/ledger/mailbox/handoff metadata",
+    };
+  }
 
-	const interpreterWrites = extractConductorInterpreterWrites(
-		commandWithHeredocBodies,
-	);
-	for (const write of interpreterWrites) {
-		if (write.unresolved || write.targets.length === 0) {
-			return {
-				allowed: false,
-				blockedDetail: `Bash ${write.runtime} write target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata`,
-			};
-		}
-		const blockedTarget = write.targets.find(
-			(target) => !isAllowedConductorMetadataPath(cwd, target),
-		);
-		if (blockedTarget) {
-			return {
-				allowed: false,
-				blockedDetail: `Bash ${write.runtime} write target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
-			};
-		}
-	}
+  const interpreterWrites = extractConductorInterpreterWrites(commandWithHeredocBodies);
+  for (const write of interpreterWrites) {
+    if (write.unresolved || write.targets.length === 0) {
+      return {
+        allowed: false,
+        blockedDetail: `Bash ${write.runtime} write target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata`,
+      };
+    }
+    const blockedTarget = write.targets.find((target) => !isAllowedConductorMetadataPath(cwd, target));
+    if (blockedTarget) {
+      return {
+        allowed: false,
+        blockedDetail: `Bash ${write.runtime} write target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
+      };
+    }
+  }
 
-	const hasGenericWriteIntent = commandHasDeepInterviewWriteIntent(
-		commandWithHeredocBodies,
-	);
-	if (!hasGenericWriteIntent) return { allowed: true };
-	const targets = extractDeepInterviewCommandWriteTargets(
-		commandWithHeredocBodies,
-	);
-	const accountedShellOnlyWriteIntent =
-		shellMutations.length > 0 &&
-		targets.length === 0 &&
-		shellMutations.every(
-			(mutation) => mutation.command === "sed" || mutation.command === "perl",
-		);
-	if (accountedShellOnlyWriteIntent) return { allowed: true };
-	if (commandInvokesApplyPatch(normalizedCommand) && targets.length === 0) {
-		return {
-			allowed: false,
-			blockedDetail:
-				"apply_patch target extraction failed for Main-root Conductor write",
-		};
-	}
-	if (targets.length === 0) {
-		return {
-			allowed: false,
-			blockedDetail:
-				"Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata",
-		};
-	}
-	const blockedTarget = targets.find(
-		(target) => !isAllowedConductorMetadataPath(cwd, target),
-	);
-	if (blockedTarget) {
-		const operationClass = /\btee\s+(?:-a\s+)?/.test(commandWithHeredocBodies)
-			? "Bash tee write"
-			: "Bash write";
-		return {
-			allowed: false,
-			blockedDetail: `${operationClass} target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
-		};
-	}
-	return { allowed: true };
+  const hasGenericWriteIntent = commandHasDeepInterviewWriteIntent(commandWithHeredocBodies);
+  if (!hasGenericWriteIntent) return { allowed: true };
+  const targets = extractDeepInterviewCommandWriteTargets(commandWithHeredocBodies);
+  const accountedShellOnlyWriteIntent = shellMutations.length > 0
+    && targets.length === 0
+    && shellMutations.every((mutation) => mutation.command === "sed" || mutation.command === "perl");
+  if (accountedShellOnlyWriteIntent) return { allowed: true };
+  if (commandInvokesApplyPatch(normalizedCommand) && targets.length === 0) {
+    return {
+      allowed: false,
+      blockedDetail: "apply_patch target extraction failed for Main-root Conductor write",
+    };
+  }
+  if (targets.length === 0) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata",
+    };
+  }
+  const blockedTarget = targets.find((target) => !isAllowedConductorMetadataPath(cwd, target));
+  if (blockedTarget) {
+    const operationClass = /\btee\s+(?:-a\s+)?/.test(commandWithHeredocBodies) ? "Bash tee write" : "Bash write";
+    return {
+      allowed: false,
+      blockedDetail: `${operationClass} target ${blockedTarget} is not workflow state/ledger/mailbox/handoff metadata`,
+    };
+  }
+  return { allowed: true };
 }
 
 function isAllowedConductorBashWrite(cwd: string, command: string): boolean {
-	return evaluateConductorBashWrite(cwd, command).allowed;
+  return evaluateConductorBashWrite(cwd, command).allowed;
 }
 
 function buildConductorBashBlockedDetail(cwd: string, command: string): string {
-	return (
-		evaluateConductorBashWrite(cwd, command).blockedDetail ??
-		"Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata"
-	);
+  return evaluateConductorBashWrite(cwd, command).blockedDetail
+    ?? "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata";
 }
 
 export async function buildConductorPreToolUseWriteGuardOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
-	resolvedSessionId?: string,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  resolvedSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-	const activeState = await readActiveMainRootConductorStateForPreToolUse(
-		payload,
-		cwd,
-		stateDir,
-		resolvedSessionId,
-	);
-	if (!activeState) return null;
-	const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
-		payload,
-		persistedSupportBlocker: await readJsonIfExists(
-			nativeSubagentSupportBlockerPath(stateDir),
-		),
-		persistedRoleRoutingMarker: readRoleRoutingMarker(stateDir, {
-			cwd,
-			sessionId: resolvedSessionId || readPayloadSessionId(payload),
-		}),
-		persistedCapacityBlocker: await readJsonIfExists(
-			nativeSubagentCapacityBlockerPath(stateDir),
-		),
-		cwd,
-		sessionId: resolvedSessionId || readPayloadSessionId(payload),
-	});
+  const activeState = await readActiveMainRootConductorStateForPreToolUse(payload, cwd, stateDir, resolvedSessionId);
+  if (!activeState) return null;
+  const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
+    payload,
+    persistedSupportBlocker: await readJsonIfExists(nativeSubagentSupportBlockerPath(stateDir)),
+    persistedRoleRoutingMarker: readRoleRoutingMarker(stateDir, {
+      cwd,
+      sessionId: resolvedSessionId || readPayloadSessionId(payload),
+    }),
+    persistedCapacityBlocker: await readJsonIfExists(nativeSubagentCapacityBlockerPath(stateDir)),
+    cwd,
+    sessionId: resolvedSessionId || readPayloadSessionId(payload),
+  });
 
-	const toolName = safeString(payload.tool_name).trim();
-	const command = readPreToolUseCommand(payload);
-	const pathCandidates = readPreToolUsePathCandidates(payload);
-	let blocked = false;
-	let blockedDetail = "Main-root Conductor write is not delegated";
 
-	if (toolName === "Bash") {
-		blocked = !isAllowedConductorBashWrite(cwd, command);
-		if (blocked) blockedDetail = buildConductorBashBlockedDetail(cwd, command);
-	} else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
-		const toolPathCandidates = collectImplementationToolPathCandidates(
-			payload,
-			toolName,
-			pathCandidates,
-		);
-		if (toolPathCandidates.length === 0) {
-			blocked = true;
-			blockedDetail = describeConductorBlockedWrite(
-				toolName,
-				undefined,
-				toolPathCandidates.length,
-			);
-		} else {
-			const blockedPath = toolPathCandidates.find(
-				(candidate) => !isAllowedConductorMetadataPath(cwd, candidate),
-			);
-			blocked = blockedPath !== undefined;
-			if (blockedPath !== undefined) {
-				blockedDetail = describeConductorBlockedWrite(
-					toolName,
-					blockedPath,
-					toolPathCandidates.length,
-				);
-			}
-		}
-	}
+  const toolName = safeString(payload.tool_name).trim();
+  const command = readPreToolUseCommand(payload);
+  const pathCandidates = readPreToolUsePathCandidates(payload);
+  let blocked = false;
+  let blockedDetail = "Main-root Conductor write is not delegated";
 
-	if (!blocked) return null;
+  if (toolName === "Bash") {
+    blocked = !isAllowedConductorBashWrite(cwd, command);
+    if (blocked) blockedDetail = buildConductorBashBlockedDetail(cwd, command);
+  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+    const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
+    if (toolPathCandidates.length === 0) {
+      blocked = true;
+      blockedDetail = describeConductorBlockedWrite(toolName, undefined, toolPathCandidates.length);
+    } else {
+      const blockedPath = toolPathCandidates.find((candidate) => !isAllowedConductorMetadataPath(cwd, candidate));
+      blocked = blockedPath !== undefined;
+      if (blockedPath !== undefined) {
+        blockedDetail = describeConductorBlockedWrite(toolName, blockedPath, toolPathCandidates.length);
+      }
+    }
+  }
 
-	const unsupportedNativeGuidance = isUnsupportedNativeSubagentEvidence(
-		nativeSubagentSupport,
-	)
-		? ` ${buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)} Treat the active conductor workflow as blocked/cancelled for native delegation recovery; do not call multi_agent_v1.close_agent.`
-		: "";
-	const roleRoutingUnavailableGuidance = isRoleRoutingUnavailableEvidence(
-		nativeSubagentSupport,
-	)
-		? ` ${buildRoleRoutingUnavailableGuidance(nativeSubagentSupport)}`
-		: "";
-	return {
-		decision: "block",
-		reason: `Main-root Conductor mode is active (${activeState.mode} phase: ${formatPhase(activeState.phase, "active")}); direct plan/code writes are blocked and must be delegated; ${blockedDetail}.`,
-		hookSpecificOutput: {
-			hookEventName: "PreToolUse",
-			additionalContext:
-				`${LEADER_CONDUCTOR_GOLDEN_RULE} ` +
-				"Use specialized agents for source edits and plan/spec authorship. " +
-				`Main-root Conductor may write only orchestration metadata/transport/ledger artifacts under ${CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES.join(", ")}; path location alone is not authorization for substantive deliverables. ` +
-				unsupportedNativeGuidance +
-				roleRoutingUnavailableGuidance +
-				" Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
-		},
-	};
+  if (!blocked) return null;
+
+  const unsupportedNativeGuidance = isUnsupportedNativeSubagentEvidence(nativeSubagentSupport)
+    ? ` ${buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)} Treat the active conductor workflow as blocked/cancelled for native delegation recovery; do not call multi_agent_v1.close_agent.`
+    : "";
+  const roleRoutingUnavailableGuidance = isRoleRoutingUnavailableEvidence(nativeSubagentSupport)
+    ? ` ${buildRoleRoutingUnavailableGuidance(nativeSubagentSupport)}`
+    : "";
+  return {
+    decision: "block",
+    reason: `Main-root Conductor mode is active (${activeState.mode} phase: ${formatPhase(activeState.phase, "active")}); direct plan/code writes are blocked and must be delegated; ${blockedDetail}.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        `${LEADER_CONDUCTOR_GOLDEN_RULE} `
+        + "Use specialized agents for source edits and plan/spec authorship. "
+        + `Main-root Conductor may write only orchestration metadata/transport/ledger artifacts under ${CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES.join(", ")}; path location alone is not authorization for substantive deliverables. `
+        + unsupportedNativeGuidance
+        + roleRoutingUnavailableGuidance
+        + " Autopilot rework and typed subagent/worker lanes are exempt from this guard.",
+    },
+  };
+
 }
-
 function isInPlaceEditorCommand(word: string, commandName: string): boolean {
-	if (commandName === "sed")
-		return (
-			word === "--in-place" ||
-			/^--in-place(?:=.+)?$/.test(word) ||
-			/^-[^-\s]*i(?:.*)?$/.test(word)
-		);
-	if (commandName === "perl")
-		return (
-			word === "-i" ||
-			word === "-pi" ||
-			/^-pi(?:\..+)?$/.test(word) ||
-			/^-p.*i(?:\..+)?$/.test(word)
-		);
-	return false;
+  if (commandName === "sed") return word === "--in-place" || /^--in-place(?:=.+)?$/.test(word) || /^-[^-\s]*i(?:.*)?$/.test(word);
+  if (commandName === "perl") return word === "-i" || word === "-pi" || /^-pi(?:\..+)?$/.test(word) || /^-p.*i(?:\..+)?$/.test(word);
+  return false;
 }
 
-function collectInPlaceEditorWriteTargets(
-	commandName: "sed" | "perl",
-	words: string[],
-	commandIndex: number,
-): string[] {
-	const targets: string[] = [];
-	let sawInPlaceEdit = false;
-	let awaitingOptionValue = false;
-	let consumedImplicitSedScript = commandName !== "sed";
+function collectInPlaceEditorWriteTargets(commandName: "sed" | "perl", words: string[], commandIndex: number): string[] {
+  const targets: string[] = [];
+  let sawInPlaceEdit = false;
+  let awaitingOptionValue = false;
+  let consumedImplicitSedScript = commandName !== "sed";
 
-	for (let index = commandIndex + 1; index < words.length; index += 1) {
-		const word = words[index] ?? "";
-		if (!word || isShellCommandSeparator(word)) break;
-		if (CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
-		if (isEnvironmentAssignmentWord(word)) continue;
+  for (let index = commandIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!word || isShellCommandSeparator(word)) break;
+    if (CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
+    if (isEnvironmentAssignmentWord(word)) continue;
 
-		if (awaitingOptionValue) {
-			awaitingOptionValue = false;
-			continue;
-		}
+    if (awaitingOptionValue) {
+      awaitingOptionValue = false;
+      continue;
+    }
 
-		if (word === "--") {
-			consumedImplicitSedScript = true;
-			continue;
-		}
-		if (
-			word === "-e" ||
-			word === "-f" ||
-			word === "--expression" ||
-			word === "--file"
-		) {
-			awaitingOptionValue = true;
-			consumedImplicitSedScript = true;
-			continue;
-		}
-		if (
-			word.startsWith("-e") ||
-			word.startsWith("-f") ||
-			word.startsWith("--expression=") ||
-			word.startsWith("--file=")
-		) {
-			consumedImplicitSedScript = true;
-			continue;
-		}
-		if (isInPlaceEditorCommand(word, commandName)) {
-			sawInPlaceEdit = true;
-			continue;
-		}
-		if (word.startsWith("-")) continue;
-		if (sawInPlaceEdit) {
-			if (commandName === "sed" && !consumedImplicitSedScript) {
-				consumedImplicitSedScript = true;
-				continue;
-			}
-			targets.push(word);
-		}
-	}
+    if (word === "--") {
+      consumedImplicitSedScript = true;
+      continue;
+    }
+    if (word === "-e" || word === "-f" || word === "--expression" || word === "--file") {
+      awaitingOptionValue = true;
+      consumedImplicitSedScript = true;
+      continue;
+    }
+    if (word.startsWith("-e") || word.startsWith("-f") || word.startsWith("--expression=") || word.startsWith("--file=")) {
+      consumedImplicitSedScript = true;
+      continue;
+    }
+    if (isInPlaceEditorCommand(word, commandName)) {
+      sawInPlaceEdit = true;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    if (sawInPlaceEdit) {
+      if (commandName === "sed" && !consumedImplicitSedScript) {
+        consumedImplicitSedScript = true;
+        continue;
+      }
+      targets.push(word);
+    }
+  }
 
-	return targets;
+  return targets;
 }
 
 function extractConductorEditorWriteTargets(command: string): string[] {
-	const targets: string[] = [];
-	for (const segment of splitShellCommandSegments(
-		stripHeredocBodiesForCommandScan(command),
-	)) {
-		const words = tokenizeShellWords(segment);
-		let commandStart = true;
-		for (let index = 0; index < words.length; index += 1) {
-			const word = words[index] ?? "";
-			if (!word) continue;
-			if (isShellCommandSeparator(word)) {
-				commandStart = true;
-				continue;
-			}
-			if (isShellGroupingSyntaxWord(word)) continue;
-			if (commandStart && isEnvironmentAssignmentWord(word)) continue;
-			if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word))
-				continue;
-			if (commandStart && word.startsWith("-")) continue;
-			if (!commandStart) continue;
+  const targets: string[] = [];
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeShellWords(segment);
+    let commandStart = true;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index] ?? "";
+      if (!word) continue;
+      if (isShellCommandSeparator(word)) {
+        commandStart = true;
+        continue;
+      }
+      if (isShellGroupingSyntaxWord(word)) continue;
+      if (commandStart && isEnvironmentAssignmentWord(word)) continue;
+      if (commandStart && CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(word)) continue;
+      if (commandStart && word.startsWith("-")) continue;
+      if (!commandStart) continue;
 
-			const commandName = commandNameFromShellWord(word);
-			if (commandName === "sed" || commandName === "perl") {
-				targets.push(
-					...collectInPlaceEditorWriteTargets(commandName, words, index),
-				);
-			}
-			commandStart = false;
-		}
-	}
-	return targets;
+      const commandName = commandNameFromShellWord(word);
+      if (commandName === "sed" || commandName === "perl") {
+        targets.push(...collectInPlaceEditorWriteTargets(commandName, words, index));
+      }
+      commandStart = false;
+    }
+  }
+  return targets;
 }
 function matchesSkillStopContext(
-	entry: { session_id?: string; thread_id?: string },
-	state: { session_id?: string; thread_id?: string },
-	sessionId: string,
-	threadId: string,
+  entry: { session_id?: string; thread_id?: string },
+  state: { session_id?: string; thread_id?: string },
+  sessionId: string,
+  threadId: string,
 ): boolean {
-	const entrySessionId = safeString(
-		entry.session_id ?? state.session_id,
-	).trim();
-	const entryThreadId = safeString(entry.thread_id ?? state.thread_id).trim();
-	if (sessionId && entrySessionId && entrySessionId !== sessionId) return false;
-	if (
-		sessionId &&
-		!entrySessionId &&
-		threadId &&
-		entryThreadId &&
-		entryThreadId !== threadId
-	) {
-		return false;
-	}
-	return true;
+  const entrySessionId = safeString(entry.session_id ?? state.session_id).trim();
+  const entryThreadId = safeString(entry.thread_id ?? state.thread_id).trim();
+  if (sessionId && entrySessionId && entrySessionId !== sessionId) return false;
+  if (sessionId && !entrySessionId && threadId && entryThreadId && entryThreadId !== threadId) {
+    return false;
+  }
+  return true;
 }
 
 function modeStateMatchesSkillStopContext(
-	state: Record<string, unknown>,
-	cwd: string,
-	sessionId: string,
+  state: Record<string, unknown>,
+  cwd: string,
+  sessionId: string,
 ): boolean {
-	const stateSessionId = safeString(
-		state.owner_omx_session_id ??
-			state.session_id ??
-			state.codex_session_id ??
-			state.owner_codex_session_id,
-	).trim();
-	if (sessionId && stateSessionId && stateSessionId !== sessionId) return false;
+  const stateSessionId = safeString(
+    state.owner_omx_session_id
+      ?? state.session_id
+      ?? state.codex_session_id
+      ?? state.owner_codex_session_id,
+  ).trim();
+  if (sessionId && stateSessionId && stateSessionId !== sessionId) return false;
 
-	const stateCwd = safeString(
-		state.cwd ??
-			state.workingDirectory ??
-			state.working_directory ??
-			state.project_path,
-	).trim();
-	if (stateCwd) {
-		try {
-			if (resolve(stateCwd) !== resolve(cwd)) return false;
-		} catch {
-			return false;
-		}
-	}
+  const stateCwd = safeString(
+    state.cwd
+      ?? state.workingDirectory
+      ?? state.working_directory
+      ?? state.project_path,
+  ).trim();
+  if (stateCwd) {
+    try {
+      if (resolve(stateCwd) !== resolve(cwd)) return false;
+    } catch {
+      return false;
+    }
+  }
 
-	return true;
+  return true;
 }
 
-function modeStateHasExplicitMatchingCwd(
-	state: Record<string, unknown>,
-	cwd: string,
-): boolean {
-	const stateCwd = safeString(
-		state.cwd ??
-			state.workingDirectory ??
-			state.working_directory ??
-			state.project_path,
-	).trim();
-	if (!stateCwd) return false;
+function modeStateHasExplicitMatchingCwd(state: Record<string, unknown>, cwd: string): boolean {
+  const stateCwd = safeString(
+    state.cwd
+      ?? state.workingDirectory
+      ?? state.working_directory
+      ?? state.project_path,
+  ).trim();
+  if (!stateCwd) return false;
 
-	try {
-		return resolve(stateCwd) === resolve(cwd);
-	} catch {
-		return false;
-	}
+  try {
+    return resolve(stateCwd) === resolve(cwd);
+  } catch {
+    return false;
+  }
 }
 
 async function clearNativeStopSessionEntries(
-	stateDir: string,
-	payload: CodexHookPayload,
-	canonicalSessionId?: string,
+  stateDir: string,
+  payload: CodexHookPayload,
+  canonicalSessionId?: string,
 ): Promise<void> {
-	const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
-	const state = await readJsonIfExists(statePath);
-	if (!state) return;
+  const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
+  const state = await readJsonIfExists(statePath);
+  if (!state) return;
 
-	const sessions = safeObject(state.sessions);
-	const keys = new Set(
-		uniqueNonEmpty([
-			readNativeStopSessionKey(payload, canonicalSessionId),
-			canonicalSessionId,
-			readPayloadSessionId(payload),
-			readPayloadThreadId(payload),
-		]),
-	);
-	let changed = false;
-	for (const key of keys) {
-		if (Object.prototype.hasOwnProperty.call(sessions, key)) {
-			delete sessions[key];
-			changed = true;
-		}
-	}
-	if (!changed) return;
+  const sessions = safeObject(state.sessions);
+  const keys = new Set(uniqueNonEmpty([
+    readNativeStopSessionKey(payload, canonicalSessionId),
+    canonicalSessionId,
+    readPayloadSessionId(payload),
+    readPayloadThreadId(payload),
+  ]));
+  let changed = false;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(sessions, key)) {
+      delete sessions[key];
+      changed = true;
+    }
+  }
+  if (!changed) return;
 
-	await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
+  await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
 }
 
 async function hasAuthoritativeInactiveSkillStopState(
-	cwd: string,
-	stateDir: string,
-	skill: string,
-	sessionId: string,
-	threadId: string,
+  cwd: string,
+  stateDir: string,
+  skill: string,
+  sessionId: string,
+  threadId: string,
 ): Promise<boolean> {
-	const sessionModeState = await readStopSessionPinnedState(
-		`${skill}-state.json`,
-		cwd,
-		sessionId,
-		stateDir,
-	);
-	if (!sessionModeState || !isTerminalOrInactiveModeState(sessionModeState))
-		return false;
+  const sessionModeState = await readStopSessionPinnedState(`${skill}-state.json`, cwd, sessionId, stateDir);
+  if (!sessionModeState || !isTerminalOrInactiveModeState(sessionModeState)) return false;
 
-	const canonicalState = await readVisibleSkillActiveStateForStateDir(
-		stateDir,
-		sessionId,
-	);
-	if (
-		canonicalState &&
-		!rootSkillStateHasNoActiveSkillForStopContext(
-			canonicalState,
-			skill,
-			sessionId,
-			threadId,
-		)
-	) {
-		return false;
-	}
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  if (canonicalState && !rootSkillStateHasNoActiveSkillForStopContext(canonicalState, skill, sessionId, threadId)) {
+    return false;
+  }
 
-	const rootModeState = await readJsonIfExists(
-		join(stateDir, `${skill}-state.json`),
-	);
-	if (!rootModeState) return true;
-	if (!modeStateMatchesSkillStopContext(rootModeState, cwd, sessionId))
-		return true;
-	return isTerminalOrInactiveModeState(rootModeState);
+  const rootModeState = await readJsonIfExists(join(stateDir, `${skill}-state.json`));
+  if (!rootModeState) return true;
+  if (!modeStateMatchesSkillStopContext(rootModeState, cwd, sessionId)) return true;
+  return isTerminalOrInactiveModeState(rootModeState);
 }
 async function readBlockingSkillForStop(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	threadId: string,
-	requiredSkill?: string,
-): Promise<{
-	skill: string;
-	phase: string;
-	latestPlanPath?: string;
-	planningComplete?: boolean;
-	runOutcome?: string;
-} | null> {
-	const canonicalState = await readVisibleSkillActiveStateForStateDir(
-		stateDir,
-		sessionId,
-	);
-	const visibleEntries = canonicalState ? listActiveSkills(canonicalState) : [];
-	const candidateSkills = requiredSkill
-		? [requiredSkill]
-		: [...SKILL_STOP_BLOCKERS];
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId: string,
+  requiredSkill?: string,
+): Promise<{ skill: string; phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string } | null> {
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  const visibleEntries = canonicalState ? listActiveSkills(canonicalState) : [];
+  const candidateSkills = requiredSkill
+    ? [requiredSkill]
+    : [...SKILL_STOP_BLOCKERS];
 
-	for (const skill of candidateSkills) {
-		const terminalRunState = await readCanonicalTerminalRunStateForStop(
-			cwd,
-			sessionId,
-			skill,
-		);
-		if (terminalRunState) continue;
+  for (const skill of candidateSkills) {
+    const terminalRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, skill);
+    if (terminalRunState) continue;
 
-		const modeState = await readStopSessionPinnedState(
-			`${skill}-state.json`,
-			cwd,
-			sessionId,
-			stateDir,
-		);
-		if (!modeState || modeState.active !== true) continue;
-		if (!modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) continue;
+    const modeState = await readStopSessionPinnedState(`${skill}-state.json`, cwd, sessionId, stateDir);
+    if (!modeState || modeState.active !== true) continue;
+    if (!modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) continue;
 
-		const modeSnapshot = getRunContinuationSnapshot(modeState);
-		if (modeSnapshot?.terminal === true) continue;
+    const modeSnapshot = getRunContinuationSnapshot(modeState);
+    if (modeSnapshot?.terminal === true) continue;
 
-		if (
-			await shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
-				cwd,
-				stateDir,
-				skill,
-				sessionId,
-				threadId,
-			)
-		)
-			continue;
+    if (await shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
+      cwd,
+      stateDir,
+      skill,
+      sessionId,
+      threadId,
+    )) continue;
 
-		const phase = formatPhase(
-			modeState.current_phase,
-			formatPhase(
-				visibleEntries.find((entry) => entry.skill === skill)?.phase,
-				"planning",
-			),
-		);
-		if (
-			TERMINAL_MODE_PHASES.has(phase.toLowerCase()) ||
-			phase === "completing"
-		) {
-			continue;
-		}
+    const phase = formatPhase(
+      modeState.current_phase,
+      formatPhase(
+        visibleEntries.find((entry) => entry.skill === skill)?.phase,
+        "planning",
+      ),
+    );
+    if (TERMINAL_MODE_PHASES.has(phase.toLowerCase()) || phase === "completing") {
+      continue;
+    }
 
-		if (!canonicalState) {
-			return {
-				skill,
-				phase,
-				latestPlanPath:
-					safeString(
-						modeState.latest_plan_path ?? modeState.latestPlanPath,
-					).trim() || undefined,
-				planningComplete:
-					modeState.planning_complete === true ||
-					modeState.planningComplete === true,
-				runOutcome:
-					safeString(modeState.run_outcome ?? modeState.outcome).trim() ||
-					undefined,
-			};
-		}
+    if (!canonicalState) {
+      return {
+        skill,
+        phase,
+        latestPlanPath: safeString(modeState.latest_plan_path ?? modeState.latestPlanPath).trim() || undefined,
+        planningComplete: modeState.planning_complete === true || modeState.planningComplete === true,
+        runOutcome: safeString(modeState.run_outcome ?? modeState.outcome).trim() || undefined,
+      };
+    }
 
-		const blocker = visibleEntries.find(
-			(entry) =>
-				entry.skill === skill &&
-				matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-		);
-		if (!blocker) continue;
+    const blocker = visibleEntries.find((entry) => (
+      entry.skill === skill
+      && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+    ));
+    if (!blocker) continue;
 
-		return {
-			skill,
-			phase: formatPhase(
-				modeState.current_phase ?? blocker.phase ?? canonicalState.phase,
-				"planning",
-			),
-			latestPlanPath:
-				safeString(
-					modeState.latest_plan_path ?? modeState.latestPlanPath,
-				).trim() || undefined,
-			planningComplete:
-				modeState.planning_complete === true ||
-				modeState.planningComplete === true,
-			runOutcome:
-				safeString(modeState.run_outcome ?? modeState.outcome).trim() ||
-				undefined,
-		};
-	}
+    return {
+      skill,
+      phase: formatPhase(modeState.current_phase ?? blocker.phase ?? canonicalState.phase, "planning"),
+      latestPlanPath: safeString(modeState.latest_plan_path ?? modeState.latestPlanPath).trim() || undefined,
+      planningComplete: modeState.planning_complete === true || modeState.planningComplete === true,
+      runOutcome: safeString(modeState.run_outcome ?? modeState.outcome).trim() || undefined,
+    };
+  }
 
-	return null;
+  return null;
 }
 
 function uniqueNonEmpty(values: Array<string | undefined>): string[] {
-	return [
-		...new Set(values.map((value) => safeString(value).trim()).filter(Boolean)),
-	];
+  return [...new Set(values.map((value) => safeString(value).trim()).filter(Boolean))];
 }
 
-function isTerminalOrInactiveModeState(
-	state: Record<string, unknown> | null,
-): boolean {
-	if (!state) return true;
-	if (state.active !== true) return true;
-	if (getRunContinuationSnapshot(state)?.terminal === true) return true;
-	const phase = safeString(state.current_phase ?? state.currentPhase)
-		.trim()
-		.toLowerCase();
-	return phase !== "" && TERMINAL_MODE_PHASES.has(phase);
+function isTerminalOrInactiveModeState(state: Record<string, unknown> | null): boolean {
+  if (!state) return true;
+  if (state.active !== true) return true;
+  if (getRunContinuationSnapshot(state)?.terminal === true) return true;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  return phase !== "" && TERMINAL_MODE_PHASES.has(phase);
 }
 
 function rootSkillStateHasNoActiveSkillForStopContext(
-	rootState: SkillActiveStateLike | null,
-	skill: string,
-	sessionId: string,
-	threadId: string,
+  rootState: SkillActiveStateLike | null,
+  skill: string,
+  sessionId: string,
+  threadId: string,
 ): boolean {
-	if (!rootState) return false;
-	return !listActiveSkills(rootState).some(
-		(entry) =>
-			entry.skill === skill &&
-			matchesSkillStopContext(entry, rootState, sessionId, threadId),
-	);
+  if (!rootState) return false;
+  return !listActiveSkills(rootState).some((entry) => (
+    entry.skill === skill
+    && matchesSkillStopContext(entry, rootState, sessionId, threadId)
+  ));
 }
 
 function rootModeStateIsCanonicalForStopContext(
-	state: Record<string, unknown>,
-	cwd: string,
-	sessionId: string,
-	threadId: string,
+  state: Record<string, unknown>,
+  cwd: string,
+  sessionId: string,
+  threadId: string,
 ): boolean {
-	if (!modeStateMatchesSkillStopContext(state, cwd, sessionId)) return false;
+  if (!modeStateMatchesSkillStopContext(state, cwd, sessionId)) return false;
 
-	const stateSessionId = safeString(
-		state.owner_omx_session_id ??
-			state.session_id ??
-			state.codex_session_id ??
-			state.owner_codex_session_id,
-	).trim();
-	if (sessionId && stateSessionId !== sessionId) return false;
+  const stateSessionId = safeString(
+    state.owner_omx_session_id
+      ?? state.session_id
+      ?? state.codex_session_id
+      ?? state.owner_codex_session_id,
+  ).trim();
+  if (sessionId && stateSessionId !== sessionId) return false;
 
-	const stateThreadId = safeString(
-		state.owner_codex_thread_id ?? state.thread_id,
-	).trim();
-	if (threadId && stateThreadId && stateThreadId !== threadId) return false;
+  const stateThreadId = safeString(state.owner_codex_thread_id ?? state.thread_id).trim();
+  if (threadId && stateThreadId && stateThreadId !== threadId) return false;
 
-	return true;
+  return true;
 }
 
 function hasExplicitSessionScope(state: Record<string, unknown>): boolean {
-	return (
-		safeString(
-			state.owner_omx_session_id ??
-				state.session_id ??
-				state.codex_session_id ??
-				state.owner_codex_session_id,
-		).trim() !== ""
-	);
+  return safeString(
+    state.owner_omx_session_id
+      ?? state.session_id
+      ?? state.codex_session_id
+      ?? state.owner_codex_session_id,
+  ).trim() !== "";
 }
 
-async function readStateTimestampMs(
-	state: Record<string, unknown>,
-	path: string,
-): Promise<number | null> {
-	return (
-		parseTimestampMs(state.updated_at) ??
-		parseTimestampMs(state.completed_at) ??
-		parseTimestampMs(state.created_at) ??
-		(await stat(path).then(
-			(info) => info.mtimeMs,
-			() => null,
-		))
-	);
+async function readStateTimestampMs(state: Record<string, unknown>, path: string): Promise<number | null> {
+  return parseTimestampMs(state.updated_at)
+    ?? parseTimestampMs(state.completed_at)
+    ?? parseTimestampMs(state.created_at)
+    ?? await stat(path).then((info) => info.mtimeMs, () => null);
 }
 
 async function unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
-	rootState: Record<string, unknown>,
-	rootPath: string,
-	sessionPath: string,
-	cwd: string,
-	threadId: string,
+  rootState: Record<string, unknown>,
+  rootPath: string,
+  sessionPath: string,
+  cwd: string,
+  threadId: string,
 ): Promise<boolean> {
-	if (hasExplicitSessionScope(rootState)) return false;
+  if (hasExplicitSessionScope(rootState)) return false;
 
-	const stateThreadId = safeString(
-		rootState.owner_codex_thread_id ?? rootState.thread_id,
-	).trim();
-	if (threadId && stateThreadId && stateThreadId !== threadId) return false;
+  const stateThreadId = safeString(rootState.owner_codex_thread_id ?? rootState.thread_id).trim();
+  if (threadId && stateThreadId && stateThreadId !== threadId) return false;
 
-	if (!modeStateHasExplicitMatchingCwd(rootState, cwd)) return false;
+  if (!modeStateHasExplicitMatchingCwd(rootState, cwd)) return false;
 
-	const phase = safeString(rootState.current_phase ?? rootState.currentPhase)
-		.trim()
-		.toLowerCase();
-	if (phase !== "complete" && phase !== "completed") return false;
+  const phase = safeString(rootState.current_phase ?? rootState.currentPhase).trim().toLowerCase();
+  if (phase !== "complete" && phase !== "completed") return false;
 
-	const planningComplete =
-		rootState.planning_complete === true || rootState.planningComplete === true;
-	const latestPlanPath = safeString(
-		rootState.latest_plan_path ?? rootState.latestPlanPath,
-	).trim();
-	if (!planningComplete || !latestPlanPath) return false;
+  const planningComplete = rootState.planning_complete === true || rootState.planningComplete === true;
+  const latestPlanPath = safeString(rootState.latest_plan_path ?? rootState.latestPlanPath).trim();
+  if (!planningComplete || !latestPlanPath) return false;
 
-	const sessionState = await readJsonIfExists(sessionPath);
-	if (!sessionState) return false;
-	const sessionPhase = safeString(
-		sessionState.current_phase ?? sessionState.currentPhase,
-	)
-		.trim()
-		.toLowerCase();
-	if (sessionPhase && TERMINAL_MODE_PHASES.has(sessionPhase)) return false;
+  const sessionState = await readJsonIfExists(sessionPath);
+  if (!sessionState) return false;
+  const sessionPhase = safeString(sessionState.current_phase ?? sessionState.currentPhase).trim().toLowerCase();
+  if (sessionPhase && TERMINAL_MODE_PHASES.has(sessionPhase)) return false;
 
-	const rootTimestamp = await readStateTimestampMs(rootState, rootPath);
-	const sessionTimestamp = await readStateTimestampMs(
-		sessionState,
-		sessionPath,
-	);
-	if (rootTimestamp === null || sessionTimestamp === null) return false;
-	return rootTimestamp > sessionTimestamp;
+  const rootTimestamp = await readStateTimestampMs(rootState, rootPath);
+  const sessionTimestamp = await readStateTimestampMs(sessionState, sessionPath);
+  if (rootTimestamp === null || sessionTimestamp === null) return false;
+  return rootTimestamp > sessionTimestamp;
 }
 
 async function shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
-	cwd: string,
-	stateDir: string,
-	skill: string,
-	sessionId: string,
-	threadId: string,
+  cwd: string,
+  stateDir: string,
+  skill: string,
+  sessionId: string,
+  threadId: string,
 ): Promise<boolean> {
-	const rootModeStatePath = join(stateDir, `${skill}-state.json`);
-	const rootModeState = await readJsonIfExists(rootModeStatePath);
-	if (!rootModeState) return false;
-	if (!isTerminalOrInactiveModeState(rootModeState)) return false;
+  const rootModeStatePath = join(stateDir, `${skill}-state.json`);
+  const rootModeState = await readJsonIfExists(rootModeStatePath);
+  if (!rootModeState) return false;
+  if (!isTerminalOrInactiveModeState(rootModeState)) return false;
 
-	const canonicalRoot =
-		rootModeStateIsCanonicalForStopContext(
-			rootModeState,
-			cwd,
-			sessionId,
-			threadId,
-		) &&
-		(skill !== "ralplan" ||
-			modeStateHasExplicitMatchingCwd(rootModeState, cwd));
-	const freshUnscopedRoot =
-		canonicalRoot || skill !== "ralplan"
-			? false
-			: await unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
-					rootModeState,
-					rootModeStatePath,
-					join(stateDir, "sessions", sessionId, `${skill}-state.json`),
-					cwd,
-					threadId,
-				);
-	if (!canonicalRoot && !freshUnscopedRoot) return false;
+  const canonicalRoot = rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId)
+    && (skill !== "ralplan" || modeStateHasExplicitMatchingCwd(rootModeState, cwd));
+  const freshUnscopedRoot = canonicalRoot || skill !== "ralplan"
+    ? false
+    : await unscopedRootRalplanStateIsNewerTerminalPlanningCompletion(
+      rootModeState,
+      rootModeStatePath,
+      join(stateDir, "sessions", sessionId, `${skill}-state.json`),
+      cwd,
+      threadId,
+    );
+  if (!canonicalRoot && !freshUnscopedRoot) return false;
 
-	const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
-	const rootSkillState = await readSkillActiveState(rootPath);
-	return rootSkillStateHasNoActiveSkillForStopContext(
-		rootSkillState,
-		skill,
-		sessionId,
-		threadId,
-	);
+  const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
+  const rootSkillState = await readSkillActiveState(rootPath);
+  return rootSkillStateHasNoActiveSkillForStopContext(rootSkillState, skill, sessionId, threadId);
 }
 
 async function readSessionScopedModeStateForRootSkill(
-	cwd: string,
-	stateDir: string,
-	skill: string,
-	sessionIds: string[],
+  cwd: string,
+  stateDir: string,
+  skill: string,
+  sessionIds: string[],
 ): Promise<Record<string, unknown> | null> {
-	for (const sessionId of sessionIds) {
-		const state = await readStopSessionPinnedState(
-			`${skill}-state.json`,
-			cwd,
-			sessionId,
-			stateDir,
-		);
-		if (state) return state;
-	}
-	return null;
+  for (const sessionId of sessionIds) {
+    const state = await readStopSessionPinnedState(`${skill}-state.json`, cwd, sessionId, stateDir);
+    if (state) return state;
+  }
+  return null;
 }
 
 async function reconcileStaleRootSkillActiveStateForStop(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
 ): Promise<void> {
-	const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
-	const rootState = await readSkillActiveState(rootPath);
-	if (!rootState?.active) return;
+  const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
+  const rootState = await readSkillActiveState(rootPath);
+  if (!rootState?.active) return;
 
-	const initializedSessionId = extractSessionIdFromInitializedStatePath(
-		rootState.initialized_state_path,
-	);
-	const rootSessionIds = uniqueNonEmpty([
-		sessionId,
-		safeString(rootState.session_id),
-		initializedSessionId,
-		...listActiveSkills(rootState).map((entry) => safeString(entry.session_id)),
-	]);
-	if (rootSessionIds.length === 0) return;
+  const initializedSessionId = extractSessionIdFromInitializedStatePath(rootState.initialized_state_path);
+  const rootSessionIds = uniqueNonEmpty([
+    sessionId,
+    safeString(rootState.session_id),
+    initializedSessionId,
+    ...listActiveSkills(rootState).map((entry) => safeString(entry.session_id)),
+  ]);
+  if (rootSessionIds.length === 0) return;
 
-	const activeEntries = listActiveSkills(rootState);
-	let changed = false;
-	const keptEntries = [];
-	for (const entry of activeEntries) {
-		const skill = safeString(entry.skill).trim();
-		if (!skill) continue;
-		const entrySessionId = safeString(entry.session_id).trim();
-		const candidateSessionIds = uniqueNonEmpty([
-			entrySessionId,
-			sessionId,
-			initializedSessionId,
-			safeString(rootState.session_id),
-		]);
-		const modeState = await readSessionScopedModeStateForRootSkill(
-			cwd,
-			stateDir,
-			skill,
-			candidateSessionIds,
-		);
-		if (isTerminalOrInactiveModeState(modeState)) {
-			changed = true;
-			continue;
-		}
-		keptEntries.push(entry);
-	}
+  const activeEntries = listActiveSkills(rootState);
+  let changed = false;
+  const keptEntries = [];
+  for (const entry of activeEntries) {
+    const skill = safeString(entry.skill).trim();
+    if (!skill) continue;
+    const entrySessionId = safeString(entry.session_id).trim();
+    const candidateSessionIds = uniqueNonEmpty([
+      entrySessionId,
+      sessionId,
+      initializedSessionId,
+      safeString(rootState.session_id),
+    ]);
+    const modeState = await readSessionScopedModeStateForRootSkill(cwd, stateDir, skill, candidateSessionIds);
+    if (isTerminalOrInactiveModeState(modeState)) {
+      changed = true;
+      continue;
+    }
+    keptEntries.push(entry);
+  }
 
-	if (!changed) return;
+  if (!changed) return;
 
-	const nowIso = new Date().toISOString();
-	const nextRoot: SkillActiveStateLike = {
-		...rootState,
-		active: keptEntries.length > 0,
-		skill: keptEntries[0]?.skill ?? safeString(rootState.skill).trim(),
-		phase: keptEntries[0]?.phase ?? safeString(rootState.phase).trim(),
-		updated_at: nowIso,
-		active_skills: keptEntries,
-		reconciled_at: nowIso,
-		reconciliation_reason: "stop_hook_session_state_terminal",
-	};
-	if (keptEntries.length === 0) {
-		nextRoot.phase = "inactive";
-	}
-	await writeFile(rootPath, JSON.stringify(nextRoot, null, 2));
+  const nowIso = new Date().toISOString();
+  const nextRoot: SkillActiveStateLike = {
+    ...rootState,
+    active: keptEntries.length > 0,
+    skill: keptEntries[0]?.skill ?? safeString(rootState.skill).trim(),
+    phase: keptEntries[0]?.phase ?? safeString(rootState.phase).trim(),
+    updated_at: nowIso,
+    active_skills: keptEntries,
+    reconciled_at: nowIso,
+    reconciliation_reason: "stop_hook_session_state_terminal",
+  };
+  if (keptEntries.length === 0) {
+    nextRoot.phase = "inactive";
+  }
+  await writeFile(rootPath, JSON.stringify(nextRoot, null, 2));
 }
 
 function buildRalplanContinuationStatus(
-	blocker: {
-		phase: string;
-		latestPlanPath?: string;
-		planningComplete?: boolean;
-		runOutcome?: string;
-	},
-	activeSubagentCount: number,
-	cwd: string,
+  blocker: { phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string },
+  activeSubagentCount: number,
+  cwd: string,
 ): { reason: string; systemMessage: string; stopReasonSuffix: string } {
-	const phase = blocker.phase || "planning";
-	const artifact = blocker.latestPlanPath
-		? ` Artifact: ${blocker.latestPlanPath}.`
-		: " Artifact: use the latest `.omx/plans/` ralplan artifact if present.";
+  const phase = blocker.phase || "planning";
+  const artifact = blocker.latestPlanPath
+    ? ` Artifact: ${blocker.latestPlanPath}.`
+    : " Artifact: use the latest `.omx/plans/` ralplan artifact if present.";
 
-	if (activeSubagentCount > 0) {
-		return {
-			reason: `Status: waiting — ralplan is waiting for ${activeSubagentCount} active native subagent thread(s) to finish (phase: ${phase}). Do not stop silently; wait for the subagent result, then continue from the current ralplan artifact and proceed to the next planning/review step.${artifact}`,
-			stopReasonSuffix: "waiting_subagent",
-			systemMessage: `OMX ralplan status: waiting for ${activeSubagentCount} active native subagent thread(s) at phase ${phase}; after they finish, continue from the current ralplan artifact and state the next status explicitly.`,
-		};
-	}
+  if (activeSubagentCount > 0) {
+    return {
+      reason:
+        `Status: waiting — ralplan is waiting for ${activeSubagentCount} active native subagent thread(s) to finish (phase: ${phase}). Do not stop silently; wait for the subagent result, then continue from the current ralplan artifact and proceed to the next planning/review step.${artifact}`,
+      stopReasonSuffix: "waiting_subagent",
+      systemMessage:
+        `OMX ralplan status: waiting for ${activeSubagentCount} active native subagent thread(s) at phase ${phase}; after they finish, continue from the current ralplan artifact and state the next status explicitly.`,
+    };
+  }
 
-	const normalizedPhase = phase.toLowerCase();
-	const normalizedOutcome = (blocker.runOutcome ?? "").toLowerCase();
-	const waitingForInput =
-		normalizedOutcome === "blocked_on_user" ||
-		normalizedPhase.includes("blocked") ||
-		normalizedPhase.includes("input") ||
-		normalizedPhase.includes("question");
+  const normalizedPhase = phase.toLowerCase();
+  const normalizedOutcome = (blocker.runOutcome ?? "").toLowerCase();
+  const waitingForInput =
+    normalizedOutcome === "blocked_on_user"
+    || normalizedPhase.includes("blocked")
+    || normalizedPhase.includes("input")
+    || normalizedPhase.includes("question");
 
-	if (waitingForInput) {
-		return {
-			reason: `Status: waiting_for_input — ralplan is paused for required user/operator input (phase: ${phase}). Ask the missing question or present the review choice explicitly before stopping.${artifact}`,
-			stopReasonSuffix: "waiting_input",
-			systemMessage: `OMX ralplan status: waiting for input at phase ${phase}; ask the required question or present the explicit review choice before stopping.`,
-		};
-	}
+  if (waitingForInput) {
+    return {
+      reason:
+        `Status: waiting_for_input — ralplan is paused for required user/operator input (phase: ${phase}). Ask the missing question or present the review choice explicitly before stopping.${artifact}`,
+      stopReasonSuffix: "waiting_input",
+      systemMessage:
+        `OMX ralplan status: waiting for input at phase ${phase}; ask the required question or present the explicit review choice before stopping.`,
+    };
+  }
 
-	const completeHint = blocker.planningComplete
-		? ` The planning artifacts are present; if consensus is approved, emit terminal ralplan complete/approved handoff state and stop planning. Implementation must wait for an explicit ${formatExecutionHandoffList(cwd).replaceAll("`", "")} handoff.`
-		: "";
+  const completeHint = blocker.planningComplete
+    ? ` The planning artifacts are present; if consensus is approved, emit terminal ralplan complete/approved handoff state and stop planning. Implementation must wait for an explicit ${formatExecutionHandoffList(cwd).replaceAll("`", "")} handoff.`
+    : "";
 
-	return {
-		reason: `Status: continue_from_artifact — ralplan is still active (phase: ${phase}) and has not emitted a terminal complete/paused/waiting status. Continue from the current ralplan artifact, resolve any review ambiguity conservatively or ask the user if needed, and proceed to the next planning/review step before stopping; do not begin implementation from ralplan.${artifact}${completeHint}`,
-		stopReasonSuffix: "continue_artifact",
-		systemMessage: `OMX ralplan status: continue_from_artifact at phase ${phase}; continue from the current ralplan artifact and finish by stating whether ralplan is complete, paused for review, waiting for input, or still continuing; do not begin implementation from ralplan.`,
-	};
+  return {
+    reason:
+      `Status: continue_from_artifact — ralplan is still active (phase: ${phase}) and has not emitted a terminal complete/paused/waiting status. Continue from the current ralplan artifact, resolve any review ambiguity conservatively or ask the user if needed, and proceed to the next planning/review step before stopping; do not begin implementation from ralplan.${artifact}${completeHint}`,
+    stopReasonSuffix: "continue_artifact",
+    systemMessage:
+      `OMX ralplan status: continue_from_artifact at phase ${phase}; continue from the current ralplan artifact and finish by stating whether ralplan is complete, paused for review, waiting for input, or still continuing; do not begin implementation from ralplan.`,
+  };
 }
 
 async function readStopAutoNudgePhase(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	threadId: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId: string,
 ): Promise<string> {
-	const normalizedSessionId = sessionId.trim();
-	if (normalizedSessionId) {
-		const scopedModeState = await readStopSessionPinnedState(
-			"deep-interview-state.json",
-			cwd,
-			normalizedSessionId,
-			stateDir,
-		);
-		if (
-			scopedModeState?.active === true &&
-			safeString(scopedModeState.current_phase).trim().toLowerCase() ===
-				"intent-first"
-		) {
-			return "planning";
-		}
-	} else {
-		const rootModeState = await readJsonIfExists(
-			join(stateDir, "deep-interview-state.json"),
-		);
-		if (
-			rootModeState?.active === true &&
-			safeString(rootModeState.current_phase).trim().toLowerCase() ===
-				"intent-first"
-		) {
-			return "planning";
-		}
-	}
+  const normalizedSessionId = sessionId.trim();
+  if (normalizedSessionId) {
+    const scopedModeState = await readStopSessionPinnedState("deep-interview-state.json", cwd, normalizedSessionId, stateDir);
+    if (
+      scopedModeState?.active === true
+      && safeString(scopedModeState.current_phase).trim().toLowerCase() === "intent-first"
+    ) {
+      return "planning";
+    }
+  } else {
+    const rootModeState = await readJsonIfExists(join(stateDir, "deep-interview-state.json"));
+    if (
+      rootModeState?.active === true
+      && safeString(rootModeState.current_phase).trim().toLowerCase() === "intent-first"
+    ) {
+      return "planning";
+    }
+  }
 
-	if (!normalizedSessionId) return "";
+  if (!normalizedSessionId) return "";
 
-	const canonicalState = await readVisibleSkillActiveStateForStateDir(
-		stateDir,
-		normalizedSessionId,
-	);
-	const visibleEntries = canonicalState ? listActiveSkills(canonicalState) : [];
-	const deepInterview = visibleEntries.find(
-		(entry) =>
-			entry.skill === "deep-interview" &&
-			matchesSkillStopContext(
-				entry,
-				canonicalState ?? {},
-				normalizedSessionId,
-				threadId,
-			),
-	);
-	if (!deepInterview) return "";
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, normalizedSessionId);
+  const visibleEntries = canonicalState ? listActiveSkills(canonicalState) : [];
+  const deepInterview = visibleEntries.find((entry) => (
+    entry.skill === "deep-interview"
+    && matchesSkillStopContext(entry, canonicalState ?? {}, normalizedSessionId, threadId)
+  ));
+  if (!deepInterview) return "";
 
-	const modeState = await readStopSessionPinnedState(
-		"deep-interview-state.json",
-		cwd,
-		normalizedSessionId,
-		stateDir,
-	);
-	if (!modeState || modeState.active !== true) return "";
+  const modeState = await readStopSessionPinnedState("deep-interview-state.json", cwd, normalizedSessionId, stateDir);
+  if (!modeState || modeState.active !== true) return "";
 
-	const modePhase = safeString(modeState.current_phase).trim().toLowerCase();
-	return modePhase === "intent-first" ? "planning" : "";
+  const modePhase = safeString(modeState.current_phase).trim().toLowerCase();
+  return modePhase === "intent-first" ? "planning" : "";
 }
 
 async function buildDeepInterviewQuestionStopOutput(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	threadId: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId: string,
 ): Promise<{ output: Record<string, unknown>; obligationId: string } | null> {
-	await reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords(
-		cwd,
-		sessionId,
-	);
-	if (await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
-		return null;
-	}
-	const modeState = await readStopSessionPinnedState(
-		"deep-interview-state.json",
-		cwd,
-		sessionId,
-		stateDir,
-	);
-	if (!modeState) return null;
+  await reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords(cwd, sessionId);
+  if (await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
+    return null;
+  }
+  const modeState = await readStopSessionPinnedState("deep-interview-state.json", cwd, sessionId, stateDir);
+  if (!modeState) return null;
 
-	const questionEnforcement = safeObject(modeState.question_enforcement);
-	const hasPendingQuestionObligation =
-		isPendingDeepInterviewQuestionEnforcement(questionEnforcement);
-	if (modeState.active !== true && !hasPendingQuestionObligation) return null;
+  const questionEnforcement = safeObject(modeState.question_enforcement);
+  const hasPendingQuestionObligation = isPendingDeepInterviewQuestionEnforcement(questionEnforcement);
+  if (modeState.active !== true && !hasPendingQuestionObligation) return null;
 
-	const phase = formatPhase(modeState.current_phase, "planning");
-	if (TERMINAL_MODE_PHASES.has(phase.toLowerCase()) || phase === "completing") {
-		return null;
-	}
+  const phase = formatPhase(modeState.current_phase, "planning");
+  if (TERMINAL_MODE_PHASES.has(phase.toLowerCase()) || phase === "completing") {
+    return null;
+  }
 
-	const canonicalState = await readVisibleSkillActiveStateForStateDir(
-		stateDir,
-		sessionId,
-	);
-	if (canonicalState) {
-		const blocker = listActiveSkills(canonicalState).find(
-			(entry) =>
-				entry.skill === "deep-interview" &&
-				matchesSkillStopContext(entry, canonicalState, sessionId, threadId),
-		);
-		if (!blocker) return null;
-	}
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  if (canonicalState) {
+    const blocker = listActiveSkills(canonicalState).find((entry) => (
+      entry.skill === "deep-interview"
+      && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+    ));
+    if (!blocker) return null;
+  }
 
-	if (!hasPendingQuestionObligation) {
-		return null;
-	}
+  if (!hasPendingQuestionObligation) {
+    return null;
+  }
 
-	const obligationId = safeString(questionEnforcement.obligation_id).trim();
-	if (!obligationId) return null;
+  const obligationId = safeString(questionEnforcement.obligation_id).trim();
+  if (!obligationId) return null;
 
-	const systemMessage = `OMX deep-interview is still active (phase: ${phase}) and requires a structured question via omx question before stopping; read the returned answers[] JSON before continuing.`;
+  const systemMessage =
+    `OMX deep-interview is still active (phase: ${phase}) and requires a structured question via omx question before stopping; read the returned answers[] JSON before continuing.`;
 
-	return {
-		obligationId,
-		output: {
-			decision: "block",
-			reason: `Deep interview is still active (phase: ${phase}) and has a pending structured question obligation; use \`omx question\` before stopping.`,
-			stopReason: "deep_interview_question_required",
-			systemMessage,
-		},
-	};
+  return {
+    obligationId,
+    output: {
+      decision: "block",
+      reason:
+        `Deep interview is still active (phase: ${phase}) and has a pending structured question obligation; use \`omx question\` before stopping.`,
+      stopReason: "deep_interview_question_required",
+      systemMessage,
+    },
+  };
 }
 
 function resolveRepeatableStopSessionId(
-	payload: CodexHookPayload,
-	canonicalSessionId?: string,
+  payload: CodexHookPayload,
+  canonicalSessionId?: string,
 ): string {
-	const inheritedSessionId = safeString(
-		process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID,
-	).trim();
-	return (
-		canonicalSessionId?.trim() ||
-		readPayloadSessionId(payload) ||
-		inheritedSessionId ||
-		""
-	);
+  const inheritedSessionId = safeString(process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID).trim();
+  return canonicalSessionId?.trim() || readPayloadSessionId(payload) || inheritedSessionId || "";
 }
 
 function isStateLevelStopSignatureKind(kind: string): boolean {
-	return kind === "team-worker-stop" || kind === "team-stop";
+  return kind === "team-worker-stop" || kind === "team-stop";
 }
 
 function buildRepeatableStopSignature(
-	payload: CodexHookPayload,
-	kind: string,
-	detail = "",
-	canonicalSessionId?: string,
+  payload: CodexHookPayload,
+  kind: string,
+  detail = "",
+  canonicalSessionId?: string,
 ): string {
-	const sessionId =
-		resolveRepeatableStopSessionId(payload, canonicalSessionId) || "no-session";
-	const threadId = readPayloadThreadId(payload) || "no-thread";
-	const normalizedDetail =
-		normalizeAutoNudgeSignatureText(detail) ||
-		safeString(detail).trim().toLowerCase();
-	if (isStateLevelStopSignatureKind(kind)) {
-		return [kind, sessionId, threadId, normalizedDetail || "no-detail"].join(
-			"|",
-		);
-	}
-	const turnId = readPayloadTurnId(payload);
-	const transcriptPath =
-		safeString(payload.transcript_path ?? payload.transcriptPath).trim() ||
-		"no-transcript";
-	const lastAssistantMessage =
-		normalizeAutoNudgeSignatureText(
-			payload.last_assistant_message ?? payload.lastAssistantMessage,
-		) || "no-message";
-	if (turnId) {
-		return [
-			kind,
-			sessionId,
-			threadId,
-			turnId,
-			transcriptPath,
-			lastAssistantMessage,
-			normalizedDetail || "no-detail",
-		].join("|");
-	}
-	return [
-		kind,
-		sessionId,
-		threadId,
-		transcriptPath,
-		lastAssistantMessage,
-		normalizedDetail || "no-detail",
-	].join("|");
+  const sessionId = resolveRepeatableStopSessionId(payload, canonicalSessionId) || "no-session";
+  const threadId = readPayloadThreadId(payload) || "no-thread";
+  const normalizedDetail = normalizeAutoNudgeSignatureText(detail) || safeString(detail).trim().toLowerCase();
+  if (isStateLevelStopSignatureKind(kind)) {
+    return [kind, sessionId, threadId, normalizedDetail || "no-detail"].join("|");
+  }
+  const turnId = readPayloadTurnId(payload);
+  const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim() || "no-transcript";
+  const lastAssistantMessage = normalizeAutoNudgeSignatureText(
+    payload.last_assistant_message ?? payload.lastAssistantMessage,
+  ) || "no-message";
+  if (turnId) {
+    return [
+      kind,
+      sessionId,
+      threadId,
+      turnId,
+      transcriptPath,
+      lastAssistantMessage,
+      normalizedDetail || "no-detail",
+    ].join("|");
+  }
+  return [
+    kind,
+    sessionId,
+    threadId,
+    transcriptPath,
+    lastAssistantMessage,
+    normalizedDetail || "no-detail",
+  ].join("|");
 }
 
 function formatStopStatePath(cwd: string, statePath: string): string {
-	const relativePath = relative(cwd, statePath);
-	if (!relativePath || relativePath.startsWith("..")) return statePath;
-	return relativePath.replace(/\\/g, "/");
+  const relativePath = relative(cwd, statePath);
+  if (!relativePath || relativePath.startsWith("..")) return statePath;
+  return relativePath.replace(/\\/g, "/");
 }
 
 function readNativeStopSessionKey(
-	payload: CodexHookPayload,
-	canonicalSessionId?: string,
+  payload: CodexHookPayload,
+  canonicalSessionId?: string,
 ): string {
-	return (
-		resolveRepeatableStopSessionId(payload, canonicalSessionId) ||
-		readPayloadThreadId(payload) ||
-		"global"
-	);
+  return resolveRepeatableStopSessionId(payload, canonicalSessionId) || readPayloadThreadId(payload) || "global";
 }
 
 function readPreviousNativeStopSignature(
-	state: Record<string, unknown>,
-	sessionKey: string,
+  state: Record<string, unknown>,
+  sessionKey: string,
 ): string {
-	const sessions = safeObject(state.sessions);
-	const sessionState = safeObject(sessions[sessionKey]);
-	return safeString(sessionState.last_signature).trim();
+  const sessions = safeObject(state.sessions);
+  const sessionState = safeObject(sessions[sessionKey]);
+  return safeString(sessionState.last_signature).trim();
 }
 
 function parseBoundedPositiveInteger(value: unknown, fallback: number): number {
-	const parsed = Math.trunc(Number(value));
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  const parsed = Math.trunc(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function parseBoundedNonNegativeInteger(
-	value: unknown,
-	fallback: number,
-): number {
-	const parsed = Math.trunc(Number(value));
-	return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+function parseBoundedNonNegativeInteger(value: unknown, fallback: number): number {
+  const parsed = Math.trunc(Number(value));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function normalizeOrdinaryStopProgressText(value: unknown): string {
-	return safeString(value).replace(/\s+/g, " ").trim().toLowerCase();
+  return safeString(value)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function shortenOrdinaryStopProgressText(value: string): string {
-	const trimmed = value.replace(/\s+/g, " ").trim();
-	if (trimmed.length <= ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH)
-		return trimmed;
-	return `${trimmed.slice(0, ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH - 1).trimEnd()}…`;
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH) return trimmed;
+  return `${trimmed.slice(0, ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH - 1).trimEnd()}…`;
 }
 
 function ordinaryStopProgressFingerprint(payload: CodexHookPayload): string {
-	const message =
-		normalizeOrdinaryStopProgressText(
-			payload.last_assistant_message ?? payload.lastAssistantMessage,
-		) || "<no assistant message>";
-	const mode = normalizeOrdinaryStopProgressText(payload.mode) || "ordinary";
-	return `${mode}|${message}`;
+  const message = normalizeOrdinaryStopProgressText(
+    payload.last_assistant_message ?? payload.lastAssistantMessage,
+  ) || "<no assistant message>";
+  const mode = normalizeOrdinaryStopProgressText(payload.mode) || "ordinary";
+  return `${mode}|${message}`;
 }
 
 function readIsoTimeMs(value: unknown): number | null {
-	const parsed = Date.parse(safeString(value));
-	return Number.isFinite(parsed) ? parsed : null;
+  const parsed = Date.parse(safeString(value));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 async function maybeBuildOrdinaryStopNoProgressOutput(
-	payload: CodexHookPayload,
-	stateDir: string,
-	canonicalSessionId?: string,
+  payload: CodexHookPayload,
+  stateDir: string,
+  canonicalSessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-	const lastAssistantMessage = safeString(
-		payload.last_assistant_message ?? payload.lastAssistantMessage,
-	).trim();
-	if (!lastAssistantMessage) return null;
+  const lastAssistantMessage = safeString(
+    payload.last_assistant_message ?? payload.lastAssistantMessage,
+  ).trim();
+  if (!lastAssistantMessage) return null;
 
-	const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
-	const state = (await readJsonIfExists(statePath)) ?? {};
-	const sessions = safeObject(state.sessions);
-	const sessionKey = readNativeStopSessionKey(payload, canonicalSessionId);
-	const sessionState = safeObject(sessions[sessionKey]);
-	const previousGuard = safeObject(sessionState.ordinary_no_progress_guard);
-	const fingerprint = ordinaryStopProgressFingerprint(payload);
-	const nowIso = new Date().toISOString();
-	const previousFingerprint = safeString(previousGuard.fingerprint).trim();
-	const sameFingerprint = previousFingerprint === fingerprint;
-	const firstSeenAt = sameFingerprint
-		? safeString(previousGuard.first_seen_at).trim() || nowIso
-		: nowIso;
-	const repeatCount = sameFingerprint
-		? parseBoundedPositiveInteger(previousGuard.repeat_count, 1) + 1
-		: 1;
+  const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
+  const state = await readJsonIfExists(statePath) ?? {};
+  const sessions = safeObject(state.sessions);
+  const sessionKey = readNativeStopSessionKey(payload, canonicalSessionId);
+  const sessionState = safeObject(sessions[sessionKey]);
+  const previousGuard = safeObject(sessionState.ordinary_no_progress_guard);
+  const fingerprint = ordinaryStopProgressFingerprint(payload);
+  const nowIso = new Date().toISOString();
+  const previousFingerprint = safeString(previousGuard.fingerprint).trim();
+  const sameFingerprint = previousFingerprint === fingerprint;
+  const firstSeenAt = sameFingerprint
+    ? safeString(previousGuard.first_seen_at).trim() || nowIso
+    : nowIso;
+  const repeatCount = sameFingerprint
+    ? parseBoundedPositiveInteger(previousGuard.repeat_count, 1) + 1
+    : 1;
 
-	sessions[sessionKey] = {
-		...sessionState,
-		ordinary_no_progress_guard: {
-			fingerprint,
-			first_seen_at: firstSeenAt,
-			last_seen_at: nowIso,
-			repeat_count: repeatCount,
-			last_turn_id: readPayloadTurnId(payload) || null,
-			last_thread_id: readPayloadThreadId(payload) || null,
-		},
-	};
-	await mkdir(stateDir, { recursive: true });
-	await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
+  sessions[sessionKey] = {
+    ...sessionState,
+    ordinary_no_progress_guard: {
+      fingerprint,
+      first_seen_at: firstSeenAt,
+      last_seen_at: nowIso,
+      repeat_count: repeatCount,
+      last_turn_id: readPayloadTurnId(payload) || null,
+      last_thread_id: readPayloadThreadId(payload) || null,
+    },
+  };
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
 
-	const maxRepeats = parseBoundedPositiveInteger(
-		process.env.OMX_NATIVE_STOP_NO_PROGRESS_MAX_REPEATS,
-		ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS,
-	);
-	const idleMs = parseBoundedNonNegativeInteger(
-		process.env.OMX_NATIVE_STOP_NO_PROGRESS_IDLE_MS,
-		ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS,
-	);
-	const firstSeenMs = readIsoTimeMs(firstSeenAt) ?? Date.now();
-	const elapsedMs = Math.max(0, Date.now() - firstSeenMs);
-	if (repeatCount < maxRepeats || elapsedMs < idleMs) return null;
+  const maxRepeats = parseBoundedPositiveInteger(
+    process.env.OMX_NATIVE_STOP_NO_PROGRESS_MAX_REPEATS,
+    ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS,
+  );
+  const idleMs = parseBoundedNonNegativeInteger(
+    process.env.OMX_NATIVE_STOP_NO_PROGRESS_IDLE_MS,
+    ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS,
+  );
+  const firstSeenMs = readIsoTimeMs(firstSeenAt) ?? Date.now();
+  const elapsedMs = Math.max(0, Date.now() - firstSeenMs);
+  if (repeatCount < maxRepeats || elapsedMs < idleMs) return null;
 
-	const message = shortenOrdinaryStopProgressText(
-		safeString(
-			payload.last_assistant_message ?? payload.lastAssistantMessage,
-		) || "no assistant message recorded",
-	);
-	const elapsedSeconds = Math.round(elapsedMs / 1000);
-	const diagnostic =
-		`OMX ordinary task no-progress guard triggered after ${repeatCount} repeated Stop-hook pass(es) over ~${elapsedSeconds}s with unchanged status: "${message}". ` +
-		"Emit a concise diagnostic summary now: state the last concrete progress/evidence, whether the task is complete, blocked, failed, or needs missing information, and stop instead of continuing a vague working loop.";
+  const message = shortenOrdinaryStopProgressText(
+    safeString(payload.last_assistant_message ?? payload.lastAssistantMessage) || "no assistant message recorded",
+  );
+  const elapsedSeconds = Math.round(elapsedMs / 1000);
+  const diagnostic =
+    `OMX ordinary task no-progress guard triggered after ${repeatCount} repeated Stop-hook pass(es) over ~${elapsedSeconds}s with unchanged status: "${message}". ` +
+    "Emit a concise diagnostic summary now: state the last concrete progress/evidence, whether the task is complete, blocked, failed, or needs missing information, and stop instead of continuing a vague working loop.";
 
-	return {
-		decision: "block",
-		reason: diagnostic,
-		stopReason: "ordinary_task_no_progress_guard",
-		systemMessage: diagnostic,
-	};
+  return {
+    decision: "block",
+    reason: diagnostic,
+    stopReason: "ordinary_task_no_progress_guard",
+    systemMessage: diagnostic,
+  };
 }
 
 async function persistNativeStopSignature(
-	stateDir: string,
-	payload: CodexHookPayload,
-	signature: string,
-	canonicalSessionId?: string,
+  stateDir: string,
+  payload: CodexHookPayload,
+  signature: string,
+  canonicalSessionId?: string,
 ): Promise<void> {
-	if (!signature) return;
-	const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
-	const state = (await readJsonIfExists(statePath)) ?? {};
-	const sessions = safeObject(state.sessions);
-	const sessionKey = readNativeStopSessionKey(payload, canonicalSessionId);
-	sessions[sessionKey] = {
-		...safeObject(sessions[sessionKey]),
-		last_signature: signature,
-		updated_at: new Date().toISOString(),
-	};
-	await mkdir(stateDir, { recursive: true });
-	await writeFile(
-		statePath,
-		JSON.stringify(
-			{
-				...state,
-				sessions,
-			},
-			null,
-			2,
-		),
-	);
+  if (!signature) return;
+  const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
+  const state = await readJsonIfExists(statePath) ?? {};
+  const sessions = safeObject(state.sessions);
+  const sessionKey = readNativeStopSessionKey(payload, canonicalSessionId);
+  sessions[sessionKey] = {
+    ...safeObject(sessions[sessionKey]),
+    last_signature: signature,
+    updated_at: new Date().toISOString(),
+  };
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(statePath, JSON.stringify({
+    ...state,
+    sessions,
+  }, null, 2));
 }
 
 async function maybeReturnRepeatableStopOutput(
-	payload: CodexHookPayload,
-	stateDir: string,
-	signature: string,
-	output: Record<string, unknown> | null,
-	canonicalSessionId?: string,
-	options: { allowRepeatDuringStopHook?: boolean } = {},
+  payload: CodexHookPayload,
+  stateDir: string,
+  signature: string,
+  output: Record<string, unknown> | null,
+  canonicalSessionId?: string,
+  options: { allowRepeatDuringStopHook?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
-	if (!output) return null;
-	const stopHookActive =
-		payload.stop_hook_active === true || payload.stopHookActive === true;
-	if (stopHookActive && options.allowRepeatDuringStopHook !== true) {
-		const state =
-			(await readJsonIfExists(join(stateDir, NATIVE_STOP_STATE_FILE))) ?? {};
-		const previousSignature = readPreviousNativeStopSignature(
-			state,
-			readNativeStopSessionKey(payload, canonicalSessionId),
-		);
-		if (!signature || previousSignature === signature) {
-			return null;
-		}
-	}
-	await persistNativeStopSignature(
-		stateDir,
-		payload,
-		signature,
-		canonicalSessionId,
-	);
-	return output;
+  if (!output) return null;
+  const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
+  if (stopHookActive && options.allowRepeatDuringStopHook !== true) {
+    const state = await readJsonIfExists(join(stateDir, NATIVE_STOP_STATE_FILE)) ?? {};
+    const previousSignature = readPreviousNativeStopSignature(
+      state,
+      readNativeStopSessionKey(payload, canonicalSessionId),
+    );
+    if (!signature || previousSignature === signature) {
+      return null;
+    }
+  }
+  await persistNativeStopSignature(stateDir, payload, signature, canonicalSessionId);
+  return output;
 }
 
 async function returnPersistentStopBlock(
-	payload: CodexHookPayload,
-	stateDir: string,
-	signatureKind: string,
-	signatureValue: string,
-	output: Record<string, unknown> | null,
-	canonicalSessionId?: string,
-	options: { allowRepeatDuringStopHook?: boolean } = {
-		allowRepeatDuringStopHook: true,
-	},
+  payload: CodexHookPayload,
+  stateDir: string,
+  signatureKind: string,
+  signatureValue: string,
+  output: Record<string, unknown> | null,
+  canonicalSessionId?: string,
+  options: { allowRepeatDuringStopHook?: boolean } = { allowRepeatDuringStopHook: true },
 ): Promise<Record<string, unknown> | null> {
-	return await maybeReturnRepeatableStopOutput(
-		payload,
-		stateDir,
-		buildRepeatableStopSignature(
-			payload,
-			signatureKind,
-			signatureValue,
-			canonicalSessionId,
-		),
-		output,
-		canonicalSessionId,
-		options,
-	);
+  return await maybeReturnRepeatableStopOutput(
+    payload,
+    stateDir,
+    buildRepeatableStopSignature(payload, signatureKind, signatureValue, canonicalSessionId),
+    output,
+    canonicalSessionId,
+    options,
+  );
 }
 
 async function findCanonicalActiveTeamForSession(
-	cwd: string,
-	sessionId: string,
-	threadId?: string,
+  cwd: string,
+  sessionId: string,
+  threadId?: string,
 ): Promise<{ teamName: string; phase: string } | null> {
-	if (!sessionId.trim()) return null;
-	const teamsRoot = join(resolveCanonicalTeamStateRoot(cwd), "team");
-	if (!existsSync(teamsRoot)) return null;
+  if (!sessionId.trim()) return null;
+  const teamsRoot = join(resolveCanonicalTeamStateRoot(cwd), "team");
+  if (!existsSync(teamsRoot)) return null;
 
-	const entries = await readdir(teamsRoot, { withFileTypes: true }).catch(
-		() => [],
-	);
-	for (const entry of entries) {
-		if (!entry.isDirectory()) continue;
-		const teamName = entry.name.trim();
-		if (!teamName) continue;
+  const entries = await readdir(teamsRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const teamName = entry.name.trim();
+    if (!teamName) continue;
 
-		const [manifest, phaseState] = await Promise.all([
-			readTeamManifestV2(teamName, cwd),
-			readTeamPhase(teamName, cwd),
-		]);
-		if (!manifest || !phaseState) continue;
-		const ownerSessionId = (manifest.leader?.session_id ?? "").trim();
-		if (ownerSessionId && ownerSessionId !== sessionId.trim()) continue;
-		if (
-			!teamStateMatchesThreadForStop(
-				manifest.leader as unknown as Record<string, unknown>,
-				threadId,
-			)
-		)
-			continue;
-		if (!isNonTerminalPhase(phaseState.current_phase)) continue;
+    const [manifest, phaseState] = await Promise.all([
+      readTeamManifestV2(teamName, cwd),
+      readTeamPhase(teamName, cwd),
+    ]);
+    if (!manifest || !phaseState) continue;
+    const ownerSessionId = (manifest.leader?.session_id ?? "").trim();
+    if (ownerSessionId && ownerSessionId !== sessionId.trim()) continue;
+    if (!teamStateMatchesThreadForStop(manifest.leader as unknown as Record<string, unknown>, threadId)) continue;
+    if (!isNonTerminalPhase(phaseState.current_phase)) continue;
 
-		return {
-			teamName,
-			phase: formatPhase(phaseState.current_phase),
-		};
-	}
+    return {
+      teamName,
+      phase: formatPhase(phaseState.current_phase),
+    };
+  }
 
-	return null;
+  return null;
 }
 
 async function resolveActiveTeamNameForStop(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	threadId?: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId?: string,
 ): Promise<string> {
-	const directState = await readTeamModeStateForStop(
-		cwd,
-		stateDir,
-		sessionId,
-		threadId,
-	);
-	const directTeamName = safeString(directState?.state.team_name).trim();
-	if (directState?.state.active === true && directTeamName)
-		return directTeamName;
+  const directState = await readTeamModeStateForStop(cwd, stateDir, sessionId, threadId);
+  const directTeamName = safeString(directState?.state.team_name).trim();
+  if (directState?.state.active === true && directTeamName) return directTeamName;
 
-	const canonicalTeam = await findCanonicalActiveTeamForSession(
-		cwd,
-		sessionId,
-		threadId,
-	);
-	return canonicalTeam?.teamName ?? "";
+  const canonicalTeam = await findCanonicalActiveTeamForSession(cwd, sessionId, threadId);
+  return canonicalTeam?.teamName ?? "";
 }
 
 async function maybeBuildReleaseReadinessFinalizeStopOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
 ): Promise<{ matched: boolean; output: Record<string, unknown> | null }> {
-	if (!sessionId) return { matched: false, output: null };
+  if (!sessionId) return { matched: false, output: null };
 
-	const teamName = await resolveActiveTeamNameForStop(
-		cwd,
-		stateDir,
-		sessionId,
-		readPayloadThreadId(payload),
-	);
-	if (!teamName) return { matched: false, output: null };
+  const teamName = await resolveActiveTeamNameForStop(cwd, stateDir, sessionId, readPayloadThreadId(payload));
+  if (!teamName) return { matched: false, output: null };
 
-	const explicitReleaseReadinessContext =
-		hasReleaseReadinessMode(payload) ||
-		(await hasReleaseReadinessStopMarker(cwd, stateDir, sessionId, teamName));
-	if (!explicitReleaseReadinessContext) {
-		return { matched: false, output: null };
-	}
+  const explicitReleaseReadinessContext =
+    hasReleaseReadinessMode(payload)
+    || await hasReleaseReadinessStopMarker(cwd, stateDir, sessionId, teamName);
+  if (!explicitReleaseReadinessContext) {
+    return { matched: false, output: null };
+  }
 
-	const summary = extractStableFinalRecommendationSummary(
-		safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
-	);
-	if (!summary) return { matched: false, output: null };
+  const summary = extractStableFinalRecommendationSummary(
+    safeString(payload.last_assistant_message ?? payload.lastAssistantMessage),
+  );
+  if (!summary) return { matched: false, output: null };
 
-	const leaderAttention = await readTeamLeaderAttention(teamName, cwd);
-	if (
-		!leaderAttention ||
-		leaderAttention.leader_decision_state !== "done_waiting_on_leader" ||
-		leaderAttention.work_remaining !== false
-	) {
-		return { matched: false, output: null };
-	}
+  const leaderAttention = await readTeamLeaderAttention(teamName, cwd);
+  if (
+    !leaderAttention
+    || leaderAttention.leader_decision_state !== "done_waiting_on_leader"
+    || leaderAttention.work_remaining !== false
+  ) {
+    return { matched: false, output: null };
+  }
 
-	const signature = buildStableFinalRecommendationStopSignature(
-		payload,
-		teamName,
-		summary,
-	);
-	const output = await maybeReturnRepeatableStopOutput(
-		payload,
-		stateDir,
-		signature,
-		{
-			decision: "block",
-			reason: `Stable final recommendation already reached with no active worker tasks. Emit exactly one concise final decision summary aligned to "${summary}" with no filler or residual acknowledgements (for example "yes"), then stop.`,
-			stopReason: "release_readiness_auto_finalize",
-			systemMessage: RELEASE_READINESS_FINALIZE_SYSTEM_MESSAGE,
-		},
-		sessionId,
-	);
-	return { matched: true, output };
+  const signature = buildStableFinalRecommendationStopSignature(payload, teamName, summary);
+  const output = await maybeReturnRepeatableStopOutput(
+    payload,
+    stateDir,
+    signature,
+    {
+      decision: "block",
+      reason:
+        `Stable final recommendation already reached with no active worker tasks. Emit exactly one concise final decision summary aligned to "${summary}" with no filler or residual acknowledgements (for example "yes"), then stop.`,
+      stopReason: "release_readiness_auto_finalize",
+      systemMessage: RELEASE_READINESS_FINALIZE_SYSTEM_MESSAGE,
+    },
+    sessionId,
+  );
+  return { matched: true, output };
 }
 
 async function buildSkillStopOutput(
-	cwd: string,
-	stateDir: string,
-	sessionId: string,
-	threadId: string,
+  cwd: string,
+  stateDir: string,
+  sessionId: string,
+  threadId: string,
 ): Promise<Record<string, unknown> | null> {
-	const blocker = await readBlockingSkillForStop(
-		cwd,
-		stateDir,
-		sessionId,
-		threadId,
-	);
-	if (!blocker) return null;
+  const blocker = await readBlockingSkillForStop(cwd, stateDir, sessionId, threadId);
+  if (!blocker) return null;
 
-	const subagentSummary = await readSubagentSessionSummary(
-		cwd,
-		sessionId,
-	).catch(() => null);
-	const activeSubagentCount =
-		subagentSummary?.activeSubagentThreadIds.length ?? 0;
+  const subagentSummary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
+  const activeSubagentCount = subagentSummary?.activeSubagentThreadIds.length ?? 0;
 
-	if (blocker.skill === "ralplan") {
-		const status = buildRalplanContinuationStatus(
-			blocker,
-			activeSubagentCount,
-			cwd,
-		);
-		return {
-			decision: "block",
-			reason: status.reason,
-			stopReason: `skill_${blocker.skill}_${blocker.phase}_${status.stopReasonSuffix}`,
-			systemMessage: status.systemMessage,
-		};
-	}
+  if (blocker.skill === "ralplan") {
+    const status = buildRalplanContinuationStatus(blocker, activeSubagentCount, cwd);
+    return {
+      decision: "block",
+      reason: status.reason,
+      stopReason: `skill_${blocker.skill}_${blocker.phase}_${status.stopReasonSuffix}`,
+      systemMessage: status.systemMessage,
+    };
+  }
 
-	if (activeSubagentCount > 0) {
-		return null;
-	}
+  if (activeSubagentCount > 0) {
+    return null;
+  }
 
-	return {
-		decision: "block",
-		reason: `OMX skill ${blocker.skill} is still active (phase: ${blocker.phase}); continue until the current ${blocker.skill} workflow reaches a terminal state.`,
-		stopReason: `skill_${blocker.skill}_${blocker.phase}`,
-		systemMessage: `OMX skill ${blocker.skill} is still active (phase: ${blocker.phase}).`,
-	};
+  return {
+    decision: "block",
+    reason: `OMX skill ${blocker.skill} is still active (phase: ${blocker.phase}); continue until the current ${blocker.skill} workflow reaches a terminal state.`,
+    stopReason: `skill_${blocker.skill}_${blocker.phase}`,
+    systemMessage: `OMX skill ${blocker.skill} is still active (phase: ${blocker.phase}).`,
+  };
 }
 
 async function findActiveTeamForTransportFailure(
-	cwd: string,
-	sessionId: string,
+  cwd: string,
+  sessionId: string,
 ): Promise<{ teamName: string; phase: string } | null> {
-	const teamState = await readModeStateForSession("team", sessionId, cwd);
-	if (teamState?.active === true) {
-		const teamName = safeString(teamState.team_name).trim();
-		const coarsePhase = formatPhase(teamState.current_phase);
-		if (teamName) {
-			const canonicalPhase =
-				(await readTeamPhase(teamName, cwd))?.current_phase ?? coarsePhase;
-			if (isNonTerminalPhase(canonicalPhase)) {
-				return { teamName, phase: formatPhase(canonicalPhase) };
-			}
-		}
-	}
+  const teamState = await readModeStateForSession("team", sessionId, cwd);
+  if (teamState?.active === true) {
+    const teamName = safeString(teamState.team_name).trim();
+    const coarsePhase = formatPhase(teamState.current_phase);
+    if (teamName) {
+      const canonicalPhase = (await readTeamPhase(teamName, cwd))?.current_phase ?? coarsePhase;
+      if (isNonTerminalPhase(canonicalPhase)) {
+        return { teamName, phase: formatPhase(canonicalPhase) };
+      }
+    }
+  }
 
-	return await findCanonicalActiveTeamForSession(cwd, sessionId);
+  return await findCanonicalActiveTeamForSession(cwd, sessionId);
 }
 
 async function markTeamTransportFailure(
-	cwd: string,
-	payload: CodexHookPayload,
+  cwd: string,
+  payload: CodexHookPayload,
 ): Promise<void> {
-	const canonicalSessionId = await resolveInternalSessionIdForPayload(
-		cwd,
-		readPayloadSessionId(payload),
-	);
-	const activeTeam = await findActiveTeamForTransportFailure(
-		cwd,
-		canonicalSessionId,
-	);
-	if (!activeTeam) return;
+  const canonicalSessionId = await resolveInternalSessionIdForPayload(cwd, readPayloadSessionId(payload));
+  const activeTeam = await findActiveTeamForTransportFailure(cwd, canonicalSessionId);
+  if (!activeTeam) return;
 
-	const nowIso = new Date().toISOString();
-	const existingPhase = await readTeamPhase(activeTeam.teamName, cwd);
-	const currentPhase = existingPhase?.current_phase ?? activeTeam.phase;
-	if (!isNonTerminalPhase(currentPhase)) return;
+  const nowIso = new Date().toISOString();
+  const existingPhase = await readTeamPhase(activeTeam.teamName, cwd);
+  const currentPhase = existingPhase?.current_phase ?? activeTeam.phase;
+  if (!isNonTerminalPhase(currentPhase)) return;
 
-	await writeTeamPhase(
-		activeTeam.teamName,
-		{
-			current_phase: "failed",
-			max_fix_attempts: existingPhase?.max_fix_attempts ?? 3,
-			current_fix_attempt: existingPhase?.current_fix_attempt ?? 0,
-			transitions: [
-				...(existingPhase?.transitions ?? []),
-				{
-					from: formatPhase(currentPhase),
-					to: "failed",
-					at: nowIso,
-					reason: "mcp_transport_dead",
-				},
-			],
-			updated_at: nowIso,
-		},
-		cwd,
-	);
+  await writeTeamPhase(
+    activeTeam.teamName,
+    {
+      current_phase: "failed",
+      max_fix_attempts: existingPhase?.max_fix_attempts ?? 3,
+      current_fix_attempt: existingPhase?.current_fix_attempt ?? 0,
+      transitions: [
+        ...(existingPhase?.transitions ?? []),
+        {
+          from: formatPhase(currentPhase),
+          to: "failed",
+          at: nowIso,
+          reason: "mcp_transport_dead",
+        },
+      ],
+      updated_at: nowIso,
+    },
+    cwd,
+  );
 
-	const existingAttention = await readTeamLeaderAttention(
-		activeTeam.teamName,
-		cwd,
-	);
-	await writeTeamLeaderAttention(
-		activeTeam.teamName,
-		{
-			team_name: activeTeam.teamName,
-			updated_at: nowIso,
-			source: "notify_hook",
-			leader_decision_state:
-				existingAttention?.leader_decision_state ?? "still_actionable",
-			leader_attention_pending: true,
-			leader_attention_reason: "mcp_transport_dead",
-			attention_reasons: [
-				...new Set([
-					...(existingAttention?.attention_reasons ?? []),
-					"mcp_transport_dead",
-				]),
-			],
-			leader_stale: existingAttention?.leader_stale ?? false,
-			leader_session_active: existingAttention?.leader_session_active ?? true,
-			leader_session_id:
-				existingAttention?.leader_session_id ?? (canonicalSessionId || null),
-			leader_session_stopped_at:
-				existingAttention?.leader_session_stopped_at ?? null,
-			unread_leader_message_count:
-				existingAttention?.unread_leader_message_count ?? 0,
-			work_remaining: existingAttention?.work_remaining ?? true,
-			stalled_for_ms: existingAttention?.stalled_for_ms ?? null,
-		},
-		cwd,
-	);
+  const existingAttention = await readTeamLeaderAttention(activeTeam.teamName, cwd);
+  await writeTeamLeaderAttention(
+    activeTeam.teamName,
+    {
+      team_name: activeTeam.teamName,
+      updated_at: nowIso,
+      source: "notify_hook",
+      leader_decision_state: existingAttention?.leader_decision_state ?? "still_actionable",
+      leader_attention_pending: true,
+      leader_attention_reason: "mcp_transport_dead",
+      attention_reasons: [
+        ...new Set([...(existingAttention?.attention_reasons ?? []), "mcp_transport_dead"]),
+      ],
+      leader_stale: existingAttention?.leader_stale ?? false,
+      leader_session_active: existingAttention?.leader_session_active ?? true,
+      leader_session_id: existingAttention?.leader_session_id ?? (canonicalSessionId || null),
+      leader_session_stopped_at: existingAttention?.leader_session_stopped_at ?? null,
+      unread_leader_message_count: existingAttention?.unread_leader_message_count ?? 0,
+      work_remaining: existingAttention?.work_remaining ?? true,
+      stalled_for_ms: existingAttention?.stalled_for_ms ?? null,
+    },
+    cwd,
+  );
 
-	await appendTeamEvent(
-		activeTeam.teamName,
-		{
-			type: "leader_attention",
-			worker: "leader-fixed",
-			reason: "mcp_transport_dead",
-			metadata: {
-				phase_before: formatPhase(currentPhase),
-			},
-		},
-		cwd,
-	).catch(() => {});
+  await appendTeamEvent(
+    activeTeam.teamName,
+    {
+      type: "leader_attention",
+      worker: "leader-fixed",
+      reason: "mcp_transport_dead",
+      metadata: {
+        phase_before: formatPhase(currentPhase),
+      },
+    },
+    cwd,
+  ).catch(() => {});
 
-	try {
-		await updateModeState(
-			"team",
-			{
-				current_phase: "failed",
-				error: "mcp_transport_dead",
-				last_turn_at: nowIso,
-			},
-			cwd,
-			canonicalSessionId || undefined,
-		);
-	} catch {
-		// Canonical team state already carries the preserved failure for coarse-state-missing sessions.
-	}
+  try {
+    await updateModeState(
+      "team",
+      {
+        current_phase: "failed",
+        error: "mcp_transport_dead",
+        last_turn_at: nowIso,
+      },
+      cwd,
+      canonicalSessionId || undefined,
+    );
+  } catch {
+    // Canonical team state already carries the preserved failure for coarse-state-missing sessions.
+  }
 }
 
 async function buildStopHookOutput(
-	payload: CodexHookPayload,
-	cwd: string,
-	stateDir: string,
-	options: { skipRalphStopBlock?: boolean } = {},
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  options: { skipRalphStopBlock?: boolean; canonicalSessionId?: string } = {},
 ): Promise<Record<string, unknown> | null> {
-	if (isStopExempt(payload)) {
-		return null;
-	}
+  if (isStopExempt(payload)) {
+    return null;
+  }
 
-	const sessionId = readPayloadSessionId(payload);
-	const canonicalSessionId = await resolveInternalSessionIdForPayload(
-		cwd,
-		sessionId,
-	);
-	const threadId = readPayloadThreadId(payload);
-	const suppressParentWorkflowStop =
-		shouldSuppressParentWorkflowStopForSideConversation(payload);
-	if (canonicalSessionId) {
-		await reconcileStaleRootSkillActiveStateForStop(
-			cwd,
-			stateDir,
-			canonicalSessionId,
-		);
-		if (
-			await hasAuthoritativeInactiveSkillStopState(
-				cwd,
-				stateDir,
-				"ralplan",
-				canonicalSessionId,
-				threadId,
-			)
-		) {
-			await clearNativeStopSessionEntries(
-				stateDir,
-				payload,
-				canonicalSessionId,
-			);
-		}
-	}
-	if (suppressParentWorkflowStop) {
-		return null;
-	}
-	const execFollowupOutput = await buildExecFollowupStopOutput(
-		cwd,
-		canonicalSessionId,
-	);
-	if (execFollowupOutput) return execFollowupOutput;
-	const ralphOwnerContext = {
-		payloadSessionId: sessionId,
-		threadId,
-		tmuxPaneId: safeString(process.env.TMUX_PANE).trim(),
-		payload,
-	};
-	const ralphCompletionAuditBlock =
-		options.skipRalphStopBlock === true
-			? null
-			: await readRalphCompletionAuditBlockState(
-					cwd,
-					stateDir,
-					canonicalSessionId,
-					ralphOwnerContext,
-				);
-	if (ralphCompletionAuditBlock) {
-		await reopenRalphCompletionAuditBlock(ralphCompletionAuditBlock);
-		const blockingPath = formatStopStatePath(
-			cwd,
-			ralphCompletionAuditBlock.path,
-		);
-		const systemMessage = [
-			`OMX Ralph completion audit is missing required evidence (${ralphCompletionAuditBlock.reason}; state: ${blockingPath}).`,
-			"Continue verification and do not report complete yet.",
-			"Record machine-readable completion evidence before stopping:",
-			'- either set "completion_audit" on the Ralph state object, for example: omx state write --input \'{"mode":"ralph","active":false,"current_phase":"complete","completion_audit":{"passed":true,"prompt_to_artifact_checklist":["..."],"verification_evidence":["..."]}}\' --json',
-			"- or set completion_audit_path / completion_audit_evidence_path to a repo-relative JSON file with those same fields.",
-			"Markdown artifacts and flat top-level checklist/evidence fields are not accepted by the Ralph Stop gate.",
-		].join(" ");
-		return await returnPersistentStopBlock(
-			payload,
-			stateDir,
-			"ralph-completion-audit-stop",
-			`${blockingPath}|${ralphCompletionAuditBlock.reason}`,
-			{
-				decision: "block",
-				reason: systemMessage,
-				stopReason: `ralph_completion_audit_${ralphCompletionAuditBlock.reason}`,
-				systemMessage,
-			},
-			canonicalSessionId,
-			{ allowRepeatDuringStopHook: true },
-		);
-	}
-	const ralphState =
-		options.skipRalphStopBlock === true
-			? null
-			: await readActiveRalphState(
-					cwd,
-					stateDir,
-					canonicalSessionId,
-					ralphOwnerContext,
-				);
-	if (!ralphState) {
-		const autoresearchState = await readActiveAutoresearchState(
-			cwd,
-			canonicalSessionId,
-		);
-		if (autoresearchState) {
-			const completion = await readAutoresearchCompletionStatus(
-				cwd,
-				canonicalSessionId!.trim(),
-			);
-			if (!completion.complete) {
-				const currentPhase =
-					safeString(
-						autoresearchState.current_phase ?? autoresearchState.currentPhase,
-					).trim() || "executing";
-				const systemMessage = `OMX autoresearch is still active (phase: ${currentPhase}); continue until validator evidence is complete before stopping.`;
-				return await maybeReturnRepeatableStopOutput(
-					payload,
-					stateDir,
-					buildRepeatableStopSignature(
-						payload,
-						"autoresearch-stop",
-						`${currentPhase}|${completion.reason}`,
-						canonicalSessionId,
-					),
-					{
-						decision: "block",
-						reason: systemMessage,
-						stopReason: `autoresearch_${currentPhase}`,
-						systemMessage,
-					},
-					canonicalSessionId,
-					{ allowRepeatDuringStopHook: true },
-				);
-			}
-		}
+  const sessionId = readPayloadSessionId(payload);
+  const canonicalSessionId = options.canonicalSessionId
+    ?? await resolveInternalSessionIdForPayload(cwd, sessionId);
+  const threadId = readPayloadThreadId(payload);
+  const suppressParentWorkflowStop = shouldSuppressParentWorkflowStopForSideConversation(payload);
+  if (canonicalSessionId) {
+    await reconcileStaleRootSkillActiveStateForStop(cwd, stateDir, canonicalSessionId);
+    if (await hasAuthoritativeInactiveSkillStopState(cwd, stateDir, "ralplan", canonicalSessionId, threadId)) {
+      await clearNativeStopSessionEntries(stateDir, payload, canonicalSessionId);
+    }
+  }
+  if (suppressParentWorkflowStop) {
+    return null;
+  }
+  const execFollowupOutput = await buildExecFollowupStopOutput(cwd, canonicalSessionId);
+  if (execFollowupOutput) return execFollowupOutput;
+  const ralphOwnerContext = {
+    payloadSessionId: sessionId,
+    threadId,
+    tmuxPaneId: safeString(process.env.TMUX_PANE).trim(),
+    payload,
+  };
+  const ralphCompletionAuditBlock = options.skipRalphStopBlock === true
+    ? null
+    : await readRalphCompletionAuditBlockState(cwd, stateDir, canonicalSessionId, ralphOwnerContext);
+  if (ralphCompletionAuditBlock) {
+    await reopenRalphCompletionAuditBlock(ralphCompletionAuditBlock);
+    const blockingPath = formatStopStatePath(cwd, ralphCompletionAuditBlock.path);
+    const systemMessage = [
+      `OMX Ralph completion audit is missing required evidence (${ralphCompletionAuditBlock.reason}; state: ${blockingPath}).`,
+      "Continue verification and do not report complete yet.",
+      "Record machine-readable completion evidence before stopping:",
+      '- either set "completion_audit" on the Ralph state object, for example: omx state write --input \'{"mode":"ralph","active":false,"current_phase":"complete","completion_audit":{"passed":true,"prompt_to_artifact_checklist":["..."],"verification_evidence":["..."]}}\' --json',
+      "- or set completion_audit_path / completion_audit_evidence_path to a repo-relative JSON file with those same fields.",
+      "Markdown artifacts and flat top-level checklist/evidence fields are not accepted by the Ralph Stop gate.",
+    ].join(" ");
+    return await returnPersistentStopBlock(
+      payload,
+      stateDir,
+      "ralph-completion-audit-stop",
+      `${blockingPath}|${ralphCompletionAuditBlock.reason}`,
+      {
+        decision: "block",
+        reason: systemMessage,
+        stopReason: `ralph_completion_audit_${ralphCompletionAuditBlock.reason}`,
+        systemMessage,
+      },
+      canonicalSessionId,
+      { allowRepeatDuringStopHook: true },
+    );
+  }
+  const ralphState = options.skipRalphStopBlock === true
+    ? null
+    : await readActiveRalphState(cwd, stateDir, sessionId || canonicalSessionId, ralphOwnerContext);
+  if (!ralphState) {
+    const autoresearchState = await readActiveAutoresearchState(cwd, canonicalSessionId);
+    if (autoresearchState) {
+      const completion = await readAutoresearchCompletionStatus(cwd, canonicalSessionId!.trim());
+      if (!completion.complete) {
+        const currentPhase = safeString(autoresearchState.current_phase ?? autoresearchState.currentPhase).trim() || 'executing';
+        const systemMessage = `OMX autoresearch is still active (phase: ${currentPhase}); continue until validator evidence is complete before stopping.`;
+        return await maybeReturnRepeatableStopOutput(
+          payload,
+          stateDir,
+          buildRepeatableStopSignature(payload, 'autoresearch-stop', `${currentPhase}|${completion.reason}`, canonicalSessionId),
+          {
+            decision: 'block',
+            reason: systemMessage,
+            stopReason: `autoresearch_${currentPhase}`,
+            systemMessage,
+          },
+          canonicalSessionId,
+          { allowRepeatDuringStopHook: true },
+        );
+      }
+    }
 
-		const teamWorkerDecision = await resolveTeamWorkerStopDecision(cwd);
-		if (teamWorkerDecision.kind === "blocked") {
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"team-worker-stop",
-				safeString(teamWorkerDecision.output.stopReason),
-				teamWorkerDecision.output,
-				canonicalSessionId,
-				{
-					allowRepeatDuringStopHook:
-						teamWorkerDecision.allowRepeatDuringStopHook,
-				},
-			);
-		}
-		if (teamWorkerDecision.kind === "allowed") {
-			try {
-				await maybeNudgeLeaderForAllowedWorkerStop({
-					stateDir: teamWorkerDecision.stateDir,
-					logsDir: join(cwd, ".omx", "logs"),
-					workerContext: teamWorkerDecision.workerContext,
-				});
-			} catch (err) {
-				void err;
-			}
-			return null;
-		}
+    const teamWorkerDecision = await resolveTeamWorkerStopDecision(cwd);
+    if (teamWorkerDecision.kind === "blocked") {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "team-worker-stop",
+        safeString(teamWorkerDecision.output.stopReason),
+        teamWorkerDecision.output,
+        canonicalSessionId,
+        { allowRepeatDuringStopHook: teamWorkerDecision.allowRepeatDuringStopHook },
+      );
+    }
+    if (teamWorkerDecision.kind === "allowed") {
+      try {
+        await maybeNudgeLeaderForAllowedWorkerStop({
+          stateDir: teamWorkerDecision.stateDir,
+          logsDir: join(cwd, ".omx", "logs"),
+          workerContext: teamWorkerDecision.workerContext,
+        });
+      } catch (err) {
+        void err;
+      }
+      return null;
+    }
 
-		const autopilotOutput = await buildModeBasedStopOutput(
-			"autopilot",
-			cwd,
-			canonicalSessionId,
-		);
-		if (autopilotOutput) {
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"autopilot-stop",
-				safeString(autopilotOutput.stopReason),
-				autopilotOutput,
-				canonicalSessionId,
-				{ allowRepeatDuringStopHook: false },
-			);
-		}
+    const autopilotOutput = await buildModeBasedStopOutput("autopilot", cwd, canonicalSessionId);
+    if (autopilotOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "autopilot-stop",
+        safeString(autopilotOutput.stopReason),
+        autopilotOutput,
+        canonicalSessionId,
+        { allowRepeatDuringStopHook: false },
+      );
+    }
 
-		const ultraworkOutput = await buildModeBasedStopOutput(
-			"ultrawork",
-			cwd,
-			canonicalSessionId,
-		);
-		if (ultraworkOutput) {
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"ultrawork-stop",
-				safeString(ultraworkOutput.stopReason),
-				ultraworkOutput,
-				canonicalSessionId,
-				{ allowRepeatDuringStopHook: false },
-			);
-		}
+    const ultraworkOutput = await buildModeBasedStopOutput("ultrawork", cwd, canonicalSessionId);
+    if (ultraworkOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "ultrawork-stop",
+        safeString(ultraworkOutput.stopReason),
+        ultraworkOutput,
+        canonicalSessionId,
+        { allowRepeatDuringStopHook: false },
+      );
+    }
 
-		const ultraqaOutput = await buildModeBasedStopOutput(
-			"ultraqa",
-			cwd,
-			canonicalSessionId,
-		);
-		if (ultraqaOutput) {
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"ultraqa-stop",
-				safeString(ultraqaOutput.stopReason),
-				ultraqaOutput,
-				canonicalSessionId,
-			);
-		}
+    const ultraqaOutput = await buildModeBasedStopOutput("ultraqa", cwd, canonicalSessionId);
+    if (ultraqaOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "ultraqa-stop",
+        safeString(ultraqaOutput.stopReason),
+        ultraqaOutput,
+        canonicalSessionId,
+      );
+    }
 
-		const releaseReadinessFinalizeResult =
-			await maybeBuildReleaseReadinessFinalizeStopOutput(
-				payload,
-				cwd,
-				stateDir,
-				canonicalSessionId,
-			);
-		if (releaseReadinessFinalizeResult.matched)
-			return releaseReadinessFinalizeResult.output;
+    const releaseReadinessFinalizeResult = await maybeBuildReleaseReadinessFinalizeStopOutput(
+      payload,
+      cwd,
+      stateDir,
+      canonicalSessionId,
+    );
+    if (releaseReadinessFinalizeResult.matched) return releaseReadinessFinalizeResult.output;
 
-		const teamOutput = await buildTeamStopOutput(
-			cwd,
-			canonicalSessionId,
-			threadId,
-		);
-		if (teamOutput) {
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"team-stop",
-				safeString(teamOutput.stopReason),
-				teamOutput,
-				canonicalSessionId,
-			);
-		}
+    const teamOutput = await buildTeamStopOutput(cwd, canonicalSessionId, threadId);
+    if (teamOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "team-stop",
+        safeString(teamOutput.stopReason),
+        teamOutput,
+        canonicalSessionId,
+      );
+    }
 
-		if (canonicalSessionId) {
-			const deepInterviewQuestionOutput =
-				await buildDeepInterviewQuestionStopOutput(
-					cwd,
-					stateDir,
-					canonicalSessionId,
-					threadId,
-				);
-			if (deepInterviewQuestionOutput) {
-				return await returnPersistentStopBlock(
-					payload,
-					stateDir,
-					"deep-interview-question-stop",
-					deepInterviewQuestionOutput.obligationId,
-					deepInterviewQuestionOutput.output,
-					canonicalSessionId,
-				);
-			}
+    if (canonicalSessionId) {
+      const deepInterviewQuestionOutput = await buildDeepInterviewQuestionStopOutput(
+        cwd,
+        stateDir,
+        canonicalSessionId,
+        threadId,
+      );
+      if (deepInterviewQuestionOutput) {
+        return await returnPersistentStopBlock(
+          payload,
+          stateDir,
+          "deep-interview-question-stop",
+          deepInterviewQuestionOutput.obligationId,
+          deepInterviewQuestionOutput.output,
+          canonicalSessionId,
+        );
+      }
 
-			const canonicalTeam = (await readCanonicalTerminalRunStateForStop(
-				cwd,
-				canonicalSessionId,
-				"team",
-			))
-				? null
-				: await findCanonicalActiveTeamForSession(
-						cwd,
-						canonicalSessionId,
-						threadId,
-					);
-			if (canonicalTeam) {
-				const canonicalTeamOutput = buildTeamStopOutputForPhase(
-					canonicalTeam.teamName,
-					canonicalTeam.phase,
-				);
-				const repeatedCanonicalTeamOutput = await returnPersistentStopBlock(
-					payload,
-					stateDir,
-					"team-stop",
-					`${canonicalTeam.teamName}|${canonicalTeam.phase}`,
-					canonicalTeamOutput,
-					canonicalSessionId,
-				);
-				if (repeatedCanonicalTeamOutput) return repeatedCanonicalTeamOutput;
-			}
+      const canonicalTeam = await readCanonicalTerminalRunStateForStop(cwd, canonicalSessionId, "team")
+        ? null
+        : await findCanonicalActiveTeamForSession(cwd, canonicalSessionId, threadId);
+      if (canonicalTeam) {
+        const canonicalTeamOutput = buildTeamStopOutputForPhase(
+          canonicalTeam.teamName,
+          canonicalTeam.phase,
+        );
+        const repeatedCanonicalTeamOutput = await returnPersistentStopBlock(
+          payload,
+          stateDir,
+          "team-stop",
+          `${canonicalTeam.teamName}|${canonicalTeam.phase}`,
+          canonicalTeamOutput,
+          canonicalSessionId,
+        );
+        if (repeatedCanonicalTeamOutput) return repeatedCanonicalTeamOutput;
+      }
 
-			const skillOutput = await buildSkillStopOutput(
-				cwd,
-				stateDir,
-				canonicalSessionId,
-				threadId,
-			);
-			if (skillOutput) {
-				return await returnPersistentStopBlock(
-					payload,
-					stateDir,
-					"skill-stop",
-					safeString(skillOutput.stopReason),
-					skillOutput,
-					canonicalSessionId,
-				);
-			}
-		}
+      const skillOutput = await buildSkillStopOutput(cwd, stateDir, canonicalSessionId, threadId);
+      if (skillOutput) {
+        return await returnPersistentStopBlock(
+          payload,
+          stateDir,
+          "skill-stop",
+          safeString(skillOutput.stopReason),
+          skillOutput,
+          canonicalSessionId,
+        );
+      }
+    }
 
-		const lastAssistantMessage = safeString(
-			payload.last_assistant_message ?? payload.lastAssistantMessage,
-		);
-		const goalWorkflowStopOutput =
-			await buildGoalWorkflowReconciliationStopOutput(payload, cwd);
-		if (goalWorkflowStopOutput) {
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"goal-workflow-reconciliation-stop",
-				safeString(goalWorkflowStopOutput.stopReason),
-				goalWorkflowStopOutput,
-				canonicalSessionId,
-				{ allowRepeatDuringStopHook: true },
-			);
-		}
-		const ordinaryNoProgressOutput =
-			await maybeBuildOrdinaryStopNoProgressOutput(
-				payload,
-				stateDir,
-				canonicalSessionId,
-			);
-		if (ordinaryNoProgressOutput) return ordinaryNoProgressOutput;
 
-		const autoNudgeConfig = await loadAutoNudgeConfig();
-		const autoNudgePhase = await readStopAutoNudgePhase(
-			cwd,
-			stateDir,
-			canonicalSessionId,
-			threadId,
-		);
+    const lastAssistantMessage = safeString(
+      payload.last_assistant_message ?? payload.lastAssistantMessage,
+    );
+    const goalWorkflowStopOutput = await buildGoalWorkflowReconciliationStopOutput(payload, cwd);
+    if (goalWorkflowStopOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "goal-workflow-reconciliation-stop",
+        safeString(goalWorkflowStopOutput.stopReason),
+        goalWorkflowStopOutput,
+        canonicalSessionId,
+        { allowRepeatDuringStopHook: true },
+      );
+    }
+    const ordinaryNoProgressOutput = await maybeBuildOrdinaryStopNoProgressOutput(
+      payload,
+      stateDir,
+      canonicalSessionId,
+    );
+    if (ordinaryNoProgressOutput) return ordinaryNoProgressOutput;
 
-		if (
-			autoNudgeConfig.enabled &&
-			detectNativeStopStallPattern(
-				lastAssistantMessage,
-				autoNudgeConfig.patterns,
-				autoNudgePhase,
-			)
-		) {
-			const effectiveResponse = resolveEffectiveAutoNudgeResponse(
-				autoNudgeConfig.response,
-			);
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"auto-nudge",
-				lastAssistantMessage,
-				{
-					decision: "block",
-					reason: effectiveResponse,
-					stopReason: "auto_nudge",
-					systemMessage:
-						"OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
-				},
-				canonicalSessionId,
-			);
-		}
+    const autoNudgeConfig = await loadAutoNudgeConfig();
+    const autoNudgePhase = await readStopAutoNudgePhase(cwd, stateDir, canonicalSessionId, threadId);
 
-		const sloppyFallbackDiffFindings = findSloppyFallbackDiffFindings(cwd);
-		const sloppyFallbackDiffOutput = buildSloppyFallbackDiffStopOutput(
-			sloppyFallbackDiffFindings,
-		);
-		if (sloppyFallbackDiffOutput) {
-			return await returnPersistentStopBlock(
-				payload,
-				stateDir,
-				"sloppy-fallback-diff-stop",
-				JSON.stringify(sloppyFallbackDiffFindings),
-				sloppyFallbackDiffOutput,
-				canonicalSessionId,
-				{ allowRepeatDuringStopHook: true },
-			);
-		}
+    if (
+      autoNudgeConfig.enabled
+      && detectNativeStopStallPattern(lastAssistantMessage, autoNudgeConfig.patterns, autoNudgePhase)
+    ) {
+      const effectiveResponse = resolveEffectiveAutoNudgeResponse(autoNudgeConfig.response);
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "auto-nudge",
+        lastAssistantMessage,
+        {
+          decision: "block",
+          reason: effectiveResponse,
+          stopReason: "auto_nudge",
+          systemMessage:
+            "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
+        },
+        canonicalSessionId,
+      );
+    }
 
-		if (isFinalHandoffDocumentRefreshCandidate(lastAssistantMessage)) {
-			const documentRefreshWarning = evaluateFinalHandoffDocumentRefresh(
-				cwd,
-				lastAssistantMessage,
-			);
-			if (documentRefreshWarning) {
-				return await maybeReturnRepeatableStopOutput(
-					payload,
-					stateDir,
-					buildRepeatableStopSignature(
-						payload,
-						"document-refresh-stop",
-						documentRefreshWarning.triggeringPaths.join("|"),
-						canonicalSessionId,
-					),
-					{ systemMessage: documentRefreshWarning.message },
-					canonicalSessionId,
-					{ allowRepeatDuringStopHook: false },
-				);
-			}
-		}
+    const sloppyFallbackDiffFindings = findSloppyFallbackDiffFindings(cwd);
+    const sloppyFallbackDiffOutput = buildSloppyFallbackDiffStopOutput(sloppyFallbackDiffFindings);
+    if (sloppyFallbackDiffOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "sloppy-fallback-diff-stop",
+        JSON.stringify(sloppyFallbackDiffFindings),
+        sloppyFallbackDiffOutput,
+        canonicalSessionId,
+        { allowRepeatDuringStopHook: true },
+      );
+    }
 
-		return null;
-	}
+    if (isFinalHandoffDocumentRefreshCandidate(lastAssistantMessage)) {
+      const documentRefreshWarning = evaluateFinalHandoffDocumentRefresh(cwd, lastAssistantMessage);
+      if (documentRefreshWarning) {
+        return await maybeReturnRepeatableStopOutput(
+          payload,
+          stateDir,
+          buildRepeatableStopSignature(
+            payload,
+            "document-refresh-stop",
+            documentRefreshWarning.triggeringPaths.join("|"),
+            canonicalSessionId,
+          ),
+          { systemMessage: documentRefreshWarning.message },
+          canonicalSessionId,
+          { allowRepeatDuringStopHook: false },
+        );
+      }
+    }
 
-	const currentPhase =
-		safeString(ralphState.state.current_phase).trim() || "executing";
-	const blockingPath = formatStopStatePath(cwd, ralphState.path);
-	const stopReason = `ralph_${currentPhase}`;
-	const systemMessage = `OMX Ralph is still active (phase: ${currentPhase}; state: ${blockingPath}); continue the task and gather fresh verification evidence before stopping.`;
+    return null;
+  }
 
-	return await returnPersistentStopBlock(
-		payload,
-		stateDir,
-		"ralph-stop",
-		currentPhase,
-		{
-			decision: "block",
-			reason: systemMessage,
-			stopReason,
-			systemMessage,
-		},
-		canonicalSessionId,
-	);
+  const currentPhase = safeString(ralphState.state.current_phase).trim() || "executing";
+  const blockingPath = formatStopStatePath(cwd, ralphState.path);
+  const stopReason = `ralph_${currentPhase}`;
+  const systemMessage =
+    `OMX Ralph is still active (phase: ${currentPhase}; state: ${blockingPath}); continue the task and gather fresh verification evidence before stopping.`;
+
+  return await returnPersistentStopBlock(
+    payload,
+    stateDir,
+    "ralph-stop",
+    currentPhase,
+    {
+      decision: "block",
+      reason: systemMessage,
+      stopReason,
+      systemMessage,
+    },
+    canonicalSessionId,
+  );
 }
 
 export async function dispatchCodexNativeHook(
-	payload: CodexHookPayload,
-	options: NativeHookDispatchOptions = {},
+  payload: CodexHookPayload,
+  options: NativeHookDispatchOptions = {},
 ): Promise<NativeHookDispatchResult> {
-	const hookEventName = readHookEventName(payload);
-	const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
-	if (hookEventName === "Stop" && !hasNativeStopRuntimeSurface(cwd)) {
-		return {
-			hookEventName,
-			omxEventName: mapCodexHookEventToOmxEvent(hookEventName),
-			skillState: null,
-			outputJson: null,
-		};
-	}
-	// Native hooks must use the same authoritative runtime state root as HUD/MCP
-	// when boxed/team roots are active; do not bypass it with cwd/.omx/state.
-	const stateDir = getBaseStateDir(cwd);
-	if (hookEventName !== "Stop") {
-		await mkdir(stateDir, { recursive: true });
-	}
+  const hookEventName = readHookEventName(payload);
+  const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
+  if (hookEventName === "Stop" && !hasNativeStopRuntimeSurface(cwd)) {
+    return {
+      hookEventName,
+      omxEventName: mapCodexHookEventToOmxEvent(hookEventName),
+      skillState: null,
+      outputJson: null,
+    };
+  }
+  // Native hooks must use the exact pointer root selected for this dispatch.
+  const pointerContext = resolveSessionPointerContext(cwd);
+  const stateDir = pointerContext.baseStateDir;
+  if (hookEventName !== "Stop") {
+    await mkdir(stateDir, { recursive: true });
+  }
 
-	const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
-	let skillState: SkillActiveState | null = null;
-	let triageAdditionalContext: string | null = null;
-	let goalWorkflowAdditionalContext: string | null = null;
-	let ultragoalSteeringAdditionalContext: string | null = null;
+  const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
+  let skillState: SkillActiveState | null = null;
+  let triageAdditionalContext: string | null = null;
+  let goalWorkflowAdditionalContext: string | null = null;
+  let ultragoalSteeringAdditionalContext: string | null = null;
 
-	const nativeSessionId = safeString(
-		payload.session_id ?? payload.sessionId,
-	).trim();
-	const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
-	const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
-	const currentSessionState = await readUsableSessionState(cwd);
-	let canonicalSessionId = safeString(currentSessionState?.session_id).trim();
-	let resolvedNativeSessionId = nativeSessionId;
-	let skipCanonicalSessionStartContext = false;
-	let isSubagentSessionStart = false;
+  const nativeSessionId = safeString(payload.session_id ?? payload.sessionId).trim();
+  const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
+  const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
+  const pointer = await readSessionPointer(pointerContext);
+  const currentSessionState = pointer.status === "usable" ? pointer.state ?? null : null;
+  let allowImplicitSessionSideEffects = pointer.status === "usable" || pointer.status === "absent";
+  let stopAuthorizationFailure: { stopReason: string; reason: string } | null = allowImplicitSessionSideEffects
+    ? null
+    : {
+      stopReason: "session_pointer_unusable",
+      reason: `OMX cannot authorize Stop while the selected session pointer is ${pointer.status}; repair the pointer evidence before continuing.`,
+    };
+  let canonicalSessionId = safeString(currentSessionState?.session_id).trim();
+  let resolvedNativeSessionId = nativeSessionId;
+  let skipCanonicalSessionStartContext = false;
+  let isSubagentSessionStart = false;
 
-	if (hookEventName === "SessionStart" && nativeSessionId) {
-		const transcriptPath = safeString(
-			payload.transcript_path ?? payload.transcriptPath,
-		).trim();
-		const subagentSessionStart =
-			readNativeSubagentSessionStartMetadata(transcriptPath);
-		if (subagentSessionStart) {
-			// A native child/subagent SessionStart carries a parent_thread_id in its
-			// transcript session_meta. Treat it as a child-agent lifecycle event for
-			// notification suppression and subagent tracking even when the canonical
-			// leader session has not been reconciled yet (#2831). A child start must
-			// never promote itself into a root/leader session or emit an independent
-			// session-start notification at session/minimal verbosity.
-			isSubagentSessionStart = true;
-			if (canonicalSessionId) {
-				const belongsToCanonicalSession =
-					await nativeSubagentSessionStartBelongsToCanonicalSession(
-						cwd,
-						canonicalSessionId,
-						currentSessionState,
-						subagentSessionStart,
-					);
-				if (belongsToCanonicalSession) {
-					resolvedNativeSessionId = nativeSessionId;
-					await recordNativeSubagentSessionStart(
-						cwd,
-						canonicalSessionId,
-						nativeSessionId,
-						subagentSessionStart,
-						transcriptPath,
-					);
-				} else {
-					skipCanonicalSessionStartContext = true;
-					resolvedNativeSessionId =
-						safeString(currentSessionState?.native_session_id).trim() ||
-						nativeSessionId;
-					await recordIgnoredNativeSubagentSessionStart(
-						cwd,
-						canonicalSessionId,
-						nativeSessionId,
-						subagentSessionStart,
-						transcriptPath,
-					);
-				}
-			} else {
-				// No canonical leader session is resolved in this worktree yet. Still
-				// register the child thread under its parent so its later Stop is
-				// recognized as subagent-scoped, skip leader SessionStart context, and
-				// do not reconcile the child as a new root session.
-				skipCanonicalSessionStartContext = true;
-				resolvedNativeSessionId = nativeSessionId;
-				await recordNativeSubagentSessionStart(
-					cwd,
-					canonicalSessionId,
-					nativeSessionId,
-					subagentSessionStart,
-					transcriptPath,
-				);
-			}
-		} else {
-			const sessionState = await reconcileNativeSessionStart(
-				cwd,
-				nativeSessionId,
-				{
-					pid: options.sessionOwnerPid ?? resolveSessionOwnerPid(payload),
-				},
-			);
-			canonicalSessionId = safeString(sessionState.session_id).trim();
-			resolvedNativeSessionId =
-				safeString(sessionState.native_session_id).trim() || nativeSessionId;
-		}
-	} else if (!canonicalSessionId) {
-		canonicalSessionId = safeString(currentSessionState?.session_id).trim();
-	}
+  if (hookEventName === "SessionStart" && nativeSessionId) {
+    const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
+    const subagentSessionStart = readNativeSubagentSessionStartMetadata(transcriptPath);
+    if (subagentSessionStart) {
+      // A native child/subagent SessionStart carries a parent_thread_id in its
+      // transcript session_meta. Treat it as a child-agent lifecycle event for
+      // notification suppression and subagent tracking even when the canonical
+      // leader session has not been reconciled yet (#2831). A child start must
+      // never promote itself into a root/leader session or emit an independent
+      // session-start notification at session/minimal verbosity.
+      isSubagentSessionStart = true;
+      if (canonicalSessionId) {
+        const belongsToCanonicalSession = await nativeSubagentSessionStartBelongsToCanonicalSession(
+          cwd,
+          canonicalSessionId,
+          currentSessionState,
+          subagentSessionStart,
+        );
+        if (belongsToCanonicalSession) {
+          resolvedNativeSessionId = nativeSessionId;
+          await recordNativeSubagentSessionStart(
+            cwd,
+            canonicalSessionId,
+            nativeSessionId,
+            subagentSessionStart,
+            transcriptPath,
+          );
+        } else {
+          skipCanonicalSessionStartContext = true;
+          resolvedNativeSessionId =
+            safeString(currentSessionState?.native_session_id).trim() || nativeSessionId;
+          await recordIgnoredNativeSubagentSessionStart(
+            cwd,
+            canonicalSessionId,
+            nativeSessionId,
+            subagentSessionStart,
+            transcriptPath,
+          );
+        }
+      } else {
+        // No canonical leader session is resolved in this worktree yet. Still
+        // register the child thread under its parent so its later Stop is
+        // recognized as subagent-scoped, skip leader SessionStart context, and
+        // do not reconcile the child as a new root session.
+        skipCanonicalSessionStartContext = true;
+        resolvedNativeSessionId = nativeSessionId;
+        await recordNativeSubagentSessionStart(
+          cwd,
+          canonicalSessionId,
+          nativeSessionId,
+          subagentSessionStart,
+          transcriptPath,
+        );
+      }
+    } else {
+      const ownerOmxSessionId = await resolveVerifiedOwnerOmxSessionId();
+      try {
+        const sessionState = await reconcileNativeSessionStart(cwd, nativeSessionId, {
+          context: pointerContext,
+          pid: options.sessionOwnerPid ?? resolveSessionOwnerPid(payload),
+          ...(ownerOmxSessionId
+            ? { ownerOmxSessionId, ownerAliasVerified: true }
+            : {}),
+        });
+        canonicalSessionId = safeString(sessionState.session_id).trim();
+        resolvedNativeSessionId = safeString(sessionState.native_session_id).trim() || nativeSessionId;
+        allowImplicitSessionSideEffects = true;
+        stopAuthorizationFailure = null;
+      } catch (error) {
+        if (!isSessionPointerLaunchAbort(error)) throw error;
+        canonicalSessionId = "";
+        resolvedNativeSessionId = nativeSessionId;
+        skipCanonicalSessionStartContext = true;
+        allowImplicitSessionSideEffects = false;
+        stopAuthorizationFailure = {
+          stopReason: "session_pointer_unusable",
+          reason: `OMX cannot authorize Stop while the selected session pointer is ${pointer.status}; repair the pointer evidence before continuing.`,
+        };
+      }
+    }
+  } else if (!canonicalSessionId) {
+    canonicalSessionId = safeString(currentSessionState?.session_id).trim();
+  }
 
-	if (hookEventName === "Stop") {
-		const inheritedSessionId = safeString(
-			process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID,
-		).trim();
-		const stopCanonicalSessionId = await resolveInternalSessionIdForPayload(
-			cwd,
-			readPayloadSessionId(payload) || inheritedSessionId,
-		);
-		if (stopCanonicalSessionId) {
-			canonicalSessionId = stopCanonicalSessionId;
-		}
-		if (
-			canonicalSessionId &&
-			safeString(currentSessionState?.session_id).trim() === canonicalSessionId
-		) {
-			resolvedNativeSessionId =
-				safeString(currentSessionState?.native_session_id).trim() ||
-				resolvedNativeSessionId;
-		}
-	}
+  if (hookEventName === "Stop") {
+    const stopPayloadSessionId = readPayloadSessionId(payload);
+    const stopCanonicalSessionId = await resolveInternalSessionIdForPayload(
+      cwd,
+      stopPayloadSessionId,
+      undefined,
+      currentSessionState,
+      pointer.status === "absent",
+    );
+    if (stopPayloadSessionId && !stopCanonicalSessionId) {
+      canonicalSessionId = "";
+      allowImplicitSessionSideEffects = false;
+      if (!stopAuthorizationFailure) {
+        stopAuthorizationFailure = {
+          stopReason: "session_scope_unmatched",
+          reason: `OMX cannot authorize Stop for unmatched session id ${stopPayloadSessionId}; the selected session pointer remains authoritative.`,
+        };
+      }
+    } else if (stopCanonicalSessionId) {
+      canonicalSessionId = stopCanonicalSessionId;
+    }
+    if (canonicalSessionId && safeString(currentSessionState?.session_id).trim() === canonicalSessionId) {
+      resolvedNativeSessionId =
+        safeString(currentSessionState?.native_session_id).trim() || resolvedNativeSessionId;
+    }
+  }
 
-	const eventSessionId = canonicalSessionId || nativeSessionId || undefined;
-	const sessionIdForState = canonicalSessionId || nativeSessionId;
-	let outputJson: Record<string, unknown> | null = null;
-	const typedAgentRolePayload = isTypedAgentRolePayload(payload);
-	const isSubagentPromptSubmit =
-		hookEventName === "UserPromptSubmit"
-			? typedAgentRolePayload ||
-				(await isNativeSubagentHook(
-					cwd,
-					canonicalSessionId,
-					nativeSessionId,
-					threadId,
-					safeString(currentSessionState?.native_session_id).trim(),
-				))
-			: false;
-	const isSubagentStop =
-		hookEventName === "Stop"
-			? (
-					await Promise.all(
-						[
-							...new Set(
-								[
-									canonicalSessionId,
-									safeString(currentSessionState?.session_id).trim(),
-								].filter(Boolean),
-							),
-						].map((candidateSessionId) =>
-							isNativeSubagentHook(
-								cwd,
-								candidateSessionId,
-								nativeSessionId,
-								threadId,
-								candidateSessionId ===
-									safeString(currentSessionState?.session_id).trim()
-									? safeString(currentSessionState?.native_session_id).trim()
-									: "",
-							),
-						),
-					)
-				).some(Boolean)
-			: false;
-	const isSubagentToolUse =
-		hookEventName === "PreToolUse" || hookEventName === "PostToolUse"
-			? await isNativeSubagentHook(
-					cwd,
-					canonicalSessionId,
-					nativeSessionId,
-					threadId,
-					safeString(currentSessionState?.native_session_id).trim(),
-				)
-			: false;
+  let eventSessionId = canonicalSessionId || nativeSessionId || undefined;
+  let sessionIdForState: string | null = canonicalSessionId || null;
+  let outputJson: Record<string, unknown> | null = null;
+  const typedAgentRolePayload = isTypedAgentRolePayload(payload);
+  const isSubagentPromptSubmit = hookEventName === "UserPromptSubmit"
+    ? typedAgentRolePayload || await isNativeSubagentHook(
+      cwd,
+      canonicalSessionId,
+      nativeSessionId,
+      threadId,
+      safeString(currentSessionState?.native_session_id).trim(),
+    )
+    : false;
+  const isSubagentStop = hookEventName === "Stop"
+    ? (await Promise.all(
+      [...new Set([
+        canonicalSessionId,
+        safeString(currentSessionState?.session_id).trim(),
+      ].filter(Boolean))]
+        .map((candidateSessionId) => isNativeSubagentHook(
+          cwd,
+          candidateSessionId,
+          nativeSessionId,
+          threadId,
+          candidateSessionId === safeString(currentSessionState?.session_id).trim()
+            ? safeString(currentSessionState?.native_session_id).trim()
+            : "",
+        )),
+    )).some(Boolean)
+    : false;
+  if (isSubagentStop && stopAuthorizationFailure?.stopReason === "session_scope_unmatched") {
+    canonicalSessionId = normalizeSessionId(readPayloadSessionId(payload)) ?? "";
+    allowImplicitSessionSideEffects = true;
+    stopAuthorizationFailure = null;
+    eventSessionId = canonicalSessionId || nativeSessionId || undefined;
+    sessionIdForState = canonicalSessionId || null;
+  }
+  const suppressNoisySubagentLifecycleDispatch =
+    (isSubagentSessionStart || isSubagentStop)
+    && shouldSuppressSubagentLifecycleHookDispatch();
 
-	const suppressNoisySubagentLifecycleDispatch =
-		(isSubagentSessionStart || isSubagentStop) &&
-		shouldSuppressSubagentLifecycleHookDispatch();
+  if (hookEventName === "UserPromptSubmit") {
+    const prompt = readPromptText(payload);
+    goalWorkflowAdditionalContext = await buildCompletedGoalCleanupPromptWarning(cwd, prompt).catch(() => null)
+      ?? await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(() => null);
+    ultragoalSteeringAdditionalContext = prompt && !isSubagentPromptSubmit && allowImplicitSessionSideEffects
+      ? await applyUserPromptUltragoalSteering(cwd, prompt).catch((error) => `OMX native UserPromptSubmit rejected bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${error instanceof Error ? error.message : String(error)}`)
+      : null;
+    let suppressActivationSeeding = !allowImplicitSessionSideEffects;
+    if (prompt && !isSubagentPromptSubmit && allowImplicitSessionSideEffects) {
+      const rawHookSessionId = canonicalSessionId || nativeSessionId;
+      const normalizedHookSessionId = normalizeSessionId(rawHookSessionId);
+      const explicitHookSessionId = currentSessionState ? undefined : normalizedHookSessionId;
+      if (rawHookSessionId && !normalizedHookSessionId) {
+        suppressActivationSeeding = true;
+      } else {
+        try {
+          const writableScope = await resolveWritableStateScope(cwd, explicitHookSessionId);
+          sessionIdForState = writableScope.sessionId ?? null;
+        } catch (error) {
+          if (!isImplicitWritableScopeFailure(error)) throw error;
+          suppressActivationSeeding = true;
+        }
+      }
+    }
+    if (prompt && !isSubagentPromptSubmit && !suppressActivationSeeding) {
+      skillState = buildNativeOutsideTmuxTeamPromptBlockState(
+        prompt,
+        cwd,
+        payload,
+        sessionIdForState || undefined,
+        threadId || undefined,
+        turnId || undefined,
+      ) ?? await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: prompt,
+        sessionId: sessionIdForState || undefined,
+        threadId,
+        turnId,
+      });
+    }
+    // --- Triage classifier (advisory-only, non-keyword prompts) ---
+    if (prompt && skillState === null && !isSubagentPromptSubmit) {
+      try {
+        if (readTriageConfig().enabled) {
+          const normalized = prompt.trim().toLowerCase();
+          const previous = readTriageState({ cwd, sessionId: sessionIdForState || null });
+          const suppress = shouldSuppressFollowup({
+            previous,
+            currentPrompt: normalized,
+            currentHasKeyword: false,
+          });
+          if (!suppress) {
+            const decision = triagePrompt(prompt);
+            const nowIso = new Date().toISOString();
+            const effectiveTurnId = turnId || nowIso;
+            if (decision.lane === "HEAVY") {
+              triageAdditionalContext =
+                "OMX native UserPromptSubmit triage detected a multi-step goal with no workflow keyword. This is advisory prompt-routing context only; it did not activate autopilot or initialize workflow state. Prefer the existing autopilot-style workflow if AGENTS.md/runtime conditions allow it, unless newer user context narrows or opts out.";
+              const newState: TriageStateFile = {
+                version: 1,
+                last_triage: {
+                  lane: "HEAVY",
+                  destination: "autopilot",
+                  reason: decision.reason,
+                  prompt_signature: promptSignature(normalized),
+                  turn_id: effectiveTurnId,
+                  created_at: nowIso,
+                },
+                suppress_followup: true,
+              };
+              if (!suppressActivationSeeding) {
+                writeTriageState({ cwd, sessionId: sessionIdForState || null, state: newState });
+              }
+            } else if (decision.lane === "LIGHT") {
+              if (decision.destination === "explore") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a read-only/question-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the explore role surface rather than escalating to autopilot.";
+              } else if (decision.destination === "executor") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a narrow edit-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the executor role surface rather than autopilot.";
+              } else if (decision.destination === "designer") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a visual/style request with no workflow keyword. This is advisory prompt-routing context only. Prefer the designer role surface.";
+              } else if (decision.destination === "researcher") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected an external documentation/reference research request with no workflow keyword. This is advisory prompt-routing context only. Prefer the researcher role surface rather than repo-local explore or autopilot.";
+              }
+              if (triageAdditionalContext !== null) {
+                const dest = decision.destination as "explore" | "executor" | "designer" | "researcher";
+                const newState: TriageStateFile = {
+                  version: 1,
+                  last_triage: {
+                    lane: "LIGHT",
+                    destination: dest,
+                    reason: decision.reason,
+                    prompt_signature: promptSignature(normalized),
+                    turn_id: effectiveTurnId,
+                    created_at: nowIso,
+                  },
+                  suppress_followup: true,
+                };
+                if (!suppressActivationSeeding) {
+                  writeTriageState({ cwd, sessionId: sessionIdForState || null, state: newState });
+                }
+              }
+            }
+            // lane === "PASS": no context, no state write
+          }
+        }
+      } catch {
+        // Swallow all triage errors; never break the hook
+        triageAdditionalContext = null;
+      }
+    }
+    const skipHudReconcileForDoctorSmoke = process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE === "1";
+    const skipHudReconcileForTeamWorkerPane = !isSubagentPromptSubmit
+      && await isConfirmedTeamWorkerPromptSubmitPane(cwd).catch(() => false);
+    if (allowImplicitSessionSideEffects && !skipHudReconcileForDoctorSmoke && !skipHudReconcileForTeamWorkerPane) {
+      const reconcileHudForPromptSubmitFn = options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
+      const hudSessionId = resolveHudReconcileSessionId(
+        currentSessionState,
+        canonicalSessionId,
+        sessionIdForState,
+      );
+      const hudSessionIds = resolveHudReconcileSessionIds(
+        currentSessionState,
+        canonicalSessionId,
+        sessionIdForState,
+        nativeSessionId,
+      );
+      await reconcileHudForPromptSubmitFn(cwd, { sessionId: hudSessionId, sessionIds: hudSessionIds }).catch(() => {});
+    }
+  }
 
-	if (isSubagentPromptSubmit || isSubagentStop || isSubagentToolUse) {
-		try {
-			refreshNativeSubagentRoleRoutingMarker(
-				cwd,
-				stateDir,
-				canonicalSessionId || nativeSessionId,
-			);
-		} catch (error) {
-			console.error(
-				`[omx] SECURITY: native role-routing marker refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			throw error;
-		}
-	}
+  if (omxEventName && allowImplicitSessionSideEffects && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
+    const baseContext = buildBaseContext(cwd, payload, hookEventName!, canonicalSessionId);
+    if (resolvedNativeSessionId) {
+      baseContext.native_session_id = resolvedNativeSessionId;
+      baseContext.codex_session_id = resolvedNativeSessionId;
+    }
+    if (canonicalSessionId) {
+      baseContext.omx_session_id = canonicalSessionId;
+    }
+    const event: HookEventEnvelope = buildNativeHookEvent(
+      omxEventName,
+      baseContext,
+      {
+        session_id: eventSessionId,
+        thread_id: threadId || undefined,
+        turn_id: turnId || undefined,
+        mode: safeString(payload.mode).trim() || undefined,
+      },
+    );
+    await dispatchHookEventRuntime({
+      event,
+      cwd,
+      allowTeamWorkerSideEffects: false,
+    });
+  }
 
-	if (hookEventName === "UserPromptSubmit") {
-		const prompt = readPromptText(payload);
-		goalWorkflowAdditionalContext =
-			(await buildCompletedGoalCleanupPromptWarning(cwd, prompt).catch(
-				() => null,
-			)) ??
-			(await buildGoalWorkflowReconciliationPromptWarning(cwd, prompt).catch(
-				() => null,
-			));
-		ultragoalSteeringAdditionalContext =
-			prompt && !isSubagentPromptSubmit
-				? await applyUserPromptUltragoalSteering(cwd, prompt).catch(
-						(error) =>
-							`OMX native UserPromptSubmit rejected bounded .omx/ultragoal steering for G002-cli-and-prompt-submit-bridge: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				: null;
-		if (prompt && !isSubagentPromptSubmit) {
-			skillState =
-				buildNativeOutsideTmuxTeamPromptBlockState(
-					prompt,
-					cwd,
-					payload,
-					sessionIdForState,
-					threadId || undefined,
-					turnId || undefined,
-				) ??
-				(await recordSkillActivation({
-					stateDir,
-					sourceCwd: cwd,
-					text: prompt,
-					sessionId: sessionIdForState,
-					threadId,
-					turnId,
-				}));
-		}
-		// --- Triage classifier (advisory-only, non-keyword prompts) ---
-		if (prompt && skillState === null && !isSubagentPromptSubmit) {
-			try {
-				if (readTriageConfig().enabled) {
-					const normalized = prompt.trim().toLowerCase();
-					const previous = readTriageState({
-						cwd,
-						sessionId: sessionIdForState || null,
-					});
-					const suppress = shouldSuppressFollowup({
-						previous,
-						currentPrompt: normalized,
-						currentHasKeyword: false,
-					});
-					if (!suppress) {
-						const decision = triagePrompt(prompt);
-						const nowIso = new Date().toISOString();
-						const effectiveTurnId = turnId || nowIso;
-						if (decision.lane === "HEAVY") {
-							triageAdditionalContext =
-								"OMX native UserPromptSubmit triage detected a multi-step goal with no workflow keyword. This is advisory prompt-routing context only; it did not activate autopilot or initialize workflow state. Prefer the existing autopilot-style workflow if AGENTS.md/runtime conditions allow it, unless newer user context narrows or opts out.";
-							const newState: TriageStateFile = {
-								version: 1,
-								last_triage: {
-									lane: "HEAVY",
-									destination: "autopilot",
-									reason: decision.reason,
-									prompt_signature: promptSignature(normalized),
-									turn_id: effectiveTurnId,
-									created_at: nowIso,
-								},
-								suppress_followup: true,
-							};
-							writeTriageState({
-								cwd,
-								sessionId: sessionIdForState || null,
-								state: newState,
-							});
-						} else if (decision.lane === "LIGHT") {
-							if (decision.destination === "explore") {
-								triageAdditionalContext =
-									"OMX native UserPromptSubmit triage detected a read-only/question-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the explore role surface rather than escalating to autopilot.";
-							} else if (decision.destination === "executor") {
-								triageAdditionalContext =
-									"OMX native UserPromptSubmit triage detected a narrow edit-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the executor role surface rather than autopilot.";
-							} else if (decision.destination === "designer") {
-								triageAdditionalContext =
-									"OMX native UserPromptSubmit triage detected a visual/style request with no workflow keyword. This is advisory prompt-routing context only. Prefer the designer role surface.";
-							} else if (decision.destination === "researcher") {
-								triageAdditionalContext =
-									"OMX native UserPromptSubmit triage detected an external documentation/reference research request with no workflow keyword. This is advisory prompt-routing context only. Prefer the researcher role surface rather than repo-local explore or autopilot.";
-							}
-							if (triageAdditionalContext !== null) {
-								const dest = decision.destination as
-									| "explore"
-									| "executor"
-									| "designer"
-									| "researcher";
-								const newState: TriageStateFile = {
-									version: 1,
-									last_triage: {
-										lane: "LIGHT",
-										destination: dest,
-										reason: decision.reason,
-										prompt_signature: promptSignature(normalized),
-										turn_id: effectiveTurnId,
-										created_at: nowIso,
-									},
-									suppress_followup: true,
-								};
-								writeTriageState({
-									cwd,
-									sessionId: sessionIdForState || null,
-									state: newState,
-								});
-							}
-						}
-						// lane === "PASS": no context, no state write
-					}
-				}
-			} catch {
-				// Swallow all triage errors; never break the hook
-				triageAdditionalContext = null;
-			}
-		}
-		const skipHudReconcileForDoctorSmoke =
-			process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE === "1";
-		const skipHudReconcileForTeamWorkerPane =
-			!isSubagentPromptSubmit &&
-			(await isConfirmedTeamWorkerPromptSubmitPane(cwd).catch(() => false));
-		if (!skipHudReconcileForDoctorSmoke && !skipHudReconcileForTeamWorkerPane) {
-			const reconcileHudForPromptSubmitFn =
-				options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
-			const hudSessionId = resolveHudReconcileSessionId(
-				currentSessionState,
-				canonicalSessionId,
-				sessionIdForState,
-			);
-			const hudSessionIds = resolveHudReconcileSessionIds(
-				currentSessionState,
-				canonicalSessionId,
-				sessionIdForState,
-				nativeSessionId,
-			);
-			await reconcileHudForPromptSubmitFn(cwd, {
-				sessionId: hudSessionId,
-				sessionIds: hudSessionIds,
-			}).catch(() => {});
-		}
-	}
+  if (hookEventName === "PreCompact") {
+    // Codex native PreCompact currently accepts only the common continuation fields.
+    // Keep the OMX lifecycle dispatch above, but do not emit `hookSpecificOutput`
+    // unless Codex defines a supported PreCompact output contract.
+    buildWikiPreCompactContext({ cwd });
+  } else if ((hookEventName === "SessionStart" && !skipCanonicalSessionStartContext) || hookEventName === "UserPromptSubmit") {
+    const additionalContext = hookEventName === "SessionStart"
+      ? await buildSessionStartContext(cwd, canonicalSessionId || nativeSessionId, {
+        hookEventName,
+        payload,
+        canonicalSessionId,
+        nativeSessionId: resolvedNativeSessionId || nativeSessionId,
+      })
+      : isSubagentPromptSubmit
+        ? null
+        : [
+          buildAdditionalContextMessage(readPromptText(payload), skillState, cwd, payload),
+          ultragoalSteeringAdditionalContext,
+          goalWorkflowAdditionalContext,
+          triageAdditionalContext,
+        ].filter((entry): entry is string => Boolean(entry)).join("\n\n") || null;
+    if (additionalContext) {
+      outputJson = {
+        hookSpecificOutput: {
+          hookEventName,
+          additionalContext,
+        },
+      };
+    }
+  } else if (hookEventName === "PreToolUse") {
+    const payloadSessionId = readPayloadSessionId(payload);
+    const rootPointerConflict = await readLiveRootSessionPointerConflict(stateDir, payloadSessionId);
+    const preToolUseSessionId = payloadSessionId
+      ? await resolveInternalSessionIdForPayload(cwd, payloadSessionId, stateDir)
+      : "";
+    outputJson = buildNativeUnknownRolePreToolUseOutput(payload)
+      ?? await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildPlanningRootPointerConflictPreToolUseOutput(payload, cwd, stateDir, rootPointerConflict)
+      ?? await buildConductorPreToolUseWriteGuardOutput(payload, cwd, stateDir, preToolUseSessionId)
+      ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, cwd, stateDir)
+      ?? buildMalformedPreToolUseBlockTestOutput(payload)
+      ?? buildNativePreToolUseOutput(payload);
+  } else if (hookEventName === "PostToolUse") {
+    if (allowImplicitSessionSideEffects) {
+      await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
+      await recordNativeSubagentSupportBlocker(cwd, stateDir, payload).catch(() => {});
+      if (detectMcpTransportFailure(payload)) {
+        await markTeamTransportFailure(cwd, payload);
+      }
+      await handleTeamWorkerPostToolUseSuccess(payload, cwd);
+    }
+    outputJson = buildNativePostToolUseOutput(payload);
+  } else if (hookEventName === "Stop") {
+    if (allowImplicitSessionSideEffects) {
+      outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
+        canonicalSessionId: canonicalSessionId || undefined,
+        skipRalphStopBlock: isSubagentStop,
+      }) ?? await buildCompletedGoalCleanupStopOutput(payload, cwd);
+    } else {
+      const failure = stopAuthorizationFailure ?? {
+        stopReason: "session_pointer_unusable",
+        reason: "OMX cannot authorize Stop without a writable session authority.",
+      };
+      outputJson = {
+        decision: "block",
+        stopReason: failure.stopReason,
+        reason: failure.reason,
+        systemMessage: failure.reason,
+      };
+    }
+  }
 
-	if (
-		omxEventName &&
-		!skipCanonicalSessionStartContext &&
-		!suppressNoisySubagentLifecycleDispatch
-	) {
-		const baseContext = buildBaseContext(
-			cwd,
-			payload,
-			hookEventName!,
-			canonicalSessionId,
-		);
-		if (resolvedNativeSessionId) {
-			baseContext.native_session_id = resolvedNativeSessionId;
-			baseContext.codex_session_id = resolvedNativeSessionId;
-		}
-		if (canonicalSessionId) {
-			baseContext.omx_session_id = canonicalSessionId;
-		}
-		const event: HookEventEnvelope = buildNativeHookEvent(
-			omxEventName,
-			baseContext,
-			{
-				session_id: eventSessionId,
-				thread_id: threadId || undefined,
-				turn_id: turnId || undefined,
-				mode: safeString(payload.mode).trim() || undefined,
-			},
-		);
-		await dispatchHookEventRuntime({
-			event,
-			cwd,
-			allowTeamWorkerSideEffects: false,
-		});
-	}
-
-	if (hookEventName === "PreCompact") {
-		// Codex native PreCompact currently accepts only the common continuation fields.
-		// Keep the OMX lifecycle dispatch above, but do not emit `hookSpecificOutput`
-		// unless Codex defines a supported PreCompact output contract.
-		buildWikiPreCompactContext({ cwd });
-	} else if (
-		(hookEventName === "SessionStart" && !skipCanonicalSessionStartContext) ||
-		hookEventName === "UserPromptSubmit"
-	) {
-		const additionalContext =
-			hookEventName === "SessionStart"
-				? await buildSessionStartContext(
-						cwd,
-						canonicalSessionId || nativeSessionId,
-						{
-							hookEventName,
-							payload,
-							canonicalSessionId,
-							nativeSessionId: resolvedNativeSessionId || nativeSessionId,
-						},
-					)
-				: isSubagentPromptSubmit
-					? null
-					: [
-							buildAdditionalContextMessage(
-								readPromptText(payload),
-								skillState,
-								cwd,
-								payload,
-							),
-							ultragoalSteeringAdditionalContext,
-							goalWorkflowAdditionalContext,
-							triageAdditionalContext,
-						]
-							.filter((entry): entry is string => Boolean(entry))
-							.join("\n\n") || null;
-		if (additionalContext) {
-			outputJson = {
-				hookSpecificOutput: {
-					hookEventName,
-					additionalContext,
-				},
-			};
-		}
-	} else if (hookEventName === "PreToolUse") {
-		const payloadSessionId = readPayloadSessionId(payload);
-		const rootPointerConflict = await readLiveRootSessionPointerConflict(
-			stateDir,
-			payloadSessionId,
-		);
-		const preToolUseSessionId = payloadSessionId
-			? await resolveInternalSessionIdForPayload(
-					cwd,
-					payloadSessionId,
-					stateDir,
-				)
-			: "";
-		outputJson =
-			buildNativeUnknownRolePreToolUseOutput(payload) ??
-			(await buildDeepInterviewPreToolUseBoundaryOutput(
-				payload,
-				cwd,
-				stateDir,
-				preToolUseSessionId,
-			)) ??
-			(await buildRalplanPreToolUseBoundaryOutput(
-				payload,
-				cwd,
-				stateDir,
-				preToolUseSessionId,
-			)) ??
-			(await buildPlanningRootPointerConflictPreToolUseOutput(
-				payload,
-				cwd,
-				stateDir,
-				rootPointerConflict,
-			)) ??
-			(await buildConductorPreToolUseWriteGuardOutput(
-				payload,
-				cwd,
-				stateDir,
-				preToolUseSessionId,
-			)) ??
-			(await buildNativeSubagentCapacityCloseGuardOutput(
-				payload,
-				cwd,
-				stateDir,
-			)) ??
-			buildMalformedPreToolUseBlockTestOutput(payload) ??
-			buildNativePreToolUseOutput(payload);
-	} else if (hookEventName === "PostToolUse") {
-		await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(
-			() => {},
-		);
-		await recordNativeSubagentSupportBlocker(cwd, stateDir, payload).catch(
-			() => {},
-		);
-		if (detectMcpTransportFailure(payload)) {
-			await markTeamTransportFailure(cwd, payload);
-		}
-		outputJson = buildNativePostToolUseOutput(payload);
-		await handleTeamWorkerPostToolUseSuccess(payload, cwd);
-	} else if (hookEventName === "Stop") {
-		outputJson =
-			(await buildStopHookOutput(payload, cwd, stateDir, {
-				skipRalphStopBlock: isSubagentStop,
-			})) ?? (await buildCompletedGoalCleanupStopOutput(payload, cwd));
-	}
-
-	return {
-		hookEventName,
-		omxEventName,
-		skillState,
-		outputJson,
-	};
+  return {
+    hookEventName,
+    omxEventName,
+    skillState,
+    outputJson,
+  };
 }
 
 function hasNativeStopRuntimeSurface(cwd: string): boolean {
-	if (existsSync(join(cwd, ".omx"))) return true;
-	if (findGitLayout(cwd)) return true;
-	const omxRoot = safeString(process.env.OMX_ROOT).trim();
-	if (omxRoot && existsSync(join(omxRoot, ".omx"))) return true;
-	const stateRoot = safeString(process.env.OMX_STATE_ROOT).trim();
-	if (stateRoot && existsSync(stateRoot)) return true;
-	return [
-		process.env.OMX_SESSION_ID,
-		process.env.OMX_TEAM_INTERNAL_WORKER,
-		process.env.OMX_TEAM_WORKER,
-		process.env.OMX_TEAM_STATE_ROOT,
-		process.env.OMX_TEAM_LEADER_CWD,
-		process.env.OMX_NOTIFY_HOOK_TRUSTED_MANAGED_CWD,
-		process.env.OMX_TMUX_HUD_OWNER,
-		process.env.OMX_TMUX_HUD_LEADER_PANE,
-	].some((value) => safeString(value).trim() !== "");
+  if (existsSync(join(cwd, ".omx"))) return true;
+  if (findGitLayout(cwd)) return true;
+  const omxRoot = safeString(process.env.OMX_ROOT).trim();
+  if (omxRoot && existsSync(join(omxRoot, ".omx"))) return true;
+  const stateRoot = safeString(process.env.OMX_STATE_ROOT).trim();
+  if (stateRoot && existsSync(stateRoot)) return true;
+  return [
+    process.env.OMX_SESSION_ID,
+    process.env.OMX_TEAM_INTERNAL_WORKER,
+    process.env.OMX_TEAM_WORKER,
+    process.env.OMX_TEAM_STATE_ROOT,
+    process.env.OMX_TEAM_LEADER_CWD,
+    process.env.OMX_NOTIFY_HOOK_TRUSTED_MANAGED_CWD,
+    process.env.OMX_TMUX_HUD_OWNER,
+    process.env.OMX_TMUX_HUD_LEADER_PANE,
+  ].some((value) => safeString(value).trim() !== "");
 }
 
 interface NativeHookCliReadResult {
-	payload: CodexHookPayload;
-	parseError: Error | null;
-	rawInput: string;
-	oversized: boolean;
-	rawHookEventName: CodexHookEventName | null;
+  payload: CodexHookPayload;
+  parseError: Error | null;
+  rawInput: string;
+  oversized: boolean;
+  rawHookEventName: CodexHookEventName | null;
 }
 
 export function isCodexNativeHookMainModule(
-	moduleUrl: string,
-	argv1: string | undefined,
+  moduleUrl: string,
+  argv1: string | undefined,
 ): boolean {
-	if (!argv1) return false;
-	return moduleUrl === pathToFileURL(argv1).href;
+  if (!argv1) return false;
+  return moduleUrl === pathToFileURL(argv1).href;
 }
 
 async function readStdinJson(): Promise<NativeHookCliReadResult> {
-	const chunks: Buffer[] = [];
-	let totalBytes = 0;
-	let oversized = false;
-	for await (const chunk of process.stdin) {
-		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-		totalBytes += buffer.byteLength;
-		if (totalBytes > MAX_NATIVE_STDIN_JSON_BYTES) {
-			const remaining = Math.max(
-				0,
-				MAX_NATIVE_STDIN_JSON_BYTES - (totalBytes - buffer.byteLength),
-			);
-			if (remaining > 0)
-				chunks.push(Buffer.from(buffer.subarray(0, remaining)));
-			oversized = true;
-			process.stdin.destroy();
-			break;
-		}
-		chunks.push(buffer);
-	}
-	const raw = Buffer.concat(chunks).toString("utf-8").trim();
-	const rawHookEventName = extractRawCodexHookEventName(raw);
-	if (oversized) {
-		return {
-			payload: {},
-			parseError: null,
-			rawInput: raw,
-			oversized: true,
-			rawHookEventName,
-		};
-	}
-	if (!raw) {
-		return {
-			payload: {},
-			parseError: null,
-			rawInput: raw,
-			oversized: false,
-			rawHookEventName,
-		};
-	}
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  let oversized = false;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    totalBytes += buffer.byteLength;
+    if (totalBytes > MAX_NATIVE_STDIN_JSON_BYTES) {
+      const remaining = Math.max(0, MAX_NATIVE_STDIN_JSON_BYTES - (totalBytes - buffer.byteLength));
+      if (remaining > 0) chunks.push(Buffer.from(buffer.subarray(0, remaining)));
+      oversized = true;
+      process.stdin.destroy();
+      break;
+    }
+    chunks.push(buffer);
+  }
+  const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  const rawHookEventName = extractRawCodexHookEventName(raw);
+  if (oversized) {
+    return {
+      payload: {},
+      parseError: null,
+      rawInput: raw,
+      oversized: true,
+      rawHookEventName,
+    };
+  }
+  if (!raw) {
+    return { payload: {}, parseError: null, rawInput: raw, oversized: false, rawHookEventName };
+  }
 
-	try {
-		return {
-			payload: safeObject(JSON.parse(raw)),
-			parseError: null,
-			rawInput: raw,
-			oversized: false,
-			rawHookEventName,
-		};
-	} catch (error) {
-		return {
-			payload: {},
-			parseError: error instanceof Error ? error : new Error(String(error)),
-			rawInput: raw,
-			oversized: false,
-			rawHookEventName,
-		};
-	}
+  try {
+    return {
+      payload: safeObject(JSON.parse(raw)),
+      parseError: null,
+      rawInput: raw,
+      oversized: false,
+      rawHookEventName,
+    };
+  } catch (error) {
+    return {
+      payload: {},
+      parseError: error instanceof Error ? error : new Error(String(error)),
+      rawInput: raw,
+      oversized: false,
+      rawHookEventName,
+    };
+  }
 }
 
-function inferHookEventNameFromMalformedInput(
-	raw: string,
-): CodexHookEventName | null {
-	const match = raw.match(
-		/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|Stop)\b/i,
-	);
-	const value = match?.[1];
-	if (!value) return null;
-	return readHookEventName({ hook_event_name: value });
+function inferHookEventNameFromMalformedInput(raw: string): CodexHookEventName | null {
+  const match = raw.match(/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|Stop)\b/i);
+  const value = match?.[1];
+  if (!value) return null;
+  return readHookEventName({ hook_event_name: value });
 }
 
 function buildMalformedStdinHookOutput(
-	parseError: Error,
-	rawInput: string,
-	cwd = process.cwd(),
+  parseError: Error,
+  rawInput: string,
+  cwd = process.cwd(),
 ): Record<string, unknown> {
-	const reason =
-		"OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.";
-	const systemMessage = `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
-	const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
-	if (inferredHookEventName === "PreToolUse") {
-		return { systemMessage };
-	}
-	if (
-		inferredHookEventName === "Stop" ||
-		(!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))
-	) {
-		return {
-			decision: "block",
-			reason,
-			stopReason: "native_hook_stdin_parse_error",
-			systemMessage,
-		};
-	}
-	return {
-		continue: false,
-		stopReason: "native_hook_stdin_parse_error",
-		systemMessage,
-	};
+  const reason =
+    "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.";
+  const systemMessage =
+    `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
+  const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
+  if (inferredHookEventName === "PreToolUse") {
+    return { systemMessage };
+  }
+  if (inferredHookEventName === "Stop" || (!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))) {
+    return {
+      decision: "block",
+      reason,
+      stopReason: "native_hook_stdin_parse_error",
+      systemMessage,
+    };
+  }
+  return {
+    continue: false,
+    stopReason: "native_hook_stdin_parse_error",
+    systemMessage,
+  };
 }
 
-async function buildOversizedStopActiveWorkflowOutput(
-	cwd: string,
-): Promise<Record<string, unknown> | null> {
-	const currentSession = await readUsableSessionState(cwd);
-	const currentSessionId =
-		safeString(currentSession?.session_id).trim() ||
-		safeString(
-			process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID,
-		).trim();
-	if (!currentSessionId) return null;
+async function buildOversizedStopActiveWorkflowOutput(cwd: string): Promise<Record<string, unknown> | null> {
+  const currentSession = await readUsableSessionState(cwd);
+  const currentSessionId = safeString(currentSession?.session_id).trim()
+    || safeString(process.env.OMX_SESSION_ID || process.env.CODEX_SESSION_ID).trim();
+  if (!currentSessionId) return null;
 
-	if (
-		await readCanonicalTerminalRunStateForStop(
-			cwd,
-			currentSessionId,
-			"autopilot",
-		)
-	)
-		return null;
+  if (await readCanonicalTerminalRunStateForStop(cwd, currentSessionId, "autopilot")) return null;
 
-	const autopilotState = await readModeStateForActiveDecision(
-		"autopilot",
-		currentSessionId,
-		cwd,
-	);
-	if (!autopilotState || !shouldContinueRun(autopilotState)) return null;
+  const autopilotState = await readModeStateForActiveDecision("autopilot", currentSessionId, cwd);
+  if (!autopilotState || !shouldContinueRun(autopilotState)) return null;
 
-	const phase = formatPhase(autopilotState.current_phase);
-	const reason = `OMX native Stop received oversized stdin before parsing while the current session has active OMX autopilot state (phase: ${phase}); continue once with a compact response or reduce hook payload size so normal Stop gates can run.`;
-	return {
-		decision: "block",
-		reason,
-		stopReason: "native_stop_stdin_oversized_active_workflow",
-		systemMessage:
-			"OMX native Stop rejected oversized stdin before parsing; active current-session workflow state is present, so Stop is blocked instead of silently allowing termination.",
-	};
+  const phase = formatPhase(autopilotState.current_phase);
+  const reason =
+    `OMX native Stop received oversized stdin before parsing while the current session has active OMX autopilot state (phase: ${phase}); continue once with a compact response or reduce hook payload size so normal Stop gates can run.`;
+  return {
+    decision: "block",
+    reason,
+    stopReason: "native_stop_stdin_oversized_active_workflow",
+    systemMessage:
+      "OMX native Stop rejected oversized stdin before parsing; active current-session workflow state is present, so Stop is blocked instead of silently allowing termination.",
+  };
 }
 
 function buildOversizedStopInactiveWorkflowOutput(): Record<string, unknown> {
-	return {};
+  return {};
 }
 
 async function buildOversizedStdinHookOutput(
-	rawHookEventName: CodexHookEventName | null,
-	cwd: string,
+  rawHookEventName: CodexHookEventName | null,
+  cwd: string,
 ): Promise<Record<string, unknown>> {
-	const systemMessage = `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
-	if (rawHookEventName === "PreToolUse") {
-		return { systemMessage };
-	}
-	if (rawHookEventName === "Stop") {
-		return (
-			(await buildOversizedStopActiveWorkflowOutput(cwd)) ??
-			buildOversizedStopInactiveWorkflowOutput()
-		);
-	}
-	return {
-		continue: false,
-		stopReason: "native_hook_stdin_oversized",
-		systemMessage,
-	};
+  const systemMessage =
+    `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
+  if (rawHookEventName === "PreToolUse") {
+    return { systemMessage };
+  }
+  if (rawHookEventName === "Stop") {
+    return await buildOversizedStopActiveWorkflowOutput(cwd) ?? buildOversizedStopInactiveWorkflowOutput();
+  }
+  return {
+    continue: false,
+    stopReason: "native_hook_stdin_oversized",
+    systemMessage,
+  };
 }
 
 function writeNativeHookJsonStdout(output: Record<string, unknown>): void {
-	process.stdout.write(`${JSON.stringify(output)}\n`);
+  process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 
 function redactMalformedHookPreview(rawInput: string): string {
-	const withoutControls = rawInput.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
-	const withoutAuthSecrets = redactAuthSecrets(withoutControls);
-	return withoutAuthSecrets
-		.replace(
-			/(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(["'])(?:\\.|(?!\2)[^\\])*\2/gi,
-			"$1$2[REDACTED]$2",
-		)
-		.replace(
-			/(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(["'])(?:\\.|[^\\])*$/gi,
-			"$1$2[REDACTED]$2",
-		)
-		.replace(
-			/(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(?!["'])[^,}]*/gi,
-			"$1[REDACTED]",
-		);
+  const withoutControls = rawInput.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  const withoutAuthSecrets = redactAuthSecrets(withoutControls);
+  return withoutAuthSecrets
+    .replace(
+      /(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(["'])(?:\\.|(?!\2)[^\\])*\2/gi,
+      "$1$2[REDACTED]$2",
+    )
+    .replace(
+      /(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(["'])(?:\\.|[^\\])*$/gi,
+      "$1$2[REDACTED]$2",
+    )
+    .replace(
+      /(["']?(?:prompt|user_prompt|input|text)["']?\s*:\s*)(?!["'])[^,}]*/gi,
+      "$1[REDACTED]",
+    );
 }
 
 function buildRawInputLogFields(rawInput: string): Record<string, unknown> {
-	if (!rawInput) return {};
-	return {
-		raw_input_length: Buffer.byteLength(rawInput, "utf-8"),
-		raw_input_prefix: redactMalformedHookPreview(rawInput).slice(0, 240),
-	};
+  if (!rawInput) return {};
+  return {
+    raw_input_length: Buffer.byteLength(rawInput, "utf-8"),
+    raw_input_prefix: redactMalformedHookPreview(rawInput).slice(0, 240),
+  };
 }
 
 async function logNativeHookCliError(
-	cwd: string,
-	type: string,
-	error: unknown,
-	payload: CodexHookPayload = {},
-	details: Record<string, unknown> = {},
+  cwd: string,
+  type: string,
+  error: unknown,
+  payload: CodexHookPayload = {},
+  details: Record<string, unknown> = {},
 ): Promise<void> {
-	const logsDir = join(cwd || process.cwd(), ".omx", "logs");
-	await mkdir(logsDir, { recursive: true }).catch(() => {});
-	const logPath = join(
-		logsDir,
-		`native-hook-${new Date().toISOString().split("T")[0]}.jsonl`,
-	);
-	await appendFile(
-		logPath,
-		JSON.stringify({
-			timestamp: new Date().toISOString(),
-			type,
-			hook_event_name: readHookEventName(payload) ?? "Unknown",
-			session_id: readPayloadSessionId(payload) || undefined,
-			thread_id: readPayloadThreadId(payload) || undefined,
-			turn_id: readPayloadTurnId(payload) || undefined,
-			error: error instanceof Error ? error.message : String(error),
-			...details,
-		}) + "\n",
-	).catch(() => {});
+  const logsDir = join(cwd || process.cwd(), ".omx", "logs");
+  await mkdir(logsDir, { recursive: true }).catch(() => {});
+  const logPath = join(logsDir, `native-hook-${new Date().toISOString().split("T")[0]}.jsonl`);
+  await appendFile(
+    logPath,
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type,
+      hook_event_name: readHookEventName(payload) ?? "Unknown",
+      session_id: readPayloadSessionId(payload) || undefined,
+      thread_id: readPayloadThreadId(payload) || undefined,
+      turn_id: readPayloadTurnId(payload) || undefined,
+      error: error instanceof Error ? error.message : String(error),
+      ...details,
+    }) + "\n",
+  ).catch(() => {});
 }
 
 function isStopDispatchFailureTestTrigger(payload: CodexHookPayload): boolean {
-	return (
-		process.env.NODE_ENV === "test" &&
-		process.env.OMX_NATIVE_HOOK_TEST_THROW_STOP_DISPATCH === "1" &&
-		readHookEventName(payload) === "Stop"
-	);
+  return process.env.NODE_ENV === "test"
+    && process.env.OMX_NATIVE_HOOK_TEST_THROW_STOP_DISPATCH === "1"
+    && readHookEventName(payload) === "Stop";
 }
 
 function isDispatchFailureTestTrigger(): boolean {
-	return (
-		process.env.NODE_ENV === "test" &&
-		process.env.OMX_NATIVE_HOOK_TEST_THROW_DISPATCH === "1"
-	);
+  return process.env.NODE_ENV === "test"
+    && process.env.OMX_NATIVE_HOOK_TEST_THROW_DISPATCH === "1";
 }
 
-function buildMalformedPreToolUseBlockTestOutput(
-	payload: CodexHookPayload,
-): Record<string, unknown> | null {
-	if (
-		process.env.NODE_ENV !== "test" ||
-		readHookEventName(payload) !== "PreToolUse"
-	)
-		return null;
-	switch (process.env.OMX_NATIVE_HOOK_TEST_MALFORMED_PRETOOL_BLOCK) {
-		case "legacy":
-			return {
-				decision: "block",
-				systemMessage:
-					"This advisory text must not validate a malformed legacy PreToolUse block.",
-			};
-		case "deny":
-			return {
-				hookSpecificOutput: {
-					hookEventName: "PreToolUse",
-					permissionDecision: "deny",
-					permissionDecisionReason: "   ",
-				},
-				systemMessage:
-					"This advisory text must not validate a malformed deny PreToolUse block.",
-			};
-		default:
-			return null;
-	}
+function buildMalformedPreToolUseBlockTestOutput(payload: CodexHookPayload): Record<string, unknown> | null {
+  if (process.env.NODE_ENV !== "test" || readHookEventName(payload) !== "PreToolUse") return null;
+  switch (process.env.OMX_NATIVE_HOOK_TEST_MALFORMED_PRETOOL_BLOCK) {
+    case "legacy":
+      return {
+        decision: "block",
+        systemMessage: "This advisory text must not validate a malformed legacy PreToolUse block.",
+      };
+    case "deny":
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "   ",
+        },
+        systemMessage: "This advisory text must not validate a malformed deny PreToolUse block.",
+      };
+    default:
+      return null;
+  }
 }
 
-function buildStopDispatchFailureOutput(
-	error: unknown,
-): Record<string, unknown> {
-	const detail = error instanceof Error ? error.message : String(error);
-	const reason =
-		"OMX native Stop hook failed before normal continuation handling. Continue once more, preserve runtime state, inspect the hook logs, and retry with a valid Stop JSON response.";
-	return {
-		decision: "block",
-		reason,
-		stopReason: "native_stop_dispatch_failure",
-		systemMessage: `${reason} Failure: ${detail}`,
-	};
+function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown> {
+  const detail = error instanceof Error ? error.message : String(error);
+  const reason =
+    "OMX native Stop hook failed before normal continuation handling. Continue once more, preserve runtime state, inspect the hook logs, and retry with a valid Stop JSON response.";
+  return {
+    decision: "block",
+    reason,
+    stopReason: "native_stop_dispatch_failure",
+    systemMessage: `${reason} Failure: ${detail}`,
+  };
 }
 
 export async function runCodexNativeHookCli(): Promise<void> {
-	const { payload, parseError, rawInput, oversized, rawHookEventName } =
-		await readStdinJson();
-	if (oversized) {
-		writeNativeHookJsonStdout(
-			await buildOversizedStdinHookOutput(rawHookEventName, process.cwd()),
-		);
-		return;
-	}
-	if (parseError) {
-		await logNativeHookCliError(
-			process.cwd(),
-			"native_hook_stdin_parse_error",
-			parseError,
-			{},
-			buildRawInputLogFields(rawInput),
-		);
-		writeNativeHookJsonStdout(
-			buildMalformedStdinHookOutput(parseError, rawInput, process.cwd()),
-		);
-		return;
-	}
+  const { payload, parseError, rawInput, oversized, rawHookEventName } = await readStdinJson();
+  if (oversized) {
+    writeNativeHookJsonStdout(await buildOversizedStdinHookOutput(rawHookEventName, process.cwd()));
+    return;
+  }
+  if (parseError) {
+    await logNativeHookCliError(
+      process.cwd(),
+      "native_hook_stdin_parse_error",
+      parseError,
+      {},
+      buildRawInputLogFields(rawInput),
+    );
+    writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput, process.cwd()));
+    return;
+  }
 
-	try {
-		if (isStopDispatchFailureTestTrigger(payload)) {
-			throw new Error("test-induced Stop dispatch failure");
-		}
-		if (isDispatchFailureTestTrigger()) {
-			throw new Error("test-induced dispatch failure");
-		}
+  try {
+    if (isStopDispatchFailureTestTrigger(payload)) {
+      throw new Error("test-induced Stop dispatch failure");
+    }
+    if (isDispatchFailureTestTrigger()) {
+      throw new Error("test-induced dispatch failure");
+    }
 
-		const result = await dispatchCodexNativeHook(payload);
-		if (result.outputJson) {
-			writeNativeHookJsonStdout(
-				sanitizeCodexHookOutput(result.hookEventName, result.outputJson) ?? {},
-			);
-		} else if (
-			result.hookEventName !== "PreCompact" &&
-			result.hookEventName !== "PostCompact"
-		) {
-			writeNativeHookJsonStdout({});
-		}
-	} catch (error) {
-		const cwd = safeString(payload.cwd).trim() || process.cwd();
-		await logNativeHookCliError(
-			cwd,
-			"native_hook_dispatch_error",
-			error,
-			payload,
-		);
-		if (readHookEventName(payload) === "Stop") {
-			writeNativeHookJsonStdout(buildStopDispatchFailureOutput(error));
-		} else {
-			process.exitCode = 1;
-		}
-	}
+    const result = await dispatchCodexNativeHook(payload);
+    if (result.outputJson) {
+      writeNativeHookJsonStdout(sanitizeCodexHookOutput(result.hookEventName, result.outputJson) ?? {});
+    } else if (result.hookEventName !== "PreCompact" && result.hookEventName !== "PostCompact") {
+      writeNativeHookJsonStdout({});
+    }
+  } catch (error) {
+    const cwd = safeString(payload.cwd).trim() || process.cwd();
+    await logNativeHookCliError(cwd, "native_hook_dispatch_error", error, payload);
+    if (readHookEventName(payload) === "Stop") {
+      writeNativeHookJsonStdout(buildStopDispatchFailureOutput(error));
+    } else {
+      process.exitCode = 1;
+    }
+  }
 }
 
 if (isCodexNativeHookMainModule(import.meta.url, process.argv[1])) {
-	runCodexNativeHookCli().catch((error) => {
-		process.exitCode = 1;
-		void logNativeHookCliError(process.cwd(), "native_hook_fatal_error", error);
-	});
+  runCodexNativeHookCli().catch((error) => {
+    process.exitCode = 1;
+    void logNativeHookCliError(process.cwd(), "native_hook_fatal_error", error);
+  });
 }

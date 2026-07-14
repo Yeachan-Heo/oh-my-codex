@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -162,6 +163,48 @@ describe('notify-hook state I/O session authority', () => {
       else delete process.env.OMX_SESSION_ID;
       if (typeof previousCodexSessionId === 'string') process.env.CODEX_SESSION_ID = previousCodexSessionId;
       else delete process.env.CODEX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('maps the recorded OMX owner alias to the canonical session for implicit and explicit writes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-state-io-owner-alias-'));
+    const previousOmxSessionId = process.env.OMX_SESSION_ID;
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const canonicalSessionId = 'omx-canonical';
+      const ownerSessionId = 'omx-owner';
+      await mkdir(join(stateDir, 'sessions', canonicalSessionId), { recursive: true });
+      await writeFile(
+        join(stateDir, 'session.json'),
+        JSON.stringify({
+          session_id: canonicalSessionId,
+          owner_omx_session_id: ownerSessionId,
+          cwd: wd,
+        }, null, 2),
+        'utf-8',
+      );
+      process.env.OMX_SESSION_ID = ownerSessionId;
+
+      assert.equal(await readCurrentSessionId(stateDir), canonicalSessionId);
+      assert.equal(
+        await resolveScopedStateDir(stateDir),
+        join(stateDir, 'sessions', canonicalSessionId),
+      );
+      assert.equal(
+        await resolveScopedStateDir(stateDir, ownerSessionId),
+        join(stateDir, 'sessions', canonicalSessionId),
+      );
+
+      await writeScopedJson(stateDir, 'hud-state.json', ownerSessionId, { turn_count: 12 });
+      const value = JSON.parse(
+        await readFile(join(stateDir, 'sessions', canonicalSessionId, 'hud-state.json'), 'utf-8'),
+      ) as { turn_count?: unknown };
+      assert.equal(value.turn_count, 12);
+      assert.equal(existsSync(join(stateDir, 'sessions', ownerSessionId)), false);
+    } finally {
+      if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
+      else delete process.env.OMX_SESSION_ID;
       await rm(wd, { recursive: true, force: true });
     }
   });
