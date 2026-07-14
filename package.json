@@ -101,7 +101,7 @@
     "@biomejs/biome": "^2.4.4",
     "@types/node": "^26.0.0",
     "c8": "^11.0.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "ajv": ">=8.18.0",
