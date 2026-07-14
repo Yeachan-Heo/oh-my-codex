@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -395,6 +395,135 @@ describe('adapted role binding', () => {
       if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
       else process.env.OMX_STATE_ROOT = previousStateRoot;
       await rm(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a foreign workspace drives the primary bind path under a shared state root', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-bind-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    let foreignCallbackRuns = 0;
+    const foreignCallback = (state: SubagentTrackingState): SubagentTrackingState => {
+      foreignCallbackRuns += 1;
+      return state;
+    };
+    try {
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
+      const sharedStateDir = getBaseStateDir(cwdA);
+      assert.equal(sharedStateDir, getBaseStateDir(cwdB));
+      const scope = { sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'token-a', nowMs: NOW_MS };
+
+      assert.equal(recordPendingRoleIntent(cwdA, { role: 'architect', ...scope }).ok, true);
+
+      // Foreign B primary bind against A's UNBOUND intent: null, zero side effects.
+      assert.equal(bindPendingRoleIntentUnderLock(cwdB, scope, foreignCallback), null);
+      assert.equal(bindAndPublishAdaptedRole(cwdB, sharedStateDir, {
+        correlationSessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'token-a', nowMs: NOW_MS,
+      }, foreignCallback), null);
+      assert.equal(foreignCallbackRuns, 0);
+      const stillPending = (await readSubagentTrackingState(cwdA)).pending_role_intents;
+      assert.equal(stillPending.length, 1);
+      assert.equal(stillPending[0]?.binding_state, undefined);
+      assert.equal(existsSync(join(sharedStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), false);
+
+      // Origin A binds its own intent (now already-bound).
+      const originBind = bindPendingRoleIntentUnderLock(cwdA, scope, bindAdaptedTurn('session-a', 'child-a'));
+      assert.equal(originBind?.alreadyBound, false);
+      assert.ok(originBind?.claimantToken);
+
+      // Foreign B primary bind against A's ALREADY-BOUND intent: null, no claimant disclosure.
+      assert.equal(bindPendingRoleIntentUnderLock(cwdB, scope, foreignCallback), null);
+      // Foreign B cannot complete A's bound journal even with the correct token.
+      assert.equal(completeAdaptedRoleBinding(cwdB, {
+        sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'token-a', claimantToken: originBind?.claimantToken,
+      }), 'not_found');
+      // Foreign B recovery is likewise a no-op.
+      recoverAdaptedRoleBindings(cwdB, sharedStateDir, NOW_MS);
+      assert.equal(foreignCallbackRuns, 0);
+      assert.equal(listBoundAdaptedRoleIntents(cwdA).length, 1);
+
+      // Same-workspace A idempotent retry still authenticates and returns its own claimant.
+      const originRetry = bindPendingRoleIntentUnderLock(cwdA, scope, foreignCallback);
+      assert.equal(originRetry?.alreadyBound, true);
+      assert.equal(originRetry?.claimantToken, originBind?.claimantToken);
+      assert.equal(foreignCallbackRuns, 0);
+
+      // Origin A recovery converges the pair.
+      recoverAdaptedRoleBindings(cwdA, sharedStateDir, NOW_MS);
+      assert.deepEqual(listBoundAdaptedRoleIntents(cwdA), []);
+      assert.equal(readRoleRoutingMarker(sharedStateDir, {
+        cwd: cwdA, sessionId: 'session-a', parentThreadId: 'parent-a', nowMs: NOW_MS,
+      })?.session_id, 'session-a');
+    } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('authenticates a symlink-aliased origin workspace as the same canonical origin', async () => {
+    const realCwd = await mkdtemp(join(tmpdir(), 'omx-adapted-real-'));
+    const aliasParent = await mkdtemp(join(tmpdir(), 'omx-adapted-alias-'));
+    const aliasCwd = join(aliasParent, 'alias');
+    try {
+      await symlink(realCwd, aliasCwd);
+      const scope = { sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'token-alias', nowMs: NOW_MS };
+      // Record via the real path.
+      assert.equal(recordPendingRoleIntent(realCwd, { role: 'architect', ...scope }).ok, true);
+      // Bind via the symlink alias -> same canonical origin -> authenticated success.
+      const binding = bindPendingRoleIntentUnderLock(aliasCwd, scope, bindAdaptedTurn('session-alias', 'child-alias'));
+      assert.equal(binding?.alreadyBound, false);
+      assert.ok(binding?.claimantToken);
+      // Complete via the real path with the alias-minted claimant.
+      assert.equal(completeAdaptedRoleBinding(realCwd, {
+        sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'token-alias', claimantToken: binding?.claimantToken,
+      }), 'completed');
+    } finally {
+      await rm(realCwd, { recursive: true, force: true });
+      await rm(aliasParent, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on a malformed caller origin or an intent with no stored origin', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
+    const stateDir = getBaseStateDir(cwd);
+    let callbackRuns = 0;
+    const callback = (state: SubagentTrackingState): SubagentTrackingState => {
+      callbackRuns += 1;
+      return state;
+    };
+    try {
+      // A blank caller origin cannot be canonicalized -> fail closed, no lock, no callback.
+      assert.equal(bindPendingRoleIntentUnderLock('   ', {
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+      }, callback), null);
+      assert.equal(callbackRuns, 0);
+
+      // A stored intent with NO origin cannot be authenticated -> primary bind returns null.
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [{
+          role: 'architect',
+          session_id: 'session-x',
+          parent_thread_id: 'parent-x',
+          correlation_token: 'token-x',
+          created_at: new Date(NOW_MS).toISOString(),
+          expires_at: new Date(NOW_MS + 600_000).toISOString(),
+        }],
+      }, null, 2)}\n`);
+      assert.equal(bindPendingRoleIntentUnderLock(cwd, {
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+      }, callback), null);
+      assert.equal(callbackRuns, 0);
+      // The origin-less intent is retained, not consumed.
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 
