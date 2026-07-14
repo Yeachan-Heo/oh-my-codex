@@ -4187,6 +4187,134 @@ describe('runtime-enforced review persistence regressions', () => {
     });
   });
 
+  it('accepts exactly sixteen publication groups without letting the effect cap admit seventeen', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const buildPlan = (
+        reviewId: string,
+        transactionKey: string,
+        sessionId: string,
+        groupCount: number,
+      ): DurablePlan => {
+        const now = '2026-07-14T00:00:00.000Z';
+        const pairs: DurableEffect[] = [];
+        const markers: DurableEffect[] = [];
+        const lanes: Array<Record<string, unknown>> = [];
+        for (let index = 0; index < groupCount; index += 1) {
+          const publicationKey = api.generateReviewId();
+          const laneId = `reviewer-${index + 1}`;
+          const eventRef = `events/result-post-tool-${index + 1}.json`;
+          const pair = structuredClone(durableEffects(
+            reviewId,
+            publicationKey,
+            workingDirectory,
+            { sessionId, rootThreadId: 'root-thread-1' },
+          ).slice(0, 2)) as any[];
+          pair[0].payload.lane_id = laneId;
+          pair[0].payload.result.lane_id = laneId;
+          pair[1].payload.activity.lane_id = laneId;
+          pair[1].payload.activity.child_thread_id = `child-${index + 1}`;
+          pair[1].payload.activity.event_ref = eventRef;
+          pair[1].payload.attestation.lane_id = laneId;
+          pair[1].payload.attestation.child_thread_id = `child-${index + 1}`;
+          pair[1].payload.attestation.tool_event_ref = eventRef;
+          pairs.push(...pair as DurableEffect[]);
+          markers.push(...([
+            ['PROPOSAL_KEY', publicationKey],
+            ['TOOL_EVENT_REF', eventRef],
+            ['NONCE', publicationKey],
+          ] as const).map(([kind, value]) => api.createReviewConsumptionEffect({
+            review_id: reviewId,
+            idempotency_key: transactionKey,
+            kind,
+            value,
+            consumed_at: now,
+          })));
+          lanes.push({
+            lane_id: laneId,
+            role: 'code-reviewer',
+            batch_id: 'batch-1',
+            scope_hash: 'a'.repeat(64),
+            status: 'COMPLETE',
+            attempt: 1,
+            timeout_ms: 30_000,
+            idle_deadline_at: now,
+            recommendation: 'REQUEST CHANGES',
+            findings: [],
+            diagnostic_ids: [],
+          });
+        }
+        return {
+          idempotency_key: transactionKey,
+          review_id: reviewId,
+          operation: `BOUND_${groupCount}_PUBLICATIONS`,
+          input: { review_id: reviewId, group_count: groupCount },
+          expected_revision: 1,
+          effects: [...pairs, ...markers, {
+            name: 'review', mode: 'APPLY_REVIEW_REVISION',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+            payload: {
+              ...reviewRecordPayload(reviewId, 2),
+              session_id: sessionId,
+              root_thread_id: 'root-thread-1',
+              scope: reviewScope(),
+              batches: [{
+                batch_id: 'batch-1', module_root: '.', files: ['src/a.ts'],
+                changed_lines: 1, oversized_single_file: false,
+              }],
+              lanes,
+            },
+          }],
+          response: { review_id: reviewId, revision: 2, group_count: groupCount },
+        };
+      };
+
+      const acceptedSessionId = api.generateReviewId();
+      const acceptedPaths = await api.resolveReviewPersistencePaths({
+        workingDirectory, session_id: acceptedSessionId,
+      });
+      const acceptedReviewId = api.generateReviewId();
+      const acceptedKey = api.generateReviewId();
+      await api.atomicWritePrivateJson(join(acceptedPaths.reviewRoot, acceptedReviewId, 'review.json'), {
+        ...reviewRecordPayload(acceptedReviewId, 1),
+        session_id: acceptedSessionId,
+        root_thread_id: 'root-thread-1',
+      });
+      await api.runDurableTransaction(
+        acceptedPaths,
+        buildPlan(acceptedReviewId, acceptedKey, acceptedSessionId, 16),
+      );
+      const [group] = await api.readReviewConsumptionGroups(acceptedPaths, acceptedReviewId);
+      assert.deepEqual({
+        publications: group?.manifest.publication_count,
+        markers: group?.markers.length,
+      }, { publications: 16, markers: 48 });
+
+      const rejectedSessionId = api.generateReviewId();
+      const rejectedPaths = await api.resolveReviewPersistencePaths({
+        workingDirectory, session_id: rejectedSessionId,
+      });
+      const rejectedReviewId = api.generateReviewId();
+      const rejectedKey = api.generateReviewId();
+      await api.atomicWritePrivateJson(join(rejectedPaths.reviewRoot, rejectedReviewId, 'review.json'), {
+        ...reviewRecordPayload(rejectedReviewId, 1),
+        session_id: rejectedSessionId,
+        root_thread_id: 'root-thread-1',
+      });
+      await assert.rejects(
+        api.runDurableTransaction(
+          rejectedPaths,
+          buildPlan(rejectedReviewId, rejectedKey, rejectedSessionId, 17),
+        ),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+      await assert.rejects(
+        readFile(join(rejectedPaths.reviewRoot, rejectedReviewId, 'transactions', rejectedKey, 'prepared'), 'utf8'),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT',
+      );
+    });
+  });
+
   it('rejects non-resumable, reason-conflicting, and wrong-attempt active restoration', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
@@ -4376,6 +4504,47 @@ describe('runtime-enforced review persistence regressions', () => {
       );
       await writeFile(hiddenPath, '{}\n', { mode: 0o600 });
       await rejectsScan();
+    });
+  });
+
+  it('binds the committed START receipt response even after the review advances', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      const originalResponse = { review_id: reviewId, revision: 1, original: true };
+      const plan: DurablePlan = {
+        journal_scope: 'START', idempotency_key: key, review_id: reviewId,
+        operation: 'START_RECEIPT_RESPONSE_BINDING', input: { review_id: reviewId }, expected_revision: 0,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: { ...reviewRecordPayload(reviewId, 1), session_id: sessionId },
+        }],
+        response: originalResponse,
+      };
+      await api.runDurableTransaction(paths, plan);
+      await api.runDurableTransaction(paths, {
+        idempotency_key: api.generateReviewId(), review_id: reviewId,
+        operation: 'ADVANCE_RECEIPT_REVIEW', input: { review_id: reviewId }, expected_revision: 1,
+        effects: [{
+          name: 'review', mode: 'APPLY_REVIEW_REVISION',
+          target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+          payload: { ...reviewRecordPayload(reviewId, 2), session_id: sessionId },
+        }],
+        response: { review_id: reviewId, revision: 2 },
+      });
+      const receiptPath = join(paths.startReceiptsRoot, `${key}.json`);
+      const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as Record<string, unknown>;
+      receipt.response = { review_id: reviewId, revision: 1, original: false };
+      await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+
+      await assert.rejects(
+        api.runDurableTransaction(paths, plan),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
     });
   });
 

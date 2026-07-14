@@ -41,6 +41,7 @@ import {
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_LOCK_WAIT_MS = 5_000;
+const MAX_DURABLE_TRANSACTION_EFFECTS = 128;
 const PROCESS_IDENTITY_TIMEOUT_MS = 1_000;
 const PROCESS_IDENTITY_MAX_BUFFER = 4_096;
 
@@ -1924,7 +1925,7 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction expected revision is invalid');
   }
   const expectedRevision = value.expected_revision as number;
-  if (!Array.isArray(value.effects) || value.effects.length > 64) {
+  if (!Array.isArray(value.effects) || value.effects.length > MAX_DURABLE_TRANSACTION_EFFECTS) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effects are invalid');
   }
   const effects = value.effects.map(validateDurableEffect);
@@ -1963,7 +1964,7 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
   validatePostToolProposalBinding(effects, idempotencyKey);
   validateActiveOverlayBinding(effects, journalScope, expectedRevision);
   validateConsumptionTopology(effects, reviewId, idempotencyKey);
-  if (effects.length > 64) {
+  if (effects.length > MAX_DURABLE_TRANSACTION_EFFECTS) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effects are invalid');
   }
   const targets = effects.map((effect) => `${effect.target.area}:${effect.target.path}`);
@@ -2182,6 +2183,9 @@ async function validateStartReceiptResult(
 ): Promise<DurableTransactionResult> {
   if (receipt.request_digest !== planDigest(plan)) {
     throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
+  }
+  if (canonicalDigest(receipt.response) !== canonicalDigest(plan.response)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt response conflicts with its request');
   }
   if (receipt.review_id !== plan.review_id
     || receipt.result_revision !== plan.expected_revision + 1
