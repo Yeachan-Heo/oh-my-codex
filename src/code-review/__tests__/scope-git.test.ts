@@ -348,6 +348,42 @@ describe('real Git scope discovery', () => {
     });
   });
 
+  it('treats ignored descendant additions and removals as scope drift', async () => {
+    await withRepository(async (repository, api) => {
+      await writeFile(join(repository, '.gitignore'), 'mixed/*.ignored\n');
+      await git(repository, 'add', '--', '.gitignore');
+      await git(repository, 'commit', '-qm', 'ignore contract');
+      await mkdir(join(repository, 'mixed'));
+      await writeFile(join(repository, 'mixed', 'visible.ts'), 'stable visible change\n');
+      const options = {
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: ['mixed'] },
+      };
+
+      const beforeIgnored = await api.resolveGitScope(options);
+      assert.equal(beforeIgnored.status, 'FULL_SCOPE');
+
+      const ignoredPath = join(repository, 'mixed', 'secret.ignored');
+      await writeFile(ignoredPath, 'ignored descendant\n');
+      const withIgnored = await api.resolveGitScope(options);
+      assert.equal(withIgnored.status, 'PARTIAL_SCOPE');
+      assert.deepEqual(withIgnored.files, beforeIgnored.files);
+      assert.notEqual(withIgnored.scope_hash, beforeIgnored.scope_hash);
+      assert.equal(
+        (await api.verifyScopeDrift(beforeIgnored, { workingDirectory: repository })).matches,
+        false,
+      );
+
+      await rm(ignoredPath);
+      const afterRemoval = await api.resolveGitScope(options);
+      assert.equal(afterRemoval.scope_hash, beforeIgnored.scope_hash);
+      assert.equal(
+        (await api.verifyScopeDrift(withIgnored, { workingDirectory: repository })).matches,
+        false,
+      );
+    });
+  });
+
   it('fails an invalid explicit base before discovery and maps unexpected Git failures', async () => {
     await withRepository(async (repository, api) => {
       await writeFile(join(repository, 'untracked.txt'), 'must not be discovered\n');

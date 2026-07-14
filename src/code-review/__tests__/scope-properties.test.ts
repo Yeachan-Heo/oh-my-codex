@@ -20,6 +20,16 @@ interface ScopeApi {
   runGitCommand(workingDirectory: string, args: readonly string[]): Promise<Buffer>;
 }
 
+interface ExpectedScopeEntry {
+  change: 'ADDED' | 'MODIFIED' | 'RENAMED';
+  previous_path?: string;
+  sources: ScopeFileSource[];
+}
+
+interface DiscoveryMutationStats {
+  atomicRenameRecords: number;
+}
+
 async function loadScopeApi(): Promise<ScopeApi> {
   const modulePath: string = '../scope.js';
   const loaded = (await import(modulePath).catch(() => null)) as Partial<ScopeApi> | null;
@@ -50,7 +60,11 @@ function shuffledIndices(length: number, seed: number): number[] {
   return result;
 }
 
-function reverseAndDuplicateDiscoveryRecords(args: readonly string[], output: Buffer): Buffer {
+function reverseAndDuplicateDiscoveryRecords(
+  args: readonly string[],
+  output: Buffer,
+  stats: DiscoveryMutationStats,
+): Buffer {
   const values = output.toString('utf8').split('\0').filter((value) => value.length > 0);
   if (values.length === 0) return output;
 
@@ -59,6 +73,7 @@ function reverseAndDuplicateDiscoveryRecords(args: readonly string[], output: Bu
     for (let index = 0; index < values.length; ) {
       const status = values[index++] as string;
       const width = status.startsWith('R') || status.startsWith('C') ? 2 : 1;
+      if (status.startsWith('R')) stats.atomicRenameRecords += 1;
       records.push([status, ...values.slice(index, index + width)]);
       index += width;
     }
@@ -79,13 +94,15 @@ describe('scope union properties', () => {
     const api = await loadScopeApi();
     const repository = await mkdtemp(join(tmpdir(), 'omx-code-review-scope-property-'));
     const fileCount = 36;
-    const expected = new Map<string, ScopeFileSource[]>();
+    const expected = new Map<string, ExpectedScopeEntry>();
+    const mutationStats: DiscoveryMutationStats = { atomicRenameRecords: 0 };
 
     try {
       await git(repository, 'init', '-q');
       await git(repository, 'config', 'user.email', 'scope-property@example.invalid');
       await git(repository, 'config', 'user.name', 'Scope Property Test');
       await mkdir(join(repository, 'generated'));
+      await writeFile(join(repository, 'generated', 'rename-source.txt'), 'rename fixture\n');
 
       for (let index = 0; index < fileCount; index += 1) {
         if (index % 4 !== 3) {
@@ -102,24 +119,39 @@ describe('scope union properties', () => {
           case 0:
             await writeFile(absolutePath, `staged ${index}\n`);
             await git(repository, 'add', '--', relativePath);
-            expected.set(relativePath, ['INDEX']);
+            expected.set(relativePath, { change: 'MODIFIED', sources: ['INDEX'] });
             break;
           case 1:
             await writeFile(absolutePath, `worktree ${index}\n`);
-            expected.set(relativePath, ['WORKTREE']);
+            expected.set(relativePath, { change: 'MODIFIED', sources: ['WORKTREE'] });
             break;
           case 2:
             await writeFile(absolutePath, `index ${index}\n`);
             await git(repository, 'add', '--', relativePath);
             await writeFile(absolutePath, `worktree ${index}\n`);
-            expected.set(relativePath, ['INDEX', 'WORKTREE']);
+            expected.set(relativePath, {
+              change: 'MODIFIED',
+              sources: ['INDEX', 'WORKTREE'],
+            });
             break;
           case 3:
             await writeFile(absolutePath, `untracked ${index}\n`);
-            expected.set(relativePath, ['UNTRACKED']);
+            expected.set(relativePath, { change: 'ADDED', sources: ['UNTRACKED'] });
             break;
         }
       }
+      await git(
+        repository,
+        'mv',
+        '--',
+        'generated/rename-source.txt',
+        'generated/rename-target.txt',
+      );
+      expected.set('generated/rename-target.txt', {
+        change: 'RENAMED',
+        previous_path: 'generated/rename-source.txt',
+        sources: ['INDEX'],
+      });
 
       const first = await api.resolveGitScope({ workingDirectory: repository });
       const perturbed = await api.resolveGitScope({
@@ -128,6 +160,7 @@ describe('scope union properties', () => {
           reverseAndDuplicateDiscoveryRecords(
             args,
             await api.runGitCommand(workingDirectory, args),
+            mutationStats,
           ),
       });
       const second = await api.resolveGitScope({
@@ -141,9 +174,26 @@ describe('scope union properties', () => {
       assert.deepEqual(first.files.map((entry) => entry.path), expectedPaths, `seed=${PROPERTY_SEED}`);
       assert.deepEqual(perturbed, first, `seed=${PROPERTY_SEED} reordered discovery`);
       assert.deepEqual(second.files.map((entry) => entry.path), expectedPaths, `seed=${PROPERTY_SEED}`);
-      assert.equal(new Set(first.files.map((entry) => entry.path)).size, fileCount);
+      assert.equal(new Set(first.files.map((entry) => entry.path)).size, expected.size);
+      assert.equal(expected.size, fileCount + 1);
+      assert.ok(
+        mutationStats.atomicRenameRecords > 0,
+        `seed=${PROPERTY_SEED} expected the wrapper to transform an atomic rename record`,
+      );
       for (const entry of first.files) {
-        assert.deepEqual(entry.sources, expected.get(entry.path), `seed=${PROPERTY_SEED} path=${entry.path}`);
+        const expectedEntry = expected.get(entry.path);
+        assert.ok(expectedEntry, `seed=${PROPERTY_SEED} unexpected path=${entry.path}`);
+        assert.deepEqual(
+          {
+            change: entry.change,
+            sources: entry.sources,
+            ...(entry.previous_path === undefined
+              ? {}
+              : { previous_path: entry.previous_path }),
+          },
+          expectedEntry,
+          `seed=${PROPERTY_SEED} path=${entry.path}`,
+        );
       }
       assert.deepEqual(
         first.files.map((entry) => ({ path: entry.path, sources: entry.sources })),

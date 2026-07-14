@@ -825,6 +825,8 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
     (total, file) => total + (file.additions ?? 0) + (file.deletions ?? 0),
     0,
   );
+  const scopeReasons = [...new Set(reasons)].sort(byteCompare);
+  const scopeStatus = scopeReasons.length === 0 ? 'FULL_SCOPE' : 'PARTIAL_SCOPE';
   const scopeHash = sha256(
     JSON.stringify(
       canonicalize({
@@ -833,6 +835,8 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
         base_ref: base.baseRef,
         base_sha: base.baseSha,
         head_sha: headSha,
+        scope_status: scopeStatus,
+        reasons: scopeReasons,
         files,
         materials: frozen.map((entry) => entry.material),
       }),
@@ -841,14 +845,14 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
 
   return {
     selector,
-    status: reasons.length === 0 ? 'FULL_SCOPE' : 'PARTIAL_SCOPE',
+    status: scopeStatus,
     ...(base.baseRef === undefined ? {} : { base_ref: base.baseRef }),
     ...(base.baseSha === undefined ? {} : { base_sha: base.baseSha }),
     head_sha: headSha,
     scope_hash: scopeHash,
     files,
     changed_lines: changedLines,
-    reasons,
+    reasons: scopeReasons,
   };
 }
 
