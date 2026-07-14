@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-05-24T12:14:18.921Z",
+  "generatedAt": "2026-07-14T14:18:25.025Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 49,
+    "skillCount": 50,
     "promptCount": 34,
-    "activeSkillCount": 27,
+    "activeSkillCount": 28,
     "activeAgentCount": 20
   },
   "coreSkills": [
@@ -268,6 +268,13 @@
     },
     {
       "name": "doctor",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "wiki",
       "category": "utility",
       "status": "active",
       "core": false,

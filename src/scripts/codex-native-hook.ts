@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
 import { extname, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
@@ -1210,7 +1210,7 @@ function tryReadGitValue(cwd: string, args: string[]): string | null {
 
 interface SloppyFallbackDiffFinding {
   path: string;
-  line: string;
+  lineNumber: number | null;
   source: "staged" | "unstaged" | "untracked";
 }
 
@@ -1240,6 +1240,9 @@ const SOURCE_DIFF_EXTENSIONS = new Set([
   ".tsx",
 ]);
 
+const MAX_UNTRACKED_SLOPPY_FALLBACK_BYTES = 512 * 1024;
+const MAX_DIAGNOSTIC_PATH_CHARS = 240;
+
 function gitOutput(cwd: string, args: string[]): string {
   try {
     return execFileSync("git", args, {
@@ -1256,6 +1259,22 @@ function gitOutput(cwd: string, args: string[]): string {
 
 function normalizeGitPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function formatDiagnosticGitPath(path: string): string {
+  let escaped = "";
+  for (const char of normalizeGitPath(path)) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    const segment = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(char)
+      ? `\\u{${codePoint.toString(16).padStart(4, "0")}}`
+      : JSON.stringify(char).slice(1, -1);
+    if (escaped.length + segment.length > MAX_DIAGNOSTIC_PATH_CHARS - 1) {
+      escaped += "…";
+      break;
+    }
+    escaped += segment;
+  }
+  return `"${escaped}"`;
 }
 
 function isDiffAuditableSourcePath(path: string): boolean {
@@ -1286,6 +1305,7 @@ function isSuspiciousSloppyFallbackAddedLine(line: string, nearbyContext: string
 interface SloppyFallbackCandidateLine {
   text: string;
   added: boolean;
+  lineNumber: number | null;
 }
 
 function collectFindingsFromCandidateLines(
@@ -1303,7 +1323,7 @@ function collectFindingsFromCandidateLines(
       .map((line) => line.text)
       .join("\n");
     if (isSuspiciousSloppyFallbackAddedLine(candidate.text, nearbyContext)) {
-      findings.push({ path, line: candidate.text.trim(), source });
+      findings.push({ path, lineNumber: candidate.lineNumber, source });
     }
   }
   return findings;
@@ -1316,6 +1336,7 @@ function collectSloppyFallbackFindingsFromPatch(
   const findings: SloppyFallbackDiffFinding[] = [];
   let currentPath = "";
   let hunkLines: SloppyFallbackCandidateLine[] = [];
+  let nextNewLineNumber: number | null = null;
 
   const flushHunk = () => {
     findings.push(...collectFindingsFromCandidateLines(currentPath, hunkLines, source));
@@ -1327,6 +1348,7 @@ function collectSloppyFallbackFindingsFromPatch(
     if (fileMatch) {
       flushHunk();
       currentPath = normalizeGitPath(fileMatch[2] || fileMatch[1] || "");
+      nextNewLineNumber = null;
       continue;
     }
     const renameMatch = rawLine.match(/^\+\+\+ b\/(.*)$/);
@@ -1336,13 +1358,17 @@ function collectSloppyFallbackFindingsFromPatch(
     }
     if (rawLine.startsWith("@@")) {
       flushHunk();
+      const hunkMatch = rawLine.match(/^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+      nextNewLineNumber = hunkMatch ? Number.parseInt(hunkMatch[1], 10) : null;
       continue;
     }
     if (!currentPath || !isDiffAuditableSourcePath(currentPath) || isDiffHeaderLine(rawLine)) continue;
     if (rawLine.startsWith("+")) {
-      hunkLines.push({ text: rawLine.slice(1), added: true });
+      hunkLines.push({ text: rawLine.slice(1), added: true, lineNumber: nextNewLineNumber });
+      if (nextNewLineNumber !== null) nextNewLineNumber += 1;
     } else if (rawLine.startsWith(" ")) {
-      hunkLines.push({ text: rawLine.slice(1), added: false });
+      hunkLines.push({ text: rawLine.slice(1), added: false, lineNumber: nextNewLineNumber });
+      if (nextNewLineNumber !== null) nextNewLineNumber += 1;
     }
   }
   flushHunk();
@@ -1354,15 +1380,24 @@ function collectSloppyFallbackFindingsFromUntracked(cwd: string): SloppyFallback
   if (!output) return [];
   const findings: SloppyFallbackDiffFinding[] = [];
   for (const rawPath of output.split("\0")) {
-    const path = normalizeGitPath(rawPath.trim());
+    const path = normalizeGitPath(rawPath);
     if (!path || !isDiffAuditableSourcePath(path)) continue;
+    const absolutePath = resolve(cwd, path);
+    const relativePath = relative(cwd, absolutePath);
+    if (!relativePath || relativePath.startsWith("..") || resolve(cwd, relativePath) !== absolutePath) continue;
     let content = "";
     try {
-      content = readFileSync(join(cwd, path), "utf-8");
+      const fileStat = lstatSync(absolutePath);
+      if (!fileStat.isFile() || fileStat.size > MAX_UNTRACKED_SLOPPY_FALLBACK_BYTES) continue;
+      content = readFileSync(absolutePath, "utf-8");
     } catch {
       continue;
     }
-    findings.push(...collectFindingsFromCandidateLines(path, content.split(/\r?\n/).map((text) => ({ text, added: true })), "untracked"));
+    findings.push(...collectFindingsFromCandidateLines(
+      path,
+      content.split(/\r?\n/).map((text, index) => ({ text, added: true, lineNumber: index + 1 })),
+      "untracked",
+    ));
   }
   return findings;
 }
@@ -1382,10 +1417,10 @@ function buildSloppyFallbackDiffStopOutput(findings: SloppyFallbackDiffFinding[]
   if (findings.length === 0) return null;
   const preview = findings
     .slice(0, 3)
-    .map((finding) => `${finding.path} (${finding.source}): ${finding.line}`)
+    .map((finding) => `${formatDiagnosticGitPath(finding.path)}:${finding.lineNumber ?? "?"} (${finding.source})`)
     .join("; ");
   const systemMessage =
-    `Sloppy fallback/workaround diff audit detected ungrounded fallback code in added source lines: ${preview}. `
+    `Sloppy fallback/workaround diff audit detected ungrounded fallback code at: ${preview}. `
     + "Continue by replacing the bypass/workaround with a grounded design, or add explicit compatibility/fail-safe/tested/issue rationale near the code if the fallback is intentional.";
   return {
     decision: "block",

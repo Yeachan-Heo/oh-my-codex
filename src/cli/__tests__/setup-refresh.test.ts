@@ -119,6 +119,33 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
+  it("uses prospective HUD wording without writing during a forced dry-run", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      const hudConfigPath = join(wd, ".omx", "hud-config.json");
+      const customized = JSON.stringify({ preset: "custom" });
+      await writeFile(hudConfigPath, customized);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: "project",
+        dryRun: true,
+        force: true,
+        verbose: true,
+      });
+
+      assert.equal(await readFile(hudConfigPath, "utf-8"), customized);
+      assert.match(output, /dry-run: would overwrite \.omx\/hud-config\.json/);
+      assert.match(output, /HUD config would be overwritten \(preset: focused\)\./);
+      assert.match(output, /StatusLine would be configured in config\.toml via \[tui\] section\./);
+      assert.doesNotMatch(output, /Wrote \.omx\/hud-config\.json/);
+      assert.doesNotMatch(output, /HUD config created \(preset: focused\)\./);
+      assert.doesNotMatch(output, /StatusLine configured in config\.toml via \[tui\] section\./);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("creates .gitignore with OMX project ignore rules during project-scoped setup", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {

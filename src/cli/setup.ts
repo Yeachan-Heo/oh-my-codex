@@ -79,6 +79,10 @@ import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
+import {
+	getSetupInstallableSkillNames,
+	isCatalogInstallableStatus,
+} from "../catalog/installable.js";
 import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
 import {
 	addGeneratedAgentsMarker,
@@ -233,28 +237,8 @@ const PROJECT_GITIGNORE_ENTRIES = [
 	"!.codex/prompts/**",
 ] as const;
 const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
-const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
 const HARD_DEPRECATED_SKILL_NAMES = new Set(["web-clone"]);
-
-function isCatalogInstallableStatus(status: string | undefined): boolean {
-	return status === "active" || status === "internal";
-}
-
-function getSetupInstallableSkillNames(
-	manifest = tryReadCatalogManifest(),
-): Set<string> {
-	return new Set([
-		...(manifest?.skills ?? [])
-			.filter(
-				(skill) =>
-					typeof skill.name === "string" &&
-					isCatalogInstallableStatus(skill.status),
-			)
-			.map((skill) => skill.name),
-		...SETUP_ONLY_INSTALLABLE_SKILLS,
-	]);
-}
 
 function applyScopePathRewritesToAgentsTemplate(
 	content: string,
@@ -2571,18 +2555,32 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	// Step 8: Configure HUD
 	console.log("[8/8] Configuring HUD...");
 	const hudConfigPath = join(projectRoot, ".omx", "hud-config.json");
-	if (force || !existsSync(hudConfigPath)) {
-		if (!dryRun) {
+	const hudConfigExists = existsSync(hudConfigPath);
+	if (force || !hudConfigExists) {
+		if (dryRun) {
+			if (verbose) {
+				console.log(
+					`  dry-run: would ${hudConfigExists ? "overwrite" : "write"} .omx/hud-config.json`,
+				);
+			}
+			console.log(
+				`  HUD config would be ${hudConfigExists ? "overwritten" : "created"} (preset: focused).`,
+			);
+		} else {
 			const defaultHudConfig = { preset: "focused" };
 			await writeFile(hudConfigPath, JSON.stringify(defaultHudConfig, null, 2));
+			if (verbose) console.log("  Wrote .omx/hud-config.json");
+			console.log(
+				`  HUD config ${hudConfigExists ? "refreshed" : "created"} (preset: focused).`,
+			);
 		}
-		if (verbose) console.log("  Wrote .omx/hud-config.json");
-		console.log("  HUD config created (preset: focused).");
 	} else {
 		console.log("  HUD config already exists (use --force to overwrite).");
 	}
 	if (omxManagesTui) {
-		console.log("  StatusLine configured in config.toml via [tui] section.");
+		console.log(
+			`  StatusLine ${dryRun ? "would be configured" : "configured"} in config.toml via [tui] section.`,
+		);
 	}
 	console.log();
 
@@ -3180,13 +3178,13 @@ export async function installSkills(
 ): Promise<SetupCategorySummary> {
 	const summary = createEmptyCategorySummary();
 	if (!existsSync(srcDir)) return summary;
-	const installableSkillNames = getSetupInstallableSkillNames();
+	const manifest = tryReadCatalogManifest();
+	const installableSkillNames = getSetupInstallableSkillNames(manifest);
 	const installableSkills: Array<{
 		name: string;
 		sourceDir: string;
 		destinationDir: string;
 	}> = [];
-	const manifest = tryReadCatalogManifest();
 	const skillStatusByName = manifest
 		? new Map(manifest.skills.map((skill) => [skill.name, skill.status]))
 		: null;

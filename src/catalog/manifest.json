@@ -210,6 +210,11 @@
       "status": "active"
     },
     {
+      "name": "wiki",
+      "category": "utility",
+      "status": "active"
+    },
+    {
       "name": "help",
       "category": "utility",
       "status": "deprecated",

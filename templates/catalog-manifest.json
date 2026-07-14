@@ -260,6 +260,13 @@
       "internalRequired": false
     },
     {
+      "name": "wiki",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "help",
       "category": "utility",
       "status": "deprecated",
