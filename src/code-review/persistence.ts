@@ -1913,7 +1913,12 @@ async function recoverPendingReviewTransactionsLocked(
     if (prepared.journal_scope !== 'START' || prepared.idempotency_key !== key) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'start transaction recovery identity conflicts');
     }
-    if (await readJsonIfPresent(files.committed) !== undefined) continue;
+    const committedValue = await readJsonIfPresent(files.committed);
+    if (committedValue !== undefined) {
+      validateCommittedAgainstPrepared(committedValue, prepared);
+      await validateReviewEffectCurrentState(paths, prepared, prepared.transaction_id);
+      continue;
+    }
     const result = await recoverDurableTransactionLocked(paths, prepared.review_id, key, 'START');
     if (result === null) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'start transaction intent disappeared during recovery');

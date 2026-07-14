@@ -1575,6 +1575,104 @@ describe('code-review durable transaction journal', () => {
     });
   });
 
+  it('validates committed START intent and applied review state before root-scan fast-path cleanup', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const committedMutations = [
+        'transaction_id', 'idempotency_key', 'input_digest', 'response',
+      ] as const;
+      const accepted: Array<{ label: string; result: unknown }> = [];
+
+      for (const mutation of committedMutations) {
+        const sessionId = api.generateReviewId();
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({
+          workingDirectory, session_id: sessionId,
+        });
+        await assert.rejects(api.runDurableTransaction(paths, {
+          journal_scope: 'START',
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: 'START_COMMITTED_TAMPER',
+          input: { stable: true },
+          expected_revision: 0,
+          effects: [],
+          response: { review_id: reviewId, stable: true },
+        }, { crashAt: 'after:committed' }), /injected crash/u);
+        const committedPath = join(paths.startTransactionsRoot, key, 'committed');
+        const committed = JSON.parse(await readFile(committedPath, 'utf8')) as Record<string, unknown>;
+        if (mutation === 'transaction_id') committed.transaction_id = api.generateReviewId();
+        if (mutation === 'idempotency_key') committed.idempotency_key = api.generateReviewId();
+        if (mutation === 'input_digest') committed.input_digest = 'f'.repeat(64);
+        if (mutation === 'response') committed.response = { tampered: true };
+        await writeFile(committedPath, `${JSON.stringify(committed, null, 2)}\n`, { mode: 0o600 });
+
+        try {
+          const result = await api.recoverPendingReviewTransactions(paths);
+          accepted.push({ label: `committed ${mutation}`, result });
+        } catch (error) {
+          assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED', mutation);
+        }
+      }
+
+      for (const mutation of ['identity', 'revision'] as const) {
+        const sessionId = api.generateReviewId();
+        const reviewId = api.generateReviewId();
+        const key = api.generateReviewId();
+        const paths = await api.resolveReviewPersistencePaths({
+          workingDirectory, session_id: sessionId,
+        });
+        await assert.rejects(api.runDurableTransaction(paths, {
+          journal_scope: 'START',
+          idempotency_key: key,
+          review_id: reviewId,
+          operation: 'START_APPLIED_REVIEW_TAMPER',
+          input: { stable: true },
+          expected_revision: 0,
+          effects: [{
+            name: 'review',
+            mode: 'APPLY_REVIEW_REVISION',
+            target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
+            payload: reviewRecordPayload(reviewId, 1),
+          }],
+          response: { review_id: reviewId, revision: 1 },
+        }, { crashAt: 'after:committed' }), /injected crash/u);
+        const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
+        const review = JSON.parse(await readFile(reviewPath, 'utf8')) as Record<string, unknown>;
+        if (mutation === 'identity') review.review_id = api.generateReviewId();
+        if (mutation === 'revision') review.revision = 2;
+        await writeFile(reviewPath, `${JSON.stringify(review, null, 2)}\n`, { mode: 0o600 });
+
+        try {
+          const result = await api.recoverPendingReviewTransactions(paths);
+          accepted.push({ label: `review ${mutation}`, result });
+        } catch (error) {
+          assert.equal((error as { code?: unknown }).code, 'PERSISTENCE_FAILED', mutation);
+        }
+      }
+
+      const validSessionId = api.generateReviewId();
+      const validReviewId = api.generateReviewId();
+      const validKey = api.generateReviewId();
+      const validPaths = await api.resolveReviewPersistencePaths({
+        workingDirectory, session_id: validSessionId,
+      });
+      await assert.rejects(api.runDurableTransaction(validPaths, {
+        journal_scope: 'START',
+        idempotency_key: validKey,
+        review_id: validReviewId,
+        operation: 'VALID_START_COMMITTED_SCAN',
+        input: { stable: true },
+        expected_revision: 0,
+        effects: [],
+        response: { review_id: validReviewId, stable: true },
+      }, { crashAt: 'after:committed' }), /injected crash/u);
+      assert.deepEqual(await api.recoverPendingReviewTransactions(validPaths), []);
+      assert.deepEqual(accepted, [], `accepted tampered START state: ${JSON.stringify(accepted)}`);
+    });
+  });
+
   it('rejects tampered prepared input, effects, revision, and locator identity before side effects', async () => {
     const mutations = ['input', 'effects', 'revision', 'locator'] as const;
     for (const mutation of mutations) {
