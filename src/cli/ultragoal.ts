@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   CodexGoalSnapshotError,
   formatCodexGoalReconciliation,
@@ -6,6 +7,12 @@ import {
   readCodexGoalSnapshotInput,
   reconcileCodexGoalSnapshot,
 } from '../goal-workflows/codex-goal-snapshot.js';
+import {
+  NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
+  resolveNativeSubagentSupportStatus,
+} from '../leader/contract.js';
+import { resolveRuntimeStateScope } from '../mcp/state-paths.js';
+import { readRoleRoutingMarker } from '../subagents/role-routing-marker.js';
 import {
   addUltragoalGoal,
   buildCodexGoalInstruction,
@@ -176,6 +183,34 @@ async function readJsonInput(raw: string | undefined, label = '--quality-gate-js
   }
 }
 
+const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = 'native-subagent-capacity-blocker.json';
+
+async function readJsonIfExists<T>(path: string): Promise<T | null> {
+  try {
+    return JSON.parse(await readFile(path, 'utf-8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCodexGoalNativeSubagentSupport(cwd: string) {
+  const scope = await resolveRuntimeStateScope(cwd);
+  const [persistedSupportBlocker, persistedCapacityBlocker] = await Promise.all([
+    readJsonIfExists<Record<string, unknown>>(join(scope.baseStateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE)),
+    readJsonIfExists<Record<string, unknown>>(join(scope.baseStateDir, NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE)),
+  ]);
+  const persistedRoleRoutingMarker = scope.sessionId
+    ? readRoleRoutingMarker(scope.baseStateDir, { cwd: scope.cwd, sessionId: scope.sessionId })
+    : null;
+  return resolveNativeSubagentSupportStatus({
+    persistedSupportBlocker,
+    persistedRoleRoutingMarker,
+    persistedCapacityBlocker,
+    cwd: scope.cwd,
+    sessionId: scope.sessionId,
+  });
+}
+
 const STEERING_KINDS = new Set<UltragoalSteeringMutationKind>(ULTRAGOAL_STEERING_MUTATION_KINDS);
 const STEERING_SOURCES = new Set<UltragoalSteeringSource>(ULTRAGOAL_STEERING_SOURCES);
 
@@ -319,11 +354,16 @@ function assertUltragoalMutationAllowedFromCurrentProcess(command: string): void
   );
 }
 
-export async function ultragoalCommand(args: string[]): Promise<void> {
+export interface UltragoalCommandDependencies {
+  buildCodexGoalInstruction?: typeof buildCodexGoalInstruction;
+}
+
+export async function ultragoalCommand(args: string[], deps: UltragoalCommandDependencies = {}): Promise<void> {
   const command = args[0] ?? 'help';
   const rest = args.slice(1);
   const json = hasFlag(rest, '--json');
   const cwd = process.cwd();
+  const buildGoalInstruction = deps.buildCodexGoalInstruction ?? buildCodexGoalInstruction;
 
   try {
     if (command === 'help' || command === '--help' || command === '-h') {
@@ -459,7 +499,8 @@ export async function ultragoalCommand(args: string[]): Promise<void> {
         } else console.log(handoff ?? (result.done ? 'ultragoal: all goals complete' : 'ultragoal: no pending goals (use --retry-failed to retry failed goals)'));
         return;
       }
-      const instruction = buildCodexGoalInstruction(result.goal, result.plan);
+      const nativeSubagentSupport = await resolveCodexGoalNativeSubagentSupport(cwd);
+      const instruction = buildGoalInstruction(result.goal, result.plan, { nativeSubagentSupport });
       if (json) printJson({ ok: true, resumed: result.resumed, goal: result.goal, instruction });
       else console.log(instruction);
       return;

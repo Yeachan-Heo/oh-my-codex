@@ -28,7 +28,7 @@ export const LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE = [
   `- ${LEADER_CONDUCTOR_SILVER_RULE}`,
   ...LEADER_CONDUCTOR_REUSE_AND_LEDGER_RULES.map((line) => `- ${line}`),
 ].join('\n');
-export type NativeSubagentSupportStatus = 'supported' | 'unsupported' | 'unknown';
+export type NativeSubagentSupportStatus = 'supported' | 'unsupported' | 'unknown' | 'role_routing_unavailable';
 
 export type NativeSubagentUnsupportedReason =
   | 'native_subagents_unsupported'
@@ -40,6 +40,7 @@ export type NativeSubagentSupportEvidenceSource =
   | 'hook_payload_available_tools'
   | 'post_tool_failure'
   | 'persisted_support_blocker'
+  | 'persisted_role_routing_marker'
   | 'capacity_blocker'
   | 'default_unknown';
 
@@ -52,9 +53,20 @@ export interface NativeSubagentSupportEvidence {
   expiresAt?: string;
 }
 
+export interface RoleRoutingUnavailableMarker {
+  schema_version: 1;
+  cwd?: string;
+  session_id?: string;
+  parent_thread_id?: string;
+  observed_at: string;
+  expires_at: string;
+  evidence?: string;
+}
+
 export interface NativeSubagentCapabilityInput {
   payload?: Record<string, unknown> | null;
   persistedSupportBlocker?: Record<string, unknown> | null;
+  persistedRoleRoutingMarker?: unknown;
   persistedCapacityBlocker?: Record<string, unknown> | null;
   nowMs?: number;
   cwd?: string;
@@ -75,6 +87,14 @@ export const LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK = [
   'Record the unsupported native-subagent blocker, terminalize the workflow as blocked/cancelled/failed, or restart in a runtime with working native subagents.',
   'Do not treat this as clean ralplan consensus, clean ultragoal final review, or permission for Main-root source/package/git edits.',
   'Do not call multi_agent_v1.close_agent after native subagent capacity/support failures; stale native handles can hang the turn.',
+].join(' ');
+
+export const LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK = [
+  'Native role routing is unavailable in this environment.',
+  'PROCEED with adapted role-specific consensus using the exposed spawn tool.',
+  'Record role identity via the OMX adapted role-intent ledger.',
+  'Keep unknown-role validation loud.',
+  'Continue the workflow without claiming native typed-subagent provenance.',
 ].join(' ');
 
 function supportRecord(value: unknown): Record<string, unknown> | null {
@@ -102,7 +122,7 @@ function isNativeSubagentUnsupportedReason(value: unknown): value is NativeSubag
 
 function isNativeSubagentSupportEvidenceSource(value: unknown): value is NativeSubagentSupportEvidenceSource {
   return typeof value === 'string'
-    && ['hook_payload_capability', 'hook_payload_available_tools', 'post_tool_failure', 'persisted_support_blocker', 'capacity_blocker', 'default_unknown'].includes(value);
+    && ['hook_payload_capability', 'hook_payload_available_tools', 'post_tool_failure', 'persisted_support_blocker', 'persisted_role_routing_marker', 'capacity_blocker', 'default_unknown'].includes(value);
 }
 
 function blockerMatchesScope(blocker: Record<string, unknown>, input: NativeSubagentCapabilityInput): boolean {
@@ -160,11 +180,39 @@ function supportEvidenceFromBlocker(
   };
 }
 
+function roleRoutingUnavailableEvidenceFromMarker(
+  marker: unknown,
+  input: NativeSubagentCapabilityInput,
+): NativeSubagentSupportEvidence | null {
+  const record = supportRecord(marker);
+  if (!record || record.schema_version !== 1 || !blockerMatchesScope(record, input)) return null;
+
+  const markerCwd = supportString(record.cwd);
+  const markerSessionId = supportString(record.session_id ?? record.sessionId);
+  if (!markerCwd && !markerSessionId) return null;
+
+  const observedAt = supportString(record.observed_at ?? record.observedAt);
+  if (!observedAt || !Number.isFinite(Date.parse(observedAt))) return null;
+  const expiresAt = supportString(record.expires_at ?? record.expiresAt);
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!expiresAt || !Number.isFinite(expiresAtMs) || expiresAtMs <= (input.nowMs ?? Date.now())) return null;
+
+  return {
+    status: 'role_routing_unavailable',
+    source: 'persisted_role_routing_marker',
+    ...(supportString(record.evidence ?? record.evidenceSummary) ? { evidenceSummary: supportString(record.evidence ?? record.evidenceSummary) } : {}),
+    observedAt,
+    expiresAt,
+  };
+}
+
 function capabilityStatusFromRecord(record: Record<string, unknown> | null): NativeSubagentSupportStatus | null {
   if (!record) return null;
   const nativeSubagents = supportBoolean(record.native_subagents ?? record.nativeSubagents);
   const multiAgent = supportBoolean(record.multi_agent_v1 ?? record.multiAgentV1);
+  const roleRouting = supportBoolean(record.role_routing ?? record.roleRouting);
   if (nativeSubagents === false || multiAgent === false) return 'unsupported';
+  if (roleRouting === false) return 'role_routing_unavailable';
   if (nativeSubagents === true || multiAgent === true) return 'supported';
   return null;
 }
@@ -180,7 +228,7 @@ const NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN = /(?:^|\.)spawn_agent$/;
 // `spawn_agent`, and namespaced forms such as `multi_agent_v1.spawn_agent` and
 // the current Codex App `collaboration.spawn_agent`, plus the legacy `task`
 // alias. The suffix anchor keeps `respawn_agent`/`spawn_agentx` from matching.
-function isNativeSubagentSpawnToolName(name: string): boolean {
+export function isNativeSubagentSpawnToolName(name: string): boolean {
   return NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN.test(name) || name === 'task';
 }
 
@@ -224,6 +272,16 @@ export function resolveNativeSubagentSupportStatus(input: NativeSubagentCapabili
       evidenceSummary: 'payload capability reports native subagent support',
     };
   }
+  if (explicitStatus === 'role_routing_unavailable') {
+    return {
+      status: 'role_routing_unavailable',
+      source: 'hook_payload_capability',
+      evidenceSummary: 'payload capability reports role routing unavailable',
+    };
+  }
+
+  const roleRoutingMarkerEvidence = roleRoutingUnavailableEvidenceFromMarker(input.persistedRoleRoutingMarker, input);
+  if (roleRoutingMarkerEvidence) return roleRoutingMarkerEvidence;
 
   const toolEvidence = availableToolsEvidence(payload);
   if (toolEvidence?.status === 'supported') return toolEvidence;
@@ -255,10 +313,21 @@ export function isUnsupportedNativeSubagentEvidence(value: unknown): boolean {
   return isUnsupportedNativeSubagentEvidenceForScope(value);
 }
 
+export function isRoleRoutingUnavailableEvidence(value: unknown): boolean {
+  const record = supportRecord(value);
+  return record?.status === 'role_routing_unavailable';
+}
+
 export function buildUnsupportedNativeSubagentGuidance(evidence: NativeSubagentSupportEvidence): string {
   const reason = evidence.reason ? ` Reason: ${evidence.reason}.` : '';
   const summary = evidence.evidenceSummary ? ` Evidence: ${evidence.evidenceSummary}.` : '';
   return `${LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK}${reason}${summary}`;
+}
+
+export function buildRoleRoutingUnavailableGuidance(evidence: NativeSubagentSupportEvidence): string {
+  const reason = evidence.reason ? ` Reason: ${evidence.reason}.` : '';
+  const summary = evidence.evidenceSummary ? ` Evidence: ${evidence.evidenceSummary}.` : '';
+  return `${LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK}${reason}${summary}`;
 }
 
 export type ConductorPhase =

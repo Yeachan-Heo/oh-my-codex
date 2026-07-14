@@ -524,6 +524,45 @@ describe('omx setup AGENTS refresh behavior', () => {
     }
   });
 
+  it('persists explicit false and clear policies when a plugin symlink skips the user AGENTS.md write', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-plugin-agents-symlink-policy-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const dotfilesAgentsPath = join(wd, 'dotfiles', '.codex', 'AGENTS.md');
+    const codexAgentsPath = join(home, '.codex', 'AGENTS.md');
+    const dotfilesContent = '# Dotfiles Instructions\n\nDotfiles-owned guidance.\n';
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(join(wd, 'dotfiles', '.codex'), { recursive: true });
+      await mkdir(join(home, '.codex'), { recursive: true });
+      await writeFile(dotfilesAgentsPath, dotfilesContent);
+      await symlink(dotfilesAgentsPath, codexAgentsPath);
+      const statePath = join(wd, '.omx', 'setup-scope.json');
+
+      for (const [mergeAgentsPolicy, expected] of [
+        [{ kind: 'set', value: false }, false],
+        [{ kind: 'clear' }, undefined],
+      ] as const) {
+        await writeFile(statePath, JSON.stringify({ scope: 'user', installMode: 'plugin', mcpMode: 'none', mergeAgents: true }));
+        await runSetupWithCapturedLogs(wd, {
+          scope: 'user',
+          installMode: 'plugin',
+          mergeAgentsPolicy,
+        });
+        assert.equal(await readlink(codexAgentsPath), dotfilesAgentsPath);
+        assert.equal(await readFile(dotfilesAgentsPath, 'utf-8'), dotfilesContent);
+        const persisted = JSON.parse(await readFile(statePath, 'utf-8')) as { mergeAgents?: boolean };
+        assert.equal(persisted.mergeAgents, expected);
+        assert.equal(Object.hasOwn(persisted, 'mergeAgents'), expected !== undefined);
+      }
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('skips plugin-mode explicit AGENTS.md merge for broken symlinked user AGENTS.md', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-plugin-agents-broken-symlink-merge-'));
     const restoreTty = setMockTty(false);
@@ -808,6 +847,53 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
       assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
       assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
+      assert.deepEqual(
+        JSON.parse(await readFile(join(wd, '.omx', 'setup-scope.json'), 'utf-8')),
+        { scope: 'project', mcpMode: 'none', mergeAgents: true },
+      );
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('persists explicit false and clear policies when an active session skips the project AGENTS.md write', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-active-policy-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const existing = '# active session file\n';
+    try {
+      const pidStartTicks = await readCurrentLinuxStartTicks();
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+      await writeFile(
+        join(wd, '.omx', 'state', 'session.json'),
+        JSON.stringify({
+          session_id: 'sess-test',
+          started_at: new Date().toISOString(),
+          cwd: wd,
+          pid: process.pid,
+          pid_start_ticks: pidStartTicks,
+        }, null, 2)
+      );
+      const statePath = join(wd, '.omx', 'setup-scope.json');
+
+      for (const [mergeAgentsPolicy, expected] of [
+        [{ kind: 'set', value: false }, false],
+        [{ kind: 'clear' }, undefined],
+      ] as const) {
+        await writeFile(statePath, JSON.stringify({ scope: 'project', mcpMode: 'none', mergeAgents: true }));
+        await runSetupWithCapturedLogs(wd, {
+          scope: 'project',
+          mergeAgentsPolicy,
+        });
+        assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
+        const persisted = JSON.parse(await readFile(statePath, 'utf-8')) as { mergeAgents?: boolean };
+        assert.equal(persisted.mergeAgents, expected);
+        assert.equal(Object.hasOwn(persisted, 'mergeAgents'), expected !== undefined);
+      }
     } finally {
       restoreHome();
       restoreTty();
@@ -847,6 +933,10 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.match(output, /Stop the active session first, then re-run setup\./);
       assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
       assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
+      assert.deepEqual(
+        JSON.parse(await readFile(join(wd, '.omx', 'setup-scope.json'), 'utf-8')),
+        { scope: 'project', installMode: 'plugin', mcpMode: 'none', mergeAgents: true },
+      );
     } finally {
       restoreHome();
       restoreTty();

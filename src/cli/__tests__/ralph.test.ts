@@ -280,14 +280,19 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /skip the mandatory ai-slop-cleaner final pass/i);
     assert.match(instructions, /latest successful pre-deslop verification evidence/i);
   });
-  it('requires explicit agent_type for native subagent dispatch guidance', () => {
+  it('requires conditional native subagent routing guidance', () => {
     const instructions = buildRalphAppendInstructions('fix issue 920', {
       changedFilesPath: '.omx/ralph/changed-files.txt',
       noDeslop: false,
       approvedHint: null,
     });
-    assert.match(instructions, /MUST set `agent_type` to an installed OMX role/);
-    assert.match(instructions, /never omit `agent_type`/);
+    assert.match(instructions, /When the native surface exposes `agent_type` role routing, every Codex native subagent dispatch MUST set `agent_type` to an installed OMX role/);
+    assert.match(instructions, /never omit `agent_type` for generic OMX work/);
+    assert.match(instructions, /role_routing_unavailable/);
+    assert.match(instructions, /do not fabricate `agent_type`/);
+    assert.match(instructions, /OMX adapted role-pass protocol/);
+    assert.match(instructions, /pre-validated role intent in the OMX subagent ledger/);
+    assert.match(instructions, /never fake the role via a prompt label/);
     assert.match(instructions, /use `reasoning_effort` instead of `tier`/);
     assert.match(instructions, /LOW -> `low`/);
     assert.match(instructions, /STANDARD -> `medium`/);

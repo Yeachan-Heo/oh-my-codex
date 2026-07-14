@@ -1,10 +1,16 @@
-import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, ftruncateSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { getBaseStateDir } from '../state/paths.js';
+import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
 
 export const SUBAGENT_TRACKING_SCHEMA_VERSION = 1;
 export const DEFAULT_SUBAGENT_ACTIVE_WINDOW_MS = 120_000;
+export const OMX_ADAPTED_PROVENANCE = 'omx_adapted';
+export const NATIVE_SUBAGENT_PROVENANCE = 'native_subagent';
 
 export type SubagentAvailabilityStatus = 'available' | 'closed' | 'unavailable';
 
@@ -19,6 +25,7 @@ export interface TrackedSubagentThread {
   turn_count: number;
   mode?: string;
   role?: string;
+  provenance_kind?: string;
   lane_id?: string;
   scope?: string;
   agent_nickname?: string;
@@ -41,6 +48,7 @@ export interface TrackedSubagentSession {
 export interface SubagentTrackingState {
   schemaVersion: 1;
   sessions: Record<string, TrackedSubagentSession>;
+  pending_role_intents: PendingRoleIntent[];
 }
 
 export interface RecordSubagentTurnInput {
@@ -50,6 +58,7 @@ export interface RecordSubagentTurnInput {
   timestamp?: string;
   mode?: string;
   role?: string;
+  provenanceKind?: string;
   laneId?: string;
   scope?: string;
   agentNickname?: string;
@@ -64,6 +73,15 @@ export interface RecordSubagentTurnInput {
   resumeFailedAt?: string;
   resumeFailureReason?: string;
   preserveCompletionEvidence?: boolean;
+}
+
+export interface PendingRoleIntent {
+  role: string;
+  session_id: string;
+  parent_thread_id: string;
+  correlation_token: string;
+  created_at: string;
+  expires_at: string;
 }
 
 export interface SubagentSessionSummary {
@@ -102,14 +120,37 @@ export interface SubagentResumeLedger extends SubagentSessionSummary {
   unavailableSubagents: SubagentLedgerEntry[];
 }
 
+const KNOWN_TYPED_AGENT_ROLES = new Set(Object.keys(AGENT_DEFINITIONS).map((role) => role.toLowerCase()));
+
 export function subagentTrackingPath(cwd: string): string {
   return join(getBaseStateDir(cwd), 'subagent-tracking.json');
+}
+
+export function resolveInstalledRoleName(role: string, codexHomeOverride?: string): string | null {
+  const normalizedRole = role.trim().toLowerCase();
+  if (!normalizedRole) return null;
+  if (KNOWN_TYPED_AGENT_ROLES.has(normalizedRole)) return normalizedRole;
+
+  for (const agentsDir of [codexAgentsDir(codexHomeOverride), projectCodexAgentsDir()]) {
+    try {
+      for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
+        const installedRole = entry.name.slice(0, -'.toml'.length).trim().toLowerCase();
+        if (installedRole === normalizedRole) return installedRole;
+      }
+    } catch {
+      // Missing or unreadable agent directories do not invalidate built-in roles.
+    }
+  }
+
+  return null;
 }
 
 export function createSubagentTrackingState(): SubagentTrackingState {
   return {
     schemaVersion: SUBAGENT_TRACKING_SCHEMA_VERSION,
     sessions: {},
+    pending_role_intents: [],
   };
 }
 
@@ -160,10 +201,7 @@ function compareResumeEntries(left: SubagentLedgerEntry, right: SubagentLedgerEn
   return left.agentId.localeCompare(right.agentId);
 }
 
-function normalizeLedgerEntry(
-  thread: TrackedSubagentThread,
-  status: SubagentAvailabilityStatus,
-): SubagentLedgerEntry {
+function normalizeLedgerEntry(thread: TrackedSubagentThread, status: SubagentAvailabilityStatus): SubagentLedgerEntry {
   const role = thread.role ?? thread.mode;
   const laneId = thread.lane_id ?? thread.agent_nickname ?? role;
   return {
@@ -184,15 +222,33 @@ function normalizeLedgerEntry(
   };
 }
 
-export function isTrustedSubagentThread(
-  session: TrackedSubagentSession | null | undefined,
-  threadId: string,
-): boolean {
+export function isTrustedSubagentThread(session: TrackedSubagentSession | null | undefined, threadId: string): boolean {
   const normalizedThreadId = threadId.trim();
   if (!session || !normalizedThreadId) return false;
   const leaderThreadId = session.leader_thread_id?.trim();
   if (leaderThreadId && leaderThreadId === normalizedThreadId) return false;
   return session.threads[normalizedThreadId]?.kind === 'subagent';
+}
+
+function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<PendingRoleIntent>;
+  const role = readOptionalTrimmedString(candidate.role);
+  const sessionId = readOptionalTrimmedString(candidate.session_id);
+  const parentThreadId = readOptionalTrimmedString(candidate.parent_thread_id);
+  const correlationToken = readOptionalTrimmedString(candidate.correlation_token);
+  const createdAt = readOptionalTrimmedString(candidate.created_at);
+  const expiresAt = readOptionalTrimmedString(candidate.expires_at);
+  if (!role || !sessionId || !parentThreadId || !correlationToken || !createdAt || !expiresAt) return null;
+  if (!Number.isFinite(Date.parse(createdAt)) || !Number.isFinite(Date.parse(expiresAt))) return null;
+  return {
+    role,
+    session_id: sessionId,
+    parent_thread_id: parentThreadId,
+    correlation_token: correlationToken,
+    created_at: createdAt,
+    expires_at: expiresAt,
+  };
 }
 
 export function normalizeSubagentTrackingState(input: unknown): SubagentTrackingState {
@@ -207,42 +263,43 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
     for (const [threadId, rawThread] of Object.entries((rawSession as TrackedSubagentSession).threads ?? {})) {
       if (!rawThread || typeof rawThread !== 'object') continue;
       const candidate = rawThread as Partial<TrackedSubagentThread>;
-      const normalizedThreadId = typeof candidate.thread_id === 'string' && candidate.thread_id.trim().length > 0
-        ? candidate.thread_id.trim()
-        : threadId.trim();
+      const normalizedThreadId =
+        typeof candidate.thread_id === 'string' && candidate.thread_id.trim().length > 0 ? candidate.thread_id.trim() : threadId.trim();
       if (!normalizedThreadId) continue;
       const kind = candidate.kind === 'leader' ? 'leader' : 'subagent';
-      const firstSeenAt = typeof candidate.first_seen_at === 'string' && candidate.first_seen_at.trim().length > 0
-        ? candidate.first_seen_at
-        : typeof candidate.last_seen_at === 'string' && candidate.last_seen_at.trim().length > 0
-          ? candidate.last_seen_at
-          : new Date(0).toISOString();
-      const lastSeenAt = typeof candidate.last_seen_at === 'string' && candidate.last_seen_at.trim().length > 0
-        ? candidate.last_seen_at
-        : firstSeenAt;
+      const firstSeenAt =
+        typeof candidate.first_seen_at === 'string' && candidate.first_seen_at.trim().length > 0
+          ? candidate.first_seen_at
+          : typeof candidate.last_seen_at === 'string' && candidate.last_seen_at.trim().length > 0
+            ? candidate.last_seen_at
+            : new Date(0).toISOString();
+      const lastSeenAt =
+        typeof candidate.last_seen_at === 'string' && candidate.last_seen_at.trim().length > 0 ? candidate.last_seen_at : firstSeenAt;
       threads[normalizedThreadId] = {
         thread_id: normalizedThreadId,
         kind,
         first_seen_at: firstSeenAt,
         last_seen_at: lastSeenAt,
-        ...(typeof candidate.last_turn_id === 'string' && candidate.last_turn_id.trim().length > 0
-          ? { last_turn_id: candidate.last_turn_id }
-          : {}),
-        ...(typeof candidate.completed_at === 'string' && candidate.completed_at.trim().length > 0
-          ? { completed_at: candidate.completed_at }
-          : {}),
+        ...(typeof candidate.last_turn_id === 'string' && candidate.last_turn_id.trim().length > 0 ? { last_turn_id: candidate.last_turn_id } : {}),
+        ...(typeof candidate.completed_at === 'string' && candidate.completed_at.trim().length > 0 ? { completed_at: candidate.completed_at } : {}),
         ...(typeof candidate.last_completed_turn_id === 'string' && candidate.last_completed_turn_id.trim().length > 0
           ? { last_completed_turn_id: candidate.last_completed_turn_id }
           : {}),
-        turn_count: typeof candidate.turn_count === 'number' && Number.isFinite(candidate.turn_count) && candidate.turn_count > 0
-          ? candidate.turn_count
-          : 1,
+        turn_count:
+          typeof candidate.turn_count === 'number' && Number.isFinite(candidate.turn_count) && candidate.turn_count > 0 ? candidate.turn_count : 1,
         ...(typeof candidate.mode === 'string' && candidate.mode.trim().length > 0 ? { mode: candidate.mode } : {}),
         ...(typeof candidate.role === 'string' && candidate.role.trim().length > 0 ? { role: candidate.role.trim() } : {}),
+        ...(typeof candidate.provenance_kind === 'string' && candidate.provenance_kind.trim().length > 0
+          ? { provenance_kind: candidate.provenance_kind.trim() }
+          : {}),
         ...(typeof candidate.lane_id === 'string' && candidate.lane_id.trim().length > 0 ? { lane_id: candidate.lane_id.trim() } : {}),
         ...(typeof candidate.scope === 'string' && candidate.scope.trim().length > 0 ? { scope: candidate.scope.trim() } : {}),
-        ...(typeof candidate.agent_nickname === 'string' && candidate.agent_nickname.trim().length > 0 ? { agent_nickname: candidate.agent_nickname.trim() } : {}),
-        ...(typeof candidate.completion_source === 'string' && candidate.completion_source.trim().length > 0 ? { completion_source: candidate.completion_source } : {}),
+        ...(typeof candidate.agent_nickname === 'string' && candidate.agent_nickname.trim().length > 0
+          ? { agent_nickname: candidate.agent_nickname.trim() }
+          : {}),
+        ...(typeof candidate.completion_source === 'string' && candidate.completion_source.trim().length > 0
+          ? { completion_source: candidate.completion_source }
+          : {}),
         ...(normalizeSubagentStatus(candidate.status) ? { status: normalizeSubagentStatus(candidate.status) } : {}),
         ...(typeof candidate.last_handoff_summary === 'string' && candidate.last_handoff_summary.trim().length > 0
           ? { last_handoff_summary: candidate.last_handoff_summary.trim() }
@@ -263,12 +320,11 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
     }
 
     const sessionCandidate = rawSession as TrackedSubagentSession;
-    const leaderThreadId = typeof sessionCandidate.leader_thread_id === 'string'
-      ? sessionCandidate.leader_thread_id.trim() || undefined
-      : undefined;
-    const updatedAt = typeof sessionCandidate.updated_at === 'string' && sessionCandidate.updated_at.trim().length > 0
-      ? sessionCandidate.updated_at
-      : new Date(0).toISOString();
+    const leaderThreadId = typeof sessionCandidate.leader_thread_id === 'string' ? sessionCandidate.leader_thread_id.trim() || undefined : undefined;
+    const updatedAt =
+      typeof sessionCandidate.updated_at === 'string' && sessionCandidate.updated_at.trim().length > 0
+        ? sessionCandidate.updated_at
+        : new Date(0).toISOString();
 
     sessions[sessionId] = {
       session_id: sessionId,
@@ -278,10 +334,370 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
     };
   }
 
+  const pendingRoleIntents = Array.isArray(parsed.pending_role_intents)
+    ? parsed.pending_role_intents.map((intent) => normalizePendingRoleIntent(intent)).filter((intent): intent is PendingRoleIntent => intent !== null)
+    : [];
+
   return {
     schemaVersion: SUBAGENT_TRACKING_SCHEMA_VERSION,
     sessions,
+    pending_role_intents: pendingRoleIntents,
   };
+}
+
+function atomicTrackingTempPath(path: string): string {
+  return `${path}.${process.pid}.${randomUUID()}.tmp`;
+}
+
+export const DEFAULT_CROSS_PROCESS_LOCK_MAX_ATTEMPTS = 80;
+export const DEFAULT_CROSS_PROCESS_LOCK_RETRY_MS = 2;
+export const CROSS_PROCESS_LOCK_LEASE_MS = 60_000;
+
+const crossProcessLockWaitArray = new Int32Array(new SharedArrayBuffer(4));
+
+type CrossProcessLockClaim = {
+  token: string;
+  pid: number;
+  host: string;
+  acquiredAtMs: number;
+  pidStartId?: string;
+};
+
+type CrossProcessLockState =
+  | { kind: 'missing' }
+  | { kind: 'claim'; claim: CrossProcessLockClaim }
+  | { kind: 'malformed' };
+
+export type CrossProcessFileLockContext = {
+  assertOwnership(): void;
+  publish(contents: string): void;
+};
+
+export class CrossProcessLockLostError extends Error {
+  constructor(lockPath: string) {
+    super(`Lost cross-process lock ownership at ${lockPath}`);
+    this.name = 'CrossProcessLockLostError';
+  }
+}
+
+export function crossProcessLockPath(resourcePath: string): string {
+  return `${resourcePath}.lock`;
+}
+
+function sleepForCrossProcessLockSync(durationMs: number): void {
+  Atomics.wait(crossProcessLockWaitArray, 0, 0, durationMs);
+}
+
+export function readProcessStartIdentity(pid: number): string | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    const closingParenthesis = stat.lastIndexOf(')');
+    const fields = stat.slice(closingParenthesis + 1).trim().split(/\s+/);
+    const starttime = fields[19];
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
+    if (closingParenthesis < 0 || !starttime || !/^\d+$/.test(starttime) || !bootId) return undefined;
+    return `${bootId}:${starttime}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function createCrossProcessLockClaim(token: string): CrossProcessLockClaim {
+  const pidStartId = readProcessStartIdentity(process.pid);
+  return {
+    token,
+    pid: process.pid,
+    host: hostname(),
+    acquiredAtMs: Date.now(),
+    ...(pidStartId ? { pidStartId } : {}),
+  };
+}
+
+function serializeCrossProcessLockClaim(claim: CrossProcessLockClaim): string {
+  return `${JSON.stringify({
+    token: claim.token,
+    pid: claim.pid,
+    host: claim.host,
+    acquired_at: new Date(claim.acquiredAtMs).toISOString(),
+    ...(claim.pidStartId ? { pid_start_id: claim.pidStartId } : {}),
+  })}\n`;
+}
+
+function readCrossProcessLockState(lockPath: string): CrossProcessLockState {
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as {
+      token?: unknown;
+      pid?: unknown;
+      host?: unknown;
+      acquired_at?: unknown;
+      pid_start_id?: unknown;
+    };
+    const token = typeof parsed.token === 'string' && parsed.token === parsed.token.trim() && parsed.token ? parsed.token : undefined;
+    const pid = typeof parsed.pid === 'number' && Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
+    const host = typeof parsed.host === 'string' && parsed.host.trim() ? parsed.host : undefined;
+    const acquiredAtMs = typeof parsed.acquired_at === 'string' ? Date.parse(parsed.acquired_at) : Number.NaN;
+    const pidStartId = parsed.pid_start_id === undefined
+      ? undefined
+      : typeof parsed.pid_start_id === 'string' && parsed.pid_start_id.trim()
+        ? parsed.pid_start_id
+        : null;
+    if (!token || !pid || !host || !Number.isFinite(acquiredAtMs) || pidStartId === null) return { kind: 'malformed' };
+    return {
+      kind: 'claim',
+      claim: { token, pid, host, acquiredAtMs, ...(pidStartId ? { pidStartId } : {}) },
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
+    return { kind: 'malformed' };
+  }
+}
+
+function isCrossProcessLockOwnerDead(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+function isCrossProcessLockOlderThanLease(acquiredAtMs: number, nowMs: number): boolean {
+  return acquiredAtMs < nowMs - CROSS_PROCESS_LOCK_LEASE_MS;
+}
+
+function isCrossProcessLockReclaimable(claim: CrossProcessLockClaim): boolean {
+  if (claim.host !== hostname()) return isCrossProcessLockOlderThanLease(claim.acquiredAtMs, Date.now());
+  if (isCrossProcessLockOwnerDead(claim.pid)) return true;
+
+  const currentPidStartId = readProcessStartIdentity(claim.pid);
+  if (claim.pidStartId && currentPidStartId) return currentPidStartId !== claim.pidStartId;
+  return isCrossProcessLockOlderThanLease(claim.acquiredAtMs, Date.now());
+}
+
+function removeCrossProcessLockFile(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+function tryAcquireCrossProcessFileLock(lockPath: string, token: string): boolean {
+  const temporaryPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+  let acquired = false;
+  try {
+    writeFileSync(temporaryPath, serializeCrossProcessLockClaim(createCrossProcessLockClaim(token)));
+    try {
+      linkSync(temporaryPath, lockPath);
+      acquired = true;
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+  } finally {
+    try {
+      removeCrossProcessLockFile(temporaryPath);
+    } catch (error) {
+      if (!acquired) throw error;
+    }
+  }
+}
+
+function restoreQuarantinedCrossProcessLock(lockPath: string, quarantinedPath: string): void {
+  try {
+    linkSync(quarantinedPath, lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
+    throw error;
+  }
+  removeCrossProcessLockFile(quarantinedPath);
+}
+
+function recoverCrossProcessFileLock(lockPath: string, observed: CrossProcessLockState): boolean {
+  if (observed.kind === 'missing') return true;
+  if (observed.kind === 'claim' && !isCrossProcessLockReclaimable(observed.claim)) return false;
+
+  const quarantinedPath = `${lockPath}.${randomUUID()}.quarantine`;
+  try {
+    renameSync(lockPath, quarantinedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+
+  const captured = readCrossProcessLockState(quarantinedPath);
+  const capturedExpectedClaim = observed.kind === 'claim'
+    && captured.kind === 'claim'
+    && captured.claim.token === observed.claim.token;
+  const capturedRecoverable = captured.kind === 'malformed'
+    || (capturedExpectedClaim && captured.kind === 'claim' && isCrossProcessLockReclaimable(captured.claim));
+  if (!capturedRecoverable) {
+    restoreQuarantinedCrossProcessLock(lockPath, quarantinedPath);
+    return true;
+  }
+
+  removeCrossProcessLockFile(quarantinedPath);
+  return true;
+}
+
+function assertCrossProcessFileLockOwnership(lockPath: string, token: string): void {
+  const state = readCrossProcessLockState(lockPath);
+  if (state.kind === 'claim' && state.claim.token === token) return;
+  throw new CrossProcessLockLostError(lockPath);
+}
+
+function releaseCrossProcessFileLock(lockPath: string, token: string): void {
+  const observed = readCrossProcessLockState(lockPath);
+  if (observed.kind !== 'claim' || observed.claim.token !== token) return;
+
+  const quarantinedPath = `${lockPath}.${randomUUID()}.release`;
+  try {
+    renameSync(lockPath, quarantinedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+
+  const captured = readCrossProcessLockState(quarantinedPath);
+  if (captured.kind === 'claim' && captured.claim.token === token) {
+    removeCrossProcessLockFile(quarantinedPath);
+    return;
+  }
+
+  restoreQuarantinedCrossProcessLock(lockPath, quarantinedPath);
+}
+
+function crossProcessLockStagePath(resourcePath: string, token: string): string {
+  return `${resourcePath}.stage.${token}`;
+}
+
+function createCrossProcessLockStage(stagePath: string): void {
+  const descriptor = openSync(stagePath, 'wx');
+  closeSync(descriptor);
+}
+
+function sweepForeignCrossProcessLockStages(resourcePath: string, token: string): void {
+  const directory = dirname(resourcePath);
+  const stagePrefix = `${basename(resourcePath)}.stage.`;
+  for (const entry of readdirSync(directory)) {
+    if (!entry.startsWith(stagePrefix) || entry.slice(stagePrefix.length) === token) continue;
+    removeCrossProcessLockFile(join(directory, entry));
+  }
+}
+
+let crossProcessPublishBarrier: (() => void) | null = null;
+
+export function __setCrossProcessPublishBarrierForTest(barrier: (() => void) | null): void {
+  crossProcessPublishBarrier = barrier;
+}
+
+export function withCrossProcessFileLockSync<T>(
+  resourcePath: string,
+  operation: (context: CrossProcessFileLockContext) => T,
+  options: { maxAttempts?: number; retryMs?: number } = {},
+): T {
+  const lockPath = crossProcessLockPath(resourcePath);
+  const maxAttempts =
+    typeof options.maxAttempts === 'number' && Number.isFinite(options.maxAttempts)
+      ? Math.max(1, Math.floor(options.maxAttempts))
+      : DEFAULT_CROSS_PROCESS_LOCK_MAX_ATTEMPTS;
+  const retryMs =
+    typeof options.retryMs === 'number' && Number.isFinite(options.retryMs)
+      ? Math.max(1, Math.floor(options.retryMs))
+      : DEFAULT_CROSS_PROCESS_LOCK_RETRY_MS;
+
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const token = randomUUID();
+  const stagePath = crossProcessLockStagePath(resourcePath, token);
+  let acquired = false;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (tryAcquireCrossProcessFileLock(lockPath, token)) {
+      acquired = true;
+      break;
+    }
+
+    const recovered = recoverCrossProcessFileLock(lockPath, readCrossProcessLockState(lockPath));
+    if (recovered && tryAcquireCrossProcessFileLock(lockPath, token)) {
+      acquired = true;
+      break;
+    }
+    if (attempt === maxAttempts - 1) {
+      throw new Error(`Timed out waiting for cross-process lock at ${lockPath}`);
+    }
+    sleepForCrossProcessLockSync(Math.min(25, retryMs * 2 ** Math.min(attempt, 4)));
+  }
+
+  if (!acquired) {
+    throw new Error(`Timed out waiting for cross-process lock at ${lockPath}`);
+  }
+
+  try {
+    sweepForeignCrossProcessLockStages(resourcePath, token);
+    createCrossProcessLockStage(stagePath);
+    return operation({
+      assertOwnership: () => assertCrossProcessFileLockOwnership(lockPath, token),
+      publish: (contents: string) => {
+        let descriptor: number;
+        try {
+          descriptor = openSync(stagePath, 'r+');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new CrossProcessLockLostError(lockPath);
+          throw error;
+        }
+        try {
+          ftruncateSync(descriptor, 0);
+          writeSync(descriptor, contents);
+        } finally {
+          closeSync(descriptor);
+        }
+
+        const barrier = crossProcessPublishBarrier;
+        crossProcessPublishBarrier = null;
+        barrier?.();
+        try {
+          renameSync(stagePath, resourcePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new CrossProcessLockLostError(lockPath);
+          throw error;
+        }
+        createCrossProcessLockStage(stagePath);
+      },
+    });
+  } finally {
+    removeCrossProcessLockFile(stagePath);
+    releaseCrossProcessFileLock(lockPath, token);
+  }
+}
+
+function readSubagentTrackingStateSync(cwd: string): SubagentTrackingState {
+  const path = subagentTrackingPath(cwd);
+  if (!existsSync(path)) return createSubagentTrackingState();
+  try {
+    return normalizeSubagentTrackingState(JSON.parse(readFileSync(path, 'utf-8')));
+  } catch {
+    return createSubagentTrackingState();
+  }
+}
+
+function writeSubagentTrackingStateSync(
+  cwd: string,
+  state: SubagentTrackingState,
+  publish?: (contents: string) => void,
+): string {
+  const normalized = normalizeSubagentTrackingState(state);
+  const path = subagentTrackingPath(cwd);
+  mkdirSync(dirname(path), { recursive: true });
+  const contents = `${JSON.stringify(normalized, null, 2)}\n`;
+  if (publish) {
+    publish(contents);
+    return path;
+  }
+  const temporaryPath = atomicTrackingTempPath(path);
+  writeFileSync(temporaryPath, contents);
+  renameSync(temporaryPath, path);
+  return path;
 }
 
 export async function readSubagentTrackingState(cwd: string): Promise<SubagentTrackingState> {
@@ -298,14 +714,110 @@ export async function writeSubagentTrackingState(cwd: string, state: SubagentTra
   const normalized = normalizeSubagentTrackingState(state);
   const path = subagentTrackingPath(cwd);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`);
+  const temporaryPath = atomicTrackingTempPath(path);
+  await writeFile(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`);
+  await rename(temporaryPath, path);
   return path;
 }
 
-export function recordSubagentTurn(
-  state: SubagentTrackingState,
-  input: RecordSubagentTurnInput,
-): SubagentTrackingState {
+function normalizeNowMs(nowMs: number | undefined): number {
+  return typeof nowMs === 'number' && Number.isFinite(nowMs) ? nowMs : Date.now();
+}
+
+function isExpiredPendingRoleIntent(intent: PendingRoleIntent, nowMs: number): boolean {
+  const expiresAtMs = Date.parse(intent.expires_at);
+  return !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs;
+}
+
+export function recordPendingRoleIntent(
+  cwd: string,
+  input: {
+    role: string;
+    sessionId: string;
+    parentThreadId: string;
+    correlationToken: string;
+    ttlMs?: number;
+    nowMs?: number;
+  },
+): { ok: true; intent: PendingRoleIntent } | { ok: false; reason: 'unknown_role' | 'invalid_correlation_token' | 'single_flight_conflict' } {
+  const role = resolveInstalledRoleName(input.role);
+  if (!role) return { ok: false, reason: 'unknown_role' };
+  const correlationToken = readOptionalTrimmedString(input.correlationToken);
+  if (!correlationToken) return { ok: false, reason: 'invalid_correlation_token' };
+
+  const nowMs = normalizeNowMs(input.nowMs);
+  const sessionId = input.sessionId.trim();
+  const parentThreadId = input.parentThreadId.trim();
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const state = readSubagentTrackingStateSync(cwd);
+    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
+    if (pendingRoleIntents.some((intent) => intent.session_id === sessionId && intent.parent_thread_id === parentThreadId)) {
+      return { ok: false, reason: 'single_flight_conflict' };
+    }
+
+    const ttlMs = typeof input.ttlMs === 'number' && Number.isFinite(input.ttlMs) ? input.ttlMs : 10 * 60_000;
+    const intent: PendingRoleIntent = {
+      role,
+      session_id: sessionId,
+      parent_thread_id: parentThreadId,
+      correlation_token: correlationToken,
+      created_at: new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + ttlMs).toISOString(),
+    };
+    state.pending_role_intents = [...pendingRoleIntents, intent];
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, state, context.publish);
+    return { ok: true, intent };
+  });
+}
+
+export function bindPendingRoleIntentUnderLock(
+  cwd: string,
+  input: { sessionId: string; parentThreadId: string; correlationToken?: string; nowMs?: number },
+  bind: (state: SubagentTrackingState, intent: { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE }) => SubagentTrackingState,
+): { role: string; provenanceKind: typeof OMX_ADAPTED_PROVENANCE } | null {
+  const nowMs = normalizeNowMs(input.nowMs);
+  const sessionId = input.sessionId.trim();
+  const parentThreadId = input.parentThreadId.trim();
+  const correlationToken = readOptionalTrimmedString(input.correlationToken);
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const state = readSubagentTrackingStateSync(cwd);
+    const pendingRoleIntents = state.pending_role_intents.filter((intent) => !isExpiredPendingRoleIntent(intent, nowMs));
+    const consumed = pendingRoleIntents.find((intent) => (
+      intent.session_id === sessionId
+      && intent.parent_thread_id === parentThreadId
+      && intent.correlation_token === correlationToken
+    )) ?? null;
+
+    if (!consumed) {
+      if (pendingRoleIntents.length !== state.pending_role_intents.length) {
+        state.pending_role_intents = pendingRoleIntents;
+        context.assertOwnership();
+        writeSubagentTrackingStateSync(cwd, state, context.publish);
+      }
+      return null;
+    }
+
+    const adaptedIntent = {
+      role: consumed.role,
+      provenanceKind: OMX_ADAPTED_PROVENANCE,
+    } as const;
+    const boundState = bind(state, adaptedIntent);
+    boundState.pending_role_intents = pendingRoleIntents.filter((intent) => intent !== consumed);
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, boundState, context.publish);
+    return adaptedIntent;
+  });
+}
+
+export function consumePendingRoleIntent(
+  cwd: string,
+  input: { sessionId: string; parentThreadId: string; correlationToken?: string; nowMs?: number },
+): { role: string; provenanceKind: 'omx_adapted' } | null {
+  return bindPendingRoleIntentUnderLock(cwd, input, (state) => state);
+}
+
+export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSubagentTurnInput): SubagentTrackingState {
   const sessionId = input.sessionId.trim();
   const threadId = input.threadId.trim();
   if (!sessionId || !threadId) return normalizeSubagentTrackingState(state);
@@ -321,56 +833,48 @@ export function recordSubagentTurn(
   const requestedKind = input.kind === 'leader' || input.kind === 'subagent' ? input.kind : undefined;
   const requestedLeaderThreadId = input.leaderThreadId?.trim();
   const existingThread = existingSession.threads[threadId];
-  const existingKind = existingThread?.kind === 'leader' || existingThread?.kind === 'subagent'
-    ? existingThread.kind
-    : undefined;
+  const existingKind = existingThread?.kind === 'leader' || existingThread?.kind === 'subagent' ? existingThread.kind : undefined;
   const existingLeaderThreadId = existingSession.leader_thread_id?.trim();
   // `leader_thread_id` is the session's top-level leader boundary.  A native
   // subagent can itself be the immediate parent of a nested native role, but
   // that must not reclassify known subagent evidence as the session leader.
-  const requestedLeaderThread = requestedLeaderThreadId
-    ? existingSession.threads[requestedLeaderThreadId]
-    : undefined;
+  const requestedLeaderThread = requestedLeaderThreadId ? existingSession.threads[requestedLeaderThreadId] : undefined;
   const requestedLeaderWouldReclassifySubagent = requestedLeaderThread?.kind === 'subagent';
-  const requestedSessionLeaderThreadId = requestedLeaderWouldReclassifySubagent
-    ? undefined
-    : requestedLeaderThreadId;
+  const requestedSessionLeaderThreadId = requestedLeaderWouldReclassifySubagent ? undefined : requestedLeaderThreadId;
   const preserveExistingSubagent = existingKind === 'subagent' && requestedKind !== 'subagent';
-  const preserveKnownLeader = requestedKind === 'subagent'
-    && (existingKind === 'leader' || existingLeaderThreadId === threadId);
+  const preserveKnownLeader = requestedKind === 'subagent' && (existingKind === 'leader' || existingLeaderThreadId === threadId);
   const leaderThreadId = preserveKnownLeader
     ? existingLeaderThreadId || threadId
-    : existingLeaderThreadId
-      || requestedSessionLeaderThreadId
-      || (requestedKind === 'subagent' || preserveExistingSubagent ? undefined : threadId);
+    : existingLeaderThreadId || requestedSessionLeaderThreadId || (requestedKind === 'subagent' || preserveExistingSubagent ? undefined : threadId);
   const kind = preserveKnownLeader
     ? 'leader'
     : requestedKind === 'leader' && existingKind === 'subagent'
       ? 'subagent'
-      : requestedKind ?? (threadId === leaderThreadId ? 'leader' : existingKind ?? 'subagent');
+      : (requestedKind ?? (threadId === leaderThreadId ? 'leader' : (existingKind ?? 'subagent')));
   const requestedStatus = normalizeSubagentStatus(input.status);
   const preservedStatus = normalizeSubagentStatus(existingThread?.status);
   const preserveCompletionEvidence = input.preserveCompletionEvidence === true;
-  const clearsPriorCompletion = input.completed !== true
-    && preserveCompletionEvidence !== true
-    && Boolean(existingThread?.completed_at);
-  const status = requestedStatus
-    ?? (input.completed ? 'closed' : undefined)
-    ?? (clearsPriorCompletion ? undefined : preservedStatus);
-  const preservedCompletion = preserveCompletionEvidence && existingThread?.completed_at
-    ? {
-        completed_at: existingThread.completed_at,
-        ...(existingThread.last_completed_turn_id ? { last_completed_turn_id: existingThread.last_completed_turn_id } : {}),
-        ...(existingThread.completion_source ? { completion_source: existingThread.completion_source } : {}),
-      }
-    : {};
+  const clearsPriorCompletion = input.completed !== true && preserveCompletionEvidence !== true && Boolean(existingThread?.completed_at);
+  const status = requestedStatus ?? (input.completed ? 'closed' : undefined) ?? (clearsPriorCompletion ? undefined : preservedStatus);
+  const preservedCompletion =
+    preserveCompletionEvidence && existingThread?.completed_at
+      ? {
+          completed_at: existingThread.completed_at,
+          ...(existingThread.last_completed_turn_id ? { last_completed_turn_id: existingThread.last_completed_turn_id } : {}),
+          ...(existingThread.completion_source ? { completion_source: existingThread.completion_source } : {}),
+        }
+      : {};
   const nextThread: TrackedSubagentThread = {
     thread_id: threadId,
     kind,
     first_seen_at: existingThread?.first_seen_at ?? timestamp,
     last_seen_at: timestamp,
     turn_count: (existingThread?.turn_count ?? 0) + 1,
-    ...(input.turnId?.trim() ? { last_turn_id: input.turnId.trim() } : existingThread?.last_turn_id ? { last_turn_id: existingThread.last_turn_id } : {}),
+    ...(input.turnId?.trim()
+      ? { last_turn_id: input.turnId.trim() }
+      : existingThread?.last_turn_id
+        ? { last_turn_id: existingThread.last_turn_id }
+        : {}),
     ...(input.completed
       ? {
           completed_at: timestamp,
@@ -380,27 +884,44 @@ export function recordSubagentTurn(
       : preservedCompletion),
     ...(input.mode?.trim() ? { mode: input.mode.trim() } : existingThread?.mode ? { mode: existingThread.mode } : {}),
     ...(input.role?.trim() ? { role: input.role.trim() } : existingThread?.role ? { role: existingThread.role } : {}),
+    ...(input.provenanceKind?.trim()
+      ? { provenance_kind: input.provenanceKind.trim() }
+      : existingThread?.provenance_kind
+        ? { provenance_kind: existingThread.provenance_kind }
+        : {}),
     ...(input.laneId?.trim() ? { lane_id: input.laneId.trim() } : existingThread?.lane_id ? { lane_id: existingThread.lane_id } : {}),
     ...(input.scope?.trim() ? { scope: input.scope.trim() } : existingThread?.scope ? { scope: existingThread.scope } : {}),
     ...(input.agentNickname?.trim()
       ? { agent_nickname: input.agentNickname.trim() }
-      : existingThread?.agent_nickname ? { agent_nickname: existingThread.agent_nickname } : {}),
+      : existingThread?.agent_nickname
+        ? { agent_nickname: existingThread.agent_nickname }
+        : {}),
     ...(status ? { status } : {}),
     ...(input.lastHandoffSummary?.trim()
       ? { last_handoff_summary: input.lastHandoffSummary.trim() }
-      : existingThread?.last_handoff_summary ? { last_handoff_summary: existingThread.last_handoff_summary } : {}),
+      : existingThread?.last_handoff_summary
+        ? { last_handoff_summary: existingThread.last_handoff_summary }
+        : {}),
     ...(input.resumeRequestedAt?.trim()
       ? { resume_requested_at: input.resumeRequestedAt.trim() }
-      : existingThread?.resume_requested_at ? { resume_requested_at: existingThread.resume_requested_at } : {}),
+      : existingThread?.resume_requested_at
+        ? { resume_requested_at: existingThread.resume_requested_at }
+        : {}),
     ...(input.resumeCompletedAt?.trim()
       ? { resume_completed_at: input.resumeCompletedAt.trim() }
-      : existingThread?.resume_completed_at ? { resume_completed_at: existingThread.resume_completed_at } : {}),
+      : existingThread?.resume_completed_at
+        ? { resume_completed_at: existingThread.resume_completed_at }
+        : {}),
     ...(input.resumeFailedAt?.trim()
       ? { resume_failed_at: input.resumeFailedAt.trim() }
-      : existingThread?.resume_failed_at ? { resume_failed_at: existingThread.resume_failed_at } : {}),
+      : existingThread?.resume_failed_at
+        ? { resume_failed_at: existingThread.resume_failed_at }
+        : {}),
     ...(input.resumeFailureReason?.trim()
       ? { resume_failure_reason: input.resumeFailureReason.trim() }
-      : existingThread?.resume_failure_reason ? { resume_failure_reason: existingThread.resume_failure_reason } : {}),
+      : existingThread?.resume_failure_reason
+        ? { resume_failure_reason: existingThread.resume_failure_reason }
+        : {}),
   };
 
   const threads = {
@@ -424,10 +945,13 @@ export function recordSubagentTurn(
 }
 
 export async function recordSubagentTurnForSession(cwd: string, input: RecordSubagentTurnInput): Promise<SubagentTrackingState> {
-  const current = await readSubagentTrackingState(cwd);
-  const next = recordSubagentTurn(current, input);
-  await writeSubagentTrackingState(cwd, next);
-  return next;
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const current = readSubagentTrackingStateSync(cwd);
+    const next = recordSubagentTurn(current, input);
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, next, context.publish);
+    return next;
+  });
 }
 
 export function summarizeSubagentSession(
@@ -440,11 +964,7 @@ export function summarizeSubagentSession(
   if (!session) return null;
 
   const activeWindowMs = options.activeWindowMs ?? DEFAULT_SUBAGENT_ACTIVE_WINDOW_MS;
-  const nowMs = typeof options.now === 'string'
-    ? Date.parse(options.now)
-    : options.now instanceof Date
-      ? options.now.getTime()
-      : Date.now();
+  const nowMs = typeof options.now === 'string' ? Date.parse(options.now) : options.now instanceof Date ? options.now.getTime() : Date.now();
 
   const allThreadIds = Object.keys(session.threads).sort();
   const allSubagentThreadIds = allThreadIds.filter((threadId) => isTrustedSubagentThread(session, threadId));

@@ -9,6 +9,7 @@ import {
 } from '../goal-workflows/codex-goal-snapshot.js';
 import {
   LEADER_CONDUCTOR_BLOCK,
+  buildRoleRoutingUnavailableGuidance,
   buildUnsupportedNativeSubagentGuidance,
   type NativeSubagentSupportEvidence,
 } from '../leader/contract.js';
@@ -1912,6 +1913,9 @@ export async function recordFinalReviewBlockers(cwd: string, options: RecordFina
 }
 
 function codexGoalConductorGuidance(options: CodexGoalInstructionOptions): string {
+  if (options.nativeSubagentSupport?.status === 'role_routing_unavailable') {
+    return buildRoleRoutingUnavailableGuidance(options.nativeSubagentSupport);
+  }
   if (options.nativeSubagentSupport?.status !== 'unsupported') return LEADER_CONDUCTOR_BLOCK;
   return [
     buildUnsupportedNativeSubagentGuidance(options.nativeSubagentSupport),

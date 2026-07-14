@@ -607,3 +607,47 @@ describe("omx setup scope behavior", () => {
     }
   });
 });
+
+describe("omx setup merge policy CLI persistence", () => {
+  it("persists explicit true and false per project root without changing the default when absent", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-merge-policy-"));
+    const otherRoot = await mkdtemp(join(tmpdir(), "omx-setup-merge-policy-other-"));
+    try {
+      const home = join(wd, "home");
+      await mkdir(home, { recursive: true });
+      for (const [root, flag, expected] of [
+        [wd, "--merge-agents", true],
+        [otherRoot, "--no-merge-agents", false],
+      ] as const) {
+        const result = runOmx(root, ["setup", "--scope", "user", flag], { HOME: home });
+        if (shouldSkipForSpawnPermissions(result.error)) return;
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const persisted = JSON.parse(await readFile(join(root, ".omx", "setup-scope.json"), "utf-8")) as { mergeAgents?: boolean };
+        assert.equal(persisted.mergeAgents, expected);
+      }
+      assert.notEqual(
+        await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+        await readFile(join(otherRoot, ".omx", "setup-scope.json"), "utf-8"),
+        "roots retain independent merge policy records",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects conflicting merge selectors before setup creates state", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-merge-policy-conflict-"));
+    try {
+      const home = join(wd, "home");
+      await mkdir(home, { recursive: true });
+      const result = runOmx(wd, ["setup", "--scope", "project", "--merge-agents", "--no-merge-agents"], { HOME: home });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr || result.stdout, /Conflicting.*merge.*policy/i);
+      assert.equal(existsSync(join(wd, ".omx", "setup-scope.json")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});

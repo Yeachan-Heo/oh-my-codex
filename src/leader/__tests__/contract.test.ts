@@ -10,11 +10,15 @@ import {
   actionKindForConductorArtifact,
   authorizeConductorAction,
   classifyConductorArtifactKind,
+  LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK,
   LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK,
   NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
+  buildRoleRoutingUnavailableGuidance,
   buildUnsupportedNativeSubagentGuidance,
+  isRoleRoutingUnavailableEvidence,
   isUnsupportedNativeSubagentEvidence,
   isUnsupportedNativeSubagentEvidenceForScope,
+  type RoleRoutingUnavailableMarker,
   resolveNativeSubagentSupportStatus,
 } from '../contract.js';
 
@@ -128,6 +132,49 @@ describe('leader conductor contract', () => {
       resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', 'multi_agent_v1.spawn_agent'] } }).status,
       'supported',
     );
+  });
+
+  it('resolves role routing unavailability from explicit capability and scoped marker evidence', () => {
+    const capabilityEvidence = resolveNativeSubagentSupportStatus({
+      payload: { omx_runtime_capabilities: { native_subagents: true, multi_agent_v1: true, role_routing: false } },
+    });
+    assert.equal(capabilityEvidence.status, 'role_routing_unavailable');
+    assert.equal(capabilityEvidence.source, 'hook_payload_capability');
+    assert.equal(isRoleRoutingUnavailableEvidence(capabilityEvidence), true);
+    assert.equal(isUnsupportedNativeSubagentEvidence(capabilityEvidence), false);
+
+    const marker: RoleRoutingUnavailableMarker = {
+      schema_version: 1,
+      cwd: '/repo',
+      session_id: 'sess-1',
+      parent_thread_id: 'parent-1',
+      observed_at: '2026-07-09T00:00:00.000Z',
+      expires_at: '2026-07-10T00:00:00.000Z',
+      evidence: 'spawn tool accepted no native role routing',
+    };
+    const markerEvidence = resolveNativeSubagentSupportStatus({
+      cwd: '/repo',
+      sessionId: 'sess-1',
+      nowMs: Date.parse('2026-07-09T12:00:00.000Z'),
+      persistedRoleRoutingMarker: marker,
+    });
+    assert.equal(markerEvidence.status, 'role_routing_unavailable');
+    assert.equal(markerEvidence.source, 'persisted_role_routing_marker');
+    assert.equal(markerEvidence.evidenceSummary, marker.evidence);
+  });
+
+  it('renders role-routing guidance that proceeds without terminal wording', () => {
+    const guidance = buildRoleRoutingUnavailableGuidance({
+      status: 'role_routing_unavailable',
+      source: 'persisted_role_routing_marker',
+      evidenceSummary: 'spawn tool accepted no native role routing',
+    });
+    assert.match(guidance, /PROCEED/);
+    assert.match(guidance, /role-intent ledger/);
+    assert.match(guidance, /Evidence: spawn tool accepted no native role routing/);
+    assert.doesNotMatch(guidance, /blocked\/cancelled\/failed/);
+    assert.doesNotMatch(guidance, /terminalize/);
+    assert.doesNotMatch(LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK, /blocked\/cancelled\/failed|terminalize/);
   });
 
   it('recognizes namespaced collaboration spawn tools and rejects near-miss names (#3119)', () => {

@@ -1513,3 +1513,62 @@ describe('post-update setup refresh handoff', () => {
     }
   });
 });
+
+describe('persisted merge policy update replay', () => {
+  it('replays valid scoped policies without force, even when a stale force field is present', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-merge-policy-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      const statePath = join(cwd, '.omx', 'setup-scope.json');
+      await writeFile(statePath, JSON.stringify({ scope: 'user', installMode: 'plugin', mergeAgents: true, force: true }));
+      assert.deepEqual(resolveSetupRefreshArgs(cwd), ['setup', '--scope', 'user', '--plugin', '--merge-agents']);
+
+      await writeFile(statePath, JSON.stringify({ scope: 'project', mcpMode: 'compat', teamMode: 'disabled', mergeAgents: false }));
+      assert.deepEqual(resolveSetupRefreshArgs(cwd), ['setup', '--scope', 'project', '--mcp', 'compat', '--disable-team', '--no-merge-agents']);
+      assert.doesNotMatch(resolveSetupRefreshArgs(cwd).join(' '), /--force/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not replay malformed, unscoped, invalid-scope, or nonboolean merge policy records', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-merge-policy-invalid-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      const statePath = join(cwd, '.omx', 'setup-scope.json');
+		for (const [record, expected] of [
+			[{ mergeAgents: true }, ["setup"]],
+			[{ scope: "workspace", mergeAgents: true }, ["setup"]],
+			[{ scope: "user", mergeAgents: "true" }, ["setup", "--scope", "user"]],
+		] as const) {
+			await writeFile(statePath, JSON.stringify(record));
+			assert.deepEqual(resolveSetupRefreshArgs(cwd), expected);
+		}
+      await writeFile(statePath, '{ broken');
+      assert.deepEqual(resolveSetupRefreshArgs(cwd), ['setup']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('snapshots the same merge-policy argv for deferred POSIX and PowerShell commands', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-merge-policy-snapshot-'));
+    const calls: Array<{ args: string[] }> = [];
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'user', mergeAgents: false, force: true }));
+      for (const platform of ['linux', 'win32'] as NodeJS.Platform[]) {
+        calls.length = 0;
+        const result = runDeferredGlobalUpdate(cwd, ((_, args) => {
+          calls.push({ args: args as string[] });
+          return { once() { return this; }, unref() {} } as unknown as ReturnType<typeof import('node:child_process').spawn>;
+        }) as typeof import('node:child_process').spawn, platform, 12345);
+        assert.equal(result.ok, true);
+        assert.match(calls[0]?.args.at(-1) ?? '', /--no-merge-agents/);
+        assert.doesNotMatch(calls[0]?.args.at(-1) ?? '', /--force/);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});

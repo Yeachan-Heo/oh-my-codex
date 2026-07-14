@@ -116,7 +116,9 @@ function validExecutionContract(stride: 'task' | 'deliverable' | 'milestone'): R
 
 async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
   const trackingPath = subagentTrackingPath(cwd);
-  const now = '2026-05-28T00:00:00.000Z';
+  const architectCompletedAt = '2026-05-28T00:00:00.000Z';
+  const criticStartedAt = '2026-05-28T00:01:00.000Z';
+  const criticCompletedAt = '2026-05-28T00:02:00.000Z';
   await mkdir(dirname(trackingPath), { recursive: true });
   await writeFile(trackingPath, JSON.stringify({
     schemaVersion: 1,
@@ -124,11 +126,11 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
       [sessionId]: {
         session_id: sessionId,
         leader_thread_id: 'thread-leader',
-        updated_at: now,
+        updated_at: criticCompletedAt,
         threads: {
-          'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: now, last_seen_at: now, turn_count: 1 },
-          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
-          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+          'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, turn_count: 1 },
+          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, completed_at: architectCompletedAt, turn_count: 1, mode: 'architect' },
+          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: criticStartedAt, last_seen_at: criticCompletedAt, completed_at: criticCompletedAt, turn_count: 1, mode: 'critic' },
         },
       },
     },

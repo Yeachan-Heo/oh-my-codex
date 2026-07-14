@@ -27,6 +27,7 @@ import { hudCommand } from "../hud/index.js";
 import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
+import { ralplanCommand } from "./ralplan.js";
 import { ultragoalCommand } from "./ultragoal.js";
 import { performanceGoalCommand } from "./performance-goal.js";
 import { askCommand } from "./ask.js";
@@ -267,6 +268,7 @@ Usage:
                 Alias for agents-init (lightweight AGENTS bootstrap only)
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
   omx ralph     Launch Codex with ralph persistence mode active
+  omx ralplan   Record validated role intents for adapted native subagent spawns
   omx ultragoal Create, resume, and checkpoint durable multi-goal plans over Codex goal mode
   omx performance-goal
                 Create, hand off, and gate evaluator-backed performance goals
@@ -321,8 +323,11 @@ Options:
                 Launch Codex in a git worktree (detached when no name is given)
   --force       Force reinstall (overwrite existing files)
   --merge-agents
-                Merge OMX-managed AGENTS.md sections into an existing AGENTS.md
-                instead of overwriting user-authored content
+                Merge OMX-managed AGENTS.md sections and persist that explicit policy for this project root
+  --no-merge-agents
+                Persist an explicit non-merge policy; current non-merge behavior remains contextual
+  --clear-merge-agents-policy
+                Clear the persisted AGENTS merge policy for this project root
   --dry-run     Show what would be done without doing it
   --plugin      Use Codex plugin delivery for omx setup and remove legacy OMX-managed user/project components
   --legacy      Use legacy setup delivery for omx setup, overriding persisted plugin mode
@@ -473,6 +478,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "wiki",
   "mcp-serve",
   "ralph",
+  "ralplan",
   "ultragoal",
   "performance-goal",
   "resume",
@@ -487,6 +493,49 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
 export interface ResolvedCliInvocation {
   command: CliCommand;
   launchArgs: string[];
+}
+
+export type SetupMergeAgentsPolicyArg =
+  | { kind: "set"; value: boolean }
+  | { kind: "clear" }
+  | undefined;
+
+export function resolveSetupAgentsMergePolicyArg(args: string[]): SetupMergeAgentsPolicyArg {
+  let policy: SetupMergeAgentsPolicyArg;
+  const setPolicy = (next: Exclude<SetupMergeAgentsPolicyArg, undefined>, source: string): void => {
+    if (policy && (policy.kind !== next.kind || (policy.kind === "set" && next.kind === "set" && policy.value !== next.value))) {
+      throw new Error(`Conflicting setup AGENTS merge policy flags: ${source} conflicts with another merge policy selector.`);
+    }
+    policy = next;
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--merge-agents" || arg === "--no-merge-agents" || arg === "--clear-merge-agents-policy") {
+      const next = args[index + 1];
+      if (next && !next.startsWith("--")) {
+        throw new Error(`Setup AGENTS merge policy flags do not accept values: ${arg} ${next}`);
+      }
+      if (arg === "--merge-agents") {
+        setPolicy({ kind: "set", value: true }, arg);
+      } else if (arg === "--no-merge-agents") {
+        setPolicy({ kind: "set", value: false }, arg);
+      } else {
+        setPolicy({ kind: "clear" }, arg);
+      }
+    } else if (
+      arg.startsWith("--merge-agents=") ||
+      arg.startsWith("--no-merge-agents=") ||
+      arg.startsWith("--clear-merge-agents-policy=")
+    ) {
+      throw new Error(`Setup AGENTS merge policy flags do not accept values: ${arg}`);
+    }
+  }
+  return policy;
+}
+
+export function resolveSetupMergeAgentsArg(args: string[]): boolean | undefined {
+  const policy = resolveSetupAgentsMergePolicyArg(args);
+  return policy?.kind === "set" ? policy.value : undefined;
 }
 
 export function resolveSetupInstallModeArg(args: string[]): SetupInstallMode | undefined {
@@ -2666,6 +2715,7 @@ export async function main(args: string[]): Promise<void> {
     "sparkshell",
     "team",
     "ralph",
+    "ralplan",
     "ultragoal",
     "performance-goal",
     "session",
@@ -2688,7 +2738,7 @@ export async function main(args: string[]): Promise<void> {
   const flags = new Set(args.filter((a) => a.startsWith("--")));
   const options = {
     force: flags.has("--force"),
-    mergeAgents: flags.has("--merge-agents"),
+    mergeAgents: undefined,
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
@@ -2717,6 +2767,7 @@ export async function main(args: string[]): Promise<void> {
         await setup({
           force: options.force,
           mergeAgents: options.mergeAgents,
+          mergeAgentsPolicy: resolveSetupAgentsMergePolicyArg(args.slice(1)),
           dryRun: options.dryRun,
           verbose: options.verbose,
           scope: resolveSetupScopeArg(args.slice(1)),
@@ -2820,6 +2871,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "ralph":
         await ralphCommand(args.slice(1));
+        break;
+      case "ralplan":
+        await ralplanCommand(args.slice(1));
         break;
       case "ultragoal":
         await ultragoalCommand(args.slice(1));
@@ -6534,7 +6588,7 @@ async function flushNotifyFallbackOnce(
     {
       cwd,
       stdio: "ignore",
-      timeout: 3000,
+      timeout: 45_000,
       windowsHide: true,
       env: buildNotifyFallbackWatcherEnv(process.env, {
         codexHomeOverride: options.codexHomeOverride,

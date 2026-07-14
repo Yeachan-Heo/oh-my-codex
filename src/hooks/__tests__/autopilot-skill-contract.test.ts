@@ -95,11 +95,17 @@ describe('autopilot skill default Ultragoal contract', () => {
   });
 
   it('requires role-specific subsequent ralplan reviewer subagents with full context', () => {
-    assert.match(ralplanSkill, /subsequent `Architect` subagent \(`agent_type: "architect"`\)/i);
-    assert.match(ralplanSkill, /subsequent `Critic` subagent \(`agent_type: "critic"`\)/i);
+    assert.match(ralplanSkill, /subsequent role-specific `Architect` subagent/i);
+    assert.match(ralplanSkill, /subsequent role-specific `Critic` subagent/i);
     assert.match(ralplanSkill, /full task statement, context snapshot, PRD\/test-spec paths/i);
-    assert.match(ralplanSkill, /do not use a default subagent with only a short improvised reviewer prompt/i);
+    assert.match(ralplanSkill, /do not substitute an unvalidated reviewer identity or a short improvised reviewer prompt/i);
     assert.match(ralplanSkill, /do not ask the Architect subagent to perform the Critic gate/i);
+    // Surface-aware role contract (#3118): agent_type is mandatory only where the
+    // native surface exposes role routing; otherwise the adapted role-intent pass
+    // carries the validated role via a correlation token, never a prompt label.
+    assert.match(ralplanSkill, /When the native surface exposes `agent_type` role routing/i);
+    assert.match(ralplanSkill, /role[_ -]?routing[_ -]?unavailable/i);
+    assert.match(ralplanSkill, /omx ralplan role-intent write/i);
   });
 
   it('documents ralplan consensus completion in pipeline and public docs', () => {
