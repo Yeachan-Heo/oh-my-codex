@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import {
 	createDurableReviewCoordinator,
 	createInitialReviewRecord,
+	seedCreatedReviewIntent,
 } from "../../code-review/coordinator.js";
 import {
 	atomicCreatePrivateJson,
@@ -349,5 +350,48 @@ describe("state-server code-review control plane", () => {
 		assert.match(firstPayload.review_id ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 		assert.notEqual(firstPayload.review_id, request.params.arguments.idempotency_key);
 		assert.deepEqual(JSON.parse(replay.content[0]?.text ?? ""), firstPayload);
+	});
+
+	it("activates the exact CREATED review seeded by keyword runtime", async () => {
+		const workingDirectory = await mkdtemp(join(tmpdir(), "omx-state-review-created-activation-"));
+		execFileSync("git", ["init", "-q"], { cwd: workingDirectory });
+		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: workingDirectory });
+		execFileSync("git", ["config", "user.name", "Test"], { cwd: workingDirectory });
+		await writeFile(join(workingDirectory, "a.ts"), "export const value = 1;\n");
+		execFileSync("git", ["add", "a.ts"], { cwd: workingDirectory });
+		execFileSync("git", ["commit", "-qm", "base"], { cwd: workingDirectory });
+		await writeFile(join(workingDirectory, "a.ts"), "export const value = 2;\n");
+		const seeded = await seedCreatedReviewIntent({
+			workingDirectory,
+			session_id: "session-created",
+			root_thread_id: "root-created",
+			invocation_turn_id: "turn-created",
+			normalized_invocation: "$code-review inspect the diff",
+			now: new Date("2026-07-14T00:00:00.000Z"),
+		});
+		const { handleStateToolCall } = await stateServer();
+		const response = await handleStateToolCall({ params: {
+			name: "review_start",
+			arguments: {
+				workingDirectory,
+				session_id: "session-created",
+				invocation: [],
+				idempotency_key: "78787878-7878-4878-8878-787878787878",
+			},
+		} });
+
+		assert.equal(response.isError, undefined, response.content[0]?.text);
+		const activated = JSON.parse(response.content[0]?.text ?? "") as { review_id?: string; status?: string };
+		assert.equal(activated.review_id, seeded.review.review_id);
+		assert.equal(activated.status, "REVIEWING");
+		const active = JSON.parse(await readFile(
+			join(workingDirectory, ".omx", "state", "sessions", "session-created", "code-review", "active.json"),
+			"utf8",
+		)) as { review_id?: string; status?: string };
+		assert.deepEqual(active, {
+			schema_version: 1,
+			review_id: seeded.review.review_id,
+			status: "REVIEWING",
+		});
 	});
 });

@@ -1992,6 +1992,107 @@ describe('Code Review Stage', () => {
   beforeEach(async () => { await setup(); });
   afterEach(async () => { await cleanup(); });
 
+  function finalizedCodeReviewArtifact(options: {
+    recommendation?: 'APPROVE' | 'COMMENT' | 'REQUEST CHANGES';
+    architecturalStatus?: 'CLEAR' | 'WATCH' | 'BLOCK';
+    clean?: boolean;
+    ruleId?: string;
+    findingTitle?: string;
+  } = {}): Record<string, unknown> {
+    const scopeHash = 'a'.repeat(64);
+    const recommendation = options.recommendation ?? 'APPROVE';
+    const architecturalStatus = options.architecturalStatus ?? 'CLEAR';
+    const clean = options.clean ?? (recommendation === 'APPROVE' && architecturalStatus === 'CLEAR');
+    return {
+      schema_version: 1,
+      review_id: '11111111-1111-4111-8111-111111111111',
+      revision: 7,
+      status: clean ? 'FINALIZED' : 'BLOCKED',
+      current_attempt: 1,
+      scope: {
+        selector: { explicit_paths: [] },
+        status: 'FULL_SCOPE',
+        scope_hash: scopeHash,
+        files: [{
+          path: 'src/example.ts',
+          change: 'MODIFIED',
+          sources: ['WORKTREE'],
+          binary: false,
+          additions: 1,
+          deletions: 0,
+        }],
+        changed_lines: 1,
+        reasons: [],
+      },
+      review_flags: [],
+      batches: [{
+        batch_id: 'batch-1',
+        module_root: '.',
+        files: ['src/example.ts'],
+        changed_lines: 1,
+        oversized_single_file: false,
+      }],
+      lanes: [
+        {
+          lane_id: 'reviewer-1',
+          role: 'code-reviewer',
+          batch_id: 'batch-1',
+          scope_hash: scopeHash,
+          status: 'COMPLETE',
+          attempt: 1,
+          recommendation,
+          findings: options.findingTitle ? [{
+            severity: 'HIGH',
+            title: options.findingTitle,
+            body: 'Implementation bug remains.',
+            file: 'src/example.ts',
+            start_line: 1,
+            fix: 'Fix the implementation.',
+          }] : [],
+          diagnostic_ids: [],
+        },
+        {
+          lane_id: 'architect-1',
+          role: 'architect',
+          batch_id: 'global',
+          scope_hash: scopeHash,
+          status: 'COMPLETE',
+          attempt: 1,
+          architectural_status: architecturalStatus,
+          findings: [],
+          diagnostic_ids: [],
+        },
+      ],
+      diagnostics: [],
+      verdict: {
+        recommendation,
+        architectural_status: architecturalStatus,
+        scope_status: 'FULL_SCOPE',
+        evidence_status: 'FULL_EVIDENCE',
+        rule_id: options.ruleId ?? (clean ? 'CLEAN_APPROVAL' : 'LANE_REQUEST_CHANGES'),
+        reasons: clean ? ['ALL_REQUIRED_EVIDENCE_CLEAR'] : ['REVIEWER_REQUEST_CHANGES:reviewer-1'],
+        clean,
+      },
+      created_at: '2026-07-15T00:00:00.000Z',
+      updated_at: '2026-07-15T00:01:00.000Z',
+      finalized_at: '2026-07-15T00:01:00.000Z',
+    };
+  }
+
+  async function persistFinalizedCodeReviewArtifact(artifact: Record<string, unknown>): Promise<{
+    artifactPath: string;
+    artifactSha256: string;
+  }> {
+    const artifactPath = `.omx/reviews/${String(artifact.review_id)}.json`;
+    const raw = `${JSON.stringify(artifact, null, 2)}\n`;
+    await mkdir(join(tempDir, '.omx', 'reviews'), { recursive: true });
+    await writeFile(join(tempDir, artifactPath), raw);
+    return {
+      artifactPath,
+      artifactSha256: createHash('sha256').update(raw).digest('hex'),
+    };
+  }
+
   it('creates a code-review stage that fails closed without review evidence', async () => {
     const stage = createCodeReviewStage();
     assert.equal(stage.name, 'code-review');
@@ -2007,24 +2108,120 @@ describe('Code Review Stage', () => {
     assert.equal(artifacts.return_to_ralplan_reason, 'Code-review evidence missing; fail closed and return to ralplan.');
   });
 
-  it('marks explicit approve and clear review evidence as clean', async () => {
+  it('does not let injected verdict fields alone produce clean evidence', async () => {
     const stage = createCodeReviewStage({ recommendation: 'APPROVE', architecturalStatus: 'CLEAR' });
+    const result = await stage.run(makeCtx({ artifacts: { ralph: { tests: 'passed' } } }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+    const verdict = artifacts.review_verdict as Record<string, unknown>;
+    assert.equal(verdict.clean, false);
+    assert.equal(verdict.recommendation, 'APPROVE');
+    assert.equal(verdict.architectural_status, 'CLEAR');
+    assert.equal(artifacts.return_to_ralplan_reason, 'Code-review runtime artifact missing or invalid; fail closed and return to ralplan.');
+  });
+
+  it('does not let an in-memory finalized artifact bypass persisted runtime evidence', async () => {
+    const stage = createCodeReviewStage({
+      finalizedArtifact: finalizedCodeReviewArtifact(),
+    } as unknown as Parameters<typeof createCodeReviewStage>[0]);
+    const result = await stage.run(makeCtx());
+    const artifacts = result.artifacts as Record<string, unknown>;
+    const verdict = artifacts.review_verdict as Record<string, unknown>;
+    assert.equal(verdict.clean, false);
+    assert.equal(artifacts.code_review_artifact, undefined);
+    assert.equal(artifacts.code_review_artifact_identity, undefined);
+    assert.equal(artifacts.suggested_next_phase, 'ralplan');
+  });
+
+  it('marks a schema-valid finalized runtime artifact as clean', async () => {
+    const artifact = finalizedCodeReviewArtifact();
+    const persisted = await persistFinalizedCodeReviewArtifact(artifact);
+    const stage = createCodeReviewStage({
+      ...persisted,
+      artifactReviewId: String(artifact.review_id),
+    });
     const result = await stage.run(makeCtx({ artifacts: { ralph: { tests: 'passed' } } }));
     const artifacts = result.artifacts as Record<string, unknown>;
     const verdict = artifacts.review_verdict as Record<string, unknown>;
     assert.equal(verdict.clean, true);
     assert.equal(verdict.recommendation, 'APPROVE');
     assert.equal(verdict.architectural_status, 'CLEAR');
+    assert.equal(verdict.artifact_path, persisted.artifactPath);
+    assert.equal(verdict.artifact_sha256, persisted.artifactSha256);
     assert.equal(artifacts.return_to_ralplan_reason, null);
+    assert.deepEqual(artifacts.code_review_artifact, artifact);
+    assert.deepEqual(artifacts.code_review_artifact_identity, {
+      review_id: artifact.review_id,
+      revision: artifact.revision,
+      artifact_path: persisted.artifactPath,
+      artifact_sha256: persisted.artifactSha256,
+    });
+  });
+
+  it('does not accept a persisted artifact without coordinator identity and digest', async () => {
+    const artifact = finalizedCodeReviewArtifact();
+    const persisted = await persistFinalizedCodeReviewArtifact(artifact);
+    const stage = createCodeReviewStage({ artifactPath: persisted.artifactPath });
+    const result = await stage.run(makeCtx());
+    const verdict = result.artifacts.review_verdict as Record<string, unknown>;
+    assert.equal(verdict.clean, false);
+    assert.equal(result.artifacts.code_review_artifact, undefined);
+    assert.equal(result.artifacts.suggested_next_phase, 'ralplan');
   });
 
   it('marks non-clean review as return-to-ralplan input', async () => {
-    const stage = createCodeReviewStage({ recommendation: 'REQUEST CHANGES', architecturalStatus: 'BLOCK', summary: 'fix review findings' });
+    const artifact = finalizedCodeReviewArtifact({
+      recommendation: 'REQUEST CHANGES',
+      architecturalStatus: 'CLEAR',
+      clean: false,
+      findingTitle: 'Bug remains',
+    });
+    const persisted = await persistFinalizedCodeReviewArtifact(artifact);
+    const stage = createCodeReviewStage({
+      ...persisted,
+      artifactReviewId: String(artifact.review_id),
+      summary: 'fix review findings',
+    });
     const result = await stage.run(makeCtx());
     const artifacts = result.artifacts as Record<string, unknown>;
     const verdict = artifacts.review_verdict as Record<string, unknown>;
     assert.equal(verdict.clean, false);
     assert.equal(artifacts.return_to_ralplan_reason, 'fix review findings');
+    assert.equal(artifacts.suggested_next_phase, 'rework');
+  });
+
+  it('routes no-change review artifacts back to ralplan instead of ultraqa', async () => {
+    const noChanges = finalizedCodeReviewArtifact({ recommendation: 'COMMENT', architecturalStatus: 'CLEAR', clean: false, ruleId: 'NO_CHANGES' });
+    (noChanges.scope as Record<string, unknown>).files = [];
+    (noChanges.scope as Record<string, unknown>).changed_lines = 0;
+    noChanges.batches = [];
+    noChanges.lanes = [];
+    noChanges.status = 'FINALIZED';
+    (noChanges.verdict as Record<string, unknown>).reasons = ['NO_CHANGES'];
+    const persisted = await persistFinalizedCodeReviewArtifact(noChanges);
+    const stage = createCodeReviewStage({
+      ...persisted,
+      artifactReviewId: String(noChanges.review_id),
+    });
+    const result = await stage.run(makeCtx());
+    const artifacts = result.artifacts as Record<string, unknown>;
+    const verdict = artifacts.review_verdict as Record<string, unknown>;
+    assert.equal(verdict.clean, false);
+    assert.equal(artifacts.suggested_next_phase, 'ralplan');
+    assert.match(String(artifacts.return_to_ralplan_reason), /No reviewable changes/);
+  });
+
+  it('fails closed when the persisted artifact digest does not match its coordinator handoff', async () => {
+    const artifact = finalizedCodeReviewArtifact();
+    const persisted = await persistFinalizedCodeReviewArtifact(artifact);
+    const stage = createCodeReviewStage({
+      artifactPath: persisted.artifactPath,
+      artifactReviewId: String(artifact.review_id),
+      artifactSha256: 'f'.repeat(64),
+    });
+    const result = await stage.run(makeCtx());
+    const verdict = result.artifacts.review_verdict as Record<string, unknown>;
+    assert.equal(verdict.clean, false);
+    assert.equal(result.artifacts.suggested_next_phase, 'ralplan');
   });
 
   it('builds a code-review instruction', () => {

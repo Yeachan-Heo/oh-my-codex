@@ -35,6 +35,8 @@ import { createUltragoalPlan, readUltragoalPlan } from "../../ultragoal/artifact
 import { getBaseStateDir } from "../../state/paths.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker-stop.js";
 import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
+import { canonicalLanePayloadDigest } from "../../code-review/evidence.js";
+import { executeReviewOperation } from "../../code-review/coordinator.js";
 
 function nativeHookScriptPath(): string {
   return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
@@ -81,9 +83,46 @@ function runNativeHookCliResult(
   );
 }
 
+function gitCommitForTest(cwd: string, message: string): void {
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test User",
+      "commit",
+      "-m",
+      message,
+    ],
+    { cwd, stdio: "ignore" },
+  );
+}
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
   await writeFile(path, JSON.stringify(value, null, 2));
+}
+
+const CODE_REVIEW_TEST_SCOPE_HASH = "a".repeat(64);
+
+function codeReviewArchitectResult(input: {
+  reviewId: string;
+  laneId: string;
+  idempotencyKey?: string;
+}): Record<string, unknown> {
+  return {
+    role: "architect",
+    review_id: input.reviewId,
+    attempt: 1,
+    lane_id: input.laneId,
+    batch_id: "global",
+    scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+    architectural_status: "CLEAR",
+    findings: [],
+  };
 }
 
 async function writeNativeMappedSessionState(
@@ -386,6 +425,13 @@ const TEAM_ENV_KEYS = [
 ] as const;
 
 const priorTeamEnv = new Map<(typeof TEAM_ENV_KEYS)[number], string | undefined>();
+const GIT_IDENTITY_ENV_KEYS = [
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+] as const;
+const priorGitIdentityEnv = new Map<(typeof GIT_IDENTITY_ENV_KEYS)[number], string | undefined>();
 
 beforeEach(() => {
   priorTeamEnv.clear();
@@ -393,6 +439,14 @@ beforeEach(() => {
     priorTeamEnv.set(key, process.env[key]);
     delete process.env[key];
   }
+  priorGitIdentityEnv.clear();
+  for (const key of GIT_IDENTITY_ENV_KEYS) {
+    priorGitIdentityEnv.set(key, process.env[key]);
+  }
+  process.env.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME || "OMX Test";
+  process.env.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL || "omx-test@example.invalid";
+  process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME || "OMX Test";
+  process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || "omx-test@example.invalid";
 });
 
 afterEach(() => {
@@ -402,6 +456,12 @@ afterEach(() => {
     else delete process.env[key];
   }
   priorTeamEnv.clear();
+  for (const key of GIT_IDENTITY_ENV_KEYS) {
+    const value = priorGitIdentityEnv.get(key);
+    if (typeof value === "string") process.env[key] = value;
+    else delete process.env[key];
+  }
+  priorGitIdentityEnv.clear();
 });
 
 describe("codex native hook config", () => {
@@ -2297,6 +2357,637 @@ PY`,
       } else {
         process.env.CODEX_HOME = originalCodexHome;
       }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("derives immutable code-review lane IDs from native subagent spawn metadata", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-lane-spawn-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-review-leader";
+      const leaderNativeThreadId = "codex-review-root";
+      const childThreadId = "codex-reviewer-child";
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: leaderNativeThreadId });
+      const transcriptPath = join(cwd, "code-reviewer-child.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: childThreadId,
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: leaderNativeThreadId,
+                  task_name: "reviewer-lane-1",
+                  lane_id: "reviewer-lane-1",
+                  agent_role: "code-reviewer",
+                },
+              },
+            },
+          },
+        })}\n`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: childThreadId,
+          transcript_path: transcriptPath,
+        },
+        { cwd },
+      );
+
+      const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8")) as {
+        sessions?: Record<string, { threads?: Record<string, { lane_id?: string; mode?: string }> }>;
+      };
+      const child = tracking.sessions?.[canonicalSessionId]?.threads?.[childThreadId];
+      assert.equal(child?.mode, "code-reviewer");
+      assert.equal(child?.lane_id, "reviewer-lane-1");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("appends content-free code-review lane activity from native tool events", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-activity-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-activity-session";
+      const rootThreadId = "codex-root-activity-thread";
+      const childThreadId = "codex-child-activity-thread";
+      const reviewId = "11111111-1111-4111-8111-111111111111";
+      const laneId = "reviewer-lane-activity";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        sessions: {
+          [sessionId]: {
+            threads: {
+              [childThreadId]: {
+                kind: "subagent",
+                leader_thread_id: rootThreadId,
+                lane_id: laneId,
+              },
+            },
+          },
+        },
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", "active.json"), {
+        schema_version: 1,
+        review_id: reviewId,
+        status: "RUNNING",
+      });
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: rootThreadId,
+          owner_codex_thread_id: rootThreadId,
+          thread_id: childThreadId,
+          tool_use_id: "toolu-activity-1",
+          tool_name: "Bash",
+          tool_input: { command: "npm test" },
+        },
+        { cwd },
+      );
+
+      const activityDir = join(stateDir, "sessions", sessionId, "code-review", reviewId, "activity", childThreadId);
+      const activityFiles = await readdir(activityDir);
+      assert.equal(activityFiles.length, 1);
+      const activity = JSON.parse(await readFile(join(activityDir, activityFiles[0]), "utf-8")) as Record<string, unknown>;
+      assert.equal(activity.review_id, reviewId);
+      assert.equal(activity.lane_id, laneId);
+      assert.equal(activity.child_thread_id, childThreadId);
+      assert.equal(activity.event_ref, "toolu-activity-1");
+      assert.equal(activity.event_kind, "TOOL_START");
+      assert.equal("tool_input" in activity, false);
+      assert.equal("command" in activity, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes code-review RESULT PostToolUse attestation only from real host child identity", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-posttool-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-session";
+      const rootThreadId = "codex-root-review-thread";
+      const childThreadId = "codex-child-review-thread";
+      const reviewId = "22222222-2222-4222-8222-222222222222";
+      const idempotencyKey = "33333333-3333-4333-8333-333333333333";
+      const laneId = "architect-lane-1";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: rootThreadId,
+            threads: {
+              [childThreadId]: {
+                kind: "subagent",
+                leader_thread_id: rootThreadId,
+                lane_id: laneId,
+              },
+            },
+          },
+        },
+      });
+      const result = codeReviewArchitectResult({ reviewId, laneId });
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", reviewId, "submissions", idempotencyKey, "proposal"), {
+        schema_version: 1,
+        state: "PENDING_HOST_ATTESTATION",
+        review_id: reviewId,
+        attempt: 1,
+        lane_id: laneId,
+        scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+        idempotency_key: idempotencyKey,
+        payload_digest: canonicalLanePayloadDigest(result),
+        result,
+        proposed_at: "2026-07-15T00:00:00.000Z",
+      });
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: childThreadId,
+          owner_codex_thread_id: rootThreadId,
+          thread_id: childThreadId,
+          tool_use_id: "toolu-review-result-1",
+          tool_name: "mcp__omx_state__review_record_lane",
+          tool_input: {
+            workingDirectory: cwd,
+            session_id: sessionId,
+            event: "RESULT",
+            review_id: reviewId,
+            attempt: 1,
+            lane_id: laneId,
+            scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+            idempotency_key: idempotencyKey,
+            result,
+          },
+          tool_response: {
+            content: [{ type: "text", text: JSON.stringify({ state: "PENDING_HOST_ATTESTATION" }) }],
+          },
+        },
+        { cwd },
+      );
+
+      const publication = JSON.parse(await readFile(
+        join(stateDir, "sessions", sessionId, "code-review", reviewId, "submissions", idempotencyKey, "post-tool"),
+        "utf-8",
+      )) as Record<string, unknown>;
+      const attestation = publication.attestation as Record<string, unknown>;
+      assert.equal(publication.publication_id, idempotencyKey);
+      assert.equal(attestation.root_thread_id, rootThreadId);
+      assert.equal(attestation.child_thread_id, childThreadId);
+      assert.equal(attestation.tool_event_ref, "toolu-review-result-1");
+      assert.equal(attestation.payload_digest, canonicalLanePayloadDigest(result));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects loose RESULT responses and child lanes that are not host-tracked", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-posttool-loose-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-loose-session";
+      const rootThreadId = "codex-review-loose-root";
+      const childThreadId = "codex-review-loose-child";
+      const reviewId = "12121212-1212-4212-8212-121212121212";
+      const laneId = "architect-lane-loose";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: rootThreadId,
+            threads: {
+              [childThreadId]: {
+                kind: "subagent",
+                leader_thread_id: rootThreadId,
+                lane_id: "another-lane",
+              },
+            },
+          },
+        },
+      });
+      const result = codeReviewArchitectResult({ reviewId, laneId });
+      const idempotencyKey = "34343434-3434-4434-8434-343434343434";
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", reviewId, "submissions", idempotencyKey, "proposal"), {
+        schema_version: 1,
+        state: "PENDING_HOST_ATTESTATION",
+        review_id: reviewId,
+        attempt: 1,
+        lane_id: laneId,
+        scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+        idempotency_key: idempotencyKey,
+        payload_digest: canonicalLanePayloadDigest(result),
+        result,
+        proposed_at: "2026-07-15T00:00:00.000Z",
+      });
+
+      await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd,
+        session_id: childThreadId,
+        owner_codex_thread_id: rootThreadId,
+        thread_id: childThreadId,
+        tool_use_id: "toolu-review-result-loose",
+        tool_name: "mcp__omx_state__review_record_lane",
+        tool_input: {
+          workingDirectory: cwd,
+          session_id: sessionId,
+          event: "RESULT",
+          review_id: reviewId,
+          attempt: 1,
+          lane_id: laneId,
+          scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+          idempotency_key: idempotencyKey,
+          result,
+        },
+        tool_response: {
+          content: [{ type: "text", text: JSON.stringify({ state: "PENDING_HOST_ATTESTATION", extra: true }) }],
+        },
+      }, { cwd });
+
+      assert.equal(
+        existsSync(join(stateDir, "sessions", sessionId, "code-review", reviewId, "submissions", idempotencyKey, "post-tool")),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed without publishing code-review RESULT attestation when host identity is absent", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-posttool-missing-root-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-session";
+      const childThreadId = "codex-child-review-thread";
+      const reviewId = "44444444-4444-4444-8444-444444444444";
+      const idempotencyKey = "55555555-5555-4555-8555-555555555555";
+      const laneId = "architect-lane-1";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: "codex-root-review-thread" });
+      const result = codeReviewArchitectResult({ reviewId, laneId });
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: childThreadId,
+          thread_id: childThreadId,
+          tool_use_id: "toolu-review-result-missing-root",
+          tool_name: "mcp__omx_state__review_record_lane",
+          tool_input: {
+            workingDirectory: cwd,
+            session_id: sessionId,
+            event: "RESULT",
+            review_id: reviewId,
+            attempt: 1,
+            lane_id: laneId,
+            scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+            idempotency_key: idempotencyKey,
+            result,
+          },
+          tool_response: { payload: { state: "PENDING_HOST_ATTESTATION" } },
+        },
+        { cwd },
+      );
+
+      assert.equal(
+        existsSync(join(stateDir, "sessions", sessionId, "code-review", reviewId, "submissions", idempotencyKey, "post-tool")),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not derive code-review RESULT child identity from the host session id", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-posttool-missing-child-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-session";
+      const rootThreadId = "codex-root-review-thread";
+      const childThreadId = "codex-child-review-thread";
+      const reviewId = "77777777-7777-4777-8777-777777777777";
+      const idempotencyKey = "88888888-8888-4888-8888-888888888888";
+      const laneId = "architect-lane-1";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      const result = codeReviewArchitectResult({ reviewId, laneId });
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", reviewId, "submissions", idempotencyKey, "proposal"), {
+        schema_version: 1,
+        state: "PENDING_HOST_ATTESTATION",
+        review_id: reviewId,
+        attempt: 1,
+        lane_id: laneId,
+        scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+        idempotency_key: idempotencyKey,
+        payload_digest: canonicalLanePayloadDigest(result),
+        result,
+        proposed_at: "2026-07-15T00:00:00.000Z",
+      });
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: childThreadId,
+          owner_codex_thread_id: rootThreadId,
+          tool_use_id: "toolu-review-result-missing-child",
+          tool_name: "mcp__omx_state__review_record_lane",
+          tool_input: {
+            workingDirectory: cwd,
+            session_id: sessionId,
+            event: "RESULT",
+            review_id: reviewId,
+            attempt: 1,
+            lane_id: laneId,
+            scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+            idempotency_key: idempotencyKey,
+            result,
+          },
+          tool_response: { payload: { state: "PENDING_HOST_ATTESTATION" } },
+        },
+        { cwd },
+      );
+
+      assert.equal(
+        existsSync(join(stateDir, "sessions", sessionId, "code-review", reviewId, "submissions", idempotencyKey, "post-tool")),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Stop once with a bounded code-review terminal brief and consumes only the exact footer", async () => {
+    const cwd = await initTempGitRepo("omx-native-hook-code-review-stop-brief-");
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-stop-session";
+      const rootThreadId = "codex-review-stop-root";
+      await writeFile(join(cwd, ".gitignore"), ".omx/\n");
+      await writeFile(join(cwd, "review-target.ts"), "export const reviewTarget = 1;\n");
+      execFileSync("git", ["add", ".gitignore", "review-target.ts"], { cwd });
+      gitCommitForTest(cwd, "seed review target");
+      await writeFile(join(cwd, "review-target.ts"), "export const reviewTarget = 2;\n");
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      const started = await executeReviewOperation("review_start", {
+        workingDirectory: cwd,
+        session_id: sessionId,
+        invocation: [],
+        idempotency_key: "66666666-6666-4666-8666-666666666660",
+      }, { source: "MCP", root_thread_id: rootThreadId });
+      assert.equal(started.isError, undefined, JSON.stringify(started.payload));
+      const reviewId = String((started.payload as { review_id?: unknown }).review_id ?? "");
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "code-review",
+        phase: "reviewing",
+        session_id: sessionId,
+        thread_id: rootThreadId,
+        active_skills: [{
+          skill: "code-review",
+          phase: "reviewing",
+          active: true,
+          session_id: sessionId,
+          thread_id: rootThreadId,
+          review_id: reviewId,
+          review_status: "REVIEWING",
+        }],
+      });
+
+      const first = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+        },
+        { cwd },
+      );
+
+      assert.equal(first.outputJson?.decision, "block");
+      const firstMessage = String(first.outputJson?.systemMessage ?? first.outputJson?.reason ?? "");
+      const footer = /<!-- omx:code-review-terminal-brief (\{[^}]+\}) -->/.exec(firstMessage)?.[0] ?? "";
+      assert.match(footer, new RegExp(`"review_id":"${reviewId}"`, "u"), JSON.stringify(first.outputJson));
+      const pendingMarker = JSON.parse(await readFile(
+        join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief.json"),
+        "utf-8",
+      )) as { state?: string; issued_at?: string };
+      assert.equal(pendingMarker.state, "PENDING_BRIEF");
+
+      const mismatch = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: footer.replace("REQUEST CHANGES", "COMMENT"),
+        },
+        { cwd },
+      );
+      assert.equal(mismatch.outputJson?.decision, "block");
+
+      const oldFooter = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: footer.replace(/"stop_signature":"[^"]+"/u, '"stop_signature":"stale-review-signature"'),
+          last_assistant_message_thread_id: rootThreadId,
+          last_assistant_message_id: "assistant-stale-terminal-brief",
+          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          last_assistant_message_immediately_precedes_stop: true,
+        },
+        { cwd },
+      );
+      assert.equal(oldFooter.outputJson?.decision, "block");
+
+      const crossThread = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: footer,
+          last_assistant_message_thread_id: "codex-review-stop-other-root",
+          last_assistant_message_id: "assistant-cross-thread-terminal-brief",
+          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          last_assistant_message_immediately_precedes_stop: true,
+        },
+        { cwd },
+      );
+      assert.equal(crossThread.outputJson?.decision, "block");
+
+      const olderMessage = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: footer,
+          last_assistant_message_thread_id: rootThreadId,
+          last_assistant_message_id: "assistant-old-terminal-brief",
+          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") - 1).toISOString(),
+          last_assistant_message_immediately_precedes_stop: true,
+        },
+        { cwd },
+      );
+      assert.equal(olderMessage.outputJson?.decision, "block");
+
+      const notImmediatelyPreceding = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: footer,
+          last_assistant_message_thread_id: rootThreadId,
+          last_assistant_message_id: "assistant-not-immediate-terminal-brief",
+          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          last_assistant_message_immediately_precedes_stop: false,
+        },
+        { cwd },
+      );
+      assert.equal(notImmediatelyPreceding.outputJson?.decision, "block");
+
+      const consumed = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: `Review failed closed.\n${footer}`,
+          last_assistant_message_thread_id: rootThreadId,
+          last_assistant_message_id: "assistant-terminal-brief-1",
+          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          last_assistant_message_immediately_precedes_stop: true,
+        },
+        { cwd },
+      );
+      assert.equal(consumed.outputJson, null);
+      const consumedMarker = JSON.parse(await readFile(
+        join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief.json"),
+        "utf-8",
+      )) as { state?: string; assistant_message_sha256?: string };
+      assert.equal(consumedMarker.state, "CONSUMED");
+      assert.ok(consumedMarker.assistant_message_sha256);
+      assert.equal(
+        existsSync(join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief-consumed.json")),
+        true,
+      );
+
+      const replay = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+        },
+        { cwd },
+      );
+      assert.equal(replay.outputJson, null);
+
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        thread_id: rootThreadId,
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: sessionId,
+          thread_id: rootThreadId,
+        }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+        thread_id: rootThreadId,
+      });
+      const ralplanStillBlocks = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+        },
+        { cwd },
+      );
+      assert.equal(ralplanStillBlocks.outputJson?.decision, "block");
+      assert.match(String(ralplanStillBlocks.outputJson?.reason ?? ""), /ralplan/i);
+
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief-consumed.json"), {
+        schema_version: 1,
+        state: "CONSUMED",
+      });
+      const damagedConsumption = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+        },
+        { cwd },
+      );
+      assert.equal(damagedConsumption.outputJson?.decision, "block");
+      assert.equal(damagedConsumption.outputJson?.stopReason, "code_review_consumed_marker_invalid");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on Stop when only a code-review overlay is active without a review identity", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-stop-overlay-only-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-stop-overlay-only";
+      const rootThreadId = "codex-review-stop-overlay-only-root";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "code-review",
+        phase: "reviewing",
+        session_id: sessionId,
+        thread_id: rootThreadId,
+        active_skills: [{
+          skill: "code-review",
+          phase: "reviewing",
+          active: true,
+          session_id: sessionId,
+          thread_id: rootThreadId,
+          review_status: "CREATED",
+        }],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /code-review.*active.*review identity/i);
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -12572,7 +13263,7 @@ PY`,
       await mkdir(join(cwd, "src"), { recursive: true });
       await writeFile(join(cwd, "src", "runtime.ts"), "export const runtime = 'base';\n");
       execFileSync("git", ["add", "src/runtime.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "initial"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "initial");
       await writeFile(
         join(cwd, "src", "runtime.ts"),
         [
@@ -12631,7 +13322,7 @@ PY`,
       await mkdir(join(cwd, "src"), { recursive: true });
       await writeFile(join(cwd, "src", "runtime.ts"), "export const runtime = 'base';\n");
       execFileSync("git", ["add", "src/runtime.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "initial"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "initial");
       await writeFile(
         join(cwd, "src", "runtime.ts"),
         [
@@ -12697,7 +13388,7 @@ PY`,
         ].join("\n"),
       );
       execFileSync("git", ["add", "src/compat.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "initial"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "initial");
       await writeFile(
         join(cwd, "src", "compat.ts"),
         [
@@ -13754,7 +14445,7 @@ PY`,
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       await writeFile(join(cwd, "README.md"), "base\n", "utf-8");
       execFileSync("git", ["add", "README.md", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
 
@@ -13799,7 +14490,7 @@ PY`,
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       await writeFile(join(cwd, "docs", "codex-native-hooks.md"), "initial\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts", "docs/codex-native-hooks.md"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
       await writeFile(join(cwd, "docs", "codex-native-hooks.md"), "updated\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts", "docs/codex-native-hooks.md"], { cwd, stdio: "ignore" });
@@ -13840,7 +14531,7 @@ PY`,
       execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
 
@@ -13849,7 +14540,7 @@ PY`,
       execFileSync("git", ["config", "user.name", "Test User"], { cwd: otherRepo, stdio: "ignore" });
       await writeFile(join(otherRepo, "README.md"), "base\n", "utf-8");
       execFileSync("git", ["add", "README.md"], { cwd: otherRepo, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd: otherRepo, stdio: "ignore" });
+      gitCommitForTest(otherRepo, "init");
 
       const result = await dispatchCodexNativeHook(
         {
@@ -13888,7 +14579,7 @@ PY`,
       execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
 
@@ -18596,7 +19287,7 @@ PY`,
       execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
 
       const output = parseSingleJsonStdout(runNativeHookCli({
@@ -18627,7 +19318,7 @@ PY`,
       execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
 
       const result = await dispatchCodexNativeHook(
@@ -18655,7 +19346,7 @@ PY`,
       execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
 
       const payload = {
@@ -18684,7 +19375,7 @@ PY`,
       execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
       execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
-      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      gitCommitForTest(cwd, "init");
       await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
 
       const result = await dispatchCodexNativeHook(

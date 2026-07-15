@@ -4512,4 +4512,75 @@ describe('code-review canonical overlay preservation', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('seeds an idempotent CREATED review intent with matching overlay identity', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-code-review-created-intent-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-keyword-code-review-created';
+    const rootThreadId = 'thread-keyword-code-review-created';
+    try {
+      const first = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the diff',
+        sessionId,
+        threadId: rootThreadId,
+        turnId: 'turn-code-review-created',
+        nowIso: '2026-07-14T00:01:00.000Z',
+      });
+      const second = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the diff',
+        sessionId,
+        threadId: rootThreadId,
+        turnId: 'turn-code-review-created',
+        nowIso: '2026-07-14T00:02:00.000Z',
+      });
+
+      assert.ok(first);
+      assert.ok(second);
+      const firstEntry = first.active_skills?.find((entry) => entry.skill === 'code-review') as Record<string, unknown> | undefined;
+      const secondEntry = second.active_skills?.find((entry) => entry.skill === 'code-review') as Record<string, unknown> | undefined;
+      assert.match(String(firstEntry?.review_id ?? ''), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+      assert.equal(secondEntry?.review_id, firstEntry?.review_id);
+      assert.equal(firstEntry?.session_id, sessionId);
+      assert.equal(firstEntry?.thread_id, rootThreadId);
+      assert.equal(firstEntry?.review_status, 'CREATED');
+      assert.equal(firstEntry?.idle_deadline_at, '2026-07-14T00:11:00.000Z');
+
+      const review = JSON.parse(await readFile(
+        join(stateDir, 'sessions', sessionId, 'code-review', String(firstEntry?.review_id), 'review.json'),
+        'utf-8',
+      )) as Record<string, unknown>;
+      assert.equal(review.status, 'CREATED');
+      assert.equal(review.session_id, sessionId);
+      assert.equal(review.root_thread_id, rootThreadId);
+      assert.equal(review.invocation_turn_id, 'turn-code-review-created');
+      assert.equal((review.effective_config as Record<string, unknown>).lane_timeout_ms, 600000);
+      const intent = JSON.parse(await readFile(
+        join(stateDir, 'sessions', sessionId, 'code-review', String(firstEntry?.review_id), 'created-intent.json'),
+        'utf-8',
+      )) as Record<string, unknown>;
+      assert.equal(intent.review_id, firstEntry?.review_id);
+      assert.equal(intent.session_id, sessionId);
+      assert.equal(intent.root_thread_id, rootThreadId);
+      assert.equal(intent.invocation_turn_id, 'turn-code-review-created');
+      assert.equal(intent.normalized_invocation, '$code-review inspect the diff');
+      assert.equal((intent.effective_config as Record<string, unknown>).lane_timeout_ms, 600000);
+      assert.equal(intent.activation_idle_deadline_at, '2026-07-14T00:11:00.000Z');
+
+      const active = JSON.parse(await readFile(
+        join(stateDir, 'sessions', sessionId, 'code-review', 'active.json'),
+        'utf-8',
+      )) as Record<string, unknown>;
+      assert.deepEqual(active, {
+        schema_version: 1,
+        review_id: firstEntry?.review_id,
+        status: 'CREATED',
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

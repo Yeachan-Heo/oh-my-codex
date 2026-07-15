@@ -13,6 +13,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { access, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
+import { seedCreatedReviewIntent } from '../code-review/coordinator.js';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
@@ -198,6 +199,33 @@ function utcCompactTimestamp(nowIso: string): string {
     throw new Error(`Invalid Autopilot context timestamp: ${nowIso}`);
   }
   return parsed.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+async function seedCodeReviewCreatedIntent(input: {
+  workingDirectory: string;
+  text: string;
+  sessionId?: string;
+  rootThreadId?: string;
+  turnId?: string;
+  nowIso: string;
+}): Promise<Partial<Pick<SkillActiveEntry, 'review_id' | 'review_status' | 'scope_hash' | 'idle_deadline_at'>>> {
+  const sessionId = safeString(input.sessionId).trim();
+  const rootThreadId = safeString(input.rootThreadId).trim();
+  if (!sessionId || !rootThreadId) return {};
+  const seeded = await seedCreatedReviewIntent({
+    workingDirectory: input.workingDirectory,
+    session_id: sessionId,
+    root_thread_id: rootThreadId,
+    ...(input.turnId === undefined ? {} : { invocation_turn_id: input.turnId }),
+    normalized_invocation: input.text,
+    now: new Date(input.nowIso),
+  });
+  return {
+    review_id: seeded.review.review_id,
+    review_status: seeded.review.status,
+    scope_hash: seeded.review.scope?.scope_hash,
+    idle_deadline_at: seeded.intent.activation_idle_deadline_at,
+  };
 }
 
 function isSafeAutopilotContextSnapshotPath(value: unknown): value is string {
@@ -1767,6 +1795,17 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     return workflowState;
   }
 
+  const codeReviewSeed = isCodeReviewOverlay
+    ? await seedCodeReviewCreatedIntent({
+      workingDirectory: sourceCwd,
+      text: input.text,
+      sessionId: input.sessionId,
+      rootThreadId: input.threadId,
+      turnId: input.turnId,
+      nowIso,
+    })
+    : {};
+
   const overlayState: SkillActiveState = {
     version: 1,
     active: true,
@@ -1788,6 +1827,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       session_id: input.sessionId,
       thread_id: input.threadId,
       turn_id: input.turnId,
+      ...codeReviewSeed,
     }],
     ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
     ...(match.skill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),

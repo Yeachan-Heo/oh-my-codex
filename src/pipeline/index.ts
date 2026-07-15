@@ -20,6 +20,7 @@ export {
   cancelPipeline,
   canResumePipeline,
   createAutopilotPipelineConfig,
+  createStrictAutopilotStages,
   readPipelineState,
   runPipeline,
 } from './orchestrator.js';

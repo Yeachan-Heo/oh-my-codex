@@ -177,7 +177,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     const qaIsNotClean = stage.name === 'ultraqa'
       && result.status === 'completed'
       && isNonCleanQaVerdict(qaVerdict);
-    const shouldReturnToRalplan = reviewIsNotClean || qaIsNotClean;
+    const suggestedNextPhase = stage.name === 'code-review'
+      ? normalizeCodeReviewNextPhase(resultArtifacts.suggested_next_phase)
+      : 'ralplan';
+    const qualityGateNextPhase = reviewIsNotClean ? suggestedNextPhase : (qaIsNotClean ? 'ralplan' : null);
 
     if (stage.name === 'code-review') {
       artifacts.review_verdict = reviewVerdict ?? null;
@@ -188,9 +191,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       artifacts.return_to_ralplan_reason = returnToRalplanReason ?? null;
     }
 
-    if (shouldReturnToRalplan) {
+    if (qualityGateNextPhase) {
       reviewCycle += 1;
-      artifacts.current_phase = 'ralplan';
+      artifacts.current_phase = qualityGateNextPhase;
       artifacts.review_cycle = reviewCycle;
     }
 
@@ -198,7 +201,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
     // Persist stage result
     await updateModeState(MODE_NAME, {
-      current_phase: shouldReturnToRalplan ? 'ralplan' : (result.status === 'completed' ? stage.name : `${stage.name}:${result.status}`),
+      current_phase: qualityGateNextPhase ?? (result.status === 'completed' ? stage.name : `${stage.name}:${result.status}`),
       handoff_artifacts: handoffArtifacts,
       ...(stage.name === 'code-review' ? {
         review_verdict: reviewVerdict,
@@ -210,7 +213,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         return_to_ralplan_reason: returnToRalplanReason ?? null,
         review_cycle: reviewCycle,
       } : {}),
-      pipeline_stage_index: shouldReturnToRalplan ? findStageIndex(config.stages, 'ralplan') : i,
+      pipeline_stage_index: qualityGateNextPhase ? findStageIndex(config.stages, qualityGateNextPhase) : i,
       pipeline_stage_results: { ...stageResults },
     } as Partial<PipelineModeStateExtension>, cwd, undefined, { trustedPipelineProgress: true });
 
@@ -235,7 +238,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       };
     }
 
-    if (shouldReturnToRalplan) {
+    if (qualityGateNextPhase) {
       if (reviewCycle >= maxRalphIterations) {
         const error = returnToRalplanReason
           ? `Autopilot quality gates were not clean after ${reviewCycle} cycle(s): ${returnToRalplanReason}`
@@ -260,11 +263,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       }
 
       if (config.onStageTransition) {
-        config.onStageTransition(stage.name, 'ralplan');
+        config.onStageTransition(stage.name, qualityGateNextPhase);
       }
       lastStageName = undefined;
       previousResult = result;
-      i = findStageIndex(config.stages, 'ralplan') - 1;
+      i = findStageIndex(config.stages, qualityGateNextPhase) - 1;
       continue;
     }
 
@@ -378,6 +381,10 @@ function findStageIndex(stages: readonly PipelineStage[], stageName: string): nu
   return index >= 0 ? index : 0;
 }
 
+function normalizeCodeReviewNextPhase(value: unknown): 'rework' | 'ralplan' {
+  return value === 'rework' ? 'rework' : 'ralplan';
+}
+
 function validateConfig(config: PipelineConfig): void {
   if (!config.name || config.name.trim() === '') {
     throw new Error('Pipeline config requires a non-empty name');
@@ -433,6 +440,9 @@ export function createAutopilotPipelineConfig(
     maxRalphIterations?: number;
     workerCount?: number;
     agentType?: string;
+    codeReviewArtifactPath?: string;
+    codeReviewArtifactReviewId?: string;
+    codeReviewArtifactSha256?: string;
     stages?: PipelineConfig['stages'];
     onStageTransition?: PipelineConfig['onStageTransition'];
   },
@@ -440,7 +450,11 @@ export function createAutopilotPipelineConfig(
   return {
     name: 'autopilot',
     task,
-    stages: options.stages ?? createStrictAutopilotStages(),
+    stages: options.stages ?? createStrictAutopilotStages({
+      artifactPath: options.codeReviewArtifactPath,
+      artifactReviewId: options.codeReviewArtifactReviewId,
+      artifactSha256: options.codeReviewArtifactSha256,
+    }),
     cwd: options.cwd,
     sessionId: options.sessionId,
     maxRalphIterations: options.maxRalphIterations ?? 10,
@@ -450,12 +464,18 @@ export function createAutopilotPipelineConfig(
   };
 }
 
-export function createStrictAutopilotStages(): PipelineConfig['stages'] {
+export function createStrictAutopilotStages(
+  reviewArtifact: {
+    artifactPath?: string;
+    artifactReviewId?: string;
+    artifactSha256?: string;
+  } = {},
+): PipelineConfig['stages'] {
   return [
     createDeepInterviewStage(),
     createRalplanStage({ requireNativeSubagents: true }),
     createUltragoalStage(),
-    createCodeReviewStage(),
+    createCodeReviewStage(reviewArtifact),
     createUltraqaStage(),
   ];
 }

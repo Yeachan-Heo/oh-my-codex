@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
 import { promisify } from 'node:util';
+import { sanitizeForPersistence } from '../redaction.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -102,6 +103,7 @@ interface LockPersistenceApi extends PersistenceApi {
 type DurableStage =
   | 'prepared'
   | 'locator'
+  | 'created-intent'
   | 'proposal'
   | 'post-tool'
   | 'consume'
@@ -111,6 +113,7 @@ type DurableStage =
   | 'report'
   | 'active-overlay'
   | 'approval'
+  | 'stop-consume'
   | 'stop-marker'
   | 'committed'
   | 'receipt'
@@ -125,7 +128,8 @@ interface DurableEffect {
     | 'APPLY_REVIEW_REVISION'
     | 'UPDATE_MATCHING_ACTIVE'
     | 'RESTORE_MISSING_ACTIVE'
-    | 'REMOVE_MATCHING_ACTIVE';
+    | 'REMOVE_MATCHING_ACTIVE'
+    | 'REPLACE_MATCHING_JSON';
   target: { area: 'REVIEW_STATE' | 'FINAL_REVIEWS'; path: string };
   payload?: unknown;
   review_id?: string;
@@ -1002,6 +1006,9 @@ function durableEffects(
 ): DurableEffect[] {
   const now = '2026-07-14T00:00:00.000Z';
   const result = reviewerResult(reviewId);
+  const sessionId = trust.sessionId ?? key;
+  const rootThreadId = trust.rootThreadId ?? 'root-thread-1';
+  const report = sanitizeForPersistence(finalArtifact(reviewId, repositoryRoot), { repositoryRoot });
   const typedConsumption = (kind: ReviewConsumptionKind, value: string): DurableEffect => {
     const digest = createHash('sha256')
       .update('omx-code-review-consumption\0', 'utf8')
@@ -1047,7 +1054,7 @@ function durableEffects(
         published_at: now,
         activity: {
           schema_version: 1,
-          session_id: trust.sessionId ?? key,
+          session_id: sessionId,
           review_id: reviewId,
           attempt: 1,
           lane_id: 'reviewer-1',
@@ -1058,8 +1065,8 @@ function durableEffects(
         },
         attestation: {
           schema_version: 1,
-          session_id: trust.sessionId ?? key,
-          root_thread_id: trust.rootThreadId ?? 'root-thread-1',
+          session_id: sessionId,
+          root_thread_id: rootThreadId,
           review_id: reviewId,
           attempt: 1,
           lane_id: 'reviewer-1',
@@ -1116,15 +1123,15 @@ function durableEffects(
           timeout_ms: 30_000, idle_deadline_at: now, recommendation: 'REQUEST CHANGES',
           findings: [], diagnostic_ids: [],
         }],
-        ...(trust.sessionId ? { session_id: trust.sessionId } : {}),
-        ...(trust.rootThreadId ? { root_thread_id: trust.rootThreadId } : {}),
+        ...(trust.sessionId === undefined ? {} : { session_id: sessionId }),
+        ...(trust.rootThreadId === undefined ? {} : { root_thread_id: rootThreadId }),
       },
     },
     {
       name: 'report',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'FINAL_REVIEWS', path: `${reviewId}.json` },
-      payload: finalArtifact(reviewId, repositoryRoot),
+      payload: report,
     },
     {
       name: 'active-overlay',
@@ -1150,7 +1157,18 @@ function durableEffects(
       name: 'stop-marker',
       mode: 'CREATE_ONCE_JSON',
       target: { area: 'REVIEW_STATE', path: 'stop-terminal-brief.json' },
-      payload: { schema_version: 1, state: 'PENDING_BRIEF', review_id: reviewId, created_at: now },
+      // ASSERTION-CHANGE-JUSTIFIED: Stop evidence now binds the exact session/root and final artifact digest.
+      payload: {
+        schema_version: 1,
+        state: 'PENDING_BRIEF',
+        session_id: sessionId,
+        review_id: reviewId,
+        root_thread_id: rootThreadId,
+        artifact_sha256: createHash('sha256').update(`${JSON.stringify(report, null, 2)}\n`).digest('hex'),
+        verdict: 'REQUEST CHANGES',
+        issued_stop_signature: 'A'.repeat(43),
+        issued_at: now,
+      },
     },
     typedConsumption('PROPOSAL_KEY', key),
     typedConsumption('TOOL_EVENT_REF', 'events/result-post-tool-1.json'),
@@ -1403,7 +1421,13 @@ describe('code-review durable transaction journal', () => {
       const key = api.generateReviewId();
       const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
       const stopPath = join(paths.reviewRoot, 'stop-terminal-brief.json');
-      await api.atomicWritePrivateJson(reviewPath, reviewRecordPayload(reviewId, 1));
+      const trust = { sessionId: key, rootThreadId: 'root-thread-1' };
+      await api.atomicWritePrivateJson(reviewPath, {
+        ...reviewRecordPayload(reviewId, 1),
+        session_id: trust.sessionId,
+        root_thread_id: trust.rootThreadId,
+      });
+      const effects = durableEffects(reviewId, key, workingDirectory, trust);
       const plan: DurablePlan = {
         journal_scope: 'REVIEW',
         idempotency_key: key,
@@ -1412,8 +1436,9 @@ describe('code-review durable transaction journal', () => {
         input: { review_id: reviewId },
         expected_revision: 1,
         effects: [
-          durableEffects(reviewId, key, workingDirectory)[4]!,
-          durableEffects(reviewId, key, workingDirectory)[8]!,
+          effects[4]!,
+          effects[5]!,
+          effects[8]!,
         ],
         response: { review_id: reviewId, revision: 2 },
       };

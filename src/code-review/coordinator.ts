@@ -32,12 +32,13 @@ import {
   validateLaneStart,
   validatePostToolPublication,
 } from './evidence.js';
-import { sanitizeForPersistence } from './redaction.js';
+import { redactReviewText, sanitizeForPersistence } from './redaction.js';
 import {
   createReviewConsumptionEffect,
   generateReviewId,
   readActiveReview,
   readReviewConsumptionMarkers,
+  recoverDurableTransactions,
   recoverPendingReviewTransactions,
   resolveReviewPersistencePaths,
   runDurableReviewTransactionWithPlanFactory,
@@ -52,7 +53,7 @@ import {
 } from './persistence.js';
 import { resolveGitScope, runGitCommand, verifyScopeDrift } from './scope.js';
 import { synthesizeVerdict } from './verdict.js';
-import { projectFinalReviewArtifact } from './render.js';
+import { projectFinalReviewArtifact, validateFinalReviewArtifact } from './render.js';
 
 export const DEFAULT_LANE_TIMEOUT_MS = 600_000;
 export const MIN_LANE_TIMEOUT_MS = 30_000;
@@ -948,7 +949,7 @@ function parseDurableReconcileRequest(value: unknown): {
   }
   const reviewId = parseReviewId(value.review_id, 'review_id');
   if (value.crashAt !== undefined && (typeof value.crashAt !== 'string'
-    || !/^(?:before|after):(?:prepared|locator|proposal|post-tool|consume|manifest|lane|review|report|active-overlay|approval|stop-marker|committed|receipt|locator-cleanup)$/u.test(value.crashAt))) {
+    || !/^(?:before|after):(?:prepared|locator|created-intent|proposal|post-tool|consume|manifest|lane|review|report|active-overlay|approval|stop-consume|stop-marker|committed|receipt|locator-cleanup)$/u.test(value.crashAt))) {
     throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'reconciliation crash boundary is invalid');
   }
   return {
@@ -1036,20 +1037,65 @@ export async function loadPublishedReviewHookJournalSnapshot(
     session_id: input.session_id,
   });
   const submissionsRoot = join(paths.reviewRoot, reviewId, 'submissions');
+  const activityRoot = join(paths.reviewRoot, reviewId, 'activity');
+  const events: LaneActivityEvent[] = [];
+  try {
+    const childEntries = await readdir(activityRoot, { withFileTypes: true });
+    for (const childEntry of childEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!childEntry.isDirectory() || childEntry.name.length === 0 || childEntry.name.length > 160) {
+        throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted activity directory is malformed');
+      }
+      const childDir = join(activityRoot, childEntry.name);
+      const eventEntries = await readdir(childDir, { withFileTypes: true });
+      for (const eventEntry of eventEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+        if (!eventEntry.isFile() || !/^[0-9a-f]{64}\.json$/u.test(eventEntry.name)) {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted activity path is malformed');
+        }
+        let raw: Buffer;
+        try {
+          raw = await readFile(join(childDir, eventEntry.name));
+        } catch {
+          throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'trusted activity is unreadable');
+        }
+        if (raw.byteLength > 1_048_576) {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted activity exceeds the size limit');
+        }
+        let event: LaneActivityEvent;
+        try {
+          event = parseLaneActivityEvent(JSON.parse(raw.toString('utf8')) as unknown);
+        } catch {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted activity is malformed');
+        }
+        const expectedEventFile = `${createHash('sha256')
+          .update(`${event.event_ref}:${event.event_kind}`, 'utf8')
+          .digest('hex')}.json`;
+        if (event.session_id !== input.session_id || event.review_id !== reviewId
+          || event.child_thread_id !== childEntry.name || eventEntry.name !== expectedEventFile) {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted activity ownership is invalid');
+        }
+        if (parseTimestamp(event.observed_at, 'trusted activity') > cutoff) continue;
+        events.push(event);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
   let entries;
   try {
     entries = await readdir(submissionsRoot, { withFileTypes: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { events: [], diagnostic_events: [], publication_ids: [] };
+      return { events: events.sort(compareActivity), diagnostic_events: [], publication_ids: [] };
     }
     throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'trusted publication directory is unavailable');
   }
 
-  const events: LaneActivityEvent[] = [];
   const publicationIds: string[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory() || !REVIEW_ID_PATTERN.test(entry.name)) continue;
+    if (!entry.isDirectory() || !REVIEW_ID_PATTERN.test(entry.name)) {
+      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted publication path is malformed');
+    }
     let raw: Buffer;
     try {
       raw = await readFile(join(submissionsRoot, entry.name, 'post-tool'));
@@ -1078,7 +1124,7 @@ export async function loadPublishedReviewHookJournalSnapshot(
     events.push(publication.activity);
     publicationIds.push(publication.publication_id);
   }
-  return { events, diagnostic_events: [], publication_ids: publicationIds };
+  return { events: events.sort(compareActivity), diagnostic_events: [], publication_ids: publicationIds };
 }
 
 async function readJson(path: string): Promise<unknown | undefined> {
@@ -1234,7 +1280,13 @@ export interface DurableReviewCoordinator {
     record: ReviewRecord;
     idempotency_key: string;
     request_identity?: unknown;
+    created_intent?: CreatedReviewIntent;
     crashAt?: DurableTransactionBoundary;
+  }): Promise<ReviewRecord>;
+  activate(input: {
+    record: ReviewRecord;
+    idempotency_key: string;
+    request_identity: unknown;
   }): Promise<ReviewRecord>;
   get(reviewId: string): Promise<ReviewRecord>;
   recordStart(input: {
@@ -1252,7 +1304,38 @@ export interface DurableReviewCoordinator {
     crashAt?: DurableTransactionBoundary;
   }): Promise<ReviewRecord>;
   resume(input: { review_id: string; current_scope_hash: string; now: Date; idempotency_key: string }): Promise<ReviewRecord>;
-  finalize(input: { review_id: string; current_scope_hash: string; now: Date; idempotency_key: string }): Promise<ReviewRecord>;
+  finalize(input: {
+    review_id: string;
+    current_scope_hash: string;
+    now: Date;
+    idempotency_key: string;
+    stop_terminal_brief?: StopTerminalBriefRequest;
+  }): Promise<ReviewRecord>;
+}
+
+export interface CreatedReviewIntent {
+  schema_version: 1;
+  state: 'CREATED';
+  review_id: string;
+  session_id: string;
+  root_thread_id: string;
+  invocation_turn_id: string;
+  normalized_invocation: string;
+  effective_config: ReviewRecord['effective_config'];
+  activation_idle_deadline_at: string;
+  created_at: string;
+}
+
+export interface SeededReviewIntent {
+  review: ReviewRecord;
+  intent: CreatedReviewIntent;
+}
+
+export interface StopTerminalBriefRequest {
+  session_id: string;
+  root_thread_id: string;
+  issued_stop_signature: string;
+  issued_at: string;
 }
 
 export function createDurableReviewCoordinator(
@@ -1271,21 +1354,33 @@ export function createDurableReviewCoordinator(
   };
 
   return {
-    async start({ record, idempotency_key: idempotencyKey, request_identity: requestIdentity, crashAt }) {
+    async start({
+      record,
+      idempotency_key: idempotencyKey,
+      request_identity: requestIdentity,
+      created_intent: createdIntent,
+      crashAt,
+    }) {
       const resolved = await paths();
       const terminal = record.status === 'FINALIZED' || record.status === 'BLOCKED';
       const transaction = await runDurableTransaction(resolved, {
         journal_scope: 'START',
         idempotency_key: idempotencyKey,
         review_id: record.review_id,
-        operation: 'START_REVIEW',
+        operation: createdIntent === undefined ? 'START_REVIEW' : 'CREATE_REVIEW_INTENT',
         input: {
           review_id: record.review_id,
-          scope_hash: record.scope?.scope_hash,
+          ...(record.scope === undefined ? {} : { scope_hash: record.scope.scope_hash }),
           ...(requestIdentity === undefined ? {} : { request_identity: requestIdentity }),
         },
         expected_revision: 0,
         effects: [
+          ...(createdIntent === undefined ? [] : [{
+            name: 'created-intent' as const,
+            mode: 'CREATE_ONCE_JSON' as const,
+            target: { area: 'REVIEW_STATE' as const, path: `${record.review_id}/created-intent.json` },
+            payload: createdIntent,
+          }]),
           reviewEffect(record),
           ...(terminal ? [{
             name: 'report' as const,
@@ -1302,6 +1397,63 @@ export function createDurableReviewCoordinator(
         response: record,
       }, crashAt === undefined ? {} : { crashAt });
       return validateStartTransactionResponse(transaction.response, record);
+    },
+
+    async activate({ record, idempotency_key: idempotencyKey, request_identity: requestIdentity }) {
+      const resolved = await paths();
+      const current = await recoverAndRead(record.review_id);
+      if (current.status !== 'CREATED') {
+        const recovered = await recoverDurableTransactions(resolved, {
+          review_id: record.review_id,
+          idempotency_key: idempotencyKey,
+        });
+        if (recovered === null) {
+          throw new ReviewCoordinatorError('IDEMPOTENCY_CONFLICT', 'review intent was already activated by another request');
+        }
+        const sameActivation = current.status === record.status
+          && current.session_id === record.session_id
+          && current.root_thread_id === record.root_thread_id
+          && isDeepStrictEqual(current.scope, record.scope)
+          && isDeepStrictEqual(current.effective_config, record.effective_config)
+          && isDeepStrictEqual(current.review_flags, record.review_flags)
+          && isDeepStrictEqual(current.batches, record.batches)
+          && isDeepStrictEqual(
+            current.lanes.map(({ lane_id, role, batch_id, scope_hash }) => ({ lane_id, role, batch_id, scope_hash })),
+            record.lanes.map(({ lane_id, role, batch_id, scope_hash }) => ({ lane_id, role, batch_id, scope_hash })),
+          );
+        if (!sameActivation) {
+          throw new ReviewCoordinatorError('IDEMPOTENCY_CONFLICT', 'review activation request conflicts with durable state');
+        }
+        return current;
+      }
+      if (current.session_id !== record.session_id || current.root_thread_id !== record.root_thread_id) {
+        throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'created review ownership conflicts with activation');
+      }
+      const output: ReviewRecord = {
+        ...structuredClone(record),
+        revision: current.revision + 1,
+        created_at: current.created_at,
+        ...(current.invocation_turn_id === undefined ? {} : { invocation_turn_id: current.invocation_turn_id }),
+      };
+      await runDurableTransaction(resolved, {
+        idempotency_key: idempotencyKey,
+        review_id: current.review_id,
+        operation: 'ACTIVATE_REVIEW_INTENT',
+        input: { request_identity: requestIdentity },
+        expected_revision: current.revision,
+        effects: [
+          reviewEffect(output),
+          ...(output.status === 'FINALIZED' ? [{
+            name: 'report' as const,
+            mode: 'CREATE_ONCE_JSON' as const,
+            target: { area: 'FINAL_REVIEWS' as const, path: `${output.review_id}.json` },
+            payload: projectFinalReviewArtifact(output),
+          }] : []),
+          ...activeStatusTransitionEffects(current, output),
+        ],
+        response: output,
+      });
+      return await readPersistedReview(resolved, current.review_id);
     },
 
     async get(reviewId) {
@@ -1509,17 +1661,52 @@ export function createDurableReviewCoordinator(
       return await readPersistedReview(resolved, reviewId);
     },
 
-    async finalize({ review_id: reviewId, current_scope_hash: currentScopeHash, now, idempotency_key: key }) {
+    async finalize({
+      review_id: reviewId,
+      current_scope_hash: currentScopeHash,
+      now,
+      idempotency_key: key,
+      stop_terminal_brief: stopTerminalBrief,
+    }) {
       const resolved = await paths();
       const current = await recoverAndRead(reviewId);
       const output = finalizeReview({ review: current, current_scope_hash: currentScopeHash, now });
       if (output === current) return current;
+      const artifact = projectFinalReviewArtifact(output);
+      const artifactSha256 = createHash('sha256').update(
+        `${JSON.stringify(sanitizeForPersistence(artifact, { repositoryRoot: resolved.workingDirectory }), null, 2)}\n`,
+        'utf8',
+      ).digest('hex');
+      const stopMarker = stopTerminalBrief === undefined || output.status !== 'BLOCKED'
+        || output.verdict?.recommendation !== 'REQUEST CHANGES'
+        ? undefined
+        : {
+          schema_version: 1,
+          state: 'PENDING_BRIEF',
+          session_id: stopTerminalBrief.session_id,
+          review_id: reviewId,
+          root_thread_id: stopTerminalBrief.root_thread_id,
+          artifact_sha256: artifactSha256,
+          verdict: 'REQUEST CHANGES',
+          issued_stop_signature: stopTerminalBrief.issued_stop_signature,
+          issued_at: stopTerminalBrief.issued_at,
+        };
+      if (stopMarker !== undefined
+        && (stopMarker.session_id !== output.session_id || stopMarker.root_thread_id !== output.root_thread_id)) {
+        throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop marker ownership conflicts with finalized review');
+      }
       await runDurableTransaction(resolved, {
         idempotency_key: key, review_id: reviewId, operation: 'FINALIZE_REVIEW',
         input: { current_scope_hash: currentScopeHash }, expected_revision: current.revision,
         effects: [
           reviewEffect(output),
-          { name: 'report', mode: 'CREATE_ONCE_JSON', target: { area: 'FINAL_REVIEWS', path: `${reviewId}.json` }, payload: projectFinalReviewArtifact(output) },
+          { name: 'report', mode: 'CREATE_ONCE_JSON', target: { area: 'FINAL_REVIEWS', path: `${reviewId}.json` }, payload: artifact },
+          ...(stopMarker === undefined ? [] : [{
+            name: 'stop-marker' as const,
+            mode: 'CREATE_ONCE_JSON' as const,
+            target: { area: 'REVIEW_STATE' as const, path: 'stop-terminal-brief.json' },
+            payload: stopMarker,
+          }]),
           ...activeStatusTransitionEffects(current, output),
         ],
         response: output,
@@ -1527,6 +1714,319 @@ export function createDurableReviewCoordinator(
       return await readPersistedReview(resolved, reviewId);
     },
   };
+}
+
+function createdReviewRecord(input: {
+  review_id: string;
+  session_id: string;
+  root_thread_id: string;
+  invocation_turn_id: string;
+  now: Date;
+}): ReviewRecord {
+  const now = input.now.toISOString();
+  return {
+    schema_version: 1,
+    revision: 1,
+    review_id: input.review_id,
+    session_id: input.session_id,
+    root_thread_id: input.root_thread_id,
+    invocation_turn_id: input.invocation_turn_id,
+    status: 'CREATED',
+    current_attempt: 1,
+    effective_config: {
+      lane_timeout_ms: DEFAULT_LANE_TIMEOUT_MS,
+      max_files_per_review: DEFAULT_MAX_FILES,
+      max_changed_lines_per_review: DEFAULT_MAX_CHANGED_LINES,
+      accepted_equivalents: [],
+    },
+    review_flags: [],
+    batches: [],
+    lanes: [],
+    attempt_history: [{
+      attempt: 1,
+      status: 'CREATED',
+      bindings: [],
+      lane_ids: [],
+      started_at: now,
+      updated_at: now,
+      resumable: false,
+    }],
+    diagnostics: [],
+    resumable: false,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+function parseCreatedReviewIntent(value: unknown, review: ReviewRecord): CreatedReviewIntent {
+  if (!isObject(value)
+    || value.schema_version !== 1 || value.state !== 'CREATED'
+    || value.review_id !== review.review_id
+    || value.session_id !== review.session_id
+    || value.root_thread_id !== review.root_thread_id
+    || value.invocation_turn_id !== review.invocation_turn_id
+    || typeof value.normalized_invocation !== 'string'
+    || value.normalized_invocation.length === 0 || [...value.normalized_invocation].length > 2_000
+    || !isDeepStrictEqual(value.effective_config, review.effective_config)
+    || typeof value.activation_idle_deadline_at !== 'string'
+    || !Number.isFinite(Date.parse(value.activation_idle_deadline_at))
+    || typeof value.created_at !== 'string' || !Number.isFinite(Date.parse(value.created_at))) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'created review intent is malformed or conflicts with its review');
+  }
+  return structuredClone(value) as unknown as CreatedReviewIntent;
+}
+
+export async function loadActiveReviewIdentity(
+  context: ReviewPersistenceContext,
+): Promise<Pick<ReviewRecord, 'review_id' | 'session_id' | 'root_thread_id' | 'status'> | null> {
+  const paths = await resolveReviewPersistencePaths(context);
+  await recoverPendingReviewTransactions(paths);
+  const active = await readActiveReview(paths);
+  if (active === null) return null;
+  const review = await readPersistedReview(paths, active.review_id);
+  if (review.status !== active.status) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'active review pointer conflicts with its review');
+  }
+  return {
+    review_id: review.review_id,
+    ...(review.session_id === undefined ? {} : { session_id: review.session_id }),
+    ...(review.root_thread_id === undefined ? {} : { root_thread_id: review.root_thread_id }),
+    status: review.status,
+  };
+}
+
+export async function seedCreatedReviewIntent(input: {
+  workingDirectory: string;
+  session_id: string;
+  root_thread_id: string;
+  invocation_turn_id?: string;
+  normalized_invocation: string;
+  now: Date;
+}): Promise<SeededReviewIntent> {
+  if (!(input.now instanceof Date) || !Number.isFinite(input.now.getTime())) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'created review intent clock is invalid');
+  }
+  const context: ReviewPersistenceContext = {
+    workingDirectory: input.workingDirectory,
+    session_id: input.session_id,
+  };
+  const paths = await resolveReviewPersistencePaths(context);
+  await recoverPendingReviewTransactions(paths);
+  const active = await readActiveReview(paths);
+  if (active !== null) {
+    const review = await readPersistedReview(paths, active.review_id);
+    if (review.status !== active.status || review.session_id !== input.session_id
+      || review.root_thread_id !== input.root_thread_id) {
+      throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'active review intent ownership conflicts');
+    }
+    const intent = parseCreatedReviewIntent(
+      await readJson(join(paths.reviewRoot, review.review_id, 'created-intent.json')),
+      review,
+    );
+    return { review, intent };
+  }
+
+  const normalizedInvocation = redactReviewText(
+    input.normalized_invocation.trim().replace(/\s+/gu, ' ').slice(0, 2_000),
+    { repositoryRoot: input.workingDirectory },
+  );
+  if (normalizedInvocation.length === 0) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', 'created review invocation is empty');
+  }
+  const invocationTurnId = input.invocation_turn_id?.trim()
+    || `activation-${deterministicTransactionId({
+      session_id: input.session_id,
+      root_thread_id: input.root_thread_id,
+      normalized_invocation: normalizedInvocation,
+    })}`;
+  const review = createdReviewRecord({
+    review_id: generateReviewId(),
+    session_id: input.session_id,
+    root_thread_id: input.root_thread_id,
+    invocation_turn_id: invocationTurnId,
+    now: input.now,
+  });
+  const intent: CreatedReviewIntent = {
+    schema_version: 1,
+    state: 'CREATED',
+    review_id: review.review_id,
+    session_id: input.session_id,
+    root_thread_id: input.root_thread_id,
+    invocation_turn_id: invocationTurnId,
+    normalized_invocation: normalizedInvocation,
+    effective_config: structuredClone(review.effective_config),
+    activation_idle_deadline_at: addMilliseconds(review.created_at, DEFAULT_LANE_TIMEOUT_MS),
+    created_at: review.created_at,
+  };
+  const key = deterministicTransactionId({
+    operation: 'CREATE_REVIEW_INTENT',
+    session_id: input.session_id,
+    root_thread_id: input.root_thread_id,
+    invocation_turn_id: invocationTurnId,
+    normalized_invocation: normalizedInvocation,
+  });
+  const started = await createDurableReviewCoordinator(context).start({
+    record: review,
+    idempotency_key: key,
+    request_identity: {
+      session_id: input.session_id,
+      root_thread_id: input.root_thread_id,
+      invocation_turn_id: invocationTurnId,
+      normalized_invocation: normalizedInvocation,
+    },
+    created_intent: intent,
+  });
+  const persistedIntent = parseCreatedReviewIntent(
+    await readJson(join(paths.reviewRoot, started.review_id, 'created-intent.json')),
+    started,
+  );
+  return { review: started, intent: persistedIntent };
+}
+
+function parseStopTerminalBriefMarker(value: unknown, reviewId: string): Record<string, unknown> {
+  if (!isObject(value)) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop terminal brief marker is malformed');
+  }
+  const pendingKeys = [
+    'schema_version', 'state', 'session_id', 'review_id', 'root_thread_id',
+    'artifact_sha256', 'verdict', 'issued_stop_signature', 'issued_at',
+  ];
+  const consumedKeys = [...pendingKeys, 'assistant_message_sha256', 'consumed_at'];
+  const expected = value.state === 'CONSUMED' ? consumedKeys : pendingKeys;
+  if (Object.keys(value).length !== expected.length
+    || expected.some((key) => !Object.hasOwn(value, key))
+    || value.schema_version !== 1
+    || (value.state !== 'PENDING_BRIEF' && value.state !== 'CONSUMED')
+    || value.review_id !== reviewId
+    || typeof value.session_id !== 'string' || value.session_id.length === 0 || value.session_id.length > 160
+    || typeof value.root_thread_id !== 'string' || value.root_thread_id.length === 0 || value.root_thread_id.length > 160
+    || typeof value.artifact_sha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(value.artifact_sha256)
+    || value.verdict !== 'REQUEST CHANGES'
+    || typeof value.issued_stop_signature !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(value.issued_stop_signature)
+    || typeof value.issued_at !== 'string' || !Number.isFinite(Date.parse(value.issued_at))
+    || (value.state === 'CONSUMED' && (
+      typeof value.assistant_message_sha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(value.assistant_message_sha256)
+      || typeof value.consumed_at !== 'string' || !Number.isFinite(Date.parse(value.consumed_at))
+    ))) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop terminal brief marker is malformed');
+  }
+  return structuredClone(value);
+}
+
+export async function consumeStopTerminalBrief(input: {
+  workingDirectory: string;
+  session_id: string;
+  root_thread_id: string;
+  review_id: string;
+  artifact_sha256: string;
+  issued_stop_signature: string;
+  assistant_message_sha256: string;
+  consumed_at: string;
+}): Promise<Record<string, unknown>> {
+  const reviewId = operationUuid(input.review_id, 'review_id');
+  if (!/^[0-9a-f]{64}$/u.test(input.artifact_sha256)
+    || !/^[A-Za-z0-9_-]{43}$/u.test(input.issued_stop_signature)
+    || !/^[0-9a-f]{64}$/u.test(input.assistant_message_sha256)
+    || !Number.isFinite(Date.parse(input.consumed_at))) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', 'Stop terminal brief consumption identity is invalid');
+  }
+  const paths = await resolveReviewPersistencePaths({
+    workingDirectory: input.workingDirectory,
+    session_id: input.session_id,
+  });
+  let consumedOutput: Record<string, unknown> | undefined;
+  const result = await runDurableReviewTransactionWithPlanFactory(paths, {
+    review_id: reviewId,
+    session_id: input.session_id,
+    root_thread_id: input.root_thread_id,
+    plan_factory: async ({ current_review: review }) => {
+      if (review.status !== 'BLOCKED' || review.verdict?.recommendation !== 'REQUEST CHANGES'
+        || review.session_id !== input.session_id || review.root_thread_id !== input.root_thread_id) {
+        throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop terminal brief review ownership or verdict conflicts');
+      }
+      const marker = parseStopTerminalBriefMarker(
+        await readJson(paths.stopTerminalBriefPath),
+        reviewId,
+      );
+      if (marker.session_id !== input.session_id
+        || marker.root_thread_id !== input.root_thread_id
+        || marker.artifact_sha256 !== input.artifact_sha256
+        || marker.issued_stop_signature !== input.issued_stop_signature) {
+        throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop terminal brief marker identity conflicts');
+      }
+      const artifactRaw = await readFile(join(paths.reviewsRoot, `${reviewId}.json`));
+      const artifactSha = createHash('sha256').update(artifactRaw).digest('hex');
+      let artifact: ReturnType<typeof validateFinalReviewArtifact>;
+      try {
+        artifact = validateFinalReviewArtifact(JSON.parse(artifactRaw.toString('utf8')) as unknown);
+      } catch {
+        throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop terminal brief artifact is invalid');
+      }
+      if (artifactSha !== marker.artifact_sha256
+        || artifact.review_id !== review.review_id
+        || artifact.revision !== review.revision
+        || artifact.status !== review.status
+        || artifact.current_attempt !== review.current_attempt
+        || artifact.scope?.scope_hash !== review.scope?.scope_hash) {
+        throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop terminal brief artifact identity conflicts');
+      }
+      if (marker.state === 'CONSUMED') {
+        const consumed = parseStopTerminalBriefMarker(
+          await readJson(paths.stopTerminalBriefConsumedPath),
+          reviewId,
+        );
+        if (!isDeepStrictEqual(consumed, marker)) {
+          throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'consumed Stop records conflict');
+        }
+        consumedOutput = consumed;
+        return undefined;
+      }
+      const consumed = {
+        ...marker,
+        state: 'CONSUMED',
+        assistant_message_sha256: input.assistant_message_sha256,
+        consumed_at: input.consumed_at,
+      };
+      consumedOutput = consumed;
+      const key = deterministicTransactionId({
+        operation: 'CONSUME_STOP_TERMINAL_BRIEF',
+        review_id: reviewId,
+        issued_stop_signature: input.issued_stop_signature,
+        assistant_message_sha256: input.assistant_message_sha256,
+      });
+      return {
+        idempotency_key: key,
+        review_id: reviewId,
+        operation: 'CONSUME_STOP_TERMINAL_BRIEF',
+        input: {
+          artifact_sha256: input.artifact_sha256,
+          issued_stop_signature: input.issued_stop_signature,
+          assistant_message_sha256: input.assistant_message_sha256,
+        },
+        expected_revision: review.revision,
+        effects: [
+          {
+            name: 'stop-consume', mode: 'CREATE_ONCE_JSON',
+            target: { area: 'REVIEW_STATE', path: 'stop-terminal-brief-consumed.json' },
+            payload: consumed,
+          },
+          {
+            name: 'stop-marker', mode: 'REPLACE_MATCHING_JSON',
+            target: { area: 'REVIEW_STATE', path: 'stop-terminal-brief.json' },
+            payload: { expected: marker, next: consumed },
+          },
+        ],
+        response: consumed,
+      };
+    },
+  });
+  if (result.transaction !== undefined) {
+    return parseStopTerminalBriefMarker(result.transaction.response, reviewId);
+  }
+  if (consumedOutput === undefined) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'Stop terminal brief consumption produced no durable result');
+  }
+  return consumedOutput;
 }
 
 export const REVIEW_OPERATION_NAMES = [
@@ -1549,6 +2049,7 @@ export interface ReviewOperationHostContext {
   source: ReviewOperationSource;
   seeded_review_id?: string;
   root_thread_id?: string;
+  stop_terminal_brief?: StopTerminalBriefRequest;
   now?: () => Date;
   monotonicNow?: () => number;
   loadTracker?(input: {
@@ -1902,11 +2403,17 @@ export async function executeReviewOperation(
           batch_plan: batchPlan,
           now,
         });
-        const started = await coordinator.start({
-          record,
-          idempotency_key: key,
-          request_identity: requestIdentity,
-        });
+        const started = host.seeded_review_id === undefined
+          ? await coordinator.start({
+            record,
+            idempotency_key: key,
+            request_identity: requestIdentity,
+          })
+          : await coordinator.activate({
+            record,
+            idempotency_key: key,
+            request_identity: requestIdentity,
+          });
         return {
           payload: {
             ...projectOperationReview(started),
@@ -2070,6 +2577,9 @@ export async function executeReviewOperation(
           current_scope_hash: await currentScopeHash(context, current),
           now: operationNow(host),
           idempotency_key: operationUuid(input.idempotency_key, 'idempotency_key'),
+          ...(host.stop_terminal_brief === undefined ? {} : {
+            stop_terminal_brief: host.stop_terminal_brief,
+          }),
         });
         const paths = await resolveReviewPersistencePaths(context);
         const artifacts = await writeFinalReviewArtifacts(paths, projectFinalReviewArtifact(record));

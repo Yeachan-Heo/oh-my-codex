@@ -107,6 +107,12 @@ export interface AtomicCreateOptions {
   beforePublish?: (temporaryPath: string) => void | Promise<void>;
 }
 
+export interface PublishReviewHookJournalEntryInput {
+  review_id: string;
+  relative_path: string;
+  build_value: (publishedAt: string) => unknown;
+}
+
 export type ReviewLockName = 'start' | 'journal' | 'mutation';
 export type ReviewLockOwnerStatus = 'live' | 'absent' | 'reused' | 'unknown';
 
@@ -181,6 +187,16 @@ function privateJson(value: unknown): string {
   return `${JSON.stringify(sanitizeForPersistence(value), null, 2)}\n`;
 }
 
+async function syncPublishedDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(directory, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 export function generateReviewId(): string {
   return randomUUID();
 }
@@ -237,6 +253,7 @@ export async function atomicWritePrivateJson(
     await options.beforeRename?.(temporaryPath);
     await rename(temporaryPath, targetPath);
     if (process.platform !== 'win32') await chmod(targetPath, PRIVATE_FILE_MODE);
+    await syncPublishedDirectory(directory);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -257,6 +274,7 @@ async function atomicWritePrivateText(targetPath: string, value: string): Promis
     handle = undefined;
     await rename(temporaryPath, targetPath);
     if (process.platform !== 'win32') await chmod(targetPath, PRIVATE_FILE_MODE);
+    await syncPublishedDirectory(directory);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -282,6 +300,7 @@ export async function atomicCreatePrivateJson(
     await options.beforePublish?.(temporaryPath);
     await link(temporaryPath, targetPath);
     if (process.platform !== 'win32') await chmod(targetPath, PRIVATE_FILE_MODE);
+    await syncPublishedDirectory(directory);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -655,9 +674,42 @@ export async function releaseReviewLocks(
   return results;
 }
 
+export async function publishReviewHookJournalEntry(
+  paths: ReviewPersistencePaths,
+  input: PublishReviewHookJournalEntryInput,
+): Promise<boolean> {
+  const reviewId = validateUuid(input.review_id, 'review_id');
+  const relativePath = validateRelativePersistencePath(input.relative_path);
+  const activityPattern = new RegExp(`^${reviewId}/activity/[^/]{1,160}/[0-9a-f]{64}\\.json$`, 'u');
+  const postToolPattern = new RegExp(
+    `^${reviewId}/submissions/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/post-tool$`,
+    'iu',
+  );
+  if (!activityPattern.test(relativePath) && !postToolPattern.test(relativePath)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'hook journal target is invalid');
+  }
+  const locks = await acquireReviewLocks(paths, reviewId, ['journal']);
+  try {
+    const publishedAt = new Date().toISOString();
+    try {
+      await atomicCreatePrivateJson(join(paths.reviewRoot, relativePath), input.build_value(publishedAt));
+      return true;
+    } catch (error) {
+      if (isAlreadyExists(error)) return false;
+      throw error;
+    }
+  } finally {
+    const released = await releaseReviewLocks(locks);
+    if (released.some((value) => !value)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'hook journal lock ownership was lost');
+    }
+  }
+}
+
 export type DurableTransactionStage =
   | 'prepared'
   | 'locator'
+  | 'created-intent'
   | 'proposal'
   | 'post-tool'
   | 'consume'
@@ -667,6 +719,7 @@ export type DurableTransactionStage =
   | 'report'
   | 'active-overlay'
   | 'approval'
+  | 'stop-consume'
   | 'stop-marker'
   | 'committed'
   | 'receipt'
@@ -684,7 +737,8 @@ export interface DurableTransactionEffect {
     | 'APPLY_REVIEW_REVISION'
     | 'UPDATE_MATCHING_ACTIVE'
     | 'RESTORE_MISSING_ACTIVE'
-    | 'REMOVE_MATCHING_ACTIVE';
+    | 'REMOVE_MATCHING_ACTIVE'
+    | 'REPLACE_MATCHING_JSON';
   target: {
     area: 'REVIEW_STATE' | 'FINAL_REVIEWS';
     path: string;
@@ -803,6 +857,7 @@ interface ReviewConsumptionManifestIntent {
 }
 
 const DURABLE_EFFECT_ORDER: readonly DurableEffectName[] = [
+  'created-intent',
   'proposal',
   'post-tool',
   'consume',
@@ -810,6 +865,7 @@ const DURABLE_EFFECT_ORDER: readonly DurableEffectName[] = [
   'lane',
   'review',
   'report',
+  'stop-consume',
   'stop-marker',
   'active-overlay',
   'approval',
@@ -865,6 +921,7 @@ function validateDurableEffect(value: unknown): DurableTransactionEffect {
       'UPDATE_MATCHING_ACTIVE',
       'RESTORE_MISSING_ACTIVE',
       'REMOVE_MATCHING_ACTIVE',
+      'REPLACE_MATCHING_JSON',
     ] as const)
       .includes(value.mode as DurableTransactionEffect['mode'])) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effect mode is invalid');
@@ -913,6 +970,15 @@ function validateDurableEffect(value: unknown): DurableTransactionEffect {
     || (effect.mode === 'REMOVE_MATCHING_ACTIVE' && effect.payload !== undefined)
   )) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active transition requires an exact expected state');
+  }
+  if (effect.mode === 'REPLACE_MATCHING_JSON' && (
+    effect.name !== 'stop-marker'
+    || !isPlainObject(effect.payload)
+    || effect.review_id !== undefined
+    || effect.expected_status !== undefined
+    || effect.expected_revision !== undefined
+  )) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'replace effect requires an exact Stop marker payload');
   }
   if (effect.mode === 'CREATE_ONCE_JSON' && (
     effect.payload === undefined
@@ -1494,6 +1560,52 @@ function validateLaneResultPayload(
   }
 }
 
+function validatePendingStopMarker(value: unknown, reviewId: string): Record<string, unknown> {
+  const marker = requireExactPayload(value, [
+    'schema_version', 'state', 'session_id', 'review_id', 'root_thread_id',
+    'artifact_sha256', 'verdict', 'issued_stop_signature', 'issued_at',
+  ], 'Stop marker');
+  if (marker.schema_version !== 1 || marker.state !== 'PENDING_BRIEF'
+    || marker.verdict !== 'REQUEST CHANGES'
+    || validateUuid(marker.review_id, 'Stop marker review_id') !== reviewId) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker identity conflicts');
+  }
+  requirePayloadString(marker.session_id, 'Stop marker session_id', 160);
+  requirePayloadString(marker.root_thread_id, 'Stop marker root_thread_id', 160);
+  requirePayloadHash(marker.artifact_sha256, 'Stop marker artifact_sha256');
+  const signature = requirePayloadString(marker.issued_stop_signature, 'Stop marker signature', 64);
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(signature)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker signature is invalid');
+  }
+  requirePayloadTimestamp(marker.issued_at, 'Stop marker issued_at');
+  return marker;
+}
+
+function validateConsumedStopMarker(value: unknown, reviewId: string): Record<string, unknown> {
+  const marker = requireExactPayload(value, [
+    'schema_version', 'state', 'session_id', 'review_id', 'root_thread_id',
+    'artifact_sha256', 'verdict', 'issued_stop_signature', 'issued_at',
+    'assistant_message_sha256', 'consumed_at',
+  ], 'consumed Stop marker');
+  validatePendingStopMarker({
+    schema_version: marker.schema_version,
+    state: 'PENDING_BRIEF',
+    session_id: marker.session_id,
+    review_id: marker.review_id,
+    root_thread_id: marker.root_thread_id,
+    artifact_sha256: marker.artifact_sha256,
+    verdict: marker.verdict,
+    issued_stop_signature: marker.issued_stop_signature,
+    issued_at: marker.issued_at,
+  }, reviewId);
+  if (marker.state !== 'CONSUMED') {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumed Stop marker state is invalid');
+  }
+  requirePayloadHash(marker.assistant_message_sha256, 'consumed Stop assistant digest');
+  requirePayloadTimestamp(marker.consumed_at, 'consumed Stop timestamp');
+  return marker;
+}
+
 function validateTypedEffectPayload(
   effect: DurableTransactionEffect,
   reviewId: string,
@@ -1508,6 +1620,36 @@ function validateTypedEffectPayload(
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review effect target is invalid');
     }
     effect.payload = validateReviewRecordPayload(effect.payload, reviewId, expectedRevision + 1);
+    return;
+  }
+  if (effect.name === 'created-intent') {
+    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
+      || effect.target.path !== `${reviewId}/created-intent.json`) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'created review intent target is invalid');
+    }
+    const intent = requireExactPayload(effect.payload, [
+      'schema_version', 'state', 'review_id', 'session_id', 'root_thread_id',
+      'invocation_turn_id', 'normalized_invocation', 'effective_config',
+      'activation_idle_deadline_at', 'created_at',
+    ], 'created review intent');
+    if (intent.schema_version !== 1 || intent.state !== 'CREATED'
+      || validateUuid(intent.review_id, 'created review intent review_id') !== reviewId) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'created review intent identity conflicts');
+    }
+    for (const key of ['session_id', 'root_thread_id', 'invocation_turn_id', 'normalized_invocation'] as const) {
+      requirePayloadString(intent[key], `created review intent ${key}`, key === 'normalized_invocation' ? 2_000 : 160);
+    }
+    const config = requireExactPayload(intent.effective_config, [
+      'lane_timeout_ms', 'max_files_per_review', 'max_changed_lines_per_review', 'accepted_equivalents',
+    ], 'created review intent config');
+    requirePositiveInteger(config.lane_timeout_ms, 'created review intent lane_timeout_ms');
+    requirePositiveInteger(config.max_files_per_review, 'created review intent max_files_per_review');
+    requirePositiveInteger(config.max_changed_lines_per_review, 'created review intent max_changed_lines_per_review');
+    if (!Array.isArray(config.accepted_equivalents) || config.accepted_equivalents.length !== 0) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'created review intent equivalents are invalid');
+    }
+    requirePayloadTimestamp(intent.activation_idle_deadline_at, 'created review intent activation deadline');
+    requirePayloadTimestamp(intent.created_at, 'created review intent created_at');
     return;
   }
   if (effect.name === 'active-overlay') {
@@ -1688,18 +1830,63 @@ function validateTypedEffectPayload(
     return;
   }
   if (effect.name === 'stop-marker') {
-    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
-      || effect.target.path !== 'stop-terminal-brief.json') {
+    if (effect.target.area !== 'REVIEW_STATE' || effect.target.path !== 'stop-terminal-brief.json') {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker target is invalid');
     }
-    const marker = requireExactPayload(effect.payload, [
-      'schema_version', 'state', 'review_id', 'created_at',
-    ], 'Stop marker');
-    if (marker.schema_version !== 1 || marker.state !== 'PENDING_BRIEF'
-      || validateUuid(marker.review_id, 'Stop marker review_id') !== reviewId) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker identity conflicts');
+    if (effect.mode === 'CREATE_ONCE_JSON') {
+      validatePendingStopMarker(effect.payload, reviewId);
+      return;
     }
-    requirePayloadTimestamp(marker.created_at, 'Stop marker created_at');
+    if (effect.mode !== 'REPLACE_MATCHING_JSON') {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker mode is invalid');
+    }
+    const replacement = requireExactPayload(effect.payload, ['expected', 'next'], 'Stop marker replacement');
+    const expected = validatePendingStopMarker(replacement.expected, reviewId);
+    const next = validateConsumedStopMarker(replacement.next, reviewId);
+    const expectedIdentity = { ...expected, state: 'CONSUMED',
+      assistant_message_sha256: next.assistant_message_sha256, consumed_at: next.consumed_at };
+    if (canonicalDigest(expectedIdentity) !== canonicalDigest(next)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumed Stop marker changes immutable identity');
+    }
+    return;
+  }
+  if (effect.name === 'stop-consume') {
+    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
+      || effect.target.path !== 'stop-terminal-brief-consumed.json') {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'consumed Stop marker target is invalid');
+    }
+    validateConsumedStopMarker(effect.payload, reviewId);
+  }
+}
+
+function validateStopMarkerBinding(effects: DurableTransactionEffect[], reviewId: string): void {
+  const markers = effects.filter((effect) => effect.name === 'stop-marker');
+  if (markers.length === 0) return;
+  if (markers.length === 1 && markers[0]!.mode === 'REPLACE_MATCHING_JSON') {
+    const consumptions = effects.filter((effect) => effect.name === 'stop-consume');
+    const replacement = markers[0]!.payload as { next?: unknown };
+    if (consumptions.length !== 1
+      || canonicalDigest(consumptions[0]!.payload) !== canonicalDigest(replacement.next)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker replacement lacks its consumed record');
+    }
+    return;
+  }
+  const reports = effects.filter((effect) => effect.name === 'report');
+  const reviews = effects.filter((effect) => effect.name === 'review');
+  if (markers.length !== 1 || reports.length !== 1 || reviews.length !== 1) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker requires one terminal review artifact');
+  }
+  const marker = markers[0]!.payload as Record<string, unknown>;
+  const review = reviews[0]!.payload as ReviewRecord;
+  const report = reports[0]!.payload as ReturnType<typeof validateFinalReviewArtifact>;
+  const reportDigest = createHash('sha256').update(privateJson(report), 'utf8').digest('hex');
+  if (review.review_id !== reviewId || (review.status !== 'BLOCKED' && review.status !== 'FINALIZED')
+    || report.status !== review.status
+    || report.verdict.recommendation !== 'REQUEST CHANGES'
+    || marker.session_id !== review.session_id
+    || marker.root_thread_id !== review.root_thread_id
+    || marker.artifact_sha256 !== reportDigest) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker does not bind its terminal review artifact');
   }
 }
 
@@ -1802,17 +1989,47 @@ function validateActiveOverlayBinding(
   }
   if (activeEffect.mode === 'UPDATE_MATCHING_ACTIVE') {
     const pointer = activeEffect.payload as ActiveReviewPointer;
+    const transitionAllowed = activeEffect.expected_status === 'CREATED'
+      ? pointer.status === 'SCOPE_FROZEN' || pointer.status === 'REVIEWING'
+      : ACTIVE_UPDATE_TRANSITIONS[activeEffect.expected_status] === pointer.status;
     if (pointer.status !== review.status
-      || ACTIVE_UPDATE_TRANSITIONS[activeEffect.expected_status] !== pointer.status) {
+      || !transitionAllowed) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay update does not match its review');
     }
     return;
   }
   const validRemoval = activeEffect.mode === 'REMOVE_MATCHING_ACTIVE'
     && ((review.status === 'FINALIZED' && activeEffect.expected_status === 'READY_TO_SYNTHESIZE')
+      || (review.status === 'FINALIZED' && activeEffect.expected_status === 'CREATED')
       || (review.status === 'BLOCKED' && !TERMINAL_REVIEW_STATUSES.includes(activeEffect.expected_status)));
   if (!validRemoval) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'active overlay removal requires a terminal review');
+  }
+}
+
+function validateCreatedIntentBinding(
+  effects: DurableTransactionEffect[],
+  journalScope: 'START' | 'REVIEW',
+  expectedRevision: number,
+): void {
+  const intents = effects.filter((effect) => effect.name === 'created-intent');
+  if (intents.length === 0) return;
+  const reviewEffects = effects.filter((effect) => effect.name === 'review');
+  const activeEffects = effects.filter((effect) => effect.name === 'active-overlay');
+  if (intents.length !== 1 || reviewEffects.length !== 1 || activeEffects.length !== 1
+    || journalScope !== 'START' || expectedRevision !== 0) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'created review intent transaction topology is invalid');
+  }
+  const intent = intents[0]!.payload as Record<string, unknown>;
+  const review = reviewEffects[0]!.payload as ReviewRecord;
+  const active = activeEffects[0]!.payload as ActiveReviewPointer;
+  if (review.status !== 'CREATED' || active.status !== 'CREATED'
+    || intent.review_id !== review.review_id
+    || intent.session_id !== review.session_id
+    || intent.root_thread_id !== review.root_thread_id
+    || intent.invocation_turn_id !== review.invocation_turn_id
+    || canonicalDigest(intent.effective_config) !== canonicalDigest(review.effective_config)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'created review intent does not bind its review');
   }
 }
 
@@ -2024,6 +2241,8 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
   }
   validatePostToolProposalBinding(effects, idempotencyKey);
   validateActiveOverlayBinding(effects, journalScope, expectedRevision);
+  validateCreatedIntentBinding(effects, journalScope, expectedRevision);
+  validateStopMarkerBinding(effects, reviewId);
   validateConsumptionTopology(effects, reviewId, idempotencyKey);
   if (effects.length > MAX_DURABLE_TRANSACTION_EFFECTS) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction effects are invalid');
@@ -2620,6 +2839,40 @@ function validatePostToolTrustBindings(
   }
 }
 
+async function validateAppliedStopEffects(
+  paths: ReviewPersistencePaths,
+  prepared: PreparedDurableTransaction,
+): Promise<void> {
+  const markerEffect = prepared.effects.find((effect) => effect.name === 'stop-marker');
+  if (markerEffect !== undefined) {
+    const current = await readJsonIfPresent(paths.stopTerminalBriefPath);
+    if (markerEffect.mode === 'REPLACE_MATCHING_JSON') {
+      const next = (markerEffect.payload as { next: unknown }).next;
+      if (canonicalDigest(current) !== canonicalDigest(next)) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed Stop marker replacement is missing');
+      }
+    } else {
+      const pending = markerEffect.payload as Record<string, unknown>;
+      const currentObject = isPlainObject(current) ? current : undefined;
+      const currentAsPending = currentObject?.state === 'CONSUMED'
+        ? Object.fromEntries(Object.entries(currentObject).filter(([key]) => (
+          key !== 'assistant_message_sha256' && key !== 'consumed_at'
+        )).map(([key, value]) => [key, key === 'state' ? 'PENDING_BRIEF' : value]))
+        : current;
+      if (canonicalDigest(currentAsPending) !== canonicalDigest(pending)) {
+        throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed Stop marker is missing');
+      }
+    }
+  }
+  const consumedEffect = prepared.effects.find((effect) => effect.name === 'stop-consume');
+  if (consumedEffect !== undefined) {
+    const consumed = await readJsonIfPresent(paths.stopTerminalBriefConsumedPath);
+    if (canonicalDigest(consumed) !== canonicalDigest(consumedEffect.payload)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed consumed Stop record is missing');
+    }
+  }
+}
+
 async function validateCommittedReviewReplayState(
   paths: ReviewPersistencePaths,
   prepared: PreparedDurableTransaction,
@@ -2635,6 +2888,7 @@ async function validateCommittedReviewReplayState(
       appliedTransactionId: prepared.transaction_id,
       requireApplied: true,
     });
+    await validateAppliedStopEffects(paths, prepared);
     return;
   }
 
@@ -2650,7 +2904,10 @@ async function validateCommittedReviewReplayState(
 
   validateReviewOwnership(paths, prepared, current);
   validatePostToolTrustBindings(paths, prepared, current);
-  if (current.revision > resultRevision) return;
+  if (current.revision > resultRevision) {
+    await validateAppliedStopEffects(paths, prepared);
+    return;
+  }
 
   const expected = {
     ...(effect.payload as ReviewRecord),
@@ -2664,6 +2921,7 @@ async function validateCommittedReviewReplayState(
     appliedTransactionId: prepared.transaction_id,
     requireApplied: true,
   });
+  await validateAppliedStopEffects(paths, prepared);
 }
 
 async function applyReviewRevision(
@@ -2748,6 +3006,16 @@ async function applyEffect(
   }
   if (effect.mode === 'APPLY_REVIEW_REVISION') {
     await applyReviewRevision(path, effect.payload, prepared);
+    return;
+  }
+  if (effect.mode === 'REPLACE_MATCHING_JSON') {
+    const replacement = effect.payload as { expected: unknown; next: unknown };
+    const current = await readJsonIfPresent(path);
+    if (canonicalDigest(current) === canonicalDigest(replacement.next)) return;
+    if (canonicalDigest(current) !== canonicalDigest(replacement.expected)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'Stop marker replacement precondition conflicts');
+    }
+    await atomicWritePrivateJson(path, replacement.next);
     return;
   }
   const active = await validateActiveEffectCurrentState(paths, prepared, {
@@ -2995,16 +3263,22 @@ function validateFactoryReviewPlan(
 ): DurableTransactionPlan {
   const plan = validateDurablePlan(value);
   const reviewEffect = plan.effects.find((effect) => effect.mode === 'APPLY_REVIEW_REVISION');
+  const isStopConsumptionOnly = reviewEffect === undefined
+    && plan.effects.length === 2
+    && plan.effects.some((effect) => effect.name === 'stop-consume')
+    && plan.effects.some((effect) => effect.name === 'stop-marker');
   if (plan.journal_scope !== 'REVIEW'
     || plan.review_id !== input.review_id
     || plan.expected_revision !== currentReview.revision
-    || reviewEffect === undefined) {
+    || (reviewEffect === undefined && !isStopConsumptionOnly)) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory transaction identity or revision conflicts');
   }
-  const proposedReview = reviewEffect.payload as ReviewRecord;
-  if (proposedReview.session_id !== input.session_id
-    || proposedReview.root_thread_id !== input.root_thread_id) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory transaction ownership conflicts');
+  if (reviewEffect !== undefined) {
+    const proposedReview = reviewEffect.payload as ReviewRecord;
+    if (proposedReview.session_id !== input.session_id
+      || proposedReview.root_thread_id !== input.root_thread_id) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory transaction ownership conflicts');
+    }
   }
   return plan;
 }
@@ -3032,8 +3306,11 @@ export async function runDurableReviewTransactionWithPlanFactory(
     const plan = validateFactoryReviewPlan(planValue, currentReview, input);
     const transaction = await runDurableTransactionLocked(paths, plan, options);
     const review = await readOwnedReviewForPlanFactory(paths, input);
-    if (review.revision !== currentReview.revision + 1) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'factory transaction did not advance the review');
+    const advancesReview = plan.effects.some((effect) => effect.mode === 'APPLY_REVIEW_REVISION');
+    if (review.revision !== currentReview.revision + (advancesReview ? 1 : 0)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', advancesReview
+        ? 'factory transaction did not advance the review'
+        : 'factory evidence transaction changed the review');
     }
     return { transaction, review: structuredClone(review) };
   } finally {

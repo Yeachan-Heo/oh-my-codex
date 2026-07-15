@@ -7,7 +7,12 @@
  * ralplan instead of treating review findings as infrastructure failure.
  */
 
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { basename, dirname, relative, resolve } from 'node:path';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
+import { validateFinalReviewArtifact } from '../../code-review/render.js';
+import type { FinalReviewArtifact } from '../../code-review/contract.js';
 
 export interface CodeReviewStageOptions {
   /** Optional review recommendation injected by tests or runtime adapters. */
@@ -18,6 +23,13 @@ export interface CodeReviewStageOptions {
 
   /** Optional human-readable review summary. */
   summary?: string;
+
+  /** Repository-relative path to the finalized runtime artifact. */
+  artifactPath?: string;
+
+  /** Optional identity checks supplied by the coordinator handoff. */
+  artifactReviewId?: string;
+  artifactSha256?: string;
 }
 
 export interface CodeReviewDescriptor {
@@ -35,8 +47,82 @@ export interface CodeReviewVerdict {
   summary: string;
   stage: 'code-review';
   artifact_path: string;
+  artifact_sha256?: string;
 }
 
+interface RuntimeArtifact {
+  artifact: FinalReviewArtifact | null;
+  artifactPath: string;
+  artifactSha256?: string;
+}
+
+const MISSING_ARTIFACT_PATH = '.omx/state/autopilot-state.json#pipeline_stage_results.code-review.artifacts.review_verdict';
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate);
+  return child !== '' && !child.startsWith('..') && !child.startsWith('/') && !child.startsWith('\\');
+}
+
+async function loadPersistedRuntimeArtifact(
+  artifactPath: string,
+  options: CodeReviewStageOptions,
+  ctx: StageContext,
+): Promise<RuntimeArtifact> {
+  const reviewsRoot = resolve(ctx.cwd, '.omx', 'reviews');
+  const absolutePath = resolve(ctx.cwd, artifactPath);
+  const displayPath = relative(resolve(ctx.cwd), absolutePath).replaceAll('\\', '/');
+  if (options.artifactReviewId === undefined
+    || options.artifactSha256 === undefined
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(options.artifactReviewId)
+    || !/^[0-9a-f]{64}$/u.test(options.artifactSha256)
+    || !isPathInside(reviewsRoot, absolutePath)
+    || dirname(absolutePath) !== reviewsRoot
+    || !/^[0-9a-f-]{36}\.json$/u.test(basename(absolutePath))) {
+    return { artifact: null, artifactPath: displayPath || artifactPath };
+  }
+  try {
+    const raw = await readFile(absolutePath);
+    const artifactSha256 = createHash('sha256').update(raw).digest('hex');
+    const artifact = validateFinalReviewArtifact(JSON.parse(raw.toString('utf8')) as unknown);
+    if (basename(absolutePath) !== `${artifact.review_id}.json`
+      || options.artifactReviewId !== artifact.review_id
+      || options.artifactSha256 !== artifactSha256) {
+      return { artifact: null, artifactPath: displayPath || artifactPath };
+    }
+    return { artifact, artifactPath: displayPath, artifactSha256 };
+  } catch {
+    return { artifact: null, artifactPath: displayPath || artifactPath };
+  }
+}
+
+async function findRuntimeArtifact(options: CodeReviewStageOptions, ctx: StageContext): Promise<RuntimeArtifact> {
+  if (options.artifactPath !== undefined) {
+    return await loadPersistedRuntimeArtifact(options.artifactPath, options, ctx);
+  }
+  return { artifact: null, artifactPath: MISSING_ARTIFACT_PATH };
+}
+
+function suggestedNextPhase(artifact: FinalReviewArtifact | null): 'ultraqa' | 'rework' | 'ralplan' {
+  if (artifact?.verdict.clean === true) return 'ultraqa';
+  if (artifact?.verdict.rule_id === 'NO_CHANGES') return 'ralplan';
+  if (!artifact) return 'ralplan';
+  const hasImplementationFindings = artifact.lanes.some((lane) =>
+    lane.role === 'code-reviewer'
+    && (lane.findings.length > 0 || lane.recommendation === 'REQUEST CHANGES'));
+  if (hasImplementationFindings) return 'rework';
+  return 'ralplan';
+}
+
+function defaultSummary(artifact: FinalReviewArtifact | null, legacyEvidencePresent: boolean): string {
+  if (!artifact) {
+    return legacyEvidencePresent
+      ? 'Code-review runtime artifact missing or invalid; fail closed and return to ralplan.'
+      : 'Code-review evidence missing; fail closed and return to ralplan.';
+  }
+  if (artifact.verdict.clean) return 'Review clean.';
+  if (artifact.verdict.rule_id === 'NO_CHANGES') return 'No reviewable changes; return to ralplan.';
+  return artifact.verdict.reasons[0] ?? 'Review returned findings; return to ralplan.';
+}
 
 export function createCodeReviewStage(options: CodeReviewStageOptions = {}): PipelineStage {
   return {
@@ -54,20 +140,24 @@ export function createCodeReviewStage(options: CodeReviewStageOptions = {}): Pip
         executionArtifacts,
         instruction: buildCodeReviewInstruction(ctx.task),
       };
-      const hasReviewEvidence = options.recommendation !== undefined || options.architecturalStatus !== undefined;
-      const recommendation = options.recommendation ?? 'REQUEST CHANGES';
-      const architecturalStatus = options.architecturalStatus ?? 'BLOCK';
-      const clean = hasReviewEvidence && recommendation === 'APPROVE' && architecturalStatus === 'CLEAR';
+      const legacyEvidencePresent = options.recommendation !== undefined || options.architecturalStatus !== undefined;
+      const runtime = await findRuntimeArtifact(options, ctx);
+      const recommendation = runtime.artifact?.verdict.recommendation ?? options.recommendation ?? 'REQUEST CHANGES';
+      const architecturalStatus = runtime.artifact?.verdict.architectural_status ?? options.architecturalStatus ?? 'BLOCK';
+      const clean = runtime.artifact?.status === 'FINALIZED'
+        && runtime.artifact.verdict.clean === true
+        && runtime.artifact.verdict.recommendation === 'APPROVE'
+        && runtime.artifact.verdict.architectural_status === 'CLEAR';
       const verdict: CodeReviewVerdict = {
         recommendation,
         architectural_status: architecturalStatus,
         clean,
-        summary: options.summary ?? (hasReviewEvidence
-          ? (clean ? 'Review clean.' : 'Review returned findings; return to ralplan.')
-          : 'Code-review evidence missing; fail closed and return to ralplan.'),
+        summary: options.summary ?? defaultSummary(runtime.artifact, legacyEvidencePresent),
         stage: 'code-review',
-        artifact_path: '.omx/state/autopilot-state.json#pipeline_stage_results.code-review.artifacts.review_verdict',
+        artifact_path: runtime.artifactPath,
+        ...(runtime.artifactSha256 === undefined ? {} : { artifact_sha256: runtime.artifactSha256 }),
       };
+      const nextPhase = suggestedNextPhase(runtime.artifact);
 
       return {
         status: 'completed',
@@ -75,6 +165,16 @@ export function createCodeReviewStage(options: CodeReviewStageOptions = {}): Pip
           stage: 'code-review',
           codeReviewDescriptor: descriptor,
           review_verdict: verdict,
+          ...(runtime.artifact ? { code_review_artifact: runtime.artifact } : {}),
+          ...(runtime.artifact && runtime.artifactSha256 ? {
+            code_review_artifact_identity: {
+              review_id: runtime.artifact.review_id,
+              revision: runtime.artifact.revision,
+              artifact_path: runtime.artifactPath,
+              artifact_sha256: runtime.artifactSha256,
+            },
+          } : {}),
+          suggested_next_phase: nextPhase,
           return_to_ralplan_reason: clean ? null : verdict.summary,
           instruction: descriptor.instruction,
         },

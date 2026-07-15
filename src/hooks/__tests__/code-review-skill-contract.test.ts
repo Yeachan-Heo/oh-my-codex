@@ -9,83 +9,61 @@ const codeReviewSkill = readFileSync(
   join(__dirname, '../../../skills/code-review/SKILL.md'),
   'utf-8',
 );
+const reviewerPrompt = readFileSync(
+  join(__dirname, '../../../prompts/code-reviewer.md'),
+  'utf-8',
+);
+const architectPrompt = readFileSync(
+  join(__dirname, '../../../prompts/architect.md'),
+  'utf-8',
+);
 
 describe('code-review skill contract', () => {
-  it('requires parallel code-reviewer and architect lanes', () => {
-    assert.match(codeReviewSkill, /`code-reviewer` and `architect` agents in parallel/i);
-    assert.match(codeReviewSkill, /Both lanes run in parallel/i);
-    assert.match(codeReviewSkill, /clean context/i);
-    assert.match(codeReviewSkill, /explicit scope and artifacts/i);
+  it('keeps invocation compatibility and read-only lane roles while routing through runtime operations', () => {
+    assert.match(codeReviewSkill, /\$code-review/);
     assert.match(codeReviewSkill, /`code-reviewer` lane/i);
     assert.match(codeReviewSkill, /`architect` lane/i);
-    assert.match(codeReviewSkill, /If either lane cannot be launched or does not return evidence/i);
-    assert.match(codeReviewSkill, /do \*\*not\*\* substitute the current\/authoring lane/i);
+    assert.match(codeReviewSkill, /review_start/);
+    assert.match(codeReviewSkill, /review_get/);
+    assert.match(codeReviewSkill, /review_record_lane/);
+    assert.match(codeReviewSkill, /review_finalize/);
+    assert.match(codeReviewSkill, /leader submits only `START`/i);
+    assert.match(codeReviewSkill, /child submits its own strict `RESULT`/i);
+    assert.match(codeReviewSkill, /PostToolUse hook attests the actual child/i);
+    assert.match(codeReviewSkill, /read-only/i);
   });
 
-  it('uses native task agent_type examples without overriding user model or effort', () => {
-    assert.match(codeReviewSkill, /Respect the user's current model and reasoning\/effort selection/i);
-    assert.match(codeReviewSkill, /Do not pass `model` or `reasoning_effort` overrides/i);
-    assert.match(codeReviewSkill, /task\(\s*agent_type="code-reviewer",\s*prompt=/s);
-    assert.match(codeReviewSkill, /task\(\s*agent_type="architect",\s*prompt=/s);
-    assert.doesNotMatch(codeReviewSkill, /task\(\s*agent_type="code-reviewer",\s*(?:model=|reasoning_effort=)/s);
-    assert.doesNotMatch(codeReviewSkill, /task\(\s*agent_type="architect",\s*(?:model=|reasoning_effort=)/s);
-    assert.doesNotMatch(codeReviewSkill, /delegate\(\s*role=/s);
-    assert.doesNotMatch(codeReviewSkill, /tier="/);
-  });
-
-  it('frames architect as the devil’s-advocate lane with deterministic blocker status', () => {
-    assert.match(codeReviewSkill, /devil['’]s-advocate/i);
-    assert.match(codeReviewSkill, /Architectural Status Contract/i);
-    assert.match(codeReviewSkill, /CLEAR/i);
-    assert.match(codeReviewSkill, /WATCH/i);
-    assert.match(codeReviewSkill, /BLOCK/i);
-    assert.match(codeReviewSkill, /If architect status is \*\*BLOCK\*\*, final recommendation is \*\*REQUEST CHANGES\*\*/i);
-  });
-
-  it('requires final synthesis across both lanes', () => {
-    assert.match(codeReviewSkill, /Final Synthesis/i);
-    assert.match(codeReviewSkill, /Combine the `code-reviewer` recommendation and the architect status/i);
-    assert.match(codeReviewSkill, /Approval requires explicit evidence from both independent lanes/i);
-    assert.match(codeReviewSkill, /missing or failed delegation is a blocking unavailable-review state/i);
-    assert.match(codeReviewSkill, /final report must make architect blockers impossible to miss/i);
-  });
-
-  it('forbids self-review fallback approval when delegation is unavailable', () => {
+  it('requires strict native lane labels and forbids authoring-lane fallback approval', () => {
+    assert.match(codeReviewSkill, /task_name.+exactly equal to the planned `lane_id`/is);
     assert.match(codeReviewSkill, /Do not self-review as a fallback/i);
-    assert.match(codeReviewSkill, /missing, unavailable, skipped, or fails/i);
-    assert.match(codeReviewSkill, /block approval until the independent lane evidence exists/i);
+    assert.match(codeReviewSkill, /do \*\*not\*\* substitute the current\/authoring lane/i);
+    assert.match(codeReviewSkill, /independent review unavailable/i);
   });
 
-  it('keeps approval criteria aligned with the deterministic synthesis contract', () => {
-    assert.match(codeReviewSkill, /\*\*APPROVE\*\* - `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence/i);
-    assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* - `code-reviewer` returns REQUEST CHANGES, architect status is `BLOCK`, or required independent review delegation is unavailable\/skipped\/failed/i);
-    assert.match(codeReviewSkill, /\*\*COMMENT\*\* - `code-reviewer` returns COMMENT with architect status `CLEAR`, architect status is `WATCH`, or only LOW\/MEDIUM improvements remain/i);
+  it('documents schema-valid runtime artifact output without duplicating the verdict truth table', () => {
+    assert.match(codeReviewSkill, /schema-valid finalized artifact/i);
+    assert.match(codeReviewSkill, /runtime coordinator owns the verdict truth table/i);
+    assert.match(codeReviewSkill, /JSON: \.omx\/reviews\/<review_id>\.json/i);
+    assert.match(codeReviewSkill, /Markdown: \.omx\/reviews\/<review_id>\.md/i);
+    assert.doesNotMatch(codeReviewSkill, /If architect status is \*\*BLOCK\*\*, final recommendation is \*\*REQUEST CHANGES\*\*/i);
   });
 
-  it('bounds auto-fix wording to the explicit ralph path only', () => {
-    assert.match(codeReviewSkill, /On the explicit Ralph path/i);
-    assert.match(codeReviewSkill, /automatic fix follow-up without another permission prompt/i);
-    assert.match(codeReviewSkill, /Plain `code-review` itself remains read-only and does \*\*not\*\* promise auto-fix/i);
+  it('makes reviewer prompt consume frozen runtime scope and emit strict RESULT diagnostics', () => {
+    assert.match(reviewerPrompt, /frozen manifest/i);
+    assert.match(reviewerPrompt, /assigned batch files/i);
+    assert.match(reviewerPrompt, /scope_hash/i);
+    assert.match(reviewerPrompt, /Do not discover an independent scope/i);
+    assert.match(reviewerPrompt, /DiagnosticSubmission/i);
+    assert.match(reviewerPrompt, /review_record_lane/i);
+    assert.doesNotMatch(reviewerPrompt, /Run `git diff`/i);
   });
 
-  it('keeps the sample output consistent with a WATCH and COMMENT outcome', () => {
-    const totalIssues = codeReviewSkill.match(/Total Issues: (\d+)/i);
-    const criticalCount = codeReviewSkill.match(/CRITICAL \((\d+)\)/i);
-    assert.match(codeReviewSkill, /HIGH \(0\)/i);
-    const highCount = codeReviewSkill.match(/HIGH \((\d+)\)/i);
-    const mediumCount = codeReviewSkill.match(/MEDIUM \((\d+)\)/i);
-    const lowCount = codeReviewSkill.match(/LOW \((\d+)\)/i);
-    assert.match(codeReviewSkill, /- code-reviewer recommendation: COMMENT/i);
-    assert.match(codeReviewSkill, /RECOMMENDATION: COMMENT/i);
-    assert.doesNotMatch(codeReviewSkill, /Risk: SQL injection vulnerability/i);
-    assert.doesNotMatch(codeReviewSkill, /Risk: Credential exposure/i);
-    assert.ok(totalIssues && criticalCount && highCount && mediumCount && lowCount);
-    assert.equal(
-      Number(totalIssues[1]),
-      Number(criticalCount[1]) +
-        Number(highCount[1]) +
-        Number(mediumCount[1]) +
-        Number(lowCount[1]),
-    );
+  it('makes architect prompt consume only global frozen scope and return no diagnostics', () => {
+    assert.match(architectPrompt, /global frozen manifest/i);
+    assert.match(architectPrompt, /batch plan/i);
+    assert.match(architectPrompt, /scope_hash/i);
+    assert.match(architectPrompt, /do not discover an independent scope/i);
+    assert.match(architectPrompt, /no diagnostics/i);
+    assert.match(architectPrompt, /architectural_status `CLEAR`, `WATCH`, or `BLOCK`/i);
   });
 });

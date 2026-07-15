@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -517,6 +518,60 @@ describe('review coordinator failure and concurrency invariants', () => {
       await assert.rejects(durable.reconcile({ review_id: REVIEW_ID }), /identity|journal|evidence/i);
       const withoutHost = durableFactory()({ workingDirectory: root, session_id: 'session-1' });
       await assert.rejects(withoutHost.reconcile({ review_id: REVIEW_ID }), /loader|trusted|unavailable/i);
+    });
+  });
+
+  it('loads ordinary activity and combined RESULT publications from the hook journal', async () => {
+    await withTemporaryReviewRoot(async (root) => {
+      const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
+      const proposal = resultProposal(running());
+      const ordinary = activity('tool-start-1', '2026-07-14T00:00:20.000Z', { event_kind: 'TOOL_START' });
+      const resultPublication = publication(proposal, '2026-07-14T00:00:30.000Z');
+      const ordinaryFile = `${createHash('sha256').update(`${ordinary.event_ref}:${ordinary.event_kind}`).digest('hex')}.json`;
+      await atomicCreatePrivateJson(
+        join(paths.reviewRoot, REVIEW_ID, 'activity', 'child-reviewer', ordinaryFile),
+        ordinary,
+      );
+      await atomicCreatePrivateJson(
+        join(paths.reviewRoot, REVIEW_ID, 'submissions', RESULT_KEY, 'post-tool'),
+        resultPublication,
+      );
+
+      const snapshot = await coordinatorModule.loadPublishedReviewHookJournalSnapshot({
+        workingDirectory: root,
+        session_id: 'session-1',
+        root_thread_id: 'root-1',
+        review_id: REVIEW_ID,
+        cutoff_at: '2026-07-14T00:00:40.000Z',
+      });
+
+      assert.deepEqual(snapshot.publication_ids, [RESULT_KEY]);
+      assert.deepEqual(
+        (snapshot.events as LaneActivityEvent[]).map((event) => event.event_ref),
+        ['tool-start-1', resultPublication.activity.event_ref],
+      );
+    });
+  });
+
+  it('rejects activity whose durable path does not bind the exact child and event identity', async () => {
+    await withTemporaryReviewRoot(async (root) => {
+      const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
+      const ordinary = activity('tool-start-foreign', '2026-07-14T00:00:20.000Z', { event_kind: 'TOOL_START' });
+      await atomicCreatePrivateJson(
+        join(paths.reviewRoot, REVIEW_ID, 'activity', 'another-child', `${createHash('sha256').update('wrong').digest('hex')}.json`),
+        ordinary,
+      );
+
+      await assert.rejects(
+        coordinatorModule.loadPublishedReviewHookJournalSnapshot({
+          workingDirectory: root,
+          session_id: 'session-1',
+          root_thread_id: 'root-1',
+          review_id: REVIEW_ID,
+          cutoff_at: '2026-07-14T00:00:40.000Z',
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'LANE_EVIDENCE_INVALID',
+      );
     });
   });
 

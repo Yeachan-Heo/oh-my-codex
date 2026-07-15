@@ -17,6 +17,7 @@ import {
 import { executeStateOperation } from "../state/operations.js";
 import {
 	executeReviewOperation,
+	loadActiveReviewIdentity,
 	loadPublishedReviewHookJournalSnapshot,
 	REVIEW_OPERATION_NAMES,
 	type ReviewOperationHostContext,
@@ -52,10 +53,15 @@ async function reviewMcpHostContext(
 	const sessionId = typeof args.session_id === "string" ? args.session_id : undefined;
 	const tracking = await readSubagentTrackingState(workingDirectory);
 	const session = sessionId === undefined ? undefined : tracking.sessions[sessionId];
+	const activeReview = sessionId === undefined
+		? null
+		: await loadActiveReviewIdentity({ workingDirectory, session_id: sessionId });
+	const rootThreadId = session?.leader_thread_id ?? activeReview?.root_thread_id;
 	return {
 		source: "MCP",
-		...(session?.leader_thread_id && sessionId ? {
-			root_thread_id: session.leader_thread_id,
+		...(activeReview?.status === "CREATED" ? { seeded_review_id: activeReview.review_id } : {}),
+		...(rootThreadId && sessionId ? {
+			root_thread_id: rootThreadId,
 			loadHookJournalSnapshot: async (input) => await loadPublishedReviewHookJournalSnapshot({
 				workingDirectory,
 				...input,

@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -14,6 +15,7 @@ import {
   createStrictAutopilotStages,
 } from '../orchestrator.js';
 import { createRalplanStage } from '../stages/ralplan.js';
+import * as pipelineIndex from '../index.js';
 import type { PipelineConfig, PipelineStage, StageContext, StageResult } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,77 @@ function makeThrowingStage(name: string, message: string): PipelineStage {
     async run(): Promise<StageResult> {
       throw new Error(message);
     },
+  };
+}
+
+function cleanCodeReviewArtifact(): Record<string, unknown> {
+  const scopeHash = 'a'.repeat(64);
+  return {
+    schema_version: 1,
+    review_id: '22222222-2222-4222-8222-222222222222',
+    revision: 7,
+    status: 'FINALIZED',
+    current_attempt: 1,
+    scope: {
+      selector: { explicit_paths: [] },
+      status: 'FULL_SCOPE',
+      scope_hash: scopeHash,
+      files: [{
+        path: 'src/example.ts',
+        change: 'MODIFIED',
+        sources: ['WORKTREE'],
+        binary: false,
+        additions: 1,
+        deletions: 0,
+      }],
+      changed_lines: 1,
+      reasons: [],
+    },
+    review_flags: [],
+    batches: [{
+      batch_id: 'batch-1',
+      module_root: '.',
+      files: ['src/example.ts'],
+      changed_lines: 1,
+      oversized_single_file: false,
+    }],
+    lanes: [
+      {
+        lane_id: 'reviewer-1',
+        role: 'code-reviewer',
+        batch_id: 'batch-1',
+        scope_hash: scopeHash,
+        status: 'COMPLETE',
+        attempt: 1,
+        recommendation: 'APPROVE',
+        findings: [],
+        diagnostic_ids: [],
+      },
+      {
+        lane_id: 'architect-1',
+        role: 'architect',
+        batch_id: 'global',
+        scope_hash: scopeHash,
+        status: 'COMPLETE',
+        attempt: 1,
+        architectural_status: 'CLEAR',
+        findings: [],
+        diagnostic_ids: [],
+      },
+    ],
+    diagnostics: [],
+    verdict: {
+      recommendation: 'APPROVE',
+      architectural_status: 'CLEAR',
+      scope_status: 'FULL_SCOPE',
+      evidence_status: 'FULL_EVIDENCE',
+      rule_id: 'CLEAN_APPROVAL',
+      reasons: ['ALL_REQUIRED_EVIDENCE_CLEAR'],
+      clean: true,
+    },
+    created_at: '2026-07-15T00:00:00.000Z',
+    updated_at: '2026-07-15T00:01:00.000Z',
+    finalized_at: '2026-07-15T00:01:00.000Z',
   };
 }
 
@@ -156,6 +229,75 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(Object.keys(result.stageResults).length, 3);
     });
 
+    it('advances the default code-review adapter to ultraqa only from its persisted final artifact', async () => {
+      const artifact = cleanCodeReviewArtifact();
+      const artifactPath = `.omx/reviews/${String(artifact.review_id)}.json`;
+      const raw = `${JSON.stringify(artifact, null, 2)}\n`;
+      const artifactSha256 = createHash('sha256').update(raw).digest('hex');
+      await mkdir(join(tempDir, '.omx', 'reviews'), { recursive: true });
+      await writeFile(join(tempDir, artifactPath), raw);
+      const defaultConfig = createAutopilotPipelineConfig('consume final review', {
+        cwd: tempDir,
+        codeReviewArtifactPath: artifactPath,
+        codeReviewArtifactReviewId: String(artifact.review_id),
+        codeReviewArtifactSha256: artifactSha256,
+      });
+      const defaultCodeReview = defaultConfig.stages.find((stage) => stage.name === 'code-review');
+      assert.ok(defaultCodeReview);
+      const order: string[] = [];
+      const observedCodeReview: PipelineStage = {
+        name: 'code-review',
+        async run(ctx): Promise<StageResult> {
+          order.push('code-review');
+          return await defaultCodeReview.run(ctx);
+        },
+      };
+      const result = await runPipeline({
+        name: 'real-review-artifact',
+        task: 'consume final review',
+        cwd: tempDir,
+        stages: [
+          makeStage('ralplan'),
+          observedCodeReview,
+          {
+            name: 'ultraqa',
+            async run(): Promise<StageResult> {
+              order.push('ultraqa');
+              return {
+                status: 'completed',
+                artifacts: {
+                  qa_verdict: {
+                    stage: 'ultraqa',
+                    clean: true,
+                    skipped: false,
+                    url: 'https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/99',
+                  },
+                  return_to_ralplan_reason: null,
+                },
+                duration_ms: 0,
+              };
+            },
+          },
+        ],
+      });
+
+      assert.equal(result.status, 'completed');
+      assert.deepEqual(order, ['code-review', 'ultraqa']);
+      const review = result.stageResults['code-review'].artifacts.review_verdict as Record<string, unknown>;
+      assert.equal(review.clean, true);
+      assert.equal(review.artifact_sha256, artifactSha256);
+      const ext = await readPipelineState(tempDir);
+      assert.deepEqual(
+        (ext?.handoff_artifacts?.code_review as Record<string, unknown> | undefined)?.code_review_artifact_identity,
+        {
+          review_id: artifact.review_id,
+          revision: artifact.revision,
+          artifact_path: artifactPath,
+          artifact_sha256: artifactSha256,
+        },
+      );
+    });
+
 
 
     it('returns to ralplan when code-review is not clean', async () => {
@@ -232,6 +374,67 @@ describe('Pipeline Orchestrator', () => {
       assert.ok(ext?.handoff_artifacts?.code_review);
       assert.equal(Object.prototype.hasOwnProperty.call(ext?.handoff_artifacts ?? {}, 'code-review'), false);
       assert.equal(Object.prototype.hasOwnProperty.call(ext?.handoff_artifacts ?? {}, 'review_verdict'), false);
+    });
+
+    it('routes implementation review findings to rework before returning to planning', async () => {
+      const order: string[] = [];
+      const stages: PipelineStage[] = [
+        {
+          name: 'ralplan',
+          async run(): Promise<StageResult> {
+            order.push('ralplan');
+            return { status: 'completed', artifacts: { plan: `cycle-${order.length}` }, duration_ms: 0 };
+          },
+        },
+        {
+          name: 'rework',
+          async run(): Promise<StageResult> {
+            order.push('rework');
+            return { status: 'completed', artifacts: { implemented: true }, duration_ms: 0 };
+          },
+        },
+        {
+          name: 'code-review',
+          async run(): Promise<StageResult> {
+            order.push('code-review');
+            return {
+              status: 'completed',
+              artifacts: {
+                review_verdict: {
+                  recommendation: 'REQUEST CHANGES',
+                  architectural_status: 'CLEAR',
+                  clean: false,
+                  stage: 'code-review',
+                  artifact_path: '.omx/reviews/rework-needed.json',
+                },
+                suggested_next_phase: 'rework',
+                return_to_ralplan_reason: 'Implementation finding requires rework.',
+              },
+              duration_ms: 0,
+            };
+          },
+        },
+        {
+          name: 'ultraqa',
+          async run(): Promise<StageResult> {
+            order.push('ultraqa');
+            return { status: 'completed', artifacts: { qa_verdict: { stage: 'ultraqa', clean: true } }, duration_ms: 0 };
+          },
+        },
+      ];
+
+      const result = await runPipeline({
+        name: 'review-rework-test',
+        task: 'route implementation findings',
+        stages,
+        cwd: tempDir,
+        maxRalphIterations: 2,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.deepEqual(order.slice(0, 4), ['ralplan', 'rework', 'code-review', 'rework']);
+      const ext = await readPipelineState(tempDir);
+      assert.equal(ext?.return_to_ralplan_reason, 'Implementation finding requires rework.');
     });
 
     it('threads return-loop review cycle into the rerun ralplan stage context', async () => {
@@ -872,6 +1075,13 @@ describe('Pipeline Orchestrator', () => {
 
     it('exposes strict default autopilot stages', () => {
       assert.deepEqual(createStrictAutopilotStages().map((stage) => stage.name), ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa']);
+    });
+
+    it('exports strict default autopilot stages from the public pipeline index', () => {
+      assert.deepEqual(
+        pipelineIndex.createStrictAutopilotStages().map((stage) => stage.name),
+        ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
+      );
     });
 
     it('accepts custom overrides', () => {

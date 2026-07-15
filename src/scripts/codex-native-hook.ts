@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "crypto";
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
@@ -138,6 +139,15 @@ import {
   MAX_NATIVE_STDIN_JSON_BYTES,
   extractRawCodexHookEventName,
 } from "./hook-payload-guard.js";
+import {
+  executeReviewOperation,
+  consumeStopTerminalBrief,
+  loadPublishedReviewHookJournalSnapshot,
+  publishReviewHookJournalEntry,
+  resolveReviewPersistencePaths,
+} from "../code-review/index.js";
+import { canonicalLanePayloadDigest } from "../code-review/evidence.js";
+import { validateFinalReviewArtifact } from "../code-review/render.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -331,6 +341,7 @@ interface NativeSubagentSessionStartMetadata {
   parentThreadId: string;
   agentNickname?: string;
   agentRole?: string;
+  laneId?: string;
 }
 
 function readBoundedFirstLineSync(path: string): string {
@@ -380,10 +391,21 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
 
     const agentNickname = safeString(threadSpawn.agent_nickname ?? payload.agent_nickname).trim();
     const agentRole = safeString(threadSpawn.agent_role ?? payload.agent_role).trim();
+    const laneId = safeString(
+      threadSpawn.lane_id
+      ?? threadSpawn.laneId
+      ?? threadSpawn.task_name
+      ?? threadSpawn.taskName
+      ?? payload.lane_id
+      ?? payload.laneId
+      ?? payload.task_name
+      ?? payload.taskName,
+    ).trim();
     return {
       parentThreadId,
       ...(agentNickname ? { agentNickname } : {}),
       ...(agentRole ? { agentRole } : {}),
+      ...(laneId ? { laneId } : {}),
     };
   } catch {
     return null;
@@ -417,6 +439,7 @@ async function recordNativeSubagentSessionStart(
       kind: 'subagent',
       ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
       mode: metadata.agentRole,
+      laneId: metadata.laneId,
     }).catch(() => {});
   }
   await appendToLog(cwd, {
@@ -9372,6 +9395,544 @@ async function markTeamTransportFailure(
   }
 }
 
+function sha256Hex(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function base64UrlNonce(bytes = 32): string {
+  return randomBytes(bytes).toString("base64url");
+}
+
+async function readJsonIfExistsRaw(path: string): Promise<unknown | null> {
+  try {
+    return JSON.parse(await readFile(path, "utf-8")) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function readActualChildThreadId(payload: CodexHookPayload): string {
+  return safeString(payload.thread_id ?? payload.threadId).trim();
+}
+
+function readRootThreadId(payload: CodexHookPayload): string {
+  return safeString(
+    payload.owner_codex_thread_id
+      ?? payload.root_thread_id
+      ?? payload.rootThreadId
+      ?? payload.parent_thread_id
+      ?? payload.parentThreadId,
+  ).trim();
+}
+
+function readToolUseId(payload: CodexHookPayload): string {
+  return safeString(
+    payload.tool_use_id
+      ?? payload.toolUseId
+      ?? payload.tool_call_id
+      ?? payload.toolCallId
+      ?? payload.event_ref
+      ?? payload.eventRef,
+  ).trim();
+}
+
+function readToolInputObject(payload: CodexHookPayload): Record<string, unknown> {
+  return safeObject(payload.tool_input ?? payload.toolInput ?? payload.input);
+}
+
+function readHostToolName(payload: CodexHookPayload): string {
+  return safeString(payload.tool_name ?? payload.toolName ?? payload.name).trim();
+}
+
+function hasExactObjectKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  return Object.keys(value).length === expected.length
+    && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function isPendingHostAttestationMarker(value: unknown): boolean {
+  const marker = safeObject(value);
+  return hasExactObjectKeys(marker, ["state"])
+    && marker.state === "PENDING_HOST_ATTESTATION";
+}
+
+function postToolUseReturnedPendingHostAttestation(payload: CodexHookPayload): boolean {
+  const candidates = [
+    payload.tool_response,
+    payload.toolResponse,
+    payload.tool_output,
+    payload.toolOutput,
+    payload.output,
+    payload.result,
+  ].filter((candidate) => candidate !== undefined);
+  if (candidates.length !== 1) return false;
+  if (isPendingHostAttestationMarker(candidates[0])) return true;
+  const response = safeObject(candidates[0]);
+  const responseKeys = Object.keys(response).sort();
+  const hasAllowedResponseShape = responseKeys.join(",") === "content"
+    || (responseKeys.join(",") === "content,isError" && response.isError === false);
+  if (!hasAllowedResponseShape || !Array.isArray(response.content) || response.content.length !== 1) {
+    return false;
+  }
+  const content = safeObject(response.content[0]);
+  if (!hasExactObjectKeys(content, ["type", "text"])
+    || content.type !== "text" || typeof content.text !== "string") return false;
+  try {
+    return isPendingHostAttestationMarker(JSON.parse(content.text) as unknown);
+  } catch {
+    return false;
+  }
+}
+
+async function publishReviewJournalJson(input: {
+  cwd: string;
+  sessionId: string;
+  reviewId: string;
+  path: string;
+  buildValue: (publishedAt: string) => unknown;
+}): Promise<boolean> {
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: input.cwd, session_id: input.sessionId });
+  return await publishReviewHookJournalEntry(paths, {
+    review_id: input.reviewId,
+    relative_path: relative(paths.reviewRoot, input.path),
+    build_value: input.buildValue,
+  });
+}
+
+async function readActiveReviewPointer(cwd: string, sessionId: string): Promise<{ review_id: string; status?: string } | null> {
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: sessionId }).catch(() => null);
+  if (!paths) return null;
+  const pointer = safeObject(await readJsonIfExistsRaw(paths.activePath));
+  const reviewId = safeString(pointer.review_id).trim();
+  return reviewId ? { review_id: reviewId, status: safeString(pointer.status).trim() || undefined } : null;
+}
+
+async function recordCodeReviewContentFreeActivity(
+  payload: CodexHookPayload,
+  cwd: string,
+  canonicalSessionId: string,
+  eventKind: "TOOL_START" | "TOOL_END" | "AGENT_PROGRESS",
+): Promise<void> {
+  if (!canonicalSessionId) return;
+  const rootThreadId = readRootThreadId(payload);
+  const childThreadId = readActualChildThreadId(payload);
+  const eventRef = readToolUseId(payload);
+  if (!rootThreadId || !childThreadId || !eventRef) return;
+  const tracking = await readSubagentTrackingState(cwd).catch(() => null);
+  const trackingSession = tracking?.sessions?.[canonicalSessionId] ?? tracking?.sessions?.[rootThreadId];
+  const laneId = trackingSession?.threads?.[childThreadId]?.lane_id?.trim();
+  if (!laneId) return;
+  const active = await readActiveReviewPointer(cwd, canonicalSessionId);
+  if (!active) return;
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: canonicalSessionId });
+  const review = safeObject(await readJsonIfExistsRaw(join(paths.reviewRoot, active.review_id, "review.json")));
+  const attempt = typeof review.current_attempt === "number" ? review.current_attempt : 1;
+  const activity = {
+    schema_version: 1,
+    session_id: canonicalSessionId,
+    review_id: active.review_id,
+    attempt,
+    lane_id: laneId,
+    child_thread_id: childThreadId,
+    event_ref: eventRef,
+    event_kind: eventKind,
+  };
+  const eventPath = join(
+    paths.reviewRoot,
+    active.review_id,
+    "activity",
+    childThreadId,
+    `${sha256Hex(`${eventRef}:${eventKind}`)}.json`,
+  );
+  await publishReviewJournalJson({
+    cwd,
+    sessionId: canonicalSessionId,
+    reviewId: active.review_id,
+    path: eventPath,
+    buildValue: (observedAt) => ({ ...activity, observed_at: observedAt }),
+  });
+}
+
+async function publishCodeReviewResultPostToolAttestation(
+  payload: CodexHookPayload,
+  cwd: string,
+  canonicalSessionId: string,
+): Promise<void> {
+  if (!canonicalSessionId || !postToolUseReturnedPendingHostAttestation(payload)) return;
+  if (readHostToolName(payload) !== "mcp__omx_state__review_record_lane") return;
+  const input = readToolInputObject(payload);
+  if (safeString(input.event) !== "RESULT") return;
+  const sessionId = safeString(input.session_id).trim() || canonicalSessionId;
+  if (sessionId !== canonicalSessionId) return;
+  const rootThreadId = readRootThreadId(payload);
+  const childThreadId = readActualChildThreadId(payload);
+  const toolEventRef = readToolUseId(payload);
+  const reviewId = safeString(input.review_id).trim();
+  const laneId = safeString(input.lane_id).trim();
+  const idempotencyKey = safeString(input.idempotency_key).trim();
+  const scopeHash = safeString(input.scope_hash).trim();
+  const attempt = typeof input.attempt === "number" ? input.attempt : Number(input.attempt);
+  const result = input.result;
+  const expectedInputKeys = [
+    "workingDirectory", "session_id", "event", "review_id", "attempt", "lane_id",
+    "scope_hash", "result", "idempotency_key",
+  ];
+  const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+  if (!hasExactObjectKeys(input, expectedInputKeys)
+    || !rootThreadId || !childThreadId || childThreadId === rootThreadId || !toolEventRef
+    || !uuidV4.test(reviewId) || !uuidV4.test(idempotencyKey)
+    || laneId.length === 0 || laneId.length > 160
+    || !/^[0-9a-f]{64}$/u.test(scopeHash)
+    || !Number.isSafeInteger(attempt) || attempt < 1
+    || resolve(safeString(input.workingDirectory)) !== resolve(cwd)) {
+    return;
+  }
+
+  const tracking = await readSubagentTrackingState(cwd).catch(() => null);
+  const trackingSession = tracking?.sessions?.[sessionId];
+  const trackedChild = trackingSession?.threads?.[childThreadId];
+  if (trackingSession?.leader_thread_id !== rootThreadId
+    || trackedChild?.kind !== "subagent"
+    || trackedChild.lane_id !== laneId) return;
+
+  let payloadDigest: string;
+  try {
+    payloadDigest = canonicalLanePayloadDigest(result);
+  } catch {
+    return;
+  }
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: sessionId });
+  const submissionDir = join(paths.reviewRoot, reviewId, "submissions", idempotencyKey);
+  const proposal = safeObject(await readJsonIfExistsRaw(join(submissionDir, "proposal")));
+  if (!hasExactObjectKeys(proposal, [
+    "schema_version", "state", "review_id", "attempt", "lane_id", "scope_hash",
+    "idempotency_key", "payload_digest", "result", "proposed_at",
+  ])
+    || proposal.schema_version !== 1
+    || safeString(proposal.state) !== "PENDING_HOST_ATTESTATION"
+    || safeString(proposal.payload_digest) !== payloadDigest
+    || safeString(proposal.review_id) !== reviewId
+    || safeString(proposal.idempotency_key) !== idempotencyKey
+    || safeString(proposal.lane_id) !== laneId
+    || safeString(proposal.scope_hash) !== scopeHash
+    || proposal.attempt !== attempt
+    || !Number.isFinite(Date.parse(safeString(proposal.proposed_at)))
+    || canonicalLanePayloadDigest(proposal.result) !== payloadDigest) {
+    return;
+  }
+  const publicationBase = {
+    schema_version: 1,
+    publication_id: idempotencyKey,
+    activity: {
+      schema_version: 1,
+      session_id: sessionId,
+      review_id: reviewId,
+      attempt,
+      lane_id: laneId,
+      child_thread_id: childThreadId,
+      event_ref: toolEventRef,
+      event_kind: "RESULT_POST_TOOL",
+    },
+    attestation: {
+      schema_version: 1,
+      session_id: sessionId,
+      root_thread_id: rootThreadId,
+      review_id: reviewId,
+      attempt,
+      lane_id: laneId,
+      child_thread_id: childThreadId,
+      scope_hash: scopeHash,
+      payload_digest: payloadDigest,
+      tool_event_ref: toolEventRef,
+      nonce: base64UrlNonce(24),
+    },
+  };
+  await publishReviewJournalJson({
+    cwd,
+    sessionId,
+    reviewId,
+    path: join(submissionDir, "post-tool"),
+    buildValue: (publishedAt) => ({
+      ...publicationBase,
+      published_at: publishedAt,
+      activity: { ...publicationBase.activity, observed_at: publishedAt },
+      attestation: { ...publicationBase.attestation, published_at: publishedAt },
+    }),
+  });
+}
+
+const CODE_REVIEW_TERMINAL_BRIEF_FOOTER_PATTERN =
+  /(?:^|\n)<!-- omx:code-review-terminal-brief (\{"review_id":"[^"]+","verdict":"REQUEST CHANGES","artifact_sha256":"[0-9a-f]{64}","stop_signature":"[^"]+"\}) -->\s*$/u;
+
+function buildCodeReviewTerminalBriefFooter(marker: {
+  review_id: string;
+  artifact_sha256: string;
+  issued_stop_signature: string;
+}): string {
+  return `<!-- omx:code-review-terminal-brief ${JSON.stringify({
+    review_id: marker.review_id,
+    verdict: "REQUEST CHANGES",
+    artifact_sha256: marker.artifact_sha256,
+    stop_signature: marker.issued_stop_signature,
+  })} -->`;
+}
+
+function parseCodeReviewTerminalBriefFooter(message: string): Record<string, unknown> | null {
+  if ([...message].length > 4_000) return null;
+  const match = CODE_REVIEW_TERMINAL_BRIEF_FOOTER_PATTERN.exec(message);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]!) as Record<string, unknown>;
+    return hasExactObjectKeys(parsed, ["review_id", "verdict", "artifact_sha256", "stop_signature"])
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readCodeReviewFinalArtifact(
+  cwd: string,
+  sessionId: string,
+  rootThreadId: string,
+  reviewId: string,
+): Promise<{ artifact: ReturnType<typeof validateFinalReviewArtifact>; sha: string } | null> {
+  const artifactPath = join(cwd, ".omx", "reviews", `${reviewId}.json`);
+  try {
+    const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: sessionId });
+    const review = safeObject(await readJsonIfExistsRaw(join(paths.reviewRoot, reviewId, "review.json")));
+    const raw = await readFile(artifactPath);
+    const artifact = validateFinalReviewArtifact(JSON.parse(raw.toString("utf-8")) as unknown);
+    const reviewScope = safeObject(review.scope);
+    if (artifact.review_id !== reviewId
+      || review.session_id !== sessionId
+      || review.root_thread_id !== rootThreadId
+      || review.revision !== artifact.revision
+      || review.status !== artifact.status
+      || review.current_attempt !== artifact.current_attempt
+      || safeString(reviewScope.scope_hash) !== safeString(artifact.scope?.scope_hash)) return null;
+    return { artifact, sha: sha256Hex(raw) };
+  } catch {
+    return null;
+  }
+}
+
+async function maybeFinalizeActiveCodeReviewForStop(
+  cwd: string,
+  sessionId: string,
+  rootThreadId: string,
+  reviewId: string,
+): Promise<{ payload: unknown; isError?: boolean } | null> {
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: sessionId }).catch(() => null);
+  if (!paths) return null;
+  const review = safeObject(await readJsonIfExistsRaw(join(paths.reviewRoot, reviewId, "review.json")));
+  if (safeString(review.status) === "FINALIZED" || safeString(review.status) === "BLOCKED") return null;
+  const attempt = typeof review.current_attempt === "number" ? review.current_attempt : 1;
+  const issuedAt = new Date().toISOString();
+  return await executeReviewOperation("review_finalize", {
+    workingDirectory: cwd,
+    session_id: sessionId,
+    review_id: reviewId,
+    attempt,
+    idempotency_key: cryptoLikeUuidFromHash(`${reviewId}:${attempt}:stop-finalize`),
+  }, {
+    source: "MCP",
+    root_thread_id: rootThreadId,
+    stop_terminal_brief: {
+      session_id: sessionId,
+      root_thread_id: rootThreadId,
+      issued_stop_signature: base64UrlNonce(32),
+      issued_at: issuedAt,
+    },
+    loadHookJournalSnapshot: (input) => loadPublishedReviewHookJournalSnapshot({
+      workingDirectory: cwd,
+      ...input,
+    }),
+  }).catch(() => ({ payload: { code: "PERSISTENCE_FAILED" }, isError: true }));
+}
+
+function cryptoLikeUuidFromHash(seed: string): string {
+  const hex = sha256Hex(seed).slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+async function buildCodeReviewStopOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+  sessionId: string,
+  threadId: string,
+): Promise<Record<string, unknown> | null> {
+  if (!sessionId) return null;
+  const rootThreadId = threadId || readRootThreadId(payload) || readPayloadThreadId(payload);
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: sessionId }).catch(() => null);
+  if (!paths) return null;
+
+  const marker = safeObject(await readJsonIfExistsRaw(paths.stopTerminalBriefPath));
+  if (safeString(marker.state) === "CONSUMED") {
+    try {
+      await consumeStopTerminalBrief({
+        workingDirectory: cwd,
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        review_id: safeString(marker.review_id),
+        artifact_sha256: safeString(marker.artifact_sha256),
+        issued_stop_signature: safeString(marker.issued_stop_signature),
+        assistant_message_sha256: safeString(marker.assistant_message_sha256),
+        consumed_at: safeString(marker.consumed_at),
+      });
+      return null;
+    } catch {
+      return {
+        decision: "block",
+        reason: "The consumed code-review terminal marker is missing matching durable evidence; recover it before stopping.",
+        stopReason: "code_review_consumed_marker_invalid",
+        systemMessage: "Recover the code-review Stop consumption transaction; do not overwrite its marker files.",
+      };
+    }
+  }
+  if (safeString(marker.state) === "PENDING_BRIEF") {
+    const markerReviewId = safeString(marker.review_id);
+    const markerArtifact = await readCodeReviewFinalArtifact(cwd, sessionId, rootThreadId, markerReviewId);
+    if (safeString(marker.session_id) !== sessionId
+      || safeString(marker.root_thread_id) !== rootThreadId
+      || markerArtifact === null
+      || markerArtifact.sha !== safeString(marker.artifact_sha256)
+      || markerArtifact.artifact.verdict.recommendation !== "REQUEST CHANGES") {
+      return {
+        decision: "block",
+        reason: "The pending code-review terminal marker does not bind the current session and final artifact.",
+        stopReason: "code_review_terminal_marker_invalid",
+        systemMessage: "Recover the code-review finalization transaction before stopping.",
+      };
+    }
+    const lastAssistantMessage = safeString(payload.last_assistant_message ?? payload.lastAssistantMessage);
+    const parsed = parseCodeReviewTerminalBriefFooter(lastAssistantMessage);
+    const assistantSha = sha256Hex(lastAssistantMessage);
+    const assistantThreadId = safeString(
+      payload.last_assistant_message_thread_id ?? payload.lastAssistantMessageThreadId,
+    ).trim();
+    const assistantMessageId = safeString(
+      payload.last_assistant_message_id ?? payload.lastAssistantMessageId,
+    ).trim();
+    const assistantCreatedAt = safeString(
+      payload.last_assistant_message_created_at ?? payload.lastAssistantMessageCreatedAt,
+    ).trim();
+    const immediatelyPreceding = payload.last_assistant_message_immediately_precedes_stop
+      ?? payload.lastAssistantMessageImmediatelyPrecedesStop;
+    const issuedAtMs = Date.parse(safeString(marker.issued_at));
+    const assistantCreatedAtMs = Date.parse(assistantCreatedAt);
+    const matches = parsed
+      && safeString(marker.session_id) === sessionId
+      && safeString(marker.root_thread_id) === rootThreadId
+      && assistantThreadId === rootThreadId
+      && assistantMessageId.length > 0 && assistantMessageId.length <= 160
+      && immediatelyPreceding === true
+      && Number.isFinite(issuedAtMs) && Number.isFinite(assistantCreatedAtMs)
+      && assistantCreatedAtMs >= issuedAtMs
+      && safeString(parsed.review_id) === safeString(marker.review_id)
+      && safeString(parsed.verdict) === "REQUEST CHANGES"
+      && safeString(parsed.artifact_sha256) === safeString(marker.artifact_sha256)
+      && safeString(parsed.stop_signature) === safeString(marker.issued_stop_signature);
+    if (matches) {
+      try {
+        await consumeStopTerminalBrief({
+          workingDirectory: cwd,
+          session_id: sessionId,
+          root_thread_id: rootThreadId,
+          review_id: safeString(marker.review_id),
+          artifact_sha256: safeString(marker.artifact_sha256),
+          issued_stop_signature: safeString(marker.issued_stop_signature),
+          assistant_message_sha256: assistantSha,
+          consumed_at: new Date().toISOString(),
+        });
+        return null;
+      } catch (error) {
+        const failure = error as { code?: unknown; message?: unknown };
+        const failureCode = safeString(failure.code) || "PERSISTENCE_FAILED";
+        return {
+          decision: "block",
+          reason: `The exact code-review terminal brief could not be consumed transactionally (${failureCode}); recover persistence before stopping.`,
+          stopReason: "code_review_terminal_brief_consume_failed",
+          systemMessage: "Recover the code-review Stop consumption transaction and retry the exact immediately preceding footer.",
+        };
+      }
+    }
+    const footer = buildCodeReviewTerminalBriefFooter({
+      review_id: safeString(marker.review_id),
+      artifact_sha256: safeString(marker.artifact_sha256),
+      issued_stop_signature: safeString(marker.issued_stop_signature),
+    });
+    return {
+      decision: "block",
+      reason: `Code-review is terminal and requires one bounded brief with the exact footer before stopping: ${footer}`,
+      stopReason: "code_review_terminal_brief_pending",
+      systemMessage: `Emit the code-review terminal brief, then include this exact footer on its own line: ${footer}`,
+    };
+  }
+
+  const active = await readActiveReviewPointer(cwd, sessionId);
+  const baseStateDir = getBaseStateDir(cwd);
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(baseStateDir, sessionId).catch(() => null);
+  const codeReviewEntry = canonicalState ? listActiveSkills(canonicalState).find((entry) =>
+    entry.skill === "code-review" && matchesSkillStopContext(entry, canonicalState, sessionId, rootThreadId)) : undefined;
+  const reviewId = active?.review_id ?? safeString(codeReviewEntry?.review_id).trim();
+  if (!reviewId) {
+    if (codeReviewEntry) {
+      return {
+        decision: "block",
+        reason: "Code-review is active but the overlay is missing its trusted review identity; continue or recover the code-review runtime state before stopping.",
+        stopReason: "code_review_missing_review_identity",
+        systemMessage: "Code-review overlay state is active without review_id; recover or restart the review before stopping.",
+      };
+    }
+    return null;
+  }
+  const finalization = await maybeFinalizeActiveCodeReviewForStop(cwd, sessionId, rootThreadId, reviewId);
+  if (finalization?.isError) {
+    const failure = safeObject(finalization.payload);
+    return {
+      decision: "block",
+      reason: `Code-review ${reviewId} could not finalize transactionally (${safeString(failure.code) || "PERSISTENCE_FAILED"}).`,
+      stopReason: "code_review_finalize_failed",
+      systemMessage: "Recover review_finalize and its runtime evidence before stopping.",
+    };
+  }
+  const final = await readCodeReviewFinalArtifact(cwd, sessionId, rootThreadId, reviewId);
+  if (!final) {
+    return {
+      decision: "block",
+      reason: `Code-review ${reviewId} is active but no finalized runtime artifact is available; continue or recover the review before stopping.`,
+      stopReason: "code_review_not_finalized",
+      systemMessage: "Code-review runtime evidence is absent or non-terminal; use review_get/review_finalize recovery before stopping.",
+    };
+  }
+  if (final.artifact.verdict.clean === true) return null;
+  const markerPayload = safeObject(await readJsonIfExistsRaw(paths.stopTerminalBriefPath));
+  if (safeString(markerPayload.state) !== "PENDING_BRIEF"
+    || safeString(markerPayload.session_id) !== sessionId
+    || safeString(markerPayload.review_id) !== reviewId
+    || safeString(markerPayload.root_thread_id) !== rootThreadId
+    || safeString(markerPayload.artifact_sha256) !== final.sha
+    || safeString(markerPayload.verdict) !== "REQUEST CHANGES") {
+    return {
+      decision: "block",
+      reason: `Code-review ${reviewId} is non-clean but its transactional terminal marker is missing or conflicts; recover review_finalize before stopping.`,
+      stopReason: "code_review_terminal_marker_invalid",
+      systemMessage: "Recover the code-review finalization transaction; do not fabricate or overwrite its terminal marker.",
+    };
+  }
+  const footer = buildCodeReviewTerminalBriefFooter({
+    review_id: reviewId,
+    artifact_sha256: final.sha,
+    issued_stop_signature: safeString(markerPayload.issued_stop_signature),
+  });
+  return {
+    decision: "block",
+    reason: `Code-review ended with REQUEST CHANGES. Emit one bounded terminal brief and include the exact footer: ${footer}`,
+    stopReason: "code_review_terminal_brief_required",
+    systemMessage: `Emit a concise code-review terminal brief; include this exact footer on its own line: ${footer}`,
+  };
+}
+
 async function buildStopHookOutput(
   payload: CodexHookPayload,
   cwd: string,
@@ -9481,6 +10042,16 @@ async function buildStopHookOutput(
         void err;
       }
       return null;
+    }
+
+    const codeReviewStopOutput = await buildCodeReviewStopOutput(
+      payload,
+      cwd,
+      canonicalSessionId || "",
+      threadId,
+    );
+    if (codeReviewStopOutput) {
+      return codeReviewStopOutput;
     }
 
     const autopilotOutput = await buildModeBasedStopOutput("autopilot", cwd, canonicalSessionId);
@@ -10020,6 +10591,12 @@ export async function dispatchCodexNativeHook(
     const preToolUseSessionId = payloadSessionId
       ? await resolveInternalSessionIdForPayload(cwd, payloadSessionId, stateDir)
       : "";
+    await recordCodeReviewContentFreeActivity(
+      payload,
+      cwd,
+      preToolUseSessionId || canonicalSessionId,
+      "TOOL_START",
+    );
     outputJson = await buildDeepInterviewPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildRalplanPreToolUseBoundaryOutput(payload, cwd, stateDir, preToolUseSessionId)
       ?? await buildPlanningRootPointerConflictPreToolUseOutput(payload, cwd, stateDir, rootPointerConflict)
@@ -10030,6 +10607,8 @@ export async function dispatchCodexNativeHook(
   } else if (hookEventName === "PostToolUse") {
     await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
     await recordNativeSubagentSupportBlocker(cwd, stateDir, payload).catch(() => {});
+    await recordCodeReviewContentFreeActivity(payload, cwd, canonicalSessionId, "TOOL_END");
+    await publishCodeReviewResultPostToolAttestation(payload, cwd, canonicalSessionId);
     if (detectMcpTransportFailure(payload)) {
       await markTeamTransportFailure(cwd, payload);
     }
