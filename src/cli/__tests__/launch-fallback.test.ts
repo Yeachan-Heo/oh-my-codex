@@ -918,7 +918,7 @@ exit 0
     }
   });
 
-  it('preserves parent provider env for interactive OMX-created tmux without logging secret values', async () => {
+  it('preserves parent provider env without replaying terminal state over an OMX-created tmux pane', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-parent-env-'));
     try {
       const home = join(wd, 'home');
@@ -934,6 +934,14 @@ exit 0
 {
   printf 'custom=%s\n' "$CUSTOM_LLM_API_KEY"
   printf 'marker=%s\n' "$IS_GAJAE_SLOP_GENERATOR"
+  printf 'term=%s\n' "$TERM"
+  printf 'term_program=%s\n' "$TERM_PROGRAM"
+  printf 'term_program_version=%s\n' "$TERM_PROGRAM_VERSION"
+  printf 'colorterm=%s\n' "$COLORTERM"
+  printf 'tmux=%s\n' "$TMUX"
+  printf 'tmux_pane=%s\n' "$TMUX_PANE"
+  printf 'columns=%s\n' "$COLUMNS"
+  printf 'lines=%s\n' "$LINES"
 } > "${envLogPath}"
 exit 130
 `,
@@ -951,7 +959,15 @@ case "$1" in
   new-session)
     last=''
     for arg in "$@"; do last="$arg"; done
-    sh -c "$last" >/dev/null 2>&1 || true
+    env -u COLORTERM \
+      TERM=tmux-256color \
+      TERM_PROGRAM=tmux \
+      TERM_PROGRAM_VERSION=3.4 \
+      TMUX=/tmp/tmux-test.sock,123,0 \
+      TMUX_PANE=%12 \
+      COLUMNS=80 \
+      LINES=24 \
+      sh -c "$last" >/dev/null 2>&1 || true
     printf 'leader-pane\\n'
     exit 0
     ;;
@@ -988,6 +1004,12 @@ exit 0
           OMX_AUTO_UPDATE: '0',
           OMX_NOTIFY_FALLBACK: '0',
           OMX_HOOK_DERIVED_SIGNALS: '0',
+          TERM: 'xterm-256color',
+          TERM_PROGRAM: 'WarpTerminal',
+          TERM_PROGRAM_VERSION: 'outer-terminal-version',
+          COLORTERM: 'truecolor',
+          COLUMNS: '200',
+          LINES: '60',
           TMUX: '',
           TMUX_PANE: '',
           CUSTOM_LLM_API_KEY: 'fake-provider-key',
@@ -1000,7 +1022,19 @@ exit 0
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.equal(
         await readFile(envLogPath, 'utf-8'),
-        'custom=fake-provider-key\nmarker=1\n',
+        [
+          'custom=fake-provider-key',
+          'marker=1',
+          'term=tmux-256color',
+          'term_program=tmux',
+          'term_program_version=3.4',
+          'colorterm=truecolor',
+          'tmux=/tmp/tmux-test.sock,123,0',
+          'tmux_pane=%12',
+          'columns=80',
+          'lines=24',
+          '',
+        ].join('\n'),
       );
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.doesNotMatch(tmuxLog, /fake-provider-key/);

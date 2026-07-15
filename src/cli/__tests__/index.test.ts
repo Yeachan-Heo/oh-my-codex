@@ -3746,6 +3746,34 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(envScript, /not-a-shell-name/);
   });
 
+  it("does not replay tmux-owned terminal metadata into the detached session", () => {
+    const envScript = serializeDetachedSessionParentEnv({
+      CUSTOM_LLM_API_KEY: "fake-provider-key",
+      TERM: "xterm-256color",
+      TERM_PROGRAM: "WarpTerminal",
+      TERM_PROGRAM_VERSION: "1.0.0",
+      COLORTERM: "truecolor",
+      TMUX: "/tmp/tmux/default,123,0",
+      TMUX_PANE: "%9",
+      COLUMNS: "200",
+      LINES: "60",
+    });
+
+    assert.match(envScript, /export CUSTOM_LLM_API_KEY='fake-provider-key'/);
+    assert.match(envScript, /export COLORTERM='truecolor'/);
+    for (const key of [
+      "TERM",
+      "TERM_PROGRAM",
+      "TERM_PROGRAM_VERSION",
+      "TMUX",
+      "TMUX_PANE",
+      "COLUMNS",
+      "LINES",
+    ]) {
+      assert.doesNotMatch(envScript, new RegExp(`^export ${key}=`, "m"));
+    }
+  });
+
   it("creates a repo-local omx command shim for launched Codex sessions", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-runtime-command-shim-"));
     try {
