@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   listActiveSkills,
+  listTransitionActiveSkills,
   readVisibleSkillActiveState,
   syncCanonicalSkillStateForMode,
   writeSkillActiveStateCopies,
@@ -282,6 +283,34 @@ describe('skill-active state helpers', () => {
     });
   });
 
+  it('requires nested transition entries to match canonical session ownership', () => {
+    const entries = [
+      { skill: 'team', phase: 'team-exec', active: true },
+      { skill: 'ralph', phase: 'executing', active: true, session_id: 'foreign-session' },
+      { skill: 'ultrawork', phase: 'executing', active: true, session_id: 'current-session' },
+    ];
+    const compact = (state: unknown, sessionId?: string) => listTransitionActiveSkills(state, sessionId)
+      .map(({ skill, phase, session_id }) => ({ skill, phase, session_id }));
+
+    assert.deepEqual(compact({
+      active: true,
+      skill: 'team',
+      session_id: 'foreign-outer',
+      active_skills: entries,
+    }), []);
+    assert.deepEqual(
+      compact({ active: true, skill: 'team', active_skills: entries }),
+      [{ skill: 'team', phase: 'team-exec', session_id: undefined }],
+    );
+    assert.deepEqual(
+      compact({ active: true, skill: 'team', active_skills: [...entries].reverse() }, 'current-session'),
+      [{ skill: 'ultrawork', phase: 'executing', session_id: 'current-session' }],
+    );
+    assert.deepEqual(
+      compact({ active: true, skill: 'team', active_skills: entries }, 'foreign-session'),
+      [{ skill: 'ralph', phase: 'executing', session_id: 'foreign-session' }],
+    );
+  });
   it('does not treat active_skills as active when the canonical state is terminal', async () => {
     await withTempRepo('omx-skill-active-terminal-overrides-entries-', async (cwd) => {
       await mkdir(join(cwd, '.omx', 'state', 'sessions', 'sess-terminal'), { recursive: true });

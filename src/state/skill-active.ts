@@ -235,6 +235,28 @@ export function listActiveSkills(raw: unknown): SkillActiveEntry[] {
   return [...deduped.values()];
 }
 
+/**
+ * Returns whether a canonical compatibility record may speak for the requested
+ * transition scope. A foreign outer session never authenticates unowned legacy
+ * child entries for a root or different-session caller.
+ */
+export function isTransitionCanonicalStateOwned(raw: unknown, sessionId?: string): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const outerSessionId = safeString((raw as SkillActiveStateLike).session_id).trim();
+  const normalizedSessionId = safeString(sessionId).trim();
+  return normalizedSessionId ? !outerSessionId || outerSessionId === normalizedSessionId : !outerSessionId;
+}
+
+export function listTransitionActiveSkills(raw: unknown, sessionId?: string): SkillActiveEntry[] {
+  if (!isTransitionCanonicalStateOwned(raw, sessionId)) return [];
+  const entries = listActiveSkills(raw);
+  const normalizedSessionId = safeString(sessionId).trim();
+  if (normalizedSessionId) {
+    return entries.filter((entry) => safeString(entry.session_id).trim() === normalizedSessionId);
+  }
+  return entries.filter((entry) => safeString(entry.session_id).trim().length === 0);
+}
+
 /** Owner metadata for read-only provenance preflight; never infers ownership from storage. */
 export function listSkillActiveOwnerCodexSessionIds(raw: unknown): string[] {
   if (!raw || typeof raw !== 'object') return [];
@@ -409,9 +431,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
       ))
     ))
     : [];
-  const visibleEntries = normalizedSessionId
-    ? [...rootEntries, ...sessionOnlyEntries]
-    : rootEntries.filter((entry) => safeString(entry.session_id).trim().length === 0);
+  const visibleEntries = listTransitionActiveSkills(existingSession ?? existingRoot ?? {}, sessionId);
 
   if (active && isTrackedWorkflowMode(mode)) {
     const currentWorkflowModes = visibleEntries
@@ -419,6 +439,8 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
       .filter(isTrackedWorkflowMode);
     assertWorkflowTransitionAllowed(currentWorkflowModes, mode, 'write');
   }
+
+  if (!normalizedSessionId && existingRoot && !isTransitionCanonicalStateOwned(existingRoot)) return;
 
   const applyEntriesToState = (
     base: SkillActiveStateLike | null,

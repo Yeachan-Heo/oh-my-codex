@@ -1767,6 +1767,58 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('activates deep-interview when terminal Team detail outranks foreign legacy mirrors', async () => {
+    await withStateRootEnv({}, async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-stale-team-transition-'));
+      try {
+        const stateDir = join(wd, '.omx', 'state');
+        await mkdir(stateDir, { recursive: true });
+        const teamState = { active: false, mode: 'team', current_phase: 'cancelled', run_outcome: 'continue' };
+        const foreignSkillState = {
+          version: 1,
+          active: true,
+          skill: 'team',
+          phase: 'team-exec',
+          current_phase: 'cancelled',
+          session_id: 'foreign-team-session',
+          active_skills: [{ skill: 'team', phase: 'team-exec', active: true }],
+        };
+        const runState = { version: 1, mode: 'team', active: true, outcome: 'continue', current_phase: 'team-exec' };
+        await writeFile(join(stateDir, 'team-state.json'), JSON.stringify(teamState, null, 2));
+        await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify(foreignSkillState, null, 2));
+        await writeFile(join(stateDir, 'run-state.json'), JSON.stringify(runState, null, 2));
+
+        const beforeList = await executeStateOperation('state_list_active', { workingDirectory: wd });
+        const beforeTeam = await executeStateOperation('state_read', { workingDirectory: wd, mode: 'team' });
+        assert.deepEqual(beforeList.payload, { active_modes: ['run'] });
+        assert.deepEqual(beforeTeam.payload, teamState);
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          mode: 'deep-interview',
+          active: true,
+          current_phase: 'deep-interview',
+          state: { interview_id: 'fixture', profile: 'quick', type: 'brownfield' },
+        });
+
+        const payload = responsePayload<{ success: boolean; path: string }>(response);
+        assert.equal(payload.success, true);
+        assert.equal(payload.path, join(stateDir, 'deep-interview-state.json'));
+        assert.deepEqual(JSON.parse(await readFile(join(stateDir, 'team-state.json'), 'utf-8')), teamState);
+        assert.deepEqual(JSON.parse(await readFile(join(stateDir, 'run-state.json'), 'utf-8')), runState);
+        assert.equal(existsSync(join(stateDir, 'sessions', 'foreign-team-session', 'deep-interview-state.json')), false);
+
+        assert.deepEqual(
+          JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')),
+          foreignSkillState,
+        );
+        const afterList = await executeStateOperation('state_list_active', { workingDirectory: wd });
+        assert.deepEqual(afterList.payload, { active_modes: ['deep-interview', 'run'] });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+  });
   it('fails closed without mutating root state when ralplan terminalization sees a foreign session pointer', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-stale-session-'));
     try {

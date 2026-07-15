@@ -35,7 +35,9 @@ import {
   clearTerminalSkillActiveMarkers,
   getSkillActiveStatePathsForStateDir,
   isTerminalSkillActiveState,
+  isTransitionCanonicalStateOwned,
   listActiveSkills,
+  listTransitionActiveSkills,
   readSkillActiveState,
   readVisibleSkillActiveStateForStateDir,
   syncCanonicalSkillStateForMode,
@@ -663,14 +665,9 @@ export async function listActiveStateModes(
   });
   const canonicalState = await readVisibleSkillActiveStateForStateDir(getBaseStateDir(cwd), sessionId);
   const canonicalActiveModes = new Set(
-    listActiveSkills(canonicalState ?? {})
-      .filter((entry) => {
-        const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
-        return sessionId ? entrySessionId === sessionId : entrySessionId.length === 0;
-      })
-      .map((entry) => entry.skill),
+    listTransitionActiveSkills(canonicalState ?? {}, sessionId).map((entry) => entry.skill),
   );
-  const hasCanonicalVisibility = canonicalState !== null;
+  const hasCanonicalVisibility = isTransitionCanonicalStateOwned(canonicalState, sessionId);
 
   return Object.entries(statuses)
     .filter(([mode, status]) => {
@@ -687,13 +684,8 @@ async function readCanonicalActiveWorkflowModes(
   baseStateDir: string,
   sessionId?: string,
 ): Promise<TrackedWorkflowMode[]> {
-  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   const canonicalState = await readVisibleSkillActiveStateForStateDir(baseStateDir, sessionId);
-  const activeModes = listActiveSkills(canonicalState ?? {})
-    .filter((entry) => {
-      const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
-      return normalizedSessionId ? entrySessionId === normalizedSessionId : entrySessionId.length === 0;
-    })
+  const activeModes = listTransitionActiveSkills(canonicalState ?? {}, sessionId)
     .map((entry) => entry.skill)
     .filter(isTrackedWorkflowMode);
   return [...new Set(activeModes)];
