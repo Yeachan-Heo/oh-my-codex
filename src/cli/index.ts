@@ -4333,26 +4333,20 @@ function buildTmuxExtendedKeysReleaseShellSnippet(cwd: string): string {
 }
 
 const SHELL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const DETACHED_SESSION_ENV_KEYS_TO_UNSET = [
-  "COLUMNS",
-  "LINES",
-  "TERMCAP",
-] as const;
 const DETACHED_SESSION_PANE_ENV_KEYS = new Set([
   "TERM",
   "TERM_PROGRAM",
   "TERM_PROGRAM_VERSION",
-  "TERMINFO",
-  "TERMINFO_DIRS",
   "TMUX",
   "TMUX_PANE",
-  ...DETACHED_SESSION_ENV_KEYS_TO_UNSET,
+  "COLUMNS",
+  "LINES",
 ]);
 
 export function serializeDetachedSessionParentEnv(
   env: NodeJS.ProcessEnv,
 ): string {
-  const lines = [`unset ${DETACHED_SESSION_ENV_KEYS_TO_UNSET.join(" ")}`];
+  const lines: string[] = [];
   for (const key of Object.keys(env).sort()) {
     if (!SHELL_ENV_NAME_PATTERN.test(key)) continue;
     if (DETACHED_SESSION_PANE_ENV_KEYS.has(key)) continue;

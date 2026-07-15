@@ -3746,32 +3746,32 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(envScript, /not-a-shell-name/);
   });
 
-  it("does not replay tmux-owned terminal metadata into the detached session", () => {
+  it("omits only tmux-owned pane metadata from the detached session env", () => {
     const envScript = serializeDetachedSessionParentEnv({
       CUSTOM_LLM_API_KEY: "fake-provider-key",
       TERM: "xterm-256color",
-      TERM_PROGRAM: "WarpTerminal",
-      TERM_PROGRAM_VERSION: "1.0.0",
+      TERM_PROGRAM: "",
+      TERM_PROGRAM_VERSION: undefined,
       TERMINFO: "/tmp/outer-terminfo",
       TERMINFO_DIRS: "/tmp/outer-terminfo-dirs",
       TERMCAP: "outer-termcap",
       COLORTERM: "truecolor",
-      TMUX: "/tmp/tmux/default,123,0",
-      TMUX_PANE: "%9",
+      TMUX: "",
+      TMUX_PANE: undefined,
       COLUMNS: "200",
-      LINES: "60",
+      LINES: "",
     });
 
     assert.match(envScript, /export CUSTOM_LLM_API_KEY='fake-provider-key'/);
     assert.match(envScript, /export COLORTERM='truecolor'/);
-    assert.match(envScript, /^unset COLUMNS LINES TERMCAP$/m);
+    assert.match(envScript, /export TERMINFO='\/tmp\/outer-terminfo'/);
+    assert.match(envScript, /export TERMINFO_DIRS='\/tmp\/outer-terminfo-dirs'/);
+    assert.match(envScript, /export TERMCAP='outer-termcap'/);
+    assert.doesNotMatch(envScript, /^unset\b/m);
     for (const key of [
       "TERM",
       "TERM_PROGRAM",
       "TERM_PROGRAM_VERSION",
-      "TERMINFO",
-      "TERMINFO_DIRS",
-      "TERMCAP",
       "TMUX",
       "TMUX_PANE",
       "COLUMNS",
@@ -3779,6 +3779,22 @@ describe("detached tmux new-session sequencing", () => {
     ]) {
       assert.doesNotMatch(envScript, new RegExp(`^export ${key}=`, "m"));
     }
+  });
+
+  it("round-trips shell-sensitive detached parent env values without evaluating them", { skip: process.platform === "win32" }, async () => {
+    const shellSensitiveValue = "literal ' quote $HOME $(printf injected) `printf injected`; \\ slash\nsecond line";
+    const envScript = serializeDetachedSessionParentEnv({
+      CUSTOM_LLM_API_KEY: shellSensitiveValue,
+      EMPTY_PROVIDER_KEY: "",
+    });
+    const result = (await import("node:child_process")).spawnSync(
+      "/bin/sh",
+      ["-c", `${envScript}printf '%s\\n<%s>\\n' "$CUSTOM_LLM_API_KEY" "$EMPTY_PROVIDER_KEY"`],
+      { encoding: "utf-8", env: { HOME: "/should-not-expand" } },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `${shellSensitiveValue}\n<>\n`);
   });
 
   it("creates a repo-local omx command shim for launched Codex sessions", async () => {
