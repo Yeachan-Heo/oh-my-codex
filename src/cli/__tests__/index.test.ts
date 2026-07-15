@@ -3764,7 +3764,7 @@ describe("detached tmux new-session sequencing", () => {
 
     assert.match(envScript, /export CUSTOM_LLM_API_KEY='fake-provider-key'/);
     assert.match(envScript, /export COLORTERM='truecolor'/);
-    assert.match(envScript, /^unset COLUMNS LINES TERMINFO TERMINFO_DIRS TERMCAP$/m);
+    assert.match(envScript, /^unset COLUMNS LINES TERMCAP$/m);
     for (const key of [
       "TERM",
       "TERM_PROGRAM",
