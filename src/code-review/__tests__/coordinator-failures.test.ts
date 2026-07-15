@@ -710,6 +710,33 @@ describe('review coordinator failure and concurrency invariants', () => {
     }
   });
 
+  it('does not let a wall-clock rollback extend an earlier lane deadline', async () => {
+    const pending = initialReview(60_000);
+    pending.lanes[0]!.idle_deadline_at = new Date(START.getTime() + 1_000).toISOString();
+    let wallNow = START.getTime();
+    let monotonicNow = 1_000;
+    const waits: number[] = [];
+
+    await assert.rejects(waitForLaneRunning({
+      load: () => pending,
+      lane_id: 'reviewer-batch-1',
+      now: () => new Date(wallNow),
+      monotonicNow: () => monotonicNow,
+      waitForChange: (_deadlineAt, maximumWaitMs) => {
+        waits.push(maximumWaitMs);
+        if (waits.length === 1) {
+          wallNow -= 60_000;
+          monotonicNow += 50;
+          return;
+        }
+        monotonicNow += maximumWaitMs;
+      },
+      maximum_wait_ms: 30_000,
+    }), (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT');
+
+    assert.deepEqual(waits, [1_000, 950]);
+  });
+
   it('blocks resume and finalization on scope drift and old-attempt late results', () => {
     const record = running();
     const blocked: ReviewRecord = {

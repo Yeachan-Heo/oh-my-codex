@@ -515,6 +515,7 @@ export async function waitForLaneRunning(input: {
   const monotonicNow = input.monotonicNow ?? (() => performance.now());
   const startedAt = monotonicTimestamp(monotonicNow, 'readiness start');
   let previousMonotonic = startedAt;
+  let laneMonotonicDeadline: number | undefined;
   while (true) {
     const record = await input.load();
     const currentMonotonic = monotonicTimestamp(monotonicNow, 'readiness elapsed');
@@ -552,7 +553,19 @@ export async function waitForLaneRunning(input: {
     if (laneRemaining <= 0) {
       throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
     }
-    const nextWait = Math.min(remainingBudget, laneRemaining);
+    const observedLaneMonotonicDeadline = currentMonotonic + laneRemaining;
+    if (!Number.isFinite(observedLaneMonotonicDeadline)) {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'lane readiness deadline is invalid');
+    }
+    laneMonotonicDeadline = Math.min(
+      laneMonotonicDeadline ?? observedLaneMonotonicDeadline,
+      observedLaneMonotonicDeadline,
+    );
+    const monotonicLaneRemaining = laneMonotonicDeadline - currentMonotonic;
+    if (monotonicLaneRemaining <= 0) {
+      throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
+    }
+    const nextWait = Math.min(remainingBudget, laneRemaining, monotonicLaneRemaining);
     await input.waitForChange(new Date(wallNow.getTime() + nextWait).toISOString(), nextWait);
   }
 }
