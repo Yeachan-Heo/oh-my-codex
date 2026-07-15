@@ -56,6 +56,34 @@ function reviewOverlay(): SkillActiveEntry {
 }
 
 describe('code-review overlay failure handling', () => {
+  it('rejects session or root-thread conflicts in both overlays and canonical entries', () => {
+    const cases: Array<{ state?: SkillActiveStateLike; overlay?: SkillActiveEntry; pattern: RegExp }> = [
+      { overlay: { ...reviewOverlay(), session_id: 'other-session' }, pattern: /overlay session/i },
+      { overlay: { ...reviewOverlay(), thread_id: 'other-thread' }, pattern: /overlay root thread/i },
+      {
+        state: ralplanState({
+          active_skills: [{ ...ralplanState().active_skills?.[0]!, session_id: 'other-session' }],
+        }),
+        pattern: /canonical session entry/i,
+      },
+      {
+        state: ralplanState({
+          active_skills: [{ ...ralplanState().active_skills?.[0]!, thread_id: 'other-thread' }],
+        }),
+        pattern: /canonical root thread entry/i,
+      },
+    ];
+    for (const testCase of cases) {
+      assert.throws(() => mergeSessionAwareSkillOverlay({
+        authoritativeState: testCase.state ?? ralplanState(),
+        overlay: testCase.overlay ?? reviewOverlay(),
+        sessionId: SESSION_ID,
+        rootThreadId: THREAD_ID,
+        nowIso: NOW,
+      }), testCase.pattern);
+    }
+  });
+
   it('rejects conflicting canonical copies without mutating the authoritative state', () => {
     const authoritative = ralplanState();
     const before = JSON.stringify(authoritative);

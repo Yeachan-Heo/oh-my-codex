@@ -15,6 +15,7 @@ import {
   writeTeamLeaderAttention,
 } from "../../team/state.js";
 import {
+  buildCodeReviewStopOutput,
   dispatchCodexNativeHook,
   isCodexNativeHookMainModule,
   looksLikeGoalCompletionPrompt,
@@ -2729,6 +2730,94 @@ PY`,
     }
   });
 
+  it("rejects malformed RESULT host markers, requests, payloads, and durable proposals", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-posttool-invalid-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-invalid-session";
+      const rootThreadId = "codex-review-invalid-root";
+      const childThreadId = "codex-review-invalid-child";
+      const reviewId = "91919191-9191-4191-8191-919191919191";
+      const idempotencyKey = "92929292-9292-4292-8292-929292929292";
+      const laneId = "architect-invalid-lane";
+      const result = codeReviewArchitectResult({ reviewId, laneId });
+      const publicationPath = join(
+        stateDir,
+        "sessions",
+        sessionId,
+        "code-review",
+        reviewId,
+        "submissions",
+        idempotencyKey,
+        "post-tool",
+      );
+      const proposalPath = join(dirname(publicationPath), "proposal");
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: rootThreadId,
+            threads: {
+              [childThreadId]: { kind: "subagent", leader_thread_id: rootThreadId, lane_id: laneId },
+            },
+          },
+        },
+      });
+      const validInput = {
+        workingDirectory: cwd,
+        session_id: sessionId,
+        event: "RESULT",
+        review_id: reviewId,
+        attempt: 1,
+        lane_id: laneId,
+        scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+        result,
+        idempotency_key: idempotencyKey,
+      };
+      const validResponse = {
+        content: [{ type: "text", text: JSON.stringify({ state: "PENDING_HOST_ATTESTATION" }) }],
+      };
+      const dispatch = async (toolInput: Record<string, unknown>, toolResponse: unknown): Promise<void> => {
+        await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: childThreadId,
+          owner_codex_thread_id: rootThreadId,
+          thread_id: childThreadId,
+          tool_use_id: "toolu-review-result-invalid",
+          tool_name: "mcp__omx_state__review_record_lane",
+          tool_input: toolInput,
+          tool_response: toolResponse,
+        }, { cwd });
+        assert.equal(existsSync(publicationPath), false);
+      };
+
+      await dispatch(validInput, { content: [{ type: "text", text: "{not-json" }] });
+      await dispatch({ ...validInput, unexpected: true }, validResponse);
+
+      const cyclicResult = { ...result } as Record<string, unknown>;
+      cyclicResult.self = cyclicResult;
+      await dispatch({ ...validInput, result: cyclicResult }, validResponse);
+
+      await writeJson(proposalPath, {
+        schema_version: 1,
+        state: "PENDING_HOST_ATTESTATION",
+        review_id: reviewId,
+        attempt: 1,
+        lane_id: laneId,
+        scope_hash: CODE_REVIEW_TEST_SCOPE_HASH,
+        idempotency_key: idempotencyKey,
+        payload_digest: "b".repeat(64),
+        result,
+        proposed_at: "2026-07-15T00:00:00.000Z",
+      });
+      await dispatch(validInput, validResponse);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks Stop once with a bounded code-review terminal brief and consumes only the exact footer", async () => {
     const cwd = await initTempGitRepo("omx-native-hook-code-review-stop-brief-");
     try {
@@ -2798,6 +2887,56 @@ PY`,
       );
       assert.equal(mismatch.outputJson?.decision, "block");
 
+      const oversizedMessage = `${"x".repeat(4_001 - footer.length - 1)}\n${footer}`;
+      assert.equal([...oversizedMessage].length, 4_001);
+      const oversizedFooter = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: oversizedMessage,
+          last_assistant_message_thread_id: rootThreadId,
+          last_assistant_message_id: "assistant-oversized-terminal-brief",
+          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          last_assistant_message_immediately_precedes_stop: true,
+        },
+        { cwd },
+      );
+      assert.equal(oversizedFooter.outputJson?.decision, "block");
+
+      const emptyMessageId = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          last_assistant_message: footer,
+          last_assistant_message_thread_id: rootThreadId,
+          last_assistant_message_id: "",
+          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          last_assistant_message_immediately_precedes_stop: true,
+        },
+        { cwd },
+      );
+      assert.equal(emptyMessageId.outputJson?.decision, "block");
+
+      const camelCasePayload = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: rootThreadId,
+          thread_id: rootThreadId,
+          lastAssistantMessage: footer.replace(/"stop_signature":"[^"]+"/u, '"stop_signature":"stale-review-signature"'),
+          lastAssistantMessageThreadId: rootThreadId,
+          lastAssistantMessageId: "assistant-camel-terminal-brief",
+          lastAssistantMessageCreatedAt: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          lastAssistantMessageImmediatelyPrecedesStop: true,
+        },
+        { cwd },
+      );
+      assert.equal(camelCasePayload.outputJson?.decision, "block");
+
       const oldFooter = await dispatchCodexNativeHook(
         {
           hook_event_name: "Stop",
@@ -2862,16 +3001,18 @@ PY`,
       );
       assert.equal(notImmediatelyPreceding.outputJson?.decision, "block");
 
+      const boundedMessage = `${"x".repeat(4_000 - footer.length - 1)}\n${footer}`;
+      assert.equal([...boundedMessage].length, 4_000);
       const consumed = await dispatchCodexNativeHook(
         {
           hook_event_name: "Stop",
           cwd,
           session_id: rootThreadId,
           thread_id: rootThreadId,
-          last_assistant_message: `Review failed closed.\n${footer}`,
+          last_assistant_message: boundedMessage,
           last_assistant_message_thread_id: rootThreadId,
-          last_assistant_message_id: "assistant-terminal-brief-1",
-          last_assistant_message_created_at: new Date(Date.parse(pendingMarker.issued_at ?? "") + 1).toISOString(),
+          last_assistant_message_id: "a".repeat(160),
+          last_assistant_message_created_at: pendingMarker.issued_at,
           last_assistant_message_immediately_precedes_stop: true,
         },
         { cwd },
@@ -2947,6 +3088,331 @@ PY`,
       );
       assert.equal(damagedConsumption.outputJson?.decision, "block");
       assert.equal(damagedConsumption.outputJson?.stopReason, "code_review_consumed_marker_invalid");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for missing artifacts, missing markers, malformed footers, and transactional consume failures", async () => {
+    const noSessionRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-stop-no-session-"));
+    try {
+      const reviewId = "91919191-9191-4191-8191-919191919191";
+      await writeJson(join(noSessionRoot, ".omx", "state", "code-review", "active.json"), {
+        schema_version: 1,
+        review_id: reviewId,
+        status: "REVIEWING",
+      });
+      await writeJson(join(noSessionRoot, ".omx", "state", "code-review", reviewId, "review.json"), {
+        status: "REVIEWING",
+        current_attempt: 1,
+      });
+      await writeJson(join(noSessionRoot, ".omx", "state", "code-review", "stop-terminal-brief.json"), {
+        state: "PENDING_BRIEF",
+      });
+      assert.equal(await buildCodeReviewStopOutput(
+        { hook_event_name: "Stop" },
+        noSessionRoot,
+        "",
+        "codex-review-stop-no-session-root",
+      ), null);
+      assert.equal(await buildCodeReviewStopOutput(
+        { hook_event_name: "Stop" },
+        noSessionRoot,
+        "../invalid-session",
+        "codex-review-stop-invalid-session-root",
+      ), null);
+      const noSession = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: noSessionRoot,
+        session_id: "",
+        thread_id: "codex-review-stop-no-session-root",
+      }, { cwd: noSessionRoot });
+      assert.equal(noSession.outputJson, null);
+    } finally {
+      await rm(noSessionRoot, { recursive: true, force: true });
+    }
+
+    const missingRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-stop-missing-"));
+    try {
+      const stateDir = join(missingRoot, ".omx", "state");
+      const sessionId = "omx-review-stop-missing-session";
+      const rootThreadId = "codex-review-stop-missing-root";
+      const reviewId = "93939393-9393-4393-8393-939393939393";
+      await writeSessionStart(missingRoot, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief.json"), {
+        schema_version: 1,
+        state: "PENDING_BRIEF",
+        session_id: sessionId,
+        review_id: reviewId,
+        root_thread_id: rootThreadId,
+        artifact_sha256: "a".repeat(64),
+        verdict: "REQUEST CHANGES",
+        issued_stop_signature: "s".repeat(43),
+        issued_at: "2026-07-14T00:00:00.000Z",
+      });
+      const invalidMarker = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: missingRoot,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+      }, { cwd: missingRoot });
+      assert.equal(invalidMarker.outputJson?.stopReason, "code_review_terminal_marker_invalid");
+
+      await rm(join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief.json"));
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", "active.json"), {
+        schema_version: 1,
+        review_id: reviewId,
+        status: "REVIEWING",
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", reviewId, "review.json"), {
+        status: "REVIEWING",
+      });
+      const finalizeFailed = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: missingRoot,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+      }, { cwd: missingRoot });
+      assert.equal(finalizeFailed.outputJson?.stopReason, "code_review_finalize_failed");
+
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", "active.json"), {
+        schema_version: 1,
+        review_id: reviewId,
+        status: "FINALIZED",
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", reviewId, "review.json"), {
+        status: "FINALIZED",
+      });
+      const missingArtifact = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: missingRoot,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+      }, { cwd: missingRoot });
+      assert.equal(missingArtifact.outputJson?.stopReason, "code_review_not_finalized");
+    } finally {
+      await rm(missingRoot, { recursive: true, force: true });
+    }
+
+    const cleanRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-stop-clean-"));
+    try {
+      const sessionId = "omx-review-stop-clean-session";
+      const rootThreadId = "codex-review-stop-clean-root";
+      const reviewId = "92929292-9292-4292-8292-929292929292";
+      const scopeHash = "c".repeat(64);
+      const sessionReviewRoot = join(cleanRoot, ".omx", "state", "sessions", sessionId, "code-review");
+      await writeSessionStart(cleanRoot, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(sessionReviewRoot, "active.json"), {
+        schema_version: 1,
+        review_id: reviewId,
+        status: "FINALIZED",
+      });
+      await writeJson(join(sessionReviewRoot, reviewId, "review.json"), {
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        revision: 7,
+        status: "FINALIZED",
+        current_attempt: 1,
+        scope: { scope_hash: scopeHash },
+      });
+      await writeJson(join(cleanRoot, ".omx", "reviews", `${reviewId}.json`), {
+        schema_version: 1,
+        review_id: reviewId,
+        revision: 7,
+        status: "FINALIZED",
+        current_attempt: 1,
+        scope: {
+          selector: { explicit_paths: [] },
+          status: "FULL_SCOPE",
+          scope_hash: scopeHash,
+          files: [{
+            path: "src/example.ts",
+            change: "MODIFIED",
+            sources: ["WORKTREE"],
+            binary: false,
+            additions: 1,
+            deletions: 0,
+          }],
+          changed_lines: 1,
+          reasons: [],
+        },
+        review_flags: [],
+        batches: [{
+          batch_id: "batch-1",
+          module_root: ".",
+          files: ["src/example.ts"],
+          changed_lines: 1,
+          oversized_single_file: false,
+        }],
+        lanes: [
+          {
+            lane_id: "reviewer-1",
+            role: "code-reviewer",
+            batch_id: "batch-1",
+            scope_hash: scopeHash,
+            status: "COMPLETE",
+            attempt: 1,
+            recommendation: "APPROVE",
+            findings: [],
+            diagnostic_ids: [],
+          },
+          {
+            lane_id: "architect-1",
+            role: "architect",
+            batch_id: "global",
+            scope_hash: scopeHash,
+            status: "COMPLETE",
+            attempt: 1,
+            architectural_status: "CLEAR",
+            findings: [],
+            diagnostic_ids: [],
+          },
+        ],
+        diagnostics: [],
+        verdict: {
+          recommendation: "APPROVE",
+          architectural_status: "CLEAR",
+          scope_status: "FULL_SCOPE",
+          evidence_status: "FULL_EVIDENCE",
+          rule_id: "CLEAN_APPROVAL",
+          reasons: ["ALL_REQUIRED_EVIDENCE_CLEAR"],
+          clean: true,
+        },
+        created_at: "2026-07-15T00:00:00.000Z",
+        updated_at: "2026-07-15T00:01:00.000Z",
+        finalized_at: "2026-07-15T00:01:00.000Z",
+      });
+
+      const clean = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: cleanRoot,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+      }, { cwd: cleanRoot });
+      assert.equal(clean.outputJson, null);
+    } finally {
+      await rm(cleanRoot, { recursive: true, force: true });
+    }
+
+    const cwd = await initTempGitRepo("omx-native-hook-code-review-stop-errors-");
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-stop-errors-session";
+      const rootThreadId = "codex-review-stop-errors-root";
+      const issuedAt = "2026-07-14T00:00:00.000Z";
+      const stopSignature = "t".repeat(43);
+      await writeFile(join(cwd, ".gitignore"), ".omx/\n");
+      await writeFile(join(cwd, "review-target.ts"), "export const reviewTarget = 1;\n");
+      execFileSync("git", ["add", ".gitignore", "review-target.ts"], { cwd });
+      gitCommitForTest(cwd, "seed review stop errors");
+      await writeFile(join(cwd, "review-target.ts"), "export const reviewTarget = 2;\n");
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      const started = await executeReviewOperation("review_start", {
+        workingDirectory: cwd,
+        session_id: sessionId,
+        invocation: [],
+        idempotency_key: "94949494-9494-4494-8494-949494949494",
+      }, { source: "MCP", root_thread_id: rootThreadId });
+      assert.equal(started.isError, undefined, JSON.stringify(started.payload));
+      const startedPayload = started.payload as { review_id: string; attempt: number };
+      const finalized = await executeReviewOperation("review_finalize", {
+        workingDirectory: cwd,
+        session_id: sessionId,
+        review_id: startedPayload.review_id,
+        attempt: startedPayload.attempt,
+        idempotency_key: "95959595-9595-4595-8595-959595959595",
+      }, {
+        source: "MCP",
+        root_thread_id: rootThreadId,
+        now: () => new Date(issuedAt),
+        loadHookJournalSnapshot: async () => ({ events: [], diagnostic_events: [], publication_ids: [] }),
+      });
+      assert.equal(finalized.isError, undefined, JSON.stringify(finalized.payload));
+      const finalizedPayload = finalized.payload as { artifact_sha256: string };
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "code-review",
+        phase: "reviewing",
+        session_id: sessionId,
+        thread_id: rootThreadId,
+        active_skills: [{
+          skill: "code-review",
+          phase: "reviewing",
+          active: true,
+          session_id: sessionId,
+          thread_id: rootThreadId,
+          review_id: startedPayload.review_id,
+          review_status: "BLOCKED",
+        }],
+      });
+
+      const missingMarker = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+      }, { cwd });
+      assert.equal(missingMarker.outputJson?.stopReason, "code_review_terminal_marker_invalid");
+
+      const markerPath = join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief.json");
+      await writeJson(markerPath, {
+        schema_version: 1,
+        state: "PENDING_BRIEF",
+        session_id: sessionId,
+        review_id: startedPayload.review_id,
+        root_thread_id: rootThreadId,
+        artifact_sha256: finalizedPayload.artifact_sha256,
+        verdict: "REQUEST CHANGES",
+        issued_stop_signature: stopSignature,
+        issued_at: issuedAt,
+      });
+      const reviewPath = join(
+        stateDir,
+        "sessions",
+        sessionId,
+        "code-review",
+        startedPayload.review_id,
+        "review.json",
+      );
+      const persistedReview = JSON.parse(await readFile(reviewPath, "utf-8")) as Record<string, unknown>;
+      await writeJson(reviewPath, { ...persistedReview, root_thread_id: "codex-review-stop-wrong-root" });
+      const mismatchedReview = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+      }, { cwd });
+      assert.equal(mismatchedReview.outputJson?.stopReason, "code_review_terminal_marker_invalid");
+      await writeJson(reviewPath, persistedReview);
+
+      const malformedFooter = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+        last_assistant_message: `<!-- omx:code-review-terminal-brief {"review_id":"\\q","verdict":"REQUEST CHANGES","artifact_sha256":"${finalizedPayload.artifact_sha256}","stop_signature":"${stopSignature}"} -->`,
+      }, { cwd });
+      assert.equal(malformedFooter.outputJson?.stopReason, "code_review_terminal_brief_pending");
+
+      await mkdir(join(stateDir, "sessions", sessionId, "code-review", "stop-terminal-brief-consumed.json"));
+      const exactFooter = `<!-- omx:code-review-terminal-brief ${JSON.stringify({
+        review_id: startedPayload.review_id,
+        verdict: "REQUEST CHANGES",
+        artifact_sha256: finalizedPayload.artifact_sha256,
+        stop_signature: stopSignature,
+      })} -->`;
+      const consumeFailed = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+        last_assistant_message: exactFooter,
+        last_assistant_message_thread_id: rootThreadId,
+        last_assistant_message_id: "assistant-consume-failure",
+        last_assistant_message_created_at: "2026-07-14T00:00:00.001Z",
+        last_assistant_message_immediately_precedes_stop: true,
+      }, { cwd });
+      assert.equal(consumeFailed.outputJson?.stopReason, "code_review_terminal_brief_consume_failed");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

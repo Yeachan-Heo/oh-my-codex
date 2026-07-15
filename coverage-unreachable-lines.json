@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [411, 412],
+      "source_sha256": "cfdbbbf064651531d7a03065ea9b01a966c4eb7fa738b0a810e3d4dbd0f4a91a",
+      "rationale": "The digest guard is retained as defense in depth after the lane-result parser has produced a bounded JSON-only value.",
+      "invariant": "A lane result reaches canonicalLanePayloadDigest only after strict recursive parsing removes unsupported and cyclic values.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [564, 565],
+      "source_sha256": "293b86648fa7fe14de3037b4199ad48014102afe004ed5badab2af4bef54770b",
+      "rationale": "The overflow guard documents the numeric boundary even though the finite monotonic clock plus a valid Date delta cannot overflow.",
+      "invariant": "Both operands are finite and the Date-domain delta is too small to move Number.MAX_VALUE to a non-finite IEEE-754 value.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [1183, 1184],
+      "source_sha256": "1b78bfa13c964ceec27c98fd07dcb18c2590761e3e9ebc511d38fcdebb7c73db",
+      "rationale": "The coordinator keeps a final receipt-shape assertion after the durable journal has already validated the committed response.",
+      "invariant": "runDurableTransaction returns only a committed response bound to the prepared transaction and validated ReviewRecord payload.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [1197, 1198],
+      "source_sha256": "a1cf8221a7aabc334e4c2fc2dd3d335aaec303c9af4ec8a107ea3c6dfb47b983",
+      "rationale": "The second receipt parser is a local defense after persistence has already accepted the exact typed committed response.",
+      "invariant": "Persistence validates the response as the transaction-bound ReviewRecord before returning it to the coordinator validator.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [1212, 1213],
+      "source_sha256": "142a7a1114a170e8fe90ddc01f83fae106992b87a2f69cb4b2fe8948615f04aa",
+      "rationale": "Conflicting START responses are rejected by the journal input and committed-response identity checks before this local assertion.",
+      "invariant": "A START idempotency key can return only its immutable committed response or fail persistence identity validation earlier.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [1222, 1223],
+      "source_sha256": "c5e51dc8d966c7e6fd4a65fa55e25de517c903d4a7abc356e93508ddcb26c909",
+      "rationale": "The RESULT response equality assertion remains defensive after the journal binds the response to the exact prepared proposal.",
+      "invariant": "The committed proposal response is canonicalized and identity-checked against the prepared effect before coordinator return.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [1254, 1255],
+      "source_sha256": "f4567727de1a632de7e08d2d2cde66cd6d0b5fe20ac0c2c975ab6ca350ee305b",
+      "rationale": "The terminal-to-active guard is retained beside effect construction although every public transition rejects FINALIZED input first.",
+      "invariant": "No validated resume, activation, reconciliation, or finalization transition can request an active status from FINALIZED.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [1589, 1590],
+      "source_sha256": "0029d8d5b5019af0733fdc56470054b24664e634c2154c4d7a1fc9c783f5a023",
+      "rationale": "Accepted terminal lanes are derived from the same persisted proposal pairs immediately before durable effects are assembled.",
+      "invariant": "A lane enters the accepted set only when reconciliation has already matched its exact persisted proposal identity.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [1594, 1595],
+      "source_sha256": "265fdbc23e2f8b6dc1b4696b1e991e5e8c0ae60d0b9187832785832dce79b4c0",
+      "rationale": "Accepted terminal lanes are derived only from complete proposal and PostToolUse publication pairs in the frozen snapshot.",
+      "invariant": "A lane enters the accepted set only after its proposal key has matched one exact persisted PostToolUse publication.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [2027, 2028],
+      "source_sha256": "04cf65199b0bfb9ac47dec213ecd9c991d8ee4864645d76b9a1ed0bea52ddeb3",
+      "rationale": "The trusted transaction factory assigns the captured consumption result before returning every non-transaction recovery plan.",
+      "invariant": "The wrapper returns either a recovered transaction response or the factory-captured result; no third successful state exists.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [2269, 2270],
+      "source_sha256": "90e8c3f047ede92adbbe03c6cd16e29a422cfce521ebef5e6765c4a83af00bf1",
+      "rationale": "The persistence recovery scan reads and validates the same START receipt before this adapter-level defensive reread occurs.",
+      "invariant": "Unreadable START receipt state fails in recoverPendingReviewTransactions before committedStartResponse can reread it.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [2277, 2278],
+      "source_sha256": "9f3fcefafd7983f16469145cd0399232b89494e84831cdee934c817213947a54",
+      "rationale": "Malformed START receipts are rejected by the authoritative persistence recovery validator before this local shape assertion.",
+      "invariant": "Only a persistence-validated receipt can survive the recovery scan and reach committedStartResponse for projection.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [2308, 2309],
+      "source_sha256": "ff2e7c0e02f2b11202e0034c0fabd1a20a7631a3f7b8e8e800257e636b091cad",
+      "rationale": "The fallback projection contains only two bounded strings and the sanitizer is supplied a previously validated repository root.",
+      "invariant": "operationError canonicalizes code and message to strings before sanitizing a fixed two-field plain JSON object.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/coordinator.ts",
+      "lines": [2371, 2372],
+      "source_sha256": "1efb73720a8826149aba77070f03613084b066cba8d0b44556b43d9d45f3a052",
+      "rationale": "A committed START response without frozen scope is rejected by durable ReviewRecord validation before replay reaches this guard.",
+      "invariant": "START_REVIEW commits require a scope-bound ReviewRecord, while scope-free CREATED intents use a distinct operation identity.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/evidence.ts",
+      "lines": [206, 207],
+      "source_sha256": "e911135530eb1488d132d58ac3f690fe0952798ea0a6fa17447e098ad4cc704c",
+      "rationale": "The strict native tracker parser rejects empty and over-limit paths before lane ownership validation receives the tracker.",
+      "invariant": "validateLaneStart uses only parseNativeTracker output whose tracker_path has already passed the same bounded-string limits.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    },
+    {
+      "file": "src/code-review/evidence.ts",
+      "lines": [411, 412],
+      "source_sha256": "84f7f34272db66f8cef3e13ffc3ac3df30c691df9fe784197996ca1dd0fcf48c",
+      "rationale": "Strict diagnostic parsing requires exactly one tool-name or program provenance form before provenance matching begins.",
+      "invariant": "Every validated DiagnosticSubmission has either tool_name or program, so the exhaustive matcher cannot reach its final fallback.",
+      "reviewer": "approved-remediation-plan/current-task:user-approved"
+    }
+  ]
+}

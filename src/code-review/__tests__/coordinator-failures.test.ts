@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -19,6 +19,7 @@ import {
   createLaneResultProposal,
   finalizeReview,
   foldActivitySnapshot,
+  loadPublishedReviewHookJournalSnapshot,
   reconcileResultPublications,
   resolveLaneTimeoutMs,
   resumeReview,
@@ -510,14 +511,31 @@ describe('review coordinator failure and concurrency invariants', () => {
 
       loadedValue = { events: [], publication_ids: [] };
       await assert.rejects(durable.reconcile({ review_id: REVIEW_ID }), /missing|malformed|journal|evidence/i);
+      loadedValue = { events: [{}], diagnostic_events: [], publication_ids: [] };
+      await assert.rejects(durable.reconcile({ review_id: REVIEW_ID }), /activity|journal|evidence/i);
+      loadedValue = { events: [], diagnostic_events: [], publication_ids: ['not-a-uuid'] };
+      await assert.rejects(durable.reconcile({ review_id: REVIEW_ID }), /cryptographic UUID|publication_id/i);
+      loadedValue = { events: [], diagnostic_events: [], publication_ids: [RESULT_KEY, RESULT_KEY] };
+      await assert.rejects(durable.reconcile({ review_id: REVIEW_ID }), /publication identity is duplicated/i);
       loadedValue = {
         events: [activity('wrong-session', '2026-07-14T00:00:55.000Z', { session_id: 'forged-session' })],
         diagnostic_events: [],
         publication_ids: [],
       };
       await assert.rejects(durable.reconcile({ review_id: REVIEW_ID }), /identity|journal|evidence/i);
+      await assert.rejects(durable.reconcile({ review_id: 'not-a-review-id' }), /cryptographic UUID/i);
+      await assert.rejects(durable.reconcile({
+        review_id: REVIEW_ID,
+        crashAt: 'before:not-a-boundary' as DurableTransactionBoundary,
+      }), /crash boundary is invalid/i);
       const withoutHost = durableFactory()({ workingDirectory: root, session_id: 'session-1' });
       await assert.rejects(withoutHost.reconcile({ review_id: REVIEW_ID }), /loader|trusted|unavailable/i);
+      const invalidClock = durableFactory()({ workingDirectory: root, session_id: 'session-1' }, {
+        root_thread_id: 'root-1',
+        now: () => new Date(Number.NaN),
+        loadHookJournalSnapshot: async () => ({ events: [], diagnostic_events: [], publication_ids: [] }),
+      });
+      await assert.rejects(invalidClock.reconcile({ review_id: REVIEW_ID }), /snapshot clock is invalid/i);
     });
   });
 
@@ -601,6 +619,180 @@ describe('review coordinator failure and concurrency invariants', () => {
       snapshot: { cutoff_at: '2026-07-14T00:00:59.999Z', events: [], publications: [{ ...before, attestation: undefined } as unknown as ResultPostToolPublication] },
       now: START,
     }), /atomic|attestation|publication/i);
+  });
+
+  it('rejects malformed journals and duplicate proposal or publication identities before mutation', () => {
+    const record = running();
+    const proposal = resultProposal(record);
+    const accepted = publication(proposal, '2026-07-14T00:00:30.000Z');
+    assert.throws(() => foldActivitySnapshot({
+      review: record,
+      snapshot: { cutoff_at: '2026-07-14T00:00:40.000Z', events: [{}], publications: [] },
+    }), /activity|evidence|malformed/i);
+    assert.throws(() => reconcileResultPublications({
+      review: record,
+      proposals: [proposal],
+      snapshot: { cutoff_at: '2026-07-14T00:00:40.000Z', events: [{}], publications: [] },
+      now: START,
+    }), /activity|evidence|malformed/i);
+    assert.throws(() => reconcileResultPublications({
+      review: record,
+      proposals: [proposal, proposal],
+      snapshot: { cutoff_at: '2026-07-14T00:00:40.000Z', events: [], publications: [] },
+      now: START,
+    }), /duplicate RESULT proposal/i);
+    assert.throws(() => reconcileResultPublications({
+      review: record,
+      proposals: [proposal],
+      snapshot: { cutoff_at: '2026-07-14T00:00:40.000Z', events: [], publications: [accepted, accepted] },
+      now: START,
+    }), /duplicate atomic PostTool/i);
+    assert.throws(() => reconcileResultPublications({
+      review: record,
+      proposals: [proposal],
+      snapshot: {
+        cutoff_at: '2026-07-14T00:00:20.000Z',
+        events: [],
+        publications: [publication(proposal, '2026-07-14T00:00:30.000Z')],
+      },
+      now: START,
+    }), /after the frozen snapshot cutoff/i);
+
+    const bothRunning = applyLaneStart({
+      review: record,
+      event: {
+        event: 'START', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global',
+        thread_id: 'child-architect', idempotency_key: ARCHITECT_START_KEY,
+      },
+      tracker: {
+        schema_version: 1, session_id: 'session-1', thread_id: 'child-architect',
+        tracker_lane_id: 'architect-global', tracker_path: 'tracker-architect',
+        first_seen_at: START.toISOString(),
+      },
+      now: START,
+    });
+    const architectKey = '33333333-3333-4333-8333-333333333333';
+    const architectProposal = createLaneResultProposal({
+      review: bothRunning,
+      event: {
+        event: 'RESULT', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global',
+        scope_hash: HASH, idempotency_key: architectKey,
+        result: {
+          role: 'architect', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global',
+          batch_id: 'global', scope_hash: HASH, architectural_status: 'CLEAR', findings: [],
+        },
+      },
+      source: 'MCP',
+      now: START,
+    });
+    const architectPublicationBase = publication(architectProposal, '2026-07-14T00:00:31.000Z');
+    const architectPublication = {
+      ...architectPublicationBase,
+      activity: { ...architectPublicationBase.activity, child_thread_id: 'child-architect' },
+      attestation: {
+        ...architectPublicationBase.attestation,
+        child_thread_id: 'child-architect',
+        nonce: accepted.attestation.nonce,
+      },
+    };
+    assert.throws(() => reconcileResultPublications({
+      review: bothRunning,
+      proposals: [proposal, architectProposal],
+      snapshot: {
+        cutoff_at: '2026-07-14T00:00:40.000Z',
+        events: [],
+        publications: [accepted, architectPublication],
+      },
+      now: START,
+    }), /nonce is reused/i);
+  });
+
+  it('fails closed for malformed, oversized, unreadable, and ownership-conflicting hook journal files', async () => {
+    const load = (root: string) => loadPublishedReviewHookJournalSnapshot({
+      workingDirectory: root,
+      session_id: 'session-1',
+      root_thread_id: 'root-1',
+      review_id: REVIEW_ID,
+      cutoff_at: '2026-07-14T00:01:00.000Z',
+    });
+    await assert.rejects(loadPublishedReviewHookJournalSnapshot({
+      workingDirectory: process.cwd(),
+      session_id: '',
+      root_thread_id: 'root-1',
+      review_id: REVIEW_ID,
+      cutoff_at: '2026-07-14T00:01:00.000Z',
+    }), /ownership is invalid/i);
+
+    const withJournal = async (
+      setup: (root: string, activityRoot: string, submissionsRoot: string) => Promise<void>,
+      pattern: RegExp,
+    ): Promise<void> => {
+      await withTemporaryReviewRoot(async (root) => {
+        const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
+        const activityRoot = join(paths.reviewRoot, REVIEW_ID, 'activity');
+        const submissionsRoot = join(paths.reviewRoot, REVIEW_ID, 'submissions');
+        await setup(root, activityRoot, submissionsRoot);
+        await assert.rejects(load(root), pattern);
+      });
+    };
+
+    await withJournal(async (_root, activityRoot) => {
+      await mkdir(activityRoot, { recursive: true });
+      await writeFile(join(activityRoot, 'not-a-child-directory'), 'x');
+    }, /activity directory is malformed/i);
+    await withJournal(async (_root, activityRoot) => {
+      await mkdir(join(activityRoot, 'child-reviewer', 'not-a-file.json'), { recursive: true });
+    }, /activity path is malformed/i);
+    await withJournal(async (_root, activityRoot) => {
+      const child = join(activityRoot, 'child-reviewer');
+      await mkdir(child, { recursive: true });
+      await writeFile(join(child, `${'a'.repeat(64)}.json`), 'x'.repeat(1_048_577));
+    }, /activity exceeds the size limit/i);
+    await withJournal(async (_root, activityRoot) => {
+      const child = join(activityRoot, 'child-reviewer');
+      await mkdir(child, { recursive: true });
+      await writeFile(join(child, `${'a'.repeat(64)}.json`), '{not-json');
+    }, /activity is malformed/i);
+    if (process.platform !== 'win32') {
+      await withJournal(async (_root, activityRoot) => {
+        const child = join(activityRoot, 'child-reviewer');
+        const file = join(child, `${'a'.repeat(64)}.json`);
+        await mkdir(child, { recursive: true });
+        await writeFile(file, '{}');
+        await chmod(file, 0o000);
+      }, /activity is unreadable/i);
+    }
+
+    await withJournal(async (_root, _activityRoot, submissionsRoot) => {
+      await mkdir(join(submissionsRoot, '..'), { recursive: true });
+      await writeFile(submissionsRoot, 'not-a-directory');
+    }, /publication directory is unavailable/i);
+    await withJournal(async (_root, _activityRoot, submissionsRoot) => {
+      await mkdir(submissionsRoot, { recursive: true });
+      await writeFile(join(submissionsRoot, 'not-a-publication-directory'), 'x');
+    }, /publication path is malformed/i);
+    await withJournal(async (_root, _activityRoot, submissionsRoot) => {
+      await mkdir(join(submissionsRoot, RESULT_KEY, 'post-tool'), { recursive: true });
+    }, /publication is unreadable/i);
+    await withJournal(async (_root, _activityRoot, submissionsRoot) => {
+      const directory = join(submissionsRoot, RESULT_KEY);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, 'post-tool'), 'x'.repeat(1_048_577));
+    }, /publication exceeds the size limit/i);
+    await withJournal(async (_root, _activityRoot, submissionsRoot) => {
+      const directory = join(submissionsRoot, RESULT_KEY);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, 'post-tool'), '{not-json');
+    }, /publication is malformed/i);
+    await withJournal(async (_root, _activityRoot, submissionsRoot) => {
+      const directory = join(submissionsRoot, RESULT_KEY);
+      const persisted = publication(resultProposal(running()), '2026-07-14T00:00:30.000Z');
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, 'post-tool'), JSON.stringify({
+        ...persisted,
+        attestation: { ...persisted.attestation, root_thread_id: 'other-root' },
+      }));
+    }, /publication ownership is invalid/i);
   });
 
   it('folds earlier activity before validating a RESULT regardless of input order', () => {
@@ -846,6 +1038,53 @@ describe('review coordinator failure and concurrency invariants', () => {
     }), (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT');
 
     assert.deepEqual(waits, [30_000, 950]);
+  });
+
+  it('fails closed for invalid readiness clocks and already-expired running or pending lanes', async () => {
+    const pending = initialReview(60_000);
+    await assert.rejects(waitForLaneRunning({
+      load: () => pending,
+      lane_id: 'reviewer-batch-1',
+      now: () => START,
+      monotonicNow: () => Number.NaN,
+      waitForChange: () => undefined,
+    }), /monotonic clock is invalid/i);
+
+    let tick = 0;
+    await assert.rejects(waitForLaneRunning({
+      load: () => pending,
+      lane_id: 'reviewer-batch-1',
+      now: () => START,
+      monotonicNow: () => (tick++ === 0 ? 10 : 9),
+      waitForChange: () => undefined,
+    }), /moved backwards/i);
+
+    await assert.rejects(waitForLaneRunning({
+      load: () => running(),
+      lane_id: 'reviewer-batch-1',
+      now: () => START,
+      monotonicNow: (() => { const values = [0, 100]; return () => values.shift()!; })(),
+      waitForChange: () => undefined,
+      maximum_wait_ms: 100,
+    }), /timeout expired/i);
+
+    await assert.rejects(waitForLaneRunning({
+      load: () => pending,
+      lane_id: 'reviewer-batch-1',
+      now: () => new Date(Number.NaN),
+      monotonicNow: () => 0,
+      waitForChange: () => undefined,
+    }), /wall clock is invalid/i);
+
+    const expired = initialReview(60_000);
+    expired.lanes[0]!.idle_deadline_at = new Date(START.getTime() - 1).toISOString();
+    await assert.rejects(waitForLaneRunning({
+      load: () => expired,
+      lane_id: 'reviewer-batch-1',
+      now: () => START,
+      monotonicNow: () => 0,
+      waitForChange: () => undefined,
+    }), /timeout expired/i);
   });
 
   it('blocks resume and finalization on scope drift and old-attempt late results', () => {

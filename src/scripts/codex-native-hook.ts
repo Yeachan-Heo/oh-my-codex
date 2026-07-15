@@ -9680,8 +9680,9 @@ function parseCodeReviewTerminalBriefFooter(message: string): Record<string, unk
   if ([...message].length > 4_000) return null;
   const match = CODE_REVIEW_TERMINAL_BRIEF_FOOTER_PATTERN.exec(message);
   if (!match) return null;
+  const encoded = match[1]!;
   try {
-    const parsed = JSON.parse(match[1]!) as Record<string, unknown>;
+    const parsed = JSON.parse(encoded) as Record<string, unknown>;
     return hasExactObjectKeys(parsed, ["review_id", "verdict", "artifact_sha256", "stop_signature"])
       ? parsed
       : null;
@@ -9755,13 +9756,12 @@ function cryptoLikeUuidFromHash(seed: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-async function buildCodeReviewStopOutput(
+export async function buildCodeReviewStopOutput(
   payload: CodexHookPayload,
   cwd: string,
   sessionId: string,
   threadId: string,
 ): Promise<Record<string, unknown> | null> {
-  if (!sessionId) return null;
   const rootThreadId = threadId || readRootThreadId(payload) || readPayloadThreadId(payload);
   const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: sessionId }).catch(() => null);
   if (!paths) return null;

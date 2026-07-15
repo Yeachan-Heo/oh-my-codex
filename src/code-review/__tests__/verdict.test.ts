@@ -104,6 +104,62 @@ describe('verdict synthesis', () => {
     assert.equal(missingArchitect.clean, false);
   });
 
+  it('preserves every distinct topology failure reason', () => {
+    const cases = [
+      {
+        result: verdict('APPROVE', 'CLEAR', {
+          expected_reviewer_lane_ids: ['reviewer-batch-1', 'reviewer-batch-1'],
+        }),
+        reasons: ['DUPLICATE_PLANNED_REVIEWER_LANE'],
+      },
+      {
+        result: verdict('APPROVE', 'CLEAR', {
+          reviewer_lanes: [reviewer('APPROVE'), reviewer('APPROVE')],
+        }),
+        reasons: ['DUPLICATE_LANE:reviewer-batch-1'],
+      },
+      {
+        result: verdict('APPROVE', 'CLEAR', {
+          expected_reviewer_lane_ids: ['reviewer-batch-1', 'reviewer-batch-2'],
+        }),
+        reasons: ['MISSING_LANE:reviewer-batch-2'],
+      },
+      {
+        result: verdict('APPROVE', 'CLEAR', {
+          reviewer_lanes: [
+            reviewer('APPROVE'),
+            reviewer('APPROVE', { lane_id: 'reviewer-batch-2', batch_id: 'batch-2' }),
+          ],
+        }),
+        reasons: ['UNPLANNED_LANE:reviewer-batch-2'],
+      },
+      {
+        result: synthesizeVerdict({
+          scope_status: 'FULL_SCOPE',
+          evidence_status: 'FULL_EVIDENCE',
+          expected_reviewer_lane_ids: ['reviewer-batch-1'],
+          reviewer_lanes: [reviewer('APPROVE')],
+        }),
+        reasons: ['MISSING_OR_INVALID_ARCHITECT'],
+      },
+    ];
+
+    for (const testCase of cases) {
+      assert.equal(testCase.result.rule_id, 'INVALID_OR_MISSING_EVIDENCE');
+      assert.deepEqual(testCase.result.reasons, testCase.reasons);
+    }
+  });
+
+  it('reports only the comment or finding reasons that actually apply', () => {
+    assert.deepEqual(verdict('APPROVE', 'WATCH').reasons, ['ARCHITECT_WATCH']);
+    assert.deepEqual(verdict('COMMENT', 'CLEAR').reasons, ['REVIEWER_COMMENT:reviewer-batch-1']);
+    assert.deepEqual(verdict('APPROVE', 'CLEAR', {
+      reviewer_lanes: [reviewer('APPROVE', {
+        findings: [{ severity: 'LOW', title: 'low', body: 'body', file: 'src/a.ts', fix: 'fix' }],
+      })],
+    }).reasons, ['REMAINING_FINDINGS']);
+  });
+
   it('aggregates the worst result across every batch and every finding', () => {
     const result = synthesizeVerdict({
       scope_status: 'FULL_SCOPE',

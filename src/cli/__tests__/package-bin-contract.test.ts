@@ -71,7 +71,8 @@ describe('package bin contract', () => {
     );
     assert.equal(
       pkg.scripts?.['coverage:ts:full:compiled'],
-      "c8 --all --src dist --exclude '**/__tests__/**' --exclude 'dist/bin/**' --exclude 'dist/**/*.d.ts' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/ts-full node dist/scripts/run-test-files.js dist",
+      // ASSERTION-CHANGE-JUSTIFIED: the checked changed-line gate consumes c8's coverage-final.json.
+      "c8 --all --src dist --exclude '**/__tests__/**' --exclude 'dist/bin/**' --exclude 'dist/**/*.d.ts' --reporter=text-summary --reporter=lcov --reporter=json-summary --reporter=json --report-dir coverage/ts-full node dist/scripts/run-test-files.js dist",
     );
     assert.equal(
       pkg.scripts?.['test:ralph-persistence:compiled'],

@@ -291,7 +291,8 @@ describe("state-server code-review control plane", () => {
 		const waiting = handleStateToolCall({ params: {
 			name: "review_get", arguments: {
 				workingDirectory, session_id: "session-1", review_id: REVIEW_ID,
-				lane_id: "reviewer-batch-1", wait: true, maximum_wait_ms: 1_000,
+				// c8 process instrumentation can make the real filesystem-backed START take over one second.
+				lane_id: "reviewer-batch-1", wait: true, maximum_wait_ms: 5_000,
 			},
 		} });
 		await new Promise<void>((resolve) => setImmediate(resolve));

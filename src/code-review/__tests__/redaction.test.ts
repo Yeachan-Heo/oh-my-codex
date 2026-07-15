@@ -11,6 +11,8 @@ interface RedactionApi {
     evidence?: string;
   };
   sanitizeForPersistence<T>(value: T, options?: { repositoryRoot?: string }): T;
+  validateReviewDiagnostics(value: unknown, options: { includeThreadId: boolean }): unknown[];
+  validateReviewReason(value: unknown): string;
 }
 
 async function loadRedactionApi(): Promise<RedactionApi> {
@@ -23,10 +25,17 @@ async function loadRedactionApi(): Promise<RedactionApi> {
   );
   assert.equal(typeof loaded?.validateReviewFinding, 'function');
   assert.equal(typeof loaded?.sanitizeForPersistence, 'function');
+  assert.equal(typeof loaded?.validateReviewDiagnostics, 'function');
+  assert.equal(typeof loaded?.validateReviewReason, 'function');
   return loaded as RedactionApi;
 }
 
 describe('code-review redaction and validation', () => {
+  it('preserves non-private PEM blocks while continuing private-key scanning', async () => {
+    const api = await loadRedactionApi();
+    const certificate = '-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----';
+    assert.equal(api.redactReviewText(certificate), certificate);
+  });
   it('redacts provider tokens, generic secrets, and authorization headers', async () => {
     const api = await loadRedactionApi();
     const sensitive = [
@@ -365,6 +374,16 @@ describe('code-review redaction and validation', () => {
       {
         severity: 'LOW', title: 'Extra', body: 'Unknown.', file: 'src/a.ts', fix: 'Remove it.', extra: true,
       },
+      null,
+      {
+        severity: 'LOW', title: 42, body: 'Type.', file: 'src/a.ts', fix: 'Use text.',
+      },
+      {
+        severity: 'LOW', title: '', body: 'Empty.', file: 'src/a.ts', fix: 'Use text.',
+      },
+      {
+        severity: 'LOW', title: 'Path', body: 'Empty path.', file: '', fix: 'Use a path.',
+      },
     ];
 
     for (const finding of invalidFindings) {
@@ -373,6 +392,60 @@ describe('code-review redaction and validation', () => {
         (error: unknown) => (error as { code?: unknown }).code === 'LANE_EVIDENCE_INVALID',
       );
     }
+  });
+
+  it('rejects malformed diagnostic collections and fields independently', async () => {
+    const api = await loadRedactionApi();
+    const valid = {
+      diagnostic_id: 'diag-1',
+      capability: 'LSP',
+      applicability: 'APPLICABLE',
+      execution: 'NATIVE',
+      outcome: 'PASS',
+      thread_id: 'thread-1',
+      event_ref: 'event-1',
+      summary: 'complete',
+    };
+    assert.equal(api.validateReviewDiagnostics([valid], { includeThreadId: true }).length, 1);
+    const malformed: unknown[] = [
+      null,
+      new Date(),
+      { ...valid, outcome: 'UNKNOWN' },
+      { ...valid, event_ref: 'bad\0event' },
+      { ...valid, args: 'not-an-array' },
+      { ...valid, summary: 'é'.repeat(1_100) },
+    ];
+    for (const diagnostic of malformed) {
+      assert.throws(
+        () => api.validateReviewDiagnostics([diagnostic], { includeThreadId: true }),
+        (error: unknown) => (error as { code?: unknown }).code === 'LANE_EVIDENCE_INVALID',
+      );
+    }
+    assert.throws(() => api.validateReviewDiagnostics({}, { includeThreadId: false }), /diagnostics must be an array/);
+    assert.throws(() => api.validateReviewDiagnostics(
+      Array.from({ length: 9 }, (_, index) => ({ ...valid, diagnostic_id: `diag-${index}`, summary: 'x'.repeat(2_000) })),
+      { includeThreadId: true },
+    ), /sixteen KiB/);
+    assert.throws(() => api.validateReviewReason('bad\0reason'), /NUL byte/);
+  });
+
+  it('rejects non-JSON persistence values, serialization cycles, and post-redaction expansion beyond one MiB', async () => {
+    const api = await loadRedactionApi();
+    for (const value of [undefined, Symbol('value'), () => 'value', new Date()]) {
+      assert.throws(
+        () => api.sanitizeForPersistence({ value }),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+    }
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    assert.throws(() => api.sanitizeForPersistence(cyclic), /not serializable/);
+
+    // The raw JSON remains below one MiB, while redacting each short secret to
+    // "[REDACTED]" expands the persisted form beyond the post-sanitize limit.
+    const expanding = { values: Array.from({ length: 50_000 }, () => 'password=a') };
+    assert.ok(Buffer.byteLength(JSON.stringify(expanding), 'utf8') < 1_048_576);
+    assert.throws(() => api.sanitizeForPersistence(expanding), /exceeds one MiB/);
   });
 
   it('rejects every non-string severity without coercing or returning it', async () => {

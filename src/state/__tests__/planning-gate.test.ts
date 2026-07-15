@@ -320,6 +320,59 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
     assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true);
   });
 
+  it('classifies bounded interpreter and wrapper option variants for protected artifacts', () => {
+    const executionForms = [
+      'node --require=.omx/context/run.js -e true',
+      'node --import=.omx/context/run.js -e true',
+      'bash --init-file=.omx/context/run.sh -i -c true',
+      'bash --rcfile=.omx/context/run.sh -i -c true',
+      'bash -- .omx/context/run.sh',
+      'bash +O nullglob .omx/context/run.sh',
+      'python -W ignore .omx/context/run.py',
+      'python --check-hash-based-pycs always .omx/context/run.py',
+      'deno run --allow-read .omx/context/run.ts',
+      'go run -race .omx/context/run.go',
+      'npm exec -- tsx .omx/context/run.ts',
+      'pnpm dlx tsx .omx/context/run.ts',
+      'npx --yes tsx .omx/context/run.ts',
+      'time -f %E sh .omx/context/run.sh',
+      'time --format=%E sh .omx/context/run.sh',
+      'timeout -k 1 5 sh .omx/context/run.sh',
+      'timeout --signal=TERM 5 sh .omx/context/run.sh',
+      'env -- sh .omx/context/run.sh',
+      'node 0<.omx/context/run.js',
+    ];
+
+    for (const executionForm of executionForms) {
+      const command = `mkdir -p .omx/context
+printf 'placeholder' > .omx/context/run.sh
+printf 'placeholder' > .omx/context/run.js
+printf 'placeholder' > .omx/context/run.py
+printf 'placeholder' > .omx/context/run.ts
+printf 'placeholder' > .omx/context/run.go
+${executionForm}`;
+
+      assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), true, executionForm);
+    }
+  });
+
+  it('does not treat inline-only interpreter options as protected artifact execution', () => {
+    for (const executionForm of [
+      "python -c 'print(1)'",
+      'python -m compileall',
+      "node --eval='true'",
+      "node --print='1'",
+      "deno eval 'true'",
+      'go version',
+      'npm test',
+    ]) {
+      const command = `mkdir -p .omx/context
+printf 'placeholder' > .omx/context/run.ts
+${executionForm}`;
+      assert.equal(isImplementationToolCall({ tool_name: 'Bash', tool_input: command }), false, executionForm);
+    }
+  });
+
   it('does not classify Read, Glob, Grep, or safe Bash as implementation tools', () => {
     assert.equal(isImplementationToolCall({ tool_name: 'Read' }), false);
     assert.equal(isImplementationToolCall({ tool_name: 'Glob' }), false);
@@ -743,6 +796,14 @@ describe('planning gate: telemetry log event', () => {
     assert.equal(logEvent.downstream_authority, 'plan_then_execute');
     assert.equal(logEvent.bypass_active, false);
     assert.ok(logEvent.timestamp);
+
+    const withoutState = buildPlanningGateLogEvent(
+      { allowed: true },
+      { tool_name: 'Read' },
+      null,
+    );
+    assert.equal(withoutState.downstream_authority, undefined);
+    assert.equal(withoutState.bypass_active, false);
   });
 });
 

@@ -561,7 +561,6 @@ export function evaluateCapabilityEvidence(
       && observation.execution === 'UNAVAILABLE';
     if (unavailable) {
       const unavailableCapability = entry.capability as 'LSP' | 'AST';
-      degraded = true;
       reasons.push(`${entry.capability}_UNAVAILABLE`);
       const fallbacks = applicable.filter((candidate) =>
         candidate.fallback_for.includes(unavailableCapability),

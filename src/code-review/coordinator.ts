@@ -2149,7 +2149,7 @@ function hostDependencies(
   };
 }
 
-function adaptiveReviewChangeWaiter(
+export function adaptiveReviewChangeWaiter(
   reviewPath: string,
   monotonicNow: () => number = () => performance.now(),
 ): (deadlineAt: string, maximumWaitMs: number) => Promise<void> {
@@ -2204,7 +2204,7 @@ function relativeReviewArtifacts(reviewId: string): { json_path: string; markdow
   };
 }
 
-function projectOperationReview(record: ReviewRecord): Record<string, unknown> {
+export function projectOperationReview(record: ReviewRecord): Record<string, unknown> {
   return {
     review_id: record.review_id,
     ...(record.session_id === undefined ? {} : { session_id: record.session_id }),

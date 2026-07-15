@@ -188,6 +188,29 @@ describe('code-review overlay transition properties', () => {
     });
   });
 
+  it('keeps an empty terminal overlay inactive without erasing prior terminal timestamps', async () => {
+    const merge = await loadOverlayMerge();
+    const result = merge({
+      authoritativeState: canonical([reviewOverlay()], {
+        completed_at: START,
+        stopped_at: START,
+      }),
+      overlay: reviewOverlay({
+        active: false,
+        status: 'completed',
+        phase: 'completed',
+      } as Partial<SkillActiveEntry>),
+      sessionId: SESSION_ID,
+      rootThreadId: THREAD_ID,
+      nowIso: UPDATE,
+    });
+
+    assert.equal(result.active, false);
+    assert.deepEqual(result.active_skills, []);
+    assert.equal(result.completed_at, START);
+    assert.equal(result.stopped_at, START);
+  });
+
   it('rejects active and terminal overlays when the review identity changes', async () => {
     const merge = await loadOverlayMerge();
     const base = canonical([

@@ -302,6 +302,7 @@ describe('Pipeline Orchestrator', () => {
 
     it('returns to ralplan when code-review is not clean', async () => {
       const order: string[] = [];
+      const transitions: Array<[string, string]> = [];
       let reviewRuns = 0;
       const stages: PipelineStage[] = [
         {
@@ -362,10 +363,12 @@ describe('Pipeline Orchestrator', () => {
         stages,
         cwd: tempDir,
         maxRalphIterations: 3,
+        onStageTransition: (from, to) => transitions.push([from, to]),
       });
 
       assert.equal(result.status, 'completed');
       assert.deepEqual(order, ['ralplan', 'ralph', 'code-review', 'ralplan', 'ralph', 'code-review', 'ultraqa']);
+      assert.ok(transitions.some(([from, to]) => from === 'code-review' && to === 'ralplan'));
 
       const ext = await readPipelineState(tempDir);
       assert.equal(ext?.review_cycle, 1);

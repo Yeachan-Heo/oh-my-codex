@@ -98,6 +98,8 @@ describe('scope normalization and parsing', () => {
 
   it('matches exact files and directory descendants only', async () => {
     const api = await loadScopeApi();
+    assert.equal(api.pathMatchesExplicitScope('src/a.ts', []), true);
+    assert.equal(api.pathMatchesExplicitScope('src/a.ts', ['']), true);
     assert.equal(api.pathMatchesExplicitScope('src/a.ts', ['src']), true);
     assert.equal(api.pathMatchesExplicitScope('src', ['src']), true);
     assert.equal(api.pathMatchesExplicitScope('src-other/a.ts', ['src']), false);

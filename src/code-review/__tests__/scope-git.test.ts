@@ -124,6 +124,21 @@ describe('real Git scope discovery', () => {
     });
   });
 
+  it('excludes OMX runtime state even before Git ignore setup has run', async () => {
+    await withRepository(async (repository, api) => {
+      await mkdir(join(repository, '.omx', 'state'), { recursive: true });
+      await writeFile(join(repository, '.omx', 'state', 'active.json'), '{"active":true}\n');
+      await writeFile(join(repository, 'visible.txt'), 'review me\n');
+
+      const manifest = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: [] },
+      });
+
+      assert.deepEqual(manifest.files.map((entry) => entry.path), ['visible.txt']);
+    });
+  });
+
   it('keeps plain and leading-BOM Git paths as distinct byte-stable identities', async () => {
     await withRepository(async (repository, api) => {
       const bomPath = '\uFEFFa';

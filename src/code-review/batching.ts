@@ -184,7 +184,6 @@ export async function createBatchPlan(options: {
     let pending: ScopeFile[] = [];
     let pendingLines = 0;
     const flush = (): void => {
-      if (pending.length === 0) return;
       batches.push({
         batch_id: `batch-${batches.length + 1}`,
         module_root: root,
@@ -199,13 +198,12 @@ export async function createBatchPlan(options: {
     for (const file of group) {
       const fileLines = changedLines(file);
       if (
-        pending.length > 0
+        pending.length !== 0
         && (pending.length + 1 > config.maxFiles
           || pendingLines + fileLines > config.maxChangedLines)
       ) flush();
       pending.push(file);
       pendingLines += fileLines;
-      if (fileLines > config.maxChangedLines) flush();
     }
     flush();
   }

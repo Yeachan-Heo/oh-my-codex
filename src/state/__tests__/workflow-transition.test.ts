@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  assertWorkflowTransitionAllowed,
   buildWorkflowTransitionMessage,
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
@@ -66,6 +67,16 @@ describe('workflow transition rules', () => {
       assert.equal(decision.allowed, testCase.allowed, `${testCase.current.join(',')} -> ${testCase.requested}`);
       assert.deepEqual(decision.resultingModes, testCase.resulting, `${testCase.current.join(',')} -> ${testCase.requested}`);
     }
+
+    assert.deepEqual(evaluateWorkflowTransition(['team'], 'team'), {
+      allowed: true,
+      kind: 'allow',
+      currentModes: ['team'],
+      requestedMode: 'team',
+      resultingModes: ['team'],
+      autoCompleteModes: [],
+    });
+    assert.equal(evaluateWorkflowTransition(['team'], 'ralph').kind, 'overlap');
   });
 
   it('builds actionable denial guidance that names both clearing paths', () => {
@@ -76,6 +87,18 @@ describe('workflow transition rules', () => {
     assert.match(error, /Clear incompatible workflow state yourself via/);
     assert.match(error, /`omx state clear --input '{"mode":"<mode>"}' --json`/);
     assert.match(error, /explicit MCP compatibility is enabled/);
+    assert.match(buildWorkflowTransitionError([], 'autopilot'), /no tracked workflows/);
+    assert.match(buildWorkflowTransitionError(['team', 'ralph'], 'autopilot'), /team and ralph are already active/);
+    assert.match(
+      buildWorkflowTransitionError(['team', 'ralph', 'ultrawork'], 'autopilot'),
+      /team, ralph, and ultrawork are already active/,
+    );
+    assert.doesNotThrow(() => assertWorkflowTransitionAllowed([], 'team'));
+    assert.throws(() => assertWorkflowTransitionAllowed(['team'], 'autopilot'), /Unsupported workflow overlap/i);
+    assert.deepEqual(
+      evaluateWorkflowTransition(['unknown', 'team', 'team'], 'ralph').currentModes,
+      ['team'],
+    );
   });
 
   it('returns auto-complete decisions for allowlisted forward transitions', () => {

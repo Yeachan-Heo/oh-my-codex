@@ -11,6 +11,9 @@ import type {
 import { buildCapabilityPlan } from '../capabilities.js';
 import {
   canonicalLanePayloadDigest,
+  parseDiagnosticToolEvents,
+  parseLaneActivityEvent,
+  parseLaneResultSubmission,
   validateLaneIndependence,
   validateLaneResultEvidence,
   validateLaneStart,
@@ -185,6 +188,15 @@ describe('lane evidence validation', () => {
       tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
       alreadyBoundThreadIds: new Set(['child-reviewer']),
     }), /bound|reuse/i);
+    assert.throws(() => validateLaneStart({
+      ...base,
+      lane: { ...base.lane, status: 'RUNNING' },
+      tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: 'tracker', first_seen_at: NOW },
+    }), /pending|attempt/i);
+    assert.throws(() => validateLaneStart({
+      ...base,
+      tracker: { schema_version: 1, session_id: 'session-1', thread_id: 'child-reviewer', tracker_lane_id: 'reviewer-batch-1', tracker_path: '', first_seen_at: NOW },
+    }), /path/i);
   });
 
   it('parses hook trackers as strict unknown data with exact bounded fields', () => {
@@ -209,10 +221,68 @@ describe('lane evidence validation', () => {
       { ...trusted, schema_version: 2 },
       { ...trusted, unexpected: true },
       { ...trusted, first_seen_at: 'not-a-time' },
+      { ...trusted, last_seen_at: '2026-07-13T23:59:59.999Z' },
       { ...trusted, tracker_path: 'x'.repeat(1_025) },
     ]) {
       assert.throws(() => validateLaneStart({ ...base, tracker: candidate as never }), /tracker|schema|field|timestamp|path/i);
     }
+  });
+
+  it('parses strict activity and diagnostic event journals with unique provenance', () => {
+    const base = {
+      schema_version: 1,
+      session_id: 'session-1',
+      review_id: REVIEW_ID,
+      attempt: 1,
+      lane_id: 'reviewer-batch-1',
+      child_thread_id: 'child-reviewer',
+      event_ref: 'event-1',
+      observed_at: '2026-07-14T00:04:00.000Z',
+    };
+    assert.equal(parseDiagnosticToolEvents([{ ...base, tool_name: 'mcp__code_intel__ast' }]).length, 1);
+    assert.equal(parseLaneActivityEvent({ ...base, event_kind: 'TOOL_END' }).event_kind, 'TOOL_END');
+    for (const candidate of [
+      {},
+      { ...base, review_id: 'not-a-uuid', tool_name: 'tool' },
+      { ...base, tool_name: 'tool', program: 'tsc' },
+      { ...base },
+    ]) {
+      assert.throws(() => parseDiagnosticToolEvents([candidate]), /event|provenance|UUID|schema|bounded/i);
+    }
+    assert.throws(() => parseDiagnosticToolEvents([
+      { ...base, tool_name: 'tool' },
+      { ...base, tool_name: 'tool' },
+    ]), /duplicated/);
+    assert.throws(() => parseLaneActivityEvent({ ...base, event_kind: 'UNKNOWN' }), /activity event/);
+  });
+
+  it('rejects cyclic and malformed exact lane result submissions', () => {
+    const current = review();
+    const cyclic = reviewerResult();
+    cyclic.self = cyclic;
+    assert.throws(() => parseLaneResultSubmission({
+      review: current,
+      lane: current.lanes[0]!,
+      result: cyclic,
+    }), /serializable plain JSON/);
+    assert.throws(() => parseLaneResultSubmission({
+      review: current,
+      lane: current.lanes[0]!,
+      result: reviewerResult({ diagnostics: null }),
+    }), /schema, limits, or identity/);
+
+    const cyclicEvidence = reviewerResult();
+    cyclicEvidence.self = cyclicEvidence;
+    assert.equal(validateLaneResultEvidence({
+      review: current,
+      lane: current.lanes[0]!,
+      result: cyclicEvidence,
+    }).valid, false);
+    assert.equal(validateLaneResultEvidence({
+      review: current,
+      lane: { ...current.lanes[0]!, status: 'PENDING', provenance: undefined },
+      result: reviewerResult(),
+    }).valid, false);
   });
 
   it('requires exact reviewer capability coverage and lane-owned tool provenance', () => {
@@ -264,6 +334,61 @@ describe('lane evidence validation', () => {
     assert.equal(result.evidence_status, 'DEGRADED_EVIDENCE');
     assert.equal(result.maximum_recommendation, 'COMMENT');
     assert.match(result.reasons.join('\n'), /event|provenance|thread|tool/i);
+  });
+
+  it('accepts an attested equivalent command and rejects a failed capability evaluation', () => {
+    const current = review();
+    current.effective_config.accepted_equivalents = [{
+      capability: 'LSP',
+      source: 'REPO_CONTRACT',
+      source_ref: `${'b'.repeat(40)}:code-review-equivalents.json#typescript-lsp`,
+      program: 'tsc',
+      args: ['--noEmit'],
+    }];
+    const diagnostics = structuredClone(reviewerResult().diagnostics) as Array<Record<string, unknown>>;
+    diagnostics[0] = {
+      ...diagnostics[0],
+      execution: 'ACCEPTED_EQUIVALENT',
+      source_ref: current.effective_config.accepted_equivalents[0]!.source_ref,
+      program: 'tsc',
+      args: ['--noEmit'],
+      tool_name: undefined,
+    };
+    delete diagnostics[0]!.tool_name;
+    const accepted = validateLaneResultEvidence({
+      review: current,
+      lane: current.lanes[0]!,
+      result: reviewerResult({ diagnostics }),
+      capabilityPlan: buildCapabilityPlan(current.scope!.files),
+      toolEvents: [
+        {
+          schema_version: 1,
+          session_id: 'session-1',
+          review_id: REVIEW_ID,
+          attempt: 1,
+          lane_id: 'reviewer-batch-1',
+          child_thread_id: 'child-reviewer',
+          event_ref: 'tool-lsp-1',
+          observed_at: '2026-07-14T00:04:00.000Z',
+          program: 'tsc',
+          args: ['--noEmit'],
+        },
+        toolEvent('tool-ast-1', 'child-reviewer', 'mcp__code_intel__ast'),
+      ],
+    });
+    assert.equal(accepted.valid, true);
+
+    diagnostics[0] = { ...diagnostics[0], execution: 'NATIVE', outcome: 'FAIL', tool_name: 'mcp__code_intel__diagnostics' };
+    delete diagnostics[0]!.program;
+    delete diagnostics[0]!.args;
+    delete diagnostics[0]!.source_ref;
+    assert.equal(validateLaneResultEvidence({
+      review: current,
+      lane: current.lanes[0]!,
+      result: reviewerResult({ diagnostics }),
+      capabilityPlan: buildCapabilityPlan(current.scope!.files),
+      toolEvents: [],
+    }).valid, false);
   });
 
   it('rejects role, batch, scope, path, line, architect-diagnostic, contradiction, and payload limits', () => {
@@ -340,6 +465,25 @@ describe('lane evidence validation', () => {
       publication,
       consumedToolEventRefs: new Set(),
     }).publication_id, RESULT_KEY);
+
+    const conflictingTimestamp = {
+      ...publication,
+      published_at: '2026-07-14T00:04:01.000Z',
+    };
+    assert.throws(() => validatePostToolPublication({
+      review: current, lane: current.lanes[0]!, proposal,
+      publication: conflictingTimestamp, consumedToolEventRefs: new Set(),
+    }), /timestamps conflict/);
+    const afterDeadline = {
+      ...publication,
+      published_at: '2026-07-14T00:11:00.000Z',
+      activity: { ...publication.activity, observed_at: '2026-07-14T00:11:00.000Z' },
+      attestation: { ...publication.attestation, published_at: '2026-07-14T00:11:00.000Z' },
+    };
+    assert.throws(() => validatePostToolPublication({
+      review: current, lane: current.lanes[0]!, proposal,
+      publication: afterDeadline, consumedToolEventRefs: new Set(),
+    }), /after the idle deadline/);
 
     for (const mutated of [
       { ...publication, publication_id: '33333333-3333-4333-8333-333333333333' },
@@ -434,6 +578,25 @@ describe('lane evidence validation', () => {
       resumable: false,
     };
     assert.deepEqual(validateWithAttempt({ lanes: [reviewer, architect], batched: false, resume: false, attempt: initialAttempt }), []);
+    assert.match(validateWithAttempt({
+      lanes: [{
+        ...reviewer,
+        provenance: {
+          ...reviewer.provenance!,
+          first_seen_at: '2026-07-14T00:06:00.000Z',
+          completed_at: '2026-07-14T00:05:00.000Z',
+        },
+      }],
+      batched: false,
+      resume: false,
+      attempt: initialAttempt,
+    }).join('\n'), /LANE_PROVENANCE_INTERVAL_INVALID/u);
+    assert.match(validateWithAttempt({
+      lanes: [{ ...reviewer, attempt: 2 }],
+      batched: false,
+      resume: false,
+      attempt: initialAttempt,
+    }).join('\n'), /ATTEMPT_LANE_IDENTITY_MISMATCH/u);
     const nonOverlap = {
       ...architect,
       provenance: {
@@ -510,5 +673,18 @@ describe('lane evidence validation', () => {
     }).join('\n'), /binding|provenance|thread/i);
     const reused = { ...architect, provenance: { ...architect.provenance!, thread_id: 'child-reviewer' } };
     assert.match(validateWithAttempt({ lanes: [reviewer, reused], batched: false, resume: false, attempt: initialAttempt }).join('\n'), /distinct|reuse/i);
+
+    const malformedInterval = {
+      ...architect,
+      provenance: { ...architect.provenance!, completed_at: 'not-a-time' },
+    };
+    assert.match(validateWithAttempt({
+      lanes: [reviewer, malformedInterval], batched: false, resume: false, attempt: initialAttempt,
+    }).join('\n'), /interval/i);
+
+    const missingBinding = { ...initialAttempt, bindings: initialAttempt.bindings.slice(0, 1) };
+    assert.match(validateWithAttempt({
+      lanes: [reviewer, architect], batched: false, resume: false, attempt: missingBinding,
+    }).join('\n'), /binding/i);
   });
 });

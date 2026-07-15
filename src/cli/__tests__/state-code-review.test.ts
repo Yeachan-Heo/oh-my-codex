@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,6 +110,21 @@ async function runCliGet(input: Record<string, unknown>) {
 }
 
 describe("omx state code-review recovery aliases", () => {
+	it("reads real bounded stdin and rejects an oversized recovery payload", () => {
+		const cli = join(process.cwd(), "dist", "cli", "omx.js");
+		const normal = spawnSync(process.execPath, [cli, "state", "review-get", "--input", "-", "--json"], {
+			cwd: process.cwd(), input: Buffer.from("{}"), encoding: "utf8",
+		});
+		assert.notEqual(normal.status, 0);
+		assert.match(normal.stderr, /workingDirectory|INVALID_INVOCATION/);
+
+		const oversized = spawnSync(process.execPath, [cli, "state", "review-get", "--input", "-", "--json"], {
+			cwd: process.cwd(), input: Buffer.alloc(1_048_577, 0x20), encoding: "utf8",
+		});
+		assert.notEqual(oversized.status, 0);
+		assert.match(oversized.stderr, /stdin JSON exceeds 1048576 bytes/);
+	});
+
 	it("maps every review alias to the matching internal operation and stdin object", async () => {
 		const expected: Array<[string, ReviewOperationName]> = [
 			["review-start", "review_start"],

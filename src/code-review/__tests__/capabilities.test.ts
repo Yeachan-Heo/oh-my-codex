@@ -461,6 +461,64 @@ describe('capability evidence degradation', () => {
     });
   });
 
+  it('reports exact fail-closed reasons for malformed, fallback, and unavailable evidence', async () => {
+    const api = await loadCapabilitiesApi();
+    const plan = api.buildCapabilityPlan([file('src/a.ts')]);
+    const accepted: AcceptedEquivalent = {
+      capability: 'LSP',
+      source: 'EXPLICIT_USER',
+      source_ref: 'approval:event-1',
+      program: 'npm',
+      args: ['run', 'typecheck'],
+    };
+    const exactReasons = (
+      observations: readonly CapabilityObservation[],
+      reasons: string[],
+      equivalents: readonly AcceptedEquivalent[] = [],
+    ): void => {
+      assert.deepEqual(api.evaluateCapabilityEvidence(plan, observations, equivalents), {
+        evidence_status: 'DEGRADED_EVIDENCE',
+        maximum_recommendation: 'REQUEST CHANGES',
+        reasons,
+      });
+    };
+
+    exactReasons(null as unknown as CapabilityObservation[], ['OBSERVATIONS_MALFORMED']);
+    exactReasons(passingObservations(plan), ['ACCEPTED_EQUIVALENTS_MALFORMED'], null as unknown as AcceptedEquivalent[]);
+    exactReasons([
+      { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS', extra: true } as unknown as CapabilityObservation,
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], ['OBSERVATION_MALFORMED:0', 'MISSING_CAPABILITY:LSP']);
+    exactReasons([
+      ...passingObservations(plan),
+      { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome: 'PASS' },
+    ], ['UNEXPECTED_FALLBACK:RG_FALLBACK']);
+    exactReasons([
+      {
+        capability: 'LSP',
+        execution: 'ACCEPTED_EQUIVALENT',
+        outcome: 'PASS',
+        source_ref: 'approval:other',
+        program: 'npm',
+        args: ['run', 'typecheck'],
+      },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], ['UNACCEPTED_EQUIVALENT:LSP'], [accepted]);
+    exactReasons([
+      { capability: 'LSP', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], ['LSP_UNAVAILABLE', 'LSP_FALLBACK_INCOMPLETE']);
+    exactReasons([
+      { capability: 'LSP', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome: 'FAIL' },
+    ], ['LSP_UNAVAILABLE', 'LSP_FALLBACK_INCOMPLETE', 'RG_FALLBACK_FALLBACK_FAIL']);
+    exactReasons([
+      { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'AST', execution: 'SKIPPED', outcome: 'NOT_RUN' },
+    ], ['AST_NOT_RUN']);
+  });
+
   it('caps successful LSP/AST fallback at COMMENT', async () => {
     const api = await loadCapabilitiesApi();
     const plan = api.buildCapabilityPlan([file('src/a.ts')]);
@@ -473,6 +531,20 @@ describe('capability evidence degradation', () => {
     assert.equal(result.evidence_status, 'DEGRADED_EVIDENCE');
     assert.equal(result.maximum_recommendation, 'COMMENT');
     assert.match(result.reasons.join('\n'), /LSP|AST/u);
+  });
+
+  it('keeps one successfully substituted unavailable primary explicitly degraded', async () => {
+    const api = await loadCapabilitiesApi();
+    const plan = api.buildCapabilityPlan([file('src/a.ts')]);
+    assert.deepEqual(api.evaluateCapabilityEvidence(plan, [
+      { capability: 'LSP', execution: 'UNAVAILABLE', outcome: 'NOT_RUN' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'RG_FALLBACK', execution: 'FALLBACK', outcome: 'PASS' },
+    ]), {
+      evidence_status: 'DEGRADED_EVIDENCE',
+      maximum_recommendation: 'COMMENT',
+      reasons: ['LSP_UNAVAILABLE'],
+    });
   });
 
   it('requires every declared fallback for an unavailable primary capability', async () => {
@@ -641,6 +713,15 @@ describe('capability evidence degradation', () => {
       { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
     ], []).maximum_recommendation, 'REQUEST CHANGES');
     assert.equal(api.evaluateCapabilityEvidence(typescriptPlan, [
+      { capability: 'LINT', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], []).maximum_recommendation, 'REQUEST CHANGES');
+    assert.equal(api.evaluateCapabilityEvidence(typescriptPlan, [
+      { capability: 'LSP', execution: 'UNKNOWN', outcome: 'PASS' } as unknown as CapabilityObservation,
+      { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
+    ], []).maximum_recommendation, 'REQUEST CHANGES');
+    assert.equal(api.evaluateCapabilityEvidence(typescriptPlan, [
       { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
       { capability: 'LSP', execution: 'NATIVE', outcome: 'PASS' },
       { capability: 'AST', execution: 'NATIVE', outcome: 'PASS' },
@@ -704,11 +785,18 @@ describe('trusted diagnostic equivalents', () => {
       { capability: 'AST', source_ref: 'base#ast' },
     ]);
     for (const value of [
+      {},
+      Array.from({ length: 129 }, () => ({ capability: 'LSP', source_ref: 'approval:event-1' })),
       [{ capability: 'LSP', source_ref: 'approval:event-1', program: 'npm' }],
       [{ capability: 'LSP', source_ref: 'approval:event-1', args: ['run', 'lint'] }],
       [{ capability: 'LSP', source_ref: 'approval:event-1', source: 'EXPLICIT_USER' }],
       [{ capability: 'LSP', source_ref: 'approval:event-1', extra: true }],
       [{ capability: 'COMPILER', source_ref: 'approval:event-1' }],
+      [{ capability: 'LSP', source_ref: '' }],
+      [
+        { capability: 'LSP', source_ref: 'approval:event-1' },
+        { capability: 'LSP', source_ref: 'approval:event-1' },
+      ],
     ]) {
       assert.throws(
         () => api.parseAcceptedEquivalentRequests(value),
@@ -852,6 +940,42 @@ describe('trusted diagnostic equivalents', () => {
       () => api.recoverEquivalentConsumption({ ...prepared, source_ref: 'different' }, committed),
       (error: unknown) => (error as { code?: unknown }).code === 'EQUIVALENT_CONSUMPTION_CONFLICT',
     );
+    assert.throws(
+      () => api.prepareEquivalentConsumption({ ...input, nonce: '' }),
+      (error: unknown) => (error as { code?: unknown }).code === 'EQUIVALENT_CONSUMPTION_CONFLICT',
+    );
+    for (const malformed of [null, { ...input, capability: 'UNKNOWN' }, { ...input, extra: true }]) {
+      assert.throws(
+        () => api.prepareEquivalentConsumption(malformed as never),
+        (error: unknown) => (error as { code?: unknown }).code === 'EQUIVALENT_CONSUMPTION_CONFLICT',
+      );
+    }
+    assert.throws(
+      () => api.prepareEquivalentConsumption(input, { state: 'UNKNOWN' }),
+      (error: unknown) => (error as { code?: unknown }).code === 'EQUIVALENT_CONSUMPTION_CONFLICT',
+    );
+    for (const malformed of [
+      null,
+      { ...prepared, capability: 'UNKNOWN' },
+      { ...prepared, extra: true },
+    ]) {
+      assert.throws(
+        () => api.prepareEquivalentConsumption(input, malformed),
+        (error: unknown) => (error as { code?: unknown }).code === 'EQUIVALENT_CONSUMPTION_CONFLICT',
+      );
+    }
+    assert.throws(
+      () => api.commitEquivalentConsumption(committed as unknown as PreparedConsumption),
+      /only a prepared consumption/,
+    );
+    assert.throws(
+      () => api.recoverEquivalentConsumption(committed as unknown as PreparedConsumption, committed),
+      /recovery intent is not prepared/,
+    );
+    assert.throws(
+      () => api.recoverEquivalentConsumption(prepared, { ...prepared, prepared_at: 'not-a-time' }),
+      /timestamp is invalid/,
+    );
   });
 
   it('binds one hook nonce to only one approval request in a resolution', async () => {
@@ -970,6 +1094,43 @@ describe('trusted diagnostic equivalents', () => {
     assert.deepEqual(result.prepared_consumptions, []);
   });
 
+  it('fails closed for malformed resolution contexts and unavailable trusted loaders', async () => {
+    const api = await loadCapabilitiesApi();
+    for (const value of [
+      null,
+      { requests: [], context: { ...explicitContext(), extra: true } },
+      { requests: [], context: { ...explicitContext(), base_sha: 42 } },
+      { requests: [], context: { ...explicitContext(), review_id: 'not-a-uuid' } },
+    ]) {
+      await assert.rejects(
+        api.resolveTrustedEquivalents(value as never),
+        (error: unknown) => (error as { code?: unknown }).code === 'INVALID_EQUIVALENT_CONTEXT',
+      );
+    }
+
+    const approvalFailure = await api.resolveTrustedEquivalents({
+      requests: [{ capability: 'LSP', source_ref: 'approval:event-1' }],
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async () => { throw new Error('ledger unavailable'); },
+      now: NOW,
+    });
+    assert.deepEqual(approvalFailure.accepted_equivalents, []);
+
+    const baseSha = 'a'.repeat(40);
+    for (const sourceRef of [
+      `other:code-review-equivalents.json#typescript-lsp`,
+      `${baseSha}:code-review-equivalents.json#bad/rule`,
+    ]) {
+      const result = await api.resolveTrustedEquivalents({
+        requests: [{ capability: 'LSP', source_ref: sourceRef }],
+        context: { ...explicitContext(), base_sha: baseSha },
+      }, { now: NOW });
+      assert.deepEqual(result.accepted_equivalents, []);
+      assert.ok(result.reasons.length > 0);
+    }
+  });
+
   it('rejects non-object base revisions before invoking the base-contract reader', async () => {
     const api = await loadCapabilitiesApi();
     let reads = 0;
@@ -1032,10 +1193,12 @@ describe('trusted diagnostic equivalents', () => {
     assert.equal(reads, 0, 'must not read a worktree file without an authoritative base');
 
     for (const contract of [
+      'not-json',
       { schema_version: 1, equivalents: [{ capability: 'LSP', program: 'npm', args: ['run', 'check'], rule_id: 'other' }] },
       { schema_version: 1, equivalents: [{ capability: 'LSP', program: 'npm', args: ['run'], rule_id: 'typescript-lsp', extra: true }] },
       { schema_version: 1, equivalents: [{ capability: 'LSP', program: 'sh', args: ['-c', 'npm test'], rule_id: 'typescript-lsp' }] },
       { schema_version: 1, equivalents: [{ capability: 'LSP', program: 'npm && echo pwned', args: [], rule_id: 'typescript-lsp' }] },
+      { schema_version: 1, equivalents: [{ capability: 'LSP', program: 'npm', args: [42], rule_id: 'typescript-lsp' }] },
       { schema_version: 1, equivalents: [
         { capability: 'LSP', program: 'npm', args: ['run', 'a'], rule_id: 'typescript-lsp' },
         { capability: 'LSP', program: 'npm', args: ['run', 'b'], rule_id: 'typescript-lsp' },
@@ -1046,11 +1209,43 @@ describe('trusted diagnostic equivalents', () => {
         requests: request,
         context: { ...explicitContext(), base_sha: baseSha },
       }, {
-        readBaseContract: async () => JSON.stringify(contract),
+        readBaseContract: async () => typeof contract === 'string' ? contract : JSON.stringify(contract),
         now: NOW,
       });
       assert.deepEqual(result.accepted_equivalents, [], JSON.stringify(contract));
       assert.ok(result.reasons.length > 0);
     }
+
+    const readFailure = await api.resolveTrustedEquivalents({
+      requests: request,
+      context: { ...explicitContext(), base_sha: baseSha },
+    }, {
+      readBaseContract: async () => { throw new Error('git show failed'); },
+      now: NOW,
+    });
+    assert.deepEqual(readFailure.accepted_equivalents, []);
+
+    const duplicateConsumptions = await api.resolveTrustedEquivalents({
+      requests: [{ capability: 'LSP', source_ref: 'approval:event-1' }],
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async () => [hookOwnedApproval()],
+      existingConsumptions: [
+        { nonce: 'hook-nonce-1' },
+        { nonce: 'hook-nonce-1' },
+      ],
+      now: NOW,
+    });
+    assert.match(duplicateConsumptions.reasons.join('\n'), /NONCE_CONFLICT/);
+
+    const malformedConsumption = await api.resolveTrustedEquivalents({
+      requests: [{ capability: 'LSP', source_ref: 'approval:event-1' }],
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async () => [hookOwnedApproval()],
+      existingConsumptions: [{ nonce: 'hook-nonce-1' }],
+      now: NOW,
+    });
+    assert.match(malformedConsumption.reasons.join('\n'), /CONSUMPTION_UNVERIFIABLE/);
   });
 });

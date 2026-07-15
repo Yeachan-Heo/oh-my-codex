@@ -119,6 +119,11 @@ describe('deterministic review batching', () => {
       (await api.createBatchPlan({ repositoryRoot: root, files: [source('src/large.ts', 20_000)] })).review_flags,
       [],
     );
+    assert.equal(
+      (await api.createBatchPlan({ repositoryRoot: root, files: [source('src/large.ts', 20_000)] }))
+        .batches[0]?.oversized_single_file,
+      false,
+    );
     assert.deepEqual(
       (await api.createBatchPlan({ repositoryRoot: root, files: [source('src/large.ts', 20_001)] })).review_flags,
       ['BATCHED_REVIEW'],
@@ -275,6 +280,27 @@ describe('deterministic review batching', () => {
     assert.deepEqual(plan.review_flags, []);
   });
 
+  it('rejects unsafe changed-line counts and surfaces non-ENOENT manifest inspection failures', async () => {
+    const api = await loadBatchingApi();
+    const root = await repository();
+    for (const invalid of [
+      source('negative.ts', -1),
+      source('fraction.ts', 1.5),
+      source('overflow.ts', Number.MAX_SAFE_INTEGER, 1),
+    ]) {
+      await assert.rejects(
+        api.createBatchPlan({ repositoryRoot: root, files: [invalid] }),
+        (error: unknown) => (error as { code?: unknown }).code === 'INVALID_SCOPE',
+      );
+    }
+
+    await writeFile(join(root, 'blocked'), 'not a directory');
+    await assert.rejects(
+      api.createBatchPlan({ repositoryRoot: root, files: [source('blocked/src/a.ts')] }),
+      (error: unknown) => (error as { code?: unknown }).code === 'BATCHING_IO_FAILED',
+    );
+  });
+
   it('covers every input exactly once, rejects duplicate paths, and is input-order invariant', async () => {
     const api = await loadBatchingApi();
     const root = await repository();
@@ -292,7 +318,10 @@ describe('deterministic review batching', () => {
 
     await assert.rejects(
       api.createBatchPlan({ repositoryRoot: root, files: [source('same.ts'), source('same.ts')] }),
-      (error: unknown) => (error as { code?: unknown }).code === 'INVALID_SCOPE',
+      (error: unknown) => (
+        (error as { code?: unknown }).code === 'INVALID_SCOPE'
+        && (error as Error).message === 'frozen scope contains duplicate paths'
+      ),
     );
   });
 

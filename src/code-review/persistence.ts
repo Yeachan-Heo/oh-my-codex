@@ -3333,7 +3333,8 @@ async function recoverDurableTransactionLocked(
     || prepared.idempotency_key !== key) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction recovery identity conflicts');
   }
-  if (journalScope === 'REVIEW') {
+  const committedValue = await readJsonIfPresent(files.committed);
+  if (journalScope === 'REVIEW' && committedValue === undefined) {
     const locatorValue = await readJsonIfPresent(join(paths.pendingReviewTransactionsRoot, prepared.transaction_id));
     if (locatorValue === undefined) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction recovery locator is missing');

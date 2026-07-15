@@ -254,6 +254,10 @@ export function pathMatchesExplicitScope(
   );
 }
 
+function isOmxRuntimePath(path: string): boolean {
+  return path === '.omx' || path.startsWith('.omx/');
+}
+
 export function filterManifestFiles(
   files: readonly ScopeFile[],
   explicitPaths: readonly string[],
@@ -830,6 +834,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
   }
   const effectiveExplicitPaths = selector.explicit_paths;
   const selected = [...discovered.values()]
+    .filter((entry) => !isOmxRuntimePath(entry.path))
     .filter(
       (entry) =>
         selector.explicit_paths.length === 0 ||

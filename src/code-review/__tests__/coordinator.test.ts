@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, it } from 'node:test';
 import type { BatchPlan } from '../batching.js';
 import type {
@@ -11,10 +15,12 @@ import type {
 } from '../contract.js';
 import {
   applyLaneStart,
+  adaptiveReviewChangeWaiter,
   createInitialReviewRecord,
   createLaneResultProposal,
   finalizeReview,
   reconcileResultPublications,
+  projectOperationReview,
   resolveLaneTimeoutMs,
   resumeReview,
   waitForLaneRunning,
@@ -148,6 +154,71 @@ function publication(proposal: LaneResultProposal, child: string, at: string): R
 }
 
 describe('review coordinator lifecycle', () => {
+  it('projects bounded diagnostics through the public operation shape', () => {
+    const record = initial();
+    record.diagnostics = [{
+      diagnostic_id: 'diag-1',
+      capability: 'LINT',
+      applicability: 'APPLICABLE',
+      execution: 'NATIVE',
+      outcome: 'PASS',
+      thread_id: 'child-reviewer',
+      tool_name: 'lint-tool',
+      event_ref: 'event-1',
+      summary: 'lint passed',
+    }];
+    assert.deepEqual((projectOperationReview(record).diagnostics as unknown[])[0], {
+      diagnostic_id: 'diag-1',
+      capability: 'LINT',
+      applicability: 'APPLICABLE',
+      execution: 'NATIVE',
+      outcome: 'PASS',
+      event_ref: 'event-1',
+      summary: 'lint passed',
+    });
+  });
+
+  it('fails closed on invalid and backwards adaptive wait clocks while retaining the timer fallback', async () => {
+    const invalid = adaptiveReviewChangeWaiter('/definitely/missing/review.json', () => 0);
+    await assert.rejects(invalid('not-a-date', 1), /deadline is invalid/i);
+
+    let startTick = 0;
+    const backwardsAtStart = adaptiveReviewChangeWaiter(
+      '/definitely/missing/review.json',
+      () => (startTick++ === 0 ? 2 : 1),
+    );
+    await assert.rejects(backwardsAtStart('2026-07-14T00:00:00.000Z', 1), /moved backwards/i);
+
+    const ticks = [0, 0, -1];
+    const backwardsAfterTimer = adaptiveReviewChangeWaiter(
+      '/definitely/missing/review.json',
+      () => ticks.shift() ?? -1,
+    );
+    await assert.rejects(backwardsAfterTimer('2026-07-14T00:00:00.000Z', 1), /moved backwards/i);
+
+    const stableTimer = adaptiveReviewChangeWaiter('/definitely/missing/review.json', () => 0);
+    await stableTimer('2026-07-14T00:00:00.000Z', 1);
+  });
+
+  it('wakes the adaptive waiter on a review.json directory change', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-review-change-waiter-'));
+    try {
+      const reviewPath = join(cwd, 'review.json');
+      const waitForChange = adaptiveReviewChangeWaiter(reviewPath, () => 0);
+      for (let index = 0; index < 5; index += 1) {
+        await waitForChange('2026-07-14T00:00:00.000Z', 1);
+      }
+      const waiting = waitForChange('2026-07-14T00:00:00.000Z', 30_000);
+      await writeFile(reviewPath, '{}\n');
+      await Promise.race([
+        waiting,
+        delay(500).then(() => { throw new Error('review.json watcher did not wake the waiter'); }),
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('finalizes an empty authoritative BatchPlan without creating review lanes', () => {
     const emptyScope: ScopeManifest = {
       ...scope(),
@@ -214,8 +285,32 @@ describe('review coordinator lifecycle', () => {
       { ...plan, required_lanes: [...plan.required_lanes, { lane_id: 'extra', role: 'code-reviewer' as const, batch_id: 'missing' }] },
       { ...plan, required_lanes: [...plan.required_lanes, { lane_id: 'architect-2', role: 'architect' as const, batch_id: 'global' as const }] },
       { ...plan, required_lanes: [{ ...plan.required_lanes[0], batch_id: 'global' }, plan.required_lanes[1]] },
+      { ...plan, required_lanes: [{ ...plan.required_lanes[0], lane_id: '' }, plan.required_lanes[1]] },
     ]) {
       assert.throws(() => createFromPlan({ ...input, batch_plan: invalid }), /batch|lane|architect|plan/i);
+    }
+  });
+
+  it('rejects every malformed or non-authoritative batch-plan shape', () => {
+    const valid = batchPlan();
+    const emptyScope = { ...scope(), files: [], changed_lines: 0 };
+    const cases: Array<{ scope?: ScopeManifest; plan: unknown }> = [
+      { plan: { ...valid, review_flags: ['UNKNOWN'] } },
+      { plan: { ...valid, batches: 'not-an-array' } },
+      { scope: emptyScope, plan: valid },
+      { plan: { ...valid, batches: [...valid.batches, { ...valid.batches[0] }] } },
+      { plan: { ...valid, batches: [{ ...valid.batches[0], module_root: '' }] } },
+      { plan: { ...valid, batches: [{ ...valid.batches[0], files: ['other.ts'] }] } },
+      { plan: { ...valid, required_lanes: [valid.required_lanes[0], { ...valid.required_lanes[1], lane_id: valid.required_lanes[0]!.lane_id }] } },
+      { plan: { ...valid, required_lanes: [{ ...valid.required_lanes[0], role: 'unknown' }, valid.required_lanes[1]] } },
+    ];
+    for (const testCase of cases) {
+      assert.throws(() => createInitialReviewRecord({
+        review_id: REVIEW_ID,
+        scope: testCase.scope ?? scope(),
+        batch_plan: testCase.plan as BatchPlan,
+        now: START,
+      }), /batch|plan|lane|scope|flag|collection/i);
     }
   });
 
@@ -228,6 +323,24 @@ describe('review coordinator lifecycle', () => {
     const repeated = startLane(running, 'reviewer-batch-1', 'child-reviewer');
     assert.deepEqual(repeated, running);
     assert.throws(() => startLane(running, 'reviewer-batch-1', 'other-child'), /bound|thread|evidence/i);
+    assert.throws(() => applyLaneStart({
+      review: initial(),
+      event: {
+        event: 'START', review_id: REVIEW_ID, attempt: 2, lane_id: 'reviewer-batch-1',
+        thread_id: 'child-reviewer', idempotency_key: REVIEWER_KEY,
+      },
+      tracker: {},
+      now: START,
+    }), /wrong review attempt/i);
+    assert.throws(() => applyLaneStart({
+      review: initial(),
+      event: {
+        event: 'START', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1',
+        thread_id: 'child-reviewer', idempotency_key: REVIEWER_KEY,
+      },
+      tracker: { invalid: true },
+      now: START,
+    }), /tracker|schema|evidence/i);
   });
 
   it('condition-waits for readiness without fixed sleeps or a held mutation callback', async () => {
@@ -263,6 +376,12 @@ describe('review coordinator lifecycle', () => {
     assert.throws(() => createLaneResultProposal({ review: running, event, source: 'CLI', now: START }), /CLI|fresh|proposal/i);
     assert.deepEqual(createLaneResultProposal({ review: running, event, source: 'CLI', now: START, existingProposal: proposal }), proposal);
     assert.throws(() => createLaneResultProposal({ review: running, event: { ...event, scope_hash: 'b'.repeat(64) }, source: 'CLI', now: START, existingProposal: proposal }), /conflict|scope|identity/i);
+    assert.throws(() => createLaneResultProposal({
+      review: running,
+      event: { ...event, scope_hash: 'b'.repeat(64) },
+      source: 'MCP',
+      now: START,
+    }), /scope hash|frozen scope/i);
   });
 
   it('strictly parses and sanitizes RESULT once before freezing its digest', () => {
@@ -522,6 +641,43 @@ describe('review coordinator lifecycle', () => {
     assert.notEqual(replacement?.lane_id, 'architect-global');
     assert.equal(replacement?.status, 'PENDING');
     assert.deepEqual(resumed.attempt_history[1]!.lane_ids, ['reviewer-batch-1', replacement!.lane_id]);
+  });
+
+  it('rejects invalid resume states and deconflicts replacement lane identities', () => {
+    const blocked = finalizeReview({ review: initial(), current_scope_hash: HASH, now: START });
+    const collision = structuredClone(blocked);
+    collision.lanes.push(
+      { ...collision.lanes[0]!, lane_id: 'reviewer-batch-1-resume-2' },
+      { ...collision.lanes[0]!, lane_id: 'reviewer-batch-1-resume-2-2' },
+    );
+    const resumed = resumeReview({ review: collision, current_scope_hash: HASH, now: START });
+    assert.ok(resumed.lanes.some((lane) => lane.lane_id === 'reviewer-batch-1-resume-2-3'));
+    assert.throws(() => resumeReview({
+      review: { ...blocked, status: 'FINALIZED' },
+      current_scope_hash: HASH,
+      now: START,
+    }), /finalized reviews cannot be resumed/i);
+    assert.throws(() => resumeReview({
+      review: initial(),
+      current_scope_hash: HASH,
+      now: START,
+    }), /not explicitly resumable/i);
+  });
+
+  it('records the exact resumable reason for every terminal lane failure class', () => {
+    for (const [status, reason] of [
+      ['FAILED', 'LANE_FAILED'],
+      ['TIMED_OUT', 'LANE_TIMED_OUT'],
+      ['INVALID', 'LANE_EVIDENCE_INVALID'],
+    ] as const) {
+      const record = initial();
+      for (const lane of record.lanes) {
+        lane.status = status;
+        lane.failure_code = reason;
+      }
+      const finalized = finalizeReview({ review: record, current_scope_hash: HASH, now: START });
+      assert.equal(finalized.resumable_reason, reason);
+    }
   });
 
   it('blocks missing or still-running lanes with a resumable verdict instead of throwing', () => {

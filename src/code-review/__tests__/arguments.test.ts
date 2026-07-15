@@ -166,6 +166,18 @@ describe('parseCodeReviewArguments', () => {
       for (const args of cases) {
         await assertInvalidInvocation(api, workingDirectory, args);
       }
+
+      for (const args of [
+        ['--base', ''],
+        ['--base', 'x'.repeat(1_025)],
+        ['--format', 'json\n'],
+        [''],
+        ['path\0name'],
+        ['path\nname'],
+        ['--resume', 'not-a-uuid'],
+      ]) {
+        await assertInvalidInvocation(api, workingDirectory, args);
+      }
     });
   });
 
