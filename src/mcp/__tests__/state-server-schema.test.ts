@@ -1,15 +1,26 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+type StateServerToolSchema = {
+	name: string;
+	inputSchema?: { properties?: { mode?: { enum?: string[] } } };
+};
+
 describe("state-server schema validation", () => {
-	it("exposes only state_* tool schemas after team MCP hard-deprecation", async () => {
+	it("exposes the exact state_* and review_* tool schemas after team MCP hard-deprecation", async () => {
 		process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = "1";
 		const { buildStateServerTools } = await import("../state-server.js");
 
-		const tools = buildStateServerTools();
+		const tools = buildStateServerTools() as StateServerToolSchema[];
 		const names = tools.map((tool: { name: string }) => tool.name).sort();
 
+		// ASSERTION-CHANGE-JUSTIFIED: Task 6 adds the five review_* tools while preserving the exact state_* set and excluding deprecated team_* tools.
 		assert.deepEqual(names, [
+			"review_finalize",
+			"review_get",
+			"review_record_lane",
+			"review_resume",
+			"review_start",
 			"state_clear",
 			"state_get_status",
 			"state_list_active",
@@ -27,7 +38,7 @@ describe("state-server schema validation", () => {
 		process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = "1";
 		const { buildStateServerTools } = await import("../state-server.js");
 
-		const tools = buildStateServerTools();
+		const tools = buildStateServerTools() as StateServerToolSchema[];
 		const toolsWithModeEnum = tools.filter(
 			(tool: {
 				inputSchema?: { properties?: { mode?: { enum?: string[] } } };

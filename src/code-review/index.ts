@@ -113,3 +113,17 @@ export {
   renderFinalReviewMarkdown,
   validateFinalReviewArtifact,
 } from './render.js';
+export {
+  REVIEW_OPERATION_NAMES,
+  ReviewCoordinatorError,
+  createDurableReviewCoordinator,
+  executeReviewOperation,
+} from './coordinator.js';
+export type {
+  DurableReviewCoordinator,
+  DurableReviewCoordinatorHostDependencies,
+  ReviewOperationHostContext,
+  ReviewOperationName,
+  ReviewOperationResponse,
+  ReviewOperationSource,
+} from './coordinator.js';

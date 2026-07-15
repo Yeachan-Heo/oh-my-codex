@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   LaneActivityEvent,
   LaneRecord,
+  LaneResult,
   LaneResultProposal,
   ResultPostToolPublication,
   ReviewAttempt,
@@ -15,7 +16,9 @@ import type {
   ScopeManifest,
 } from './contract.js';
 import type { BatchPlan } from './batching.js';
-import { buildCapabilityPlan } from './capabilities.js';
+import { createBatchPlan } from './batching.js';
+import { buildCapabilityPlan, parseAcceptedEquivalentRequests } from './capabilities.js';
+import { parseCodeReviewArguments } from './arguments.js';
 import {
   canonicalLanePayloadDigest,
   parseLaneResultSubmission,
@@ -30,17 +33,20 @@ import {
 import { sanitizeForPersistence } from './redaction.js';
 import {
   createReviewConsumptionEffect,
+  readActiveReview,
   readReviewConsumptionMarkers,
   recoverPendingReviewTransactions,
   resolveReviewPersistencePaths,
   runDurableReviewTransactionWithPlanFactory,
   runDurableTransaction,
+  writeFinalReviewArtifacts,
   type DurableTransactionBoundary,
   type DurableTransactionEffect,
   type DurableTransactionPlan,
   type ReviewPersistenceContext,
   type ReviewPersistencePaths,
 } from './persistence.js';
+import { resolveGitScope, runGitCommand, verifyScopeDrift } from './scope.js';
 import { synthesizeVerdict } from './verdict.js';
 import { projectFinalReviewArtifact } from './render.js';
 
@@ -1062,7 +1068,12 @@ async function readPersistedReview(paths: ReviewPersistencePaths, reviewId: stri
 }
 
 export interface DurableReviewCoordinator {
-  start(input: { record: ReviewRecord; idempotency_key: string; crashAt?: DurableTransactionBoundary }): Promise<ReviewRecord>;
+  start(input: {
+    record: ReviewRecord;
+    idempotency_key: string;
+    request_identity?: unknown;
+    crashAt?: DurableTransactionBoundary;
+  }): Promise<ReviewRecord>;
   get(reviewId: string): Promise<ReviewRecord>;
   recordStart(input: {
     event: Extract<ReviewRecordLaneEvent, { event: 'START' }>;
@@ -1098,7 +1109,7 @@ export function createDurableReviewCoordinator(
   };
 
   return {
-    async start({ record, idempotency_key: idempotencyKey, crashAt }) {
+    async start({ record, idempotency_key: idempotencyKey, request_identity: requestIdentity, crashAt }) {
       const resolved = await paths();
       const terminal = record.status === 'FINALIZED' || record.status === 'BLOCKED';
       const transaction = await runDurableTransaction(resolved, {
@@ -1106,7 +1117,11 @@ export function createDurableReviewCoordinator(
         idempotency_key: idempotencyKey,
         review_id: record.review_id,
         operation: 'START_REVIEW',
-        input: { review_id: record.review_id, scope_hash: record.scope?.scope_hash },
+        input: {
+          review_id: record.review_id,
+          scope_hash: record.scope?.scope_hash,
+          ...(requestIdentity === undefined ? {} : { request_identity: requestIdentity }),
+        },
         expected_revision: 0,
         effects: [
           reviewEffect(record),
@@ -1350,4 +1365,463 @@ export function createDurableReviewCoordinator(
       return await readPersistedReview(resolved, reviewId);
     },
   };
+}
+
+export const REVIEW_OPERATION_NAMES = [
+  'review_start',
+  'review_get',
+  'review_record_lane',
+  'review_resume',
+  'review_finalize',
+] as const;
+
+export type ReviewOperationName = (typeof REVIEW_OPERATION_NAMES)[number];
+export type ReviewOperationSource = 'MCP' | 'CLI';
+
+export interface ReviewOperationResponse {
+  payload: unknown;
+  isError?: boolean;
+}
+
+export interface ReviewOperationHostContext {
+  source: ReviewOperationSource;
+  seeded_review_id?: string;
+  root_thread_id?: string;
+  now?: () => Date;
+  loadTracker?(input: {
+    workingDirectory: string;
+    session_id?: string;
+    review_id: string;
+    attempt: number;
+    lane_id: string;
+    thread_id: string;
+  }): Promise<unknown>;
+  loadHookJournalSnapshot?(input: {
+    session_id: string;
+    root_thread_id: string;
+    review_id: string;
+    cutoff_at: string;
+  }): Promise<unknown>;
+}
+
+const REVIEW_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function operationInput(value: unknown): Record<string, unknown> {
+  if (!isObject(value)) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', 'review operation input must be a JSON object');
+  }
+  return value;
+}
+
+function exactOperationFields(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  required: readonly string[],
+): void {
+  const allow = new Set(allowed);
+  const unknown = Object.keys(value).filter((key) => !allow.has(key)).sort();
+  if (unknown.length > 0) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', `unknown review operation field: ${unknown[0]}`);
+  }
+  const missing = required.filter((key) => !Object.hasOwn(value, key));
+  if (missing.length > 0) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', `missing review operation field: ${missing[0]}`);
+  }
+}
+
+function operationString(
+  value: unknown,
+  name: string,
+  maximum = 1_024,
+): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maximum || /[\0\r\n]/u.test(value)) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', `${name} must be a non-empty bounded string`);
+  }
+  return value;
+}
+
+function operationUuid(value: unknown, name: string): string {
+  const parsed = operationString(value, name, 64).toLowerCase();
+  if (!REVIEW_ID_PATTERN.test(parsed)) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', `${name} must be a cryptographic UUID`);
+  }
+  return parsed;
+}
+
+function operationAttempt(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new ReviewCoordinatorError('INVALID_INVOCATION', 'attempt must be a positive integer');
+  }
+  return value as number;
+}
+
+function operationContext(input: Record<string, unknown>): ReviewPersistenceContext {
+  const workingDirectory = resolve(operationString(input.workingDirectory, 'workingDirectory', 4_096));
+  const sessionId = input.session_id === undefined
+    ? undefined
+    : operationString(input.session_id, 'session_id', 160);
+  return {
+    workingDirectory,
+    ...(sessionId === undefined ? {} : { session_id: sessionId }),
+  };
+}
+
+function operationNow(host: ReviewOperationHostContext): Date {
+  const now = (host.now ?? (() => new Date()))();
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'trusted review clock is invalid');
+  }
+  return now;
+}
+
+function hostDependencies(
+  host: ReviewOperationHostContext,
+): DurableReviewCoordinatorHostDependencies | undefined {
+  if (host.root_thread_id === undefined || host.loadHookJournalSnapshot === undefined) return undefined;
+  return {
+    root_thread_id: host.root_thread_id,
+    loadHookJournalSnapshot: host.loadHookJournalSnapshot,
+    ...(host.now === undefined ? {} : { now: host.now }),
+  };
+}
+
+function relativeReviewArtifacts(reviewId: string): { json_path: string; markdown_path: string } {
+  return {
+    json_path: `.omx/reviews/${reviewId}.json`,
+    markdown_path: `.omx/reviews/${reviewId}.md`,
+  };
+}
+
+function projectOperationReview(record: ReviewRecord): Record<string, unknown> {
+  return {
+    review_id: record.review_id,
+    ...(record.session_id === undefined ? {} : { session_id: record.session_id }),
+    attempt: record.current_attempt,
+    status: record.status,
+    revision: record.revision,
+    ...(record.scope === undefined ? {} : {
+      scope: {
+        status: record.scope.status,
+        scope_hash: record.scope.scope_hash,
+        file_count: record.scope.files.length,
+        changed_lines: record.scope.changed_lines,
+        reasons: record.scope.reasons,
+      },
+    }),
+    review_flags: record.review_flags,
+    batches: record.batches,
+    lanes: record.lanes.map((lane) => ({
+      lane_id: lane.lane_id,
+      role: lane.role,
+      batch_id: lane.batch_id,
+      attempt: lane.attempt,
+      status: lane.status,
+      scope_hash: lane.scope_hash,
+      idle_deadline_at: lane.idle_deadline_at,
+    })),
+    diagnostics: record.diagnostics.slice(0, 128).map((diagnostic) => ({
+      diagnostic_id: diagnostic.diagnostic_id,
+      capability: diagnostic.capability,
+      applicability: diagnostic.applicability,
+      execution: diagnostic.execution,
+      outcome: diagnostic.outcome,
+      event_ref: diagnostic.event_ref,
+      summary: diagnostic.summary,
+    })),
+    resumable: record.resumable,
+    ...(record.resumable_reason === undefined ? {} : { resumable_reason: record.resumable_reason }),
+    ...(record.verdict === undefined ? {} : { verdict: record.verdict }),
+    artifacts: relativeReviewArtifacts(record.review_id),
+  };
+}
+
+async function activeReviewId(context: ReviewPersistenceContext): Promise<string> {
+  const paths = await resolveReviewPersistencePaths(context);
+  const active = await readActiveReview(paths);
+  if (active === null) {
+    throw new ReviewCoordinatorError('REVIEW_NOT_STARTED', 'no active code review exists for this state scope');
+  }
+  return active.review_id;
+}
+
+async function committedStartResponse(
+  paths: ReviewPersistencePaths,
+  idempotencyKey: string,
+  reviewId: string,
+): Promise<ReviewRecord | undefined> {
+  await recoverPendingReviewTransactions(paths);
+  let raw: string;
+  try {
+    raw = await readFile(join(paths.startReceiptsRoot, `${idempotencyKey}.json`), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+  const receipt = JSON.parse(raw) as unknown;
+  if (!isObject(receipt)
+    || receipt.idempotency_key !== idempotencyKey
+    || receipt.review_id !== reviewId
+    || !isObject(receipt.response)
+    || receipt.response.review_id !== reviewId) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'START receipt response is malformed');
+  }
+  return structuredClone(receipt.response) as unknown as ReviewRecord;
+}
+
+async function currentScopeHash(
+  context: ReviewPersistenceContext,
+  record: ReviewRecord,
+): Promise<string> {
+  if (record.scope === undefined) {
+    throw new ReviewCoordinatorError('REVIEW_NOT_STARTED', 'review scope has not been frozen');
+  }
+  const drift = await verifyScopeDrift(record.scope, { workingDirectory: context.workingDirectory });
+  return drift.current_scope_hash;
+}
+
+function operationError(
+  error: unknown,
+  workingDirectory: string | undefined,
+): ReviewOperationResponse {
+  const candidate = error as { code?: unknown; message?: unknown };
+  const code = typeof candidate?.code === 'string' ? candidate.code : 'REVIEW_OPERATION_FAILED';
+  const message = typeof candidate?.message === 'string' ? candidate.message : 'review operation failed';
+  let payload: unknown = { error: 'review operation failed', code };
+  try {
+    payload = sanitizeForPersistence(
+      { error: message, code },
+      workingDirectory === undefined ? {} : { repositoryRoot: workingDirectory },
+    );
+  } catch {
+    // Keep the fallback generic when even the error cannot satisfy persistence limits.
+  }
+  return { payload, isError: true };
+}
+
+/**
+ * The only runtime control-plane adapter for code review. Transport provenance
+ * is supplied out-of-band through `host`; payload fields are never trusted as
+ * MCP/CLI identity or attestation evidence.
+ */
+export async function executeReviewOperation(
+  name: ReviewOperationName,
+  rawInput: unknown,
+  host: ReviewOperationHostContext,
+): Promise<ReviewOperationResponse> {
+  let context: ReviewPersistenceContext | undefined;
+  try {
+    const input = operationInput(rawInput);
+    context = operationContext(input);
+    const coordinator = createDurableReviewCoordinator(context, hostDependencies(host));
+
+    switch (name) {
+      case 'review_start': {
+        exactOperationFields(
+          input,
+          ['workingDirectory', 'session_id', 'invocation', 'idempotency_key', 'accepted_equivalent_requests'],
+          ['workingDirectory', 'invocation', 'idempotency_key'],
+        );
+        if (!Array.isArray(input.invocation)
+          || input.invocation.some((argument) => typeof argument !== 'string')) {
+          throw new ReviewCoordinatorError('INVALID_INVOCATION', 'invocation must be an array of strings');
+        }
+        const key = operationUuid(input.idempotency_key, 'idempotency_key');
+        const acceptedRequests = input.accepted_equivalent_requests === undefined
+          ? []
+          : parseAcceptedEquivalentRequests(input.accepted_equivalent_requests);
+        const parsed = await parseCodeReviewArguments(input.invocation as string[], {
+          workingDirectory: context.workingDirectory,
+          validateRef: async (ref) => {
+            try {
+              await runGitCommand(context!.workingDirectory, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        });
+        if (parsed.operation !== 'start') {
+          throw new ReviewCoordinatorError('INVALID_INVOCATION', 'review_start cannot resume an existing review');
+        }
+        const reviewId = host.seeded_review_id === undefined
+          ? key
+          : operationUuid(host.seeded_review_id, 'seeded_review_id');
+        const paths = await resolveReviewPersistencePaths(context);
+        const requestIdentity = {
+          selector: parsed.selector,
+          accepted_equivalent_requests: acceptedRequests,
+        };
+        const committed = await committedStartResponse(paths, key, reviewId);
+        if (committed !== undefined) {
+          const started = await coordinator.start({
+            record: committed,
+            idempotency_key: key,
+            request_identity: requestIdentity,
+          });
+          if (started.scope === undefined) {
+            throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'committed START response has no frozen scope');
+          }
+          return {
+            payload: {
+              ...projectOperationReview(started),
+              capability_plan: buildCapabilityPlan(started.scope.files),
+              required_lane_plan: started.lanes
+                .filter((lane) => lane.attempt === 1)
+                .map((lane) => ({ lane_id: lane.lane_id, role: lane.role, batch_id: lane.batch_id })),
+              accepted_equivalent_requests: acceptedRequests,
+              state_path: `code-review/${started.review_id}/review.json`,
+            },
+          };
+        }
+        const scope = await resolveGitScope({
+          workingDirectory: context.workingDirectory,
+          selector: parsed.selector,
+        });
+        const repositoryRoot = (await runGitCommand(
+          context.workingDirectory,
+          ['rev-parse', '--show-toplevel'],
+        )).toString('utf8').trim();
+        const batchPlan = await createBatchPlan({ repositoryRoot, files: scope.files });
+        const now = operationNow(host);
+        const record = createInitialReviewRecord({
+          // The caller-generated v4 key makes concurrent retries converge before
+          // any START receipt exists; the durable layer still validates conflicts.
+          review_id: reviewId,
+          ...(context.session_id === undefined ? {} : { session_id: context.session_id }),
+          ...(host.root_thread_id === undefined ? {} : { root_thread_id: host.root_thread_id }),
+          scope,
+          batch_plan: batchPlan,
+          now,
+        });
+        const started = await coordinator.start({
+          record,
+          idempotency_key: key,
+          request_identity: requestIdentity,
+        });
+        return {
+          payload: {
+            ...projectOperationReview(started),
+            capability_plan: buildCapabilityPlan(scope.files),
+            required_lane_plan: batchPlan.required_lanes,
+            accepted_equivalent_requests: acceptedRequests,
+            state_path: `code-review/${started.review_id}/review.json`,
+          },
+        };
+      }
+
+      case 'review_get': {
+        exactOperationFields(input, ['workingDirectory', 'session_id', 'review_id'], ['workingDirectory']);
+        const reviewId = input.review_id === undefined
+          ? await activeReviewId(context)
+          : operationUuid(input.review_id, 'review_id');
+        let record = await coordinator.get(reviewId);
+        if (hostDependencies(host) !== undefined) {
+          record = await coordinator.reconcile({ review_id: reviewId });
+        }
+        return { payload: projectOperationReview(record) };
+      }
+
+      case 'review_record_lane': {
+        const event = input.event;
+        if (event !== 'START' && event !== 'RESULT') {
+          throw new ReviewCoordinatorError('INVALID_INVOCATION', 'review_record_lane event must be START or RESULT');
+        }
+        const common = ['workingDirectory', 'session_id', 'event', 'review_id', 'attempt', 'lane_id', 'idempotency_key'];
+        exactOperationFields(
+          input,
+          event === 'START' ? [...common, 'thread_id'] : [...common, 'scope_hash', 'result'],
+          event === 'START' ? [...common, 'thread_id'] : [...common, 'scope_hash', 'result'],
+        );
+        const reviewId = operationUuid(input.review_id, 'review_id');
+        const attempt = operationAttempt(input.attempt);
+        const laneId = operationString(input.lane_id, 'lane_id', 160);
+        const key = operationUuid(input.idempotency_key, 'idempotency_key');
+        const now = operationNow(host);
+        if (event === 'START') {
+          if (host.loadTracker === undefined) {
+            throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted hook tracker loader is unavailable');
+          }
+          const threadId = operationString(input.thread_id, 'thread_id', 160);
+          const tracker = await host.loadTracker({
+            ...context,
+            review_id: reviewId,
+            attempt,
+            lane_id: laneId,
+            thread_id: threadId,
+          });
+          const record = await coordinator.recordStart({
+            event: {
+              event: 'START', review_id: reviewId, attempt, lane_id: laneId,
+              thread_id: threadId, idempotency_key: key,
+            },
+            tracker,
+            now,
+          });
+          return { payload: projectOperationReview(record) };
+        }
+        const proposal = await coordinator.recordResult({
+          event: {
+            event: 'RESULT', review_id: reviewId, attempt, lane_id: laneId,
+            scope_hash: operationString(input.scope_hash, 'scope_hash', 128),
+            result: input.result as LaneResult,
+            idempotency_key: key,
+          },
+          source: host.source,
+          now,
+        });
+        return { payload: proposal };
+      }
+
+      case 'review_resume': {
+        exactOperationFields(
+          input,
+          ['workingDirectory', 'session_id', 'review_id', 'idempotency_key'],
+          ['workingDirectory', 'review_id', 'idempotency_key'],
+        );
+        const reviewId = operationUuid(input.review_id, 'review_id');
+        const current = await coordinator.get(reviewId);
+        const record = await coordinator.resume({
+          review_id: reviewId,
+          current_scope_hash: await currentScopeHash(context, current),
+          now: operationNow(host),
+          idempotency_key: operationUuid(input.idempotency_key, 'idempotency_key'),
+        });
+        return { payload: projectOperationReview(record) };
+      }
+
+      case 'review_finalize': {
+        exactOperationFields(
+          input,
+          ['workingDirectory', 'session_id', 'review_id', 'attempt', 'idempotency_key'],
+          ['workingDirectory', 'review_id', 'attempt', 'idempotency_key'],
+        );
+        const reviewId = operationUuid(input.review_id, 'review_id');
+        let current = await coordinator.get(reviewId);
+        const attempt = operationAttempt(input.attempt);
+        if (current.current_attempt !== attempt) {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'review_finalize targets the wrong attempt');
+        }
+        if (hostDependencies(host) !== undefined) {
+          current = await coordinator.reconcile({ review_id: reviewId });
+        }
+        const record = await coordinator.finalize({
+          review_id: reviewId,
+          current_scope_hash: await currentScopeHash(context, current),
+          now: operationNow(host),
+          idempotency_key: operationUuid(input.idempotency_key, 'idempotency_key'),
+        });
+        const paths = await resolveReviewPersistencePaths(context);
+        const artifacts = await writeFinalReviewArtifacts(paths, projectFinalReviewArtifact(record));
+        return {
+          payload: {
+            ...projectOperationReview(record),
+            artifacts: relativeReviewArtifacts(reviewId),
+            artifact_sha256: artifacts.artifact_sha256,
+          },
+        };
+      }
+    }
+  } catch (error) {
+    return operationError(error, context?.workingDirectory);
+  }
 }
