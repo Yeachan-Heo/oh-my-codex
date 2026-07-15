@@ -3718,14 +3718,6 @@ const RALPLAN_EXECUTION_HANDOFF_SKILLS = new Set([
   "ultraqa",
 ]);
 
-function isActiveDeepInterviewPhase(state: Record<string, unknown> | null): boolean {
-  if (!state || state.active !== true) return false;
-  const mode = safeString(state.mode).trim();
-  if (mode && mode !== "deep-interview") return false;
-  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
-  if (phase && (TERMINAL_MODE_PHASES.has(phase) || phase === "completing")) return false;
-  return true;
-}
 
 function isInactiveCompletedDeepInterviewPhase(state: Record<string, unknown> | null): boolean {
   if (!state || state.active !== false) return false;
@@ -7013,6 +7005,128 @@ function isCompleteRalplanTerminalWritePayload(
   return true;
 }
 
+function hasUnquotedShellControlOrRedirection(command: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = quote === char ? null : quote ?? char;
+      continue;
+    }
+    if (!quote && ";&|()<>\n\r".includes(char)) return true;
+  }
+  return false;
+}
+
+function suppliedSessionAliasesMatch(payload: Record<string, unknown>, sessionId: string): boolean {
+  return [
+    payload.session_id,
+    payload.owner_omx_session_id,
+    payload.codex_session_id,
+    payload.owner_codex_session_id,
+  ].filter((value) => value !== undefined)
+    .every((value) => safeString(value).trim() === sessionId);
+}
+
+function hasOnlyFinishedExplicitOutcomes(payload: Record<string, unknown>): boolean {
+  const values = [
+    payload.lifecycle_outcome,
+    payload.lifecycleOutcome,
+    payload.terminal_outcome,
+    payload.terminalOutcome,
+    payload.run_outcome,
+    payload.runOutcome,
+  ].filter((value) => value !== undefined);
+  return values.every((value) => inferTerminalLifecycleOutcome(
+    { lifecycle_outcome: value },
+    { includeQuestionEnforcement: false },
+  ) === "finished");
+}
+
+function isCompleteDeepInterviewTerminalWritePayload(
+  payload: Record<string, unknown>,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  if (!sessionId) return false;
+  const activeMode = safeString(activeState.mode).trim().toLowerCase();
+  if (activeMode && activeMode !== "deep-interview") return false;
+  const activeSessionId = safeString(
+    activeState.session_id
+      ?? activeState.owner_omx_session_id
+      ?? activeState.codex_session_id
+      ?? activeState.owner_codex_session_id,
+  ).trim();
+  if (activeSessionId && activeSessionId !== sessionId) return false;
+
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  const phase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
+  const payloadSessionId = safeString(payload.session_id).trim();
+  if (!hasOnlyFinishedExplicitOutcomes(payload)) return false;
+  return mode === "deep-interview"
+    && payload.active === false
+    && phase === "complete"
+    && payloadSessionId === sessionId
+    && inferTerminalLifecycleOutcome(payload, { includeQuestionEnforcement: false }) === "finished";
+}
+
+function isAllowedDeepInterviewTerminalStateWriteCommand(
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  const rawWords = tokenizeShellWords(normalizeShellLineContinuations(command).trim());
+  if (rawWords[0] !== "omx") return false;
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnquotedShellControlOrRedirection(command)) return false;
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
+  if (splitStateScanSegments(canonicalCommand).length !== 1) return false;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
+  if (extractDeepInterviewCommandWriteTargets(command).length > 0) return false;
+
+  const operations = collectOmxStateCommandOperations(command, "write");
+  if (operations.length !== 1) return false;
+  const operation = operations[0];
+  if (!operation || operation.nested || operation.commandPrefix.trim() || hasPriorExecutableCommand(operation.prefix)) return false;
+  const inlineInputCount = operation.args.filter((arg) => arg === "--input" || arg.startsWith("--input=")).length;
+  if (inlineInputCount !== 1 || operation.args.some((arg) => arg === "--input-file" || arg.startsWith("--input-file="))) return false;
+  const inlineInput = readStateWriteFlagValue(operation.args, "--input");
+  let rawPayload: Record<string, unknown> | null = null;
+  try {
+    rawPayload = inlineInput ? safeObject(JSON.parse(inlineInput)) : null;
+  } catch {
+    rawPayload = null;
+  }
+  const nestedState = safeObject(rawPayload?.state);
+  if (
+    !rawPayload
+    || "workingDirectory" in rawPayload
+    || !suppliedSessionAliasesMatch(rawPayload, sessionId)
+    || !hasOnlyFinishedExplicitOutcomes(rawPayload)
+    || (nestedState && (
+      "mode" in nestedState
+      || "session_id" in nestedState
+      || "workingDirectory" in nestedState
+      || "active" in nestedState
+      || "current_phase" in nestedState
+      || "currentPhase" in nestedState
+      || !suppliedSessionAliasesMatch(nestedState, sessionId)
+      || !hasOnlyFinishedExplicitOutcomes(nestedState)
+    ))
+  ) return false;
+
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isCompleteDeepInterviewTerminalWritePayload(payload, activeState, sessionId) : false;
+}
+
 function isAllowedRalplanTerminalStateWriteCommand(
   cwd: string,
   command: string,
@@ -7051,10 +7165,56 @@ function commandEndsPlanningPhase(cwd: string, command: string): boolean {
   return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
 }
 
-function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
+function isAllowedDeepInterviewBashWrite(
+  cwd: string,
+  command: string,
+  activeState?: Record<string, unknown>,
+  sessionId = "",
+): boolean {
+  const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
+  const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
+    const stateWordIndex = words.indexOf("state");
+    const writeWordIndex = stateWordIndex >= 0 ? words.indexOf("write", stateWordIndex + 1) : -1;
+    if (writeWordIndex <= stateWordIndex) return false;
+    const hasRuntimeBeforeState = words.slice(0, stateWordIndex).some((word) => {
+      const base = shellWordBaseName(word);
+      return isNodeInterpreterCommandWord(base) || base === "bun" || base === "tsx";
+    });
+    if (!hasRuntimeBeforeState) return false;
+
+    const inlineInput = readStateWriteFlagValue(words, "--input");
+    let payload: Record<string, unknown> | null = null;
+    try {
+      const parsed = inlineInput ? safeObject(JSON.parse(inlineInput)) : null;
+      const modeOverride = readStateWriteFlagValue(words, "--mode");
+      payload = parsed
+        ? normalizeStateWriteClassificationPayload(modeOverride ? { ...parsed, mode: modeOverride } : parsed)
+        : null;
+    } catch {
+      payload = null;
+    }
+    return (!payload && stateWriteOperations.length === 0)
+      || Boolean(payload && (
+        safeString(payload.mode).trim().toLowerCase() !== "deep-interview"
+        || isPlanningPhaseDeactivationPayload(payload)
+      ));
+  };
+  const rawCommand = normalizeShellLineContinuations(command).trim();
+  if ([rawCommand, canonicalizeOmxStateTransportCommand(rawCommand)]
+    .some((candidate) => hasUnsafeRuntimeStateWrite(tokenizeShellWords(candidate)))) return false;
+  if (stateWriteOperations.some((operation) => operation.nested)) return false;
   if (isAllowedDeepInterviewRalplanHandoffCommand(cwd, command)) return true;
   if (hasDeepInterviewRalplanHandoffStateMutation(cwd, command)) return false;
-  if (commandEndsPlanningPhase(cwd, command)) return false;
+  if (commandEndsPlanningPhase(cwd, command)) {
+    return activeState
+      ? isAllowedDeepInterviewTerminalStateWriteCommand(cwd, command, activeState, sessionId)
+      : false;
+  }
+  if (stateWriteOperations.length > 0) {
+    const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+    const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+    if (!payload || safeString(payload.mode).trim().toLowerCase() !== "deep-interview") return false;
+  }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
@@ -7079,13 +7239,11 @@ async function readActiveDeepInterviewStateForPreToolUse(
   const modeState = sessionId
     ? await readStopSessionPinnedState("deep-interview-state.json", cwd, sessionId, stateDir)
     : await readJsonIfExists(join(stateDir, "deep-interview-state.json"));
-  if (isActiveDeepInterviewPhase(modeState) && modeState && modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) {
-    const hasActiveDeepInterviewSkill = listActiveSkills(canonicalState).some((entry) => (
-      entry.skill === "deep-interview"
-      && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
-    ));
-    if (hasActiveDeepInterviewSkill) return modeState;
-  }
+  const hasActiveDeepInterviewSkill = listActiveSkills(canonicalState).some((entry) => (
+    entry.skill === "deep-interview"
+    && matchesSkillStopContext(entry, canonicalState, sessionId, threadId)
+  ));
+  if (hasActiveDeepInterviewSkill && modeState?.active === true) return modeState;
   if (isInactiveCompletedDeepInterviewPhase(modeState)) return null;
 
   const autopilotState = sessionId
@@ -7326,7 +7484,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   let blockedDetail = "implementation/write tools are blocked until an explicit handoff workflow is activated";
 
   if (toolName === "Bash") {
-    blocked = !isAllowedDeepInterviewBashWrite(cwd, command);
+    blocked = !isAllowedDeepInterviewBashWrite(cwd, command, activeState, sessionId);
     if (blocked) {
       blockedDetail = buildDeepInterviewBashBlockedDetail(cwd, command);
     }

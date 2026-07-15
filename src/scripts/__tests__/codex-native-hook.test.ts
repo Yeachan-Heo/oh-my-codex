@@ -10167,6 +10167,175 @@ exit 0
 		}
 	});
 
+	it("allows only the authenticated standalone deep-interview complete terminal state write", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-terminal-write-"));
+		try {
+			const stateDir = join(cwd, ".omx", "state");
+			const sessionId = "sess-di-terminal-write";
+			const threadId = "thread-di-terminal-write";
+			const sessionDir = join(stateDir, "sessions", sessionId);
+			await mkdir(sessionDir, { recursive: true });
+			await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+			await writeJson(join(sessionDir, "skill-active-state.json"), {
+				active: true,
+				skill: "deep-interview",
+				phase: "planning",
+				session_id: sessionId,
+				thread_id: threadId,
+				active_skills: [{
+					skill: "deep-interview",
+					phase: "planning",
+					active: true,
+					session_id: sessionId,
+					thread_id: threadId,
+				}],
+			});
+			const activeWrite = await executeStateOperation("state_write", {
+				mode: "deep-interview",
+				active: true,
+				current_phase: "intent-first",
+				session_id: sessionId,
+				thread_id: threadId,
+				workingDirectory: cwd,
+			});
+			assert.notEqual(activeWrite.isError, true);
+			const persistedActiveState = JSON.parse(
+				await readFile(join(sessionDir, "deep-interview-state.json"), "utf-8"),
+			) as { mode?: string; session_id?: string };
+			assert.equal(persistedActiveState.mode, undefined);
+			assert.equal(persistedActiveState.session_id, undefined);
+
+			const preToolUse = (command: string) => dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: sessionId,
+				thread_id: threadId,
+				tool_name: "Bash",
+				tool_input: { command },
+			}, { cwd });
+			const validPayload = JSON.stringify({
+				mode: "deep-interview",
+				active: false,
+				current_phase: "complete",
+				session_id: sessionId,
+				state: { spec_path: ".omx/interviews/final.md" },
+			});
+			const validCommand = `omx state write --input '${validPayload}' --json`;
+			assert.equal((await preToolUse(validCommand)).outputJson, null);
+			const terminalInputFile = join(cwd, "terminal-input.json");
+			await writeFile(terminalInputFile, validPayload);
+			const foreignInputFile = join(cwd, "foreign-input.json");
+			await writeFile(foreignInputFile, JSON.stringify({
+				mode: "team",
+				active: false,
+				current_phase: "complete",
+				session_id: sessionId,
+			}));
+			const activePayload = JSON.stringify({
+				mode: "deep-interview",
+				active: true,
+				current_phase: "intent-first",
+				session_id: sessionId,
+			});
+			for (const command of [
+				`env bun --preload ./preload.ts dist/cli/omx.js state write --input '${activePayload}' --json`,
+				`command tsx --tsconfig tsconfig.json dist/cli/omx.js state write --input '${activePayload}' --json`,
+				`time nodejs --require ./preload.js dist/cli/omx.js state write --input '${activePayload}' --json`,
+			]) {
+				assert.equal((await preToolUse(command)).outputJson, null, command);
+			}
+
+			const rejectedCommands = [
+				["wrong mode", `omx state write --input '${JSON.stringify({ mode: "ralplan", active: false, current_phase: "complete", session_id: sessionId })}' --json`],
+				["wrong session", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: "sess-other" })}' --json`],
+				["missing session", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete" })}' --json`],
+				["missing inactive flag", `omx state write --input '${JSON.stringify({ mode: "deep-interview", current_phase: "complete", session_id: sessionId })}' --json`],
+				["missing complete phase", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, session_id: sessionId })}' --json`],
+				["cancelled deactivation", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "cancelled", session_id: sessionId })}' --json`],
+				["cleared deactivation", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "cleared", session_id: sessionId })}' --json`],
+				["contradictory run outcome", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, run_outcome: "cancelled" })}' --json`],
+				["contradictory lifecycle outcome", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, lifecycle_outcome: "askuserQuestion" })}' --json`],
+				["nested mode conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, state: { mode: "ralplan" } })}' --json`],
+				["nested session conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, state: { session_id: "sess-other" } })}' --json`],
+				["paired run outcome conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, lifecycle_outcome: "finished", run_outcome: "cancelled" })}' --json`],
+				["paired terminal outcome conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, lifecycle_outcome: "finished", terminal_outcome: "cancelled" })}' --json`],
+				["shadowed run outcome conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, run_outcome: "cancelled", state: { run_outcome: "finish" } })}' --json`],
+				["shadowed lifecycle outcome conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, lifecycle_outcome: "askuserQuestion", state: { lifecycle_outcome: "finished" } })}' --json`],
+				["shadowed terminal outcome conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, terminal_outcome: "cancelled", state: { terminal_outcome: "finished" } })}' --json`],
+				["foreign working directory", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, workingDirectory: join(cwd, "other") })}' --json`],
+				["top-level owner session conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, owner_omx_session_id: "sess-other" })}' --json`],
+				["top-level codex session conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, codex_session_id: "sess-other" })}' --json`],
+				["nested owner session conflict", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: sessionId, state: { owner_codex_session_id: "sess-other" } })}' --json`],
+				["nested active override", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: true, current_phase: "intent-first", session_id: sessionId, state: { active: false, current_phase: "complete" } })}' --json`],
+				["nested camel phase override", `omx state write --input '${JSON.stringify({ mode: "deep-interview", active: true, current_phase: "intent-first", session_id: sessionId, state: { active: false, currentPhase: "complete" } })}' --json`],
+				["state clear", "omx state clear --mode deep-interview --json"],
+				["direct input file", `omx state write --input-file ${terminalInputFile} --json`],
+				["prefix chain", `printf ready && ${validCommand}`],
+				["suffix chain", `${validCommand} && printf done`],
+				["pipeline", `${validCommand} | tee terminal.json`],
+				["command substitution", `printf '%s' \"$(${validCommand})\"`],
+				["nested shell", `bash -c 'omx state write --input-file ${terminalInputFile} --json'`],
+				["subshell grouping", `( ${validCommand} )`],
+				["background execution", `${validCommand} &`],
+				["wrapper dispatch", `env ${validCommand}`],
+				["node runtime wrapper", `node --require ./preload.js dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["bun runtime wrapper", `bun --preload ./preload.ts dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["tsx runtime wrapper", `tsx --require ./preload.ts dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["path-qualified omx", `./attacker/omx state write --input '${validPayload}' --json`],
+				["env bun preload wrapper", `env bun --preload ./preload.ts dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["command tsx config wrapper", `command tsx --tsconfig tsconfig.json dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["time node preload wrapper", `time node --require ./preload.js dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["nodejs runtime wrapper", `nodejs --require ./preload.js dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["path-qualified nodejs wrapper", `/usr/bin/nodejs --require ./preload.js dist/cli/omx.js state write --input '${validPayload}' --json`],
+				["nested terminal payload wrapper", `env bun --preload ./preload.ts dist/cli/omx.js state write --input '${JSON.stringify({ mode: "deep-interview", session_id: sessionId, state: { active: false, current_phase: "complete" } })}' --json`],
+				["foreign completed payload wrapper", `command tsx --tsconfig tsconfig.json dist/cli/omx.js state write --input '${JSON.stringify({ mode: "ralph", active: false, current_phase: "complete", session_id: sessionId })}' --json`],
+				["nodejs terminal input file wrapper", `nodejs dist/cli/omx.js state write --input-file ${terminalInputFile} --json`],
+				["path-qualified nodejs foreign input file wrapper", `/usr/bin/nodejs dist/cli/omx.js state write --input-file ${foreignInputFile} --json`],
+				["split-string nodejs terminal input file wrapper", `env -S "nodejs dist/cli/omx.js state write --input-file ${terminalInputFile} --json"`],
+				["long split-string nodejs foreign input file wrapper", `env --split-string "nodejs dist/cli/omx.js state write --input-file ${foreignInputFile} --json"`],
+				["split-string bun terminal wrapper", `env -S "bun --preload ./preload.ts dist/cli/omx.js state write --input '${validPayload}' --json"`],
+				["split-string tsx foreign wrapper", `env --split-string "tsx --tsconfig tsconfig.json dist/cli/omx.js state write --input '${JSON.stringify({ mode: "team", active: true, current_phase: "running", session_id: sessionId })}' --json"`],
+				["stdout redirect", `${validCommand} > terminal.json`],
+				["null redirect", `${validCommand} > /dev/null`],
+				["stderr redirect", `${validCommand} 2> terminal.err`],
+				["stdin redirect", `${validCommand} < ${terminalInputFile}`],
+				["arbitrary state mutation", `omx state write --input '${JSON.stringify({ mode: "team", active: false, current_phase: "complete", session_id: sessionId, state: { arbitrary: true } })}' --json`],
+			] as const;
+			for (const [name, command] of rejectedCommands) {
+				const result = await preToolUse(command);
+				assert.equal(
+					(result.outputJson as { decision?: string } | null)?.decision,
+					"block",
+					name,
+				);
+			}
+			for (const conflictingState of [
+				{ active: true, mode: "ralplan", current_phase: "intent-first" },
+				{ active: true, current_phase: "intent-first", session_id: "sess-other" },
+			]) {
+				await writeJson(join(sessionDir, "deep-interview-state.json"), conflictingState);
+				assert.equal(
+					((await preToolUse(validCommand)).outputJson as { decision?: string } | null)?.decision,
+					"block",
+				);
+				const implementationWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: sessionId,
+					thread_id: threadId,
+					tool_name: "Edit",
+					tool_input: { file_path: "src/runtime.ts" },
+				}, { cwd });
+				assert.equal(
+					(implementationWrite.outputJson as { decision?: string } | null)?.decision,
+					"block",
+				);
+			}
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("allows deep-interview artifact and state writes while blocking implementation Bash writes", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-pretool-deep-interview-artifact-"),
@@ -11094,7 +11263,7 @@ exit 0
 				);
 			}
 
-			const allowedQuotedModeMentionInPayload = await preToolUse(
+			const blockedForeignModeMutationWithQuotedMention = await preToolUse(
 				{
 					hook_event_name: "PreToolUse",
 					cwd,
@@ -11108,7 +11277,10 @@ exit 0
 				},
 				{ cwd },
 			);
-			assert.equal(allowedQuotedModeMentionInPayload.outputJson, null);
+			assert.equal(
+				(blockedForeignModeMutationWithQuotedMention.outputJson as { decision?: string } | null)?.decision,
+				"block",
+			);
 
 			const allowedStateInputFile = join(cwd, "allowed-state-input.json");
 			await writeJson(allowedStateInputFile, {
