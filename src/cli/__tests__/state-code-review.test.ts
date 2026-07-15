@@ -210,9 +210,12 @@ describe("omx state code-review recovery aliases", () => {
 
 		const proposed = await executeReviewOperation("review_record_lane", input, { source: "MCP", now: () => NOW });
 		assert.equal(proposed.isError, undefined);
+		assert.deepEqual(proposed.payload, { state: "PENDING_HOST_ATTESTATION" });
 		const recovered = await runCliReview(input);
 		assert.equal(recovered.exitCode, undefined);
-		assert.deepEqual(JSON.parse(recovered.stdout[0] ?? ""), proposed.payload);
+		// ASSERTION-CHANGE-JUSTIFIED: only a fresh transport proposal is redacted to
+		// the pending marker; same-key CLI recovery returns the committed proposal.
+		assert.equal((JSON.parse(recovered.stdout[0] ?? "") as { state?: string }).state, "PENDING_HOST_ATTESTATION");
 	});
 
 	it("recovers a PREPARED proposal with the same key and preserves MCP/CLI get parity", async () => {

@@ -35,6 +35,7 @@ import {
 import { sanitizeForPersistence } from './redaction.js';
 import {
   createReviewConsumptionEffect,
+  generateReviewId,
   readActiveReview,
   readReviewConsumptionMarkers,
   recoverPendingReviewTransactions,
@@ -1725,7 +1726,6 @@ async function activeReviewId(context: ReviewPersistenceContext): Promise<string
 async function committedStartResponse(
   paths: ReviewPersistencePaths,
   idempotencyKey: string,
-  reviewId: string,
 ): Promise<ReviewRecord | undefined> {
   await recoverPendingReviewTransactions(paths);
   let raw: string;
@@ -1738,11 +1738,12 @@ async function committedStartResponse(
   const receipt = JSON.parse(raw) as unknown;
   if (!isObject(receipt)
     || receipt.idempotency_key !== idempotencyKey
-    || receipt.review_id !== reviewId
+    || typeof receipt.review_id !== 'string'
     || !isObject(receipt.response)
-    || receipt.response.review_id !== reviewId) {
+    || receipt.response.review_id !== receipt.review_id) {
     throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'START receipt response is malformed');
   }
+  operationUuid(receipt.review_id, 'START receipt review_id');
   return structuredClone(receipt.response) as unknown as ReviewRecord;
 }
 
@@ -1821,15 +1822,12 @@ export async function executeReviewOperation(
         if (parsed.operation !== 'start') {
           throw new ReviewCoordinatorError('INVALID_INVOCATION', 'review_start cannot resume an existing review');
         }
-        const reviewId = host.seeded_review_id === undefined
-          ? key
-          : operationUuid(host.seeded_review_id, 'seeded_review_id');
         const paths = await resolveReviewPersistencePaths(context);
         const requestIdentity = {
           selector: parsed.selector,
           accepted_equivalent_requests: acceptedRequests,
         };
-        const committed = await committedStartResponse(paths, key, reviewId);
+        const committed = await committedStartResponse(paths, key);
         if (committed !== undefined) {
           const started = await coordinator.start({
             record: committed,
@@ -1851,6 +1849,9 @@ export async function executeReviewOperation(
             },
           };
         }
+        const reviewId = host.seeded_review_id === undefined
+          ? generateReviewId()
+          : operationUuid(host.seeded_review_id, 'seeded_review_id');
         const scope = await resolveGitScope({
           workingDirectory: context.workingDirectory,
           selector: parsed.selector,
@@ -1862,8 +1863,6 @@ export async function executeReviewOperation(
         const batchPlan = await createBatchPlan({ repositoryRoot, files: scope.files });
         const now = operationNow(host);
         const record = createInitialReviewRecord({
-          // The caller-generated v4 key makes concurrent retries converge before
-          // any START receipt exists; the durable layer still validates conflicts.
           review_id: reviewId,
           ...(context.session_id === undefined ? {} : { session_id: context.session_id }),
           ...(host.root_thread_id === undefined ? {} : { root_thread_id: host.root_thread_id }),
@@ -1995,7 +1994,11 @@ export async function executeReviewOperation(
           source: host.source,
           now,
         });
-        return { payload: proposal };
+        return {
+          payload: host.source === 'MCP'
+            ? { state: 'PENDING_HOST_ATTESTATION' }
+            : proposal,
+        };
       }
 
       case 'review_resume': {

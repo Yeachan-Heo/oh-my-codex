@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -163,7 +163,7 @@ describe("state-server code-review control plane", () => {
 		});
 		assert.equal(response.isError, undefined);
 		const proposal = JSON.parse(response.content[0]?.text ?? "") as { state?: string };
-		assert.equal(proposal.state, "PENDING_HOST_ATTESTATION");
+		assert.deepEqual(proposal, { state: "PENDING_HOST_ATTESTATION" });
 		assert.equal((await coordinator.get(REVIEW_ID)).lanes.find((lane) => lane.lane_id === "architect-global")?.status, "RUNNING");
 	});
 
@@ -180,7 +180,13 @@ describe("state-server code-review control plane", () => {
 				result: architectResult(), idempotency_key: RESULT_KEY,
 			},
 		} });
-		const proposal = JSON.parse(proposed.content[0]?.text ?? "") as { payload_digest: string };
+		const paths = await resolveReviewPersistencePaths({ workingDirectory, session_id: "session-1" });
+		// ASSERTION-CHANGE-JUSTIFIED: a fresh transport response intentionally exposes
+		// only the pending marker; the trusted hook reads the durable proposal itself.
+		const proposal = JSON.parse(await readFile(
+			join(paths.reviewRoot, REVIEW_ID, "submissions", RESULT_KEY, "proposal"),
+			"utf8",
+		)) as { payload_digest: string };
 		const publication = {
 			schema_version: 1, publication_id: RESULT_KEY, published_at: "2026-07-14T00:00:01.000Z",
 			activity: {
@@ -197,7 +203,6 @@ describe("state-server code-review control plane", () => {
 				nonce: "nonce-result-1", published_at: "2026-07-14T00:00:01.000Z",
 			},
 		};
-		const paths = await resolveReviewPersistencePaths({ workingDirectory, session_id: "session-1" });
 		await atomicCreatePrivateJson(
 			join(paths.reviewRoot, REVIEW_ID, "submissions", RESULT_KEY, "post-tool"),
 			publication,
@@ -333,6 +338,9 @@ describe("state-server code-review control plane", () => {
 		const replay = await handleStateToolCall(request);
 		assert.equal(first.isError, undefined, first.content[0]?.text);
 		assert.equal(replay.isError, undefined, replay.content[0]?.text);
-		assert.deepEqual(JSON.parse(replay.content[0]?.text ?? ""), JSON.parse(first.content[0]?.text ?? ""));
+		const firstPayload = JSON.parse(first.content[0]?.text ?? "") as { review_id?: string };
+		assert.match(firstPayload.review_id ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+		assert.notEqual(firstPayload.review_id, request.params.arguments.idempotency_key);
+		assert.deepEqual(JSON.parse(replay.content[0]?.text ?? ""), firstPayload);
 	});
 });
