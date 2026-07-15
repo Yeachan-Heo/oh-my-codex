@@ -3752,6 +3752,9 @@ describe("detached tmux new-session sequencing", () => {
       TERM: "xterm-256color",
       TERM_PROGRAM: "WarpTerminal",
       TERM_PROGRAM_VERSION: "1.0.0",
+      TERMINFO: "/tmp/outer-terminfo",
+      TERMINFO_DIRS: "/tmp/outer-terminfo-dirs",
+      TERMCAP: "outer-termcap",
       COLORTERM: "truecolor",
       TMUX: "/tmp/tmux/default,123,0",
       TMUX_PANE: "%9",
@@ -3761,10 +3764,14 @@ describe("detached tmux new-session sequencing", () => {
 
     assert.match(envScript, /export CUSTOM_LLM_API_KEY='fake-provider-key'/);
     assert.match(envScript, /export COLORTERM='truecolor'/);
+    assert.match(envScript, /^unset COLUMNS LINES TERMINFO TERMINFO_DIRS TERMCAP$/m);
     for (const key of [
       "TERM",
       "TERM_PROGRAM",
       "TERM_PROGRAM_VERSION",
+      "TERMINFO",
+      "TERMINFO_DIRS",
+      "TERMCAP",
       "TMUX",
       "TMUX_PANE",
       "COLUMNS",
