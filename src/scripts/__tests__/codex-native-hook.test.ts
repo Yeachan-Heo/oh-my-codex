@@ -25951,6 +25951,58 @@ PY`,
     }
   });
 
+  it("allows a native subagent Stop instead of auto-nudging it into another turn", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-auto-nudge-subagent-stop-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          "sess-stop-auto-child": {
+            session_id: "sess-stop-auto-child",
+            leader_thread_id: "thread-leader",
+            updated_at: new Date().toISOString(),
+            threads: {
+              "thread-leader": {
+                thread_id: "thread-leader",
+                kind: "leader",
+                first_seen_at: new Date().toISOString(),
+                last_seen_at: new Date().toISOString(),
+                turn_count: 1,
+              },
+              "thread-child": {
+                thread_id: "thread-child",
+                kind: "subagent",
+                first_seen_at: new Date().toISOString(),
+                last_seen_at: new Date().toISOString(),
+                turn_count: 1,
+                mode: "executor",
+              },
+            },
+          },
+        },
+        pending_role_intents: [],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-auto-child",
+          thread_id: "thread-child",
+          last_assistant_message: "Keep going and finish the cleanup.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("bounds repeated ordinary working Stop loops with a diagnostic summary", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-working-loop-"));
     try {
