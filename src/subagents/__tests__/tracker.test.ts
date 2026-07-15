@@ -1343,6 +1343,29 @@ describe('subagents/tracker', () => {
     );
   });
 
+  it('rejects parser-invalid tokens before persistence and round-trips valid tokens', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-token-grammar-'));
+    try {
+      assert.deepEqual(recordPendingRoleIntent(cwd, {
+        role: 'architect',
+        sessionId: 'session-token-grammar',
+        parentThreadId: 'parent-token-grammar',
+        correlationToken: 'abc_def',
+      }), { ok: false, reason: 'invalid_correlation_token' });
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 0);
+
+      assert.equal(recordPendingRoleIntent(cwd, {
+        role: 'architect',
+        sessionId: 'session-token-grammar',
+        parentThreadId: 'parent-token-grammar',
+        correlationToken: 'abc123',
+      }).ok, true);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, 'abc123');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a second live role intent for the same parent thread', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     try {
@@ -1351,7 +1374,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_000,
         }).ok,
         true,
@@ -1361,7 +1384,7 @@ describe('subagents/tracker', () => {
           role: 'critic',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'critic-token',
+          correlationToken: 'critictoken',
           nowMs: 1_001,
         }),
         { ok: false, reason: 'single_flight_conflict' },
@@ -1381,7 +1404,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent-concurrent-record',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_000,
         },
         {
@@ -1390,7 +1413,7 @@ describe('subagents/tracker', () => {
           role: 'critic',
           sessionId: 'sess-role-intent-concurrent-record',
           parentThreadId: 'thread-parent',
-          correlationToken: 'critic-token',
+          correlationToken: 'critictoken',
           nowMs: 1_000,
         },
       ]);
@@ -1417,7 +1440,7 @@ describe('subagents/tracker', () => {
         role: 'architect',
         sessionId: 'session-foreign',
         parentThreadId: 'parent-foreign',
-        correlationToken: 'token-foreign',
+        correlationToken: 'tokenforeign',
         ttlMs: 1,
         nowMs: 1_000,
       });
@@ -1435,7 +1458,7 @@ describe('subagents/tracker', () => {
         role: 'critic',
         sessionId: 'session-bound',
         parentThreadId: 'parent-bound',
-        correlationToken: 'token-bound',
+        correlationToken: 'tokenbound',
         nowMs,
       }).ok, true);
       await assertForeignRetained();
@@ -1443,7 +1466,7 @@ describe('subagents/tracker', () => {
       const binding = bindPendingRoleIntentUnderLock(cwdB, {
         sessionId: 'session-bound',
         parentThreadId: 'parent-bound',
-        correlationToken: 'token-bound',
+        correlationToken: 'tokenbound',
         nowMs,
       }, (state) => state);
       assert.ok(binding?.claimantToken);
@@ -1452,7 +1475,7 @@ describe('subagents/tracker', () => {
       assert.equal(completeAdaptedRoleBinding(cwdB, {
         sessionId: 'session-bound',
         parentThreadId: 'parent-bound',
-        correlationToken: 'token-bound',
+        correlationToken: 'tokenbound',
         claimantToken: binding?.claimantToken,
         nowMs,
       }), 'completed');
@@ -1462,13 +1485,13 @@ describe('subagents/tracker', () => {
         role: 'critic',
         sessionId: 'session-consume',
         parentThreadId: 'parent-consume',
-        correlationToken: 'token-consume',
+        correlationToken: 'tokenconsume',
         nowMs,
       }).ok, true);
       assert.deepEqual(consumePendingRoleIntent(cwdB, {
         sessionId: 'session-consume',
         parentThreadId: 'parent-consume',
-        correlationToken: 'token-consume',
+        correlationToken: 'tokenconsume',
         nowMs,
       }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
       await assertForeignRetained();
@@ -1498,15 +1521,15 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: input.sessionId,
           parentThreadId: input.parentThreadId,
-          correlationToken: 'expected-token',
+          correlationToken: 'expectedtoken',
           nowMs: 1_000,
         }).ok,
         true,
       );
       assert.equal(bindPendingRoleIntentUnderLock(cwd, input, bind), null);
-      assert.equal(bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'wrong-token' }, bind), null);
-      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, 'expected-token');
-      const firstBinding = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expected-token' }, bind);
+      assert.equal(bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'wrongtoken' }, bind), null);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, 'expectedtoken');
+      const firstBinding = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expectedtoken' }, bind);
       assert.equal(firstBinding?.role, 'architect');
       assert.equal(firstBinding?.provenanceKind, OMX_ADAPTED_PROVENANCE);
       assert.equal(firstBinding?.alreadyBound, false);
@@ -1514,7 +1537,7 @@ describe('subagents/tracker', () => {
       const retainedIntent = (await readSubagentTrackingState(cwd)).pending_role_intents[0];
       assert.equal(retainedIntent?.binding_state, 'bound');
       assert.equal(retainedIntent?.binding_claimant_token, firstBinding?.claimantToken);
-      const replay = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expected-token' }, bind);
+      const replay = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expectedtoken' }, bind);
       assert.deepEqual(replay, {
         role: 'architect',
         provenanceKind: OMX_ADAPTED_PROVENANCE,
@@ -1523,11 +1546,11 @@ describe('subagents/tracker', () => {
       });
       assert.equal(bindCount, 1);
       assert.equal(
-        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expected-token', claimantToken: replay?.claimantToken }),
+        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expectedtoken', claimantToken: replay?.claimantToken }),
         'claimant_mismatch',
       );
       assert.equal(
-        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expected-token', claimantToken: firstBinding?.claimantToken }),
+        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expectedtoken', claimantToken: firstBinding?.claimantToken }),
         'completed',
       );
     } finally {
@@ -1605,6 +1628,63 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('stamps an owned already-bound cwd-default legacy journal on bind replay without disclosing its claimant', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-bound-legacy-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    const nowMs = Date.now();
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      delete process.env.OMX_STATE_ROOT;
+      await mkdir(getBaseStateDir(cwd), { recursive: true });
+      const legacyIntent = {
+        role: 'architect',
+        session_id: 'legacy-bound-session',
+        parent_thread_id: 'legacy-bound-parent',
+        correlation_token: 'a3118b',
+        created_at: new Date(nowMs).toISOString(),
+        expires_at: new Date(nowMs + 60_000).toISOString(),
+        binding_state: 'bound',
+        binding_claimant_token: 'legacy-claimant',
+        bound_at: new Date(nowMs).toISOString(),
+      };
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [legacyIntent],
+      })}\n`);
+
+      let bindCalled = false;
+      assert.deepEqual(bindPendingRoleIntentUnderLock(cwd, {
+        sessionId: legacyIntent.session_id,
+        parentThreadId: legacyIntent.parent_thread_id,
+        correlationToken: legacyIntent.correlation_token,
+        nowMs,
+      }, (state) => {
+        bindCalled = true;
+        return state;
+      }), {
+        role: 'architect',
+        provenanceKind: OMX_ADAPTED_PROVENANCE,
+        claimantToken: undefined,
+        alreadyBound: true,
+      });
+      assert.equal(bindCalled, false);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.origin_cwd, cwd);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      if (previousTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
   it('does not allow a shared-root workspace to claim another originless legacy journal', async () => {
     const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-shared-legacy-'));
     const cwdA = join(sharedRoot, 'workspace-a');
@@ -1669,6 +1749,97 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('selects exact-origin duplicate journals deterministically and consumes every own duplicate', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-duplicate-origin-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    const nowMs = Date.now();
+    const scope = {
+      sessionId: 'duplicate-session',
+      parentThreadId: 'duplicate-parent',
+      correlationToken: 'a3118d',
+    };
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      delete process.env.OMX_STATE_ROOT;
+      await mkdir(getBaseStateDir(cwd), { recursive: true });
+      const journal = (role: string, originCwd?: string, claimantToken?: string) => ({
+        role,
+        session_id: scope.sessionId,
+        parent_thread_id: scope.parentThreadId,
+        correlation_token: scope.correlationToken,
+        created_at: new Date(nowMs).toISOString(),
+        expires_at: new Date(nowMs + 60_000).toISOString(),
+        ...(originCwd ? { origin_cwd: originCwd } : {}),
+        ...(claimantToken ? {
+          binding_state: 'bound' as const,
+          binding_claimant_token: claimantToken,
+          bound_at: new Date(nowMs).toISOString(),
+        } : {}),
+      });
+      const legacy = journal('architect');
+      const exact = journal('critic', cwd);
+      const writeJournals = async (pendingRoleIntents: object[]) => {
+        await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+          schemaVersion: 1,
+          sessions: {},
+          pending_role_intents: pendingRoleIntents,
+        })}\n`);
+      };
+
+      for (const duplicateOrder of [[legacy, exact], [exact, legacy]]) {
+        await writeJournals(duplicateOrder);
+        assert.deepEqual(consumePendingRoleIntent(cwd, { ...scope, nowMs }), {
+          role: 'critic',
+          provenanceKind: OMX_ADAPTED_PROVENANCE,
+        });
+        assert.equal(consumePendingRoleIntent(cwd, { ...scope, nowMs }), null);
+        assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
+      }
+
+      for (const duplicateOrder of [[legacy, exact], [exact, legacy]]) {
+        await writeJournals(duplicateOrder);
+        let boundRole: string | undefined;
+        const binding = bindPendingRoleIntentUnderLock(cwd, { ...scope, nowMs }, (state, intent) => {
+          boundRole = intent.role;
+          return state;
+        });
+        assert.equal(binding?.role, 'critic');
+        assert.equal(boundRole, 'critic');
+        assert.ok(binding?.claimantToken);
+        assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents.map((intent) => intent.role), ['critic']);
+        assert.equal(completeAdaptedRoleBinding(cwd, {
+          ...scope,
+          claimantToken: binding?.claimantToken,
+          nowMs,
+        }), 'completed');
+        assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
+      }
+
+      const legacyBound = journal('architect', undefined, 'legacyclaimant');
+      const exactBound = journal('critic', cwd, 'exactclaimant');
+      for (const duplicateOrder of [[legacyBound, exactBound], [exactBound, legacyBound]]) {
+        await writeJournals(duplicateOrder);
+        assert.equal(completeAdaptedRoleBinding(cwd, {
+          ...scope,
+          claimantToken: 'exactclaimant',
+          nowMs,
+        }), 'completed');
+        assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
+      }
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      if (previousTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('consumes a pending role intent exactly once', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     try {
@@ -1677,7 +1848,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_000,
         }).ok,
         true,
@@ -1686,7 +1857,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_001,
         }),
         { role: 'architect', provenanceKind: OMX_ADAPTED_PROVENANCE },
@@ -1695,7 +1866,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_002,
         }),
         null,
@@ -1710,7 +1881,7 @@ describe('subagents/tracker', () => {
     const input = {
       sessionId: 'sess-complete-binding',
       parentThreadId: 'thread-parent',
-      correlationToken: 'complete-token',
+      correlationToken: 'completetoken',
       nowMs: 1_001,
     };
     try {
@@ -1760,7 +1931,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_000,
         }).ok,
         true,
@@ -1772,7 +1943,7 @@ describe('subagents/tracker', () => {
           cwd,
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_001,
         },
         {
@@ -1780,7 +1951,7 @@ describe('subagents/tracker', () => {
           cwd,
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_001,
         },
       ]);
@@ -1796,7 +1967,7 @@ describe('subagents/tracker', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const sessionId = 'sess-role-intent-lifecycle-race';
     const parentThreadId = 'thread-parent';
-    const correlationToken = 'architect-token';
+    const correlationToken = 'architecttoken';
     try {
       const recordResults = await runConcurrentPendingRoleIntentWorkers(cwd, [
         {
@@ -1859,7 +2030,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_000,
           ttlMs: 10,
         }).ok,
@@ -1869,7 +2040,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architect-token',
+          correlationToken: 'architecttoken',
           nowMs: 1_010,
         }),
         null,

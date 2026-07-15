@@ -7,7 +7,11 @@ export const ROLE_INTENT_SPAWN_TASK_NAME_PREFIX = 'omx_role_intent_';
 
 
 export function buildRoleIntentSpawnTaskName(correlationToken: string): string {
-  return `${ROLE_INTENT_SPAWN_TASK_NAME_PREFIX}${correlationToken.trim()}`;
+  const normalizedCorrelationToken = correlationToken.trim();
+  if (!ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(normalizedCorrelationToken)) {
+    throw new Error('Invalid role-intent correlation token.');
+  }
+  return `${ROLE_INTENT_SPAWN_TASK_NAME_PREFIX}${normalizedCorrelationToken}`;
 }
 
 export function isAppCompatibleSpawnTaskName(taskName: string): boolean {

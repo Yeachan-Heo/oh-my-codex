@@ -5,7 +5,7 @@ import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { getBaseStateDir, getBaseStateDirWithSource } from '../state/paths.js';
-import { canonicalizeOriginCwd } from '../leader/contract.js';
+import { canonicalizeOriginCwd, ROLE_INTENT_CORRELATION_TOKEN_PATTERN } from '../leader/contract.js';
 
 import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
 
@@ -815,6 +815,58 @@ function pendingRoleIntentPredicates(cwd: string, canonicalOrigin: string | null
   return { isOwn, shouldPruneExpired };
 }
 
+export function isRoleIntentOwnedByCwd(cwd: string, intent: PendingRoleIntent): boolean {
+  return pendingRoleIntentPredicates(cwd, canonicalizeOriginCwd(cwd), Date.now()).isOwn(intent);
+}
+
+function sameLogicalRoleIntent(
+  intent: PendingRoleIntent,
+  sessionId: string,
+  parentThreadId: string,
+  correlationToken?: string,
+): boolean {
+  return (
+    intent.session_id === sessionId
+    && intent.parent_thread_id === parentThreadId
+    && (correlationToken === undefined || intent.correlation_token === correlationToken)
+  );
+}
+
+function selectDominantRoleIntent(
+  candidates: PendingRoleIntent[],
+  canonicalOrigin: string,
+): PendingRoleIntent | null {
+  return [...candidates].sort((left, right) => {
+    const leftIsExactOrigin = left.origin_cwd !== undefined
+      && canonicalizeOriginCwd(left.origin_cwd) === canonicalOrigin;
+    const rightIsExactOrigin = right.origin_cwd !== undefined
+      && canonicalizeOriginCwd(right.origin_cwd) === canonicalOrigin;
+    if (leftIsExactOrigin !== rightIsExactOrigin) return leftIsExactOrigin ? -1 : 1;
+
+    const leftStableKey = [
+      left.role,
+      left.correlation_token,
+      left.created_at,
+      left.expires_at,
+      left.binding_state ?? '',
+      left.binding_claimant_token ?? '',
+      left.bound_at ?? '',
+      left.origin_cwd ?? '',
+    ].join('\u0000');
+    const rightStableKey = [
+      right.role,
+      right.correlation_token,
+      right.created_at,
+      right.expires_at,
+      right.binding_state ?? '',
+      right.binding_claimant_token ?? '',
+      right.bound_at ?? '',
+      right.origin_cwd ?? '',
+    ].join('\u0000');
+    return leftStableKey.localeCompare(rightStableKey);
+  })[0] ?? null;
+}
+
 export function recordPendingRoleIntent(
   cwd: string,
   input: {
@@ -829,7 +881,9 @@ export function recordPendingRoleIntent(
   const role = resolveInstalledRoleName(input.role);
   if (!role) return { ok: false, reason: 'unknown_role' };
   const correlationToken = readOptionalTrimmedString(input.correlationToken);
-  if (!correlationToken) return { ok: false, reason: 'invalid_correlation_token' };
+  if (!correlationToken || !ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(correlationToken)) {
+    return { ok: false, reason: 'invalid_correlation_token' };
+  }
 
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
@@ -884,13 +938,15 @@ export function bindPendingRoleIntentUnderLock(
     const state = readSubagentTrackingStateSync(cwd);
     const all = state.pending_role_intents;
     const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
-    const matchedIntent = all.find((intent) => (
-      isOwn(intent)
-      && intent.session_id === sessionId
-      && intent.parent_thread_id === parentThreadId
-      && intent.correlation_token === correlationToken
-      && (intent.binding_state === 'bound' || !isExpiredPendingRoleIntent(intent, nowMs))
-    )) ?? null;
+    const matchedIntent = selectDominantRoleIntent(
+      all.filter((intent) => (
+        isOwn(intent)
+        && correlationToken !== undefined
+        && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)
+        && (intent.binding_state === 'bound' || !isExpiredPendingRoleIntent(intent, nowMs))
+      )),
+      canonicalOrigin,
+    );
 
     if (!matchedIntent) {
       const retained = all.filter((intent) => !shouldPruneExpired(intent));
@@ -907,6 +963,13 @@ export function bindPendingRoleIntentUnderLock(
       provenanceKind: OMX_ADAPTED_PROVENANCE,
     } as const;
     if (matchedIntent.binding_state === 'bound') {
+      if (!matchedIntent.origin_cwd) {
+        state.pending_role_intents = all.map((intent) => (
+          intent === matchedIntent ? { ...intent, origin_cwd: canonicalOrigin } : intent
+        ));
+        context.assertOwnership();
+        writeSubagentTrackingStateSync(cwd, state, context.publish);
+      }
       return {
         ...adaptedIntent,
         claimantToken: undefined,
@@ -918,6 +981,10 @@ export function bindPendingRoleIntentUnderLock(
     const boundState = bind(state, adaptedIntent);
     boundState.pending_role_intents = all
       .filter((intent) => !shouldPruneExpired(intent))
+      .filter((intent) => (
+        intent === matchedIntent
+        || !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken))
+      ))
       .map((intent) => (
         intent === matchedIntent
           ? {
@@ -949,14 +1016,16 @@ export function consumePendingRoleIntent(
     const state = readSubagentTrackingStateSync(cwd);
     const all = state.pending_role_intents;
     const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
-    const consumed = all.find((intent) => (
-      isOwn(intent)
-      && intent.binding_state !== 'bound'
-      && !isExpiredPendingRoleIntent(intent, nowMs)
-      && intent.session_id === sessionId
-      && intent.parent_thread_id === parentThreadId
-      && intent.correlation_token === correlationToken
-    )) ?? null;
+    const consumed = selectDominantRoleIntent(
+      all.filter((intent) => (
+        isOwn(intent)
+        && intent.binding_state !== 'bound'
+        && !isExpiredPendingRoleIntent(intent, nowMs)
+        && correlationToken !== undefined
+        && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)
+      )),
+      canonicalOrigin,
+    );
 
     if (!consumed) {
       const retained = all.filter((intent) => !shouldPruneExpired(intent));
@@ -970,7 +1039,7 @@ export function consumePendingRoleIntent(
 
     state.pending_role_intents = all
       .filter((intent) => !shouldPruneExpired(intent))
-      .filter((intent) => intent !== consumed);
+      .filter((intent) => !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)));
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, state, context.publish);
     return { role: consumed.role, provenanceKind: OMX_ADAPTED_PROVENANCE };
@@ -992,13 +1061,14 @@ export function completeAdaptedRoleBinding(
     const state = readSubagentTrackingStateSync(cwd);
     const all = state.pending_role_intents;
     const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
-    const boundIntent = all.find((intent) => (
-      isOwn(intent)
-      && intent.binding_state === 'bound'
-      && intent.session_id === sessionId
-      && intent.parent_thread_id === parentThreadId
-      && (correlationToken === undefined || intent.correlation_token === correlationToken)
-    )) ?? null;
+    const boundIntent = selectDominantRoleIntent(
+      all.filter((intent) => (
+        isOwn(intent)
+        && intent.binding_state === 'bound'
+        && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)
+      )),
+      canonicalOrigin,
+    );
     if (!boundIntent) {
       const retained = all.filter((intent) => !shouldPruneExpired(intent));
       if (retained.length !== all.length) {
@@ -1020,7 +1090,7 @@ export function completeAdaptedRoleBinding(
 
     state.pending_role_intents = all
       .filter((intent) => !shouldPruneExpired(intent))
-      .filter((intent) => intent !== boundIntent);
+      .filter((intent) => !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)));
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, state, context.publish);
     return 'completed';

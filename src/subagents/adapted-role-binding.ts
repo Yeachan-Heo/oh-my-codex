@@ -2,6 +2,7 @@ import { canonicalizeOriginCwd, type RoleRoutingUnavailableMarker } from '../lea
 import {
   bindPendingRoleIntentUnderLock,
   completeAdaptedRoleBinding,
+  isRoleIntentOwnedByCwd,
   listBoundAdaptedRoleIntents,
   OMX_ADAPTED_PROVENANCE,
   type SubagentTrackingState,
@@ -45,7 +46,7 @@ export function recoverAdaptedRoleBindings(cwd: string, stateDir: string, nowMs?
     // OMX_TEAM_STATE_ROOT the tracker is shared across workspaces. Only recover, publish a
     // marker for, and complete an intent that belongs to THIS canonical origin workspace; a
     // foreign workspace's retained journal is left untouched.
-    if (canonicalizeOriginCwd(intent.origin_cwd) !== canonicalOrigin) continue;
+    if (!isRoleIntentOwnedByCwd(cwd, intent)) continue;
     try {
       writeRoleRoutingMarker(
         stateDir,

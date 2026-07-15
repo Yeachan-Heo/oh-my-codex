@@ -141,18 +141,17 @@ describe('ralplan role-intent write', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
-  it('fails closed before persistence when a token passes the App name validator but cannot round-trip', async () => {
+  it('fails before persistence when an invalid generated token reaches the task-name builder', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-role-intent-'));
     try {
       await writeCurrentSession(cwd, 'current-session', 'native-leader', 'tracker-leader');
 
-      const result = await invokeRoleIntent(cwd, [
-        'role-intent', 'write', '--role', 'architect', '--parent-thread', 'native-leader', '--json',
-      ], { generateCorrelationToken: () => 'abc_def' });
-
-      assert.equal(result.exitCode, 1);
-      assert.deepEqual(result.stderr, []);
-      assert.deepEqual(JSON.parse(result.stdout.join('\n')), { ok: false, reason: 'spawn_task_name_unsupported' });
+      await assert.rejects(
+        () => invokeRoleIntent(cwd, [
+          'role-intent', 'write', '--role', 'architect', '--parent-thread', 'native-leader', '--json',
+        ], { generateCorrelationToken: () => 'abc_def' }),
+        /Invalid role-intent correlation token/,
+      );
       assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
     } finally {
       await rm(cwd, { recursive: true, force: true });

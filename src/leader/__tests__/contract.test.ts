@@ -384,6 +384,7 @@ describe('leader conductor contract', () => {
     assert.equal(isAppCompatibleSpawnTaskName('omx_role_intent_deadbeef'), true);
     assert.equal(ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test('abc123'), true);
     assert.equal(ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test('abc_def'), false);
+    assert.throws(() => buildRoleIntentSpawnTaskName('abc_def'), /Invalid role-intent correlation token/);
 
     assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_deadbeef'), 'deadbeef');
     assert.equal(parseRoleIntentCorrelationToken(' omx_role_intent_deadbeef '), 'deadbeef');

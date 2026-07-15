@@ -405,14 +405,18 @@ function readBoundedFirstLineSync(path: string): string {
   }
 }
 
-function readRoleIntentCorrelationToken(...carrierValues: unknown[]): string | undefined {
-  for (const carrierValue of carrierValues) {
-    if (carrierValue === undefined || carrierValue === null) continue;
-    const taskName = String(carrierValue).trim();
-    if (!taskName) continue;
-    return parseRoleIntentCorrelationToken(taskName);
+function selectAuthoritativeTaskName(
+  threadSpawn: unknown,
+  subagent: unknown,
+  payload: unknown,
+): { present: boolean; value: unknown } {
+  for (const obj of [threadSpawn, subagent, payload]) {
+    if (obj && typeof obj === "object") {
+      if ("task_name" in obj) return { present: true, value: (obj as Record<string, unknown>).task_name };
+      if ("taskName" in obj) return { present: true, value: (obj as Record<string, unknown>).taskName };
+    }
   }
-  return undefined;
+  return { present: false, value: undefined };
 }
 
 
@@ -439,11 +443,10 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
       payload.agent_nickname ?? payload.agentNickname,
     ];
     const agentNickname = safeString(agentNicknameCarrierValues[0]).trim();
-    const correlationToken = readRoleIntentCorrelationToken(
-      threadSpawn.task_name ?? threadSpawn.taskName,
-      subagent.task_name ?? subagent.taskName,
-      payload.task_name ?? payload.taskName,
-    );
+    const authoritativeTaskName = selectAuthoritativeTaskName(threadSpawn, subagent, payload);
+    const correlationToken = authoritativeTaskName.present
+      ? parseRoleIntentCorrelationToken(authoritativeTaskName.value)
+      : undefined;
     const agentRole = safeString(
       threadSpawn.agent_role
         ?? threadSpawn.agentRole

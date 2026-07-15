@@ -54,12 +54,12 @@ describe('adapted role binding', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
     try {
-      recordIntent(cwd, 'session-happy', 'parent-happy', 'token-happy');
+      recordIntent(cwd, 'session-happy', 'parent-happy', 'tokenhappy');
 
       assert.deepEqual(bindAndPublishAdaptedRole(cwd, stateDir, {
         correlationSessionId: 'session-happy',
         parentThreadId: 'parent-happy',
-        correlationToken: 'token-happy',
+        correlationToken: 'tokenhappy',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-happy', 'child-happy')), { role: 'architect' });
 
@@ -82,7 +82,7 @@ describe('adapted role binding', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
     try {
-      recordIntent(cwd, 'session-before', 'parent-before', 'token-before');
+      recordIntent(cwd, 'session-before', 'parent-before', 'tokenbefore');
 
       assert.equal(bindAndPublishAdaptedRole(cwd, stateDir, {
         correlationSessionId: 'session-before',
@@ -103,11 +103,11 @@ describe('adapted role binding', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
     try {
-      recordIntent(cwd, 'session-after-tracker', 'parent-after-tracker', 'token-after-tracker');
+      recordIntent(cwd, 'session-after-tracker', 'parent-after-tracker', 'tokenaftertracker');
       const binding = bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-after-tracker',
         parentThreadId: 'parent-after-tracker',
-        correlationToken: 'token-after-tracker',
+        correlationToken: 'tokenaftertracker',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-after-tracker', 'child-after-tracker'));
       assert.equal(binding?.alreadyBound, false);
@@ -132,11 +132,11 @@ describe('adapted role binding', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
     try {
-      recordIntent(cwd, 'session-after-marker', 'parent-after-marker', 'token-after-marker');
+      recordIntent(cwd, 'session-after-marker', 'parent-after-marker', 'tokenaftermarker');
       const binding = bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-after-marker',
         parentThreadId: 'parent-after-marker',
-        correlationToken: 'token-after-marker',
+        correlationToken: 'tokenaftermarker',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-after-marker', 'child-after-marker'));
       assert.equal(binding?.alreadyBound, false);
@@ -167,11 +167,11 @@ describe('adapted role binding', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
     try {
-      recordIntent(cwd, 'session-restart', 'parent-restart', 'token-restart');
+      recordIntent(cwd, 'session-restart', 'parent-restart', 'tokenrestart');
       bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-restart',
         parentThreadId: 'parent-restart',
-        correlationToken: 'token-restart',
+        correlationToken: 'tokenrestart',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-restart', 'child-restart'));
 
@@ -189,6 +189,54 @@ describe('adapted role binding', () => {
     }
   });
 
+  it('recovers an owned cwd-default already-bound legacy journal and completes it with its durable claimant', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-legacy-bound-recovery-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      delete process.env.OMX_STATE_ROOT;
+      const stateDir = getBaseStateDir(cwd);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [{
+          role: 'architect',
+          session_id: 'legacy-bound-recovery-session',
+          parent_thread_id: 'legacy-bound-recovery-parent',
+          correlation_token: 'a3118r',
+          created_at: new Date(NOW_MS).toISOString(),
+          expires_at: new Date(NOW_MS + 600_000).toISOString(),
+          binding_state: 'bound',
+          binding_claimant_token: 'legacyclaimant',
+          bound_at: new Date(NOW_MS).toISOString(),
+        }],
+      })}\n`);
+
+      recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
+
+      assert.deepEqual(listBoundAdaptedRoleIntents(cwd), []);
+      assert.equal(readRoleRoutingMarker(stateDir, {
+        cwd,
+        sessionId: 'legacy-bound-recovery-session',
+        parentThreadId: 'legacy-bound-recovery-parent',
+        nowMs: NOW_MS,
+      })?.session_id, 'legacy-bound-recovery-session');
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      if (previousTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
   it('does not duplicate adapted authority on an idempotent retry', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
@@ -198,11 +246,11 @@ describe('adapted role binding', () => {
       return bindAdaptedTurn('session-retry', 'child-retry')(state, intent);
     };
     try {
-      recordIntent(cwd, 'session-retry', 'parent-retry', 'token-retry');
+      recordIntent(cwd, 'session-retry', 'parent-retry', 'tokenretry');
       const input = {
         correlationSessionId: 'session-retry',
         parentThreadId: 'parent-retry',
-        correlationToken: 'token-retry',
+        correlationToken: 'tokenretry',
         nowMs: NOW_MS,
       };
 
@@ -230,7 +278,7 @@ describe('adapted role binding', () => {
     const input = {
       sessionId: 'session-stale',
       parentThreadId: 'parent-stale',
-      correlationToken: 'token-stale',
+      correlationToken: 'tokenstale',
       nowMs: NOW_MS,
     };
     try {
@@ -360,22 +408,22 @@ describe('adapted role binding', () => {
       const scope = { sessionId: 'session-shared-marker', parentThreadId: 'parent-shared-marker', nowMs: NOW_MS };
 
       assert.equal(recordPendingRoleIntent(cwdA, {
-        role: 'architect', ...scope, correlationToken: 'token-a',
+        role: 'architect', ...scope, correlationToken: 'tokena',
       }).ok, true);
       assert.equal(recordPendingRoleIntent(cwdB, {
-        role: 'critic', ...scope, correlationToken: 'token-b',
+        role: 'critic', ...scope, correlationToken: 'tokenb',
       }).ok, true);
 
       assert.deepEqual(bindAndPublishAdaptedRole(cwdA, sharedStateDir, {
         correlationSessionId: scope.sessionId,
         parentThreadId: scope.parentThreadId,
-        correlationToken: 'token-a',
+        correlationToken: 'tokena',
         nowMs: NOW_MS,
       }, bindAdaptedTurn(scope.sessionId, 'child-a')), { role: 'architect' });
       assert.deepEqual(bindAndPublishAdaptedRole(cwdB, sharedStateDir, {
         correlationSessionId: scope.sessionId,
         parentThreadId: scope.parentThreadId,
-        correlationToken: 'token-b',
+        correlationToken: 'tokenb',
         nowMs: NOW_MS,
       }, bindAdaptedTurn(scope.sessionId, 'child-b')), { role: 'critic' });
 
@@ -451,7 +499,7 @@ describe('adapted role binding', () => {
         role: 'architect',
         sessionId: 'session-expired-a',
         parentThreadId: 'parent-expired-a',
-        correlationToken: 'token-expired-a',
+        correlationToken: 'tokenexpireda',
         ttlMs: 1,
         nowMs: NOW_MS,
       });
@@ -469,7 +517,7 @@ describe('adapted role binding', () => {
         role: 'critic',
         sessionId: 'session-bound-b',
         parentThreadId: 'parent-bound-b',
-        correlationToken: 'token-bound-b',
+        correlationToken: 'tokenboundb',
         nowMs: lateNowMs,
       }).ok, true);
       await assertForeignRetained();
@@ -477,7 +525,7 @@ describe('adapted role binding', () => {
       const bound = bindPendingRoleIntentUnderLock(cwdB, {
         sessionId: 'session-bound-b',
         parentThreadId: 'parent-bound-b',
-        correlationToken: 'token-bound-b',
+        correlationToken: 'tokenboundb',
         nowMs: lateNowMs,
       }, bindAdaptedTurn('session-bound-b', 'child-bound-b'));
       assert.ok(bound?.claimantToken);
@@ -486,7 +534,7 @@ describe('adapted role binding', () => {
       assert.equal(completeAdaptedRoleBinding(cwdB, {
         sessionId: 'session-bound-b',
         parentThreadId: 'parent-bound-b',
-        correlationToken: 'token-bound-b',
+        correlationToken: 'tokenboundb',
         claimantToken: bound?.claimantToken,
         nowMs: lateNowMs,
       }), 'completed');
@@ -496,14 +544,14 @@ describe('adapted role binding', () => {
         role: 'critic',
         sessionId: 'session-consume-b',
         parentThreadId: 'parent-consume-b',
-        correlationToken: 'token-consume-b',
+        correlationToken: 'tokenconsumeb',
         nowMs: lateNowMs,
       }).ok, true);
       await assertForeignRetained();
       assert.deepEqual(consumePendingRoleIntent(cwdB, {
         sessionId: 'session-consume-b',
         parentThreadId: 'parent-consume-b',
-        correlationToken: 'token-consume-b',
+        correlationToken: 'tokenconsumeb',
         nowMs: lateNowMs,
       }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
       await assertForeignRetained();
@@ -527,31 +575,31 @@ describe('adapted role binding', () => {
       assert.equal(getBaseStateDir(cwdA), getBaseStateDir(cwdB));
 
       assert.equal(recordPendingRoleIntent(cwdA, {
-        role: 'architect', ...scope, correlationToken: 'token-a',
+        role: 'architect', ...scope, correlationToken: 'tokena',
       }).ok, true);
       assert.equal(recordPendingRoleIntent(cwdB, {
-        role: 'critic', ...scope, correlationToken: 'token-b',
+        role: 'critic', ...scope, correlationToken: 'tokenb',
       }).ok, true);
       assert.deepEqual(recordPendingRoleIntent(cwdA, {
-        role: 'critic', ...scope, correlationToken: 'token-a-second',
+        role: 'critic', ...scope, correlationToken: 'tokenasecond',
       }), { ok: false, reason: 'single_flight_conflict' });
       assert.deepEqual(recordPendingRoleIntent(cwdB, {
-        role: 'architect', ...scope, correlationToken: 'token-b-second',
+        role: 'architect', ...scope, correlationToken: 'tokenbsecond',
       }), { ok: false, reason: 'single_flight_conflict' });
 
       const boundA = bindPendingRoleIntentUnderLock(cwdA, {
         ...scope,
-        correlationToken: 'token-a',
+        correlationToken: 'tokena',
       }, bindAdaptedTurn(scope.sessionId, 'child-a'));
       assert.ok(boundA?.claimantToken);
       assert.deepEqual(consumePendingRoleIntent(cwdB, {
         ...scope,
-        correlationToken: 'token-b',
+        correlationToken: 'tokenb',
       }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
 
       // A's bound journal still occupies only A's scope; B can independently record (S, P).
       assert.equal(recordPendingRoleIntent(cwdB, {
-        role: 'critic', ...scope, correlationToken: 'token-b-after-a-bound',
+        role: 'critic', ...scope, correlationToken: 'tokenbafterabound',
       }).ok, true);
     } finally {
       if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
@@ -577,14 +625,14 @@ describe('adapted role binding', () => {
         role: 'architect',
         sessionId: 'session-a',
         parentThreadId: 'parent-a',
-        correlationToken: 'token-a',
+        correlationToken: 'tokena',
         nowMs: NOW_MS,
       }).ok, true);
       // A binds (tracker committed) then crashes before publishing the marker.
       assert.ok(bindPendingRoleIntentUnderLock(cwdA, {
         sessionId: 'session-a',
         parentThreadId: 'parent-a',
-        correlationToken: 'token-a',
+        correlationToken: 'tokena',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-a', 'child-a'))?.claimantToken);
 
@@ -615,6 +663,53 @@ describe('adapted role binding', () => {
     }
   });
 
+  it('does not recover a legacy no-origin bound journal from another workspace under a shared state root', async () => {
+    const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-legacy-recovery-'));
+    const cwdA = join(sharedRoot, 'workspace-a');
+    const cwdB = join(sharedRoot, 'workspace-b');
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    try {
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      process.env.OMX_STATE_ROOT = sharedRoot;
+      await mkdir(cwdA, { recursive: true });
+      await mkdir(cwdB, { recursive: true });
+      const sharedStateDir = getBaseStateDir(cwdA);
+      await mkdir(sharedStateDir, { recursive: true });
+      await writeFile(subagentTrackingPath(cwdA), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [{
+          role: 'architect',
+          session_id: 'shared-legacy-bound-session',
+          parent_thread_id: 'shared-legacy-bound-parent',
+          correlation_token: 'a3118s',
+          created_at: new Date(NOW_MS).toISOString(),
+          expires_at: new Date(NOW_MS + 600_000).toISOString(),
+          binding_state: 'bound',
+          binding_claimant_token: 'legacyclaimant',
+          bound_at: new Date(NOW_MS).toISOString(),
+        }],
+      })}\n`);
+
+      recoverAdaptedRoleBindings(cwdB, sharedStateDir, NOW_MS);
+
+      assert.equal(listBoundAdaptedRoleIntents(cwdB).length, 1);
+      assert.equal(existsSync(join(sharedStateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), false);
+      assert.equal((await readSubagentTrackingState(cwdB)).pending_role_intents[0]?.origin_cwd, undefined);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      if (previousTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
+      await rm(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when a foreign workspace drives the primary bind path under a shared state root', async () => {
     const sharedRoot = await mkdtemp(join(tmpdir(), 'omx-adapted-shared-bind-'));
     const cwdA = join(sharedRoot, 'workspace-a');
@@ -631,7 +726,7 @@ describe('adapted role binding', () => {
       await mkdir(cwdB, { recursive: true });
       const sharedStateDir = getBaseStateDir(cwdA);
       assert.equal(sharedStateDir, getBaseStateDir(cwdB));
-      const scope = { sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'token-a', nowMs: NOW_MS };
+      const scope = { sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'tokena', nowMs: NOW_MS };
       const legacyScope = {
         sessionId: 'session-legacy-no-origin',
         parentThreadId: 'parent-legacy-no-origin',
@@ -668,7 +763,7 @@ describe('adapted role binding', () => {
       // Foreign B primary bind against A's UNBOUND intent: null, zero side effects.
       assert.equal(bindPendingRoleIntentUnderLock(cwdB, scope, foreignCallback), null);
       assert.equal(bindAndPublishAdaptedRole(cwdB, sharedStateDir, {
-        correlationSessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'token-a', nowMs: NOW_MS,
+        correlationSessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'tokena', nowMs: NOW_MS,
       }, foreignCallback), null);
       assert.equal(foreignCallbackRuns, 0);
       const stillPending = (await readSubagentTrackingState(cwdA)).pending_role_intents;
@@ -685,7 +780,7 @@ describe('adapted role binding', () => {
       assert.equal(bindPendingRoleIntentUnderLock(cwdB, scope, foreignCallback), null);
       // Foreign B cannot complete A's bound journal even with the correct token.
       assert.equal(completeAdaptedRoleBinding(cwdB, {
-        sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'token-a', claimantToken: originBind?.claimantToken,
+        sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'tokena', claimantToken: originBind?.claimantToken,
       }), 'not_found');
       // Foreign B recovery is likewise a no-op.
       recoverAdaptedRoleBindings(cwdB, sharedStateDir, NOW_MS);
@@ -732,7 +827,7 @@ describe('adapted role binding', () => {
         parentThreadId: 'parent-alias-marker',
         nowMs: NOW_MS,
       })?.cwd, realCwd);
-      const scope = { sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'token-alias', nowMs: NOW_MS };
+      const scope = { sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'tokenalias', nowMs: NOW_MS };
       // Record via the real path.
       assert.equal(recordPendingRoleIntent(realCwd, { role: 'architect', ...scope }).ok, true);
       // Bind via the symlink alias -> same canonical origin -> authenticated success.
@@ -741,7 +836,7 @@ describe('adapted role binding', () => {
       assert.ok(binding?.claimantToken);
       // Complete via the real path with the alias-minted claimant.
       assert.equal(completeAdaptedRoleBinding(realCwd, {
-        sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'token-alias', claimantToken: binding?.claimantToken,
+        sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'tokenalias', claimantToken: binding?.claimantToken,
       }), 'completed');
     } finally {
       await rm(realCwd, { recursive: true, force: true });
@@ -773,7 +868,7 @@ describe('adapted role binding', () => {
         role: 'critic',
         sessionId: 'session-normal',
         parentThreadId: 'parent-normal',
-        correlationToken: 'token-normal',
+        correlationToken: 'tokennormal',
         nowMs: NOW_MS,
       }).ok, true);
 
@@ -809,11 +904,11 @@ describe('adapted role binding', () => {
     const stateDirA = getBaseStateDir(cwdA);
     const stateDirB = getBaseStateDir(cwdB);
     try {
-      recordIntent(cwdA, 'session-workspace', 'parent-workspace', 'token-workspace');
+      recordIntent(cwdA, 'session-workspace', 'parent-workspace', 'tokenworkspace');
       bindPendingRoleIntentUnderLock(cwdA, {
         sessionId: 'session-workspace',
         parentThreadId: 'parent-workspace',
-        correlationToken: 'token-workspace',
+        correlationToken: 'tokenworkspace',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-workspace', 'child-workspace'));
 
@@ -836,18 +931,18 @@ describe('adapted role binding', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));
     const stateDir = getBaseStateDir(cwd);
     try {
-      recordIntent(cwd, 'session-a-one', 'parent-a-one', 'token-a-one');
-      recordIntent(cwd, 'session-a-two', 'parent-a-two', 'token-a-two');
+      recordIntent(cwd, 'session-a-one', 'parent-a-one', 'tokenaone');
+      recordIntent(cwd, 'session-a-two', 'parent-a-two', 'tokenatwo');
       bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-a-one',
         parentThreadId: 'parent-a-one',
-        correlationToken: 'token-a-one',
+        correlationToken: 'tokenaone',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-a-one', 'child-a-one'));
       bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-a-two',
         parentThreadId: 'parent-a-two',
-        correlationToken: 'token-a-two',
+        correlationToken: 'tokenatwo',
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-a-two', 'child-a-two'));
 
