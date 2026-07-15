@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
@@ -9,6 +10,12 @@ import { getBaseStateDir } from '../../state/paths.js';
 import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
 import { subagentTrackingPath } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
+const credentialDigest = (value: string) => createHash('sha256').update(value).digest('hex');
+const canonicalCorrelationToken = (value: string) => credentialDigest(value).slice(0, 32);
+const canonicalClaimantToken = (value: string) => {
+  const digest = credentialDigest(value);
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+};
 
 interface PendingRoleIntentRecordWorkerInput {
   operation: 'record';
@@ -1325,7 +1332,7 @@ describe('subagents/tracker', () => {
         role: 'not-a-known-role',
         sessionId: 'sess-role-intent',
         parentThreadId: 'thread-parent',
-        correlationToken: 'correlation-token',
+        correlationToken: canonicalCorrelationToken('correlation-token'),
       }),
       { ok: false, reason: 'unknown_role' },
     );
@@ -1358,9 +1365,9 @@ describe('subagents/tracker', () => {
         role: 'architect',
         sessionId: 'session-token-grammar',
         parentThreadId: 'parent-token-grammar',
-        correlationToken: 'abc123',
+        correlationToken: canonicalCorrelationToken('abc123'),
       }).ok, true);
-      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, 'abc123');
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, canonicalCorrelationToken('abc123'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1374,7 +1381,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_000,
         }).ok,
         true,
@@ -1384,7 +1391,7 @@ describe('subagents/tracker', () => {
           role: 'critic',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'critictoken',
+          correlationToken: canonicalCorrelationToken('critictoken'),
           nowMs: 1_001,
         }),
         { ok: false, reason: 'single_flight_conflict' },
@@ -1404,7 +1411,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent-concurrent-record',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_000,
         },
         {
@@ -1413,7 +1420,7 @@ describe('subagents/tracker', () => {
           role: 'critic',
           sessionId: 'sess-role-intent-concurrent-record',
           parentThreadId: 'thread-parent',
-          correlationToken: 'critictoken',
+          correlationToken: canonicalCorrelationToken('critictoken'),
           nowMs: 1_000,
         },
       ]);
@@ -1440,7 +1447,7 @@ describe('subagents/tracker', () => {
         role: 'architect',
         sessionId: 'session-foreign',
         parentThreadId: 'parent-foreign',
-        correlationToken: 'tokenforeign',
+        correlationToken: canonicalCorrelationToken('tokenforeign'),
         ttlMs: 1,
         nowMs: 1_000,
       });
@@ -1458,7 +1465,7 @@ describe('subagents/tracker', () => {
         role: 'critic',
         sessionId: 'session-bound',
         parentThreadId: 'parent-bound',
-        correlationToken: 'tokenbound',
+        correlationToken: canonicalCorrelationToken('tokenbound'),
         nowMs,
       }).ok, true);
       await assertForeignRetained();
@@ -1466,7 +1473,7 @@ describe('subagents/tracker', () => {
       const binding = bindPendingRoleIntentUnderLock(cwdB, {
         sessionId: 'session-bound',
         parentThreadId: 'parent-bound',
-        correlationToken: 'tokenbound',
+        correlationToken: canonicalCorrelationToken('tokenbound'),
         nowMs,
       }, (state) => state);
       assert.ok(binding?.claimantToken);
@@ -1475,7 +1482,7 @@ describe('subagents/tracker', () => {
       assert.equal(completeAdaptedRoleBinding(cwdB, {
         sessionId: 'session-bound',
         parentThreadId: 'parent-bound',
-        correlationToken: 'tokenbound',
+        correlationToken: canonicalCorrelationToken('tokenbound'),
         claimantToken: binding?.claimantToken,
         nowMs,
       }), 'completed');
@@ -1485,13 +1492,13 @@ describe('subagents/tracker', () => {
         role: 'critic',
         sessionId: 'session-consume',
         parentThreadId: 'parent-consume',
-        correlationToken: 'tokenconsume',
+        correlationToken: canonicalCorrelationToken('tokenconsume'),
         nowMs,
       }).ok, true);
       assert.deepEqual(consumePendingRoleIntent(cwdB, {
         sessionId: 'session-consume',
         parentThreadId: 'parent-consume',
-        correlationToken: 'tokenconsume',
+        correlationToken: canonicalCorrelationToken('tokenconsume'),
         nowMs,
       }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
       await assertForeignRetained();
@@ -1521,15 +1528,15 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: input.sessionId,
           parentThreadId: input.parentThreadId,
-          correlationToken: 'expectedtoken',
+          correlationToken: canonicalCorrelationToken('expectedtoken'),
           nowMs: 1_000,
         }).ok,
         true,
       );
       assert.equal(bindPendingRoleIntentUnderLock(cwd, input, bind), null);
-      assert.equal(bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'wrongtoken' }, bind), null);
-      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, 'expectedtoken');
-      const firstBinding = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expectedtoken' }, bind);
+      assert.equal(bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: canonicalCorrelationToken('wrongtoken') }, bind), null);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, canonicalCorrelationToken('expectedtoken'));
+      const firstBinding = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: canonicalCorrelationToken('expectedtoken') }, bind);
       assert.equal(firstBinding?.role, 'architect');
       assert.equal(firstBinding?.provenanceKind, OMX_ADAPTED_PROVENANCE);
       assert.equal(firstBinding?.alreadyBound, false);
@@ -1537,7 +1544,7 @@ describe('subagents/tracker', () => {
       const retainedIntent = (await readSubagentTrackingState(cwd)).pending_role_intents[0];
       assert.equal(retainedIntent?.binding_state, 'bound');
       assert.equal(retainedIntent?.binding_claimant_token, firstBinding?.claimantToken);
-      const replay = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: 'expectedtoken' }, bind);
+      const replay = bindPendingRoleIntentUnderLock(cwd, { ...input, correlationToken: canonicalCorrelationToken('expectedtoken') }, bind);
       assert.deepEqual(replay, {
         role: 'architect',
         provenanceKind: OMX_ADAPTED_PROVENANCE,
@@ -1546,11 +1553,11 @@ describe('subagents/tracker', () => {
       });
       assert.equal(bindCount, 1);
       assert.equal(
-        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expectedtoken', claimantToken: replay?.claimantToken }),
+        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: canonicalCorrelationToken('expectedtoken'), claimantToken: replay?.claimantToken }),
         'claimant_mismatch',
       );
       assert.equal(
-        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: 'expectedtoken', claimantToken: firstBinding?.claimantToken }),
+        completeAdaptedRoleBinding(cwd, { ...input, correlationToken: canonicalCorrelationToken('expectedtoken'), claimantToken: firstBinding?.claimantToken }),
         'completed',
       );
     } finally {
@@ -1573,7 +1580,7 @@ describe('subagents/tracker', () => {
         role: 'architect',
         session_id: 'legacy-session-bind',
         parent_thread_id: 'legacy-parent-bind',
-        correlation_token: 'legacy-token-bind',
+        correlation_token: canonicalCorrelationToken('legacy-token-bind'),
         created_at: new Date(nowMs).toISOString(),
         expires_at: new Date(nowMs + 60_000).toISOString(),
       };
@@ -1604,7 +1611,7 @@ describe('subagents/tracker', () => {
         ...legacyIntent,
         session_id: 'legacy-session-consume',
         parent_thread_id: 'legacy-parent-consume',
-        correlation_token: 'legacy-token-consume',
+        correlation_token: canonicalCorrelationToken('legacy-token-consume'),
       };
       await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
         schemaVersion: 1,
@@ -1643,11 +1650,11 @@ describe('subagents/tracker', () => {
         role: 'architect',
         session_id: 'legacy-bound-session',
         parent_thread_id: 'legacy-bound-parent',
-        correlation_token: 'a3118b',
+        correlation_token: canonicalCorrelationToken('a3118b'),
         created_at: new Date(nowMs).toISOString(),
         expires_at: new Date(nowMs + 60_000).toISOString(),
         binding_state: 'bound',
-        binding_claimant_token: 'legacy-claimant',
+        binding_claimant_token: canonicalClaimantToken('legacy-claimant'),
         bound_at: new Date(nowMs).toISOString(),
       };
       await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
@@ -1703,7 +1710,7 @@ describe('subagents/tracker', () => {
         role: 'architect',
         session_id: 'shared-legacy-session',
         parent_thread_id: 'shared-legacy-parent',
-        correlation_token: 'shared-legacy-token',
+        correlation_token: canonicalCorrelationToken('shared-legacy-token'),
         created_at: new Date(nowMs).toISOString(),
         expires_at: new Date(nowMs + 60_000).toISOString(),
       };
@@ -1758,7 +1765,7 @@ describe('subagents/tracker', () => {
     const scope = {
       sessionId: 'duplicate-session',
       parentThreadId: 'duplicate-parent',
-      correlationToken: 'a3118d',
+      correlationToken: canonicalCorrelationToken('a3118d'),
     };
     try {
       delete process.env.OMX_ROOT;
@@ -1775,7 +1782,7 @@ describe('subagents/tracker', () => {
         ...(originCwd ? { origin_cwd: originCwd } : {}),
         ...(claimantToken ? {
           binding_state: 'bound' as const,
-          binding_claimant_token: claimantToken,
+          binding_claimant_token: canonicalClaimantToken(claimantToken),
           bound_at: new Date(nowMs).toISOString(),
         } : {}),
       });
@@ -1824,7 +1831,7 @@ describe('subagents/tracker', () => {
         await writeJournals(duplicateOrder);
         assert.equal(completeAdaptedRoleBinding(cwd, {
           ...scope,
-          claimantToken: 'exactclaimant',
+          claimantToken: canonicalClaimantToken('exactclaimant'),
           nowMs,
         }), 'completed');
         assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
@@ -1898,7 +1905,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_000,
         }).ok,
         true,
@@ -1907,7 +1914,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_001,
         }),
         { role: 'architect', provenanceKind: OMX_ADAPTED_PROVENANCE },
@@ -1916,7 +1923,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_002,
         }),
         null,
@@ -1931,7 +1938,7 @@ describe('subagents/tracker', () => {
     const input = {
       sessionId: 'sess-complete-binding',
       parentThreadId: 'thread-parent',
-      correlationToken: 'completetoken',
+      correlationToken: canonicalCorrelationToken('completetoken'),
       nowMs: 1_001,
     };
     try {
@@ -1945,7 +1952,7 @@ describe('subagents/tracker', () => {
       const binding = bindPendingRoleIntentUnderLock(cwd, input, (state) => state);
       assert.ok(binding?.claimantToken);
       assert.equal(
-        completeAdaptedRoleBinding(cwd, { ...input, claimantToken: 'wrong-claimant' }),
+        completeAdaptedRoleBinding(cwd, { ...input, claimantToken: canonicalClaimantToken('wrong-claimant') }),
         'claimant_mismatch',
       );
       assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
@@ -1980,7 +1987,7 @@ describe('subagents/tracker', () => {
       role: 'architect',
       session_id: 'claimant-less-session',
       parent_thread_id: 'claimant-less-parent',
-      correlation_token: 'a3118f',
+      correlation_token: canonicalCorrelationToken('a3118f'),
       created_at: new Date(nowMs).toISOString(),
       expires_at: new Date(nowMs + 60_000).toISOString(),
       binding_state: 'bound',
@@ -2021,7 +2028,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_000,
         }).ok,
         true,
@@ -2033,7 +2040,7 @@ describe('subagents/tracker', () => {
           cwd,
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_001,
         },
         {
@@ -2041,7 +2048,7 @@ describe('subagents/tracker', () => {
           cwd,
           sessionId: 'sess-role-intent-concurrent-consume',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_001,
         },
       ]);
@@ -2057,7 +2064,7 @@ describe('subagents/tracker', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-'));
     const sessionId = 'sess-role-intent-lifecycle-race';
     const parentThreadId = 'thread-parent';
-    const correlationToken = 'architecttoken';
+    const correlationToken = canonicalCorrelationToken('architecttoken');
     try {
       const recordResults = await runConcurrentPendingRoleIntentWorkers(cwd, [
         {
@@ -2120,7 +2127,7 @@ describe('subagents/tracker', () => {
           role: 'architect',
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_000,
           ttlMs: 10,
         }).ok,
@@ -2130,7 +2137,7 @@ describe('subagents/tracker', () => {
         consumePendingRoleIntent(cwd, {
           sessionId: 'sess-role-intent',
           parentThreadId: 'thread-parent',
-          correlationToken: 'architecttoken',
+          correlationToken: canonicalCorrelationToken('architecttoken'),
           nowMs: 1_010,
         }),
         null,
@@ -2157,22 +2164,22 @@ describe('subagents/tracker', () => {
         schemaVersion: 1,
         sessions: {},
         pending_role_intents: [
-          { ...base, correlation_token: '', binding_claimant_token: 'claimant' },
-          { ...base, correlation_token: 'validtoken', binding_claimant_token: 'claimant' },
+          { ...base, correlation_token: '', binding_claimant_token: canonicalClaimantToken('claimant') },
+          { ...base, correlation_token: canonicalCorrelationToken('validtoken'), binding_claimant_token: canonicalClaimantToken('claimant') },
         ],
       })}\n`);
       const retained = (await readSubagentTrackingState(cwd)).pending_role_intents;
       assert.equal(retained[0]?.correlation_token, '');
-      assert.equal(retained[0]?.binding_claimant_token, 'claimant');
+      assert.equal(retained[0]?.binding_claimant_token, canonicalClaimantToken('claimant'));
       assert.equal(completeAdaptedRoleBinding(cwd, {
         sessionId: scope.session_id, parentThreadId: scope.parent_thread_id,
-        correlationToken: 'validtoken', claimantToken: 'claimant', nowMs,
+        correlationToken: canonicalCorrelationToken('validtoken'), claimantToken: canonicalClaimantToken('claimant'), nowMs,
       }), 'claimant_mismatch');
       assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 2);
 
       await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
         schemaVersion: 1, sessions: {}, pending_role_intents: [{
-          ...base, correlation_token: 'validtoken', binding_claimant_token: 'claimant',
+          ...base, correlation_token: canonicalCorrelationToken('validtoken'), binding_claimant_token: canonicalClaimantToken('claimant'),
         }],
       })}\n`);
       assert.equal(completeAdaptedRoleBinding(cwd, {
@@ -2184,6 +2191,22 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('rejects noncanonical caller correlation credentials without changing a retained intent', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-caller-credential-'));
+    const correlationToken = canonicalCorrelationToken('caller-correlation');
+    const scope = { sessionId: 'caller-session', parentThreadId: 'caller-parent', correlationToken, nowMs: Date.now() };
+    try {
+      assert.equal(recordPendingRoleIntent(cwd, { role: 'architect', ...scope }).ok, true);
+      for (const invalid of ['', ' ', null, 1, true, [], {}]) {
+        assert.equal(bindPendingRoleIntentUnderLock(cwd, { ...scope, correlationToken: invalid as string }, (state) => state), null);
+        assert.equal(consumePendingRoleIntent(cwd, { ...scope, correlationToken: invalid as string }), null);
+        assert.equal(completeAdaptedRoleBinding(cwd, { ...scope, correlationToken: invalid as string }), 'not_found');
+      }
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   it('rejects NUL and ELOOP origins before creating tracking artifacts', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-origin-'));
     const loop = join(parent, 'loop');
@@ -2191,7 +2214,7 @@ describe('subagents/tracker', () => {
       await symlink(loop, loop);
       for (const cwd of [`${parent}\u0000suffix`, loop]) {
         assert.deepEqual(recordPendingRoleIntent(cwd, {
-          role: 'architect', sessionId: 'origin-session', parentThreadId: 'origin-parent', correlationToken: 'origintoken',
+          role: 'architect', sessionId: 'origin-session', parentThreadId: 'origin-parent', correlationToken: canonicalCorrelationToken('origintoken'),
         }), { ok: false, reason: 'invalid_origin' });
       }
       assert.deepEqual(readdirSync(parent), ['loop']);

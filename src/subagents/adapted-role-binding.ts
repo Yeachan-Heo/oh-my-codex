@@ -2,6 +2,8 @@ import { canonicalizeOriginCwd, type RoleRoutingUnavailableMarker } from '../lea
 import {
   bindPendingRoleIntentUnderLock,
   completeAdaptedRoleBinding,
+  isCanonicalClaimantToken,
+  isCanonicalCorrelationToken,
   isRoleIntentOwnedByCwd,
   listBoundAdaptedRoleIntents,
   OMX_ADAPTED_PROVENANCE,
@@ -48,11 +50,8 @@ export function recoverAdaptedRoleBindings(cwd: string, stateDir: string, nowMs?
     // foreign workspace's retained journal is left untouched.
     if (!isRoleIntentOwnedByCwd(cwd, intent)) continue;
     try {
-      if (typeof intent.correlation_token !== 'string' || intent.correlation_token.trim() !== intent.correlation_token) continue;
-      if (
-        Object.hasOwn(intent, 'binding_claimant_token')
-        && (typeof intent.binding_claimant_token !== 'string' || intent.binding_claimant_token.length === 0 || intent.binding_claimant_token.trim() !== intent.binding_claimant_token)
-      ) continue;
+      if (!isCanonicalCorrelationToken(intent.correlation_token)) continue;
+      if (Object.hasOwn(intent, 'binding_claimant_token') && !isCanonicalClaimantToken(intent.binding_claimant_token)) continue;
       writeRoleRoutingMarker(
         stateDir,
         buildAdaptedRoleRoutingMarker(cwd, intent.session_id, intent.parent_thread_id, normalizedNowMs),

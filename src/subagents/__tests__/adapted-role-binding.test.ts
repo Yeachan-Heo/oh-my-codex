@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -24,6 +25,12 @@ import {
 } from '../tracker.js';
 
 const NOW_MS = Date.now();
+const credentialDigest = (value: string) => createHash('sha256').update(value).digest('hex');
+const canonicalCorrelationToken = (value: string) => credentialDigest(value).slice(0, 32);
+const canonicalClaimantToken = (value: string) => {
+  const digest = credentialDigest(value);
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+};
 
 function bindAdaptedTurn(sessionId: string, threadId: string) {
   return (
@@ -44,7 +51,7 @@ function recordIntent(cwd: string, sessionId: string, parentThreadId: string, co
     role: 'architect',
     sessionId,
     parentThreadId,
-    correlationToken,
+    correlationToken: /^[0-9a-f]{32}$/.test(correlationToken) ? correlationToken : canonicalCorrelationToken(correlationToken),
     nowMs: NOW_MS,
   }).ok, true);
 }
@@ -59,7 +66,7 @@ describe('adapted role binding', () => {
       assert.deepEqual(bindAndPublishAdaptedRole(cwd, stateDir, {
         correlationSessionId: 'session-happy',
         parentThreadId: 'parent-happy',
-        correlationToken: 'tokenhappy',
+        correlationToken: canonicalCorrelationToken('tokenhappy'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-happy', 'child-happy')), { role: 'architect' });
 
@@ -87,7 +94,7 @@ describe('adapted role binding', () => {
       assert.equal(bindAndPublishAdaptedRole(cwd, stateDir, {
         correlationSessionId: 'session-before',
         parentThreadId: 'parent-before',
-        correlationToken: 'wrong-token',
+        correlationToken: canonicalCorrelationToken('wrong-token'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-before', 'child-before')), null);
 
@@ -107,7 +114,7 @@ describe('adapted role binding', () => {
       const binding = bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-after-tracker',
         parentThreadId: 'parent-after-tracker',
-        correlationToken: 'tokenaftertracker',
+        correlationToken: canonicalCorrelationToken('tokenaftertracker'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-after-tracker', 'child-after-tracker'));
       assert.equal(binding?.alreadyBound, false);
@@ -136,7 +143,7 @@ describe('adapted role binding', () => {
       const binding = bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-after-marker',
         parentThreadId: 'parent-after-marker',
-        correlationToken: 'tokenaftermarker',
+        correlationToken: canonicalCorrelationToken('tokenaftermarker'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-after-marker', 'child-after-marker'));
       assert.equal(binding?.alreadyBound, false);
@@ -171,7 +178,7 @@ describe('adapted role binding', () => {
       bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-restart',
         parentThreadId: 'parent-restart',
-        correlationToken: 'tokenrestart',
+        correlationToken: canonicalCorrelationToken('tokenrestart'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-restart', 'child-restart'));
 
@@ -207,7 +214,7 @@ describe('adapted role binding', () => {
           role: 'architect',
           session_id: 'legacy-bound-recovery-session',
           parent_thread_id: 'legacy-bound-recovery-parent',
-          correlation_token: 'a3118r',
+          correlation_token: canonicalCorrelationToken('a3118r'),
           created_at: new Date(NOW_MS).toISOString(),
           expires_at: new Date(NOW_MS + 600_000).toISOString(),
           binding_state: 'bound',
@@ -249,7 +256,7 @@ describe('adapted role binding', () => {
       const input = {
         correlationSessionId: 'session-retry',
         parentThreadId: 'parent-retry',
-        correlationToken: 'tokenretry',
+        correlationToken: canonicalCorrelationToken('tokenretry'),
         nowMs: NOW_MS,
       };
 
@@ -277,7 +284,7 @@ describe('adapted role binding', () => {
     const input = {
       sessionId: 'session-stale',
       parentThreadId: 'parent-stale',
-      correlationToken: 'tokenstale',
+      correlationToken: canonicalCorrelationToken('tokenstale'),
       nowMs: NOW_MS,
     };
     try {
@@ -318,7 +325,7 @@ describe('adapted role binding', () => {
           role: 'architect',
           session_id: 'session-malformed',
           parent_thread_id: 'parent-malformed',
-          correlation_token: 'token-malformed',
+          correlation_token: canonicalCorrelationToken('token-malformed'),
           created_at: new Date(NOW_MS).toISOString(),
           expires_at: new Date(NOW_MS - 1).toISOString(),
           binding_state: 'bound',
@@ -353,11 +360,11 @@ describe('adapted role binding', () => {
           role: 'architect',
           session_id: 'session-boundat',
           parent_thread_id: 'parent-boundat',
-          correlation_token: 'token-boundat',
+          correlation_token: canonicalCorrelationToken('token-boundat'),
           created_at: new Date(NOW_MS).toISOString(),
           expires_at: new Date(NOW_MS + 600_000).toISOString(),
           binding_state: 'bound',
-          binding_claimant_token: 'stored-claimant',
+          binding_claimant_token: canonicalClaimantToken('stored-claimant'),
           bound_at: 'not-a-valid-date',
           origin_cwd: cwd,
         }],
@@ -365,7 +372,7 @@ describe('adapted role binding', () => {
 
       // A malformed bound_at must NOT erase the stored security identity.
       const normalized = (await readSubagentTrackingState(cwd)).pending_role_intents[0];
-      assert.equal(normalized?.binding_claimant_token, 'stored-claimant');
+      assert.equal(normalized?.binding_claimant_token, canonicalClaimantToken('stored-claimant'));
       assert.equal(normalized?.bound_at, undefined);
 
       // Fail closed: an omitted caller token cannot complete the claimed journal.
@@ -373,7 +380,7 @@ describe('adapted role binding', () => {
         completeAdaptedRoleBinding(cwd, {
           sessionId: 'session-boundat',
           parentThreadId: 'parent-boundat',
-          correlationToken: 'token-boundat',
+          correlationToken: canonicalCorrelationToken('token-boundat'),
         }),
         'claimant_mismatch',
       );
@@ -383,8 +390,8 @@ describe('adapted role binding', () => {
         completeAdaptedRoleBinding(cwd, {
           sessionId: 'session-boundat',
           parentThreadId: 'parent-boundat',
-          correlationToken: 'token-boundat',
-          claimantToken: 'stored-claimant',
+          correlationToken: canonicalCorrelationToken('token-boundat'),
+          claimantToken: canonicalClaimantToken('stored-claimant'),
         }),
         'completed',
       );
@@ -407,22 +414,22 @@ describe('adapted role binding', () => {
       const scope = { sessionId: 'session-shared-marker', parentThreadId: 'parent-shared-marker', nowMs: NOW_MS };
 
       assert.equal(recordPendingRoleIntent(cwdA, {
-        role: 'architect', ...scope, correlationToken: 'tokena',
+        role: 'architect', ...scope, correlationToken: canonicalCorrelationToken('tokena'),
       }).ok, true);
       assert.equal(recordPendingRoleIntent(cwdB, {
-        role: 'critic', ...scope, correlationToken: 'tokenb',
+        role: 'critic', ...scope, correlationToken: canonicalCorrelationToken('tokenb'),
       }).ok, true);
 
       assert.deepEqual(bindAndPublishAdaptedRole(cwdA, sharedStateDir, {
         correlationSessionId: scope.sessionId,
         parentThreadId: scope.parentThreadId,
-        correlationToken: 'tokena',
+        correlationToken: canonicalCorrelationToken('tokena'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn(scope.sessionId, 'child-a')), { role: 'architect' });
       assert.deepEqual(bindAndPublishAdaptedRole(cwdB, sharedStateDir, {
         correlationSessionId: scope.sessionId,
         parentThreadId: scope.parentThreadId,
-        correlationToken: 'tokenb',
+        correlationToken: canonicalCorrelationToken('tokenb'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn(scope.sessionId, 'child-b')), { role: 'critic' });
 
@@ -498,7 +505,7 @@ describe('adapted role binding', () => {
         role: 'architect',
         sessionId: 'session-expired-a',
         parentThreadId: 'parent-expired-a',
-        correlationToken: 'tokenexpireda',
+        correlationToken: canonicalCorrelationToken('tokenexpireda'),
         ttlMs: 1,
         nowMs: NOW_MS,
       });
@@ -516,7 +523,7 @@ describe('adapted role binding', () => {
         role: 'critic',
         sessionId: 'session-bound-b',
         parentThreadId: 'parent-bound-b',
-        correlationToken: 'tokenboundb',
+        correlationToken: canonicalCorrelationToken('tokenboundb'),
         nowMs: lateNowMs,
       }).ok, true);
       await assertForeignRetained();
@@ -524,7 +531,7 @@ describe('adapted role binding', () => {
       const bound = bindPendingRoleIntentUnderLock(cwdB, {
         sessionId: 'session-bound-b',
         parentThreadId: 'parent-bound-b',
-        correlationToken: 'tokenboundb',
+        correlationToken: canonicalCorrelationToken('tokenboundb'),
         nowMs: lateNowMs,
       }, bindAdaptedTurn('session-bound-b', 'child-bound-b'));
       assert.ok(bound?.claimantToken);
@@ -533,7 +540,7 @@ describe('adapted role binding', () => {
       assert.equal(completeAdaptedRoleBinding(cwdB, {
         sessionId: 'session-bound-b',
         parentThreadId: 'parent-bound-b',
-        correlationToken: 'tokenboundb',
+        correlationToken: canonicalCorrelationToken('tokenboundb'),
         claimantToken: bound?.claimantToken,
         nowMs: lateNowMs,
       }), 'completed');
@@ -543,14 +550,14 @@ describe('adapted role binding', () => {
         role: 'critic',
         sessionId: 'session-consume-b',
         parentThreadId: 'parent-consume-b',
-        correlationToken: 'tokenconsumeb',
+        correlationToken: canonicalCorrelationToken('tokenconsumeb'),
         nowMs: lateNowMs,
       }).ok, true);
       await assertForeignRetained();
       assert.deepEqual(consumePendingRoleIntent(cwdB, {
         sessionId: 'session-consume-b',
         parentThreadId: 'parent-consume-b',
-        correlationToken: 'tokenconsumeb',
+        correlationToken: canonicalCorrelationToken('tokenconsumeb'),
         nowMs: lateNowMs,
       }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
       await assertForeignRetained();
@@ -574,31 +581,31 @@ describe('adapted role binding', () => {
       assert.equal(getBaseStateDir(cwdA), getBaseStateDir(cwdB));
 
       assert.equal(recordPendingRoleIntent(cwdA, {
-        role: 'architect', ...scope, correlationToken: 'tokena',
+        role: 'architect', ...scope, correlationToken: canonicalCorrelationToken('tokena'),
       }).ok, true);
       assert.equal(recordPendingRoleIntent(cwdB, {
-        role: 'critic', ...scope, correlationToken: 'tokenb',
+        role: 'critic', ...scope, correlationToken: canonicalCorrelationToken('tokenb'),
       }).ok, true);
       assert.deepEqual(recordPendingRoleIntent(cwdA, {
-        role: 'critic', ...scope, correlationToken: 'tokenasecond',
+        role: 'critic', ...scope, correlationToken: canonicalCorrelationToken('tokenasecond'),
       }), { ok: false, reason: 'single_flight_conflict' });
       assert.deepEqual(recordPendingRoleIntent(cwdB, {
-        role: 'architect', ...scope, correlationToken: 'tokenbsecond',
+        role: 'architect', ...scope, correlationToken: canonicalCorrelationToken('tokenbsecond'),
       }), { ok: false, reason: 'single_flight_conflict' });
 
       const boundA = bindPendingRoleIntentUnderLock(cwdA, {
         ...scope,
-        correlationToken: 'tokena',
+        correlationToken: canonicalCorrelationToken('tokena'),
       }, bindAdaptedTurn(scope.sessionId, 'child-a'));
       assert.ok(boundA?.claimantToken);
       assert.deepEqual(consumePendingRoleIntent(cwdB, {
         ...scope,
-        correlationToken: 'tokenb',
+        correlationToken: canonicalCorrelationToken('tokenb'),
       }), { role: 'critic', provenanceKind: OMX_ADAPTED_PROVENANCE });
 
       // A's bound journal still occupies only A's scope; B can independently record (S, P).
       assert.equal(recordPendingRoleIntent(cwdB, {
-        role: 'critic', ...scope, correlationToken: 'tokenbafterabound',
+        role: 'critic', ...scope, correlationToken: canonicalCorrelationToken('tokenbafterabound'),
       }).ok, true);
     } finally {
       if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
@@ -624,14 +631,14 @@ describe('adapted role binding', () => {
         role: 'architect',
         sessionId: 'session-a',
         parentThreadId: 'parent-a',
-        correlationToken: 'tokena',
+        correlationToken: canonicalCorrelationToken('tokena'),
         nowMs: NOW_MS,
       }).ok, true);
       // A binds (tracker committed) then crashes before publishing the marker.
       assert.ok(bindPendingRoleIntentUnderLock(cwdA, {
         sessionId: 'session-a',
         parentThreadId: 'parent-a',
-        correlationToken: 'tokena',
+        correlationToken: canonicalCorrelationToken('tokena'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-a', 'child-a'))?.claimantToken);
 
@@ -684,11 +691,11 @@ describe('adapted role binding', () => {
           role: 'architect',
           session_id: 'shared-legacy-bound-session',
           parent_thread_id: 'shared-legacy-bound-parent',
-          correlation_token: 'a3118s',
+          correlation_token: canonicalCorrelationToken('a3118s'),
           created_at: new Date(NOW_MS).toISOString(),
           expires_at: new Date(NOW_MS + 600_000).toISOString(),
           binding_state: 'bound',
-          binding_claimant_token: 'legacyclaimant',
+          binding_claimant_token: canonicalClaimantToken('legacyclaimant'),
           bound_at: new Date(NOW_MS).toISOString(),
         }],
       })}\n`);
@@ -725,11 +732,11 @@ describe('adapted role binding', () => {
       await mkdir(cwdB, { recursive: true });
       const sharedStateDir = getBaseStateDir(cwdA);
       assert.equal(sharedStateDir, getBaseStateDir(cwdB));
-      const scope = { sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'tokena', nowMs: NOW_MS };
+      const scope = { sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: canonicalCorrelationToken('tokena'), nowMs: NOW_MS };
       const legacyScope = {
         sessionId: 'session-legacy-no-origin',
         parentThreadId: 'parent-legacy-no-origin',
-        correlationToken: 'token-legacy-no-origin',
+        correlationToken: canonicalCorrelationToken('token-legacy-no-origin'),
         nowMs: NOW_MS,
       };
       await mkdir(sharedStateDir, { recursive: true });
@@ -762,7 +769,7 @@ describe('adapted role binding', () => {
       // Foreign B primary bind against A's UNBOUND intent: null, zero side effects.
       assert.equal(bindPendingRoleIntentUnderLock(cwdB, scope, foreignCallback), null);
       assert.equal(bindAndPublishAdaptedRole(cwdB, sharedStateDir, {
-        correlationSessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'tokena', nowMs: NOW_MS,
+        correlationSessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: canonicalCorrelationToken('tokena'), nowMs: NOW_MS,
       }, foreignCallback), null);
       assert.equal(foreignCallbackRuns, 0);
       const stillPending = (await readSubagentTrackingState(cwdA)).pending_role_intents;
@@ -779,7 +786,7 @@ describe('adapted role binding', () => {
       assert.equal(bindPendingRoleIntentUnderLock(cwdB, scope, foreignCallback), null);
       // Foreign B cannot complete A's bound journal even with the correct token.
       assert.equal(completeAdaptedRoleBinding(cwdB, {
-        sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: 'tokena', claimantToken: originBind?.claimantToken,
+        sessionId: 'session-a', parentThreadId: 'parent-a', correlationToken: canonicalCorrelationToken('tokena'), claimantToken: originBind?.claimantToken,
       }), 'not_found');
       // Foreign B recovery is likewise a no-op.
       recoverAdaptedRoleBindings(cwdB, sharedStateDir, NOW_MS);
@@ -826,7 +833,7 @@ describe('adapted role binding', () => {
         parentThreadId: 'parent-alias-marker',
         nowMs: NOW_MS,
       })?.cwd, realCwd);
-      const scope = { sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'tokenalias', nowMs: NOW_MS };
+      const scope = { sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: canonicalCorrelationToken('tokenalias'), nowMs: NOW_MS };
       // Record via the real path.
       assert.equal(recordPendingRoleIntent(realCwd, { role: 'architect', ...scope }).ok, true);
       // Bind via the symlink alias -> same canonical origin -> authenticated success.
@@ -835,7 +842,7 @@ describe('adapted role binding', () => {
       assert.ok(binding?.claimantToken);
       // Complete via the real path with the alias-minted claimant.
       assert.equal(completeAdaptedRoleBinding(realCwd, {
-        sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: 'tokenalias', claimantToken: binding?.claimantToken,
+        sessionId: 'session-alias', parentThreadId: 'parent-alias', correlationToken: canonicalCorrelationToken('tokenalias'), claimantToken: binding?.claimantToken,
       }), 'completed');
     } finally {
       await rm(realCwd, { recursive: true, force: true });
@@ -856,29 +863,27 @@ describe('adapted role binding', () => {
     };
     try {
       await mkdir(stateDir, { recursive: true });
-      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
-        schemaVersion: 1, sessions: {}, pending_role_intents: [
-          { ...base, correlation_token: 'a ', binding_claimant_token: 'claimant' },
-          { ...base, correlation_token: 'zvalidtoken', binding_claimant_token: 'claimant' },
-        ],
-      })}\n`);
-      recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
-      assert.equal(readRoleRoutingMarker(stateDir, {
-        cwd, sessionId: base.session_id, parentThreadId: base.parent_thread_id, nowMs: NOW_MS,
-      }), null);
-      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 2);
+      const invalidCorrelation = { ...base, correlation_token: '', binding_claimant_token: canonicalClaimantToken('claimant') };
+      const validCredential = { ...base, correlation_token: canonicalCorrelationToken('zvalidtoken'), binding_claimant_token: canonicalClaimantToken('claimant') };
+      for (const intents of [[invalidCorrelation, validCredential], [validCredential, invalidCorrelation]]) {
+        await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({ schemaVersion: 1, sessions: {}, pending_role_intents: intents })}\n`);
+        recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
+        assert.equal(readRoleRoutingMarker(stateDir, {
+          cwd, sessionId: base.session_id, parentThreadId: base.parent_thread_id, nowMs: NOW_MS,
+        }), null);
+        assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 2);
+      }
 
-      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
-        schemaVersion: 1, sessions: {}, pending_role_intents: [
-          { ...base, correlation_token: 'a-valid', binding_claimant_token: 'claimant' },
-          { ...base, correlation_token: 'z-invalid', binding_claimant_token: ' ' },
-        ],
-      })}\n`);
-      recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
-      assert.equal(readRoleRoutingMarker(stateDir, {
-        cwd, sessionId: base.session_id, parentThreadId: base.parent_thread_id, nowMs: NOW_MS,
-      })?.session_id, base.session_id);
-      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+      const validDominant = { ...base, correlation_token: '00000000000000000000000000000000', binding_claimant_token: canonicalClaimantToken('claimant') };
+      const invalidLower = { ...base, correlation_token: 'ffffffffffffffffffffffffffffffff', binding_claimant_token: ' ' };
+      for (const intents of [[validDominant, invalidLower], [invalidLower, validDominant]]) {
+        await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({ schemaVersion: 1, sessions: {}, pending_role_intents: intents })}\n`);
+        recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
+        assert.equal(readRoleRoutingMarker(stateDir, {
+          cwd, sessionId: base.session_id, parentThreadId: base.parent_thread_id, nowMs: NOW_MS,
+        })?.session_id, base.session_id);
+        assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -895,20 +900,20 @@ describe('adapted role binding', () => {
     try {
       // A blank caller origin cannot be canonicalized -> fail closed, no lock, no callback.
       assert.equal(bindPendingRoleIntentUnderLock('   ', {
-        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: canonicalCorrelationToken('token-x'), nowMs: NOW_MS,
       }, callback), null);
       assert.equal(callbackRuns, 0);
       assert.equal(consumePendingRoleIntent('   ', {
-        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: canonicalCorrelationToken('token-x'), nowMs: NOW_MS,
       }), null);
       assert.equal(completeAdaptedRoleBinding('   ', {
-        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: canonicalCorrelationToken('token-x'), nowMs: NOW_MS,
       }), 'not_found');
       assert.equal(recordPendingRoleIntent(cwd, {
         role: 'critic',
         sessionId: 'session-normal',
         parentThreadId: 'parent-normal',
-        correlationToken: 'tokennormal',
+        correlationToken: canonicalCorrelationToken('tokennormal'),
         nowMs: NOW_MS,
       }).ok, true);
 
@@ -922,13 +927,13 @@ describe('adapted role binding', () => {
           role: 'architect',
           session_id: 'session-x',
           parent_thread_id: 'parent-x',
-          correlation_token: 'token-x',
+          correlation_token: canonicalCorrelationToken('token-x'),
           created_at: new Date(NOW_MS).toISOString(),
           expires_at: new Date(NOW_MS + 600_000).toISOString(),
         }],
       }, null, 2)}\n`);
       const legacyBinding = bindPendingRoleIntentUnderLock(cwd, {
-        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: 'token-x', nowMs: NOW_MS,
+        sessionId: 'session-x', parentThreadId: 'parent-x', correlationToken: canonicalCorrelationToken('token-x'), nowMs: NOW_MS,
       }, callback);
       assert.equal(legacyBinding?.alreadyBound, false);
       assert.ok(legacyBinding?.claimantToken);
@@ -948,7 +953,7 @@ describe('adapted role binding', () => {
       bindPendingRoleIntentUnderLock(cwdA, {
         sessionId: 'session-workspace',
         parentThreadId: 'parent-workspace',
-        correlationToken: 'tokenworkspace',
+        correlationToken: canonicalCorrelationToken('tokenworkspace'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-workspace', 'child-workspace'));
 
@@ -976,13 +981,13 @@ describe('adapted role binding', () => {
       bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-a-one',
         parentThreadId: 'parent-a-one',
-        correlationToken: 'tokenaone',
+        correlationToken: canonicalCorrelationToken('tokenaone'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-a-one', 'child-a-one'));
       bindPendingRoleIntentUnderLock(cwd, {
         sessionId: 'session-a-two',
         parentThreadId: 'parent-a-two',
-        correlationToken: 'tokenatwo',
+        correlationToken: canonicalCorrelationToken('tokenatwo'),
         nowMs: NOW_MS,
       }, bindAdaptedTurn('session-a-two', 'child-a-two'));
 
@@ -1000,6 +1005,38 @@ describe('adapted role binding', () => {
         parentThreadId: 'parent-a-two',
         nowMs: NOW_MS,
       })?.session_id, 'session-a-two');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('rejects every malformed persisted credential without publishing or deleting it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-invalid-credential-'));
+    const stateDir = getBaseStateDir(cwd);
+    const base = {
+      role: 'architect',
+      session_id: 'invalid-credential-session',
+      parent_thread_id: 'invalid-credential-parent',
+      created_at: new Date(NOW_MS).toISOString(),
+      expires_at: new Date(NOW_MS + 60_000).toISOString(),
+      binding_state: 'bound' as const,
+      origin_cwd: cwd,
+    };
+    const validCorrelation = canonicalCorrelationToken('valid-correlation');
+    const validClaimant = canonicalClaimantToken('valid-claimant');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      for (const [field, invalid] of [
+        ['correlation_token', ''], ['correlation_token', ' '], ['correlation_token', null], ['correlation_token', 1], ['correlation_token', true], ['correlation_token', []], ['correlation_token', {}],
+        ['binding_claimant_token', ''], ['binding_claimant_token', ' '], ['binding_claimant_token', null], ['binding_claimant_token', 1], ['binding_claimant_token', true], ['binding_claimant_token', []], ['binding_claimant_token', {}],
+      ] as const) {
+        const invalidIntent = field === 'correlation_token'
+          ? { ...base, correlation_token: invalid, binding_claimant_token: validClaimant }
+          : { ...base, correlation_token: validCorrelation, binding_claimant_token: invalid };
+        await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({ schemaVersion: 1, sessions: {}, pending_role_intents: [invalidIntent] })}\n`);
+        recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
+        assert.equal(readRoleRoutingMarker(stateDir, { cwd, sessionId: base.session_id, parentThreadId: base.parent_thread_id, nowMs: NOW_MS }), null);
+        assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

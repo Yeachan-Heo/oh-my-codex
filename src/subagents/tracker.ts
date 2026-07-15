@@ -5,7 +5,7 @@ import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { getBaseStateDir, getBaseStateDirWithSource } from '../state/paths.js';
-import { canonicalizeOriginCwd, ROLE_INTENT_CORRELATION_TOKEN_PATTERN } from '../leader/contract.js';
+import { canonicalizeOriginCwd } from '../leader/contract.js';
 
 import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
 
@@ -831,12 +831,12 @@ function sameLogicalRoleIntent(
   );
 }
 
-function isCanonicalCorrelationToken(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+export function isCanonicalCorrelationToken(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
 }
 
-function isCanonicalClaimantToken(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+export function isCanonicalClaimantToken(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 }
 
 function hasOwnBoundLogicalIntent(
@@ -905,8 +905,8 @@ export function recordPendingRoleIntent(
 ): { ok: true; intent: PendingRoleIntent } | { ok: false; reason: 'unknown_role' | 'invalid_correlation_token' | 'invalid_origin' | 'single_flight_conflict' } {
   const role = resolveInstalledRoleName(input.role);
   if (!role) return { ok: false, reason: 'unknown_role' };
-  const correlationToken = readOptionalTrimmedString(input.correlationToken);
-  if (!correlationToken || !ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(correlationToken)) {
+  const correlationToken = input.correlationToken;
+  if (!isCanonicalCorrelationToken(correlationToken)) {
     return { ok: false, reason: 'invalid_correlation_token' };
   }
 
@@ -954,7 +954,8 @@ export function bindPendingRoleIntentUnderLock(
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
-  const correlationToken = readOptionalTrimmedString(input.correlationToken);
+  const correlationToken = input.correlationToken;
+  if (!isCanonicalCorrelationToken(correlationToken)) return null;
   // Fail-closed origin authentication: establish the caller's canonical origin workspace up
   // front. A malformed/unavailable origin can never disclose role/claimant, run the bind
   // callback, mutate pending->bound, or acquire the lock.
@@ -1043,7 +1044,8 @@ export function consumePendingRoleIntent(
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
-  const correlationToken = readOptionalTrimmedString(input.correlationToken);
+  const correlationToken = input.correlationToken;
+  if (!isCanonicalCorrelationToken(correlationToken)) return null;
   const canonicalOrigin = canonicalizeOriginCwd(cwd);
   if (canonicalOrigin === null) return null;
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
