@@ -786,6 +786,7 @@ interface CommittedStartReceipt {
   review_id: string;
   session_id: string | null;
   response: unknown;
+  response_digest: string;
   result_revision: number;
   result_digest: string;
   committed_at: string;
@@ -1348,7 +1349,7 @@ function validateAttemptPayload(value: unknown): void {
   }
 }
 
-function validateReviewRecordPayload(
+export function validateReviewRecordPayload(
   value: unknown,
   reviewId: string,
   revision: number,
@@ -2065,6 +2066,20 @@ function planDigest(plan: DurableTransactionPlan): string {
   });
 }
 
+function startRequestDigest(
+  plan: Pick<DurableTransactionPlan, 'journal_scope' | 'operation' | 'input' | 'expected_revision'>,
+): string {
+  if ((plan.journal_scope ?? 'REVIEW') !== 'START') return planDigest(plan as DurableTransactionPlan);
+  const input = isPlainObject(plan.input) ? { ...plan.input } : plan.input;
+  if (isPlainObject(input)) delete input.review_id;
+  return canonicalDigest({
+    journal_scope: 'START',
+    operation: plan.operation,
+    input,
+    expected_revision: plan.expected_revision,
+  });
+}
+
 function transactionDirectory(
   paths: ReviewPersistencePaths,
   reviewId: string,
@@ -2182,7 +2197,7 @@ function validateCommittedAgainstPrepared(
 function parseStartReceipt(value: unknown): CommittedStartReceipt {
   if (!isPlainObject(value) || !hasExactKeys(value, [
     'schema_version', 'state', 'transaction_id', 'idempotency_key', 'request_digest',
-    'review_id', 'session_id', 'response', 'result_revision', 'result_digest', 'committed_at',
+    'review_id', 'session_id', 'response', 'response_digest', 'result_revision', 'result_digest', 'committed_at',
   ]) || value.schema_version !== 1 || value.state !== 'COMMITTED'
     || (value.session_id !== null && typeof value.session_id !== 'string')) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt is malformed');
@@ -2198,6 +2213,7 @@ function parseStartReceipt(value: unknown): CommittedStartReceipt {
       ? null
       : requirePayloadString(value.session_id, 'START receipt session_id', 160),
     response: sanitizeForPersistence(value.response),
+    response_digest: requirePayloadHash(value.response_digest, 'START receipt response_digest'),
     result_revision: requirePositiveInteger(value.result_revision, 'START receipt result_revision'),
     result_digest: requirePayloadHash(value.result_digest, 'START receipt result_digest'),
     committed_at: requirePayloadTimestamp(value.committed_at, 'START receipt committed_at'),
@@ -2217,6 +2233,9 @@ async function scanStartReceipts(paths: ReviewPersistencePaths): Promise<Map<str
     const receipt = parseStartReceipt(raw);
     if (receipt.idempotency_key !== filenameKey || receipts.has(receipt.idempotency_key)) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt identity is duplicated');
+    }
+    if (canonicalDigest(receipt.response) !== receipt.response_digest) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt response digest conflicts');
     }
     const reviewRaw = await readJsonIfPresent(join(paths.reviewRoot, receipt.review_id, 'review.json'));
     if (!isPlainObject(reviewRaw) || !Number.isSafeInteger(reviewRaw.revision)) {
@@ -2241,14 +2260,13 @@ async function validateStartReceiptResult(
   receipt: CommittedStartReceipt,
   plan: DurableTransactionPlan,
 ): Promise<DurableTransactionResult> {
-  if (receipt.request_digest !== planDigest(plan)) {
+  if (receipt.request_digest !== startRequestDigest(plan)) {
     throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
   }
-  if (canonicalDigest(receipt.response) !== canonicalDigest(plan.response)) {
-    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt response conflicts with its request');
+  if (canonicalDigest(receipt.response) !== receipt.response_digest) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt response digest conflicts');
   }
-  if (receipt.review_id !== plan.review_id
-    || receipt.result_revision !== plan.expected_revision + 1
+  if (receipt.result_revision !== plan.expected_revision + 1
     || (paths.session_id ?? null) !== receipt.session_id) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'START receipt session identity conflicts');
   }
@@ -2287,10 +2305,11 @@ async function publishStartReceipt(
     state: 'COMMITTED',
     transaction_id: prepared.transaction_id,
     idempotency_key: prepared.idempotency_key,
-    request_digest: prepared.input_digest,
+    request_digest: startRequestDigest(prepared),
     review_id: prepared.review_id,
     session_id: paths.session_id ?? null,
     response: committed.response,
+    response_digest: canonicalDigest(committed.response),
     result_revision: review.revision,
     result_digest: canonicalDigest(review),
     committed_at: committed.committed_at,
@@ -2839,6 +2858,7 @@ async function runDurableTransactionLocked(
 ): Promise<DurableTransactionResult> {
   const plan = validateDurablePlan(planValue);
   const digest = planDigest(plan);
+  const requestDigest = startRequestDigest(plan);
   const journalScope = plan.journal_scope ?? 'REVIEW';
   if (journalScope === 'START') {
     const receipt = (await scanStartReceipts(paths)).get(plan.idempotency_key);
@@ -2851,7 +2871,8 @@ async function runDurableTransactionLocked(
     if (preparedValue === undefined) throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'committed transaction has no intent');
     const prepared = parsePrepared(preparedValue);
     const committed = validateCommittedAgainstPrepared(existingCommitted, prepared);
-    if (prepared.input_digest !== digest) {
+    if (prepared.input_digest !== digest
+      && (journalScope !== 'START' || startRequestDigest(prepared) !== requestDigest)) {
       throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
     }
     await validateCommittedReviewReplayState(paths, prepared);
@@ -2864,7 +2885,8 @@ async function runDurableTransactionLocked(
   let prepared: PreparedDurableTransaction;
   if (existingPrepared !== undefined) {
     prepared = parsePrepared(existingPrepared);
-    if (prepared.input_digest !== digest) {
+    if (prepared.input_digest !== digest
+      && (journalScope !== 'START' || startRequestDigest(prepared) !== requestDigest)) {
       throw new ReviewPersistenceError('IDEMPOTENCY_CONFLICT', 'idempotency key was used with a different input');
     }
   } else {

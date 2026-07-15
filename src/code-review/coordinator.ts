@@ -42,6 +42,7 @@ import {
   resolveReviewPersistencePaths,
   runDurableReviewTransactionWithPlanFactory,
   runDurableTransaction,
+  validateReviewRecordPayload,
   writeFinalReviewArtifacts,
   type DurableTransactionBoundary,
   type DurableTransactionEffect,
@@ -1130,10 +1131,41 @@ function reviewEffect(record: ReviewRecord): DurableTransactionEffect {
 }
 
 function validateStartTransactionResponse(value: unknown, expected: ReviewRecord): ReviewRecord {
-  if (!isDeepStrictEqual(value, expected)) {
+  if (!isObject(value)
+    || typeof value.review_id !== 'string'
+    || !Number.isSafeInteger(value.revision)) {
     throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'START transaction receipt response is malformed');
   }
-  return structuredClone(value) as ReviewRecord;
+  const startLaneIdentity = (record: ReviewRecord): unknown => record.lanes.map((lane) => ({
+    attempt: lane.attempt,
+    lane_id: lane.lane_id,
+    role: lane.role,
+    batch_id: lane.batch_id,
+    scope_hash: lane.scope_hash,
+    status: lane.status,
+  }));
+  let validated: ReviewRecord;
+  try {
+    validated = validateReviewRecordPayload(value, value.review_id, value.revision as number);
+  } catch {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'START transaction receipt response is malformed');
+  }
+  const exactCandidate = value.review_id === expected.review_id && isDeepStrictEqual(validated, expected);
+  const sameRequestResult = value.review_id !== expected.review_id
+    && validated.status === expected.status
+    && validated.current_attempt === expected.current_attempt
+    && validated.resumable === expected.resumable
+    && validated.session_id === expected.session_id
+    && validated.root_thread_id === expected.root_thread_id
+    && isDeepStrictEqual(validated.scope, expected.scope)
+    && isDeepStrictEqual(validated.effective_config, expected.effective_config)
+    && isDeepStrictEqual(validated.review_flags, expected.review_flags)
+    && isDeepStrictEqual(validated.batches, expected.batches)
+    && isDeepStrictEqual(startLaneIdentity(validated), startLaneIdentity(expected));
+  if (!exactCandidate && !sameRequestResult) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'START transaction receipt response conflicts');
+  }
+  return structuredClone(validated);
 }
 
 function validateProposalTransactionResponse(

@@ -215,7 +215,13 @@ describe("omx state code-review recovery aliases", () => {
 		assert.equal(recovered.exitCode, undefined);
 		// ASSERTION-CHANGE-JUSTIFIED: only a fresh transport proposal is redacted to
 		// the pending marker; same-key CLI recovery returns the committed proposal.
-		assert.equal((JSON.parse(recovered.stdout[0] ?? "") as { state?: string }).state, "PENDING_HOST_ATTESTATION");
+		const recoveredProposal = JSON.parse(recovered.stdout[0] ?? "") as {
+			state?: string; idempotency_key?: string; payload_digest?: string; result?: unknown;
+		};
+		assert.equal(recoveredProposal.state, "PENDING_HOST_ATTESTATION");
+		assert.equal(recoveredProposal.idempotency_key, RESULT_KEY);
+		assert.match(recoveredProposal.payload_digest ?? "", /^[0-9a-f]{64}$/u);
+		assert.deepEqual(recoveredProposal.result, input.result);
 	});
 
 	it("recovers a PREPARED proposal with the same key and preserves MCP/CLI get parity", async () => {

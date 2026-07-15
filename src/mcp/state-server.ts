@@ -271,7 +271,7 @@ function buildReviewTools() {
 			attempt: { type: "integer", minimum: 1 }, lane_id: { type: "string" },
 			thread_id: { type: "string" }, idempotency_key: idempotencyKey,
 		},
-		required: ["workingDirectory", "event", "review_id", "attempt", "lane_id", "thread_id", "idempotency_key"],
+		required: ["workingDirectory", "session_id", "event", "review_id", "attempt", "lane_id", "thread_id", "idempotency_key"],
 	} as const;
 	const resultEventSchema = {
 		type: "object", additionalProperties: false,
@@ -281,7 +281,7 @@ function buildReviewTools() {
 			scope_hash: { type: "string" }, result: { oneOf: [reviewerResultSchema, architectResultSchema] },
 			idempotency_key: idempotencyKey,
 		},
-		required: ["workingDirectory", "event", "review_id", "attempt", "lane_id", "scope_hash", "result", "idempotency_key"],
+		required: ["workingDirectory", "session_id", "event", "review_id", "attempt", "lane_id", "scope_hash", "result", "idempotency_key"],
 	} as const;
 	return [
 		{

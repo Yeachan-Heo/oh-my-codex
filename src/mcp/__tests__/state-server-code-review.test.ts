@@ -107,13 +107,16 @@ describe("state-server code-review control plane", () => {
 			assert.equal((tool.inputSchema as { additionalProperties?: boolean }).additionalProperties, false);
 		}
 		const lane = reviewTools.find((tool) => tool.name === "review_record_lane");
-		const variants = (lane?.inputSchema as { oneOf?: Array<{ additionalProperties?: boolean; properties?: Record<string, unknown> }> }).oneOf;
+		const variants = (lane?.inputSchema as {
+			oneOf?: Array<{ additionalProperties?: boolean; properties?: Record<string, unknown>; required?: string[] }>;
+		}).oneOf;
 		assert.equal(variants?.length, 2);
 		assert.deepEqual(variants?.map((variant) => variant.additionalProperties), [false, false]);
 		assert.deepEqual(variants?.map((variant) => Object.keys(variant.properties ?? {}).sort()), [
 			["attempt", "event", "idempotency_key", "lane_id", "review_id", "session_id", "thread_id", "workingDirectory"],
 			["attempt", "event", "idempotency_key", "lane_id", "result", "review_id", "scope_hash", "session_id", "workingDirectory"],
 		]);
+		assert.deepEqual(variants?.map((variant) => variant.required?.includes("session_id")), [true, true]);
 		const getSchema = reviewTools.find((tool) => tool.name === "review_get")?.inputSchema as {
 			properties?: Record<string, unknown>;
 		};
@@ -334,8 +337,12 @@ describe("state-server code-review control plane", () => {
 				idempotency_key: "10000000-0000-4000-8000-000000000006",
 			} },
 		};
-		const first = await handleStateToolCall(request);
-		const replay = await handleStateToolCall(request);
+		// ASSERTION-CHANGE-JUSTIFIED: same-key calls may overlap before either START
+		// receipt exists; both must converge on the coordinator-owned review UUID.
+		const [first, replay] = await Promise.all([
+			handleStateToolCall(request),
+			handleStateToolCall(request),
+		]);
 		assert.equal(first.isError, undefined, first.content[0]?.text);
 		assert.equal(replay.isError, undefined, replay.content[0]?.text);
 		const firstPayload = JSON.parse(first.content[0]?.text ?? "") as { review_id?: string };
