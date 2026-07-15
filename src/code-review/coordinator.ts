@@ -516,6 +516,7 @@ export async function waitForLaneRunning(input: {
   const startedAt = monotonicTimestamp(monotonicNow, 'readiness start');
   let previousMonotonic = startedAt;
   let laneMonotonicDeadline: number | undefined;
+  let laneWallDeadline: number | undefined;
   while (true) {
     const record = await input.load();
     const currentMonotonic = monotonicTimestamp(monotonicNow, 'readiness elapsed');
@@ -549,23 +550,25 @@ export async function waitForLaneRunning(input: {
       throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'readiness wall clock is invalid');
     }
     const laneDeadline = parseTimestamp(lane.idle_deadline_at, 'lane readiness deadline');
-    const laneRemaining = laneDeadline - wallNow.getTime();
-    if (laneRemaining <= 0) {
-      throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
+    if (laneMonotonicDeadline === undefined || laneWallDeadline === undefined) {
+      const initialLaneRemaining = laneDeadline - wallNow.getTime();
+      if (initialLaneRemaining <= 0) {
+        throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
+      }
+      laneMonotonicDeadline = currentMonotonic + initialLaneRemaining;
+      laneWallDeadline = laneDeadline;
+      if (!Number.isFinite(laneMonotonicDeadline)) {
+        throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'lane readiness deadline is invalid');
+      }
+    } else if (laneDeadline < laneWallDeadline) {
+      laneMonotonicDeadline -= laneWallDeadline - laneDeadline;
+      laneWallDeadline = laneDeadline;
     }
-    const observedLaneMonotonicDeadline = currentMonotonic + laneRemaining;
-    if (!Number.isFinite(observedLaneMonotonicDeadline)) {
-      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'lane readiness deadline is invalid');
-    }
-    laneMonotonicDeadline = Math.min(
-      laneMonotonicDeadline ?? observedLaneMonotonicDeadline,
-      observedLaneMonotonicDeadline,
-    );
     const monotonicLaneRemaining = laneMonotonicDeadline - currentMonotonic;
     if (monotonicLaneRemaining <= 0) {
       throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
     }
-    const nextWait = Math.min(remainingBudget, laneRemaining, monotonicLaneRemaining);
+    const nextWait = Math.min(remainingBudget, monotonicLaneRemaining);
     await input.waitForChange(new Date(wallNow.getTime() + nextWait).toISOString(), nextWait);
   }
 }

@@ -651,14 +651,19 @@ describe('review coordinator failure and concurrency invariants', () => {
     const pending = initialReview(60_000);
     pending.lanes[0]!.idle_deadline_at = new Date(START.getTime() + 1_000).toISOString();
     let now = START.getTime();
+    let monotonicNow = 0;
     let observedDeadline = '';
     await assert.rejects(waitForLaneRunning({
       load: () => pending,
       lane_id: 'reviewer-batch-1',
       now: () => new Date(now),
+      // ASSERTION-CHANGE-JUSTIFIED: readiness expiry is monotonic, so the seam
+      // must advance elapsed time rather than relying on a wall-clock jump.
+      monotonicNow: () => monotonicNow,
       waitForChange: (deadlineAt) => {
         observedDeadline = deadlineAt;
         now += 1_000;
+        monotonicNow += 1_000;
       },
       maximum_wait_ms: 30_000,
     }), (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT');
@@ -735,6 +740,57 @@ describe('review coordinator failure and concurrency invariants', () => {
     }), (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT');
 
     assert.deepEqual(waits, [1_000, 950]);
+  });
+
+  it('does not let a wall-clock jump expire an unchanged monotonic lane deadline', async () => {
+    const pending = initialReview(60_000);
+    let wallNow = START.getTime();
+    let monotonicNow = 1_000;
+    const waits: number[] = [];
+
+    await assert.rejects(waitForLaneRunning({
+      load: () => pending,
+      lane_id: 'reviewer-batch-1',
+      now: () => new Date(wallNow),
+      monotonicNow: () => monotonicNow,
+      waitForChange: (_deadlineAt, maximumWaitMs) => {
+        waits.push(maximumWaitMs);
+        if (waits.length === 1) {
+          wallNow += 86_400_000;
+          monotonicNow += 1;
+          return;
+        }
+        monotonicNow += maximumWaitMs;
+      },
+      maximum_wait_ms: 30_000,
+    }), (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT');
+
+    assert.deepEqual(waits, [30_000, 29_999]);
+  });
+
+  it('tightens the monotonic cap when the persisted lane deadline moves earlier', async () => {
+    const pending = initialReview(60_000);
+    let monotonicNow = 1_000;
+    const waits: number[] = [];
+
+    await assert.rejects(waitForLaneRunning({
+      load: () => pending,
+      lane_id: 'reviewer-batch-1',
+      now: () => START,
+      monotonicNow: () => monotonicNow,
+      waitForChange: (_deadlineAt, maximumWaitMs) => {
+        waits.push(maximumWaitMs);
+        if (waits.length === 1) {
+          pending.lanes[0]!.idle_deadline_at = new Date(START.getTime() + 1_000).toISOString();
+          monotonicNow += 50;
+          return;
+        }
+        monotonicNow += maximumWaitMs;
+      },
+      maximum_wait_ms: 30_000,
+    }), (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT');
+
+    assert.deepEqual(waits, [30_000, 950]);
   });
 
   it('blocks resume and finalization on scope drift and old-attempt late results', () => {
