@@ -386,13 +386,18 @@ describe('leader conductor contract', () => {
     assert.equal(ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test('abc_def'), false);
     assert.throws(() => buildRoleIntentSpawnTaskName('abc_def'), /Invalid role-intent correlation token/);
 
-    assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_deadbeef'), 'deadbeef');
-    assert.equal(parseRoleIntentCorrelationToken(' omx_role_intent_deadbeef '), 'deadbeef');
+    assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_a3118'), 'a3118');
+    assert.equal(parseRoleIntentCorrelationToken(['omx_role_intent_a3118']), undefined);
+    assert.equal(parseRoleIntentCorrelationToken({ toString: () => 'omx_role_intent_a3118' }), undefined);
+    assert.equal(parseRoleIntentCorrelationToken(' omx_role_intent_a3118'), undefined);
+    assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_a3118 '), undefined);
     assert.equal(parseRoleIntentCorrelationToken('omx-role-intent:deadbeef'), undefined);
     assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_abc_def'), undefined);
     assert.equal(parseRoleIntentCorrelationToken('omx_role_intent_DEADBEEF'), undefined);
     assert.equal(parseRoleIntentCorrelationToken(''), undefined);
     assert.equal(parseRoleIntentCorrelationToken(42), undefined);
+    assert.equal(parseRoleIntentCorrelationToken(null), undefined);
+    assert.equal(parseRoleIntentCorrelationToken(undefined), undefined);
 
     const generatedTaskName = buildRoleIntentSpawnTaskName(randomUUID().replace(/-/g, ''));
     assert.match(generatedTaskName, NATIVE_SPAWN_TASK_NAME_PATTERN);

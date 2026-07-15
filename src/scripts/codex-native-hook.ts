@@ -411,9 +411,8 @@ function selectAuthoritativeTaskName(
   payload: unknown,
 ): { present: boolean; value: unknown } {
   for (const obj of [threadSpawn, subagent, payload]) {
-    if (obj && typeof obj === "object") {
-      if ("task_name" in obj) return { present: true, value: (obj as Record<string, unknown>).task_name };
-      if ("taskName" in obj) return { present: true, value: (obj as Record<string, unknown>).taskName };
+    if (obj && typeof obj === "object" && "task_name" in obj) {
+      return { present: true, value: (obj as Record<string, unknown>).task_name };
     }
   }
   return { present: false, value: undefined };

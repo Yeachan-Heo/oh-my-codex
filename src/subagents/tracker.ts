@@ -832,11 +832,29 @@ function sameLogicalRoleIntent(
   );
 }
 
+function hasOwnBoundLogicalIntent(
+  all: PendingRoleIntent[],
+  isOwn: (intent: PendingRoleIntent) => boolean,
+  sessionId: string,
+  parentThreadId: string,
+  correlationToken?: string,
+): boolean {
+  return all.some((intent) => (
+    isOwn(intent)
+    && intent.binding_state === 'bound'
+    && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)
+  ));
+}
+
 function selectDominantRoleIntent(
   candidates: PendingRoleIntent[],
   canonicalOrigin: string,
 ): PendingRoleIntent | null {
   return [...candidates].sort((left, right) => {
+    const leftIsBound = left.binding_state === 'bound';
+    const rightIsBound = right.binding_state === 'bound';
+    if (leftIsBound !== rightIsBound) return leftIsBound ? -1 : 1;
+
     const leftIsExactOrigin = left.origin_cwd !== undefined
       && canonicalizeOriginCwd(left.origin_cwd) === canonicalOrigin;
     const rightIsExactOrigin = right.origin_cwd !== undefined
@@ -963,10 +981,18 @@ export function bindPendingRoleIntentUnderLock(
       provenanceKind: OMX_ADAPTED_PROVENANCE,
     } as const;
     if (matchedIntent.binding_state === 'bound') {
-      if (!matchedIntent.origin_cwd) {
-        state.pending_role_intents = all.map((intent) => (
-          intent === matchedIntent ? { ...intent, origin_cwd: canonicalOrigin } : intent
+      const next = all
+        .filter((intent) => (
+          intent.binding_state === 'bound'
+          || !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken))
+        ))
+        .map((intent) => (
+          intent === matchedIntent && !intent.origin_cwd
+            ? { ...intent, origin_cwd: canonicalOrigin }
+            : intent
         ));
+      if (next.length !== all.length || !matchedIntent.origin_cwd) {
+        state.pending_role_intents = next;
         context.assertOwnership();
         writeSubagentTrackingStateSync(cwd, state, context.publish);
       }
@@ -1016,6 +1042,8 @@ export function consumePendingRoleIntent(
     const state = readSubagentTrackingStateSync(cwd);
     const all = state.pending_role_intents;
     const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
+    if (hasOwnBoundLogicalIntent(all, isOwn, sessionId, parentThreadId, correlationToken)) return null;
+
     const consumed = selectDominantRoleIntent(
       all.filter((intent) => (
         isOwn(intent)
@@ -1039,7 +1067,10 @@ export function consumePendingRoleIntent(
 
     state.pending_role_intents = all
       .filter((intent) => !shouldPruneExpired(intent))
-      .filter((intent) => !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)));
+      .filter((intent) => (
+        intent.binding_state === 'bound'
+        || !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken))
+      ));
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, state, context.publish);
     return { role: consumed.role, provenanceKind: OMX_ADAPTED_PROVENANCE };
@@ -1078,14 +1109,15 @@ export function completeAdaptedRoleBinding(
       }
       return 'not_found';
     }
-    // Fail-closed claimant CAS: a stored claimant token requires the caller to present
-    // the exact token. An omitted or wrong token must never complete the claimed journal
-    // (prevents unauthenticated completion / successor theft). Tokenless completion is
-    // permitted only for malformed/legacy bound journals that carry no stored claimant.
+    // Fail-closed claimant CAS: stored claimants require their exact token. Claimant-less
+    // legacy bound journals require their exact durable correlation token; omission is never
+    // a wildcard for completion.
     if (boundIntent.binding_claimant_token) {
       if (claimantToken === undefined || boundIntent.binding_claimant_token !== claimantToken) {
         return 'claimant_mismatch';
       }
+    } else if (correlationToken === undefined || boundIntent.correlation_token !== correlationToken) {
+      return 'claimant_mismatch';
     }
 
     state.pending_role_intents = all

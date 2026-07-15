@@ -19,9 +19,9 @@ export function isAppCompatibleSpawnTaskName(taskName: string): boolean {
 }
 
 export function parseRoleIntentCorrelationToken(taskName: unknown): string | undefined {
-  const value = String(taskName).trim();
-  if (!value.startsWith(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX)) return undefined;
-  const correlationToken = value.slice(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX.length);
+  if (typeof taskName !== 'string') return undefined;
+  if (!taskName.startsWith(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX)) return undefined;
+  const correlationToken = taskName.slice(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX.length);
   return ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(correlationToken) ? correlationToken : undefined;
 }
 

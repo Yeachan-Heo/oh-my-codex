@@ -29344,6 +29344,7 @@ describe("#3118 native role contract", () => {
 			taskName?: string;
 			taskNameCarrier?: TaskNameCarrier;
 			taskNames?: Partial<Record<TaskNameCarrier, unknown>>;
+			camelTaskNames?: Partial<Record<TaskNameCarrier, unknown>>;
 		},
 	): Promise<void> {
 		const taskNameCarrier = input.taskNameCarrier ?? "payload";
@@ -29353,6 +29354,11 @@ describe("#3118 native role contract", () => {
 			}
 			return input.taskName && taskNameCarrier === carrier ? { task_name: input.taskName } : {};
 		};
+		const camelTaskNameField = (carrier: TaskNameCarrier): Record<string, unknown> => (
+			input.camelTaskNames && Object.prototype.hasOwnProperty.call(input.camelTaskNames, carrier)
+				? { taskName: input.camelTaskNames[carrier] }
+				: {}
+		);
 		const transcriptPath = join(cwd, `${input.childSessionId}-rollout.jsonl`);
 		await writeFile(
 			transcriptPath,
@@ -29361,13 +29367,16 @@ describe("#3118 native role contract", () => {
 				payload: {
 					id: input.childSessionId,
 					...taskNameField("payload"),
+					...camelTaskNameField("payload"),
 					source: {
 						subagent: {
 							...taskNameField("subagent"),
+							...camelTaskNameField("subagent"),
 							thread_spawn: {
 								parent_thread_id: input.parentThreadId,
 								depth: 1,
 								...taskNameField("thread_spawn"),
+								...camelTaskNameField("thread_spawn"),
 								...(input.agentNickname
 									? { agent_nickname: input.agentNickname }
 									: {}),
@@ -29520,6 +29529,31 @@ describe("#3118 native role contract", () => {
 			{
 				name: "null-thread-spawn",
 				taskNames: (taskName) => ({ thread_spawn: null, subagent: taskName }),
+				binds: false,
+			},
+			{
+				name: "array-thread-spawn",
+				taskNames: (taskName) => ({ thread_spawn: [taskName] }),
+				binds: false,
+			},
+			{
+				name: "object-thread-spawn",
+				taskNames: (taskName) => ({ thread_spawn: { taskName } }),
+				binds: false,
+			},
+			{
+				name: "leading-whitespace-thread-spawn",
+				taskNames: (taskName) => ({ thread_spawn: ` ${taskName}` }),
+				binds: false,
+			},
+			{
+				name: "trailing-whitespace-thread-spawn",
+				taskNames: (taskName) => ({ thread_spawn: `${taskName} ` }),
+				binds: false,
+			},
+			{
+				name: "number-thread-spawn",
+				taskNames: () => ({ thread_spawn: 3118 }),
 				binds: false,
 			},
 			{
@@ -29720,6 +29754,37 @@ describe("#3118 native role contract", () => {
 				(await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token,
 				correlationToken,
 			);
+		});
+	});
+
+	it("does not authenticate a camelCase taskName role-intent marker without task_name (#3118)", async () => {
+		await withIsolatedNativeRoleState("adapted-camel-task-name", async (cwd, stateDir) => {
+			const canonicalSessionId = "sess-3118-adapted-camel-task-name";
+			const parentThreadId = "thread-3118-adapted-camel-task-name-parent";
+			const childSessionId = "thread-3118-adapted-camel-task-name-child";
+			const correlationToken = "a3118b";
+			await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+			await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
+			assert.equal(recordPendingRoleIntent(cwd, {
+				role: "architect",
+				sessionId: canonicalSessionId,
+				parentThreadId,
+				correlationToken,
+			}).ok, true);
+
+			await startUntypedNativeChild(cwd, {
+				childSessionId,
+				parentThreadId,
+				camelTaskNames: { thread_spawn: buildRoleIntentSpawnTaskName(correlationToken) },
+			});
+
+			const child = await readNativeRoleChild(stateDir, canonicalSessionId, childSessionId);
+			assert.equal(child?.mode, undefined);
+			assert.equal(child?.role, undefined);
+			assert.equal(child?.provenance_kind, undefined);
+			assert.equal(existsSync(join(stateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), false);
+			assert.equal(readRoleRoutingMarker(stateDir, { cwd, sessionId: canonicalSessionId, parentThreadId }), null);
+			assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents[0]?.correlation_token, correlationToken);
 		});
 	});
 });

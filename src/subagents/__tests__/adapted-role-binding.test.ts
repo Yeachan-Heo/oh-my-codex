@@ -189,7 +189,7 @@ describe('adapted role binding', () => {
     }
   });
 
-  it('recovers an owned cwd-default already-bound legacy journal and completes it with its durable claimant', async () => {
+  it('recovers an owned cwd-default claimant-less legacy bound journal', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-legacy-bound-recovery-'));
     const previousOmxRoot = process.env.OMX_ROOT;
     const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -211,7 +211,6 @@ describe('adapted role binding', () => {
           created_at: new Date(NOW_MS).toISOString(),
           expires_at: new Date(NOW_MS + 600_000).toISOString(),
           binding_state: 'bound',
-          binding_claimant_token: 'legacyclaimant',
           bound_at: new Date(NOW_MS).toISOString(),
         }],
       })}\n`);

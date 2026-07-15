@@ -1829,6 +1829,56 @@ describe('subagents/tracker', () => {
         }), 'completed');
         assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
       }
+
+      const mixedStates = [
+        {
+          name: 'exact-bound-with-legacy-pending',
+          bound: journal('critic', cwd, 'exact-bound-claimant'),
+          pending: journal('architect'),
+        },
+        {
+          name: 'legacy-bound-with-exact-pending',
+          bound: journal('critic', undefined, 'legacy-bound-claimant'),
+          pending: journal('architect', cwd),
+        },
+      ];
+      for (const { name, bound, pending } of mixedStates) {
+        for (const invocationOrder of [['bind', 'consume'], ['consume', 'bind']] as const) {
+          for (const journalOrder of [[bound, pending], [pending, bound]]) {
+            await writeJournals(journalOrder);
+            const authorizedRoles: string[] = [];
+            let bindCount = 0;
+            for (const operation of invocationOrder) {
+              if (operation === 'bind') {
+                const binding = bindPendingRoleIntentUnderLock(cwd, { ...scope, nowMs }, (state) => {
+                  bindCount += 1;
+                  return state;
+                });
+                assert.deepEqual(binding, {
+                  role: 'critic',
+                  provenanceKind: OMX_ADAPTED_PROVENANCE,
+                  claimantToken: undefined,
+                  alreadyBound: true,
+                }, `${name}:${invocationOrder.join('-')}:${journalOrder[0]?.role}`);
+                authorizedRoles.push(binding?.role ?? 'missing');
+              } else {
+                assert.equal(
+                  consumePendingRoleIntent(cwd, { ...scope, nowMs }),
+                  null,
+                  `${name}:${invocationOrder.join('-')}:${journalOrder[0]?.role}`,
+                );
+              }
+            }
+            assert.deepEqual(authorizedRoles, ['critic']);
+            assert.equal(bindCount, 0);
+            const retained = (await readSubagentTrackingState(cwd)).pending_role_intents;
+            assert.equal(retained.length, 1);
+            assert.equal(retained[0]?.role, 'critic');
+            assert.equal(retained[0]?.binding_state, 'bound');
+            assert.equal(retained[0]?.correlation_token, scope.correlationToken);
+          }
+        }
+      }
     } finally {
       if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
       else process.env.OMX_ROOT = previousOmxRoot;
@@ -1918,6 +1968,46 @@ describe('subagents/tracker', () => {
         completeAdaptedRoleBinding(cwd, { ...input, claimantToken: binding.claimantToken }),
         'not_found',
       );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('requires a claimant-less bound journal to receive its durable correlation token before completion', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-claimant-less-'));
+    const nowMs = Date.now();
+    const intent = {
+      role: 'architect',
+      session_id: 'claimant-less-session',
+      parent_thread_id: 'claimant-less-parent',
+      correlation_token: 'a3118f',
+      created_at: new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + 60_000).toISOString(),
+      binding_state: 'bound',
+      bound_at: new Date(nowMs).toISOString(),
+      origin_cwd: cwd,
+    };
+    try {
+      await mkdir(getBaseStateDir(cwd), { recursive: true });
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [intent],
+      })}\n`);
+
+      assert.equal(completeAdaptedRoleBinding(cwd, {
+        sessionId: intent.session_id,
+        parentThreadId: intent.parent_thread_id,
+        nowMs,
+      }), 'claimant_mismatch');
+      assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, [intent]);
+      assert.equal(completeAdaptedRoleBinding(cwd, {
+        sessionId: intent.session_id,
+        parentThreadId: intent.parent_thread_id,
+        correlationToken: intent.correlation_token,
+        nowMs,
+      }), 'completed');
+      assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
