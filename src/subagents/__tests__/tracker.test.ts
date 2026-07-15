@@ -2207,19 +2207,103 @@ describe('subagents/tracker', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+  it('rejects every malformed completion credential without rewriting durable bound journals', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-completion-credentials-'));
+    const nowMs = Date.now();
+    const correlationToken = canonicalCorrelationToken('completion-correlation');
+    const claimantToken = canonicalClaimantToken('completion-claimant');
+    const scope = { sessionId: 'completion-session', parentThreadId: 'completion-parent', nowMs };
+    const base = {
+      role: 'architect',
+      session_id: scope.sessionId,
+      parent_thread_id: scope.parentThreadId,
+      created_at: new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + 60_000).toISOString(),
+      binding_state: 'bound' as const,
+      bound_at: new Date(nowMs).toISOString(),
+      origin_cwd: cwd,
+    };
+    const writeJournal = async (journal: object) => {
+      const raw = `${JSON.stringify({ schemaVersion: 1, sessions: {}, pending_role_intents: [journal] })}\n`;
+      await writeFile(subagentTrackingPath(cwd), raw);
+      return raw;
+    };
+    const assertRetainedMismatch = async (label: string, journal: object, input: Parameters<typeof completeAdaptedRoleBinding>[1]) => {
+      const raw = await writeJournal(journal);
+      assert.equal(completeAdaptedRoleBinding(cwd, input), 'claimant_mismatch', label);
+      assert.equal(readFileSync(subagentTrackingPath(cwd), 'utf-8'), raw, label);
+    };
+    try {
+      await mkdir(getBaseStateDir(cwd), { recursive: true });
+      const claimantLess = { ...base, correlation_token: correlationToken };
+      const claimed = { ...claimantLess, binding_claimant_token: claimantToken };
+      const invalidCorrelations: Array<[string, unknown]> = [
+        ['omitted', undefined], ['empty', ''], ['ascii-whitespace', ' '], ['tab-cr-lf-wrapped', `\t${correlationToken}\r\n`],
+        ['uppercase', correlationToken.toUpperCase()], ['wrong-length', correlationToken.slice(1)], ['non-hex', 'g'.repeat(32)],
+        ['wrong-canonical', canonicalCorrelationToken('other-correlation')], ['null', null], ['number', 1], ['boolean', true], ['array', []], ['object', {}],
+      ];
+      for (const [name, value] of invalidCorrelations) {
+        const input = { ...scope, correlationToken: value as unknown as string, claimantToken };
+        await assertRetainedMismatch(`claimant-less correlation ${name}`, claimantLess, input);
+        await assertRetainedMismatch(`claimed correlation ${name}`, claimed, input);
+      }
+      const invalidClaimants: Array<[string, unknown]> = [
+        ['omitted', undefined], ['empty', ''], ['ascii-whitespace', ' '], ['tab-cr-lf-wrapped', `\t${claimantToken}\r\n`],
+        ['uppercase', claimantToken.toUpperCase()], ['wrong-length', claimantToken.slice(1)], ['non-hex', 'x'.repeat(36)],
+        ['wrong-canonical', canonicalClaimantToken('other-claimant')], ['null', null], ['number', 1], ['boolean', true], ['array', []], ['object', {}],
+      ];
+      for (const [name, value] of invalidClaimants) {
+        await assertRetainedMismatch(`claimed claimant ${name}`, claimed, { ...scope, correlationToken, claimantToken: value as unknown as string });
+      }
+      await writeJournal(claimantLess);
+      assert.equal(completeAdaptedRoleBinding(cwd, { ...scope, correlationToken }), 'completed');
+      assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
+      await writeJournal(claimed);
+      assert.equal(completeAdaptedRoleBinding(cwd, { ...scope, correlationToken, claimantToken }), 'completed');
+      assert.deepEqual((await readSubagentTrackingState(cwd)).pending_role_intents, []);
+
+      for (const persistedCorrelation of ['', ' ', null, 1, true, [], {}]) {
+        await assertRetainedMismatch('claimed persisted correlation', { ...claimed, correlation_token: persistedCorrelation }, { ...scope, correlationToken, claimantToken });
+        await assertRetainedMismatch('claimant-less persisted correlation', { ...claimantLess, correlation_token: persistedCorrelation }, { ...scope, correlationToken });
+      }
+      for (const persistedClaimant of ['', ' ', null, 1, true, [], {}]) {
+        await assertRetainedMismatch('claimed persisted claimant', { ...claimed, binding_claimant_token: persistedClaimant }, { ...scope, correlationToken, claimantToken });
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects NUL and ELOOP origins before creating tracking artifacts', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-origin-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-origin-state-'));
     const loop = join(parent, 'loop');
+    const validCwd = join(parent, 'valid');
+    const previousStateRoot = process.env.OMX_STATE_ROOT;
+    const assertNoArtifacts = () => assert.deepEqual(readdirSync(stateRoot), []);
     try {
+      process.env.OMX_STATE_ROOT = stateRoot;
       await symlink(loop, loop);
       for (const cwd of [`${parent}\u0000suffix`, loop]) {
         assert.deepEqual(recordPendingRoleIntent(cwd, {
           role: 'architect', sessionId: 'origin-session', parentThreadId: 'origin-parent', correlationToken: canonicalCorrelationToken('origintoken'),
         }), { ok: false, reason: 'invalid_origin' });
+        assertNoArtifacts();
       }
-      assert.deepEqual(readdirSync(parent), ['loop']);
+      await mkdir(validCwd);
+      const recorded = recordPendingRoleIntent(validCwd, {
+        role: 'architect', sessionId: 'valid-origin-session', parentThreadId: 'valid-origin-parent', correlationToken: canonicalCorrelationToken('validorigintoken'),
+      });
+      assert.equal(recorded.ok, true);
+      assert.equal(recorded.ok && recorded.intent.origin_cwd, validCwd);
+      const state = await readSubagentTrackingState(validCwd);
+      assert.deepEqual(state.pending_role_intents, recorded.ok ? [recorded.intent] : []);
+      assert.equal(existsSync(subagentTrackingPath(validCwd)), true);
     } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousStateRoot;
       await rm(parent, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
     }
   });
 });
