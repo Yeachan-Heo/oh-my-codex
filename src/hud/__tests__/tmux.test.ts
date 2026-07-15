@@ -12,6 +12,7 @@ import {
   findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
   hudPaneMatchesOwner,
+  listCurrentWindowPanes,
   listCurrentWindowHudPaneIds,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   TMUX_PANE_FIELD_SEPARATOR_OCTAL_ESCAPE,
@@ -39,6 +40,23 @@ describe('HUD pane creation', () => {
     assert.equal(result, null);
     assert.deepEqual(calls.at(-1), ['kill-pane', '-t', '%new']);
     assert.equal(calls.filter((args) => args[0] === 'kill-pane').length, 1);
+  });
+});
+
+describe('HUD pane scanning', () => {
+  it('can preserve tmux scan failures for callers that must fail closed', () => {
+    const failingScan = () => { throw new Error('tmux list-panes failed'); };
+    assert.deepEqual(listCurrentWindowPanes(failingScan), []);
+
+    const strictList = listCurrentWindowPanes as unknown as (
+      execTmuxSync: (args: string[]) => string,
+      currentPaneId: string | undefined,
+      options: { throwOnError: boolean },
+    ) => unknown;
+    assert.throws(
+      () => strictList(failingScan, '%1', { throwOnError: true }),
+      /tmux list-panes failed/,
+    );
   });
 });
 describe('HUD resize hook helpers', () => {

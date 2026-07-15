@@ -562,6 +562,7 @@ export function buildHudWatchCommand(
 export function listCurrentWindowPanes(
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
   currentPaneId?: string,
+  options: { throwOnError?: boolean } = {},
 ): TmuxPaneSnapshot[] {
   try {
     return parseTmuxPaneSnapshot(
@@ -586,7 +587,8 @@ export function listCurrentWindowPanes(
         ].join(TMUX_PANE_FIELD_SEPARATOR),
       ]),
     );
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   }
 }

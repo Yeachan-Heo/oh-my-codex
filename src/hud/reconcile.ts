@@ -56,14 +56,14 @@ function reapOrphanedSessionHudPanes(
     currentPaneId: string | undefined;
     killPane: (paneId: string) => boolean;
   },
-): string[] {
+): { reapedPaneIds: string[]; failed: boolean } {
   const { sessionId, currentPaneId, killPane } = opts;
   const sameSessionIds = new Set(
     [sessionId, ...(opts.sessionIds ?? [])]
       .map((candidate) => candidate?.trim() ?? '')
       .filter((candidate) => candidate !== ''),
   );
-  if (sameSessionIds.size === 0) return [];
+  if (sameSessionIds.size === 0) return { reapedPaneIds: [], failed: false };
   // A recorded leader only counts as "live" if it exists in this window AND is not
   // itself a HUD watcher. Without the HUD exclusion, an orphan whose recorded leader
   // is *another HUD pane* would be preserved here; that referenced HUD could be
@@ -73,6 +73,7 @@ function reapOrphanedSessionHudPanes(
     panes.filter((pane) => !isHudWatchPane(pane)).map((pane) => pane.paneId),
   );
   const reaped: string[] = [];
+  let failed = false;
   for (const pane of panes) {
     if (!isHudWatchPane(pane)) continue;
     const owner = readHudPaneOwner(pane);
@@ -82,8 +83,9 @@ function reapOrphanedSessionHudPanes(
     // Keep HUDs whose leader is the current pane or another live non-HUD leader pane.
     if (owner.leaderPaneId === currentPaneId || liveNonHudPaneIds.has(owner.leaderPaneId)) continue;
     if (killPane(pane.paneId)) reaped.push(pane.paneId);
+    else failed = true;
   }
-  return reaped;
+  return { reapedPaneIds: reaped, failed };
 }
 
 function hasExplicitHudOwnerMarker(pane: TmuxPaneSnapshot): boolean {
@@ -98,13 +100,14 @@ function reapStaleCurrentLeaderHudPanes(
     currentPaneId: string | undefined;
     killPane: (paneId: string) => boolean;
   },
-): string[] {
+): { reapedPaneIds: string[]; failed: boolean } {
   const { currentPaneId, killPane } = opts;
-  if (!currentPaneId) return [];
+  if (!currentPaneId) return { reapedPaneIds: [], failed: false };
   const currentSessionIds = new Set(opts.sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean));
-  if (currentSessionIds.size === 0) return [];
+  if (currentSessionIds.size === 0) return { reapedPaneIds: [], failed: false };
 
   const reaped: string[] = [];
+  let failed = false;
   for (const pane of panes) {
     if (!isHudWatchPane(pane)) continue;
     const owner = readHudPaneOwner(pane);
@@ -113,8 +116,9 @@ function reapStaleCurrentLeaderHudPanes(
     if (!owner.sessionId || currentSessionIds.has(owner.sessionId)) continue;
     if (!hasVerifiedHudPaneInstanceIdentity(pane, currentSessionIds)) continue;
     if (killPane(pane.paneId)) reaped.push(pane.paneId);
+    else failed = true;
   }
-  return reaped;
+  return { reapedPaneIds: reaped, failed };
 }
 
 export interface ReconcileHudForPromptSubmitResult {
@@ -176,14 +180,14 @@ function ensureHudResizeHook(
   desiredHeight: number,
   cwd: string,
   deps: ReconcileHudForPromptSubmitDeps,
-): void {
+): boolean {
   try {
-    (deps.registerHudResizeHook ?? registerHudResizeHook)(hudPaneId, leaderPaneId, desiredHeight, {
+    return (deps.registerHudResizeHook ?? registerHudResizeHook)(hudPaneId, leaderPaneId, desiredHeight, {
       cwd,
       env: deps.env ?? process.env,
     });
   } catch {
-    // Non-critical — hook registration failure does not break HUD lifecycle.
+    return false;
   }
 }
 
@@ -241,7 +245,7 @@ function planOwnedHudPaneDedupe(
   owner: HudPaneOwner,
   preferredPaneId: string,
   equivalentSessionIds: ReadonlySet<string>,
-): { paneId: string; duplicatePaneIds: string[]; unsafeCandidate: boolean } {
+): { paneId: string | null; duplicatePaneIds: string[]; unsafeCandidate: boolean } {
   const ownedPanes = panes
     .filter((pane) => pane.paneId !== currentPaneId)
     .filter((pane) => hudPaneMatchesOwner(pane, owner));
@@ -251,13 +255,28 @@ function planOwnedHudPaneDedupe(
   const ownedPaneIds = ownedPanes.map((pane) => pane.paneId);
   const keeperPaneId = ownedPaneIds.includes(preferredPaneId)
     ? preferredPaneId
-    : (ownedPaneIds[0] ?? preferredPaneId);
+    : (ownedPaneIds[0] ?? null);
 
   return {
     paneId: keeperPaneId,
     duplicatePaneIds: ownedPaneIds.filter((paneId) => paneId !== keeperPaneId),
     unsafeCandidate: false,
   };
+}
+
+function hasConvergedOwnedHudPane(
+  panes: TmuxPaneSnapshot[],
+  currentPaneId: string | undefined,
+  owner: HudPaneOwner,
+  expectedPaneId: string,
+  equivalentSessionIds: ReadonlySet<string>,
+): boolean {
+  const ownedPanes = panes
+    .filter((pane) => pane.paneId !== currentPaneId)
+    .filter((pane) => hudPaneMatchesOwner(pane, owner));
+  return ownedPanes.length === 1
+    && ownedPanes[0]?.paneId === expectedPaneId
+    && hasVerifiedHudPaneInstanceIdentity(ownedPanes[0], equivalentSessionIds);
 }
 
 const HUD_RECONCILE_LOCK_STALE_MS = 10_000;
@@ -376,6 +395,14 @@ export async function reconcileHudForPromptSubmit(
       },
     )
     : { status: 'failed' as const };
+  if (acquired.status === 'failed') {
+    return {
+      status: 'failed',
+      paneId: null,
+      desiredHeight: null,
+      duplicateCount: 0,
+    };
+  }
   if (acquired.status !== 'acquired' || !acquired.lock) {
     return {
       status: 'skipped_concurrent',
@@ -385,7 +412,15 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
-  const listPanes = deps.listCurrentWindowPanes ?? ((paneId) => listCurrentWindowPanes(undefined, paneId));
+  const listPanes = deps.listCurrentWindowPanes
+    ?? ((paneId) => listCurrentWindowPanes(undefined, paneId, { throwOnError: true }));
+  const scanPanes = (): TmuxPaneSnapshot[] | null => {
+    try {
+      return listPanes(currentPaneId);
+    } catch {
+      return null;
+    }
+  };
   const createPane = deps.createHudWatchPane ?? ((hudCwd, hudCmd, options) => createHudWatchPane(hudCwd, hudCmd, options));
   const killPane = deps.killTmuxPane ?? ((paneId) => killTmuxPane(paneId));
   const resizePane = deps.resizeTmuxPane ?? ((paneId, lines) => resizeTmuxPane(paneId, lines));
@@ -394,17 +429,24 @@ export async function reconcileHudForPromptSubmit(
   const equivalentSessionIds = domain.session?.equivalentIds ?? [];
   try {
 
-  let panes = listPanes(currentPaneId);
+  let panes = scanPanes();
+  if (!panes) {
+    return { status: 'failed', paneId: null, desiredHeight: null, duplicateCount: 0 };
+  }
 
   // Reclaim orphaned HUD panes left behind by a destroyed leader before deciding
   // whether a HUD already exists; otherwise dead-leader HUDs accumulate one per
   // prompt submit and the window fills with stacked HUD strips.
-  const reapedOrphanPaneIds = reapOrphanedSessionHudPanes(panes, {
+  const orphanReap = reapOrphanedSessionHudPanes(panes, {
     sessionId: resolvedSessionId,
     sessionIds: equivalentSessionIds,
     currentPaneId,
     killPane,
   });
+  if (orphanReap.failed) {
+    return { status: 'failed', paneId: null, desiredHeight: null, duplicateCount: 0 };
+  }
+  const reapedOrphanPaneIds = orphanReap.reapedPaneIds;
   if (reapedOrphanPaneIds.length > 0) {
     const reapedPaneIdSet = new Set(reapedOrphanPaneIds);
     panes = panes.filter((pane) => !reapedPaneIdSet.has(pane.paneId));
@@ -416,11 +458,15 @@ export async function reconcileHudForPromptSubmit(
   // does not match same-owner dedupe and the next launch would create a second HUD
   // beside it. Reap only HUDs tied to this exact leader pane; neighboring panes'
   // HUDs remain isolated by leaderPaneId.
-  const reapedStaleLeaderPaneIds = reapStaleCurrentLeaderHudPanes(panes, {
+  const staleLeaderReap = reapStaleCurrentLeaderHudPanes(panes, {
     sessionIds: equivalentSessionIds,
     currentPaneId,
     killPane,
   });
+  if (staleLeaderReap.failed) {
+    return { status: 'failed', paneId: null, desiredHeight: null, duplicateCount: 0 };
+  }
+  const reapedStaleLeaderPaneIds = staleLeaderReap.reapedPaneIds;
   if (reapedStaleLeaderPaneIds.length > 0) {
     const reapedPaneIdSet = new Set(reapedStaleLeaderPaneIds);
     panes = panes.filter((pane) => !reapedPaneIdSet.has(pane.paneId));
@@ -463,9 +509,10 @@ export async function reconcileHudForPromptSubmit(
   if (singleHudPane && !needsHudTopologyRecreate(singleHudPane, leaderPane)) {
     const shouldResize = needsHudHeightResize(singleHudPane, desiredHeight);
     const resized = shouldResize ? resizePane(singleHudPane.paneId, desiredHeight) : true;
-    if (resized) ensureHudResizeHook(singleHudPane.paneId, currentPaneId, desiredHeight, cwd, deps);
+    const hookRegistered = resized
+      && ensureHudResizeHook(singleHudPane.paneId, currentPaneId, desiredHeight, cwd, deps);
     return {
-      status: resized ? (shouldResize ? 'resized' : 'unchanged') : 'failed',
+      status: hookRegistered ? (shouldResize ? 'resized' : 'unchanged') : 'failed',
       paneId: singleHudPane.paneId,
       desiredHeight,
       duplicateCount,
@@ -479,13 +526,31 @@ export async function reconcileHudForPromptSubmit(
     const keeperPane = hudPanes.find((pane) => !needsHudTopologyRecreate(pane, leaderPane));
 
     if (keeperPane) {
+      let killedEveryDuplicate = true;
       for (const paneId of hudPaneIds.filter((paneId) => paneId !== keeperPane.paneId)) {
-        killPane(paneId);
+        if (!killPane(paneId)) killedEveryDuplicate = false;
+      }
+      if (!killedEveryDuplicate) {
+        return {
+          status: 'failed',
+          paneId: keeperPane.paneId,
+          desiredHeight,
+          duplicateCount,
+        };
       }
       const resized = resizePane(keeperPane.paneId, desiredHeight);
-      if (resized) ensureHudResizeHook(keeperPane.paneId, currentPaneId, desiredHeight, cwd, deps);
+      const hookRegistered = resized
+        && ensureHudResizeHook(keeperPane.paneId, currentPaneId, desiredHeight, cwd, deps);
+      const finalPanes = resized ? scanPanes() : null;
+      const converged = hookRegistered && finalPanes !== null && hasConvergedOwnedHudPane(
+        finalPanes,
+        currentPaneId,
+        owner,
+        keeperPane.paneId,
+        equivalentSessionIdSet,
+      );
       return {
-        status: resized ? 'replaced_duplicates' : 'failed',
+        status: converged ? 'replaced_duplicates' : 'failed',
         paneId: keeperPane.paneId,
         desiredHeight,
         duplicateCount,
@@ -523,7 +588,15 @@ export async function reconcileHudForPromptSubmit(
 
   const removedHudPaneIds = new Set<string>();
   for (const paneId of hudPaneIds) {
-    if (killPane(paneId)) removedHudPaneIds.add(paneId);
+    if (!killPane(paneId)) {
+      return {
+        status: 'failed',
+        paneId,
+        desiredHeight,
+        duplicateCount,
+      };
+    }
+    removedHudPaneIds.add(paneId);
   }
 
   const createOptions: { heightLines: number; fullWidth?: boolean; targetPaneId?: string; instanceId?: string } = {
@@ -546,18 +619,34 @@ export async function reconcileHudForPromptSubmit(
   // "no HUD" before either split-window has materialized. Re-scan after create
   // and collapse same-owner panes so the second creator cleans up the race
   // instead of leaving a duplicate HUD in the user window.
+  const postCreatePanes = scanPanes();
+  if (!postCreatePanes) {
+    return { status: 'failed', paneId: null, desiredHeight, duplicateCount };
+  }
   const postCreate = planOwnedHudPaneDedupe(
-    listPanes(currentPaneId).filter((pane) => !removedHudPaneIds.has(pane.paneId)),
+    postCreatePanes.filter((pane) => !removedHudPaneIds.has(pane.paneId)),
     currentPaneId,
     owner,
     paneId,
     equivalentSessionIdSet,
   );
   if (postCreate.unsafeCandidate) {
-    return { status: 'recreated', paneId, desiredHeight, duplicateCount: 0 };
+    return { status: 'failed', paneId: null, desiredHeight, duplicateCount: 0 };
   }
+  if (!postCreate.paneId) {
+    return { status: 'failed', paneId: null, desiredHeight, duplicateCount: 0 };
+  }
+  let killedEveryPostCreateDuplicate = true;
   for (const duplicatePaneId of postCreate.duplicatePaneIds) {
-    killPane(duplicatePaneId);
+    if (!killPane(duplicatePaneId)) killedEveryPostCreateDuplicate = false;
+  }
+  if (!killedEveryPostCreateDuplicate) {
+    return {
+      status: 'failed',
+      paneId: postCreate.paneId,
+      desiredHeight,
+      duplicateCount: postCreate.duplicatePaneIds.length,
+    };
   }
   const resized = resizePane(postCreate.paneId, desiredHeight);
   if (!resized) {
@@ -568,7 +657,22 @@ export async function reconcileHudForPromptSubmit(
       duplicateCount: postCreate.duplicatePaneIds.length,
     };
   }
-  ensureHudResizeHook(postCreate.paneId, currentPaneId, desiredHeight, cwd, deps);
+  const hookRegistered = ensureHudResizeHook(postCreate.paneId, currentPaneId, desiredHeight, cwd, deps);
+  const finalPanes = scanPanes();
+  if (!hookRegistered || !finalPanes || !hasConvergedOwnedHudPane(
+    finalPanes,
+    currentPaneId,
+    owner,
+    postCreate.paneId,
+    equivalentSessionIdSet,
+  )) {
+    return {
+      status: 'failed',
+      paneId: postCreate.paneId,
+      desiredHeight,
+      duplicateCount: postCreate.duplicatePaneIds.length,
+    };
+  }
 
   return {
     status: postCreate.duplicatePaneIds.length > 0 || hudPaneIds.length > 1 ? 'replaced_duplicates' : 'recreated',

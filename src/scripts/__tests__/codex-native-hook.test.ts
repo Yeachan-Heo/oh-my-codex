@@ -9189,8 +9189,14 @@ case "$cmd" in
     ;;
   list-panes)
     printf '%%1\x1fcodex\x1f0\x1f0\x1f200\x1f60\x1f59\x1f200\x1f60\x1fsess-hud-1\x1fsess-hud-1\x1fcodex\x1f%s\n' ${JSON.stringify(cwd)}
+    if [[ -f ${JSON.stringify(join(cwd, "hud-pane-created"))} ]]; then
+      printf '%%9\x1fnode\x1f0\x1f58\x1f200\x1f2\x1f59\x1f200\x1f60\x1fsess-hud-1\x1fsess-hud-1\x1fexec env OMX_SESSION_ID='"'"'sess-hud-1'"'"' OMX_TMUX_HUD_OWNER='"'"'1'"'"' OMX_TMUX_HUD_LEADER_PANE='"'"'%%1'"'"' /node /omx.js hud --watch --preset=focused\x1f%s\n' ${JSON.stringify(cwd)}
+    fi
     ;;
-  split-window) printf '%%9\n' ;;
+  split-window)
+    : > ${JSON.stringify(join(cwd, "hud-pane-created"))}
+    printf '%%9\n'
+    ;;
   resize-pane) ;;
 esac
 `,
@@ -9371,9 +9377,15 @@ case "$cmd" in
   list-panes)
     printf '%%1\x1fcodex\x1f0\x1f0\x1f200\x1f60\x1f59\x1f200\x1f60\x1fomx-canonical-hud-reuse\x1fomx-canonical-hud-reuse\x1fcodex\x1f%s\n' ${JSON.stringify(cwd)}
     printf '%%2\x1fnode\x1f0\x1f60\x1f200\x1f3\x1f62\x1f200\x1f60\x1f\x1f\x1fexec env OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\x1f%s\n' ${JSON.stringify(cwd)}
+    if [[ -f ${JSON.stringify(join(cwd, "hud-pane-created"))} ]]; then
+      printf '%%9\x1fnode\x1f0\x1f58\x1f200\x1f2\x1f59\x1f200\x1f60\x1fomx-canonical-hud-reuse\x1fomx-canonical-hud-reuse\x1fexec env OMX_SESSION_ID='"'"'omx-canonical-hud-reuse'"'"' OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\x1f%s\n' ${JSON.stringify(cwd)}
+    fi
     ;;
   resize-pane) ;;
-  split-window) printf '%%9\n' ;;
+  split-window)
+    : > ${JSON.stringify(join(cwd, "hud-pane-created"))}
+    printf '%%9\n'
+    ;;
 esac
 `,
 			);
