@@ -62,11 +62,15 @@ async function reconcileHudForPromptSubmit(cwd: string, deps: ReconcileHudForPro
     probeTmuxInstance: deps.probeTmuxInstance ?? (async (paneId) => ({
       paneTarget: paneId ?? '',
       sessionName: 'managed',
-      paneInstanceId: '',
+      paneInstanceId: sessionId,
       sessionInstanceId: sessionId,
       instanceId: sessionId,
-      source: 'session' as const,
-      paneTagStatus: 'absent' as const,
+      source: 'pane' as const,
+      paneTagStatus: 'present' as const,
+      sessionTagStatus: 'present' as const,
+      sessionId: '$1',
+      windowId: '@1',
+      contextStable: true,
     })),
   });
 }
@@ -2108,9 +2112,34 @@ describe('reconcileHudForPromptSubmit verified lifecycle ownership', () => {
         instanceId: 'sess-a',
         source: 'session',
         paneTagStatus: 'absent',
+        sessionTagStatus: 'present',
+        sessionId: '$1',
+        windowId: '@1',
+        contextStable: true,
       }),
       listCurrentWindowPanes: () => { listed = true; return []; },
       createHudWatchPane: () => { assert.fail('mismatched owner must not create a pane'); return null; },
+    });
+    assert.equal(result.status, 'skipped_not_omx_owned_tmux');
+    assert.equal(listed, false);
+  });
+
+  it('requires live pane and session tags with stable tmux context before mutation', async () => {
+    let listed = false;
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: 'socket', TMUX_PANE: '%leader', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      resolveDomain: async () => ({
+        version: 1, cwd: '/repo', baseStateDir: '/tmp/hud-dual-tag', rootSource: 'cwd-default', domainKey: 'hud-control-plane:dual-tag',
+        authorityStatePath: '/tmp/hud-dual-tag/hud-authority-state.json', authorityLeasePath: '/tmp/hud-dual-tag/hud-authority-lease.json',
+        authorityLockPath: '/tmp/hud-dual-tag/hud-authority.lock', reconcileLockPath: '/tmp/hud-dual-tag/hud-reconcile.lock',
+        session: { canonicalId: 'sess-a', equivalentIds: ['sess-a'], source: 'explicit' },
+        claimant: { sessionId: 'sess-a', leaderPaneId: '%leader', tmuxSessionName: 'managed' }, managed: true,
+      }),
+      probeTmuxInstance: async () => ({
+        paneTarget: '%leader', sessionName: 'managed', paneInstanceId: 'sess-a', sessionInstanceId: '', instanceId: 'sess-a', source: 'pane',
+        paneTagStatus: 'present', sessionTagStatus: 'absent', sessionId: '$1', windowId: '@1', contextStable: true,
+      }),
+      listCurrentWindowPanes: () => { listed = true; return []; },
     });
     assert.equal(result.status, 'skipped_not_omx_owned_tmux');
     assert.equal(listed, false);
@@ -2127,8 +2156,9 @@ describe('reconcileHudForPromptSubmit verified lifecycle ownership', () => {
         claimant: { sessionId: 'canonical-id', leaderPaneId: '%leader', tmuxSessionName: 'managed' }, managed: true,
       }),
       probeTmuxInstance: async () => ({
-        paneTarget: '%leader', sessionName: 'managed', paneInstanceId: 'native-id', sessionInstanceId: '',
-        instanceId: 'native-id', source: 'pane', paneTagStatus: 'present',
+        paneTarget: '%leader', sessionName: 'managed', paneInstanceId: 'native-id', sessionInstanceId: 'native-id',
+        instanceId: 'native-id', source: 'pane', paneTagStatus: 'present', sessionTagStatus: 'present',
+        sessionId: '$1', windowId: '@1', contextStable: true,
       }),
       listCurrentWindowPanes: () => [{ paneId: '%leader', currentCommand: 'codex', startCommand: 'codex' }],
       createHudWatchPane: () => '%hud', resizeTmuxPane: () => true, resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
@@ -2186,21 +2216,23 @@ describe('teardownManagedHudPane', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-teardown-exact-'));
     const killed: string[] = [];
     const unregistered: string[] = [];
+    const events: string[] = [];
     const deps: ReconcileHudForPromptSubmitDeps = {
       env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'session-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
       sessionId: 'session-a',
       resolveDomain: async () => testReconcileDomain(cwd, { sessionId: 'session-a', env: { TMUX_PANE: '%1' } }),
       probeTmuxInstance: async () => ({
-        paneTarget: '%1', sessionName: 'managed', paneInstanceId: 'session-a', sessionInstanceId: '',
-        instanceId: 'session-a', source: 'pane', paneTagStatus: 'present',
+        paneTarget: '%1', sessionName: 'managed', paneInstanceId: 'session-a', sessionInstanceId: 'session-a',
+        instanceId: 'session-a', source: 'pane', paneTagStatus: 'present', sessionTagStatus: 'present',
+        sessionId: '$1', windowId: '@1', contextStable: true,
       }),
       listCurrentWindowPanes: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', paneInstanceId: 'session-a', sessionInstanceId: 'session-a' },
         { paneId: '%2', currentCommand: 'node', startCommand: "exec env OMX_SESSION_ID='session-a' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' node omx.js hud --watch", paneInstanceId: 'session-a', sessionInstanceId: 'session-a' },
         { paneId: '%3', currentCommand: 'node', startCommand: "exec env OMX_SESSION_ID='session-b' OMX_TMUX_HUD_OWNER='1' OMX_TMUX_HUD_LEADER_PANE='%1' node omx.js hud --watch", paneInstanceId: 'session-b', sessionInstanceId: 'session-b' },
       ],
-      killTmuxPane: (paneId) => { killed.push(paneId); return true; },
-      unregisterHudResizeHook: (paneId) => { if (paneId) unregistered.push(paneId); return true; },
+      killTmuxPane: (paneId) => { events.push(`kill:${paneId}`); killed.push(paneId); return true; },
+      unregisterHudResizeHook: (paneId) => { events.push(`unregister:${paneId}`); if (paneId) unregistered.push(paneId); return true; },
     };
     try {
       const result = await teardownManagedHudPane(cwd, deps);
@@ -2208,6 +2240,7 @@ describe('teardownManagedHudPane', () => {
       assert.deepEqual(result.removedPaneIds, ['%2']);
       assert.deepEqual(killed, ['%2']);
       assert.deepEqual(unregistered, ['%1']);
+      assert.deepEqual(events, ['unregister:%1', 'kill:%2']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2222,8 +2255,9 @@ describe('teardownManagedHudPane', () => {
         sessionId: 'session-a',
         resolveDomain: async () => testReconcileDomain(cwd, { sessionId: 'session-a', env: { TMUX_PANE: '%1' } }),
         probeTmuxInstance: async () => ({
-          paneTarget: '%1', sessionName: 'managed', paneInstanceId: 'session-a', sessionInstanceId: '',
-          instanceId: 'session-a', source: 'pane', paneTagStatus: 'present',
+          paneTarget: '%1', sessionName: 'managed', paneInstanceId: 'session-a', sessionInstanceId: 'session-a',
+          instanceId: 'session-a', source: 'pane', paneTagStatus: 'present', sessionTagStatus: 'present',
+          sessionId: '$1', windowId: '@1', contextStable: true,
         }),
         listCurrentWindowPanes: () => [
           { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', paneInstanceId: 'stale', sessionInstanceId: 'session-a' },

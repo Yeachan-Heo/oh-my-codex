@@ -3578,29 +3578,27 @@ function tagTmuxSessionWithInstance(sessionName: string, sessionId: string): voi
   });
 }
 
-async function establishCurrentTmuxInstanceBinding(sessionId: string): Promise<ActualTmuxInstanceEvidence | null> {
-  if (!process.env.TMUX || !process.env.TMUX_PANE) return null;
-  const paneTarget = process.env.TMUX_PANE.trim();
+async function establishCurrentTmuxInstanceBinding(
+  sessionId: string,
+  paneId: string | undefined = process.env.TMUX_PANE,
+  expectedSessionName?: string,
+): Promise<ActualTmuxInstanceEvidence | null> {
+  const paneTarget = paneId?.trim() ?? '';
   if (!paneTarget) return null;
   try {
-    const readContext = (): string => execFileSync(
+    const sessionName = expectedSessionName?.trim() || execFileSync(
       "tmux",
-      ["display-message", "-p", "-t", paneTarget, "#{session_name}:#{window_index} #{pane_id}"],
+      ["display-message", "-p", "-t", paneTarget, "#S"],
       { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 },
     ).trim();
-    const before = readContext();
-    const [sessionAndWindow = "", livePaneId = ""] = before.split(" ");
-    const sessionName = sessionAndWindow.split(":")[0]?.trim() ?? "";
-    if (!sessionName || livePaneId.trim() !== paneTarget) return null;
+    if (!sessionName) return null;
     tagTmuxSessionWithInstance(sessionName, sessionId);
     execFileSync("tmux", ["set-option", "-p", "-t", paneTarget, OMX_PANE_INSTANCE_OPTION, sessionId], {
       stdio: ["ignore", "ignore", "ignore"],
       timeout: 2000,
     });
     const evidence = await probeActualTmuxInstanceEvidence(paneTarget);
-    if (readContext() !== before || evidence.sessionName !== sessionName || !tmuxEvidenceBindsCandidate(evidence, sessionId)) {
-      return null;
-    }
+    if (evidence.sessionName !== sessionName || !tmuxEvidenceBindsCandidate(evidence, sessionId)) return null;
     return evidence;
   } catch {
     return null;
@@ -5328,6 +5326,7 @@ async function runCodex(
       let registeredClientAttachedHookName: string | null = null;
       let detachedParentEnvFilePath: string | undefined;
       let detachedLeaderPaneId: string | null = null;
+      let detachedHudEvidenceVerified = false;
       try {
         // This path is the user-shell interactive launch: OMX creates a tmux
         // session and immediately attaches the user's terminal to it. If a tmux
@@ -5365,7 +5364,7 @@ async function runCodex(
             // The persisted session binding and tmux instance tag are both in
             // place before the shared reconciler is permitted to mutate panes.
             await detachedSessionBindingWrite;
-            if (detachedLeaderPaneId) {
+            if (detachedLeaderPaneId && detachedHudEvidenceVerified) {
               await reconcileManagedHudPane(cwd, sessionId, detachedLeaderPaneId, hudRuntimeEnv);
             }
             const finalizeSteps = buildDetachedSessionFinalizeSteps(
@@ -5429,6 +5428,11 @@ async function runCodex(
                 });
               }
               writeDetachedSessionBinding(leaderPaneId);
+              detachedHudEvidenceVerified = await establishCurrentTmuxInstanceBinding(
+                sessionId,
+                leaderPaneId,
+                sessionName,
+              ) !== null;
             }
           }
         }

@@ -638,7 +638,7 @@ describe('hudCommand --tmux', () => {
     await writeFile(tmuxPath, `#!/usr/bin/env bash
 printf '%s\n' "$*" >> ${JSON.stringify(logPath)}
 if [[ "$1" == "display-message" && "$*" == *'#{session_id}'* ]]; then
-  printf '$7\t@3\n'
+  printf 'managed-session\t$7\t@3\t%%1\n'
   exit 0
 fi
 if [[ "$1" == "display-message" && "$*" == *'#S'* ]]; then
@@ -646,6 +646,10 @@ if [[ "$1" == "display-message" && "$*" == *'#S'* ]]; then
   exit 0
 fi
 if [[ "$1" == "show-option" && "$*" == *'-p -t %1 @omx_pane_instance_id'* ]]; then
+  printf 'sess-a\n'
+  exit 0
+fi
+if [[ "$1" == "show-option" && "$*" == *'-t managed-session @omx_instance_id'* ]]; then
   printf 'sess-a\n'
   exit 0
 fi
@@ -714,20 +718,47 @@ exit 0
     await mkdir(fakeBin);
     const tmuxPath = join(fakeBin, 'tmux');
     await writeFile(tmuxPath, `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> ${JSON.stringify(logPath)}
-if [[ "$1" == "display-message" && "$*" == *'#{pane_id}'* ]]; then
-  echo '%1'
-  exit 0
+printf '%s\n' "$*" >> ${JSON.stringify(logPath)}
+if [[ "$1" == "display-message" ]]; then
+  fmt="\${@: -1}"
+  case "$fmt" in
+    *session_name*)
+      printf 'managed-session\t$7\t@3\t%%1\n'
+      exit 0
+      ;;
+    *session_id*)
+      printf '$7\t@3\n'
+      exit 0
+      ;;
+    '#{pane_id}')
+      printf '%%1\n'
+      exit 0
+      ;;
+    '#S')
+      printf 'managed-session\n'
+      exit 0
+      ;;
+  esac
 fi
-if [[ "$1" == "display-message" && "$*" == *'#{session_id}'* ]]; then
-  printf '$7\\t@3\\n'
-  exit 0
+if [[ "$1" == "show-option" ]]; then
+  target=""
+  pane_scope=0
+  option="\${@: -1}"
+  for ((index=2; index <= $#; index++)); do
+    arg="\${!index}"
+    if [[ "$arg" == '-p' ]]; then pane_scope=1; fi
+    if [[ "$arg" == '-t' ]]; then next=$((index + 1)); target="\${!next}"; fi
+  done
+  if [[ "$pane_scope" == 1 && "$target" == '%1' && "$option" == '@omx_pane_instance_id' ]]; then
+    printf 'sess-a\n'
+    exit 0
+  fi
+  if [[ "$pane_scope" == 0 && "$target" == 'managed-session' && "$option" == '@omx_instance_id' ]]; then
+    printf 'sess-a\n'
+    exit 0
+  fi
 fi
-if [[ "$1" == "display-message" && "$*" == *'#S'* ]]; then
-  printf 'managed-session\n'
-  exit 0
-fi
-if [[ "$1" == "show-option" && "$*" == *'-p -t %1 @omx_pane_instance_id'* ]]; then
+if [[ "$1" == "show-option" && "$*" == *'-t managed-session @omx_instance_id'* ]]; then
   printf 'sess-a\n'
   exit 0
 fi

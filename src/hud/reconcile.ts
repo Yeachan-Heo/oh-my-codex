@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises';
 
 import { acquireHudLifecycleLock, releaseHudLifecycleLock, type HudLifecycleLockDeps } from './lifecycle-lock.js';
 import { resolveHudControlPlaneDomain, type ResolvedHudControlPlaneDomain } from '../mcp/state-paths.js';
-import { probeActualTmuxInstanceEvidence, tmuxEvidenceBindsCandidate, type ActualTmuxInstanceEvidence } from '../scripts/notify-hook/managed-tmux.js';
+import { probeActualTmuxInstanceEvidence, type ActualTmuxInstanceEvidence } from '../scripts/notify-hook/managed-tmux.js';
 
 import { readAllState, readHudConfig } from './state.js';
 import { getHudRenderMaxLines } from './render.js';
@@ -276,10 +276,14 @@ function isVerifiedManagedHudOwner(
     domain.managed
     && currentPaneId
     && evidence.paneTarget === currentPaneId
+    && evidence.contextStable
+    && evidence.paneTagStatus === 'present'
+    && evidence.sessionTagStatus === 'present'
+    && equivalentSessionIds.has(evidence.paneInstanceId)
+    && equivalentSessionIds.has(evidence.sessionInstanceId)
     && domain.claimant.leaderPaneId === currentPaneId
     && domain.claimant.tmuxSessionName
-    && domain.claimant.tmuxSessionName === evidence.sessionName
-    && [...equivalentSessionIds].some((sessionId) => tmuxEvidenceBindsCandidate(evidence, sessionId)),
+    && domain.claimant.tmuxSessionName === evidence.sessionName,
   );
 }
 
@@ -631,19 +635,23 @@ export async function teardownManagedHudPane(
     }
 
     const identity = { tmuxSessionInstanceId, tmuxPaneInstanceId };
-    const removedPaneIds: string[] = [];
-    const killPane = deps.killTmuxPane ?? killTmuxPane;
-    for (const pane of panes) {
-      if (pane.paneId === currentPaneId || !isHudWatchPane(pane)) continue;
-      const exactOwner = [...equivalentSessionIds].some((sessionId) => hudPaneMatchesExactCandidate(
+    const exactHudPaneIds = panes
+      .filter((pane) => pane.paneId !== currentPaneId && isHudWatchPane(pane))
+      .filter((pane) => [...equivalentSessionIds].some((sessionId) => hudPaneMatchesExactCandidate(
         pane,
         { sessionId, leaderPaneId: currentPaneId },
         identity,
-      ));
-      if (exactOwner && killPane(pane.paneId)) removedPaneIds.push(pane.paneId);
+      )))
+      .map((pane) => pane.paneId);
+    if (exactHudPaneIds.length === 0) {
+      return { status: 'unchanged', removedPaneIds: [] };
     }
-    if (removedPaneIds.length > 0) {
-      (deps.unregisterHudResizeHook ?? unregisterHudResizeHook)(currentPaneId);
+
+    (deps.unregisterHudResizeHook ?? unregisterHudResizeHook)(currentPaneId);
+    const removedPaneIds: string[] = [];
+    const killPane = deps.killTmuxPane ?? killTmuxPane;
+    for (const paneId of exactHudPaneIds) {
+      if (killPane(paneId)) removedPaneIds.push(paneId);
     }
     return { status: removedPaneIds.length > 0 ? 'removed' : 'unchanged', removedPaneIds };
   } finally {

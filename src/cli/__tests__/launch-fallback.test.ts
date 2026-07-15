@@ -457,6 +457,8 @@ describe('omx launcher when tmux is available', () => {
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
+sessionMarker="${activeMarker}.tmux-instance"
+paneMarker="${activeMarker}.pane-instance"
 case "$1" in
   -V)
     printf 'tmux 3.4\n'
@@ -480,14 +482,14 @@ case "$1" in
     exit 0
     ;;
   display-message)
-    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+    if [ "$2" = '-p' ] && { [ "$3" = '#{socket_path}' ] || [ "$5" = '#{socket_path}' ]; }; then
       printf '/tmp/tmux-test.sock\n'
-    elif [ "$2" = '-p' ] && [ "$5" = '#{session_name}' ]; then
+    elif [ "$5" = '#{session_name}' ]; then
       cat "${activeMarker}"
-    elif [ "$2" = '-p' ] && [ "$5" = '#{session_attached}' ]; then
+    elif [ "$5" = '#{session_attached}' ]; then
       printf '1\n'
     else
-      printf '0\n'
+      printf '%s\t$0\t@1\t%%12\n' "$(cat "${activeMarker}")"
     fi
     exit 0
     ;;
@@ -499,9 +501,18 @@ case "$1" in
     printf 'off\n'
     exit 0
     ;;
+  show-option)
+    if [ "$6" = '@omx_pane_instance_id' ]; then
+      cat "${instanceMarker}"
+      exit 0
+    fi
+    exit 1
+    ;;
   set-option)
     if [ "$4" = '@omx_instance_id' ]; then
       printf '%s\n' "$5" > "${instanceMarker}"
+    elif [ "$5" = '@omx_pane_instance_id' ]; then
+      printf '%s\n' "$6" > "\${paneMarker}"
     fi
     exit 0
     ;;
@@ -560,6 +571,8 @@ exit 0
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
+sessionMarker="${instanceMarker}.session"
+paneMarker="${instanceMarker}.pane"
 case "$1" in
   -V)
     printf 'tmux 3.4\n'
@@ -569,6 +582,11 @@ case "$1" in
     exit 1
     ;;
   new-session)
+    prev=''
+    for arg in "$@"; do
+      if [ "$prev" = '-s' ]; then printf '%s\n' "$arg" > "$sessionMarker"; fi
+      prev="$arg"
+    done
     printf '%%77\n'
     exit 0
     ;;
@@ -577,14 +595,18 @@ case "$1" in
     exit 0
     ;;
   display-message)
-    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+    if [ "$2" = '-p' ] && { [ "$3" = '#{socket_path}' ] || [ "$5" = '#{socket_path}' ]; }; then
       printf '/tmp/tmux-test.sock\n'
+    elif [ "$2" = '-p' ] && [ "$3" = '-t' ] && [ "$4" = '%77' ] && [ "$5" = '#{session_name}\t#{session_id}\t#{window_id}\t#{pane_id}' ]; then
+      printf '%s\t$0\t@1\t%%77\n' "$(cat "$sessionMarker")"
     elif [ "$2" = '-p' ] && [ "$5" = '#{session_name}' ]; then
-      printf 'detached-session\n'
+      cat "$sessionMarker"
     elif [ "$2" = '-p' ] && [ "$5" = '#{session_attached}' ]; then
       printf '1\n'
+    elif [ "$2" = '-p' ] && [ "$5" = '#{session_name}:#{window_index} #{pane_id}' ]; then
+      printf '%s:0 %%77\n' "$(cat "$sessionMarker")"
     else
-      printf '0\n'
+      printf '%s\t$0\t@1\t%%77\n' "$(cat "$sessionMarker")"
     fi
     exit 0
     ;;
@@ -596,9 +618,18 @@ case "$1" in
     printf 'off\n'
     exit 0
     ;;
+  show-option)
+    if [ "$6" = '@omx_pane_instance_id' ] && [ -f "${instanceMarker}" ]; then
+      cat "${instanceMarker}"
+      exit 0
+    fi
+    exit 1
+    ;;
   set-option)
     if [ "$4" = '@omx_instance_id' ]; then
       printf '%s\n' "$5" > "${instanceMarker}"
+    elif [ "$5" = '@omx_pane_instance_id' ]; then
+      printf '%s\n' "$6" > "\${paneMarker}"
     fi
     exit 0
     ;;
@@ -734,14 +765,38 @@ exit 0
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
+sessionMarker="${logPath}.session"
+instanceMarker="${logPath}.instance"
+paneMarker="${logPath}.pane"
 case "$1" in
   -V) printf 'tmux 3.4\n'; exit 0 ;;
   has-session) exit 1 ;;
-  new-session) printf '%%12\n'; exit 0 ;;
+  new-session)
+    prev=''
+    for arg in "$@"; do
+      if [ "$prev" = '-s' ]; then printf '%s\n' "$arg" > "$sessionMarker"; fi
+      prev="$arg"
+    done
+    printf '%%12\n'
+    exit 0 ;;
   split-window) printf 'hud-pane\n'; exit 0 ;;
-  display-message) if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then printf '/tmp/tmux-test.sock\n'; else printf '0\n'; fi; exit 0 ;;
-  show-options) printf 'off\n'; exit 0 ;;
-  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
+  display-message)
+    if [ "$2" = '-p' ] && { [ "$3" = '#{socket_path}' ] || [ "$5" = '#{socket_path}' ]; }; then printf '/tmp/tmux-test.sock\n';
+    elif [ "$2" = '-p' ] && [ "$3" = '-t' ] && [ "$4" = '%12' ] && [ "$5" = '#{session_name}\t#{session_id}\t#{window_id}\t#{pane_id}' ]; then printf '%s\t$0\t@1\t%%12\n' "$(cat "$sessionMarker")";
+    elif [ "$2" = '-p' ] && [ "$5" = '#{session_name}:#{window_index} #{pane_id}' ]; then printf '%s:0 %%12\n' "$(cat "$sessionMarker")";
+    else printf '0\n'; fi
+    exit 0 ;;
+  show-options)
+    if [ "$5" = '@omx_instance_id' ] && [ -f "\${instanceMarker}" ]; then cat "\${instanceMarker}"; else printf 'off\n'; fi
+    exit 0 ;;
+  show-option)
+    if [ "$6" = '@omx_pane_instance_id' ] && [ -f "\${instanceMarker}" ]; then cat "\${instanceMarker}"; else exit 1; fi
+    exit 0 ;;
+  set-option)
+    if [ "$4" = '@omx_instance_id' ]; then printf '%s\n' "$5" > "\${instanceMarker}";
+    elif [ "$5" = '@omx_pane_instance_id' ]; then printf '%s\n' "$6" > "\${paneMarker}"; fi
+    exit 0 ;;
+  set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
 esac
 exit 0
 `,
@@ -796,14 +851,37 @@ exit 0
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
+sessionMarker="${logPath}.session"
+instanceMarker="${logPath}.instance"
+paneMarker="${logPath}.pane"
 case "$1" in
   -V) printf 'tmux 3.4\n'; exit 0 ;;
   has-session) exit 1 ;;
-  new-session) printf '%%12\n'; exit 0 ;;
+  new-session)
+    prev=''
+    for arg in "$@"; do
+      if [ "$prev" = '-s' ]; then printf '%s\n' "$arg" > "$sessionMarker"; fi
+      prev="$arg"
+    done
+    printf '%%12\n'
+    exit 0 ;;
   split-window) printf 'hud-pane\n'; exit 0 ;;
-  display-message) if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then printf '/tmp/tmux-test.sock\n'; else printf '0\n'; fi; exit 0 ;;
-  show-options) printf 'off\n'; exit 0 ;;
-  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
+  display-message)
+    if [ "$2" = '-p' ] && { [ "$3" = '#{socket_path}' ] || [ "$5" = '#{socket_path}' ]; }; then printf '/tmp/tmux-test.sock\n';
+    elif [ "$2" = '-p' ] && [ "$3" = '-t' ] && [ "$4" = '%12' ] && [ "$5" = '#{session_name}\t#{session_id}\t#{window_id}\t#{pane_id}' ]; then printf '%s\t$0\t@1\t%%12\n' "$(cat "$sessionMarker")";
+    else printf '%s\t$0\t@1\t%%12\n' "$(cat "$sessionMarker")"; fi
+    exit 0 ;;
+  show-options)
+    if [ "$5" = '@omx_instance_id' ] && [ -f "$instanceMarker" ]; then cat "$instanceMarker"; else printf 'off\n'; fi
+    exit 0 ;;
+  show-option)
+    if [ "$6" = '@omx_pane_instance_id' ] && [ -f "$instanceMarker" ]; then cat "$instanceMarker"; else exit 1; fi
+    exit 0 ;;
+  set-option)
+    if [ "$4" = '@omx_instance_id' ]; then printf '%s\n' "$5" > "$instanceMarker";
+    elif [ "$5" = '@omx_pane_instance_id' ]; then printf '%s\n' "$6" > "$paneMarker"; fi
+    exit 0 ;;
+  set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
 esac
 exit 0
 `,

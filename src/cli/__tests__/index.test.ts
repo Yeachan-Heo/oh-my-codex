@@ -4015,7 +4015,7 @@ exit 0
     const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
-      /if \(detachedLeaderPaneId\) \{\s*await reconcileManagedHudPane\(cwd, sessionId, detachedLeaderPaneId, hudRuntimeEnv\);\s*\}\s*const finalizeSteps = buildDetachedSessionFinalizeSteps/,
+      /if \(detachedLeaderPaneId && detachedHudEvidenceVerified\) \{\s*await reconcileManagedHudPane\(cwd, sessionId, detachedLeaderPaneId, hudRuntimeEnv\);\s*\}\s*const finalizeSteps = buildDetachedSessionFinalizeSteps/,
     );
   });
 

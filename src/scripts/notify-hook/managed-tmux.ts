@@ -89,6 +89,27 @@ interface TmuxOptionProbe {
   value: string;
 }
 
+interface TmuxPaneContext {
+  sessionName: string;
+  sessionId: string;
+  windowId: string;
+  paneId: string;
+}
+
+async function readTmuxPaneContext(paneTarget: string): Promise<TmuxPaneContext | null> {
+  try {
+    const result = await runProcess(
+      'tmux',
+      ['display-message', '-p', '-t', paneTarget, '#{session_name}\t#{session_id}\t#{window_id}\t#{pane_id}'],
+      2000,
+    );
+    const [sessionName = '', sessionId = '', windowId = '', paneId = ''] = safeString(result.stdout).trim().split('\t');
+    return { sessionName: sessionName.trim(), sessionId: sessionId.trim(), windowId: windowId.trim(), paneId: paneId.trim() };
+  } catch {
+    return null;
+  }
+}
+
 async function probeTmuxOption(targetValue: string, optionName: string, { pane = false } = {}): Promise<TmuxOptionProbe> {
   const target = safeString(targetValue).trim();
   if (!target) return { status: 'absent', value: '' };
@@ -124,60 +145,51 @@ export interface ActualTmuxInstanceEvidence {
   instanceId: string;
   source: 'none' | 'pane' | 'session';
   paneTagStatus: 'not-requested' | 'present' | 'absent' | 'error';
+  sessionTagStatus: 'not-requested' | 'present' | 'absent' | 'error';
+  sessionId: string;
+  windowId: string;
+  contextStable: boolean;
 }
 
 export async function probeActualTmuxInstanceEvidence(paneTarget?: string): Promise<ActualTmuxInstanceEvidence> {
   const resolvedPaneTarget = safeString(paneTarget ?? process.env.TMUX_PANE ?? '').trim();
-  let sessionName = '';
-  if (resolvedPaneTarget) {
-    try {
-      const result = await runProcess('tmux', ['display-message', '-p', '-t', resolvedPaneTarget, '#S'], 2000);
-      sessionName = safeString(result.stdout).trim();
-    } catch {
-      // A pane target without a session cannot provide session-tag evidence.
-    }
-  } else {
-    sessionName = readCurrentTmuxSessionName();
-  }
-
+  const beforeContext = resolvedPaneTarget ? await readTmuxPaneContext(resolvedPaneTarget) : null;
+  const sessionName = beforeContext?.sessionName ?? (resolvedPaneTarget ? '' : readCurrentTmuxSessionName());
   const paneProbe = resolvedPaneTarget
     ? await probeTmuxOption(resolvedPaneTarget, OMX_PANE_INSTANCE_OPTION, { pane: true })
     : { status: 'absent' as const, value: '' };
+  const sessionProbe = sessionName
+    ? await probeTmuxOption(sessionName, OMX_INSTANCE_OPTION)
+    : { status: 'absent' as const, value: '' };
+  const afterContext = resolvedPaneTarget ? await readTmuxPaneContext(resolvedPaneTarget) : null;
+  const contextStable = Boolean(
+    beforeContext
+    && afterContext
+    && beforeContext.sessionName
+    && beforeContext.sessionId
+    && beforeContext.windowId
+    && beforeContext.paneId === resolvedPaneTarget
+    && beforeContext.sessionName === afterContext.sessionName
+    && beforeContext.sessionId === afterContext.sessionId
+    && beforeContext.windowId === afterContext.windowId
+    && beforeContext.paneId === afterContext.paneId,
+  );
   const paneTagStatus = resolvedPaneTarget ? paneProbe.status : 'not-requested';
-  if (paneProbe.status === 'present') {
-    return {
-      paneTarget: resolvedPaneTarget,
-      sessionName,
-      paneInstanceId: paneProbe.value,
-      sessionInstanceId: '',
-      instanceId: paneProbe.value,
-      source: 'pane',
-      paneTagStatus,
-    };
-  }
-  if (paneProbe.status === 'error') {
-    return {
-      paneTarget: resolvedPaneTarget,
-      sessionName,
-      paneInstanceId: '',
-      sessionInstanceId: '',
-      instanceId: '',
-      source: 'none',
-      paneTagStatus,
-    };
-  }
-
-  const sessionInstanceId = sessionName
-    ? await readTmuxSessionInstanceId(sessionName)
-    : '';
+  const sessionTagStatus = sessionName ? sessionProbe.status : 'not-requested';
+  const paneInstanceId = paneProbe.status === 'error' ? '' : paneProbe.value;
+  const sessionInstanceId = paneProbe.status === 'error' || sessionProbe.status === 'error' ? '' : sessionProbe.value;
   return {
     paneTarget: resolvedPaneTarget,
     sessionName,
-    paneInstanceId: '',
+    paneInstanceId,
     sessionInstanceId,
-    instanceId: sessionInstanceId,
-    source: sessionInstanceId ? 'session' : 'none',
+    instanceId: paneInstanceId || sessionInstanceId,
+    source: paneProbe.status === 'error' ? 'none' : paneInstanceId ? 'pane' : sessionInstanceId ? 'session' : 'none',
     paneTagStatus,
+    sessionTagStatus,
+    sessionId: beforeContext?.sessionId ?? '',
+    windowId: beforeContext?.windowId ?? '',
+    contextStable,
   };
 }
 
@@ -187,11 +199,10 @@ export function tmuxEvidenceBindsCandidate(
 ): boolean {
   const candidate = safeString(candidateSessionId).trim();
   if (!candidate) return false;
-  if (evidence.paneTagStatus === 'present') {
-    return evidence.source === 'pane' && evidence.paneInstanceId === candidate;
-  }
-  return evidence.paneTagStatus === 'absent'
-    && evidence.source === 'session'
+  return evidence.contextStable
+    && evidence.paneTagStatus === 'present'
+    && evidence.sessionTagStatus === 'present'
+    && evidence.paneInstanceId === candidate
     && evidence.sessionInstanceId === candidate;
 }
 

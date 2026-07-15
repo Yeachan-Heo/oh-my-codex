@@ -2883,7 +2883,7 @@ PY`,
       };
       assert.equal(reboundPointer.session_id, canonicalSessionId);
       assert.equal(reboundPointer.native_session_id, nativeSessionId);
-      assert.equal(reboundPointer.owner_omx_session_id, ownerSessionId);
+      assert.equal(reboundPointer.owner_omx_session_id, undefined);
 
       const afterAlias = await dispatchCodexNativeHook(
         {
@@ -2899,6 +2899,7 @@ PY`,
       assert.equal(afterAlias.skillState?.session_id, canonicalSessionId);
       assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "deep-interview-state.json")), true);
       assert.equal(existsSync(join(stateDir, "sessions", ownerSessionId, "deep-interview-state.json")), false);
+      process.env.OMX_SESSION_ID = canonicalSessionId;
 
       const terminalWrite = await executeStateOperation("state_write", {
         mode: "deep-interview",
@@ -3003,7 +3004,7 @@ PY`,
         owner_omx_session_id?: string;
       };
       assert.equal(stalePointer.session_id, "native-stale-3138");
-      assert.equal(stalePointer.owner_omx_session_id, "omx-stale-3138");
+      assert.equal(stalePointer.owner_omx_session_id, undefined);
 
       const foreignCwd = join(root, "foreign");
       const foreignStatePath = join(foreignCwd, ".omx", "state", "session.json");
@@ -9145,29 +9146,52 @@ export async function onHookEvent(event) {
 			const tmuxLog = join(cwd, "tmux.log");
 			await writeFile(
 				join(binDir, "tmux"),
-				`#!/usr/bin/env bash
+`#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\\n' "$*" >> ${JSON.stringify(tmuxLog)}
-case "$1" in
-  list-panes)
-    printf '%%1\\tcodex\\tcodex\\n'
-    ;;
+printf '%s\n' "$*" >> ${JSON.stringify(tmuxLog)}
+cmd="$1"
+shift || true
+case "$cmd" in
   display-message)
-    case "$*" in
-      *'#S') printf 'omx-hud-reconcile\n' ;;
-      *) printf '200\t60\n' ;;
+    target=""
+    fmt=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        -p) shift ;;
+        -t) target="$2"; shift 2 ;;
+        *) fmt="$1"; shift ;;
+      esac
+    done
+    case "$fmt" in
+      '#{session_name}'$'\t''#{session_id}'$'\t''#{window_id}'$'\t''#{pane_id}')
+        printf 'omx-hud-reconcile\t$7\t@3\t%%1\n'
+        ;;
+      '#{session_id}'$'\t''#{window_id}') printf '$7\t@3\n' ;;
+      '#S') printf 'omx-hud-reconcile\n' ;;
     esac
     ;;
   show-option|show-options)
-    case "$*" in
-      *'@omx_pane_instance_id') printf 'sess-hud-1\n' ;;
-    esac
+    target=""
+    pane_scope=0
+    option="\${@: -1}"
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        -p) pane_scope=1; shift ;;
+        -t) target="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [[ "$pane_scope" == 1 && ( "$target" == '%1' || "$target" == '%9' ) && "$option" == '@omx_pane_instance_id' ]]; then
+      printf 'sess-hud-1\n'
+    elif [[ "$pane_scope" == 0 && "$target" == 'omx-hud-reconcile' && "$option" == '@omx_instance_id' ]]; then
+      printf 'sess-hud-1\n'
+    fi
     ;;
-  split-window)
-    printf '%%9\\n'
+  list-panes)
+    printf '%%1\x1fcodex\x1f0\x1f0\x1f200\x1f60\x1f59\x1f200\x1f60\x1fsess-hud-1\x1fsess-hud-1\x1fcodex\x1f%s\n' ${JSON.stringify(cwd)}
     ;;
-  resize-pane)
-    ;;
+  split-window) printf '%%9\n' ;;
+  resize-pane) ;;
 esac
 `,
 			);
@@ -9303,30 +9327,53 @@ esac
 			const tmuxLog = join(cwd, "tmux.log");
 			await writeFile(
 				join(binDir, "tmux"),
-				`#!/usr/bin/env bash
+`#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> ${JSON.stringify(tmuxLog)}
-case "$1" in
-  list-panes)
-    printf '%%1\tcodex\tcodex\n'
-    printf '%%2\tnode\texec env OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\n'
-    ;;
+cmd="$1"
+shift || true
+case "$cmd" in
   display-message)
-    case "$*" in
-      *'#S') printf 'omx-hud-reuse\n' ;;
-      *) printf '200\t60\n' ;;
+    target=""
+    fmt=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        -p) shift ;;
+        -t) target="$2"; shift 2 ;;
+        *) fmt="$1"; shift ;;
+      esac
+    done
+    case "$fmt" in
+      '#{session_name}'$'\t''#{session_id}'$'\t''#{window_id}'$'\t''#{pane_id}')
+        printf 'omx-hud-reuse\t$8\t@4\t%%1\n'
+        ;;
+      '#{session_id}'$'\t''#{window_id}') printf '$8\t@4\n' ;;
+      '#S') printf 'omx-hud-reuse\n' ;;
     esac
     ;;
   show-option|show-options)
-    case "$*" in
-      *'@omx_pane_instance_id') printf 'omx-canonical-hud-reuse\n' ;;
-    esac
+    target=""
+    pane_scope=0
+    option="\${@: -1}"
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        -p) pane_scope=1; shift ;;
+        -t) target="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [[ "$pane_scope" == 1 && ( "$target" == '%1' || "$target" == '%9' ) && "$option" == '@omx_pane_instance_id' ]]; then
+      printf 'omx-canonical-hud-reuse\n'
+    elif [[ "$pane_scope" == 0 && "$target" == 'omx-hud-reuse' && "$option" == '@omx_instance_id' ]]; then
+      printf 'omx-canonical-hud-reuse\n'
+    fi
     ;;
-  resize-pane)
+  list-panes)
+    printf '%%1\x1fcodex\x1f0\x1f0\x1f200\x1f60\x1f59\x1f200\x1f60\x1fomx-canonical-hud-reuse\x1fomx-canonical-hud-reuse\x1fcodex\x1f%s\n' ${JSON.stringify(cwd)}
+    printf '%%2\x1fnode\x1f0\x1f60\x1f200\x1f3\x1f62\x1f200\x1f60\x1f\x1f\x1fexec env OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\x1f%s\n' ${JSON.stringify(cwd)}
     ;;
-  split-window)
-    printf '%%9\n'
-    ;;
+  resize-pane) ;;
+  split-window) printf '%%9\n' ;;
 esac
 `,
 			);

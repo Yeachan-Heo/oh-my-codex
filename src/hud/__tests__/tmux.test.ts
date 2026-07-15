@@ -8,6 +8,7 @@ import {
   buildHudResizeHookName,
   buildHudResizeHookSlot,
   buildHudWatchCommand,
+  createHudWatchPane,
   findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
   hudPaneMatchesOwner,
@@ -24,6 +25,22 @@ import {
 } from '../tmux.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS } from '../constants.js';
 
+
+describe('HUD pane creation', () => {
+  it('rolls back only the new pane when instance-tag readback fails', () => {
+    const calls: string[][] = [];
+    const result = createHudWatchPane('/repo', 'node omx.js hud --watch', { instanceId: 'session-a' }, (args) => {
+      calls.push(args);
+      if (args[0] === 'split-window') return '%new\n';
+      if (args[0] === 'show-option') return 'wrong-session\n';
+      return '';
+    });
+
+    assert.equal(result, null);
+    assert.deepEqual(calls.at(-1), ['kill-pane', '-t', '%new']);
+    assert.equal(calls.filter((args) => args[0] === 'kill-pane').length, 1);
+  });
+});
 describe('HUD resize hook helpers', () => {
   it('builds a deterministic hook name from the tmux session, window, and leader identity', () => {
     assert.equal(buildHudResizeHookName('$7', '@3', '%1'), 'omx_hud_resize_7_3_1');
