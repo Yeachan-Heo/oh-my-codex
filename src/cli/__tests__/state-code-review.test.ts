@@ -92,6 +92,22 @@ async function runCliReview(input: Record<string, unknown>) {
 	}
 }
 
+async function runCliGet(input: Record<string, unknown>) {
+	const stdout: string[] = [];
+	const stderr: string[] = [];
+	const previousExitCode = process.exitCode;
+	process.exitCode = undefined;
+	try {
+		await stateCommand(["review-get", "--input", "-", "--json"], {
+			readStdin: async () => Buffer.from(JSON.stringify(input)),
+			stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line),
+		});
+		return { stdout, stderr, exitCode: process.exitCode };
+	} finally {
+		process.exitCode = previousExitCode;
+	}
+}
+
 describe("omx state code-review recovery aliases", () => {
 	it("maps every review alias to the matching internal operation and stdin object", async () => {
 		const expected: Array<[string, ReviewOperationName]> = [
@@ -162,6 +178,26 @@ describe("omx state code-review recovery aliases", () => {
 			},
 		});
 		assert.deepEqual(calls, [{ operation: "state_read", input: { mode: "ralph" } }]);
+	});
+
+	it("rejects every readiness field at the real CLI adapter while MCP observation remains legal", async () => {
+		for (const readiness of [
+			{ lane_id: "reviewer-batch-1" },
+			{ wait: false },
+			{ maximum_wait_ms: 1_000 },
+		]) {
+			const cli = await runCliGet({ workingDirectory: process.cwd(), ...readiness });
+			assert.equal(cli.exitCode, 1);
+			assert.equal((JSON.parse(cli.stderr[0] ?? "") as { code?: string }).code, "INVALID_INVOCATION");
+		}
+
+		const workingDirectory = await mkdtemp(join(tmpdir(), "omx-state-review-mcp-readiness-"));
+		await seedRunningArchitect(workingDirectory);
+		const mcp = await executeReviewOperation("review_get", {
+			workingDirectory, session_id: "session-1", review_id: REVIEW_ID,
+			lane_id: "architect-global", wait: false,
+		}, { source: "MCP", now: () => NOW });
+		assert.equal(mcp.isError, undefined);
 	});
 
 	it("rejects fresh CLI RESULT but recovers the same committed proposal key", async () => {

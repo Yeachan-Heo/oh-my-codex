@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { watch } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   LaneActivityEvent,
@@ -104,6 +105,14 @@ function parseTimestamp(value: string, name: string): number {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', `${name} timestamp is invalid`);
   return parsed;
+}
+
+function monotonicTimestamp(clock: () => number, name: string): number {
+  const value = clock();
+  if (!Number.isFinite(value)) {
+    throw new ReviewCoordinatorError('INVALID_CONFIGURATION', `${name} monotonic clock is invalid`);
+  }
+  return value;
 }
 
 function addMilliseconds(timestamp: string, milliseconds: number): string {
@@ -498,13 +507,22 @@ export async function waitForLaneRunning(input: {
   load: () => ReviewRecord | Promise<ReviewRecord>;
   lane_id: string;
   now: () => Date;
-  waitForChange: (deadline_at: string) => void | Promise<void>;
+  monotonicNow?: () => number;
+  waitForChange: (deadline_at: string, maximum_wait_ms: number) => void | Promise<void>;
   maximum_wait_ms?: number;
 }): Promise<LaneRecord> {
   const maximum = Math.min(READINESS_WAIT_MS, Math.max(0, input.maximum_wait_ms ?? READINESS_WAIT_MS));
-  const deadline = input.now().getTime() + maximum;
+  const monotonicNow = input.monotonicNow ?? (() => performance.now());
+  const startedAt = monotonicTimestamp(monotonicNow, 'readiness start');
+  let previousMonotonic = startedAt;
   while (true) {
     const record = await input.load();
+    const currentMonotonic = monotonicTimestamp(monotonicNow, 'readiness elapsed');
+    if (currentMonotonic < previousMonotonic) {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'readiness monotonic clock moved backwards');
+    }
+    previousMonotonic = currentMonotonic;
+    const remainingBudget = maximum - (currentMonotonic - startedAt);
     const lane = record.lanes.find((candidate) => candidate.lane_id === input.lane_id && candidate.attempt === record.current_attempt);
     if (lane === undefined) {
       const staleAttempt = record.lanes.some((candidate) => candidate.lane_id === input.lane_id);
@@ -513,16 +531,29 @@ export async function waitForLaneRunning(input: {
         staleAttempt ? 'lane readiness attempt does not match the current review attempt' : 'lane readiness target is unknown',
       );
     }
-    if (lane.status === 'RUNNING') return lane;
+    if (lane.status === 'RUNNING') {
+      if (remainingBudget <= 0) {
+        throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
+      }
+      return lane;
+    }
     if (lane.status !== 'PENDING') {
       throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', `lane readiness ended in ${lane.status}`);
     }
-    const laneDeadline = parseTimestamp(lane.idle_deadline_at, 'lane readiness deadline');
-    const effectiveDeadline = Math.min(deadline, laneDeadline);
-    if (input.now().getTime() >= effectiveDeadline) {
+    if (remainingBudget <= 0) {
       throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
     }
-    await input.waitForChange(new Date(effectiveDeadline).toISOString());
+    const wallNow = input.now();
+    if (!(wallNow instanceof Date) || !Number.isFinite(wallNow.getTime())) {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'readiness wall clock is invalid');
+    }
+    const laneDeadline = parseTimestamp(lane.idle_deadline_at, 'lane readiness deadline');
+    const laneRemaining = laneDeadline - wallNow.getTime();
+    if (laneRemaining <= 0) {
+      throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
+    }
+    const nextWait = Math.min(remainingBudget, laneRemaining);
+    await input.waitForChange(new Date(wallNow.getTime() + nextWait).toISOString(), nextWait);
   }
 }
 
@@ -1470,6 +1501,7 @@ export interface ReviewOperationHostContext {
   seeded_review_id?: string;
   root_thread_id?: string;
   now?: () => Date;
+  monotonicNow?: () => number;
   loadTracker?(input: {
     workingDirectory: string;
     session_id?: string;
@@ -1567,12 +1599,23 @@ function hostDependencies(
   };
 }
 
-function adaptiveReviewChangeWaiter(reviewPath: string): (deadlineAt: string) => Promise<void> {
+function adaptiveReviewChangeWaiter(
+  reviewPath: string,
+  monotonicNow: () => number = () => performance.now(),
+): (deadlineAt: string, maximumWaitMs: number) => Promise<void> {
   let backoffMs = 50;
-  return async (deadlineAt) => {
-    const remainingMs = Math.max(0, Date.parse(deadlineAt) - Date.now());
-    if (remainingMs === 0) return;
-    const delayMs = Math.min(remainingMs, backoffMs);
+  let previousMonotonic = monotonicTimestamp(monotonicNow, 'adaptive wait start');
+  return async (deadlineAt, maximumWaitMs) => {
+    if (!Number.isFinite(Date.parse(deadlineAt))
+      || !Number.isFinite(maximumWaitMs) || maximumWaitMs <= 0) {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'adaptive review wait deadline is invalid');
+    }
+    const startedAt = monotonicTimestamp(monotonicNow, 'adaptive wait elapsed');
+    if (startedAt < previousMonotonic) {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'adaptive wait monotonic clock moved backwards');
+    }
+    previousMonotonic = startedAt;
+    const delayMs = Math.min(maximumWaitMs, backoffMs);
     backoffMs = Math.min(backoffMs * 2, 1_000);
     await new Promise<void>((resolveWait) => {
       let settled = false;
@@ -1596,6 +1639,11 @@ function adaptiveReviewChangeWaiter(reviewPath: string): (deadlineAt: string) =>
         // The adaptive monotonic timer remains the condition-poll fallback.
       }
     });
+    const finishedAt = monotonicTimestamp(monotonicNow, 'adaptive wait elapsed');
+    if (finishedAt < previousMonotonic) {
+      throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'adaptive wait monotonic clock moved backwards');
+    }
+    previousMonotonic = finishedAt;
   };
 }
 
@@ -1829,6 +1877,10 @@ export async function executeReviewOperation(
           ['workingDirectory', 'session_id', 'review_id', 'lane_id', 'wait', 'maximum_wait_ms'],
           ['workingDirectory'],
         );
+        if (host.source === 'CLI'
+          && ['lane_id', 'wait', 'maximum_wait_ms'].some((field) => Object.hasOwn(input, field))) {
+          throw new ReviewCoordinatorError('INVALID_INVOCATION', 'CLI review_get does not accept readiness fields');
+        }
         const reviewId = input.review_id === undefined
           ? await activeReviewId(context)
           : operationUuid(input.review_id, 'review_id');
@@ -1862,11 +1914,16 @@ export async function executeReviewOperation(
         };
         if (wait) {
           const paths = await resolveReviewPersistencePaths(context);
+          const monotonicNow = host.monotonicNow ?? (() => performance.now());
           await waitForLaneRunning({
             load,
             lane_id: laneId!,
             now: () => operationNow(host),
-            waitForChange: adaptiveReviewChangeWaiter(join(paths.reviewRoot, reviewId, 'review.json')),
+            monotonicNow,
+            waitForChange: adaptiveReviewChangeWaiter(
+              join(paths.reviewRoot, reviewId, 'review.json'),
+              monotonicNow,
+            ),
             ...(maximumWaitMs === undefined ? {} : { maximum_wait_ms: maximumWaitMs }),
           });
         }

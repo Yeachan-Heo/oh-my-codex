@@ -683,6 +683,33 @@ describe('review coordinator failure and concurrency invariants', () => {
     }), (error: unknown) => (error as { code?: string }).code === 'LANE_EVIDENCE_INVALID');
   });
 
+  it('expires the readiness budget by monotonic elapsed time across wall-clock rollback and jumps', async () => {
+    for (const wallDelta of [-60_000, 5_000]) {
+      const pending = initialReview(60_000);
+      let wallNow = START.getTime();
+      let monotonicNow = 1_000;
+      let waits = 0;
+      const request: Parameters<typeof waitForLaneRunning>[0] = {
+        load: () => pending,
+        lane_id: 'reviewer-batch-1',
+        now: () => new Date(wallNow),
+        monotonicNow: () => monotonicNow,
+        waitForChange: () => {
+          waits += 1;
+          if (waits > 3) throw new Error('monotonic readiness budget was exceeded');
+          wallNow += wallDelta;
+          monotonicNow += 10_000;
+        },
+        maximum_wait_ms: 30_000,
+      };
+      await assert.rejects(
+        waitForLaneRunning(request),
+        (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT',
+      );
+      assert.equal(waits, 3);
+    }
+  });
+
   it('blocks resume and finalization on scope drift and old-attempt late results', () => {
     const record = running();
     const blocked: ReviewRecord = {
