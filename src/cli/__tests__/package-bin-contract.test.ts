@@ -47,6 +47,7 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['sync:plugin:check'], 'node dist/scripts/sync-plugin-mirror.js --check');
     assert.equal(pkg.scripts?.['verify:plugin-bundle'], 'node dist/scripts/sync-plugin-mirror.js --check');
     assert.equal(pkg.scripts?.['verify:native-agents'], 'node dist/scripts/verify-native-agents.js');
+    assert.equal(pkg.scripts?.['verify:packed-assets'], 'node dist/scripts/verify-packed-assets.js');
     assert.equal(pkg.scripts?.prepack, 'npm run build && npm run verify:native-agents && npm run sync:plugin && npm run verify:plugin-bundle && npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.prepare, 'node src/scripts/prepare-build.js');
     assert.match(pkg.scripts?.postinstall ?? '', /dist\/scripts\/postinstall\.js/);
@@ -99,6 +100,11 @@ describe('package bin contract', () => {
     assert.ok(pkg.files?.includes('crates/'));
     assert.ok(pkg.files?.includes('plugins/'));
     assert.ok(pkg.files?.includes('.agents/plugins/marketplace.json'));
+    // ASSERTION-CHANGE-JUSTIFIED: packed verification must not borrow the broad source scripts tree or its fixtures.
+    assert.equal(pkg.files?.includes('src/scripts/'), false);
+    assert.ok(pkg.files?.includes('src/scripts/ask-claude.sh'));
+    assert.ok(pkg.files?.includes('src/scripts/ask-gemini.sh'));
+    assert.ok(pkg.files?.includes('src/scripts/prepare-build.js'));
 
     const binPath = join(process.cwd(), 'dist', 'cli', 'omx.js');
     const compiledCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');

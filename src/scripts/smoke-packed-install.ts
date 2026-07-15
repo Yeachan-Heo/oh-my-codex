@@ -11,6 +11,12 @@ import { pathToFileURL } from 'node:url';
 import {
   ensureReusableNodeModules,
 } from '../utils/repo-deps.js';
+import { prepareHermeticTestEnvironment } from './test-environment.js';
+import {
+  parseNpmPackManifest,
+  verifyPackedAssetManifest,
+  type NpmPackResult,
+} from './verify-packed-assets.js';
 
 export {
   hasUsableNodeModules,
@@ -68,7 +74,7 @@ export function ensureRepoDependencies(repoRoot: string, options: EnsureRepoDeps
   const {
     gitRunner = spawnSync,
     install = (cwd: string) => {
-      const result = spawnSync('npm', ['ci'], {
+      const result = spawnSync(npmBinName('npm'), ['ci'], {
         cwd,
         encoding: 'utf-8',
         stdio: 'pipe',
@@ -124,7 +130,7 @@ function npmBinName(name: string): string {
 }
 
 function resolveGlobalNodeModules(prefixDir: string): string {
-  const result = run('npm', ['root', '-g', '--prefix', prefixDir], { cwd: prefixDir });
+  const result = run(npmBinName('npm'), ['root', '-g', '--prefix', prefixDir], { cwd: prefixDir });
   const root = String(result.stdout || '').trim();
   if (!root) throw new Error('npm root -g did not return a node_modules directory');
   return root;
@@ -189,40 +195,34 @@ export function buildNativeHookSmokePayload(
   }
 }
 
-function smokeInstalledNativeHookDist(prefixDir: string): void {
+function smokeInstalledNativeHookDist(
+  prefixDir: string,
+  smokeCwd: string,
+  baseEnv: NodeJS.ProcessEnv,
+): void {
   const globalNodeModules = resolveGlobalNodeModules(prefixDir);
   const packageRoot = join(globalNodeModules, 'oh-my-codex');
   const hookScript = join(packageRoot, 'dist', 'scripts', 'codex-native-hook.js');
-  const smokeCwd = mkdtempSync(join(tmpdir(), 'omx-packed-hook-smoke-'));
-  try {
-    for (const eventName of PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS) {
-      const payload = buildNativeHookSmokePayload(eventName, smokeCwd);
-      const result = run(process.execPath, [realpathSync(hookScript)], {
-        cwd: smokeCwd,
-        env: {
-          ...process.env,
-          OMX_NATIVE_HOOK_DOCTOR_SMOKE: '1',
-          OMX_ROOT: join(smokeCwd, '.omx-packed-hook-root'),
-          OMX_SESSION_ID: `packed-install-smoke-${eventName}`,
-          OMX_SOURCE_CWD: smokeCwd,
-          OMX_STARTUP_CWD: smokeCwd,
-        },
-        input: JSON.stringify(payload),
-      });
-      validateHookStdout(eventName, result.stdout as string);
-    }
-  } finally {
-    rmSync(smokeCwd, { recursive: true, force: true });
+  for (const eventName of PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS) {
+    const payload = buildNativeHookSmokePayload(eventName, smokeCwd);
+    const result = run(process.execPath, [realpathSync(hookScript)], {
+      cwd: smokeCwd,
+      env: {
+        ...baseEnv,
+        OMX_NATIVE_HOOK_DOCTOR_SMOKE: '1',
+        OMX_ROOT: join(smokeCwd, '.omx-packed-hook-root'),
+        OMX_SESSION_ID: `packed-install-smoke-${eventName}`,
+        OMX_SOURCE_CWD: smokeCwd,
+        OMX_STARTUP_CWD: smokeCwd,
+      },
+      input: JSON.stringify(payload),
+    });
+    validateHookStdout(eventName, result.stdout as string);
   }
 }
 
-export function parseNpmPackJsonOutput(stdout: string): Array<{ filename: string }> {
-  const start = stdout.lastIndexOf('\n[');
-  const jsonText = (start >= 0 ? stdout.slice(start + 1) : stdout).trim();
-  if (!jsonText.startsWith('[')) {
-    throw new Error(`npm pack did not return JSON output: ${stdout.trim()}`);
-  }
-  return JSON.parse(jsonText) as Array<{ filename: string }>;
+export function parseNpmPackJsonOutput(stdout: string): NpmPackResult[] {
+  return parseNpmPackManifest(stdout);
 }
 
 async function main(): Promise<void> {
@@ -232,6 +232,11 @@ async function main(): Promise<void> {
   const tempRoot = mkdtempSync(join(tmpdir(), 'omx-packed-install-'));
   const prefixDir = join(tempRoot, 'prefix');
   mkdirSync(prefixDir, { recursive: true });
+  const hermetic = prepareHermeticTestEnvironment(join(tempRoot, 'hermetic'), {
+    baseEnv: process.env,
+    packageRoot: repoRoot,
+    isolateCwd: true,
+  });
 
   let tarballPath: string | undefined;
   try {
@@ -239,19 +244,30 @@ async function main(): Promise<void> {
       log: (message: string) => console.log(message),
     });
 
-    const pack = run('npm', ['pack', '--json'], { cwd: repoRoot });
+    const pack = run(npmBinName('npm'), ['pack', '--json'], { cwd: repoRoot, env: hermetic.env });
     const packOutput = parseNpmPackJsonOutput(pack.stdout as string);
+    verifyPackedAssetManifest(packOutput);
     const tarballName = packOutput[0]?.filename;
     if (!tarballName) throw new Error('npm pack did not return a tarball filename');
     tarballPath = join(repoRoot, tarballName);
 
-    run('npm', ['install', '-g', tarballPath, '--prefix', prefixDir], { cwd: repoRoot });
+    run(npmBinName('npm'), ['install', '-g', tarballPath, '--prefix', prefixDir], {
+      cwd: hermetic.cwd,
+      env: hermetic.env,
+    });
+
+    const globalNodeModules = resolveGlobalNodeModules(prefixDir);
+    const installedPackageRoot = join(globalNodeModules, 'oh-my-codex');
+    run(npmBinName('npm'), ['--prefix', installedPackageRoot, 'run', 'test:ci:compiled'], {
+      cwd: hermetic.cwd,
+      env: hermetic.env,
+    });
 
     const omxPath = join(prefixDir, process.platform === 'win32' ? '' : 'bin', npmBinName('omx'));
     for (const argv of PACKED_INSTALL_SMOKE_CORE_COMMANDS) {
-      run(omxPath, argv, { cwd: repoRoot });
+      run(omxPath, argv, { cwd: hermetic.cwd, env: hermetic.env });
     }
-    smokeInstalledNativeHookDist(prefixDir);
+    smokeInstalledNativeHookDist(prefixDir, hermetic.cwd, hermetic.env);
 
     console.log('packed install smoke: PASS');
   } finally {

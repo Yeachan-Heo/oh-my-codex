@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { createHermeticTestEnvironment, type HermeticTestEnvironment } from './test-environment.js';
 
 const DEFAULT_TEST_TIMEOUT_MS = 0;
 const DEFAULT_RUNNER_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -102,6 +103,15 @@ function buildChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return childEnv;
 }
 
+function createChildExecution(): HermeticTestEnvironment {
+  return createHermeticTestEnvironment({
+    baseEnv: buildChildEnv(process.env),
+    packageRoot: process.env.OMX_NODE_TEST_PACKAGE_ROOT || process.cwd(),
+    isolateCwd: parseBooleanEnv(process.env.OMX_NODE_TEST_ISOLATE_CWD),
+    preserveRuntimeEnv: true,
+  });
+}
+
 const roots = process.argv.slice(2);
 const targets = roots.length > 0 ? roots : ['dist'];
 const files: string[] = [];
@@ -140,8 +150,6 @@ console.error(
   }${runnerTimeoutMs > 0 ? `, and runner timeout ${runnerTimeoutMs}ms` : ', and runner timeout disabled'}, with per-file process isolation`,
 );
 
-const childEnv = buildChildEnv(process.env);
-
 function reportAbnormalExit(file: string, signal: NodeJS.Signals | null, errorMessage?: string): void {
   if (errorMessage) {
     console.error(`[run-test-files] node --test error for ${file}: ${errorMessage}`);
@@ -179,6 +187,7 @@ function terminateChild(child: ChildProcess): void {
 
 function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
   return new Promise((resolveRun) => {
+    const execution = createChildExecution();
     let finished = false;
     let sawFailure = false;
     let lastTapOk = 0;
@@ -194,7 +203,8 @@ function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
 
     const child = spawn(process.execPath, [...sharedTestArgs, file], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: childEnv,
+      cwd: execution.cwd,
+      env: execution.env,
       detached: !isWindows(),
     });
 
@@ -210,6 +220,7 @@ function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
       child.stdout?.destroy();
       child.stderr?.destroy();
       child.unref();
+      execution.cleanup();
       resolveRun({
         status,
         signal,
@@ -322,12 +333,20 @@ function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
 }
 
 function runFileSync(file: string): TestRunResult {
-  const result = spawnSync(process.execPath, [...sharedTestArgs, file], {
-    stdio: 'inherit',
-    env: childEnv,
-    timeout: runnerTimeoutMs > 0 ? runnerTimeoutMs : undefined,
-    killSignal: 'SIGTERM',
-  });
+  const execution = createChildExecution();
+  const result = (() => {
+    try {
+      return spawnSync(process.execPath, [...sharedTestArgs, file], {
+        stdio: 'inherit',
+        cwd: execution.cwd,
+        env: execution.env,
+        timeout: runnerTimeoutMs > 0 ? runnerTimeoutMs : undefined,
+        killSignal: 'SIGTERM',
+      });
+    } finally {
+      execution.cleanup();
+    }
+  })();
 
   const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
   if (result.status !== 0 && (result.error || typeof result.status !== 'number')) {

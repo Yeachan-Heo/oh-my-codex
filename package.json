@@ -65,6 +65,7 @@
     "sync:plugin:check": "node dist/scripts/sync-plugin-mirror.js --check",
     "verify:plugin-bundle": "node dist/scripts/sync-plugin-mirror.js --check",
     "verify:native-agents": "node dist/scripts/verify-native-agents.js",
+    "verify:packed-assets": "node dist/scripts/verify-packed-assets.js",
     "prompt:inventory": "node dist/scripts/prompt-inventory.js",
     "build:api": "node dist/scripts/build-api.js",
     "prepare": "node src/scripts/prepare-build.js"
@@ -81,7 +82,9 @@
     "skills/",
     "prompts/",
     "templates/",
-    "src/scripts/",
+    "src/scripts/ask-claude.sh",
+    "src/scripts/ask-gemini.sh",
+    "src/scripts/prepare-build.js",
     "plugins/",
     ".agents/plugins/marketplace.json"
   ],

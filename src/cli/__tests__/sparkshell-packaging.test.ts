@@ -42,7 +42,9 @@ describe('sparkshell packaging scaffold', () => {
     assert.equal(pkg.files?.includes('bin/'), false, 'did not expect broad bin/ allowlist in package files');
     assert.equal(pkg.files?.includes('bin/native/'), false, 'did not expect package files to include bin/native/');
     assert.equal(pkg.files?.includes('dist/'), true);
-    assert.equal(pkg.files?.includes('src/scripts/'), true);
+    // ASSERTION-CHANGE-JUSTIFIED: publishing the entire source scripts tree leaked tests and fixtures; only runtime shell/prepare inputs are legal.
+    assert.equal(pkg.files?.includes('src/scripts/'), false);
+    assert.equal(pkg.files?.includes('src/scripts/prepare-build.js'), true);
 
     const buildScriptPath = join(process.cwd(), 'dist', 'scripts', 'build-sparkshell.js');
     const testScriptPath = join(process.cwd(), 'dist', 'scripts', 'test-sparkshell.js');
