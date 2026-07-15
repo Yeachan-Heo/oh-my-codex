@@ -500,6 +500,119 @@ jobs:
           name: team-critical-coverage
           path: coverage/team/
 
+  coverage-workflow-critical:
+    name: Coverage Gate (Workflow Critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, build-dist]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - name: Run workflow-critical checked coverage
+        run: npm run coverage:workflow-critical:compiled
+
+  coverage-ts-full-checked:
+    name: Coverage Gate (Full TypeScript Checked)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [changes, build-dist]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install test prerequisites
+        run: .github/scripts/install-prereqs.sh build-essential tmux -- cc tmux
+      - name: Setup Rust for harness-backed Node tests
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - name: Run checked full TypeScript coverage
+        run: npm run coverage:ts:full:checked:compiled
+
+  mutation-core:
+    name: Mutation Gate (Core Decisions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, build-dist]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - name: Run core decision mutation gate
+        run: npm run test:mutation:core:compiled
+
+  packed-install:
+    name: Packed Install Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, build-dist]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - name: Run real packed-install verification
+        run: npm run smoke:packed-install
+
+  code-review-cross-platform:
+    name: Code Review (${{ matrix.os }} / Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    needs: [changes]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: [20, 26]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:code-review:cross-platform:compiled
+
   ralph-persistence-gate:
     name: Ralph Persistence Gate
     runs-on: ubuntu-latest
@@ -556,7 +669,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, ralph-persistence-gate, build]
+    needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, coverage-workflow-critical, coverage-ts-full-checked, mutation-core, packed-install, code-review-cross-platform, ralph-persistence-gate, build]
     steps:
       - name: Check required job results
         shell: bash
@@ -577,6 +690,11 @@ jobs:
           BUILD_DIST_RESULT: ${{ needs.build-dist.result }}
           TEST_RESULT: ${{ needs.test.result }}
           COVERAGE_TEAM_CRITICAL_RESULT: ${{ needs.coverage-team-critical.result }}
+          COVERAGE_WORKFLOW_CRITICAL_RESULT: ${{ needs.coverage-workflow-critical.result }}
+          COVERAGE_TS_FULL_CHECKED_RESULT: ${{ needs.coverage-ts-full-checked.result }}
+          MUTATION_CORE_RESULT: ${{ needs.mutation-core.result }}
+          PACKED_INSTALL_RESULT: ${{ needs.packed-install.result }}
+          CODE_REVIEW_CROSS_PLATFORM_RESULT: ${{ needs.code-review-cross-platform.result }}
           RALPH_PERSISTENCE_GATE_RESULT: ${{ needs.ralph-persistence-gate.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           REASON: ${{ needs.changes.outputs.reason }}
@@ -629,6 +747,11 @@ jobs:
           echo "  build-dist: $BUILD_DIST_RESULT"
           echo "  test: $TEST_RESULT"
           echo "  coverage-team-critical: $COVERAGE_TEAM_CRITICAL_RESULT"
+          echo "  coverage-workflow-critical: $COVERAGE_WORKFLOW_CRITICAL_RESULT"
+          echo "  coverage-ts-full-checked: $COVERAGE_TS_FULL_CHECKED_RESULT"
+          echo "  mutation-core: $MUTATION_CORE_RESULT"
+          echo "  packed-install: $PACKED_INSTALL_RESULT"
+          echo "  code-review-cross-platform: $CODE_REVIEW_CROSS_PLATFORM_RESULT"
           echo "  ralph-persistence-gate: $RALPH_PERSISTENCE_GATE_RESULT"
           echo "  build: $BUILD_RESULT"
 
@@ -654,6 +777,11 @@ jobs:
           check_job build-dist "$BUILD_DIST_RESULT" "$dist_active"
           check_job test "$TEST_RESULT" "$ts_active"
           check_job coverage-team-critical "$COVERAGE_TEAM_CRITICAL_RESULT" "$ts_active"
+          check_job coverage-workflow-critical "$COVERAGE_WORKFLOW_CRITICAL_RESULT" "$ts_active"
+          check_job coverage-ts-full-checked "$COVERAGE_TS_FULL_CHECKED_RESULT" "$ts_active"
+          check_job mutation-core "$MUTATION_CORE_RESULT" "$ts_active"
+          check_job packed-install "$PACKED_INSTALL_RESULT" "$dist_active"
+          check_job code-review-cross-platform "$CODE_REVIEW_CROSS_PLATFORM_RESULT" "$ts_active"
           check_job ralph-persistence-gate "$RALPH_PERSISTENCE_GATE_RESULT" "$ts_active"
           check_job build "$BUILD_RESULT" "$build_active"
 

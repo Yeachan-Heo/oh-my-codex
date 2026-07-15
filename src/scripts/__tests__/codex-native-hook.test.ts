@@ -193,12 +193,16 @@ async function setTeamPaneIds(
 async function withIsolatedHome<T>(prefix: string, run: (homeDir: string) => Promise<T>): Promise<T> {
   const homeDir = await mkdtemp(join(tmpdir(), `omx-native-hook-home-${prefix}-`));
   const previousHome = process.env.HOME;
+  const previousCodexHome = process.env.CODEX_HOME;
   try {
     process.env.HOME = homeDir;
+    process.env.CODEX_HOME = join(homeDir, ".codex");
     return await run(homeDir);
   } finally {
     if (typeof previousHome === "string") process.env.HOME = previousHome;
     else delete process.env.HOME;
+    if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+    else delete process.env.CODEX_HOME;
     await rm(homeDir, { recursive: true, force: true });
   }
 }

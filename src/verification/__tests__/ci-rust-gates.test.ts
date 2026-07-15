@@ -196,7 +196,18 @@ describe('CI Rust gates', () => {
     for (const jobName of ['rustfmt', 'clippy', 'rust-tests']) {
       assertJobIf(workflow, jobName, /full_suite == 'true'.*rust_changed == 'true'.*native_changed == 'true'/s);
     }
-    for (const jobName of ['lint', 'typecheck', 'test', 'coverage-team-critical', 'ralph-persistence-gate']) {
+    for (const jobName of [
+      'lint',
+      'typecheck',
+      'test',
+      'coverage-team-critical',
+      'coverage-workflow-critical',
+      'coverage-ts-full-checked',
+      'mutation-core',
+      'packed-install',
+      'code-review-cross-platform',
+      'ralph-persistence-gate',
+    ]) {
       assertJobIf(workflow, jobName, /full_suite == 'true'.*ts_changed == 'true'.*shared_config_changed == 'true'/s);
     }
     assertJobIf(
@@ -266,7 +277,20 @@ describe('CI Rust gates', () => {
   it('uses npm package caching without skipping clean dependency installs', () => {
     const workflow = readCiWorkflow();
 
-    for (const jobName of ['lint', 'typecheck', 'build-dist', 'test', 'coverage-team-critical', 'ralph-persistence-gate', 'build']) {
+    for (const jobName of [
+      'lint',
+      'typecheck',
+      'build-dist',
+      'test',
+      'coverage-team-critical',
+      'coverage-workflow-critical',
+      'coverage-ts-full-checked',
+      'mutation-core',
+      'packed-install',
+      'code-review-cross-platform',
+      'ralph-persistence-gate',
+      'build',
+    ]) {
       const job = jobBlock(workflow, jobName);
 
       assert.match(job, /uses:\s*actions\/setup-node@v6/);
@@ -283,7 +307,7 @@ describe('CI Rust gates', () => {
 
     assert.match(
       workflow,
-      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, ralph-persistence-gate, build\]/,
+      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, coverage-workflow-critical, coverage-ts-full-checked, mutation-core, packed-install, code-review-cross-platform, ralph-persistence-gate, build\]/,
     );
   });
 
@@ -309,13 +333,18 @@ describe('CI Rust gates', () => {
       'build-dist',
       'test',
       'coverage-team-critical',
+      'coverage-workflow-critical',
+      'coverage-ts-full-checked',
+      'mutation-core',
+      'packed-install',
+      'code-review-cross-platform',
       'ralph-persistence-gate',
       'build',
     ];
 
     assert.match(
       ciStatusJob,
-      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, ralph-persistence-gate, build\]/,
+      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, coverage-workflow-critical, coverage-ts-full-checked, mutation-core, packed-install, code-review-cross-platform, ralph-persistence-gate, build\]/,
     );
 
     for (const jobName of requiredJobs) {
@@ -335,11 +364,26 @@ describe('CI Rust gates', () => {
     assert.match(ciStatusJob, /All required CI checks passed for active lanes/);
   });
 
-  it('keeps expensive report-only coverage out of the required CI path', () => {
+  // ASSERTION-CHANGE-JUSTIFIED: the 2026-07-14 testing contract makes checked full coverage a required release gate.
+  it('makes checked full coverage a required CI result instead of a report-only lane', () => {
     const workflow = readCiWorkflow();
+    const ciStatusJob = jobBlock(workflow, 'ci-status');
 
-    assert.doesNotMatch(workflow, /^  coverage-ts-full:/m);
-    assert.doesNotMatch(workflow, /needs\.coverage-ts-full\.result/);
+    assert.match(workflow, /^  coverage-ts-full-checked:/m);
+    assert.match(jobBlock(workflow, 'coverage-ts-full-checked'), /npm run coverage:ts:full:checked:compiled/);
+    assert.match(ciStatusJob, /needs\.coverage-ts-full-checked\.result/);
+  });
+
+  it('runs code-review tests on Ubuntu, macOS, and Windows with fixed Node 20 and 26 majors', () => {
+    const job = jobBlock(readCiWorkflow(), 'code-review-cross-platform');
+
+    assert.match(job, /runs-on:\s*\$\{\{ matrix\.os \}\}/);
+    assert.match(job, /os:\s*\[ubuntu-latest, macos-latest, windows-latest\]/);
+    assert.match(job, /node-version:\s*\[20, 26\]/);
+    assert.match(job, /node-version:\s*\$\{\{ matrix\.node-version \}\}/);
+    assert.match(job, /npm run build/);
+    assert.match(job, /npm run test:code-review:cross-platform:compiled/);
+    assert.match(job, /fail-fast:\s*false/);
   });
 
   it('runs typecheck once while retaining the Node 22 smoke lane for runtime coverage', () => {
@@ -366,6 +410,11 @@ describe('CI Rust gates', () => {
       'build-dist',
       'test',
       'coverage-team-critical',
+      'coverage-workflow-critical',
+      'coverage-ts-full-checked',
+      'mutation-core',
+      'packed-install',
+      'code-review-cross-platform',
       'ralph-persistence-gate',
       'build',
       'ci-status',

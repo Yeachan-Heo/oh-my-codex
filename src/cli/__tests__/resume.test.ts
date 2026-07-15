@@ -15,13 +15,20 @@ function runOmx(
   const testDir = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(testDir, '..', '..', '..');
   const omxBin = join(repoRoot, 'dist', 'cli', 'omx.js');
+  const env = {
+    ...process.env,
+    ...envOverrides,
+  };
+  // These tests exercise default/project Codex-home selection. The outer
+  // hermetic runner owns a CODEX_HOME, so child fixtures must explicitly
+  // remove it unless a case opts in through envOverrides.
+  if (!Object.hasOwn(envOverrides, 'CODEX_HOME')) delete env.CODEX_HOME;
+  if (!Object.hasOwn(envOverrides, 'CODEX_SQLITE_HOME')) delete env.CODEX_SQLITE_HOME;
+
   const result = spawnSync(process.execPath, [omxBin, ...argv], {
     cwd,
     encoding: 'utf-8',
-    env: {
-      ...process.env,
-      ...envOverrides,
-    },
+    env,
   });
   return {
     status: result.status,

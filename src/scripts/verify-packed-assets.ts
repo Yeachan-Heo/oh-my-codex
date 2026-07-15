@@ -15,6 +15,7 @@ export const REQUIRED_PACKED_ASSETS = [
   'dist/scripts/__tests__/smoke-packed-install.test.js',
   'dist/scripts/codex-native-hook.js',
   'dist/scripts/run-compiled-ci.js',
+  'dist/scripts/run-release-gates.js',
   'dist/scripts/run-test-files.js',
   'dist/scripts/sync-plugin-mirror.js',
   'dist/scripts/verify-native-agents.js',

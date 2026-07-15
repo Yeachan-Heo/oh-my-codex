@@ -87,10 +87,35 @@ jobs:
           console.log(`[version-sync] OK package=${pkg.version} workspace=${workspace.workspace?.package?.version} tag=${tag ?? ''}`.trim());
           EOF
 
+  verify-release:
+    name: Release Quality Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    needs: [verify-version-sync]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install test prerequisites
+        run: .github/scripts/install-prereqs.sh build-essential tmux -- cc tmux
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build release gate runner
+        run: npm run build
+      - name: Run canonical release gates
+        run: npm run verify:release
+
   build-native:
     name: Build native (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
-    needs: [verify-version-sync]
+    needs: [verify-release]
     strategy:
       fail-fast: false
       matrix:

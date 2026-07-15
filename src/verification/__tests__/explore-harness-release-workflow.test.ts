@@ -37,6 +37,7 @@ describe('native release workflow', () => {
     assert.match(workflow, /omx-sparkshell/);
     assert.match(workflow, /native-release-manifest\.json/);
     assert.match(workflow, /Publish Native Assets/);
+    assert.match(workflow, /Release Quality Gates/);
     assert.match(workflow, /Smoke Verify Native Assets/);
     assert.match(workflow, /Smoke Test Packed Global Install/);
     assert.match(workflow, /Publish npm Package/);
@@ -53,12 +54,15 @@ describe('native release workflow', () => {
     assert.doesNotMatch(workflow, /--require-no-fallback/);
 
     assert.match(workflow, /verify-version-sync:[\s\S]*Verify version sync against workspace crates[\s\S]*node --input-type=module/);
+    assert.match(workflow, /verify-release:[\s\S]*npm run build[\s\S]*npm run verify:release/);
+    assert.match(workflow, /build-native:[\s\S]*needs:\s*\[verify-release\]/);
     assert.match(workflow, /publish-native-assets:[\s\S]*npm run build[\s\S]*node dist\/scripts\/generate-native-release-manifest\.js/);
     assert.match(workflow, /publish-native-assets:[\s\S]*Generate release body[\s\S]*node dist\/scripts\/generate-release-body\.js --template RELEASE_BODY\.md --out RELEASE_BODY\.generated\.md/);
     assert.match(workflow, /body_path:\s*RELEASE_BODY\.generated\.md/);
     assert.match(workflow, /smoke-verify-native:[\s\S]*npm run build[\s\S]*node dist\/scripts\/verify-native-release-assets\.js/);
     assert.match(workflow, /smoke-packed-install:[\s\S]*npm run build[\s\S]*Smoke test packed install boot \+ core commands[\s\S]*npm run smoke:packed-install/);
     assert.match(workflow, /publish-npm:[\s\S]*Verify version sync against workspace crates[\s\S]*npm pack --dry-run/);
+
   });
 
   it('keeps cargo-dist Linux targets aligned with musl-first plus glibc fallback assets', () => {
