@@ -190,6 +190,12 @@ For `ralplan`, native `PreToolUse` allows only a standalone terminal
 authority for consensus validation and root/session terminalization, so compound
 Bash commands that add any suffix after the closeout command stay blocked.
 
+`deep-interview` uses the same narrow closeout boundary: only a standalone,
+same-session write with `mode:"deep-interview"`, `active:false`, and
+`current_phase:"complete"` is allowed. Partial deactivation, mismatched-session
+payloads, nested transports, state clears, and commands with suffixes remain
+blocked by the planning guard.
+
 There is still no distinct native Codex `ask-user-question` hook today. That means `askuserQuestion` classification remains a runtime/fallback responsibility unless a future native hook surface exposes first-class question-stop metadata.
 
 ## Combined workflow note

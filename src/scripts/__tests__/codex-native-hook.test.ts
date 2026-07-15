@@ -13879,6 +13879,99 @@ exit 0
 		}
 	});
 
+	it("allows complete deep-interview terminal state writes while preserving the planning boundary", async () => {
+		const cwd = await mkdtemp(
+			join(tmpdir(), "omx-native-hook-pretool-deep-interview-terminal-"),
+		);
+		try {
+			const stateDir = join(cwd, ".omx", "state");
+			const sessionId = "sess-deep-interview-terminal";
+			const sessionDir = join(stateDir, "sessions", sessionId);
+			await mkdir(sessionDir, { recursive: true });
+			await writeJson(join(stateDir, "session.json"), {
+				session_id: sessionId,
+				cwd,
+			});
+			await writeJson(join(sessionDir, "skill-active-state.json"), {
+				version: 1,
+				active: true,
+				skill: "deep-interview",
+				phase: "interviewing",
+				session_id: sessionId,
+				active_skills: [
+					{
+						skill: "deep-interview",
+						phase: "interviewing",
+						active: true,
+						session_id: sessionId,
+					},
+				],
+			});
+			await writeJson(join(sessionDir, "deep-interview-state.json"), {
+				active: true,
+				mode: "deep-interview",
+				current_phase: "interviewing",
+				session_id: sessionId,
+			});
+
+			const dispatchBash = async (toolUseId: string, command: string) =>
+				dispatchCodexNativeHook(
+					{
+						hook_event_name: "PreToolUse",
+						cwd,
+						session_id: sessionId,
+						tool_name: "Bash",
+						tool_use_id: toolUseId,
+						tool_input: { command },
+					},
+					{ cwd },
+				);
+
+			const allowedTerminal = await dispatchBash(
+				"tool-deep-interview-terminal-allowed",
+				"omx state write --input '{\"mode\":\"deep-interview\",\"active\":false,\"current_phase\":\"complete\",\"state\":{\"artifact\":\".omx/interviews/final.md\"}}' --json",
+			);
+			assert.equal(allowedTerminal.outputJson, null);
+
+			const blockedPartial = await dispatchBash(
+				"tool-deep-interview-terminal-partial",
+				"omx state write --input '{\"mode\":\"deep-interview\",\"active\":false}' --json",
+			);
+			assert.equal(
+				(blockedPartial.outputJson as { decision?: string } | null)?.decision,
+				"block",
+			);
+
+			const blockedMismatchedSession = await dispatchBash(
+				"tool-deep-interview-terminal-mismatched-session",
+				"omx state write --input '{\"mode\":\"deep-interview\",\"active\":false,\"current_phase\":\"complete\",\"session_id\":\"other-session\"}' --json",
+			);
+			assert.equal(
+				(
+					blockedMismatchedSession.outputJson as {
+						decision?: string;
+					} | null
+				)?.decision,
+				"block",
+			);
+
+			const blockedTerminalThenImplementation = await dispatchBash(
+				"tool-deep-interview-terminal-then-implementation",
+				"omx state write --input '{\"mode\":\"deep-interview\",\"active\":false,\"current_phase\":\"complete\"}' --json && printf bad > src/leak.ts",
+			);
+			assert.equal(
+				(
+					blockedTerminalThenImplementation.outputJson as {
+						decision?: string;
+					} | null
+				)?.decision,
+				"block",
+			);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("allows complete ralplan terminal state writes while blocking partial deactivation writes", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-pretool-ralplan-state-input-file-"),

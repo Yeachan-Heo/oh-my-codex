@@ -7037,6 +7037,53 @@ function isAllowedRalplanTerminalStateWriteCommand(
   return payload ? isCompleteRalplanTerminalWritePayload(payload, activeState, sessionId) : false;
 }
 
+function isCompleteDeepInterviewTerminalWritePayload(
+  payload: Record<string, unknown>,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  if (!sessionId) return false;
+  const mode = safeString(payload.mode).trim().toLowerCase();
+  if (mode !== "deep-interview") return false;
+  const phase = safeString(payload.current_phase ?? payload.currentPhase).trim().toLowerCase();
+  if (payload.active !== false || phase !== "complete") return false;
+
+  const payloadSessionId = safeString(payload.session_id).trim();
+  const activeSessionId = safeString(
+    activeState.session_id
+      ?? activeState.owner_omx_session_id
+      ?? activeState.codex_session_id
+      ?? activeState.owner_codex_session_id,
+  ).trim();
+  if (payloadSessionId && payloadSessionId !== sessionId) return false;
+  if (payloadSessionId && activeSessionId && payloadSessionId !== activeSessionId) return false;
+  return true;
+}
+
+function isAllowedDeepInterviewTerminalStateWriteCommand(
+  cwd: string,
+  command: string,
+  activeState: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
+  if (splitStateScanSegments(canonicalCommand).length !== 1) return false;
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
+  if (commandHasDeepInterviewWriteIntent(canonicalCommand)) return false;
+
+  const operations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (operations.length !== 1) return false;
+  const operation = operations[0];
+  if (!operation || operation.nested || hasPriorExecutableCommand(operation.prefix)) return false;
+
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  return payload ? isCompleteDeepInterviewTerminalWritePayload(payload, activeState, sessionId) : false;
+}
+
 function commandEndsPlanningPhase(cwd: string, command: string): boolean {
   if (findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
@@ -7051,10 +7098,19 @@ function commandEndsPlanningPhase(cwd: string, command: string): boolean {
   return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
 }
 
-function isAllowedDeepInterviewBashWrite(cwd: string, command: string): boolean {
+function isAllowedDeepInterviewBashWrite(
+  cwd: string,
+  command: string,
+  activeState?: Record<string, unknown>,
+  sessionId = "",
+): boolean {
   if (isAllowedDeepInterviewRalplanHandoffCommand(cwd, command)) return true;
   if (hasDeepInterviewRalplanHandoffStateMutation(cwd, command)) return false;
-  if (commandEndsPlanningPhase(cwd, command)) return false;
+  if (commandEndsPlanningPhase(cwd, command)) {
+    return activeState
+      ? isAllowedDeepInterviewTerminalStateWriteCommand(cwd, command, activeState, sessionId)
+      : false;
+  }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
@@ -7326,7 +7382,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   let blockedDetail = "implementation/write tools are blocked until an explicit handoff workflow is activated";
 
   if (toolName === "Bash") {
-    blocked = !isAllowedDeepInterviewBashWrite(cwd, command);
+    blocked = !isAllowedDeepInterviewBashWrite(cwd, command, activeState, sessionId);
     if (blocked) {
       blockedDetail = buildDeepInterviewBashBlockedDetail(cwd, command);
     }
