@@ -4482,6 +4482,77 @@ describe('applyRalplanGate', () => {
 });
 
 describe('code-review canonical overlay preservation', () => {
+  it('fails closed when the canonical session state is malformed', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-code-review-malformed-state-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-keyword-code-review-malformed';
+    const statePath = join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE);
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(statePath, '{');
+      const result = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the diff',
+        sessionId,
+        threadId: 'thread-keyword-code-review-malformed',
+        nowIso: '2026-07-14T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.active, false);
+      assert.equal(result.skill, 'code-review');
+      assert.deepEqual(result.active_skills, []);
+      assert.match(String(result.transition_error), /canonical skill state.*malformed/i);
+      assert.equal(await readFile(statePath, 'utf-8'), '{');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a transition error instead of merging a conflicting canonical owner', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-code-review-conflicting-owner-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-keyword-code-review-conflicting-owner';
+    const statePath = join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE);
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(statePath, JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'ralplan',
+        keyword: '$ralplan',
+        phase: 'planning',
+        activated_at: '2026-07-14T00:00:00.000Z',
+        updated_at: '2026-07-14T00:00:00.000Z',
+        session_id: sessionId,
+        thread_id: 'thread-original-owner',
+        active_skills: [{
+          skill: 'ralplan',
+          active: true,
+          phase: 'planning',
+          session_id: sessionId,
+          thread_id: 'thread-original-owner',
+        }],
+      }, null, 2));
+      const result = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$code-review inspect the diff',
+        sessionId,
+        threadId: 'thread-new-owner',
+        nowIso: '2026-07-14T00:01:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ralplan');
+      assert.match(String(result.transition_error), /canonical root thread.*conflicts/i);
+      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['ralplan']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps ralplan authoritative while adding a non-tracked code-review entry', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-code-review-overlay-'));
     const stateDir = join(cwd, '.omx', 'state');

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -452,7 +452,12 @@ describe('omx uninstall', () => {
     try {
       const home = join(wd, 'home');
       const codexDir = join(home, '.codex');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
       await mkdir(codexDir, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(fakeCodexPath, '#!/bin/sh\nif [ "$1" = "features" ]; then printf "hooks stable true\\n"; else printf "codex-cli 0.130.0\\n"; fi\n');
+      await chmod(fakeCodexPath, 0o755);
       await writeFile(
         join(codexDir, 'config.toml'),
         buildOmxConfig().replace(/^hooks = true$/m, 'codex_hooks = true'),
@@ -478,7 +483,8 @@ describe('omx uninstall', () => {
         ) + '\n',
       );
 
-      const res = runOmx(wd, ['uninstall'], { HOME: home });
+      // ASSERTION-CHANGE-JUSTIFIED: hook-flag normalization must not depend on the developer's installed Codex version.
+      const res = runOmx(wd, ['uninstall'], { HOME: home, PATH: `${fakeBin}:${process.env.PATH ?? ''}` });
       if (shouldSkipForSpawnPermissions(res.error)) return;
       assert.equal(res.status, 0, res.stderr || res.stdout);
       assert.equal(existsSync(join(codexDir, 'hooks.json')), true);

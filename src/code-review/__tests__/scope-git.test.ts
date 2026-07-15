@@ -514,6 +514,122 @@ describe('real Git scope discovery', () => {
     });
   });
 
+  it('fails closed for path decoding, optional Git probes, and explicit-base edge cases', async () => {
+    await withRepository(async (repository, api) => {
+      const noTrailingNewline: GitExecutor = async (workingDirectory, args) =>
+        args[0] === 'rev-parse' && args[1] === '--show-toplevel'
+          ? Buffer.from(repository)
+          : api.runGitCommand(workingDirectory, args);
+      assert.match(
+        (await api.resolveGitScope({ workingDirectory: repository, gitExecutor: noTrailingNewline })).scope_hash,
+        /^[0-9a-f]{64}$/u,
+      );
+
+      const emptyRoot: GitExecutor = async (workingDirectory, args) =>
+        args[0] === 'rev-parse' && args[1] === '--show-toplevel'
+          ? Buffer.alloc(0)
+          : api.runGitCommand(workingDirectory, args);
+      await assert.rejects(
+        api.resolveGitScope({ workingDirectory: repository, gitExecutor: emptyRoot }),
+        (error: unknown) => (error as { code?: unknown }).code === 'NOT_GIT_REPOSITORY',
+      );
+
+      const failedOptionalProbe: GitExecutor = async (workingDirectory, args) => {
+        if (args[0] === 'symbolic-ref') throw new Error('optional probe without an exit code');
+        return api.runGitCommand(workingDirectory, args);
+      };
+      await assert.rejects(
+        api.resolveGitScope({ workingDirectory: repository, gitExecutor: failedOptionalProbe }),
+        (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED',
+      );
+
+      for (const requestedBase of ['-option-like-base', 'base\0with-nul']) {
+        await assert.rejects(
+          api.resolveGitScope({
+            workingDirectory: repository,
+            selector: { requested_base: requestedBase, explicit_paths: [] },
+          }),
+          (error: unknown) => (error as { code?: unknown }).code === 'INVALID_BASE',
+        );
+      }
+
+      const noMergeBase: GitExecutor = async (workingDirectory, args) => {
+        if (args[0] === 'merge-base') {
+          throw Object.assign(new Error('histories do not meet'), { code: 1 });
+        }
+        return api.runGitCommand(workingDirectory, args);
+      };
+      await assert.rejects(
+        api.resolveGitScope({
+          workingDirectory: repository,
+          selector: { requested_base: 'HEAD', explicit_paths: [] },
+          gitExecutor: noMergeBase,
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'INVALID_BASE',
+      );
+    });
+  });
+
+  it('rejects defensive unmerged discovery and preserves the strongest duplicate change', async () => {
+    await withRepository(async (repository, api) => {
+      const injectedNameStatus = (payload: string): GitExecutor => async (workingDirectory, args) => {
+        if (args[0] === 'diff' && args.includes('--cached') && args.includes('--name-status')) {
+          return Buffer.from(payload);
+        }
+        return api.runGitCommand(workingDirectory, args);
+      };
+
+      await assert.rejects(
+        api.resolveGitScope({
+          workingDirectory: repository,
+          selector: { requested_base: 'HEAD', explicit_paths: [] },
+          gitExecutor: injectedNameStatus('U\0tracked.txt\0'),
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'UNMERGED',
+      );
+
+      const manifest = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: [] },
+        gitExecutor: injectedNameStatus('M\0tracked.txt\0T\0tracked.txt\0'),
+      });
+      assert.equal(byPath(manifest).get('tracked.txt')?.change, 'TYPE_CHANGED');
+    });
+  });
+
+  it('maps lstat and readlink races to scope drift without widening the scope', async () => {
+    await withRepository(async (repository, api) => {
+      await writeFile(join(repository, 'tracked.txt'), 'changed\n');
+      const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      await assert.rejects(
+        api.resolveGitScope({
+          workingDirectory: repository,
+          selector: { requested_base: 'HEAD', explicit_paths: ['tracked.txt'] },
+          fileSystem: {
+            lstat: async () => { throw denied; },
+            open: (path: string, flags: number) => open(path, flags),
+            readlink: (path: string) => readlink(path, { encoding: 'buffer' }),
+          },
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'SCOPE_DRIFT',
+      );
+
+      await symlink('tracked.txt', join(repository, 'link.txt'));
+      await assert.rejects(
+        api.resolveGitScope({
+          workingDirectory: repository,
+          selector: { requested_base: 'HEAD', explicit_paths: ['link.txt'] },
+          fileSystem: {
+            lstat: (path: string) => lstat(path, { bigint: true }),
+            open: (path: string, flags: number) => open(path, flags),
+            readlink: async () => { throw new Error('link changed'); },
+          },
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'SCOPE_DRIFT',
+      );
+    });
+  });
+
   it('recomputes ephemeral content hashes to detect scope drift', async () => {
     await withRepository(async (repository, api) => {
       await writeFile(join(repository, 'untracked.txt'), 'version one\n');

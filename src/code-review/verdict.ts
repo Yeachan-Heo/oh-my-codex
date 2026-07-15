@@ -197,9 +197,6 @@ export function synthesizeVerdict(input: VerdictSynthesisInput): FinalVerdict {
     );
   }
 
-  const allApprove = input.reviewer_lanes.every((lane) => lane.recommendation === 'APPROVE');
-  if (!allApprove || architecturalStatus !== 'CLEAR') {
-    return verdict(input, 'REQUEST CHANGES', architecturalStatus, 'INVALID_OR_MISSING_EVIDENCE', ['APPROVAL_INPUT_INCOMPLETE']);
-  }
+  // All non-approval recommendations and architect statuses returned in the ordered rules above.
   return verdict(input, 'APPROVE', 'CLEAR', 'CLEAN_APPROVAL', ['ALL_REQUIRED_EVIDENCE_CLEAR']);
 }

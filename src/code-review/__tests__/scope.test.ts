@@ -65,6 +65,28 @@ describe('scope normalization and parsing', () => {
         path,
       );
     }
+    for (const path of ['', 'nul\0path']) {
+      assert.throws(
+        () => api.normalizeExplicitPaths('/repo', [path]),
+        (error: unknown) => (error as { code?: unknown }).code === 'INVALID_PATH',
+        path,
+      );
+    }
+  });
+
+  it('fails closed for unsupported and structurally malformed Git records', async () => {
+    const api = await loadScopeApi();
+    const invalid = [
+      () => api.parseNameStatus('Z\0path.ts\0', 'INDEX'),
+      () => api.parseNameStatus('R100\0old.ts\0', 'INDEX'),
+      () => api.parseNameStatus('M\0', 'INDEX'),
+      () => api.parseNumStat('1\tbroken\0'),
+      () => api.parseNumStat('many\t1\tpath.ts\0'),
+      () => api.parseNumStat('1\t1\t\0old.ts\0'),
+    ];
+    for (const parse of invalid) {
+      assert.throws(parse, (error: unknown) => (error as { code?: unknown }).code === 'GIT_COMMAND_FAILED');
+    }
   });
 
   it('treats missing paths as filters and never widens them to unchanged content', async () => {

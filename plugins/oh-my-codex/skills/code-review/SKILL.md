@@ -22,16 +22,18 @@ This skill activates when:
 - If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the review is grounded; stop once enough evidence exists.
 - Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, credentialed, external-production, or preference-dependent.
 
-Delegates to the `code-reviewer` and `architect` agents in parallel for a two-lane review:
+Delegates to native `code-reviewer` and `architect` lanes as thin runtime adapters:
 
-1. **Identify Changes**
-   - Run `git diff` to find changed files
-   - Determine scope of review (specific files or entire PR)
+1. **Freeze Scope with Runtime**
+   - Call internal `review_start` for the `$code-review` invocation; consume only its frozen manifest, batch plan, `scope_hash`, capability plan, deadlines, and required lane IDs.
+   - Do not discover scope with ad-hoc diffs in prompts. CLI `review-record-lane RESULT` is recovery-only for an existing same-key proposal transaction; fresh RESULT evidence must come from MCP plus native PostToolUse attestation.
 
-2. **Launch Parallel Review Lanes**
+2. **Launch Runtime-Planned Review Lanes**
    - **`code-reviewer` lane** - owns spec compliance, security, code quality, performance, and maintainability findings
    - **`architect` lane** - owns the devil's-advocate / design-tradeoff perspective
-   - Both lanes run in parallel on a clean context with explicit scope and artifacts, and produce distinct outputs before final synthesis
+   - Launch each capacity wave concurrently with native `task_name` / lane label exactly equal to the planned `lane_id`; every child first waits on `review_get` until its lane is `RUNNING`.
+   - The leader submits only `START` through `review_record_lane`. Each child submits its own strict `RESULT` through MCP; the native PostToolUse hook attests the actual child/tool-use identity, and later coordinator reads reconcile before finalization.
+   - Both lanes run in parallel on a clean context with explicit frozen runtime scope and artifacts, and produce distinct outputs before final synthesis.
    - If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
 
 3. **Review Categories**
@@ -58,14 +60,9 @@ Delegates to the `code-reviewer` and `architect` agents in parallel for a two-la
    - Code examples where applicable
 
 7. **Final Synthesis**
-   - Combine the `code-reviewer` recommendation and the architect status into one final verdict
-   - Approval requires explicit evidence from both independent lanes; missing or failed delegation is a blocking unavailable-review state, not an approval fallback
-   - Deterministic merge gating rules:
-     - If architect status is **BLOCK**, final recommendation is **REQUEST CHANGES**
-     - Else if `code-reviewer` recommendation is **REQUEST CHANGES**, final recommendation is **REQUEST CHANGES**
-     - Else if architect status is **WATCH**, final recommendation is **COMMENT**
-     - Else final recommendation follows the `code-reviewer` lane
-   - The final report must make architect blockers impossible to miss
+   - Call `review_finalize` after coordinator observation/reconciliation. The runtime coordinator owns the verdict truth table; do not reimplement it in the prompt or final prose.
+   - Approval requires a schema-valid finalized artifact with explicit evidence from both independent lanes; missing or failed delegation is a blocking unavailable-review state, not an approval fallback.
+   - The final report is rendered from the finalized JSON/Markdown artifacts and must make architect blockers impossible to miss.
 
 
 ## State/HUD Phase Contract
@@ -98,7 +95,7 @@ Review code changes for quality, security, and maintainability.
 
 This is the code/spec/security lane. Do not absorb architectural ownership.
 
-Scope: [git diff or specific files]
+Runtime inputs: [frozen manifest, batch plan or assigned batch files, review_id, attempt, lane_id, scope_hash, capability plan when applicable]
 
 Review Checklist:
 - Security vulnerabilities (OWASP Top 10)
@@ -121,7 +118,7 @@ task(
 
 Review the same code changes from the architecture/tradeoff perspective.
 
-Scope: [git diff or specific files]
+Runtime inputs: [frozen manifest, batch plan or assigned batch files, review_id, attempt, lane_id, scope_hash, capability plan when applicable]
 
 Focus:
 - System boundaries and interfaces
@@ -135,7 +132,7 @@ Output:
 - Concrete tradeoff or design recommendation"
 )
 
-Run both lanes in parallel, then synthesize them with the deterministic rules above.
+Run runtime-planned lanes in parallel, let native PostToolUse attest RESULT submissions, then finalize through the coordinator.
 ```
 
 ## External Model Consultation (Preferred)
@@ -215,9 +212,14 @@ SYNTHESIS
 ---------
 - code-reviewer recommendation: COMMENT
 - architect status: WATCH
+- runtime rule: <rule_id from finalized artifact>
 - final recommendation: COMMENT
 
 RECOMMENDATION: COMMENT
+
+Artifacts:
+- JSON: .omx/reviews/<review_id>.json
+- Markdown: .omx/reviews/<review_id>.md
 
 Address any WATCH concerns before treating the change as merge-ready.
 ```

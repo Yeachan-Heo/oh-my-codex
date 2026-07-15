@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ArchitectStatus, LaneRecord, ReviewRecommendation } from '../contract.js';
-import { synthesizeVerdict } from '../verdict.js';
+import { synthesizeVerdict, worseArchitectStatus } from '../verdict.js';
 
 const HASH = 'a'.repeat(64);
 
@@ -51,6 +51,11 @@ function verdict(recommendation: ReviewRecommendation, architecturalStatus: Arch
 }
 
 describe('verdict synthesis', () => {
+  it('selects the worse architectural status in either operand order', () => {
+    assert.equal(worseArchitectStatus('CLEAR', 'WATCH'), 'WATCH');
+    assert.equal(worseArchitectStatus('BLOCK', 'WATCH'), 'BLOCK');
+  });
+
   it('implements the complete reviewer recommendation by architect status truth table', () => {
     const expected: Record<ReviewRecommendation, Record<ArchitectStatus, ReviewRecommendation>> = {
       APPROVE: { CLEAR: 'APPROVE', WATCH: 'COMMENT', BLOCK: 'REQUEST CHANGES' },
@@ -137,5 +142,6 @@ describe('verdict synthesis', () => {
     assert.equal(verdict('APPROVE', 'CLEAR').clean, true);
     assert.equal(verdict('APPROVE', 'CLEAR', { evidence_status: 'DEGRADED_EVIDENCE' }).clean, false);
     assert.equal(verdict('APPROVE', 'CLEAR', { reviewer_lanes: [reviewer('APPROVE', { findings: [{ severity: 'MEDIUM', title: 'm', body: 'b', file: 'src/a.ts', fix: 'f' }] })] }).clean, false);
+    assert.equal(verdict('COMMENT', 'WATCH').rule_id, 'COMMENT_OR_FINDINGS');
   });
 });

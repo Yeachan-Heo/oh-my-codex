@@ -5,6 +5,7 @@ import {
 	mkdir,
 	mkdtemp,
 	readFile,
+	realpath,
 	rm,
 	symlink,
 	writeFile,
@@ -2037,7 +2038,8 @@ command = "node"
 				res.stdout.match(/\[!!\] GPT-5\.6 multi-agent compatibility:/g)?.length,
 				1,
 			);
-			assert.match(res.stdout, new RegExp(`project scope config at ${configPath}`));
+			// ASSERTION-CHANGE-JUSTIFIED: macOS may canonicalize /var to /private/var in the spawned CLI.
+			assert.match(res.stdout, new RegExp(`project scope config at ${await realpath(configPath)}`));
 			assert.match(res.stdout, /features\.multi_agent \(custom; custom-value\)/);
 			assert.match(res.stdout, /agents\.max_threads \(custom; custom-value\)/);
 			assert.match(res.stdout, /agents\.max_depth \(custom; custom-value\)/);

@@ -2168,6 +2168,22 @@ describe('Code Review Stage', () => {
     assert.equal(result.artifacts.suggested_next_phase, 'ralplan');
   });
 
+  it('fails closed when the persisted artifact is malformed JSON', async () => {
+    const artifact = finalizedCodeReviewArtifact();
+    const artifactPath = `.omx/reviews/${String(artifact.review_id)}.json`;
+    const raw = '{';
+    await mkdir(join(tempDir, '.omx', 'reviews'), { recursive: true });
+    await writeFile(join(tempDir, artifactPath), raw);
+    const stage = createCodeReviewStage({
+      artifactPath,
+      artifactReviewId: String(artifact.review_id),
+      artifactSha256: createHash('sha256').update(raw).digest('hex'),
+    });
+    const result = await stage.run(makeCtx());
+    assert.equal((result.artifacts.review_verdict as Record<string, unknown>).clean, false);
+    assert.equal(result.artifacts.code_review_artifact, undefined);
+  });
+
   it('marks non-clean review as return-to-ralplan input', async () => {
     const artifact = finalizedCodeReviewArtifact({
       recommendation: 'REQUEST CHANGES',
@@ -2208,6 +2224,27 @@ describe('Code Review Stage', () => {
     assert.equal(verdict.clean, false);
     assert.equal(artifacts.suggested_next_phase, 'ralplan');
     assert.match(String(artifacts.return_to_ralplan_reason), /No reviewable changes/);
+  });
+
+  it('routes architecture-only non-clean evidence to ralplan', async () => {
+    const artifact = finalizedCodeReviewArtifact({
+      recommendation: 'COMMENT',
+      architecturalStatus: 'WATCH',
+      clean: false,
+    });
+    (artifact.lanes as Array<Record<string, unknown>>)[0]!.recommendation = 'APPROVE';
+    (artifact.lanes as Array<Record<string, unknown>>)[0]!.findings = [];
+    artifact.status = 'FINALIZED';
+    (artifact.verdict as Record<string, unknown>).rule_id = 'COMMENT_OR_FINDINGS';
+    (artifact.verdict as Record<string, unknown>).reasons = ['ARCHITECT_WATCH'];
+    const persisted = await persistFinalizedCodeReviewArtifact(artifact);
+    const stage = createCodeReviewStage({
+      ...persisted,
+      artifactReviewId: String(artifact.review_id),
+    });
+    const result = await stage.run(makeCtx());
+    assert.deepEqual(result.artifacts.code_review_artifact, artifact);
+    assert.equal(result.artifacts.suggested_next_phase, 'ralplan');
   });
 
   it('fails closed when the persisted artifact digest does not match its coordinator handoff', async () => {

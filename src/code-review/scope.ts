@@ -359,7 +359,7 @@ export function parseNumStat(output: Buffer | string): ParsedNumStat[] {
 
     const previousPath = values[++index];
     const path = values[++index];
-    if (previousPath === undefined || path === undefined) {
+    if (!previousPath || !path) {
       throw new ScopeResolutionError('GIT_COMMAND_FAILED', 'Malformed Git rename numstat output');
     }
     records.push({

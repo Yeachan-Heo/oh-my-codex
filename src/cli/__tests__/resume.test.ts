@@ -581,6 +581,7 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
       const previousRuntimeCodexHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime');
       const fakeBin = join(wd, 'bin');
       const fakeCodexPath = join(fakeBin, 'codex');
+      const fakeStatTreePath = join(fakeBin, 'stat-tree.cjs');
       const fakePsPath = join(fakeBin, 'ps');
       const oldRolloutPath = join(projectCodexHome, 'sessions', '2024', '01', '02', 'rollout-old-a.jsonl');
       const newerRolloutPath = join(projectCodexHome, 'sessions', '2024', '03', '04', 'rollout-old-b.jsonl');
@@ -600,9 +601,21 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
       await utimes(newerRolloutPath, newerMtime, newerMtime);
       await symlink(join(projectCodexHome, 'sessions'), join(previousRuntimeCodexHome, 'sessions'), 'dir');
 
+      await writeFile(fakeStatTreePath, `const fs = require('node:fs');
+const path = require('node:path');
+function visit(directory) {
+  for (const name of fs.readdirSync(directory)) {
+    const candidate = path.join(directory, name);
+    const stat = fs.statSync(candidate);
+    if (stat.isDirectory()) visit(candidate);
+    else if (name.endsWith('.jsonl')) console.log(stat.mtime.toISOString().replace('T', ' ').replace('Z', ''), candidate);
+  }
+}
+visit(process.argv[2]);
+`);
       await writeFile(fakeCodexPath, `#!/bin/sh
-printf 'fake-codex:%s\\n' "$*"
-find "$CODEX_HOME/sessions" -type f -name '*.jsonl' -exec stat -c '%y %n' {} \\; | sort
+	printf 'fake-codex:%s\\n' "$*"
+	${JSON.stringify(process.execPath)} ${JSON.stringify(fakeStatTreePath)} "$CODEX_HOME/sessions" | sort
 `);
       await chmod(fakeCodexPath, 0o755);
       await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
