@@ -29475,7 +29475,7 @@ describe("#3118 native role contract", () => {
 				const canonicalSessionId = `sess-3118-adapted-bind-${taskNameCarrier}`;
 				const parentThreadId = `thread-3118-adapted-parent-${taskNameCarrier}`;
 				const childSessionId = `thread-3118-adapted-child-${taskNameCarrier}`;
-				const correlationToken = "a3118";
+				const correlationToken = "11111111111111111111111100003118";
 				await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
 				await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
 				assert.equal(
@@ -29578,7 +29578,7 @@ describe("#3118 native role contract", () => {
 				const canonicalSessionId = `sess-3118-task-name-${scenario.name}`;
 				const parentThreadId = `thread-3118-task-name-${scenario.name}`;
 				const childSessionId = `child-3118-task-name-${scenario.name}`;
-				const correlationToken = "a3118e";
+				const correlationToken = "22222222222222222222222200003118";
 				await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
 				await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
 				assert.equal(recordPendingRoleIntent(cwd, {
@@ -29638,8 +29638,8 @@ describe("#3118 native role contract", () => {
 				assert.ok(readRoleRoutingMarker(stateDir, { cwd, sessionId: canonicalSessionId, parentThreadId }));
 			};
 
-			await bindAdaptedRole("architect", "a3118c", "thread-3118-app-architect-child");
-			await bindAdaptedRole("critic", "c3118c", "thread-3118-app-critic-child");
+			await bindAdaptedRole("architect", "33333333333333333333333300003118", "thread-3118-app-architect-child");
+			await bindAdaptedRole("critic", "44444444444444444444444400003118", "thread-3118-app-critic-child");
 		});
 	});
 
@@ -29648,7 +29648,7 @@ describe("#3118 native role contract", () => {
 			const canonicalSessionId = "sess-3118-unbound-task-name-mismatch";
 			const parentThreadId = "thread-3118-unbound-task-name-mismatch-parent";
 			const childSessionId = "thread-3118-unbound-task-name-mismatch-child";
-			const correlationToken = "e3118";
+			const correlationToken = "55555555555555555555555500003118";
 			await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
 			await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
 			assert.equal(
@@ -29689,7 +29689,7 @@ describe("#3118 native role contract", () => {
 			const canonicalSessionId = "sess-3118-unbound-no-app-marker";
 			const parentThreadId = "thread-3118-unbound-no-app-marker-parent";
 			const childSessionId = "thread-3118-unbound-no-app-marker-child";
-			const correlationToken = "expectedcorrelationtoken";
+			const correlationToken = "66666666666666666666666600003118";
 			await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
 			await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
 			assert.equal(
@@ -29725,7 +29725,7 @@ describe("#3118 native role contract", () => {
 			const canonicalSessionId = "sess-3118-adapted-agent-nickname-fallback";
 			const parentThreadId = "thread-3118-adapted-agent-nickname-fallback-parent";
 			const childSessionId = "thread-3118-adapted-agent-nickname-fallback-child";
-			const correlationToken = "a3118a";
+			const correlationToken = "77777777777777777777777700003118";
 			await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
 			await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
 			assert.equal(
@@ -29762,7 +29762,7 @@ describe("#3118 native role contract", () => {
 			const canonicalSessionId = "sess-3118-adapted-camel-task-name";
 			const parentThreadId = "thread-3118-adapted-camel-task-name-parent";
 			const childSessionId = "thread-3118-adapted-camel-task-name-child";
-			const correlationToken = "a3118b";
+			const correlationToken = "88888888888888888888888800003118";
 			await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
 			await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
 			assert.equal(recordPendingRoleIntent(cwd, {
