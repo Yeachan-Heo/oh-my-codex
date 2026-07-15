@@ -14,6 +14,7 @@ import {
   NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE,
   writeRoleRoutingMarker,
 } from '../../subagents/role-routing-marker.js';
+import { readModeState, startMode } from '../../modes/base.js';
 import { ultragoalCommand, ULTRAGOAL_HELP } from '../ultragoal.js';
 
 async function withCwd<T>(run: (cwd: string) => Promise<T>): Promise<T> {
@@ -259,6 +260,7 @@ describe('cli/ultragoal', () => {
 
   it('prints explicit terminal cleanup after final checkpoint without claiming hidden clear', async () => {
     await withCwd(async (cwd) => {
+      await startMode('ultragoal', 'Complete the final milestone.', 1, cwd);
       await capture(() => ultragoalCommand(['create-goals', '--brief', '- Final milestone']));
       await capture(() => ultragoalCommand(['complete-goals']));
       const goals = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { codexObjective: string };
@@ -277,6 +279,53 @@ describe('cli/ultragoal', () => {
       assert.match(output, /Terminal next step for another goal in this same Codex thread\/session: run \/goal clear/);
       assert.match(output, /OMX shell commands and hooks do not call \/goal clear or hidden thread\/goal\/clear routes/);
       assert.doesNotMatch(output, /cleared Codex goal state/i);
+
+      const runtime = await readModeState('ultragoal', cwd);
+      assert.equal(runtime?.active, false);
+      assert.equal(runtime?.current_phase, 'complete');
+      assert.ok(typeof runtime?.completed_at === 'string');
+
+      const skillActive = JSON.parse(
+        await readFile(join(cwd, '.omx/state/skill-active-state.json'), 'utf-8'),
+      ) as { active?: boolean; active_skills?: unknown[] };
+      assert.equal(skillActive.active, false);
+      assert.deepEqual(skillActive.active_skills, []);
+    });
+  });
+
+  it('keeps the runtime active after a non-terminal intermediate checkpoint', async () => {
+    await withCwd(async (cwd) => {
+      const taskObjective = 'Complete two durable Ultragoal stories.';
+      await startMode('ultragoal', taskObjective, 2, cwd);
+      await capture(() => ultragoalCommand([
+        'create-goals',
+        '--brief', taskObjective,
+        '--goal', 'First::Complete the first durable story.',
+        '--goal', 'Second::Complete the second durable story.',
+      ]));
+      await capture(() => ultragoalCommand(['complete-goals']));
+      const goals = JSON.parse(
+        await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8'),
+      ) as { codexObjective: string };
+
+      const checkpoint = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-first',
+        '--status', 'complete',
+        '--evidence', 'The first durable story is complete.',
+        '--codex-goal-json', JSON.stringify({ goal: { objective: goals.codexObjective, status: 'active' } }),
+        '--json',
+      ]));
+      assert.equal(checkpoint.exitCode, undefined);
+      const parsed = JSON.parse(checkpoint.stdout.join('\n')) as {
+        summary: { aggregateComplete: boolean; artifactComplete: boolean };
+      };
+      assert.equal(parsed.summary.aggregateComplete, false);
+      assert.equal(parsed.summary.artifactComplete, false);
+
+      const runtime = await readModeState('ultragoal', cwd);
+      assert.equal(runtime?.active, true);
+      assert.notEqual(runtime?.current_phase, 'complete');
     });
   });
 

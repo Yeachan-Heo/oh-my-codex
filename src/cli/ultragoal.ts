@@ -11,6 +11,7 @@ import {
   NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
   resolveNativeSubagentSupportStatus,
 } from '../leader/contract.js';
+import { readModeState, updateModeState } from '../modes/base.js';
 import { resolveRuntimeStateScope } from '../mcp/state-paths.js';
 import { readRoleRoutingMarker } from '../subagents/role-routing-marker.js';
 import {
@@ -128,6 +129,17 @@ function positionalText(args: readonly string[]): string {
 
 function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
+}
+
+async function completeActiveUltragoalRuntime(cwd: string): Promise<void> {
+  const state = await readModeState('ultragoal', cwd);
+  if (state?.active !== true) return;
+
+  await updateModeState('ultragoal', {
+    active: false,
+    current_phase: 'complete',
+    completed_at: new Date().toISOString(),
+  }, cwd);
 }
 
 function normalizeCodexGoalMode(raw: string | undefined): 'aggregate' | 'per_story' | undefined {
@@ -523,12 +535,15 @@ export async function ultragoalCommand(args: string[], deps: UltragoalCommandDep
       const codexGoal = await parseCodexGoalJson(readValue(rest, '--codex-goal-json'));
       const qualityGate = await readJsonInput(readValue(rest, '--quality-gate-json'));
       const plan = await checkpointUltragoal(cwd, { goalId, status, evidence, codexGoal, qualityGate });
-      if (json) printJson({ ok: true, plan, summary: summarizeUltragoalPlan(plan) });
+      const summary = summarizeUltragoalPlan(plan);
+      if (status === 'complete' && summary.artifactComplete) {
+        await completeActiveUltragoalRuntime(cwd);
+      }
+      if (json) printJson({ ok: true, plan, summary });
       else {
         const goal = plan.goals.find((candidate: UltragoalItem) => candidate.id === goalId);
         console.log(`ultragoal checkpoint: ${goalId} -> ${goal?.status ?? status}`);
         printStatus(plan);
-        const summary = summarizeUltragoalPlan(plan);
         if (status === 'complete' && (summary.aggregateComplete || summary.artifactComplete)) {
           console.log(buildCodexGoalTerminalCleanupNotice('Ultragoal completion'));
         }
