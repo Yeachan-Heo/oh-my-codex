@@ -940,8 +940,11 @@ exit 0
   printf 'colorterm=%s\n' "$COLORTERM"
   printf 'tmux=%s\n' "$TMUX"
   printf 'tmux_pane=%s\n' "$TMUX_PANE"
-  printf 'columns=%s\n' "$COLUMNS"
-  printf 'lines=%s\n' "$LINES"
+  printf 'columns=%s\n' "\${COLUMNS-unset}"
+  printf 'lines=%s\n' "\${LINES-unset}"
+  printf 'terminfo=%s\n' "\${TERMINFO-unset}"
+  printf 'terminfo_dirs=%s\n' "\${TERMINFO_DIRS-unset}"
+  printf 'termcap=%s\n' "\${TERMCAP-unset}"
 } > "${envLogPath}"
 exit 130
 `,
@@ -965,8 +968,11 @@ case "$1" in
       TERM_PROGRAM_VERSION=3.4 \
       TMUX=/tmp/tmux-test.sock,123,0 \
       TMUX_PANE=%12 \
-      COLUMNS=80 \
-      LINES=24 \
+      COLUMNS=211 \
+      LINES=77 \
+      TERMINFO=/tmp/server-terminfo \
+      TERMINFO_DIRS=/tmp/server-terminfo-dirs \
+      TERMCAP=server-termcap \
       sh -c "$last" >/dev/null 2>&1 || true
     printf 'leader-pane\\n'
     exit 0
@@ -1007,6 +1013,9 @@ exit 0
           TERM: 'xterm-256color',
           TERM_PROGRAM: 'WarpTerminal',
           TERM_PROGRAM_VERSION: 'outer-terminal-version',
+          TERMINFO: '/tmp/outer-terminfo',
+          TERMINFO_DIRS: '/tmp/outer-terminfo-dirs',
+          TERMCAP: 'outer-termcap',
           COLORTERM: 'truecolor',
           COLUMNS: '200',
           LINES: '60',
@@ -1031,8 +1040,11 @@ exit 0
           'colorterm=truecolor',
           'tmux=/tmp/tmux-test.sock,123,0',
           'tmux_pane=%12',
-          'columns=80',
-          'lines=24',
+          'columns=unset',
+          'lines=unset',
+          'terminfo=unset',
+          'terminfo_dirs=unset',
+          'termcap=unset',
           '',
         ].join('\n'),
       );
