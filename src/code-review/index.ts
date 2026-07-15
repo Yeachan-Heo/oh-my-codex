@@ -118,10 +118,12 @@ export {
   ReviewCoordinatorError,
   createDurableReviewCoordinator,
   executeReviewOperation,
+  loadPublishedReviewHookJournalSnapshot,
 } from './coordinator.js';
 export type {
   DurableReviewCoordinator,
   DurableReviewCoordinatorHostDependencies,
+  PublishedHookJournalSnapshotInput,
   ReviewOperationHostContext,
   ReviewOperationName,
   ReviewOperationResponse,

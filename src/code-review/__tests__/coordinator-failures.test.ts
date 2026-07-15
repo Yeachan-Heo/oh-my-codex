@@ -647,6 +647,42 @@ describe('review coordinator failure and concurrency invariants', () => {
     }), /readiness|lane|timeout/i);
   });
 
+  it('bounds readiness by the lane deadline and fails closed for terminal or old-attempt lanes', async () => {
+    const pending = initialReview(60_000);
+    pending.lanes[0]!.idle_deadline_at = new Date(START.getTime() + 1_000).toISOString();
+    let now = START.getTime();
+    let observedDeadline = '';
+    await assert.rejects(waitForLaneRunning({
+      load: () => pending,
+      lane_id: 'reviewer-batch-1',
+      now: () => new Date(now),
+      waitForChange: (deadlineAt) => {
+        observedDeadline = deadlineAt;
+        now += 1_000;
+      },
+      maximum_wait_ms: 30_000,
+    }), (error: unknown) => (error as { code?: string }).code === 'LANE_TIMED_OUT');
+    assert.equal(observedDeadline, pending.lanes[0]!.idle_deadline_at);
+
+    const terminal = structuredClone(pending);
+    terminal.lanes[0]!.status = 'FAILED';
+    await assert.rejects(waitForLaneRunning({
+      load: () => terminal,
+      lane_id: 'reviewer-batch-1',
+      now: () => START,
+      waitForChange: () => assert.fail('terminal readiness must not wait'),
+    }), (error: unknown) => (error as { code?: string }).code === 'LANE_EVIDENCE_INVALID');
+
+    const nextAttempt = structuredClone(pending);
+    nextAttempt.current_attempt = 2;
+    await assert.rejects(waitForLaneRunning({
+      load: () => nextAttempt,
+      lane_id: 'reviewer-batch-1',
+      now: () => START,
+      waitForChange: () => assert.fail('old-attempt readiness must not wait'),
+    }), (error: unknown) => (error as { code?: string }).code === 'LANE_EVIDENCE_INVALID');
+  });
+
   it('blocks resume and finalization on scope drift and old-attempt late results', () => {
     const record = running();
     const blocked: ReviewRecord = {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -8,6 +8,10 @@ import {
 	createDurableReviewCoordinator,
 	createInitialReviewRecord,
 } from "../../code-review/coordinator.js";
+import {
+	atomicCreatePrivateJson,
+	resolveReviewPersistencePaths,
+} from "../../code-review/persistence.js";
 import {
 	createSubagentTrackingState,
 	recordSubagentTurn,
@@ -25,7 +29,10 @@ async function stateServer() {
 	return await import("../state-server.js");
 }
 
-async function seedRunningArchitect(workingDirectory: string) {
+async function seedRunningArchitect(
+	workingDirectory: string,
+	now = new Date("2026-07-14T00:00:00.000Z"),
+) {
 	const coordinator = createDurableReviewCoordinator({ workingDirectory, session_id: "session-1" });
 	const record = createInitialReviewRecord({
 		review_id: REVIEW_ID,
@@ -45,7 +52,7 @@ async function seedRunningArchitect(workingDirectory: string) {
 				{ lane_id: "architect-global", role: "architect", batch_id: "global" },
 			],
 		},
-		now: new Date("2026-07-14T00:00:00.000Z"),
+		now,
 	});
 	await coordinator.start({ record, idempotency_key: START_KEY });
 	await coordinator.recordStart({
@@ -56,11 +63,24 @@ async function seedRunningArchitect(workingDirectory: string) {
 		tracker: {
 			schema_version: 1, session_id: "session-1", thread_id: "child-architect",
 			tracker_lane_id: "architect-global", tracker_path: ".omx/state/subagent-tracking.json",
-			first_seen_at: "2026-07-14T00:00:00.000Z",
+			first_seen_at: now.toISOString(),
 		},
-		now: new Date("2026-07-14T00:00:00.000Z"),
+		now,
 	});
 	return coordinator;
+}
+
+async function writeArchitectTracking(workingDirectory: string) {
+	let tracking = createSubagentTrackingState();
+	tracking = recordSubagentTurn(tracking, {
+		sessionId: "session-1", threadId: "root-1", leaderThreadId: "root-1", kind: "leader",
+		timestamp: "2026-07-14T00:00:00.000Z",
+	});
+	tracking = recordSubagentTurn(tracking, {
+		sessionId: "session-1", threadId: "child-architect", leaderThreadId: "root-1", kind: "subagent",
+		laneId: "architect-global", role: "architect", timestamp: "2026-07-14T00:00:00.000Z",
+	});
+	await writeSubagentTrackingState(workingDirectory, tracking);
 }
 
 function architectResult() {
@@ -93,6 +113,12 @@ describe("state-server code-review control plane", () => {
 		assert.deepEqual(variants?.map((variant) => Object.keys(variant.properties ?? {}).sort()), [
 			["attempt", "event", "idempotency_key", "lane_id", "review_id", "session_id", "thread_id", "workingDirectory"],
 			["attempt", "event", "idempotency_key", "lane_id", "result", "review_id", "scope_hash", "session_id", "workingDirectory"],
+		]);
+		const getSchema = reviewTools.find((tool) => tool.name === "review_get")?.inputSchema as {
+			properties?: Record<string, unknown>;
+		};
+		assert.deepEqual(Object.keys(getSchema.properties ?? {}).sort(), [
+			"lane_id", "maximum_wait_ms", "review_id", "session_id", "wait", "workingDirectory",
 		]);
 	});
 
@@ -141,6 +167,77 @@ describe("state-server code-review control plane", () => {
 		assert.equal((await coordinator.get(REVIEW_ID)).lanes.find((lane) => lane.lane_id === "architect-global")?.status, "RUNNING");
 	});
 
+	it("reconciles a hook-owned PostTool publication through MCP review_get", async () => {
+		const workingDirectory = await mkdtemp(join(tmpdir(), "omx-state-review-reconcile-"));
+		await seedRunningArchitect(workingDirectory);
+		await writeArchitectTracking(workingDirectory);
+		const { handleStateToolCall } = await stateServer();
+		const proposed = await handleStateToolCall({ params: {
+			name: "review_record_lane",
+			arguments: {
+				workingDirectory, session_id: "session-1", event: "RESULT", review_id: REVIEW_ID,
+				attempt: 1, lane_id: "architect-global", scope_hash: HASH,
+				result: architectResult(), idempotency_key: RESULT_KEY,
+			},
+		} });
+		const proposal = JSON.parse(proposed.content[0]?.text ?? "") as { payload_digest: string };
+		const publication = {
+			schema_version: 1, publication_id: RESULT_KEY, published_at: "2026-07-14T00:00:01.000Z",
+			activity: {
+				schema_version: 1, session_id: "session-1", review_id: REVIEW_ID, attempt: 1,
+				lane_id: "architect-global", child_thread_id: "child-architect",
+				event_ref: "events/result-post-tool-1.json", event_kind: "RESULT_POST_TOOL",
+				observed_at: "2026-07-14T00:00:01.000Z",
+			},
+			attestation: {
+				schema_version: 1, session_id: "session-1", root_thread_id: "root-1",
+				review_id: REVIEW_ID, attempt: 1, lane_id: "architect-global",
+				child_thread_id: "child-architect", scope_hash: HASH,
+				payload_digest: proposal.payload_digest, tool_event_ref: "events/result-post-tool-1.json",
+				nonce: "nonce-result-1", published_at: "2026-07-14T00:00:01.000Z",
+			},
+		};
+		const paths = await resolveReviewPersistencePaths({ workingDirectory, session_id: "session-1" });
+		await atomicCreatePrivateJson(
+			join(paths.reviewRoot, REVIEW_ID, "submissions", RESULT_KEY, "post-tool"),
+			publication,
+		);
+		const response = await handleStateToolCall({ params: {
+			name: "review_get", arguments: { workingDirectory, session_id: "session-1", review_id: REVIEW_ID },
+		} });
+		assert.equal(response.isError, undefined, response.content[0]?.text);
+		const body = JSON.parse(response.content[0]?.text ?? "") as { lanes: Array<{ lane_id: string; status: string }> };
+		assert.equal(body.lanes.find((lane) => lane.lane_id === "architect-global")?.status, "COMPLETE");
+	});
+
+	it("does not absorb absent publications and rejects tampering without leaking paths or raw context", async () => {
+		const workingDirectory = await mkdtemp(join(tmpdir(), "omx-state-review-tamper-"));
+		await seedRunningArchitect(workingDirectory, new Date());
+		await writeArchitectTracking(workingDirectory);
+		const { handleStateToolCall } = await stateServer();
+		const before = await handleStateToolCall({ params: {
+			name: "review_get", arguments: { workingDirectory, session_id: "session-1", review_id: REVIEW_ID },
+		} });
+		const beforeBody = JSON.parse(before.content[0]?.text ?? "") as { lanes: Array<{ lane_id: string; status: string }> };
+		assert.equal(beforeBody.lanes.find((lane) => lane.lane_id === "architect-global")?.status, "RUNNING");
+
+		const paths = await resolveReviewPersistencePaths({ workingDirectory, session_id: "session-1" });
+		const tamperedDirectory = join(paths.reviewRoot, REVIEW_ID, "submissions", RESULT_KEY);
+		await mkdir(tamperedDirectory, { recursive: true, mode: 0o700 });
+		await writeFile(
+			join(tamperedDirectory, "post-tool"),
+			JSON.stringify({ schema_version: 1, publication_id: RESULT_KEY, raw_context: "raw-secret-sentinel" }),
+			{ mode: 0o600 },
+		);
+		const tampered = await handleStateToolCall({ params: {
+			name: "review_get", arguments: { workingDirectory, session_id: "session-1", review_id: REVIEW_ID },
+		} });
+		const text = tampered.content[0]?.text ?? "";
+		assert.equal(tampered.isError, true);
+		assert.doesNotMatch(text, /raw-secret-sentinel/);
+		assert.doesNotMatch(text, new RegExp(workingDirectory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	});
+
 	it("loads START identity from the hook-owned tracker instead of caller fields", async () => {
 		const workingDirectory = await mkdtemp(join(tmpdir(), "omx-state-review-start-"));
 		const coordinator = await seedRunningArchitect(workingDirectory);
@@ -165,6 +262,55 @@ describe("state-server code-review control plane", () => {
 		} });
 		assert.equal(response.isError, undefined, response.content[0]?.text);
 		assert.equal((await coordinator.get(REVIEW_ID)).lanes.find((lane) => lane.lane_id === "reviewer-batch-1")?.status, "RUNNING");
+	});
+
+	it("condition-waits for the requested lane and fails closed for timeout or attempt mismatch", async () => {
+		const workingDirectory = await mkdtemp(join(tmpdir(), "omx-state-review-wait-"));
+		const readinessNow = new Date();
+		await seedRunningArchitect(workingDirectory, readinessNow);
+		let tracking = createSubagentTrackingState();
+		tracking = recordSubagentTurn(tracking, {
+			sessionId: "session-1", threadId: "root-1", leaderThreadId: "root-1", kind: "leader",
+			timestamp: readinessNow.toISOString(),
+		});
+		tracking = recordSubagentTurn(tracking, {
+			sessionId: "session-1", threadId: "child-reviewer", leaderThreadId: "root-1", kind: "subagent",
+			laneId: "reviewer-batch-1", role: "code-reviewer", timestamp: readinessNow.toISOString(),
+		});
+		await writeSubagentTrackingState(workingDirectory, tracking);
+		const { handleStateToolCall } = await stateServer();
+		const waiting = handleStateToolCall({ params: {
+			name: "review_get", arguments: {
+				workingDirectory, session_id: "session-1", review_id: REVIEW_ID,
+				lane_id: "reviewer-batch-1", wait: true, maximum_wait_ms: 1_000,
+			},
+		} });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		const started = await handleStateToolCall({ params: {
+			name: "review_record_lane", arguments: {
+				workingDirectory, session_id: "session-1", event: "START", review_id: REVIEW_ID,
+				attempt: 1, lane_id: "reviewer-batch-1", thread_id: "child-reviewer",
+				idempotency_key: "10000000-0000-4000-8000-000000000007",
+			},
+		} });
+		assert.equal(started.isError, undefined, started.content[0]?.text);
+		const ready = await waiting;
+		assert.equal(ready.isError, undefined, ready.content[0]?.text);
+		const readyBody = JSON.parse(ready.content[0]?.text ?? "") as { lanes: Array<{ lane_id: string; status: string }> };
+		assert.equal(readyBody.lanes.find((lane) => lane.lane_id === "reviewer-batch-1")?.status, "RUNNING");
+
+		for (const argumentsValue of [
+			{ lane_id: "missing-attempt-lane", wait: true, maximum_wait_ms: 1_000 },
+			{ lane_id: "reviewer-batch-1", wait: true, maximum_wait_ms: 30_001 },
+			{ wait: true, maximum_wait_ms: 1_000 },
+		]) {
+			const failed = await handleStateToolCall({ params: {
+				name: "review_get", arguments: {
+					workingDirectory, session_id: "session-1", review_id: REVIEW_ID, ...argumentsValue,
+				},
+			} });
+			assert.equal(failed.isError, true);
+		}
 	});
 
 	it("replays review_start with the same key instead of creating another active review", async () => {

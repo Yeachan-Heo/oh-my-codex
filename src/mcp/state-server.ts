@@ -17,6 +17,7 @@ import {
 import { executeStateOperation } from "../state/operations.js";
 import {
 	executeReviewOperation,
+	loadPublishedReviewHookJournalSnapshot,
 	REVIEW_OPERATION_NAMES,
 	type ReviewOperationHostContext,
 } from "../code-review/coordinator.js";
@@ -53,7 +54,13 @@ async function reviewMcpHostContext(
 	const session = sessionId === undefined ? undefined : tracking.sessions[sessionId];
 	return {
 		source: "MCP",
-		...(session?.leader_thread_id ? { root_thread_id: session.leader_thread_id } : {}),
+		...(session?.leader_thread_id && sessionId ? {
+			root_thread_id: session.leader_thread_id,
+			loadHookJournalSnapshot: async (input) => await loadPublishedReviewHookJournalSnapshot({
+				workingDirectory,
+				...input,
+			}),
+		} : {}),
 		loadTracker: async (input) => {
 			const current = await readSubagentTrackingState(input.workingDirectory);
 			const currentSession = input.session_id === undefined ? undefined : current.sessions[input.session_id];
@@ -300,7 +307,24 @@ function buildReviewTools() {
 			name: "review_get", description: "Read and reconcile a durable code review.",
 			inputSchema: {
 				type: "object", additionalProperties: false,
-				properties: { ...reviewCommonProperties, review_id: reviewId }, required: ["workingDirectory"],
+				properties: {
+					...reviewCommonProperties,
+					review_id: reviewId,
+					lane_id: { type: "string", minLength: 1, maxLength: 160 },
+					wait: { type: "boolean" },
+					maximum_wait_ms: { type: "integer", minimum: 1, maximum: 30_000 },
+				},
+				required: ["workingDirectory"],
+				allOf: [
+					{
+						if: { properties: { wait: { const: true } }, required: ["wait"] },
+						then: { required: ["lane_id"] },
+					},
+					{
+						if: { required: ["maximum_wait_ms"] },
+						then: { properties: { wait: { const: true } }, required: ["wait", "lane_id"] },
+					},
+				],
 			},
 		},
 		{

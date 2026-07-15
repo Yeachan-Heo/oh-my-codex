@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { watch } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   LaneActivityEvent,
@@ -89,6 +90,14 @@ export interface DurableReviewCoordinatorHostDependencies {
     cutoff_at: string;
   }): Promise<unknown>;
   now?: () => Date;
+}
+
+export interface PublishedHookJournalSnapshotInput {
+  workingDirectory: string;
+  session_id: string;
+  root_thread_id: string;
+  review_id: string;
+  cutoff_at: string;
 }
 
 function parseTimestamp(value: string, name: string): number {
@@ -497,14 +506,23 @@ export async function waitForLaneRunning(input: {
   while (true) {
     const record = await input.load();
     const lane = record.lanes.find((candidate) => candidate.lane_id === input.lane_id && candidate.attempt === record.current_attempt);
-    if (lane?.status === 'RUNNING') return lane;
-    if (lane !== undefined && lane.status !== 'PENDING') {
+    if (lane === undefined) {
+      const staleAttempt = record.lanes.some((candidate) => candidate.lane_id === input.lane_id);
+      throw new ReviewCoordinatorError(
+        'LANE_EVIDENCE_INVALID',
+        staleAttempt ? 'lane readiness attempt does not match the current review attempt' : 'lane readiness target is unknown',
+      );
+    }
+    if (lane.status === 'RUNNING') return lane;
+    if (lane.status !== 'PENDING') {
       throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', `lane readiness ended in ${lane.status}`);
     }
-    if (input.now().getTime() >= deadline) {
+    const laneDeadline = parseTimestamp(lane.idle_deadline_at, 'lane readiness deadline');
+    const effectiveDeadline = Math.min(deadline, laneDeadline);
+    if (input.now().getTime() >= effectiveDeadline) {
       throw new ReviewCoordinatorError('LANE_TIMED_OUT', 'lane readiness timeout expired');
     }
-    await input.waitForChange(new Date(deadline).toISOString());
+    await input.waitForChange(new Date(effectiveDeadline).toISOString());
   }
 }
 
@@ -948,6 +966,70 @@ function parseTrustedHookJournalSnapshot(input: {
     diagnostic_events: diagnosticEvents.filter((event) => event.attempt === currentAttempt),
     publication_ids: publicationIds,
   };
+}
+
+/**
+ * Read the hook-owned, create-once PostTool publications from their derived
+ * persistence location. Callers provide review identity, never a path or
+ * locator, and malformed publications fail closed before reconciliation.
+ */
+export async function loadPublishedReviewHookJournalSnapshot(
+  input: PublishedHookJournalSnapshotInput,
+): Promise<TrustedHookJournalSnapshot> {
+  const reviewId = parseReviewId(input.review_id, 'review_id');
+  if (typeof input.session_id !== 'string' || input.session_id.length === 0 || input.session_id.length > 160
+    || typeof input.root_thread_id !== 'string' || input.root_thread_id.length === 0 || input.root_thread_id.length > 160) {
+    throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted publication ownership is invalid');
+  }
+  const cutoff = parseTimestamp(input.cutoff_at, 'trusted publication cutoff');
+  const paths = await resolveReviewPersistencePaths({
+    workingDirectory: input.workingDirectory,
+    session_id: input.session_id,
+  });
+  const submissionsRoot = join(paths.reviewRoot, reviewId, 'submissions');
+  let entries;
+  try {
+    entries = await readdir(submissionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { events: [], diagnostic_events: [], publication_ids: [] };
+    }
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'trusted publication directory is unavailable');
+  }
+
+  const events: LaneActivityEvent[] = [];
+  const publicationIds: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory() || !REVIEW_ID_PATTERN.test(entry.name)) continue;
+    let raw: Buffer;
+    try {
+      raw = await readFile(join(submissionsRoot, entry.name, 'post-tool'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'trusted publication is unreadable');
+    }
+    if (raw.byteLength > 1_048_576) {
+      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted publication exceeds the size limit');
+    }
+    let publication: ResultPostToolPublication;
+    try {
+      publication = parsePostToolPublication(JSON.parse(raw.toString('utf8')) as unknown);
+    } catch {
+      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted publication is malformed');
+    }
+    if (publication.publication_id !== entry.name.toLowerCase()
+      || publication.activity.session_id !== input.session_id
+      || publication.attestation.session_id !== input.session_id
+      || publication.attestation.root_thread_id !== input.root_thread_id
+      || publication.activity.review_id !== reviewId
+      || publication.attestation.review_id !== reviewId) {
+      throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted publication ownership is invalid');
+    }
+    if (parseTimestamp(publication.published_at, 'trusted publication') > cutoff) continue;
+    events.push(publication.activity);
+    publicationIds.push(publication.publication_id);
+  }
+  return { events, diagnostic_events: [], publication_ids: publicationIds };
 }
 
 async function readJson(path: string): Promise<unknown | undefined> {
@@ -1485,6 +1567,38 @@ function hostDependencies(
   };
 }
 
+function adaptiveReviewChangeWaiter(reviewPath: string): (deadlineAt: string) => Promise<void> {
+  let backoffMs = 50;
+  return async (deadlineAt) => {
+    const remainingMs = Math.max(0, Date.parse(deadlineAt) - Date.now());
+    if (remainingMs === 0) return;
+    const delayMs = Math.min(remainingMs, backoffMs);
+    backoffMs = Math.min(backoffMs * 2, 1_000);
+    await new Promise<void>((resolveWait) => {
+      let settled = false;
+      let directoryWatcher: ReturnType<typeof watch> | undefined;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        directoryWatcher?.close();
+        resolveWait();
+      };
+      // Node timers use a monotonic clock. The bounded timer is the fallback
+      // when the platform watcher coalesces or misses an atomic rename event.
+      const timer = setTimeout(finish, delayMs);
+      try {
+        directoryWatcher = watch(dirname(reviewPath), { persistent: false }, (_event, filename) => {
+          if (filename === null || filename.toString() === 'review.json') finish();
+        });
+        directoryWatcher.once('error', finish);
+      } catch {
+        // The adaptive monotonic timer remains the condition-poll fallback.
+      }
+    });
+  };
+}
+
 function relativeReviewArtifacts(reviewId: string): { json_path: string; markdown_path: string } {
   return {
     json_path: `.omx/reviews/${reviewId}.json`,
@@ -1710,14 +1824,53 @@ export async function executeReviewOperation(
       }
 
       case 'review_get': {
-        exactOperationFields(input, ['workingDirectory', 'session_id', 'review_id'], ['workingDirectory']);
+        exactOperationFields(
+          input,
+          ['workingDirectory', 'session_id', 'review_id', 'lane_id', 'wait', 'maximum_wait_ms'],
+          ['workingDirectory'],
+        );
         const reviewId = input.review_id === undefined
           ? await activeReviewId(context)
           : operationUuid(input.review_id, 'review_id');
-        let record = await coordinator.get(reviewId);
-        if (hostDependencies(host) !== undefined) {
-          record = await coordinator.reconcile({ review_id: reviewId });
+        const laneId = input.lane_id === undefined
+          ? undefined
+          : operationString(input.lane_id, 'lane_id', 160);
+        if (input.wait !== undefined && typeof input.wait !== 'boolean') {
+          throw new ReviewCoordinatorError('INVALID_INVOCATION', 'wait must be a boolean');
         }
+        const wait = input.wait === true;
+        if (wait && laneId === undefined) {
+          throw new ReviewCoordinatorError('INVALID_INVOCATION', 'lane_id is required when wait is true');
+        }
+        let maximumWaitMs: number | undefined;
+        if (input.maximum_wait_ms !== undefined) {
+          if (!Number.isSafeInteger(input.maximum_wait_ms)
+            || (input.maximum_wait_ms as number) < 1
+            || (input.maximum_wait_ms as number) > READINESS_WAIT_MS
+            || !wait) {
+            throw new ReviewCoordinatorError(
+              'INVALID_INVOCATION',
+              `maximum_wait_ms requires wait=true and must be an integer from 1 through ${READINESS_WAIT_MS}`,
+            );
+          }
+          maximumWaitMs = input.maximum_wait_ms as number;
+        }
+        const canReconcile = hostDependencies(host) !== undefined;
+        const load = async (): Promise<ReviewRecord> => {
+          const current = await coordinator.get(reviewId);
+          return canReconcile ? await coordinator.reconcile({ review_id: reviewId }) : current;
+        };
+        if (wait) {
+          const paths = await resolveReviewPersistencePaths(context);
+          await waitForLaneRunning({
+            load,
+            lane_id: laneId!,
+            now: () => operationNow(host),
+            waitForChange: adaptiveReviewChangeWaiter(join(paths.reviewRoot, reviewId, 'review.json')),
+            ...(maximumWaitMs === undefined ? {} : { maximum_wait_ms: maximumWaitMs }),
+          });
+        }
+        const record = await load();
         return { payload: projectOperationReview(record) };
       }
 
