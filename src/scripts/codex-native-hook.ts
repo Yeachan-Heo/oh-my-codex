@@ -9955,7 +9955,6 @@ export async function dispatchCodexNativeHook(
   } catch {
     // Recovery is best-effort for unrelated hook events.
   }
-  }
   if (hookEventName === "Stop" && !hasNativeStopRuntimeSurface(cwd)) {
     return {
       hookEventName,
