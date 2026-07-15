@@ -41,13 +41,18 @@ export function recoverAdaptedRoleBindings(cwd: string, stateDir: string, nowMs?
   const normalizedNowMs = normalizeNowMs(nowMs);
   const canonicalOrigin = canonicalizeOriginCwd(cwd);
   if (canonicalOrigin === null) return;
-  for (const intent of listBoundAdaptedRoleIntents(cwd, normalizedNowMs)) {
+  for (const intent of listBoundAdaptedRoleIntents(cwd, normalizedNowMs, true)) {
     // Fail-closed origin authentication: under a shared OMX_ROOT/OMX_STATE_ROOT/
     // OMX_TEAM_STATE_ROOT the tracker is shared across workspaces. Only recover, publish a
     // marker for, and complete an intent that belongs to THIS canonical origin workspace; a
     // foreign workspace's retained journal is left untouched.
     if (!isRoleIntentOwnedByCwd(cwd, intent)) continue;
     try {
+      if (typeof intent.correlation_token !== 'string' || intent.correlation_token.trim() !== intent.correlation_token) continue;
+      if (
+        Object.hasOwn(intent, 'binding_claimant_token')
+        && (typeof intent.binding_claimant_token !== 'string' || intent.binding_claimant_token.length === 0 || intent.binding_claimant_token.trim() !== intent.binding_claimant_token)
+      ) continue;
       writeRoleRoutingMarker(
         stateDir,
         buildAdaptedRoleRoutingMarker(cwd, intent.session_id, intent.parent_thread_id, normalizedNowMs),
@@ -56,7 +61,7 @@ export function recoverAdaptedRoleBindings(cwd: string, stateDir: string, nowMs?
         sessionId: intent.session_id,
         parentThreadId: intent.parent_thread_id,
         correlationToken: intent.correlation_token,
-        claimantToken: intent.binding_claimant_token,
+        ...(Object.hasOwn(intent, 'binding_claimant_token') ? { claimantToken: intent.binding_claimant_token as string } : {}),
         nowMs: normalizedNowMs,
       });
     } catch {

@@ -17,7 +17,7 @@ Usage:
 role-intent write records the validated role required by the next adapted native spawn.
 `;
 
-type RoleIntentFailureReason = 'unknown_role' | 'invalid_correlation_token' | 'single_flight_conflict' | 'session_not_current' | 'parent_not_active_leader' | 'spawn_task_name_unsupported';
+type RoleIntentFailureReason = 'unknown_role' | 'invalid_correlation_token' | 'invalid_origin' | 'single_flight_conflict' | 'session_not_current' | 'parent_not_active_leader' | 'spawn_task_name_unsupported';
 
 interface ParsedRoleIntentWriteArgs {
   role: string;

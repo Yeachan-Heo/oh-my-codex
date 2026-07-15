@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -2137,6 +2137,66 @@ describe('subagents/tracker', () => {
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('retains invalid durable credentials and rejects whitespace callers without fallthrough', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-credentials-'));
+    const nowMs = Date.now();
+    const scope = { session_id: 'credential-session', parent_thread_id: 'credential-parent' };
+    const base = {
+      role: 'architect',
+      ...scope,
+      created_at: new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + 60_000).toISOString(),
+      binding_state: 'bound' as const,
+      origin_cwd: cwd,
+    };
+    try {
+      await mkdir(getBaseStateDir(cwd), { recursive: true });
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1,
+        sessions: {},
+        pending_role_intents: [
+          { ...base, correlation_token: '', binding_claimant_token: 'claimant' },
+          { ...base, correlation_token: 'validtoken', binding_claimant_token: 'claimant' },
+        ],
+      })}\n`);
+      const retained = (await readSubagentTrackingState(cwd)).pending_role_intents;
+      assert.equal(retained[0]?.correlation_token, '');
+      assert.equal(retained[0]?.binding_claimant_token, 'claimant');
+      assert.equal(completeAdaptedRoleBinding(cwd, {
+        sessionId: scope.session_id, parentThreadId: scope.parent_thread_id,
+        correlationToken: 'validtoken', claimantToken: 'claimant', nowMs,
+      }), 'claimant_mismatch');
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 2);
+
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1, sessions: {}, pending_role_intents: [{
+          ...base, correlation_token: 'validtoken', binding_claimant_token: 'claimant',
+        }],
+      })}\n`);
+      assert.equal(completeAdaptedRoleBinding(cwd, {
+        sessionId: scope.session_id, parentThreadId: scope.parent_thread_id,
+        correlationToken: ' validtoken ', claimantToken: ' claimant ', nowMs,
+      }), 'claimant_mismatch');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects NUL and ELOOP origins before creating tracking artifacts', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'omx-subagent-tracker-origin-'));
+    const loop = join(parent, 'loop');
+    try {
+      await symlink(loop, loop);
+      for (const cwd of [`${parent}\u0000suffix`, loop]) {
+        assert.deepEqual(recordPendingRoleIntent(cwd, {
+          role: 'architect', sessionId: 'origin-session', parentThreadId: 'origin-parent', correlationToken: 'origintoken',
+        }), { ok: false, reason: 'invalid_origin' });
+      }
+      assert.deepEqual(readdirSync(parent), ['loop']);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
     }
   });
 });

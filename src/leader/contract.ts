@@ -43,7 +43,7 @@ export function canonicalizeOriginCwd(cwd: string | undefined): string | null {
       const real = realpathSync(prefix);
       return suffix.length ? join(real, ...suffix) : real;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return resolved;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
       const parent = dirname(prefix);
       if (parent === prefix) return resolved;
       suffix.unshift(basename(prefix));

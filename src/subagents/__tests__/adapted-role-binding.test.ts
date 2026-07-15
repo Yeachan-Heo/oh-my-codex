@@ -842,6 +842,47 @@ describe('adapted role binding', () => {
       await rm(aliasParent, { recursive: true, force: true });
     }
   });
+  it('never publishes a recovery marker for an invalid dominant durable credential', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-invalid-dominant-'));
+    const stateDir = getBaseStateDir(cwd);
+    const base = {
+      role: 'architect',
+      session_id: 'invalid-dominant-session',
+      parent_thread_id: 'invalid-dominant-parent',
+      created_at: new Date(NOW_MS).toISOString(),
+      expires_at: new Date(NOW_MS + 60_000).toISOString(),
+      binding_state: 'bound',
+      origin_cwd: cwd,
+    };
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1, sessions: {}, pending_role_intents: [
+          { ...base, correlation_token: 'a ', binding_claimant_token: 'claimant' },
+          { ...base, correlation_token: 'zvalidtoken', binding_claimant_token: 'claimant' },
+        ],
+      })}\n`);
+      recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
+      assert.equal(readRoleRoutingMarker(stateDir, {
+        cwd, sessionId: base.session_id, parentThreadId: base.parent_thread_id, nowMs: NOW_MS,
+      }), null);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 2);
+
+      await writeFile(subagentTrackingPath(cwd), `${JSON.stringify({
+        schemaVersion: 1, sessions: {}, pending_role_intents: [
+          { ...base, correlation_token: 'a-valid', binding_claimant_token: 'claimant' },
+          { ...base, correlation_token: 'z-invalid', binding_claimant_token: ' ' },
+        ],
+      })}\n`);
+      recoverAdaptedRoleBindings(cwd, stateDir, NOW_MS);
+      assert.equal(readRoleRoutingMarker(stateDir, {
+        cwd, sessionId: base.session_id, parentThreadId: base.parent_thread_id, nowMs: NOW_MS,
+      })?.session_id, base.session_id);
+      assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 
   it('fails closed on a malformed caller origin but migrates a cwd-partitioned originless journal', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-adapted-binding-'));

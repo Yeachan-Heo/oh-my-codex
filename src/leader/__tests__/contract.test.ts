@@ -404,7 +404,7 @@ describe('leader conductor contract', () => {
     assert.doesNotMatch(generatedTaskName, /[-:]/);
   });
 
-  it('canonicalizes symlinked origins without collapsing uncanonicalizable or missing identities', async () => {
+  it('canonicalizes symlinked and nonexistent-leaf origins while rejecting ELOOP identities', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-contract-canonical-origin-'));
     const realWorkspace = join(root, 'real-workspace');
     const aliasWorkspace = join(root, 'alias-workspace');
@@ -420,7 +420,8 @@ describe('leader conductor contract', () => {
         canonicalizeOriginCwd(join(aliasWorkspace, 'missing', 'leaf')),
         canonicalizeOriginCwd(join(realWorkspace, 'missing', 'leaf')),
       );
-      assert.notEqual(canonicalizeOriginCwd(loopA), canonicalizeOriginCwd(loopB));
+      assert.equal(canonicalizeOriginCwd(loopA), null);
+      assert.equal(canonicalizeOriginCwd(loopB), null);
       assert.equal(canonicalizeOriginCwd(undefined), null);
       assert.equal(canonicalizeOriginCwd(''), null);
 

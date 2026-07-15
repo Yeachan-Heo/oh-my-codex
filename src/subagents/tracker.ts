@@ -244,14 +244,12 @@ function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
   const role = readOptionalTrimmedString(candidate.role);
   const sessionId = readOptionalTrimmedString(candidate.session_id);
   const parentThreadId = readOptionalTrimmedString(candidate.parent_thread_id);
-  const correlationToken = readOptionalTrimmedString(candidate.correlation_token);
   const createdAt = readOptionalTrimmedString(candidate.created_at);
   const expiresAt = readOptionalTrimmedString(candidate.expires_at);
-  if (!role || !sessionId || !parentThreadId || !correlationToken || !createdAt || !expiresAt) return null;
+  if (!role || !sessionId || !parentThreadId || !Object.hasOwn(candidate, 'correlation_token') || !createdAt || !expiresAt) return null;
   if (!Number.isFinite(Date.parse(createdAt)) || !Number.isFinite(Date.parse(expiresAt))) return null;
 
   const bindingState = candidate.binding_state === 'bound' ? 'bound' : undefined;
-  const claimantToken = readOptionalTrimmedString(candidate.binding_claimant_token);
   const boundAt = readOptionalTrimmedString(candidate.bound_at);
   const hasValidBoundAt = Boolean(boundAt && Number.isFinite(Date.parse(boundAt)));
   const originCwd = readOptionalTrimmedString(candidate.origin_cwd);
@@ -259,14 +257,15 @@ function normalizePendingRoleIntent(value: unknown): PendingRoleIntent | null {
     role,
     session_id: sessionId,
     parent_thread_id: parentThreadId,
-    correlation_token: correlationToken,
+    // Bound journals are durable security records. Retain malformed credentials verbatim so
+    // completion can reject them rather than silently converting them into claimant-less data.
+    correlation_token: candidate.correlation_token as string,
     created_at: createdAt,
     expires_at: expiresAt,
     ...(bindingState ? { binding_state: bindingState } : {}),
-    // Preserve the security identity (claimant token) INDEPENDENTLY of bound_at.
-    // A malformed/missing bound_at must never erase the stored claimant, otherwise a
-    // fail-closed CAS would degrade to unauthenticated tokenless completion.
-    ...(bindingState && claimantToken ? { binding_claimant_token: claimantToken } : {}),
+    ...(bindingState && Object.hasOwn(candidate, 'binding_claimant_token')
+      ? { binding_claimant_token: candidate.binding_claimant_token }
+      : {}),
     ...(bindingState && hasValidBoundAt ? { bound_at: boundAt } : {}),
     ...(originCwd ? { origin_cwd: originCwd } : {}),
   };
@@ -832,6 +831,14 @@ function sameLogicalRoleIntent(
   );
 }
 
+function isCanonicalCorrelationToken(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+function isCanonicalClaimantToken(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
 function hasOwnBoundLogicalIntent(
   all: PendingRoleIntent[],
   isOwn: (intent: PendingRoleIntent) => boolean,
@@ -895,7 +902,7 @@ export function recordPendingRoleIntent(
     ttlMs?: number;
     nowMs?: number;
   },
-): { ok: true; intent: PendingRoleIntent } | { ok: false; reason: 'unknown_role' | 'invalid_correlation_token' | 'single_flight_conflict' } {
+): { ok: true; intent: PendingRoleIntent } | { ok: false; reason: 'unknown_role' | 'invalid_correlation_token' | 'invalid_origin' | 'single_flight_conflict' } {
   const role = resolveInstalledRoleName(input.role);
   if (!role) return { ok: false, reason: 'unknown_role' };
   const correlationToken = readOptionalTrimmedString(input.correlationToken);
@@ -907,6 +914,7 @@ export function recordPendingRoleIntent(
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
   const canonicalOrigin = canonicalizeOriginCwd(cwd);
+  if (canonicalOrigin === null) return { ok: false, reason: 'invalid_origin' };
   const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
@@ -1084,19 +1092,21 @@ export function completeAdaptedRoleBinding(
   const nowMs = normalizeNowMs(input.nowMs);
   const sessionId = input.sessionId.trim();
   const parentThreadId = input.parentThreadId.trim();
-  const correlationToken = input.correlationToken === undefined ? undefined : input.correlationToken.trim();
-  const claimantToken = input.claimantToken === undefined ? undefined : input.claimantToken.trim();
+  const correlationToken = input.correlationToken;
+  const claimantToken = input.claimantToken;
   const canonicalOrigin = canonicalizeOriginCwd(cwd);
   if (canonicalOrigin === null) return 'not_found';
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const state = readSubagentTrackingStateSync(cwd);
     const all = state.pending_role_intents;
     const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
+    // Select the owned bound scope before authenticating it. Credentials are not a lookup key:
+    // otherwise an invalid dominant duplicate could be bypassed by a lower valid duplicate.
     const boundIntent = selectDominantRoleIntent(
       all.filter((intent) => (
         isOwn(intent)
         && intent.binding_state === 'bound'
-        && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)
+        && sameLogicalRoleIntent(intent, sessionId, parentThreadId)
       )),
       canonicalOrigin,
     );
@@ -1109,28 +1119,43 @@ export function completeAdaptedRoleBinding(
       }
       return 'not_found';
     }
-    // Fail-closed claimant CAS: stored claimants require their exact token. Claimant-less
-    // legacy bound journals require their exact durable correlation token; omission is never
-    // a wildcard for completion.
-    if (boundIntent.binding_claimant_token) {
-      if (claimantToken === undefined || boundIntent.binding_claimant_token !== claimantToken) {
-        return 'claimant_mismatch';
-      }
-    } else if (correlationToken === undefined || boundIntent.correlation_token !== correlationToken) {
-      return 'claimant_mismatch';
-    }
+    const hasClaimant = Object.hasOwn(boundIntent, 'binding_claimant_token');
+    if (
+      !isCanonicalCorrelationToken(boundIntent.correlation_token)
+      || !isCanonicalCorrelationToken(correlationToken)
+      || boundIntent.correlation_token !== correlationToken
+      || (hasClaimant && (
+        !isCanonicalClaimantToken(boundIntent.binding_claimant_token)
+        || !isCanonicalClaimantToken(claimantToken)
+        || boundIntent.binding_claimant_token !== claimantToken
+      ))
+    ) return 'claimant_mismatch';
 
     state.pending_role_intents = all
       .filter((intent) => !shouldPruneExpired(intent))
-      .filter((intent) => !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, correlationToken)));
+      .filter((intent) => !(isOwn(intent) && sameLogicalRoleIntent(intent, sessionId, parentThreadId, boundIntent.correlation_token as string)));
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, state, context.publish);
     return 'completed';
   });
 }
 
-export function listBoundAdaptedRoleIntents(cwd: string, _nowMs?: number): PendingRoleIntent[] {
-  return readSubagentTrackingStateSync(cwd).pending_role_intents.filter((intent) => intent.binding_state === 'bound');
+export function listBoundAdaptedRoleIntents(cwd: string, _nowMs?: number, ownedDominant = false): PendingRoleIntent[] {
+  const allBound = readSubagentTrackingStateSync(cwd).pending_role_intents.filter((intent) => intent.binding_state === 'bound');
+  if (!ownedDominant) return allBound;
+  const canonicalOrigin = canonicalizeOriginCwd(cwd);
+  if (canonicalOrigin === null) return [];
+  const { isOwn } = pendingRoleIntentPredicates(cwd, canonicalOrigin, Date.now());
+  const scopes = new Map<string, PendingRoleIntent[]>();
+  for (const intent of allBound) {
+    if (!isOwn(intent)) continue;
+    const key = `${intent.session_id}\u0000${intent.parent_thread_id}`;
+    scopes.set(key, [...(scopes.get(key) ?? []), intent]);
+  }
+  return [...scopes.values()].flatMap((candidates) => {
+    const dominant = selectDominantRoleIntent(candidates, canonicalOrigin);
+    return dominant ? [dominant] : [];
+  });
 }
 
 export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSubagentTurnInput): SubagentTrackingState {
