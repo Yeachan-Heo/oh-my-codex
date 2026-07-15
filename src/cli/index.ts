@@ -4333,6 +4333,15 @@ function buildTmuxExtendedKeysReleaseShellSnippet(cwd: string): string {
 }
 
 const SHELL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const DETACHED_SESSION_PANE_ENV_KEYS = new Set([
+  "TERM",
+  "TERM_PROGRAM",
+  "TERM_PROGRAM_VERSION",
+  "TMUX",
+  "TMUX_PANE",
+  "COLUMNS",
+  "LINES",
+]);
 
 export function serializeDetachedSessionParentEnv(
   env: NodeJS.ProcessEnv,
@@ -4340,6 +4349,7 @@ export function serializeDetachedSessionParentEnv(
   const lines: string[] = [];
   for (const key of Object.keys(env).sort()) {
     if (!SHELL_ENV_NAME_PATTERN.test(key)) continue;
+    if (DETACHED_SESSION_PANE_ENV_KEYS.has(key)) continue;
     const value = env[key];
     if (typeof value !== "string") continue;
     if (value.includes("\0")) continue;
