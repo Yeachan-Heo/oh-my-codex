@@ -203,6 +203,16 @@ describe('runtime-cli helpers', () => {
         status: 'pending',
       }, cwd);
 
+      // This fixture creates only durable Team state, not a detached tmux session.
+      // An empty persisted session is the authoritative absence proof required before
+      // shutdown may remove that state; it must not invent a leader-pane effect.
+      const config = await readTeamConfig('shutdown-fallback', cwd);
+      assert.ok(config);
+      config.tmux_session = '';
+      config.leader_pane_id = null;
+      config.leader_pane_pid = null;
+      await saveTeamConfig(config, cwd);
+
       const teamRoot = join(cwd, '.omx', 'state', 'team', 'shutdown-fallback');
       assert.equal(existsSync(teamRoot), true);
 

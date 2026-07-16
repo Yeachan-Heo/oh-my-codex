@@ -32,7 +32,7 @@ async function withIsolatedStateEnv(fn: () => Promise<void>): Promise<void> {
 }
 
 describe('modes/base tmux pane capture', () => {
-  it('captures tmux_pane_id in mode state on startMode()', async () => {
+  it('fails closed without persisting a Ralph pane binding when exact proof is unavailable', async () => {
     await withIsolatedStateEnv(async () => {
       const prev = process.env.TMUX_PANE;
       const prevTmux = process.env.TMUX;
@@ -58,9 +58,9 @@ exit 1
 
         await startMode('ralph', 'test', 1, wd);
         const raw = JSON.parse(await readFile(join(wd, '.omx', 'state', 'ralph-state.json'), 'utf-8'));
-        assert.equal(raw.tmux_pane_id, '%123');
-        assert.equal(raw.tmux_window_id, '@7');
-        assert.ok(typeof raw.tmux_pane_set_at === 'string' && raw.tmux_pane_set_at.length > 0);
+        assert.equal(raw.tmux_pane_id, undefined);
+        assert.equal(raw.tmux_window_id, undefined);
+        assert.equal(raw.tmux_pane_set_at, undefined);
       } finally {
         if (typeof prev === 'string') process.env.TMUX_PANE = prev;
         else delete process.env.TMUX_PANE;

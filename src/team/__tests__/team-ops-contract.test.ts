@@ -42,6 +42,7 @@ const EXPECTED_STATE_RE_EXPORTS = {
   teamTransitionDispatchRequest: 'transitionDispatchRequest',
   teamMarkDispatchRequestNotified: 'markDispatchRequestNotified',
   teamMarkDispatchRequestDelivered: 'markDispatchRequestDelivered',
+  teamRemoveDispatchRequestsForWorkers: 'removeDispatchRequestsForWorkers',
   teamAppendEvent: 'appendTeamEvent',
   teamReadTaskApproval: 'readTaskApproval',
   teamWriteTaskApproval: 'writeTaskApproval',
@@ -58,8 +59,13 @@ const EXPECTED_STATE_RE_EXPORTS = {
   teamMarkOwnedTeamsLeaderSessionStopped: 'markOwnedTeamsLeaderSessionStopped',
   teamWriteWorkerStatus: 'writeWorkerStatus',
   teamWithScalingLock: 'withScalingLock',
+  teamWithTaskMembershipBarrier: 'withTeamTaskBarrier',
+  recoverTeamMembershipTaskTransaction: 'recoverTeamMembershipTaskTransaction',
+  commitTeamMembershipTaskTransaction: 'commitTeamMembershipTaskTransaction',
+  finalizeTeamMembershipTaskTransaction: 'finalizeTeamMembershipTaskTransaction',
   resolveDispatchLockTimeoutMs: 'resolveDispatchLockTimeoutMs',
   writeAtomic: 'writeAtomic',
+  teamRemoveDurableFile: 'removeDurableFile',
 } as const;
 
 function parseStateReExports(source: string): Record<string, string> {

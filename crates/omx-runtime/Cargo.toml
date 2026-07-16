@@ -9,5 +9,6 @@ repository.workspace = true
 [dependencies]
 omx-mux = { path = "../omx-mux" }
 omx-runtime-core = { path = "../omx-runtime-core" }
+fs2 = "0.4"
 serde_json = "1"
 

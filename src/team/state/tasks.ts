@@ -61,8 +61,6 @@ export async function claimTask(
   expectedVersion: number | null,
   deps: ClaimTaskDeps,
 ): Promise<ClaimTaskResult> {
-  const cfg = await deps.readTeamConfig(deps.teamName, deps.cwd);
-  if (!cfg || !cfg.workers.some((w) => w.name === workerName)) return { ok: false, error: 'worker_not_found' };
 
   const existing = await deps.readTask(deps.teamName, taskId, deps.cwd);
   if (!existing) return { ok: false, error: 'task_not_found' };
@@ -79,6 +77,11 @@ export async function claimTask(
 
     const readinessAfterLock = await computeTaskReadiness(deps.teamName, taskId, deps.cwd, deps);
     if (!readinessAfterLock.ready) return { ok: false as const, error: 'blocked_dependency' as const, dependencies: readinessAfterLock.dependencies };
+
+    const cfg = await deps.readTeamConfig(deps.teamName, deps.cwd);
+    if (!cfg || !cfg.workers.some((worker) => worker.name === workerName)) {
+      return { ok: false as const, error: 'worker_not_found' as const };
+    }
 
     if (deps.isTerminalTaskStatus(v.status)) return { ok: false as const, error: 'already_terminal' as const };
     if (v.status === 'in_progress') {

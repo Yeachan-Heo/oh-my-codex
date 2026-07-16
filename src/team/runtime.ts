@@ -1,5 +1,9 @@
+import { createHash } from 'crypto';
+
+
 import { join, resolve, dirname } from 'path';
-import { existsSync, appendFileSync, mkdirSync } from 'fs';
+import { existsSync, appendFileSync, mkdirSync, readFileSync } from 'fs';
+
 import { mkdir, readdir, readFile, writeFile } from 'fs/promises';
 import { performance } from 'perf_hooks';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
@@ -9,6 +13,7 @@ import {
   isTmuxAvailable,
   hasCurrentTmuxClientContext,
   createTeamSession,
+  CreateTeamSessionPartialError,
   buildWorkerProcessLaunchSpec,
   scrubTeamWorkerHudOwnershipEnv,
   resolveTeamWorkerCli,
@@ -25,18 +30,22 @@ import {
   sendToWorkerStdin,
   isWorkerAlive,
   isWorkerPaneOpen,
-  getWorkerPanePid,
-  killWorkerByPaneIdAsync,
   paneHasOmxInstanceTag,
   readPaneTeamOwnerTagResult,
   restoreStandaloneHudPane,
+  finalizeRestoredHudCleanupDebtSync,
+  reconcileRestoredHudCleanupDebtSync,
   teardownWorkerPanes,
   unregisterResizeHook,
-  destroyTeamSession,
+  queryDetachedTeamSession,
+  requestDetachedTeamSessionDestroy,
+  queryDetachedSessionLeaderBinding,
   listPaneIds,
   listTeamSessions,
   resolveSharedSessionShutdownTopology,
 } from './tmux-session.js';
+import { readExactPaneProofSync, readExactPaneProofsSync, type ExactPaneProof } from './exact-pane.js';
+import { reconcileScaleDownCleanupDebt } from './scaling.js';
 import {
   teamInit as initTeamState,
   DEFAULT_MAX_WORKERS,
@@ -74,6 +83,8 @@ import {
   teamWritePhase as writeTeamPhaseState,
   teamWriteWorkerStatus as writeWorkerStatus,
   writeAtomic,
+  teamWithTaskMembershipBarrier as withTeamTaskMembershipBarrier,
+  teamRemoveDurableFile as removeDurableFile,
   type TeamConfig,
   type WorkerInfo,
   type WorkerHeartbeat,
@@ -86,6 +97,7 @@ import {
   type TeamPolicy,
   type TeamDispatchRequest,
 } from './team-ops.js';
+import { commitTeamMembershipTaskTransaction, writeTeamManifestV2 as writeTeamManifestV2State } from './state.js';
 import {
   queueInboxInstruction,
   queueDirectMailboxMessage,
@@ -311,6 +323,43 @@ async function syncTeamModeStateOnShutdown(
   }
 }
 
+async function mutateShutdownConfig(
+  config: TeamConfig,
+  cwd: string,
+  mutate: (current: TeamConfig) => void,
+): Promise<TeamConfig> {
+  return await withTeamTaskMembershipBarrier(config.name, cwd, async () => {
+    const current = await readTeamConfig(config.name, cwd);
+    if (!current) throw new Error(`shutdown_config_missing:${config.name}`);
+    const baseGeneration = current.config_generation ?? 0;
+    const teamRoot = join(current.team_state_root ?? resolveCanonicalTeamStateRoot(cwd), 'team', current.name);
+    const [currentConfigBytes, currentManifestBytes] = await Promise.all([
+      readFile(join(teamRoot, 'config.json'), 'utf8'),
+      existsSync(join(teamRoot, 'manifest.v2.json')) ? readFile(join(teamRoot, 'manifest.v2.json'), 'utf8') : null,
+    ]);
+    mutate(current);
+    const currentManifest = currentManifestBytes === null ? null : JSON.parse(currentManifestBytes) as Record<string, unknown>;
+    await commitTeamMembershipTaskTransaction(current.name, cwd, {
+      baseGeneration,
+      tasks: [],
+      config: { oldBytes: currentConfigBytes, newBytes: JSON.stringify(current, null, 2) },
+      manifest: {
+        oldBytes: currentManifestBytes,
+        newBytes: currentManifest === null ? null : JSON.stringify({
+          ...currentManifest,
+          hud_pane_id: current.hud_pane_id,
+          hud_pane_pid: current.hud_pane_pid,
+          resize_hook_name: current.resize_hook_name,
+          resize_hook_target: current.resize_hook_target,
+        }, null, 2),
+      },
+    });
+    const committed = await readTeamConfig(current.name, cwd);
+    if (!committed) throw new Error(`shutdown_config_missing_after_commit:${current.name}`);
+    return committed;
+  });
+}
+
 async function assertTeamStartupIsNonDestructive(
   teamName: string,
   cwd: string,
@@ -364,16 +413,43 @@ export function applyCreatedInteractiveSessionToConfig(
   workerPaneIds: Array<string | undefined>,
 ): void {
   config.tmux_session = createdSession.name;
+  config.tmux_session_id = createdSession.tmuxSessionId;
+  config.tmux_session_created = createdSession.tmuxSessionCreated;
   config.leader_pane_id = createdSession.leaderPaneId;
   config.hud_pane_id = createdSession.hudPaneId;
+  config.leader_pane_pid = typeof createdSession.leaderPanePid === 'number' && Number.isSafeInteger(createdSession.leaderPanePid) && createdSession.leaderPanePid > 0
+    ? createdSession.leaderPanePid
+    : null;
+  config.hud_pane_pid = typeof createdSession.hudPanePid === 'number' && Number.isSafeInteger(createdSession.hudPanePid) && createdSession.hudPanePid > 0
+    ? createdSession.hudPanePid
+    : null;
   config.tmux_pane_owner_id = createdSession.teamPaneOwnerId;
   config.resize_hook_name = createdSession.resizeHookName;
   config.resize_hook_target = createdSession.resizeHookTarget;
+  const paneIdsByIndex = createdSession.workerPaneIdsByIndex;
+  const panePidsByIndex = createdSession.workerPanePidsByIndex;
+  if (paneIdsByIndex) {
+    for (let i = 0; i < paneIdsByIndex.length; i++) {
+      const paneId = paneIdsByIndex[i];
+      if (!paneId) continue;
+      workerPaneIds[i] = paneId;
+      if (config.workers[i]) {
+        config.workers[i].pane_id = paneId;
+        const panePid = panePidsByIndex?.[i];
+        if (typeof panePid === 'number' && Number.isSafeInteger(panePid) && panePid > 0) config.workers[i].pid = panePid;
+
+      }
+    }
+    return;
+  }
+
   for (let i = 0; i < createdSession.workerPaneIds.length; i++) {
     const paneId = createdSession.workerPaneIds[i];
     workerPaneIds[i] = paneId;
     if (config.workers[i]) {
       config.workers[i].pane_id = paneId;
+      const panePid = createdSession.workerPanePidsByIndex?.[i];
+      if (typeof panePid === 'number' && Number.isSafeInteger(panePid) && panePid > 0) config.workers[i].pid = panePid;
     }
   }
 }
@@ -417,29 +493,49 @@ function collectShutdownPaneIds(params: {
   return [...paneIds];
 }
 
-function filterSharedSessionShutdownWorkerPaneIdsByOwner(
-  paneIds: string[],
+function collectAuthorizedSharedSessionWorkerPaneIds(
+  paneIds: readonly string[],
   teamPaneOwnerId: string,
-  legacyPersistedWorkerPaneIds: ReadonlySet<string> = new Set<string>(),
-  onOwnerReadError?: (paneId: string, error: string) => void,
+  canonicalWorkerPaneIds: ReadonlySet<string>,
+  initiallyTaggedWorkerPaneIds?: ReadonlySet<string>,
+  authorizedTaggedWorkerPaneIds?: Set<string>,
 ): string[] {
   const expectedOwnerId = teamPaneOwnerId.trim();
-  if (!expectedOwnerId) return [];
-  return paneIds.filter((paneId) => {
-    const actualOwnerId = readPaneTeamOwnerTagResult(paneId);
-    if (actualOwnerId.status === 'value') return actualOwnerId.value === expectedOwnerId;
-    if (actualOwnerId.status === 'missing') {
-      // Legacy, already-running Team panes may not have @omx_team_pane_owner_id.
-      // Keep that compatibility path explicitly bounded to panes that are both
-      // live worker-command candidates and persisted in this team's state. This
-      // preserves old Team cleanup without letting arbitrary worker-looking
-      // panes become kill candidates merely because the owner tag is absent.
-      return legacyPersistedWorkerPaneIds.has(paneId);
+  if (!expectedOwnerId && paneIds.length > 0) {
+    throw new Error('shutdown_shared_session_worker_owner_unavailable:missing_team_owner_id');
+  }
+
+  const authorized = new Set<string>();
+  for (const paneId of paneIds) {
+    const owner = readPaneTeamOwnerTagResult(paneId);
+    if (initiallyTaggedWorkerPaneIds?.has(paneId)
+      && (owner.status !== 'value' || owner.value !== expectedOwnerId)) {
+      throw new Error(`shutdown_shared_session_worker_owner_changed:${paneId}`);
     }
-    onOwnerReadError?.(paneId, actualOwnerId.error);
-    return false;
-  });
+    if (owner.status === 'error') {
+      // A read failure is authority ambiguity only for an explicit persisted
+      // worker that topology independently identifies as a worker candidate.
+      if (canonicalWorkerPaneIds.has(paneId)) {
+        throw new Error(`shutdown_shared_session_worker_owner_unavailable:${paneId}:${owner.error}`);
+      }
+      continue;
+    }
+    if (owner.status === 'value') {
+      if (owner.value === expectedOwnerId) {
+        authorized.add(paneId);
+        authorizedTaggedWorkerPaneIds?.add(paneId);
+      } else if (canonicalWorkerPaneIds.has(paneId)) {
+        throw new Error(`shutdown_shared_session_worker_owner_changed:${paneId}`);
+      }
+      continue;
+    }
+    if (canonicalWorkerPaneIds.has(paneId)) {
+      throw new Error(`shutdown_shared_session_worker_owner_changed:${paneId}`);
+    }
+  }
+  return [...authorized];
 }
+
 
 function isSharedSessionHudPaneReclaimable(params: {
   paneId: string;
@@ -485,6 +581,244 @@ export function shouldPrekillInteractiveShutdownProcessTrees(sessionName: string
   // including native Windows prompt-worker ancestry where pane-targeted
   // teardown alone is insufficient.
   return true;
+}
+
+function canonicalDetachedStateRoot(config: TeamConfig | null, cwd: string): string {
+  return resolve(config?.team_state_root ?? resolveCanonicalTeamStateRoot(cwd));
+}
+
+function detachedSessionDestroyReceiptPath(teamName: string, cwd: string, config?: TeamConfig | null): string {
+  return join(canonicalDetachedStateRoot(config ?? null, cwd), 'team', teamName, '.detached-session-destroy-receipt.json');
+}
+
+function detachedConfigIdentity(teamName: string, cwd: string, config: TeamConfig): string | null {
+  const ownerId = typeof config.tmux_pane_owner_id === 'string' ? config.tmux_pane_owner_id.trim() : '';
+  const paneId = typeof config.leader_pane_id === 'string' ? config.leader_pane_id.trim() : '';
+  const panePid = config.leader_pane_pid;
+  if (config.name !== teamName || !config.created_at || !config.tmux_session || !ownerId || !/^%[0-9]+$/.test(paneId)
+    || typeof panePid !== 'number' || !Number.isSafeInteger(panePid) || panePid <= 0) return null;
+  // Bind the durable bytes of both canonical files, not only authorization
+  // fields. A worker/membership mutation invalidates a published receipt.
+  try {
+    const teamRoot = join(canonicalDetachedStateRoot(config, cwd), 'team', teamName);
+    const configBytes = readFileSync(join(teamRoot, 'config.json'), 'utf8');
+    const manifestBytes = readFileSync(join(teamRoot, 'manifest.v2.json'), 'utf8');
+    const parsedConfig = JSON.parse(configBytes) as { config_generation?: unknown };
+    const parsedManifest = JSON.parse(manifestBytes) as { config_generation?: unknown };
+    if (!Number.isSafeInteger(parsedConfig.config_generation)
+      || !Number.isSafeInteger(parsedManifest.config_generation)
+      || parsedConfig.config_generation !== parsedManifest.config_generation) return null;
+    return createHash('sha256').update(JSON.stringify({
+      version: 2,
+      team_name: teamName,
+      state_root: canonicalDetachedStateRoot(config, cwd),
+      config_bytes: configBytes,
+      manifest_bytes: manifestBytes,
+    })).digest('hex');
+  } catch {
+    return null;
+  }
+
+}
+
+
+type DetachedSessionDestroyReceipt = {
+  schema_version: 2;
+  schema: 'omx.detached_session_destroy.v2';
+  operation: 'detached_session_destroy';
+  status: 'intent' | 'accepted';
+  team_name: string;
+  state_root: string;
+  config_identity_version: 2;
+
+  config_identity_digest: string;
+  session_name: string;
+  session_id: string;
+  session_created: string;
+  leader_pane_id: string;
+  leader_pane_pid: number;
+  owner_id: string;
+};
+
+/** Deterministic test seam for mutations after durable intent publication. */
+let detachedSessionDestroyAfterJournalHook: (() => void | Promise<void>) | null = null;
+
+export function setDetachedSessionDestroyAfterJournalHookForTest(
+  hook: (() => void | Promise<void>) | null,
+): void {
+  detachedSessionDestroyAfterJournalHook = hook;
+}
+
+function isDetachedSessionDestroyReceipt(value: unknown): value is DetachedSessionDestroyReceipt {
+  if (!value || typeof value !== 'object') return false;
+  const receipt = value as Record<string, unknown>;
+  return receipt.schema_version === 2 && receipt.schema === 'omx.detached_session_destroy.v2'
+    && receipt.operation === 'detached_session_destroy' && (receipt.status === 'intent' || receipt.status === 'accepted')
+    && typeof receipt.team_name === 'string' && receipt.team_name.length > 0
+    && typeof receipt.state_root === 'string' && receipt.state_root.length > 0 && resolve(receipt.state_root) === receipt.state_root
+    && receipt.config_identity_version === 2 && typeof receipt.config_identity_digest === 'string' && /^[a-f0-9]{64}$/.test(receipt.config_identity_digest)
+
+    && typeof receipt.session_name === 'string' && receipt.session_name.length > 0 && !receipt.session_name.includes(':')
+    && typeof receipt.session_id === 'string' && receipt.session_id.length > 0 && !/\s/.test(receipt.session_id)
+    && typeof receipt.session_created === 'string' && /^[0-9]+$/.test(receipt.session_created)
+    && typeof receipt.leader_pane_id === 'string' && /^%[0-9]+$/.test(receipt.leader_pane_id)
+    && typeof receipt.leader_pane_pid === 'number' && Number.isSafeInteger(receipt.leader_pane_pid) && receipt.leader_pane_pid > 0
+    && typeof receipt.owner_id === 'string' && receipt.owner_id.length > 0;
+}
+
+async function readDetachedSessionDestroyReceipt(teamName: string, cwd: string, config: TeamConfig | null): Promise<DetachedSessionDestroyReceipt | null> {
+  const path = detachedSessionDestroyReceiptPath(teamName, cwd, config);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf-8')) as unknown;
+    if (!isDetachedSessionDestroyReceipt(parsed) || parsed.team_name !== teamName || parsed.state_root !== canonicalDetachedStateRoot(config, cwd)) throw new Error('invalid receipt');
+    return parsed;
+  } catch {
+    throw new Error(`detached_session_destroy_receipt_malformed:${config?.tmux_session || 'missing_session'}`);
+  }
+}
+
+async function writeDetachedSessionDestroyReceipt(teamName: string, cwd: string, config: TeamConfig | null, receipt: DetachedSessionDestroyReceipt): Promise<void> {
+  await writeAtomic(detachedSessionDestroyReceiptPath(teamName, cwd, config), `${JSON.stringify(receipt, null, 2)}\n`);
+}
+
+function validateDetachedReceiptConfig(teamName: string, cwd: string, config: TeamConfig, receipt: DetachedSessionDestroyReceipt): void {
+  if (receipt.team_name !== teamName || receipt.state_root !== canonicalDetachedStateRoot(config, cwd)
+    || receipt.config_identity_version !== 2 || detachedConfigIdentity(teamName, cwd, config) !== receipt.config_identity_digest
+
+    || config.tmux_session !== receipt.session_name || config.tmux_session_id !== receipt.session_id
+    || config.tmux_session_created !== receipt.session_created || config.leader_pane_id !== receipt.leader_pane_id
+    || config.leader_pane_pid !== receipt.leader_pane_pid || config.tmux_pane_owner_id !== receipt.owner_id) {
+    throw new Error(`detached_session_destroy_receipt_config_mismatch:${receipt.session_name}`);
+  }
+}
+
+function assertDetachedSessionDestroyAuthority(receipt: DetachedSessionDestroyReceipt): void {
+  const expected = { sessionId: receipt.session_id, sessionCreated: receipt.session_created };
+  const query = queryDetachedTeamSession(receipt.session_name, expected);
+  if (query.status !== 'exact'
+    || !queryDetachedSessionLeaderBinding(receipt.leader_pane_id, receipt.leader_pane_pid, receipt.session_name, expected)) {
+    throw new Error(`detached_session_destroy_authorization_unavailable:${receipt.session_name}`);
+  }
+  const proof = readExactPaneProofSync(receipt.leader_pane_id);
+  if (proof.status !== 'live' || proof.pid !== receipt.leader_pane_pid) throw new Error(`detached_session_destroy_authorization_unavailable:${receipt.session_name}`);
+  const owner = readPaneTeamOwnerTagResult(proof.paneId);
+  if (owner.status !== 'value' || owner.value !== receipt.owner_id) throw new Error(`detached_session_destroy_authorization_unavailable:${receipt.session_name}`);
+}
+
+function requestDetachedSessionDestroyAtFinalSink(receipt: DetachedSessionDestroyReceipt): boolean {
+  return requestDetachedTeamSessionDestroy(receipt.session_name, {
+    sessionId: receipt.session_id,
+    sessionCreated: receipt.session_created,
+    leaderPaneId: receipt.leader_pane_id,
+    leaderPanePid: receipt.leader_pane_pid,
+    ownerId: receipt.owner_id,
+  });
+}
+
+
+async function withDetachedSessionDestroyLock<T>(teamName: string, cwd: string, fn: () => Promise<T>): Promise<T> {
+  return await withTeamTaskMembershipBarrier(teamName, cwd, fn);
+}
+
+async function convergeDetachedSessionDestroyReceiptUnlocked(teamName: string, cwd: string, config: TeamConfig | null, receipt: DetachedSessionDestroyReceipt): Promise<boolean> {
+  const query = queryDetachedTeamSession(receipt.session_name, { sessionId: receipt.session_id, sessionCreated: receipt.session_created });
+  if (query.status === 'unavailable' || query.status === 'replacement') throw new Error(`detached_session_destroy_unresolved:${receipt.session_name}`);
+  if (query.status === 'absent') {
+    if (config) {
+      validateDetachedReceiptConfig(teamName, cwd, config, receipt);
+      config.tmux_session = '';
+      await saveTeamConfig(config, cwd);
+    } else if (receipt.status !== 'accepted') {
+      throw new Error(`detached_session_destroy_authorization_unavailable:${receipt.session_name}`);
+    }
+    return true;
+  }
+  if (!config) throw new Error(`detached_session_destroy_authorization_unavailable:${receipt.session_name}`);
+  validateDetachedReceiptConfig(teamName, cwd, config, receipt);
+  assertDetachedSessionDestroyAuthority(receipt);
+  if (!requestDetachedSessionDestroyAtFinalSink(receipt)) {
+    throw new Error(`detached_session_destroy_unresolved:${receipt.session_name}`);
+  }
+
+  await writeDetachedSessionDestroyReceipt(teamName, cwd, config, { ...receipt, status: 'accepted' });
+  return await convergeDetachedSessionDestroyReceiptUnlocked(teamName, cwd, config, { ...receipt, status: 'accepted' });
+}
+
+async function reconcileDetachedSessionDestroyReceipt(teamName: string, cwd: string, config: TeamConfig | null): Promise<boolean> {
+  return await withDetachedSessionDestroyLock(teamName, cwd, async () => {
+    const canonical = await readTeamConfig(teamName, cwd);
+    const receipt = await readDetachedSessionDestroyReceipt(teamName, cwd, canonical ?? config);
+    if (!receipt) return false;
+    if (!canonical) {
+      // Name/file presence is not authority. Accepted absence requires a
+      // successfully parsed current canonical generation.
+      throw new Error(`detached_session_destroy_authorization_unavailable:${receipt.session_name}`);
+    }
+
+    return await convergeDetachedSessionDestroyReceiptUnlocked(teamName, cwd, canonical, receipt);
+  });
+}
+
+async function destroyConfiguredDetachedTeamSession(teamName: string, cwd: string, config: TeamConfig): Promise<void> {
+  if (!config.tmux_session) return;
+  await withDetachedSessionDestroyLock(teamName, cwd, async () => {
+    const canonical = await readTeamConfig(teamName, cwd);
+    if (!canonical) throw new Error(`detached_session_destroy_authorization_unavailable:${config.tmux_session}`);
+    const existing = await readDetachedSessionDestroyReceipt(teamName, cwd, canonical);
+    if (existing) {
+      await convergeDetachedSessionDestroyReceiptUnlocked(teamName, cwd, canonical, existing);
+      return;
+    }
+    const sessionName = canonical.tmux_session;
+    const sessionId = typeof canonical.tmux_session_id === 'string' ? canonical.tmux_session_id : '';
+    const sessionCreated = typeof canonical.tmux_session_created === 'string' ? canonical.tmux_session_created : '';
+    const digest = detachedConfigIdentity(teamName, cwd, canonical);
+    const ownerId = typeof canonical.tmux_pane_owner_id === 'string' ? canonical.tmux_pane_owner_id.trim() : '';
+    const leaderPaneId = typeof canonical.leader_pane_id === 'string' ? canonical.leader_pane_id.trim() : '';
+    const leaderPanePid = canonical.leader_pane_pid;
+    if (!digest || !sessionName || !/^\$[0-9]+$/.test(sessionId) || !/^[0-9]+$/.test(sessionCreated) || !ownerId || !/^%[0-9]+$/.test(leaderPaneId)
+      || typeof leaderPanePid !== 'number' || !Number.isSafeInteger(leaderPanePid) || leaderPanePid <= 0) {
+      throw new Error(`detached_session_destroy_authorization_unavailable:${sessionName || 'missing_session'}`);
+    }
+    const receipt: DetachedSessionDestroyReceipt = {
+      schema_version: 2, schema: 'omx.detached_session_destroy.v2', operation: 'detached_session_destroy', status: 'intent',
+      team_name: teamName, state_root: canonicalDetachedStateRoot(canonical, cwd), config_identity_version: 2, config_identity_digest: digest,
+      session_name: sessionName, session_id: sessionId, session_created: sessionCreated,
+      leader_pane_id: leaderPaneId, leader_pane_pid: leaderPanePid, owner_id: ownerId,
+    };
+    assertDetachedSessionDestroyAuthority(receipt);
+    await writeDetachedSessionDestroyReceipt(teamName, cwd, canonical, receipt);
+    const afterJournalHook = detachedSessionDestroyAfterJournalHook;
+    detachedSessionDestroyAfterJournalHook = null;
+    await afterJournalHook?.();
+    const current = await readTeamConfig(teamName, cwd);
+    if (!current) throw new Error(`detached_session_destroy_authorization_unavailable:${sessionName}`);
+    validateDetachedReceiptConfig(teamName, cwd, current, receipt);
+    assertDetachedSessionDestroyAuthority(receipt);
+    if (!requestDetachedSessionDestroyAtFinalSink(receipt)) {
+      throw new Error(`detached_session_destroy_unresolved:${sessionName}`);
+    }
+    await writeDetachedSessionDestroyReceipt(teamName, cwd, current, { ...receipt, status: 'accepted' });
+    await convergeDetachedSessionDestroyReceiptUnlocked(teamName, cwd, current, { ...receipt, status: 'accepted' });
+  });
+}
+
+interface UnavailablePaneProof {
+  paneId: string;
+  reason: Extract<ExactPaneProof, { status: 'unavailable' }>['reason'];
+  detail?: string;
+}
+
+function assertPaneTeardownProofsAvailable(
+  operation: string,
+  unavailableProofs: readonly UnavailablePaneProof[],
+): void {
+  if (unavailableProofs.length === 0) return;
+  const detail = unavailableProofs
+    .map((proof) => `${proof.paneId}:${proof.reason}${proof.detail ? `:${proof.detail}` : ''}`)
+    .join(',');
+  throw new Error(`${operation}_pane_proof_unavailable:${detail}`);
 }
 
 export async function cleanupTeamWorkerLaunchOrphanedMcpProcesses(
@@ -1987,7 +2321,7 @@ function registerPromptWorkerHandle(
     const teamHandles = promptWorkerRegistry.get(teamName);
     if (!teamHandles) return;
     const handle = teamHandles.get(workerName);
-    if (handle?.processGroupId && isProcessGroupAlive(handle.processGroupId)) {
+    if (handle?.processGroupId && probeProcessGroupLiveness(handle.processGroupId) !== 'gone') {
       return;
     }
     teamHandles.delete(workerName);
@@ -2006,30 +2340,75 @@ function removePromptWorkerHandle(teamName: string, workerName: string): void {
   if (teamHandles.size === 0) promptWorkerRegistry.delete(teamName);
 }
 
-function isPidAlive(pid: number): boolean {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
+function probePidLiveness(pid: number): 'alive' | 'gone' | 'unknown' {
+  if (!Number.isFinite(pid) || pid <= 0) return 'gone';
   try {
     process.kill(pid, 0);
-    return true;
+    return 'alive';
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return 'gone';
     process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-    return false;
+    return 'unknown';
   }
 }
 
-function isProcessGroupAlive(processGroupId: number): boolean {
-  if (process.platform === 'win32') return false;
-  if (!Number.isFinite(processGroupId) || processGroupId <= 0) return false;
+function isPidAlive(pid: number): boolean {
+  return probePidLiveness(pid) === 'alive';
+}
+
+function isPidGone(pid: number): boolean {
+  return probePidLiveness(pid) === 'gone';
+}
+
+type ProcessIdentity = {
+  pid: number;
+  /** Linux /proc stat start-time ticks; this changes when a PID is reused. */
+  start_time: string;
+};
+
+async function captureProcessIdentity(pid: number): Promise<ProcessIdentity | null> {
+  // There is no portable process birth identifier exposed by Node. Refuse to
+  // persist replayable PID debt on platforms without Linux's stable proc stat
+  // start-time field rather than later treating a reused PID as authoritative.
+  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
-    process.kill(-processGroupId, 0);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-    return false;
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+    const close = stat.lastIndexOf(')');
+    const fields = close >= 0 ? stat.slice(close + 2).trim().split(/\s+/) : [];
+    // field 22 is starttime; fields begin at field 3 after the comm value.
+    const startTime = fields[19];
+    return typeof startTime === 'string' && /^[0-9]+$/.test(startTime)
+      ? { pid, start_time: startTime }
+      : null;
+  } catch {
+    return null;
   }
 }
+
+async function captureProcessIdentities(pids: readonly number[]): Promise<ProcessIdentity[] | null> {
+  const identities = await Promise.all([...new Set(pids)].map((pid) => captureProcessIdentity(pid)));
+  return identities.every((identity): identity is ProcessIdentity => identity !== null) ? identities : null;
+}
+
+async function probeProcessIdentity(identity: ProcessIdentity): Promise<'gone' | 'same' | 'reused_or_unknown'> {
+  const current = await captureProcessIdentity(identity.pid);
+  if (current === null) return probePidLiveness(identity.pid) === 'gone' ? 'gone' : 'reused_or_unknown';
+  return current.start_time === identity.start_time ? 'same' : 'reused_or_unknown';
+}
+
+function probeProcessGroupLiveness(processGroupId: number): 'alive' | 'gone' | 'unknown' {
+  if (process.platform === 'win32') return 'gone';
+  if (!Number.isFinite(processGroupId) || processGroupId <= 0) return 'gone';
+  try {
+    process.kill(-processGroupId, 0);
+    return 'alive';
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return 'gone';
+    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    return 'unknown';
+  }
+}
+
 
 interface PromptWorkerTeardownResult {
   terminated: boolean;
@@ -2099,11 +2478,11 @@ async function waitForTrackedPidsExit(pids: readonly number[], timeoutMs: number
 
   const deadline = Date.now() + Math.max(0, timeoutMs);
   while (Date.now() < deadline) {
-    if (tracked.every((pid) => !isPidAlive(pid))) return true;
+    if (tracked.every(isPidGone)) return true;
     await new Promise((resolve) => setTimeout(resolve, PROMPT_WORKER_EXIT_POLL_MS));
   }
 
-  return tracked.every((pid) => !isPidAlive(pid));
+  return tracked.every(isPidGone);
 }
 
 async function terminateTrackedProcessTree(
@@ -2134,9 +2513,9 @@ async function terminateTrackedProcessTree(
 
     const groupDeadline = Date.now() + Math.max(0, graceMs);
     while (Date.now() < groupDeadline) {
-      const groupAlive = isProcessGroupAlive(processGroupId);
-      const descendantsAlive = trackedPids.some((pid) => isPidAlive(pid));
-      if (!groupAlive && !descendantsAlive) {
+      const groupGone = probeProcessGroupLiveness(processGroupId) === 'gone';
+      const descendantsGone = trackedPids.every(isPidGone);
+      if (groupGone && descendantsGone) {
         return { terminated: true, forcedKill: false, trackedPids };
       }
       await new Promise((resolve) => setTimeout(resolve, PROMPT_WORKER_EXIT_POLL_MS));
@@ -2162,16 +2541,16 @@ async function terminateTrackedProcessTree(
 
     const killDeadline = Date.now() + Math.max(0, killWaitMs);
     while (Date.now() < killDeadline) {
-      const groupAlive = isProcessGroupAlive(processGroupId);
-      const descendantsAlive = trackedPids.some((pid) => isPidAlive(pid));
-      if (!groupAlive && !descendantsAlive) {
+      const groupGone = probeProcessGroupLiveness(processGroupId) === 'gone';
+      const descendantsGone = trackedPids.every(isPidGone);
+      if (groupGone && descendantsGone) {
         return { terminated: true, forcedKill: true, trackedPids };
       }
       await new Promise((resolve) => setTimeout(resolve, PROMPT_WORKER_EXIT_POLL_MS));
     }
 
     return {
-      terminated: !isProcessGroupAlive(processGroupId) && trackedPids.every((pid) => !isPidAlive(pid)),
+      terminated: probeProcessGroupLiveness(processGroupId) === 'gone' && trackedPids.every(isPidGone),
       forcedKill: true,
       trackedPids,
     };
@@ -2180,7 +2559,7 @@ async function terminateTrackedProcessTree(
   const trackedPids = collectProcessTreePids(rootPid);
   if (trackedPids.length === 0) {
     return {
-      terminated: !isPidAlive(rootPid),
+      terminated: isPidGone(rootPid),
       forcedKill: false,
       trackedPids: [],
     };
@@ -2218,6 +2597,373 @@ async function terminateTrackedProcessTree(
   };
 }
 
+type ExactPaneUnavailableProof = Extract<ExactPaneProof, { status: 'unavailable' }>;
+
+type ExactPaneProcessTreeTeardown = {
+  terminated: boolean;
+  stopped: boolean;
+  trackedPids: number[];
+  authorizedPanePid?: number;
+  proofUnavailable?: ExactPaneUnavailableProof;
+  trackedProcessIdentities?: ProcessIdentity[];
+};
+
+type ExactPaneProcessProbe =
+  | { status: 'alive' | 'gone' | 'stopped' | 'unknown' }
+  | { status: 'unavailable'; proof: ExactPaneUnavailableProof };
+
+/**
+ * Every operating-system effect attributed to an explicit pane must re-read
+ * the pane's global row immediately before that effect. A changed/dead row is
+ * not a fallback opportunity: it stops this pane's process-tree teardown.
+ */
+function reproveExactPaneAfterProcessEsrcH(
+  paneId: string,
+): ExactPaneProcessProbe {
+  const proof = readExactPaneProofSync(paneId);
+  if (proof.status === 'unavailable') return { status: 'unavailable', proof };
+  if (proof.status === 'gone') return { status: 'gone' };
+  // ESRCH establishes only that the process was absent. A still-live pane row
+  // is not authority to advance the pane lifecycle without an absent reproof.
+  return { status: 'stopped' };
+}
+
+function signalExactPaneProcess(
+  paneId: string,
+  authorizedPanePid: number,
+  pid: number,
+  signal: NodeJS.Signals,
+): ExactPaneProcessProbe {
+  const proof = readExactPaneProofSync(paneId);
+  if (proof.status === 'unavailable') return { status: 'unavailable', proof };
+  if (proof.status === 'live' && proof.pid !== authorizedPanePid) return { status: 'stopped' };
+  if (proof.status === 'gone') return { status: 'stopped' };
+  try {
+    process.kill(pid, signal);
+    return { status: 'alive' };
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH'
+      ? reproveExactPaneAfterProcessEsrcH(paneId)
+      : { status: 'unknown' };
+  }
+}
+
+function probeExactPaneProcess(
+  paneId: string,
+  authorizedPanePid: number,
+  pid: number,
+): ExactPaneProcessProbe {
+  const proof = readExactPaneProofSync(paneId);
+  if (proof.status === 'unavailable') return { status: 'unavailable', proof };
+  if (proof.status === 'live' && proof.pid !== authorizedPanePid) return { status: 'stopped' };
+  try {
+    process.kill(pid, 0);
+    return proof.status === 'gone' ? { status: 'stopped' } : { status: 'alive' };
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH'
+      ? reproveExactPaneAfterProcessEsrcH(paneId)
+      : { status: 'unknown' };
+  }
+}
+
+async function waitForExactPaneTrackedPidsExit(
+  paneId: string,
+  authorizedPanePid: number,
+  pids: readonly number[],
+  timeoutMs: number,
+): Promise<ExactPaneProcessTreeTeardown> {
+  const trackedPids = [...pids];
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  do {
+    let anyAlive = false;
+    for (const pid of trackedPids) {
+      const probe = probeExactPaneProcess(paneId, authorizedPanePid, pid);
+      if (probe.status === 'unavailable') return { terminated: false, stopped: true, trackedPids, authorizedPanePid, proofUnavailable: probe.proof };
+      if (probe.status === 'stopped') return { terminated: false, stopped: true, trackedPids, authorizedPanePid };
+      if (probe.status === 'unknown') return { terminated: false, stopped: true, trackedPids, authorizedPanePid };
+      if (probe.status === 'alive') anyAlive = true;
+    }
+    if (!anyAlive) return { terminated: true, stopped: false, trackedPids, authorizedPanePid };
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, PROMPT_WORKER_EXIT_POLL_MS));
+  } while (Date.now() < deadline);
+
+  for (const pid of trackedPids) {
+    const probe = probeExactPaneProcess(paneId, authorizedPanePid, pid);
+    if (probe.status === 'unavailable') return { terminated: false, stopped: true, trackedPids, authorizedPanePid, proofUnavailable: probe.proof };
+    if (probe.status === 'stopped' || probe.status === 'unknown') return { terminated: false, stopped: true, trackedPids, authorizedPanePid };
+    if (probe.status === 'alive') return { terminated: false, stopped: false, trackedPids, authorizedPanePid };
+  }
+  return { terminated: true, stopped: false, trackedPids, authorizedPanePid };
+}
+
+async function terminateExactPaneProcessTree(
+  paneId: string,
+  expectedPanePid?: number,
+  graceMs: number = PROMPT_WORKER_SIGTERM_WAIT_MS,
+  killWaitMs: number = PROMPT_WORKER_SIGKILL_WAIT_MS,
+  authorizePaneEffect?: (paneId: string, pid: number) => boolean,
+): Promise<ExactPaneProcessTreeTeardown> {
+  const authorization = readExactPaneProofSync(paneId);
+  if (authorization.status === 'unavailable') return { terminated: false, stopped: true, trackedPids: [], proofUnavailable: authorization };
+  if (authorization.status === 'gone') return { terminated: true, stopped: true, trackedPids: [] };
+  if (typeof expectedPanePid === 'number' && authorization.pid !== expectedPanePid) {
+    return { terminated: false, stopped: true, trackedPids: [], authorizedPanePid: authorization.pid, proofUnavailable: {
+      status: 'unavailable', paneId, reason: 'pane_pid_changed', detail: `expected ${expectedPanePid}, got ${authorization.pid}`,
+    } };
+  }
+  if (authorizePaneEffect && !authorizePaneEffect(paneId, authorization.pid)) {
+    return {
+      terminated: false,
+      stopped: true,
+      trackedPids: [],
+      authorizedPanePid: authorization.pid,
+      proofUnavailable: {
+        status: 'unavailable',
+        paneId,
+        reason: 'pane_pid_changed',
+        detail: 'pane owner authorization changed',
+      },
+    };
+  }
+
+
+  const trackedPids = collectProcessTreePids(authorization.pid);
+  if (trackedPids.length === 0) return { terminated: true, stopped: false, trackedPids, authorizedPanePid: authorization.pid };
+  // Birth evidence is mandatory for descendant signals. A pane's pinned PID
+  // authorizes its root process, but a numeric descendant PID is never enough:
+  // its /proc start time must still match immediately before each signal.
+  const trackedProcessIdentities = await captureProcessIdentities(trackedPids) ?? undefined;
+  const trackedProcessIdentityByPid = new Map(
+    (trackedProcessIdentities ?? []).map((identity) => [identity.pid, identity]),
+  );
+  const revalidateDescendantIdentity = async (pid: number): Promise<boolean> => {
+    if (pid === authorization.pid) return true;
+    const identity = trackedProcessIdentityByPid.get(pid);
+    return identity !== undefined && (await probeProcessIdentity(identity)) === 'same';
+  };
+  for (const pid of trackedPids) {
+    if (authorizePaneEffect && !authorizePaneEffect(paneId, authorization.pid)) {
+      return {
+        terminated: false,
+        stopped: true,
+        trackedPids,
+        trackedProcessIdentities,
+        authorizedPanePid: authorization.pid,
+        proofUnavailable: {
+          status: 'unavailable',
+          paneId,
+          reason: 'pane_pid_changed',
+          detail: 'pane owner authorization changed',
+        },
+      };
+    }
+    if (!await revalidateDescendantIdentity(pid)) {
+      return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid };
+    }
+
+    const signal = signalExactPaneProcess(paneId, authorization.pid, pid, 'SIGTERM');
+    if (signal.status === 'unavailable') return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid, proofUnavailable: signal.proof };
+    if (signal.status === 'stopped' || signal.status === 'unknown') return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid };
+  }
+  const graceful = await waitForExactPaneTrackedPidsExit(paneId, authorization.pid, trackedPids, graceMs);
+  if (graceful.terminated || graceful.stopped) return { ...graceful, trackedProcessIdentities };
+  for (const pid of trackedPids) {
+    const probe = probeExactPaneProcess(paneId, authorization.pid, pid);
+    if (probe.status === 'unavailable') return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid, proofUnavailable: probe.proof };
+    if (probe.status === 'stopped') return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid };
+    if (probe.status === 'gone') continue;
+    if (authorizePaneEffect && !authorizePaneEffect(paneId, authorization.pid)) {
+      return {
+        terminated: false,
+        stopped: true,
+        trackedPids,
+        trackedProcessIdentities,
+        authorizedPanePid: authorization.pid,
+        proofUnavailable: {
+          status: 'unavailable',
+          paneId,
+          reason: 'pane_pid_changed',
+          detail: 'pane owner authorization changed',
+        },
+      };
+    }
+    if (!await revalidateDescendantIdentity(pid)) {
+      return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid };
+    }
+    const signal = signalExactPaneProcess(paneId, authorization.pid, pid, 'SIGKILL');
+    if (signal.status === 'unavailable') return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid, proofUnavailable: signal.proof };
+    if (signal.status === 'stopped' || signal.status === 'unknown') return { terminated: false, stopped: true, trackedPids, trackedProcessIdentities, authorizedPanePid: authorization.pid };
+  }
+  return { ...(await waitForExactPaneTrackedPidsExit(paneId, authorization.pid, trackedPids, killWaitMs)), trackedProcessIdentities };
+}
+
+type GonePaneDescendantCleanupDebtEntry =
+  | {
+    pane_id: string;
+    authorized_pane_pid: number;
+    tracked_processes: ProcessIdentity[];
+    evidence: string;
+  }
+  | {
+    pane_id: string;
+    authorized_pane_pid: number;
+    tracked_pids: number[];
+    tracked_processes?: ProcessIdentity[];
+    evidence: 'process_identity_unavailable';
+  };
+
+type GonePaneDescendantCleanupDebt = {
+  schema_version: 1;
+  operation: 'gone_pane_descendant_cleanup';
+  entries: GonePaneDescendantCleanupDebtEntry[];
+};
+
+function gonePaneDescendantCleanupDebtPath(teamName: string, cwd: string, config?: TeamConfig): string {
+  const stateRoot = config?.team_state_root ?? resolveCanonicalTeamStateRoot(resolve(cwd));
+  return join(stateRoot, 'team', teamName, '.gone-pane-descendant-cleanup-debt.json');
+}
+
+function trackedPidsFromGonePaneDebtEntry(entry: GonePaneDescendantCleanupDebtEntry): number[] {
+  return 'tracked_pids' in entry
+    ? entry.tracked_pids
+    : entry.tracked_processes.map((identity) => identity.pid);
+}
+
+async function persistGonePaneDescendantCleanupDebt(params: {
+  teamName: string;
+  cwd: string;
+  config: TeamConfig;
+  paneId: string;
+  teardown: ExactPaneProcessTreeTeardown;
+}): Promise<void> {
+  const { teamName, cwd, config, paneId, teardown } = params;
+  const unresolvedTrackedPids = teardown.trackedPids.filter((pid) => probePidLiveness(pid) !== 'gone');
+  if (unresolvedTrackedPids.length === 0 || typeof teardown.authorizedPanePid !== 'number') return;
+  const liveTrackedProcesses = (teardown.trackedProcessIdentities ?? []).filter((identity) => (
+    unresolvedTrackedPids.includes(identity.pid)
+  ));
+  const debtPath = gonePaneDescendantCleanupDebtPath(teamName, cwd, config);
+  let prior: GonePaneDescendantCleanupDebt = { schema_version: 1, operation: 'gone_pane_descendant_cleanup', entries: [] };
+  try {
+    prior = JSON.parse(await readFile(debtPath, 'utf8')) as GonePaneDescendantCleanupDebt;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('gone_pane_descendant_cleanup_debt_unreadable');
+  }
+  if (!isValidGonePaneDescendantCleanupDebt(prior)) throw new Error('gone_pane_descendant_cleanup_debt_malformed');
+
+  const priorEntry = prior.entries.find((entry) => entry.pane_id === paneId);
+  const entries = prior.entries.filter((entry) => entry.pane_id !== paneId);
+  if (liveTrackedProcesses.length !== unresolvedTrackedPids.length) {
+    const priorIdentities = priorEntry?.tracked_processes ?? [];
+
+    const identitiesByPid = new Map(priorIdentities.map((identity) => [identity.pid, identity]));
+    for (const identity of liveTrackedProcesses) {
+      if (!identitiesByPid.has(identity.pid)) identitiesByPid.set(identity.pid, identity);
+    }
+    entries.push({
+      pane_id: paneId,
+      authorized_pane_pid: teardown.authorizedPanePid,
+      tracked_pids: [...new Set([...(priorEntry ? trackedPidsFromGonePaneDebtEntry(priorEntry) : []), ...unresolvedTrackedPids])],
+      ...(identitiesByPid.size > 0 ? { tracked_processes: [...identitiesByPid.values()] } : {}),
+      evidence: 'process_identity_unavailable',
+    });
+  } else {
+    entries.push({
+      pane_id: paneId,
+      authorized_pane_pid: teardown.authorizedPanePid,
+      tracked_processes: liveTrackedProcesses,
+      evidence: teardown.proofUnavailable
+        ? `${teardown.proofUnavailable.reason}:${teardown.proofUnavailable.detail ?? ''}`
+        : 'pane_authority_lost_during_descendant_teardown',
+    });
+  }
+  await writeAtomic(debtPath, JSON.stringify({ schema_version: 1, operation: 'gone_pane_descendant_cleanup', entries }, null, 2));
+}
+
+function isValidProcessIdentity(value: unknown): value is ProcessIdentity {
+  return typeof value === 'object' && value !== null
+    && Number.isSafeInteger((value as { pid?: unknown }).pid)
+    && (value as { pid: number }).pid > 0
+    && typeof (value as { start_time?: unknown }).start_time === 'string'
+    && /^[0-9]+$/.test((value as { start_time: string }).start_time);
+}
+
+function isValidGonePaneDescendantCleanupDebt(value: unknown): value is GonePaneDescendantCleanupDebt {
+  if (typeof value !== 'object' || value === null) return false;
+  const debt = value as Partial<GonePaneDescendantCleanupDebt>;
+  if (debt.schema_version !== 1 || debt.operation !== 'gone_pane_descendant_cleanup' || !Array.isArray(debt.entries)) return false;
+  if (new Set(debt.entries.map((entry) => (entry as { pane_id?: unknown })?.pane_id)).size !== debt.entries.length) return false;
+  return debt.entries.every((entry) => {
+    if (typeof entry !== 'object' || entry === null) return false;
+    const candidate = entry as {
+      pane_id?: unknown;
+      authorized_pane_pid?: unknown;
+      evidence?: unknown;
+      tracked_pids?: unknown;
+      tracked_processes?: unknown;
+    };
+    if (typeof candidate.pane_id !== 'string' || !/^%[0-9]+$/.test(candidate.pane_id)
+      || !Number.isSafeInteger(candidate.authorized_pane_pid)
+      || (candidate.authorized_pane_pid as number) <= 0) return false;
+    if (candidate.evidence === 'process_identity_unavailable') {
+      const trackedPids = candidate.tracked_pids as number[];
+      if (!Array.isArray(candidate.tracked_pids) || candidate.tracked_pids.length === 0
+        || trackedPids.some((pid) => !Number.isSafeInteger(pid) || pid <= 0)
+        || new Set(trackedPids).size !== trackedPids.length) return false;
+      if (candidate.tracked_processes === undefined) return true;
+      if (!Array.isArray(candidate.tracked_processes) || !candidate.tracked_processes.every(isValidProcessIdentity)) return false;
+      const trackedProcesses = candidate.tracked_processes as ProcessIdentity[];
+      return trackedProcesses.every((identity) => trackedPids.includes(identity.pid))
+        && new Set(trackedProcesses.map((identity) => identity.pid)).size === trackedProcesses.length;
+    }
+    if (typeof candidate.evidence !== 'string' || candidate.evidence.length === 0
+      || candidate.tracked_pids !== undefined
+      || !Array.isArray(candidate.tracked_processes) || candidate.tracked_processes.length === 0
+      || !candidate.tracked_processes.every(isValidProcessIdentity)) return false;
+    const trackedProcesses = candidate.tracked_processes as ProcessIdentity[];
+    return new Set(trackedProcesses.map((identity) => identity.pid)).size === trackedProcesses.length;
+
+  });
+}
+
+async function reconcileGonePaneDescendantCleanupDebt(teamName: string, cwd: string, config?: TeamConfig): Promise<void> {
+  const debtPath = gonePaneDescendantCleanupDebtPath(teamName, cwd, config);
+  if (!existsSync(debtPath)) return;
+  let debt: GonePaneDescendantCleanupDebt;
+  try {
+    debt = JSON.parse(await readFile(debtPath, 'utf8')) as GonePaneDescendantCleanupDebt;
+  } catch {
+    throw new Error('gone_pane_descendant_cleanup_debt_unreadable');
+  }
+  if (!isValidGonePaneDescendantCleanupDebt(debt)) throw new Error('gone_pane_descendant_cleanup_debt_malformed');
+  const unresolved: GonePaneDescendantCleanupDebtEntry[] = [];
+  for (const entry of debt.entries) {
+    if ('tracked_pids' in entry) {
+      const trackedProcesses = entry.tracked_processes ?? [];
+      const knownIdentities = new Map<number, ProcessIdentity>(
+        trackedProcesses.map((identity) => [identity.pid, identity]),
+      );
+      const states: Array<'gone' | 'same' | 'reused_or_unknown'> = await Promise.all(entry.tracked_pids.map((pid: number) => {
+        const identity = knownIdentities.get(pid);
+        return identity ? probeProcessIdentity(identity) : Promise.resolve(
+          probePidLiveness(pid) === 'gone' ? 'gone' as const : 'reused_or_unknown' as const,
+        );
+      }));
+      if (states.some((state: string) => state !== 'gone')) unresolved.push(entry);
+      continue;
+    }
+    const states: Array<'gone' | 'same' | 'reused_or_unknown'> = await Promise.all(entry.tracked_processes.map(probeProcessIdentity));
+    if (states.some((state: string) => state !== 'gone')) unresolved.push(entry);
+  }
+  if (unresolved.length === 0) {
+    await removeDurableFile(debtPath);
+    return;
+  }
+  await writeAtomic(debtPath, JSON.stringify({ ...debt, entries: unresolved }, null, 2));
+  throw new Error(`gone_pane_descendant_cleanup_debt_unresolved:${unresolved.map((entry) => entry.pane_id).join(',')}`);
+}
+
 async function teardownPromptWorker(
   teamName: string,
   workerName: string,
@@ -2238,7 +2984,9 @@ async function teardownPromptWorker(
   }
 
   const teardown = await terminateTrackedProcessTree(pid ?? 0, processGroupId);
-  const processGone = processGroupId ? !isProcessGroupAlive(processGroupId) : !isPidAlive(pid!);
+  const processGone = processGroupId
+    ? probeProcessGroupLiveness(processGroupId) === 'gone'
+    : isPidGone(pid!);
   if (teardown.terminated && processGone) {
     removePromptWorkerHandle(teamName, workerName);
     return { terminated: true, forcedKill: teardown.forcedKill, pid };
@@ -2253,34 +3001,29 @@ async function teardownPromptWorker(
     },
     cwd,
   ).catch(() => {});
-  if (!teardown.terminated) {
-    await appendTeamEvent(
-      teamName,
-      {
-        type: 'worker_stopped',
-        worker: workerName,
-        reason: `prompt_teardown_failed:${context}:pid=${pid}`,
-      },
-      cwd,
-    ).catch(() => {});
-    return {
-      terminated: false,
-      forcedKill: teardown.forcedKill,
-      pid,
-      error: 'still_alive_after_sigkill',
-    };
-  }
-
-  removePromptWorkerHandle(teamName, workerName);
-  return { terminated: true, forcedKill: teardown.forcedKill, pid };
+  await appendTeamEvent(
+    teamName,
+    {
+      type: 'worker_stopped',
+      worker: workerName,
+      reason: `prompt_teardown_failed:${context}:pid=${pid}`,
+    },
+    cwd,
+  ).catch(() => {});
+  return {
+    terminated: false,
+    forcedKill: teardown.forcedKill,
+    pid,
+    error: 'still_alive_after_sigkill',
+  };
 }
 
 function isPromptWorkerAlive(config: TeamConfig, worker: WorkerInfo): boolean {
   const handle = getPromptWorkerHandle(config.name, worker.name);
   if (handle?.child.exitCode === null && !handle.child.killed) return true;
-  if (handle?.processGroupId && isProcessGroupAlive(handle.processGroupId)) return true;
-  if (process.platform !== 'win32' && isProcessGroupAlive(worker.pid as number)) return true;
-  return isPidAlive(worker.pid as number);
+  if (handle?.processGroupId && probeProcessGroupLiveness(handle.processGroupId) !== 'gone') return true;
+  if (process.platform !== 'win32' && probeProcessGroupLiveness(worker.pid as number) !== 'gone') return true;
+  return probePidLiveness(worker.pid as number) !== 'gone';
 }
 
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
@@ -2475,11 +3218,7 @@ async function writeDecompositionArtifacts(
 
   const manifest = await readTeamManifestV2(teamName, cwd);
   if (manifest) {
-    await writeFile(
-      join(root, 'manifest.v2.json'),
-      JSON.stringify({ ...manifest, team_decomposition: metadata }, null, 2),
-      'utf8',
-    );
+    await writeTeamManifestV2State({ ...manifest, team_decomposition: { ...metadata } }, cwd);
   }
 }
 
@@ -2510,6 +3249,7 @@ export async function settleStartupAttemptResults(
     return { ok: false, workerIndex, workerName, error };
   });
 }
+
 
 export async function startTeam(
   teamName: string,
@@ -2551,6 +3291,8 @@ export async function startTeam(
     : rawIdentityScope;
   const sanitized = buildInternalTeamName(displayName, identityScope);
   const leaderSessionId = identityScope.sessionId || identityScope.paneId || identityScope.tmuxTarget || identityScope.runId;
+  const existingStartupConfig = await readTeamConfig(sanitized, leaderCwd);
+  await reconcileGonePaneDescendantCleanupDebt(sanitized, leaderCwd, existingStartupConfig ?? undefined);
 
   await assertTeamStartupIsNonDestructive(sanitized, leaderCwd, leaderSessionId);
   if (displayName !== sanitized) {
@@ -2675,7 +3417,19 @@ export async function startTeam(
   let sessionCreated = false;
   const createdWorkerPaneIds: string[] = [];
   let createdLeaderPaneId: string | undefined;
+  // A returned interactive session has successfully tagged these panes. Rollback
+  // must retain that ownership authorization through its final kill proof.
+  const startupTaggedPaneOwnerIds = new Map<string, string>();
+  const authorizeStartupRollbackPaneEffect = (paneId: string): boolean => {
+    const expectedOwnerId = startupTaggedPaneOwnerIds.get(paneId);
+    if (!expectedOwnerId) return true;
+    const currentOwner = readPaneTeamOwnerTagResult(paneId);
+    return currentOwner.status === 'value' && currentOwner.value === expectedOwnerId;
+  };
+
+
   let config: TeamConfig | null = null;
+  const workerPaneIds = Array.from({ length: workerCount }, () => undefined as string | undefined);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(launchEnv);
   const workerStartupEvidenceTimeoutMs = resolveWorkerStartupEvidenceTimeoutMs(
     launchEnv,
@@ -2926,7 +3680,6 @@ export async function startTeam(
       };
     });
 
-    const workerPaneIds = Array.from({ length: workerCount }, () => undefined as string | undefined);
 
     const materializeWorkerStartupState = async (
       bootstrapPlan: typeof workerBootstrapPlans[number],
@@ -2949,11 +3702,18 @@ export async function startTeam(
         team_state_root: teamStateRoot,
       };
 
-      if (workerLaunchMode === 'interactive') {
-        const panePid = getWorkerPanePid(sessionName, workerIndex, paneId);
-        if (panePid) identity.pid = panePid;
-      } else if (config?.workers[workerIndex - 1]?.pid) {
-        identity.pid = config.workers[workerIndex - 1].pid;
+      const persistedPanePid = config?.workers[workerIndex - 1]?.pid;
+      if (workerLaunchMode === 'interactive' && paneId) {
+        if (typeof persistedPanePid !== 'number' || !Number.isSafeInteger(persistedPanePid) || persistedPanePid <= 0) {
+          throw new Error(`startup_worker_pane_pid_unavailable:${paneId}`);
+        }
+        const paneProof = readExactPaneProofSync(paneId);
+        if (paneProof.status !== 'live' || paneProof.pid !== persistedPanePid) {
+          throw new Error(`startup_worker_pane_identity_changed:${paneId}`);
+        }
+        identity.pid = persistedPanePid;
+      } else if (typeof persistedPanePid === 'number') {
+        identity.pid = persistedPanePid;
       }
 
       if (paneId) identity.pane_id = paneId;
@@ -3009,6 +3769,21 @@ export async function startTeam(
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
       createdLeaderPaneId = createdSession.leaderPaneId;
       applyCreatedInteractiveSessionToConfig(config, createdSession, workerPaneIds);
+      const createdOwnerId = typeof createdSession.teamPaneOwnerId === 'string'
+        ? createdSession.teamPaneOwnerId.trim()
+        : '';
+      if (createdOwnerId) {
+        for (const paneId of [
+          createdSession.leaderPaneId,
+          ...createdSession.workerPaneIds,
+          createdSession.hudPaneId,
+        ]) {
+          if (typeof paneId === 'string' && paneId.trim().startsWith('%')) {
+            startupTaggedPaneOwnerIds.set(paneId, createdOwnerId);
+          }
+        }
+      }
+
       for (const [index, paneId] of createdSession.workerPaneIds.entries()) {
         startupTiming.mark('split_returned', { worker: `worker-${index + 1}`, pane_id: paneId });
       }
@@ -3016,6 +3791,8 @@ export async function startTeam(
       config.tmux_session = `prompt-${sanitized}`;
       config.leader_pane_id = null;
       config.hud_pane_id = null;
+      config.leader_pane_pid = null;
+      config.hud_pane_pid = null;
       config.resize_hook_name = null;
       config.resize_hook_target = null;
       for (let i = 1; i <= workerCount; i++) {
@@ -3105,10 +3882,17 @@ export async function startTeam(
       let startupReadyPromptObserved = false;
       if (workerLaunchMode === 'interactive' && !skipWorkerReadyWait && !initialPrompt && !startupDirectOutcome?.ok) {
         startupTiming.mark('ready_wait_start', { worker: workerName, pane_id: paneId });
-        const ready = await waitForWorkerReadyAsync(sessionName, workerIndex, workerReadyTimeoutMs, paneId);
+        const ready = await waitForWorkerReadyAsync(sessionName, workerIndex, workerReadyTimeoutMs, paneId, config!.workers[workerIndex - 1]?.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined);
         startupTiming.mark('ready_wait_end', { worker: workerName, pane_id: paneId, ok: ready });
         if (!ready) {
-          const workerAlive = isWorkerPaneOpen(sessionName, workerIndex, paneId);
+          const workerAlive = isWorkerPaneOpen(
+            sessionName,
+            workerIndex,
+            paneId,
+            config!.workers[workerIndex - 1]?.pid,
+            config!.tmux_pane_owner_id ?? undefined,
+            config!.hud_pane_id ?? undefined,
+          );
           if (workerAlive) {
             await recordRecoverableStartupIssue({
               teamName: sanitized,
@@ -3167,8 +3951,8 @@ export async function startTeam(
           if (dispatchOutcome.ok) break;
           if (attempt < startupDispatchRetries) {
             if (workerLaunchMode === 'interactive') {
-              if (dismissTrustPromptIfPresent(sessionName, workerIndex, paneId)) {
-                await waitForWorkerReadyAsync(sessionName, workerIndex, workerReadyTimeoutMs, paneId);
+              if (dismissTrustPromptIfPresent(sessionName, workerIndex, paneId, config!.workers[workerIndex - 1]?.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined)) {
+                await waitForWorkerReadyAsync(sessionName, workerIndex, workerReadyTimeoutMs, paneId, config!.workers[workerIndex - 1]?.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined);
               } else {
                 await new Promise((resolve) => setTimeout(resolve, Math.max(0, startupRetryDelayS * 1000)));
               }
@@ -3182,7 +3966,14 @@ export async function startTeam(
       if (!dispatchOutcome.ok) {
         const workerAlive = workerLaunchMode === 'prompt'
           ? isPromptWorkerAlive(config!, config!.workers[workerIndex - 1]!)
-          : isWorkerPaneOpen(sessionName, workerIndex, paneId);
+          : isWorkerPaneOpen(
+            sessionName,
+            workerIndex,
+            paneId,
+            config!.workers[workerIndex - 1]?.pid,
+            config!.tmux_pane_owner_id ?? undefined,
+            config!.hud_pane_id ?? undefined,
+          );
         if (workerLaunchMode === 'prompt' && !workerAlive) {
           await recordPromptStartupWorkerStopped({
             teamName: sanitized,
@@ -3234,6 +4025,52 @@ export async function startTeam(
     };
   } catch (error) {
     const rollbackErrors: string[] = [];
+    let preserveRollbackState = false;
+    if (error instanceof CreateTeamSessionPartialError && config) {
+      const partialSession = error.partialSession;
+      sessionName = partialSession.name;
+      sessionCreated = true;
+      createdWorkerPaneIds.push(...partialSession.workerPaneIds);
+      createdLeaderPaneId = partialSession.leaderPaneId;
+      applyCreatedInteractiveSessionToConfig(config, partialSession, workerPaneIds);
+      await saveTeamConfig(config, leaderCwd);
+      const cleanupDebt = [
+        ...error.cleanupErrors,
+        ...error.proofUnavailable.map((proof) => `pane_proof_unavailable:${proof.paneId}:${proof.reason}`),
+      ];
+      if (cleanupDebt.length > 0) {
+        await appendTeamEvent(sanitized, {
+          type: 'team_leader_nudge',
+          worker: 'leader-fixed',
+          reason: `startup_create_session_cleanup_debt:${cleanupDebt.join(';')}; retry preserved session resources`,
+        }, leaderCwd).catch(() => {});
+      }
+      // CreateTeamSessionPartialError means create-time teardown did not reach a
+      // proven-gone state. Preserve its config, hook registration, state and
+      // worktrees exactly as saved above for a later retry; generic rollback
+      // would otherwise destroy the retry evidence.
+      assertPaneTeardownProofsAvailable('startup_rollback', error.proofUnavailable);
+      throw error;
+    }
+    if (config && error instanceof Error && error.message.startsWith('startup_worker_pane_identity_changed:')) {
+      const startupCleanupDebt = config.workers.flatMap((worker) => {
+        if (!worker.pane_id || typeof worker.pid !== 'number' || !Number.isSafeInteger(worker.pid) || worker.pid <= 0) return [];
+        const proof = readExactPaneProofSync(worker.pane_id);
+        return proof.status === 'live' && proof.pid !== worker.pid
+          ? [{ status: 'unavailable' as const, paneId: worker.pane_id, reason: 'pane_pid_changed' as const, detail: `expected ${worker.pid}, got ${proof.pid}` }]
+          : [];
+      });
+      if (startupCleanupDebt.length > 0) {
+        await saveTeamConfig(config, leaderCwd);
+        await appendTeamEvent(sanitized, {
+          type: 'team_leader_nudge',
+          worker: 'leader-fixed',
+          reason: `startup_worker_pane_cleanup_debt:${startupCleanupDebt.map((proof) => `${proof.paneId}:${proof.reason}`).join(',')}; retry preserved session resources`,
+        }, leaderCwd).catch(() => {});
+        assertPaneTeardownProofsAvailable('startup_rollback', startupCleanupDebt);
+      }
+    }
+
 
     if (sessionCreated) {
       if (config?.resize_hook_name && config.resize_hook_target) {
@@ -3247,40 +4084,86 @@ export async function startTeam(
         }
       }
 
-      if (config) {
-        config.resize_hook_name = null;
-        config.resize_hook_target = null;
-        try {
-          await saveTeamConfig(config, leaderCwd);
-        } catch (cleanupError) {
-          rollbackErrors.push(`saveTeamConfig(clear resize hook): ${String(cleanupError)}`);
-        }
-      }
-
       // In split-pane topology, we must not kill the entire tmux session; kill only created panes.
       if (sessionName.includes(':')) {
-        for (const [index, paneId] of createdWorkerPaneIds.entries()) {
-          const panePid = getWorkerPanePid(sessionName, index + 1, paneId);
-          if (panePid) {
-            await terminateTrackedProcessTree(panePid);
+        const paneProcessProofUnavailable: ExactPaneUnavailableProof[] = [];
+        for (const paneId of createdWorkerPaneIds) {
+          const teardown = await terminateExactPaneProcessTree(
+            paneId,
+            config?.workers.find((worker) => worker.pane_id === paneId)?.pid,
+            undefined,
+            undefined,
+            authorizeStartupRollbackPaneEffect,
+          );
+          if (teardown.proofUnavailable) {
+            if (config) await persistGonePaneDescendantCleanupDebt({ teamName: sanitized, cwd: leaderCwd, config, paneId, teardown });
+            paneProcessProofUnavailable.push(teardown.proofUnavailable);
+            break;
           }
-          try {
-            await killWorkerByPaneIdAsync(paneId, createdLeaderPaneId);
-          } catch (err) {
-            process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+          if (!teardown.terminated && teardown.stopped) {
+            if (config) await persistGonePaneDescendantCleanupDebt({ teamName: sanitized, cwd: leaderCwd, config, paneId, teardown });
+            paneProcessProofUnavailable.push({
+              status: 'unavailable',
+              paneId,
+              reason: 'pane_proof_lost_during_process_teardown',
+              detail: 'exact pane authority was lost before the tracked process tree was resolved',
+            });
+            break;
           }
         }
-        if (config?.hud_pane_id) {
-          try {
-            await killWorkerByPaneIdAsync(config.hud_pane_id, createdLeaderPaneId);
-          } catch (err) {
-            process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+
+        if (paneProcessProofUnavailable.length > 0) {
+          if (config) await saveTeamConfig(config, leaderCwd);
+          assertPaneTeardownProofsAvailable('startup_rollback', paneProcessProofUnavailable);
+        }
+        const rollbackPanePids = Object.fromEntries((config?.workers ?? [])
+          .filter((worker) => typeof worker.pane_id === 'string' && typeof worker.pid === 'number')
+          .map((worker) => [worker.pane_id as string, worker.pid as number]));
+        if (config?.hud_pane_id && typeof config.hud_pane_pid === 'number') {
+          rollbackPanePids[config.hud_pane_id] = config.hud_pane_pid;
+        }
+        const rollbackPaneIds = [
+          ...createdWorkerPaneIds,
+          ...(config?.hud_pane_id && typeof config.hud_pane_pid === 'number' ? [config.hud_pane_id] : []),
+        ].filter((paneId): paneId is string => typeof paneId === 'string' && paneId.trim().startsWith('%'));
+        const rollbackPaneTeardown = await teardownWorkerPanes(rollbackPaneIds, {
+          leaderPaneId: createdLeaderPaneId,
+          expectedPanePids: rollbackPanePids,
+          authorizePaneKill: (paneId) => authorizeStartupRollbackPaneEffect(paneId),
+        });
+        const resolvedRollbackPaneIds = new Set([
+          ...rollbackPaneTeardown.provenGonePaneIds,
+          ...rollbackPaneTeardown.killedPaneIds,
+        ]);
+        if (config && (rollbackPaneTeardown.proofUnavailable.length > 0 || rollbackPaneTeardown.kill.failed > 0)) {
+          config.workers = config.workers.filter((worker) => !worker.pane_id || !resolvedRollbackPaneIds.has(worker.pane_id));
+          config.worker_count = config.workers.length;
+          if (config.hud_pane_id && resolvedRollbackPaneIds.has(config.hud_pane_id)) {
+            config.hud_pane_id = null;
+            config.hud_pane_pid = null;
           }
+        }
+        if (rollbackPaneTeardown.proofUnavailable.length > 0) {
+          if (config) {
+            try {
+              await saveTeamConfig(config, leaderCwd);
+            } catch (cleanupError) {
+              rollbackErrors.push(`saveTeamConfig(preserve rollback state): ${String(cleanupError)}`);
+            }
+          }
+          assertPaneTeardownProofsAvailable('startup_rollback', rollbackPaneTeardown.proofUnavailable);
+        }
+        if (rollbackPaneTeardown.kill.failed > 0) {
+          if (config) await saveTeamConfig(config, leaderCwd);
+          const originalMessage = error instanceof Error ? error.message : String(error);
+          throw new Error(`${originalMessage}; rollback encountered errors: paneTeardown:${rollbackPaneTeardown.kill.failedPaneIds.join(',')}`);
         }
       } else {
         try {
-          destroyTeamSession(sessionName);
+          if (!config) throw new Error('detached_session_destroy_authorization_unavailable:missing_config');
+          await destroyConfiguredDetachedTeamSession(sanitized, leaderCwd, config);
         } catch (cleanupError) {
+          preserveRollbackState = true;
           rollbackErrors.push(`destroyTeamSession: ${String(cleanupError)}`);
         }
       }
@@ -3328,11 +4211,21 @@ export async function startTeam(
     }
     restoreTeamModelInstructionsFile(sanitized);
 
+    let descendantCleanupDebtUnresolved = false;
     try {
-      await cleanupTeamState(sanitized, leaderCwd);
+      await reconcileGonePaneDescendantCleanupDebt(sanitized, leaderCwd, config ?? undefined);
     } catch (cleanupError) {
-      rollbackErrors.push(`cleanupTeamState: ${String(cleanupError)}`);
+      descendantCleanupDebtUnresolved = true;
+      rollbackErrors.push(`reconcileGonePaneDescendantCleanupDebt: ${String(cleanupError)}`);
     }
+    if (!descendantCleanupDebtUnresolved && !preserveRollbackState) {
+      try {
+        await cleanupTeamState(sanitized, leaderCwd);
+      } catch (cleanupError) {
+        rollbackErrors.push(`cleanupTeamState: ${String(cleanupError)}`);
+      }
+    }
+
     if (provisionedWorktrees.length > 0) {
       try {
         await rollbackProvisionedWorktrees(provisionedWorktrees, {
@@ -3396,7 +4289,7 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     config.workers.map(async (worker) => {
       const alive = config.worker_launch_mode === 'prompt'
         ? isPromptWorkerAlive(config, worker)
-        : isWorkerAlive(sessionName, worker.index, worker.pane_id);
+        : isWorkerAlive(sessionName, worker.index, worker.pane_id, worker.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
       const [status, heartbeat] = await Promise.all([
         readWorkerStatus(sanitized, worker.name, cwd),
         readWorkerHeartbeat(sanitized, worker.name, cwd),
@@ -3696,12 +4589,15 @@ export async function assignTask(
       });
       if (outcome.ok) break;
       if (attempt < maxAssignRetries && config.worker_launch_mode === 'interactive' && config.tmux_session) {
-        if (dismissTrustPromptIfPresent(config.tmux_session, workerInfo.index, workerInfo.pane_id)) {
+        if (dismissTrustPromptIfPresent(config.tmux_session, workerInfo.index, workerInfo.pane_id, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined)) {
           waitForWorkerReady(
             config.tmux_session,
             workerInfo.index,
             resolveWorkerReadyTimeoutMs(process.env),
             workerInfo.pane_id,
+            workerInfo.pid,
+            config.tmux_pane_owner_id ?? undefined,
+            config.hud_pane_id ?? undefined,
           );
         } else {
           await new Promise<void>(r => setTimeout(r, assignRetryDelayS * 1000));
@@ -3777,19 +4673,65 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   const confirmIssues = options.confirmIssues === true;
   let skipWorkerAcks = false;
   const sanitized = resolveTeamNameForCurrentContext(teamName, cwd);
-  const config = await readTeamConfig(sanitized, cwd);
+  let config = await readTeamConfig(sanitized, cwd);
   if (!config) {
-    // No config -- just try to kill tmux session and clean up
-    try {
-      destroyTeamSession(`omx-team-${sanitized}`);
-    } catch (err) {
-      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-    }
+    await reconcileDetachedSessionDestroyReceipt(sanitized, cwd, null);
+    await reconcileGonePaneDescendantCleanupDebt(sanitized, cwd);
+    // A missing config is not authority over a conventionally named tmux
+    // session. It may be another team's or a recycled user session.
     await cleanupTeamState(sanitized, cwd);
     await syncTeamModeStateOnShutdown(sanitized, cwd);
     restoreTeamModelInstructionsFile(sanitized);
     return { commitHygieneArtifacts: null };
   }
+  // Reconcile accepted detached-session destruction before any other shutdown
+  // effect. A receipt is the only durable authority across the kill/query crash
+  // window and is deliberately fail-closed on malformed or unavailable input.
+  await reconcileDetachedSessionDestroyReceipt(sanitized, cwd, config);
+  config = await readTeamConfig(sanitized, cwd);
+  if (!config) throw new Error(`shutdown_config_missing_after_detached_reconciliation:${sanitized}`);
+  const restoredHudDebtRoot = join(config.team_state_root ?? resolveCanonicalTeamStateRoot(cwd), 'team', sanitized);
+  const configuredRestoredHudPaneId = typeof config.hud_pane_id === 'string' && /^%[0-9]+$/.test(config.hud_pane_id)
+    ? config.hud_pane_id
+    : null;
+  const configuredRestoredHudPanePid = typeof config.hud_pane_pid === 'number'
+    && Number.isSafeInteger(config.hud_pane_pid)
+    && config.hud_pane_pid > 0
+    ? config.hud_pane_pid
+    : null;
+  if (configuredRestoredHudPaneId && configuredRestoredHudPanePid) {
+    try {
+      // A restored-HUD debt is finalized only when this canonical config
+      // transaction records its exact frozen pane identity. A stale config may
+      // point to a different HUD after a crash, so replay the pinned debt
+      // rather than treating that mismatch as successful finalization.
+      finalizeRestoredHudCleanupDebtSync(
+        cwd,
+        configuredRestoredHudPaneId,
+        configuredRestoredHudPanePid,
+        restoredHudDebtRoot,
+        true,
+      );
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('restored_hud_cleanup_debt_unresolved:')) {
+        throw error;
+      }
+      // The config identity is not the debt identity. Remove it durably before
+      // replaying the pinned obligation: a later detached-session teardown must
+      // not treat a live, same-PID/owner non-HUD pane as the restored HUD.
+      config = await mutateShutdownConfig(config, cwd, (current) => {
+        current.hud_pane_id = null;
+        current.hud_pane_pid = undefined;
+      });
+
+      reconcileRestoredHudCleanupDebtSync(cwd, restoredHudDebtRoot);
+    }
+  } else {
+    reconcileRestoredHudCleanupDebtSync(cwd, restoredHudDebtRoot);
+  }
+  const priorScaleDownCleanup = await reconcileScaleDownCleanupDebt(sanitized, cwd, config);
+  if (!priorScaleDownCleanup.ok) throw new Error(priorScaleDownCleanup.error);
+  await reconcileGonePaneDescendantCleanupDebt(sanitized, cwd, config);
   const manifest = await readTeamManifestV2(sanitized, cwd);
   const leaderSessionId = typeof manifest?.leader?.session_id === 'string'
     ? manifest.leader.session_id.trim()
@@ -3846,6 +4788,19 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   }
 
   const sessionName = config.tmux_session;
+  const sharedSessionTopology = config.worker_launch_mode === 'interactive' && sessionName.includes(':')
+    ? resolveSharedSessionShutdownTopology(sessionName, config.leader_pane_id, sanitized)
+    : null;
+  if (sharedSessionTopology?.status === 'unavailable') {
+    throw new Error(`shutdown_shared_session_topology_unavailable:${sharedSessionTopology.detail}`);
+  }
+  if (typeof config.hud_pane_id === 'string' && /^%[0-9]+$/.test(config.hud_pane_id)
+    && typeof config.hud_pane_pid === 'number' && Number.isSafeInteger(config.hud_pane_pid) && config.hud_pane_pid > 0) {
+    const persistedHudProof = readExactPaneProofSync(config.hud_pane_id);
+    if (persistedHudProof.status === 'live' && persistedHudProof.pid !== config.hud_pane_pid) {
+      throw new Error(`shutdown_shared_session_HUD_pane_identity_changed:${config.hud_pane_id}`);
+    }
+  }
   const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
   const shutdownRequestTimes = new Map<string, string>();
 
@@ -3905,20 +4860,20 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         throw new Error(`shutdown_rejected:${detail}`);
       }
 
-      const anyAlive = config.workers.some((w) => (
-        config.worker_launch_mode === 'prompt'
-          ? isPromptWorkerAlive(config, w)
-          : isWorkerAlive(sessionName, w.index, w.pane_id)
+      const anyAlive = config!.workers.some((w) => (
+        config!.worker_launch_mode === 'prompt'
+          ? isPromptWorkerAlive(config!, w)
+          : isWorkerAlive(sessionName, w.index, w.pane_id, w.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined)
       ));
       if (!anyAlive) break;
       // Sleep 2s
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    const anyAliveAfterWait = config.workers.some((w) => (
-      config.worker_launch_mode === 'prompt'
-        ? isPromptWorkerAlive(config, w)
-        : isWorkerAlive(sessionName, w.index, w.pane_id)
+    const anyAliveAfterWait = config!.workers.some((w) => (
+      config!.worker_launch_mode === 'prompt'
+        ? isPromptWorkerAlive(config!, w)
+        : isWorkerAlive(sessionName, w.index, w.pane_id, w.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined)
     ));
     if (anyAliveAfterWait && !force) {
       // Workers may have accepted shutdown but not exited (Codex TUI requires explicit exit).
@@ -3929,17 +4884,15 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   // 3. Force kill remaining workers
   const leaderPaneId = config.leader_pane_id;
   const hudPaneId = config.hud_pane_id;
+  const leaderPanePid = config.leader_pane_pid;
+  const hudPanePid = config.hud_pane_pid;
   if (config.worker_launch_mode === 'interactive') {
-    const sharedSessionTopology = sessionName.includes(':')
-      ? resolveSharedSessionShutdownTopology(sessionName, leaderPaneId, sanitized)
-      : null;
-    const effectiveLeaderPaneId = sharedSessionTopology ? sharedSessionTopology.leaderPaneId : leaderPaneId;
+
+    const effectiveLeaderPaneId = sharedSessionTopology?.status === 'available'
+      ? sharedSessionTopology.leaderPaneId
+      : leaderPaneId;
+
     const tmuxPaneOwnerId = typeof config.tmux_pane_owner_id === 'string' ? config.tmux_pane_owner_id.trim() : '';
-    const legacyPersistedWorkerPaneIds = new Set(
-      config.workers
-        .map((worker) => (typeof worker.pane_id === 'string' ? worker.pane_id.trim() : ''))
-        .filter((paneId) => paneId.startsWith('%')),
-    );
     const ownerReadWarnings = new Set<string>();
     const warnOwnerReadError = (kind: string, paneId: string, error: string): void => {
       const key = `${kind}:${paneId}:${error}`;
@@ -3954,36 +4907,328 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         legacyInstanceId: leaderSessionId,
       }) ? effectiveLeaderPaneId : null)
       : effectiveLeaderPaneId;
-    const effectiveHudPaneId = sharedSessionTopology
-      ? (sharedSessionTopology.hudPaneIds.find((paneId) => isSharedSessionHudPaneReclaimable({
+    const reclaimableHudPaneIds = sharedSessionTopology
+      ? sharedSessionTopology.hudPaneIds.filter((paneId) => isSharedSessionHudPaneReclaimable({
         paneId,
         persistedHudPaneId: hudPaneId,
         leaderOwnedHudPaneIds: sharedSessionTopology.leaderOwnedHudPaneIds,
         teamPaneOwnerId: tmuxPaneOwnerId,
-        onOwnerReadError: (hudPaneId, error) => warnOwnerReadError('HUD pane', hudPaneId, error),
-      })) ?? null)
-      : hudPaneId;
-    const shutdownCandidatePaneIds = sharedSessionTopology
-      ? filterSharedSessionShutdownWorkerPaneIdsByOwner(
-        sharedSessionTopology.teamWorkerPaneIds,
+        onOwnerReadError: (candidateHudPaneId, error) => {
+          warnOwnerReadError('HUD pane', candidateHudPaneId, error);
+        },
+      }))
+      : (hudPaneId ? [hudPaneId] : []);
+    const effectiveHudPaneId = reclaimableHudPaneIds[0] ?? null;
+    const explicitPersistedWorkerPaneIds = new Set(config.workers
+      .map((worker) => (typeof worker.pane_id === 'string' ? worker.pane_id.trim() : ''))
+      .filter((paneId) => /^%[0-9]+$/.test(paneId))
+      .filter((paneId) => paneId !== leaderPaneId && paneId !== hudPaneId));
+    // Every persisted worker pane is a canonical shutdown member. Command markers
+    // only discover additional candidates; they cannot erase canonical membership.
+    const canonicalExplicitWorkerPaneIds = new Set(explicitPersistedWorkerPaneIds);
+    const initiallyTaggedWorkerPaneIds = new Set<string>();
+    const authorizedDiscoveredWorkerPaneIds = sharedSessionTopology
+      ? collectAuthorizedSharedSessionWorkerPaneIds(
+        [...new Set([
+          ...canonicalExplicitWorkerPaneIds,
+          ...sharedSessionTopology.teamWorkerPaneIds,
+        ])],
         tmuxPaneOwnerId,
-        legacyPersistedWorkerPaneIds,
-        (paneId, error) => warnOwnerReadError('worker pane', paneId, error),
+        canonicalExplicitWorkerPaneIds,
+        undefined,
+        initiallyTaggedWorkerPaneIds,
       )
-      : listPaneIds(sessionName);
-    let shutdownPaneIds = collectShutdownPaneIds({
-      config,
-      candidatePaneIds: shutdownCandidatePaneIds,
-      includePersistedWorkerPaneIds: !sharedSessionTopology,
-      leaderPaneId: effectiveLeaderPaneId,
-      hudPaneId: effectiveHudPaneId,
-    });
+      : (sessionName ? listPaneIds(sessionName) : []);
+    const excludedSharedWorkerPaneIds = new Set(
+      [effectiveLeaderPaneId, effectiveHudPaneId]
+        .filter((paneId): paneId is string => typeof paneId === 'string' && /^%[0-9]+$/.test(paneId)),
+    );
+    const sharedWorkerPaneIds = [...new Set(authorizedDiscoveredWorkerPaneIds)];
+    if (sharedSessionTopology && sharedWorkerPaneIds.some((paneId) => excludedSharedWorkerPaneIds.has(paneId))) {
+      throw new Error(`shutdown_shared_session_worker_target_invalid:${sharedWorkerPaneIds.filter((paneId) => excludedSharedWorkerPaneIds.has(paneId)).join(',')}`);
+    }
+    // Freeze this union before any shared-session topology effect. HUD teardown
+    // and restoration must never cause later worker target rediscovery.
+    const shutdownPaneIds = sharedSessionTopology
+      ? sharedWorkerPaneIds
+      : collectShutdownPaneIds({
+        config,
+        candidatePaneIds: authorizedDiscoveredWorkerPaneIds,
+        leaderPaneId: effectiveLeaderPaneId,
+        hudPaneId: effectiveHudPaneId,
+      });
+    const canonicalWorkerPaneIds = [...shutdownPaneIds];
+    const expectedSharedWorkerPanePids = new Map<string, number>();
+    const prekillResolvedWorkerPaneIds = new Set<string>();
+    type FrozenSharedPaneAuthorization = {
+      paneId: string;
+      pid: number;
+      owner: string | null;
+    };
+    const freezeSharedPaneAuthorization = (
+      paneId: string,
+      kind: 'HUD pane' | 'restore leader pane',
+      expectedPid?: number | null,
+    ): FrozenSharedPaneAuthorization => {
+      const proof = readExactPaneProofSync(paneId);
+      if (proof.status !== 'live') {
+        throw new Error(`shutdown_shared_session_${kind.replaceAll(' ', '_')}_proof_unavailable:${paneId}`);
+      }
+      if (typeof expectedPid === 'number') {
+        if (!Number.isSafeInteger(expectedPid) || expectedPid <= 0) {
+          throw new Error(`shutdown_shared_session_${kind.replaceAll(' ', '_')}_pid_missing:${paneId}`);
+        }
+        if (proof.pid !== expectedPid) {
+          throw new Error(`shutdown_shared_session_${kind.replaceAll(' ', '_')}_identity_changed:${paneId}`);
+        }
+      }
+      const owner = readPaneTeamOwnerTagResult(paneId);
+      if (owner.status === 'error') {
+        throw new Error(`shutdown_shared_session_${kind.replaceAll(' ', '_')}_owner_unavailable:${paneId}:${owner.error}`);
+      }
+      if (owner.status !== 'value' || !tmuxPaneOwnerId || owner.value !== tmuxPaneOwnerId) {
+        throw new Error(`shutdown_shared_session_${kind.replaceAll(' ', '_')}_owner_changed:${paneId}`);
+      }
+      return { paneId, pid: proof.pid, owner: owner.value };
+    };
+    const assertSharedPaneAuthorizationContinuous = (
+      authorization: FrozenSharedPaneAuthorization,
+      kind: 'HUD pane' | 'restore leader pane',
+    ): void => {
+      const scope = sharedSessionTopology ? 'shared_session' : 'detached_session';
+      const proof = readExactPaneProofSync(authorization.paneId);
+      if (proof.status !== 'live' || proof.pid !== authorization.pid) {
+        throw new Error(`shutdown_${scope}_${kind.replaceAll(' ', '_')}_identity_changed:${authorization.paneId}`);
+      }
+      const owner = readPaneTeamOwnerTagResult(authorization.paneId);
+      if (owner.status === 'error') {
+        throw new Error(`shutdown_${scope}_${kind.replaceAll(' ', '_')}_owner_unavailable:${authorization.paneId}:${owner.error}`);
+      }
+      const currentOwner = owner.status === 'value' ? owner.value : null;
+      if (currentOwner !== authorization.owner) {
+        throw new Error(`shutdown_${scope}_${kind.replaceAll(' ', '_')}_owner_changed:${authorization.paneId}`);
+      }
+    };
+    const persistedHudPaneId = typeof hudPaneId === 'string' && /^%[0-9]+$/.test(hudPaneId)
+      ? hudPaneId
+      : null;
+    const persistedLeaderPaneId = typeof leaderPaneId === 'string' && /^%[0-9]+$/.test(leaderPaneId)
+      ? leaderPaneId
+      : null;
+    if (persistedHudPaneId && effectiveHudPaneId === persistedHudPaneId && (typeof hudPanePid !== 'number' || !Number.isSafeInteger(hudPanePid) || hudPanePid <= 0)) {
+      const scope = sharedSessionTopology ? 'shared_session' : 'detached_session';
+      throw new Error(`shutdown_${scope}_HUD_pane_pid_missing:${effectiveHudPaneId}`);
+    }
+    const frozenHudAuthorization = effectiveHudPaneId
+      ? (sharedSessionTopology
+        ? freezeSharedPaneAuthorization(
+          effectiveHudPaneId,
+          'HUD pane',
+          effectiveHudPaneId === persistedHudPaneId ? hudPanePid : undefined,
+        )
+        : (() => {
+          if (!persistedHudPaneId || effectiveHudPaneId !== persistedHudPaneId || !tmuxPaneOwnerId
+            || typeof hudPanePid !== 'number' || !Number.isSafeInteger(hudPanePid) || hudPanePid <= 0) {
+            throw new Error(`shutdown_detached_session_HUD_pane_authorization_unavailable:${effectiveHudPaneId}`);
+          }
+          const proof = readExactPaneProofSync(effectiveHudPaneId);
+          if (proof.status !== 'live' || proof.pid !== hudPanePid) {
+            throw new Error(`shutdown_detached_session_HUD_pane_identity_changed:${effectiveHudPaneId}`);
+          }
+          const owner = readPaneTeamOwnerTagResult(proof.paneId);
+          if (owner.status !== 'value' || owner.value !== tmuxPaneOwnerId) {
+            throw new Error(`shutdown_detached_session_HUD_pane_owner_changed:${effectiveHudPaneId}`);
+          }
+          const finalProof = readExactPaneProofSync(proof.paneId);
+          if (finalProof.status !== 'live' || finalProof.pid !== hudPanePid) {
+            throw new Error(`shutdown_detached_session_HUD_pane_identity_changed:${effectiveHudPaneId}`);
+          }
+          return { paneId: finalProof.paneId, pid: hudPanePid, owner: tmuxPaneOwnerId };
+        })())
+      : null;
+    if (persistedLeaderPaneId && trustedHudRestoreLeaderPaneId === persistedLeaderPaneId && (typeof leaderPanePid !== 'number' || !Number.isSafeInteger(leaderPanePid) || leaderPanePid <= 0)) {
+      throw new Error(`shutdown_shared_session_restore_leader_pane_pid_missing:${trustedHudRestoreLeaderPaneId}`);
+    }
+    const frozenRestoreLeaderAuthorization = sharedSessionTopology && trustedHudRestoreLeaderPaneId
+      ? freezeSharedPaneAuthorization(
+        trustedHudRestoreLeaderPaneId,
+        'restore leader pane',
+        trustedHudRestoreLeaderPaneId === persistedLeaderPaneId ? leaderPanePid : undefined,
+      )
+      : null;
+
+    const assertCompleteSharedWorkerPaneProofs = (allowResolvedGone = false): void => {
+
+      const unavailable = readExactPaneProofsSync(canonicalWorkerPaneIds).flatMap((proof) => {
+        if (proof.status !== 'live') {
+          if (allowResolvedGone && proof.status === 'gone' && prekillResolvedWorkerPaneIds.has(proof.paneId)) return [];
+          return proof.status === 'unavailable'
+            ? [proof]
+            : [{ status: 'unavailable' as const, paneId: proof.paneId, reason: 'pane_proof_lost_during_process_teardown' as const }];
+        }
+
+
+        const persistedPid = config!.workers.find((worker) => worker.pane_id?.trim() === proof.paneId)?.pid;
+        if (canonicalExplicitWorkerPaneIds.has(proof.paneId)
+          && (typeof persistedPid !== 'number' || !Number.isSafeInteger(persistedPid) || persistedPid <= 0)) {
+          return [{ status: 'unavailable' as const, paneId: proof.paneId, reason: 'pane_pid_changed' as const, detail: 'canonical persisted pane PID is missing' }];
+        }
+        const expectedPid = typeof persistedPid === 'number' ? persistedPid : expectedSharedWorkerPanePids.get(proof.paneId);
+        if (typeof expectedPid === 'number' && proof.pid !== expectedPid) {
+          return [{ status: 'unavailable' as const, paneId: proof.paneId, reason: 'pane_pid_changed' as const, detail: `expected ${expectedPid}, got ${proof.pid}` }];
+        }
+        expectedSharedWorkerPanePids.set(proof.paneId, proof.pid);
+        return [];
+      });
+      assertPaneTeardownProofsAvailable('shutdown', unavailable);
+    };
+    const frozenSharedWorkerOwnerIds = new Map<string, string>();
+    if (sharedSessionTopology) {
+      assertCompleteSharedWorkerPaneProofs();
+      for (const paneId of canonicalWorkerPaneIds) {
+        const owner = readPaneTeamOwnerTagResult(paneId);
+        if (owner.status === 'error') {
+          throw new Error(`shutdown_shared_session_worker_owner_unavailable:${paneId}:${owner.error}`);
+        }
+        if (owner.status !== 'value' || !tmuxPaneOwnerId || owner.value !== tmuxPaneOwnerId) {
+          throw new Error(`shutdown_shared_session_worker_owner_changed:${paneId}`);
+        }
+        frozenSharedWorkerOwnerIds.set(paneId, owner.value);
+      }
+    }
+    const authorizeFrozenSharedWorkerProcessSignal = (paneId: string, panePid: number): boolean => {
+      const expectedPid = expectedSharedWorkerPanePids.get(paneId)
+        ?? config!.workers.find((worker) => worker.pane_id === paneId)?.pid;
+      if (expectedPid !== panePid) return false;
+      if (sharedSessionTopology && frozenSharedWorkerOwnerIds.has(paneId)) {
+        const expectedOwner = frozenSharedWorkerOwnerIds.get(paneId);
+        const owner = readPaneTeamOwnerTagResult(paneId);
+        return owner.status === 'value' && owner.value === expectedOwner && expectedOwner === tmuxPaneOwnerId;
+      }
+      const owner = readPaneTeamOwnerTagResult(paneId);
+      return owner.status === 'value' && owner.value === tmuxPaneOwnerId;
+    };
+
     if (shouldPrekillInteractiveShutdownProcessTrees(sessionName)) {
-      const workerPanePids = shutdownPaneIds
-        .map((paneId) => getWorkerPanePid(sessionName, 1, paneId))
-        .filter((pid): pid is number => typeof pid === 'number' && Number.isFinite(pid) && pid > 0);
-      for (const panePid of workerPanePids) {
-        await terminateTrackedProcessTree(panePid);
+      const paneProcessProofUnavailable: ExactPaneUnavailableProof[] = [];
+      for (const paneId of shutdownPaneIds) {
+        const teardown = await terminateExactPaneProcessTree(
+          paneId,
+          config.workers.find((worker) => worker.pane_id === paneId)?.pid ?? expectedSharedWorkerPanePids.get(paneId),
+          undefined,
+          undefined,
+          authorizeFrozenSharedWorkerProcessSignal,
+        );
+        if (teardown.proofUnavailable) {
+          await persistGonePaneDescendantCleanupDebt({ teamName: sanitized, cwd, config, paneId, teardown });
+          paneProcessProofUnavailable.push(teardown.proofUnavailable);
+          break;
+        }
+        if (!teardown.terminated && teardown.stopped) {
+          await persistGonePaneDescendantCleanupDebt({ teamName: sanitized, cwd, config, paneId, teardown });
+          paneProcessProofUnavailable.push({
+            status: 'unavailable',
+            paneId,
+            reason: 'pane_proof_lost_during_process_teardown',
+            detail: 'exact pane authority was lost before the tracked process tree was resolved',
+          });
+          break;
+        }
+        if (teardown.terminated && readExactPaneProofSync(paneId).status === 'gone') {
+          prekillResolvedWorkerPaneIds.add(paneId);
+        }
+
+
+      }
+      if (paneProcessProofUnavailable.length > 0) {
+        assertPaneTeardownProofsAvailable('shutdown', paneProcessProofUnavailable);
+      }
+
+    }
+
+    // Revalidate ownership of the frozen discovered members, then re-prove the
+    // frozen complete worker set in one snapshot immediately before the first
+    // HUD topology effect. This never admits a newly discovered pane.
+    if (sharedSessionTopology) {
+      const reauthorizedDiscoveredWorkerPaneIds = collectAuthorizedSharedSessionWorkerPaneIds(
+        authorizedDiscoveredWorkerPaneIds,
+        tmuxPaneOwnerId,
+        canonicalExplicitWorkerPaneIds,
+        initiallyTaggedWorkerPaneIds,
+      );
+
+      if (reauthorizedDiscoveredWorkerPaneIds.length !== authorizedDiscoveredWorkerPaneIds.length
+        || reauthorizedDiscoveredWorkerPaneIds.some((paneId) => !authorizedDiscoveredWorkerPaneIds.includes(paneId))) {
+        throw new Error('shutdown_shared_session_worker_owner_changed');
+      }
+      assertCompleteSharedWorkerPaneProofs(true);
+
+    }
+
+    let restoredHudPaneId: string | null = null;
+    if (effectiveHudPaneId) {
+      // Confirm restoration authority before removing the shared HUD, then
+      // check it again immediately before the split below.
+      if (sessionName.includes(':') && frozenRestoreLeaderAuthorization) {
+        assertSharedPaneAuthorizationContinuous(frozenRestoreLeaderAuthorization, 'restore leader pane');
+      }
+      if (frozenHudAuthorization) {
+        assertSharedPaneAuthorizationContinuous(frozenHudAuthorization, 'HUD pane');
+      }
+      const hudTeardown = await teardownWorkerPanes([effectiveHudPaneId], {
+        leaderPaneId: effectiveLeaderPaneId,
+        expectedPanePids: frozenHudAuthorization
+          ? { [frozenHudAuthorization.paneId]: frozenHudAuthorization.pid }
+          : undefined,
+        authorizePaneKill: frozenHudAuthorization
+          ? () => {
+            assertSharedPaneAuthorizationContinuous(frozenHudAuthorization, 'HUD pane');
+            return true;
+          }
+          : undefined,
+      });
+      assertPaneTeardownProofsAvailable('shutdown', hudTeardown.proofUnavailable);
+      if (hudTeardown.kill.failed > 0) {
+        throw new Error(`shutdown_pane_teardown_failed:${hudTeardown.kill.failedPaneIds.join(',')}`);
+      }
+
+      if (sessionName.includes(':')) {
+        if (frozenRestoreLeaderAuthorization) {
+          assertSharedPaneAuthorizationContinuous(frozenRestoreLeaderAuthorization, 'restore leader pane');
+        }
+        restoredHudPaneId = restoreStandaloneHudPane(trustedHudRestoreLeaderPaneId, cwd, {
+          sessionId: leaderSessionId,
+          expectedLeaderPanePid: frozenRestoreLeaderAuthorization?.pid,
+          expectedLeaderPaneOwnerId: tmuxPaneOwnerId,
+          stateRoot: join(config.team_state_root ?? resolveCanonicalTeamStateRoot(cwd), 'team', sanitized),
+          assertLeaderPaneAuthorization: frozenRestoreLeaderAuthorization
+            ? () => assertSharedPaneAuthorizationContinuous(frozenRestoreLeaderAuthorization, 'restore leader pane')
+            : undefined,
+        });
+        if (!restoredHudPaneId) {
+          const reason = trustedHudRestoreLeaderPaneId
+            ? 'failed to restore standalone HUD pane'
+            : 'skipped standalone HUD restore because leader pane ownership could not be verified';
+          console.warn(`[team shutdown] ${sanitized}: ${reason}`);
+        }
+      }
+      if (restoredHudPaneId) {
+        const restoredHudProof = readExactPaneProofSync(restoredHudPaneId);
+        if (restoredHudProof.status !== 'live') {
+          throw new Error(`shutdown_restored_hud_pane_proof_unavailable:${restoredHudPaneId}`);
+        }
+        config = await mutateShutdownConfig(config, cwd, (current) => {
+          current.hud_pane_id = restoredHudPaneId;
+          current.hud_pane_pid = restoredHudProof.pid;
+        });
+
+        finalizeRestoredHudCleanupDebtSync(
+          cwd,
+          restoredHudPaneId,
+          restoredHudProof.pid,
+          join(config.team_state_root ?? resolveCanonicalTeamStateRoot(cwd), 'team', sanitized),
+          true,
+        );
       }
     }
 
@@ -3993,60 +5238,51 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       const unregistered = unregisterResizeHook(config.resize_hook_target, resizeHookName);
       if (!unregistered && isTmuxAvailable()) {
         const baseSession = sessionName.split(':')[0];
-        const sessionStillActive = listTeamSessions().includes(baseSession);
-        if (sessionStillActive) {
+        const teamSessions = listTeamSessions();
+        if (teamSessions === null || teamSessions.includes(baseSession)) {
           resizeHookWarning = `failed to unregister resize hook ${resizeHookName}`;
         }
       }
+
     }
-    config.resize_hook_name = null;
-    config.resize_hook_target = null;
-    await saveTeamConfig(config, cwd);
     if (resizeHookWarning) {
       console.warn(`[team shutdown] ${sanitized}: ${resizeHookWarning}; continuing teardown`);
     }
-    let restoredHudPaneId: string | null = null;
-    if (effectiveHudPaneId) {
-      await killWorkerByPaneIdAsync(effectiveHudPaneId, effectiveLeaderPaneId ?? undefined);
-      if (sessionName.includes(':')) {
-        restoredHudPaneId = restoreStandaloneHudPane(trustedHudRestoreLeaderPaneId, cwd, {
-          sessionId: leaderSessionId,
-        });
-        if (!restoredHudPaneId) {
-          const reason = trustedHudRestoreLeaderPaneId
-            ? 'failed to restore standalone HUD pane'
-            : 'skipped standalone HUD restore because leader pane ownership could not be verified';
-          console.warn(`[team shutdown] ${sanitized}: ${reason}`);
-        }
-      }
+    const workerTeardown = await teardownWorkerPanes(
+      shutdownPaneIds.filter((paneId) => !prekillResolvedWorkerPaneIds.has(paneId)),
+      {
+        leaderPaneId: effectiveLeaderPaneId,
+        hudPaneId: restoredHudPaneId ?? effectiveHudPaneId,
+        expectedPanePids: {
+          ...Object.fromEntries(expectedSharedWorkerPanePids),
+          ...Object.fromEntries(config.workers
+            .filter((worker) => typeof worker.pane_id === 'string' && typeof worker.pid === 'number')
+            .map((worker) => [worker.pane_id as string, worker.pid as number])),
+        },
+        authorizePaneKill: sharedSessionTopology
+          ? (paneId) => {
+            const expectedOwner = frozenSharedWorkerOwnerIds.get(paneId);
+            if (expectedOwner === undefined) return false;
+            const currentOwner = readPaneTeamOwnerTagResult(paneId);
+            return currentOwner.status === 'value'
+              && currentOwner.value === expectedOwner
+              && expectedOwner === tmuxPaneOwnerId;
+          }
+          : undefined,
+      },
+    );
+    assertPaneTeardownProofsAvailable('shutdown', workerTeardown.proofUnavailable);
+    if (workerTeardown.kill.failed > 0) {
+      throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
     }
-    shutdownPaneIds = collectShutdownPaneIds({
-      config,
-      candidatePaneIds: sessionName.includes(':')
-        ? filterSharedSessionShutdownWorkerPaneIdsByOwner(
-          resolveSharedSessionShutdownTopology(sessionName, effectiveLeaderPaneId, sanitized).teamWorkerPaneIds,
-          tmuxPaneOwnerId,
-          legacyPersistedWorkerPaneIds,
-          (paneId, error) => warnOwnerReadError('worker pane', paneId, error),
-        )
-        : listPaneIds(sessionName),
-      includePersistedWorkerPaneIds: !sessionName.includes(':'),
-      restoredStandaloneHudPaneId: restoredHudPaneId,
-      leaderPaneId: effectiveLeaderPaneId,
-      hudPaneId: effectiveHudPaneId,
-    });
-    await teardownWorkerPanes(shutdownPaneIds, {
-      leaderPaneId: effectiveLeaderPaneId,
-      hudPaneId: restoredHudPaneId ?? effectiveHudPaneId,
+    config = await mutateShutdownConfig(config, cwd, (current) => {
+      current.resize_hook_name = null;
+      current.resize_hook_target = null;
     });
 
-    // 4. Destroy tmux session
+    // 4. Destroy a detached session only after an authoritative leader proof.
     if (!sessionName.includes(':')) {
-      try {
-        destroyTeamSession(sessionName);
-      } catch (err) {
-        process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-      }
+      await destroyConfiguredDetachedTeamSession(sanitized, cwd, config);
     }
   } else {
     const promptTeardownFailures: string[] = [];
@@ -4210,7 +5446,7 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
     const missingHandles = config.workers
       .filter((worker) => {
         if (!Number.isFinite(worker.pid) || (worker.pid ?? 0) <= 0) return false;
-        return isPidAlive(worker.pid as number);
+        return probePidLiveness(worker.pid as number) !== 'gone';
       })
       .filter((worker) => !getPromptWorkerHandle(sanitized, worker.name));
     if (missingHandles.length > 0) {
@@ -4245,7 +5481,10 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
 async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<string[]> {
   const root = teamRuntimeTeamsRoot(cwd);
   if (!existsSync(root)) return [];
-  const sessions = new Set(listTeamSessions());
+  const listedSessions = listTeamSessions();
+  if (listedSessions === null) throw new Error('tmux_session_query_unavailable');
+  const sessions = new Set(listedSessions);
+
   const entries = await readdir(root, { withFileTypes: true });
   const active: string[] = [];
   for (const e of entries) {
@@ -4283,7 +5522,9 @@ async function detectAndCleanStaleTeam(
   const stateDir = teamRuntimeTeamRoot(teamName, leaderCwd);
   if (!existsSync(stateDir)) return;
 
-  const sessions = new Set(listTeamSessions());
+  const listedSessions = listTeamSessions();
+  if (listedSessions === null) return;
+  const sessions = new Set(listedSessions);
   if (sessions.has(`omx-team-${teamName}`)) return;
 
   const repoRootResult = spawnSync('git', ['rev-parse', '--show-toplevel'], {
@@ -4470,7 +5711,7 @@ async function notifyWorkerOutcome(config: TeamConfig, workerIndex: number, mess
     return { ok: false, transport: 'tmux_send_keys', reason: 'tmux_unavailable' };
   }
   try {
-    await sendToWorker(config.tmux_session, workerIndex, message, workerPaneId, worker.worker_cli);
+    await sendToWorker(config.tmux_session, workerIndex, message, workerPaneId, worker.worker_cli, worker.pid ?? undefined, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
     return { ok: true, transport: 'tmux_send_keys', reason: 'tmux_send_keys_sent' };
   } catch (error) {
     return {

@@ -12,7 +12,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { runProcess } from './process-runner.js';
 import { resolvePaneTarget, resolveSessionToPane } from './tmux-injection.js';
-import { evaluatePaneInjectionReadiness, sendPaneInput } from './team-tmux-guard.js';
+import {
+  EXACT_PANE_UNAVAILABLE_REASON,
+  evaluatePaneInjectionReadiness,
+  normalizeExactPaneId,
+  sendPaneInput,
+  verifyExactPaneLive,
+  verifyExactPaneOwnerLive,
+} from './team-tmux-guard.js';
 import {
   buildCapturePaneArgv,
   normalizeTmuxCapture,
@@ -456,23 +463,83 @@ async function writeBridgeDispatchCompat(stateDir, teamName, requests) {
   await writeJsonAtomic(compatPath, { records });
 }
 
+function explicitPaneIdentity(value) {
+  const rawPaneId = safeString(value).trim();
+  return { provided: rawPaneId !== '', paneId: normalizeExactPaneId(rawPaneId), rawPaneId };
+}
 
-function defaultInjectTarget(request, config) {
+function positivePanePid(value) {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
+}
+
+
+function resolveAddressedWorker(request, config) {
+  const workers = Array.isArray(config?.workers) ? config.workers : [];
+  if (Number.isFinite(request?.worker_index)) {
+    const worker = workers.find((candidate) => Number(candidate?.index) === Number(request.worker_index));
+    if (worker) return worker;
+  }
+  const recipient = safeString(request?.to_worker).trim();
+  return workers.find((candidate) => safeString(candidate?.name).trim() === recipient) || null;
+}
+
+function resolveConfiguredPaneIdentity(request, config) {
   if (request.to_worker === 'leader-fixed') {
-    const leaderPaneId = resolveLeaderPaneId(config);
-    if (leaderPaneId) return { type: 'pane', value: leaderPaneId };
-    return null;
+    return { source: 'leader_pane_id', expectedPanePid: positivePanePid(config?.leader_pane_pid), expectedPaneOwnerId: safeString(config?.tmux_pane_owner_id).trim(), ...explicitPaneIdentity(config?.leader_pane_id) };
   }
-  if (request.pane_id) return { type: 'pane', value: request.pane_id };
-  if (typeof request.worker_index === 'number' && Array.isArray(config?.workers)) {
-    const worker = config.workers.find((candidate) => Number(candidate?.index) === request.worker_index);
-    if (worker?.pane_id) return { type: 'pane', value: worker.pane_id };
+  const worker = resolveAddressedWorker(request, config);
+  const expectedPanePid = positivePanePid(worker?.pid);
+  return { source: 'worker_pane_id', expectedPanePid, expectedPaneOwnerId: safeString(config?.tmux_pane_owner_id).trim(), ...explicitPaneIdentity(worker?.pane_id) };
+}
+
+function resolveDispatchTarget(request, config) {
+  const requestPane = explicitPaneIdentity(request?.pane_id);
+  const configuredPane = resolveConfiguredPaneIdentity(request, config);
+  const hudPaneId = explicitPaneIdentity(config?.hud_pane_id).paneId;
+  if (requestPane.provided) {
+    if (!requestPane.paneId) {
+      return { failure: 'invalid_explicit_pane', paneId: requestPane.paneId, paneSource: 'request_pane_id', rawPaneId: requestPane.rawPaneId };
+    }
+    if (requestPane.paneId === hudPaneId) {
+      return { failure: 'hud_pane_target', paneId: requestPane.paneId, paneSource: 'request_pane_id' };
+    }
+    if (configuredPane.provided) {
+      if (!configuredPane.paneId) {
+        return { failure: 'invalid_explicit_pane', paneId: configuredPane.paneId, paneSource: configuredPane.source, rawPaneId: configuredPane.rawPaneId };
+      }
+      if (requestPane.paneId !== configuredPane.paneId) {
+        return {
+          failure: 'exact_pane_mismatch',
+          paneId: requestPane.paneId,
+          paneSource: 'request_pane_id',
+          configuredPaneId: configuredPane.paneId,
+        };
+      }
+    }
+    if (!positivePanePid(configuredPane.expectedPanePid)) {
+      return { failure: 'missing_exact_pane_pid', paneId: requestPane.paneId, paneSource: configuredPane.source };
+    }
+    if (!configuredPane.expectedPaneOwnerId) {
+      return { failure: 'missing_expected_pane_owner', paneId: requestPane.paneId, paneSource: configuredPane.source };
+    }
+    return { target: { type: 'pane', value: requestPane.paneId }, exactPaneId: requestPane.paneId, expectedPanePid: configuredPane.expectedPanePid, expectedPaneOwnerId: configuredPane.expectedPaneOwnerId, expectedHudPaneId: hudPaneId, source: 'request_pane_id', reason: 'explicit_request_pane_id' };
   }
-  if (typeof request.worker_index === 'number' && config.tmux_session) {
-    return { type: 'pane', value: `${config.tmux_session}.${request.worker_index}` };
+  if (configuredPane.provided) {
+    if (!configuredPane.paneId) {
+      return { failure: 'invalid_explicit_pane', paneId: configuredPane.paneId, paneSource: configuredPane.source, rawPaneId: configuredPane.rawPaneId };
+    }
+    if (configuredPane.paneId === hudPaneId) {
+      return { failure: 'hud_pane_target', paneId: configuredPane.paneId, paneSource: configuredPane.source };
+    }
+    if (!positivePanePid(configuredPane.expectedPanePid)) {
+      return { failure: 'missing_exact_pane_pid', paneId: configuredPane.paneId, paneSource: configuredPane.source };
+    }
+    if (!configuredPane.expectedPaneOwnerId) {
+      return { failure: 'missing_expected_pane_owner', paneId: configuredPane.paneId, paneSource: configuredPane.source };
+    }
+    return { target: { type: 'pane', value: configuredPane.paneId }, exactPaneId: configuredPane.paneId, expectedPanePid: configuredPane.expectedPanePid, expectedPaneOwnerId: configuredPane.expectedPaneOwnerId, expectedHudPaneId: hudPaneId, source: configuredPane.source, reason: configuredPane.source };
   }
-  if (config.tmux_session) return { type: 'session', value: config.tmux_session };
-  return null;
+  return { target: null };
 }
 
 async function appendLeaderNotificationDeferredEvent({
@@ -754,13 +821,52 @@ const INJECT_VERIFY_DELAY_MS = 250;
 const INJECT_VERIFY_ROUNDS = 3;
 
 async function injectDispatchRequest(request, config, cwd, stateDir) {
-  const target = defaultInjectTarget(request, config);
+  const dispatchTarget = resolveDispatchTarget(request, config);
+  if (dispatchTarget.failure) {
+    if (dispatchTarget.failure !== 'exact_pane_mismatch' && dispatchTarget.failure !== 'invalid_explicit_pane') {
+      return {
+        ok: false,
+        reason: dispatchTarget.failure,
+        pane: dispatchTarget.paneId || null,
+        pane_source: dispatchTarget.paneSource || null,
+        exact_pane_proof: null,
+        tmux_injection_attempted: false,
+      };
+    }
+    const paneProof = dispatchTarget.failure === 'exact_pane_mismatch'
+      ? {
+        reason: 'exact_pane_mismatch',
+        proof: {
+          status: 'unavailable',
+          paneId: dispatchTarget.paneId,
+          reason: 'pane_mismatch',
+          detail: `configured pane is ${dispatchTarget.configuredPaneId}`,
+        },
+      }
+      : await verifyExactPaneLive(dispatchTarget.rawPaneId);
+    return {
+      ok: false,
+      reason: paneProof.reason,
+      pane: dispatchTarget.paneId || null,
+      pane_source: dispatchTarget.paneSource || null,
+      exact_pane_proof: paneProof.proof || null,
+      tmux_injection_attempted: false,
+    };
+  }
+
+  const target = dispatchTarget.target;
   if (!target) {
     return { ok: false, reason: 'missing_tmux_target' };
   }
   const leaderTargeted = request.to_worker === 'leader-fixed';
   let resolution;
-  if (target.type === 'session') {
+  if (dispatchTarget.exactPaneId) {
+    resolution = {
+      paneTarget: dispatchTarget.exactPaneId,
+      reason: dispatchTarget.reason,
+      source: dispatchTarget.source,
+    };
+  } else if (target.type === 'session') {
     const paneId = await resolveSessionToPane(target.value).catch(() => null);
     resolution = paneId
       ? { paneTarget: paneId, reason: 'session_target_resolved' }
@@ -771,13 +877,26 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   if (!resolution.paneTarget) {
     return { ok: false, reason: `target_resolution_failed:${resolution.reason}` };
   }
-  const isLeaderMailboxDispatch = request.to_worker === 'leader-fixed';
+
+  const exactPaneId = dispatchTarget.exactPaneId || normalizeExactPaneId(resolution.paneTarget);
+  const exactPaneFailure = (paneProof, tmuxInjectionAttempted) => ({
+    ok: false,
+    reason: paneProof.reason,
+    pane: resolution.paneTarget,
+    pane_source: resolution.source || null,
+    exact_pane_proof: paneProof.proof || null,
+    tmux_injection_attempted: tmuxInjectionAttempted,
+  });
   const paneGuard = await evaluatePaneInjectionReadiness(resolution.paneTarget, {
     skipIfScrolling: true,
     requireRunningAgent: leaderTargeted,
     requireReady: false,
     requireIdle: false,
     requireObservableState: leaderTargeted,
+    exactPaneId,
+    expectedPanePid: dispatchTarget.expectedPanePid,
+    expectedPaneOwnerId: dispatchTarget.expectedPaneOwnerId,
+    expectedHudPaneId: dispatchTarget.expectedHudPaneId,
   });
   if (!paneGuard.ok) {
     return {
@@ -787,9 +906,17 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       pane_source: resolution.source || null,
       readiness_evidence: paneGuard.readinessEvidence || null,
       pane_current_command: paneGuard.paneCurrentCommand || null,
+      exact_pane_proof: paneGuard.exactPaneProof || null,
       tmux_injection_attempted: false,
     };
   }
+
+  let exactPaneProof = paneGuard.exactPaneProof || null;
+  const verifyExplicitPane = async () => {
+    const paneProof = await verifyExactPaneOwnerLive(exactPaneId, dispatchTarget.expectedPanePid, dispatchTarget.expectedPaneOwnerId);
+    exactPaneProof = paneProof.proof || null;
+    return paneProof;
+  };
 
   const attemptCountAtStart = Number.isFinite(request.attempt_count)
     ? Math.max(0, Math.floor(request.attempt_count))
@@ -797,6 +924,8 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   const submitKeyPresses = resolveWorkerCliForRequest(request, config) === 'claude' ? 1 : 2;
   let preCaptureHasTrigger = false;
   if (attemptCountAtStart >= 1) {
+    const preCaptureProof = await verifyExplicitPane();
+    if (!preCaptureProof.ok) return exactPaneFailure(preCaptureProof, false);
     try {
       // Narrow capture (8 lines) to scope check to input area, not scrollback output
       const preCapture = await runProcess('tmux', buildJoinedCapturePaneArgv(resolution.paneTarget, 8), 2000);
@@ -809,16 +938,20 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   // Retype whenever trigger text is NOT in the narrow input area, regardless of attempt count.
   // Pre-0.7.4 bug: 80-line capture matched trigger in scrollback output, falsely skipping retype.
   const shouldTypePrompt = attemptCountAtStart === 0 || !preCaptureHasTrigger;
-  if (shouldTypePrompt) {
-    if (attemptCountAtStart >= 1) {
-      // Clear stale text in input buffer before retyping (mirrors sync path tmux-session.ts:1270)
-      await runProcess('tmux', ['send-keys', '-t', resolution.paneTarget, 'C-u'], 1000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 50));
-    }
+  if (shouldTypePrompt && attemptCountAtStart >= 1) {
+    // Clear stale text in input buffer before retyping (mirrors sync path tmux-session.ts:1270)
+    const clearProof = await verifyExplicitPane();
+    if (!clearProof.ok) return exactPaneFailure(clearProof, false);
+    await runProcess('tmux', ['send-keys', '-t', resolution.paneTarget, 'C-u'], 1000).catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
   }
 
   const sendResult = await sendPaneInput({
     paneTarget: resolution.paneTarget,
+    exactPaneId,
+    expectedPanePid: dispatchTarget.expectedPanePid,
+    expectedPaneOwnerId: dispatchTarget.expectedPaneOwnerId,
+    expectedHudPaneId: dispatchTarget.expectedHudPaneId,
     prompt: request.trigger_message,
     submitKeyPresses,
     typePrompt: shouldTypePrompt,
@@ -832,9 +965,11 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       pane_source: resolution.source || null,
       readiness_evidence: paneGuard.readinessEvidence || null,
       pane_current_command: paneGuard.paneCurrentCommand || null,
+      exact_pane_proof: sendResult.exactPaneProof || null,
       tmux_injection_attempted: true,
     };
   }
+  exactPaneProof = sendResult.exactPaneProof || exactPaneProof;
 
   // Post-injection verification: confirm the trigger text was consumed.
   // Fixes #391: without this, dispatch marks 'notified' even when the worker
@@ -843,72 +978,102 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   const verifyWideArgv = buildJoinedCapturePaneArgv(resolution.paneTarget);
   for (let round = 0; round < INJECT_VERIFY_ROUNDS; round++) {
     await new Promise((r) => setTimeout(r, INJECT_VERIFY_DELAY_MS));
+    const narrowProof = await verifyExplicitPane();
+    if (!narrowProof.ok) return exactPaneFailure(narrowProof, true);
+
+    let narrowCap;
     try {
       // Primary: trigger text no longer in narrow input area.
       // Secondary guard: also inspect the recent non-empty tail of wide capture.
       // This avoids false confirmations when Codex leaves the unsent draft just
       // above a large blank area (narrow capture misses it) while still avoiding
       // full-scrollback false positives.
-      const narrowCap = await runProcess('tmux', verifyNarrowArgv, 2000);
-      const wideCap = await runProcess('tmux', verifyWideArgv, 2000);
-      const triggerInNarrow = capturedPaneContainsTrigger(narrowCap.stdout, request.trigger_message);
-      const triggerNearTail = capturedPaneContainsTriggerNearTail(wideCap.stdout, request.trigger_message);
-      if (triggerInNarrow || triggerNearTail) {
-        // Draft is still visible, so C-m has not actually submitted it yet.
-        // Do not let transient spinner/active-task text mask an unsent draft.
-        await sendPaneInput({
-          paneTarget: resolution.paneTarget,
-          prompt: request.trigger_message,
-          submitKeyPresses,
-          typePrompt: false,
-        }).catch(() => {});
-        continue;
-      }
-      // Worker is actively processing (mirrors sync path tmux-session.ts:1292-1294)
-      if (paneHasActiveTask(wideCap.stdout)) {
-        runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, request.team_name);
-        return {
-          ok: true,
-          reason: 'tmux_send_keys_confirmed_active_task',
-          pane: resolution.paneTarget,
-          pane_source: resolution.source || null,
-          readiness_evidence: paneGuard.readinessEvidence || null,
-          pane_current_command: paneGuard.paneCurrentCommand || null,
-          tmux_injection_attempted: true,
-        };
-      }
-      // Do not declare success while a pane is not input-ready. Otherwise a
-      // pre-ready send can be marked "confirmed" and later appear as a stuck
-      // unsent draft once the UI finishes loading. This includes leader-fixed:
-      // its Codex UI can show "tab to queue message" while busy, and marking
-      // delivered before queue/consumption confirmation loses the orchestration
-      // nudge until a human presses Tab manually.
-      if (!paneLooksReady(wideCap.stdout)) {
-        continue;
-      }
-      if (!triggerInNarrow && !triggerNearTail) {
-        runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, request.team_name);
-        return {
-          ok: true,
-          reason: 'tmux_send_keys_confirmed',
-          pane: resolution.paneTarget,
-          pane_source: resolution.source || null,
-          readiness_evidence: paneGuard.readinessEvidence || null,
-          pane_current_command: paneGuard.paneCurrentCommand || null,
-          tmux_injection_attempted: true,
-        };
-      }
+      narrowCap = await runProcess('tmux', verifyNarrowArgv, 2000);
     } catch {
-      // capture failed; fall through to retry C-m
+      // Capture failed; fall through to retry C-m.
+    }
+    if (narrowCap) {
+      const wideProof = await verifyExplicitPane();
+      if (!wideProof.ok) return exactPaneFailure(wideProof, true);
+      try {
+        const wideCap = await runProcess('tmux', verifyWideArgv, 2000);
+        const triggerInNarrow = capturedPaneContainsTrigger(narrowCap.stdout, request.trigger_message);
+        const triggerNearTail = capturedPaneContainsTriggerNearTail(wideCap.stdout, request.trigger_message);
+        if (triggerInNarrow || triggerNearTail) {
+          // Draft is still visible, so C-m has not actually submitted it yet.
+          // Do not let transient spinner/active-task text mask an unsent draft.
+          const retrySend = await sendPaneInput({
+            paneTarget: resolution.paneTarget,
+            exactPaneId,
+            expectedPanePid: dispatchTarget.expectedPanePid,
+            expectedPaneOwnerId: dispatchTarget.expectedPaneOwnerId,
+            expectedHudPaneId: dispatchTarget.expectedHudPaneId,
+            prompt: request.trigger_message,
+            submitKeyPresses,
+            typePrompt: false,
+          });
+          if (!retrySend.ok && retrySend.reason === EXACT_PANE_UNAVAILABLE_REASON) {
+            return exactPaneFailure({ reason: retrySend.reason, proof: retrySend.exactPaneProof }, true);
+          }
+          exactPaneProof = retrySend.exactPaneProof || exactPaneProof;
+          continue;
+        }
+        // Worker is actively processing (mirrors sync path tmux-session.ts:1292-1294)
+        if (paneHasActiveTask(wideCap.stdout)) {
+          runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, request.team_name);
+          return {
+            ok: true,
+            reason: 'tmux_send_keys_confirmed_active_task',
+            pane: resolution.paneTarget,
+            pane_source: resolution.source || null,
+            readiness_evidence: paneGuard.readinessEvidence || null,
+            pane_current_command: paneGuard.paneCurrentCommand || null,
+            exact_pane_proof: exactPaneProof,
+            tmux_injection_attempted: true,
+          };
+        }
+        // Do not declare success while a pane is not input-ready. Otherwise a
+        // pre-ready send can be marked "confirmed" and later appear as a stuck
+        // unsent draft once the UI finishes loading. This includes leader-fixed:
+        // its Codex UI can show "tab to queue message" while busy, and marking
+        // delivered before queue/consumption confirmation loses the orchestration
+        // nudge until a human presses Tab manually.
+        if (!paneLooksReady(wideCap.stdout)) {
+          continue;
+        }
+        if (!triggerInNarrow && !triggerNearTail) {
+          runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, request.team_name);
+          return {
+            ok: true,
+            reason: 'tmux_send_keys_confirmed',
+            pane: resolution.paneTarget,
+            pane_source: resolution.source || null,
+            readiness_evidence: paneGuard.readinessEvidence || null,
+            pane_current_command: paneGuard.paneCurrentCommand || null,
+            exact_pane_proof: exactPaneProof,
+            tmux_injection_attempted: true,
+          };
+        }
+      } catch {
+        // Capture failed; fall through to retry C-m.
+      }
     }
     // Draft still visible and no active task — retry C-m
-    await sendPaneInput({
+    const retrySend = await sendPaneInput({
       paneTarget: resolution.paneTarget,
+      exactPaneId,
+      expectedPanePid: dispatchTarget.expectedPanePid,
+      expectedPaneOwnerId: dispatchTarget.expectedPaneOwnerId,
+      expectedHudPaneId: dispatchTarget.expectedHudPaneId,
       prompt: request.trigger_message,
       submitKeyPresses,
       typePrompt: false,
       queueFirstSubmit: leaderTargeted,
-    }).catch(() => {});
+    });
+    if (!retrySend.ok && retrySend.reason === EXACT_PANE_UNAVAILABLE_REASON) {
+      return exactPaneFailure({ reason: retrySend.reason, proof: retrySend.exactPaneProof }, true);
+    }
+    exactPaneProof = retrySend.exactPaneProof || exactPaneProof;
   }
 
   // Trigger text is still visible after all retry rounds.
@@ -919,6 +1084,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
     pane_source: resolution.source || null,
     readiness_evidence: paneGuard.readinessEvidence || null,
     pane_current_command: paneGuard.paneCurrentCommand || null,
+    exact_pane_proof: exactPaneProof,
     tmux_injection_attempted: true,
   };
 }
@@ -962,6 +1128,7 @@ function buildDispatchAttemptEvidence(result, fallback = {}) {
     pane_source: safeString(result?.pane_source || fallback.pane_source || '').trim() || null,
     readiness_evidence: safeString(result?.readiness_evidence || fallback.readiness_evidence || '').trim() || null,
     pane_current_command: safeString(result?.pane_current_command || fallback.pane_current_command || '').trim() || null,
+    exact_pane_proof: result?.exact_pane_proof ?? fallback.exact_pane_proof ?? null,
     tmux_injection_attempted:
       typeof result?.tmux_injection_attempted === 'boolean'
         ? result.tmux_injection_attempted
@@ -1024,7 +1191,7 @@ export async function drainPendingTeamDispatch({
           continue;
         }
 
-        if (request.to_worker === 'leader-fixed' && !resolveLeaderPaneId(config)) {
+        if (request.to_worker === 'leader-fixed' && !resolveLeaderPaneId(config) && !explicitPaneIdentity(request.pane_id).provided) {
           const nowIso = new Date().toISOString();
           const alreadyDeferred = safeString(request.last_reason).trim() === LEADER_PANE_MISSING_DEFERRED_REASON;
           request.updated_at = nowIso;

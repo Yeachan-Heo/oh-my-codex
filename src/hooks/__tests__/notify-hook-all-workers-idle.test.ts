@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,6 +28,10 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+if [[ "$cmd" == "show-option" && "\${@: -1}" == "@omx_team_pane_owner_id" ]]; then
+  printf '%s\n' 'team:test'
+  exit 0
+fi
 if [[ "$cmd" == "display-message" ]]; then
   exit 0
 fi
@@ -60,7 +64,9 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  for pane in $(seq 1 200); do
+    printf '%%%s\t0\t%s\n' "$pane" "$((12000 + pane))"
+  done
   exit 0
 fi
 exit 0
@@ -73,6 +79,18 @@ function writeWorkerIdentityFixture(cwd: string, workerEnv: string): string {
   assert.ok(workerName, 'worker env fixture should include a worker name');
 
   const stateRoot = join(cwd, '.omx', 'state');
+  const configPath = join(stateRoot, 'team', teamName, 'config.json');
+  if (existsSync(configPath)) {
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    if (typeof config.leader_pane_id === 'string' && config.leader_pane_id.trim() !== '') {
+      config.tmux_pane_owner_id = 'team:test';
+      if (!(typeof config.leader_pane_pid === 'number' && config.leader_pane_pid > 0)) {
+        const paneNumber = Number(config.leader_pane_id.slice(1));
+        if (Number.isInteger(paneNumber) && paneNumber > 0) config.leader_pane_pid = 12000 + paneNumber;
+      }
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+    }
+  }
   const workerDir = join(stateRoot, 'team', teamName, 'workers', workerName);
   const identityPath = join(workerDir, 'identity.json');
   if (!existsSync(identityPath)) {
@@ -275,6 +293,7 @@ describe('notify-hook all-workers-idle notification', () => {
         name: teamName,
         tmux_session: 'devsess:81',
         leader_pane_id: '%181',
+        leader_pane_pid: 12181,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -294,6 +313,10 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+if [[ "$cmd" == "show-option" && "\${@: -1}" == "@omx_team_pane_owner_id" ]]; then
+  printf '%s\n' 'team:test'
+  exit 0
+fi
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -339,7 +362,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%181\t0\t12181\n'
   exit 0
 fi
 exit 0
@@ -388,6 +411,7 @@ exit 0
         name: teamName,
         tmux_session: 'busy-all-idle:0',
         leader_pane_id: '%182',
+        leader_pane_pid: 12182,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -407,6 +431,10 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+if [[ "$cmd" == "show-option" && "\${@: -1}" == "@omx_team_pane_owner_id" ]]; then
+  printf '%s\n' 'team:test'
+  exit 0
+fi
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -460,7 +488,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%182\t0\t12182\n'
   exit 0
 fi
 exit 0
@@ -505,6 +533,7 @@ exit 0
         name: teamName,
         tmux_session: 'devsess:8',
         leader_pane_id: '%99',
+        leader_pane_pid: 12099,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -766,6 +795,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-event',
         leader_pane_id: '%77',
+        leader_pane_pid: 12077,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -891,6 +921,7 @@ exit 0
         name: teamName,
         tmux_session: 'solo-session:0',
         leader_pane_id: '%13',
+        leader_pane_pid: 12013,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -951,6 +982,8 @@ exit 0
         permissions_snapshot: { approval_mode: 'unknown', sandbox_mode: 'unknown', network_access: true },
         tmux_session: 'correct-session:1',
         leader_pane_id: '%123',
+        leader_pane_pid: 12123,
+        tmux_pane_owner_id: 'team:test',
         worker_count: 1,
         workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
         next_task_id: 1,

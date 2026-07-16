@@ -39,6 +39,12 @@ pub struct DispatchRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchError {
+    DuplicateRequestId {
+        request_id: String,
+    },
+    InvalidRequestId {
+        request_id: String,
+    },
     NotFound {
         request_id: String,
     },
@@ -52,6 +58,12 @@ pub enum DispatchError {
 impl fmt::Display for DispatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DuplicateRequestId { request_id } => {
+                write!(f, "duplicate dispatch request id: {request_id}")
+            }
+            Self::InvalidRequestId { request_id } => {
+                write!(f, "invalid dispatch request id: {request_id:?}")
+            }
             Self::NotFound { request_id } => {
                 write!(f, "dispatch record not found: {request_id}")
             }
@@ -85,9 +97,20 @@ impl DispatchLog {
         request_id: impl Into<String>,
         target: impl Into<String>,
         metadata: Option<serde_json::Value>,
-    ) {
+    ) -> Result<(), DispatchError> {
+        let request_id = request_id.into();
+        if request_id.is_empty() {
+            return Err(DispatchError::InvalidRequestId { request_id });
+        }
+        if self
+            .records
+            .iter()
+            .any(|record| record.request_id == request_id)
+        {
+            return Err(DispatchError::DuplicateRequestId { request_id });
+        }
         self.records.push(DispatchRecord {
-            request_id: request_id.into(),
+            request_id,
             target: target.into(),
             status: DispatchStatus::Pending,
             created_at: now_iso(),
@@ -97,6 +120,7 @@ impl DispatchLog {
             reason: None,
             metadata,
         });
+        Ok(())
     }
 
     pub fn mark_notified(
@@ -154,6 +178,23 @@ impl DispatchLog {
 
     pub fn records(&self) -> &[DispatchRecord] {
         &self.records
+    }
+
+    pub fn request_ids(&self) -> impl Iterator<Item = &str> {
+        self.records.iter().map(|record| record.request_id.as_str())
+    }
+
+    pub fn contains_request_id(&self, request_id: &str) -> bool {
+        self.records
+            .iter()
+            .any(|record| record.request_id == request_id)
+    }
+
+    /// Remove records that have reached a terminal delivery state.
+    pub fn prune_terminal_records(&mut self) {
+        self.records.retain(|record| {
+            record.status != DispatchStatus::Delivered && record.status != DispatchStatus::Failed
+        });
     }
 
     pub fn to_backlog_snapshot(&self) -> BacklogSnapshot {
@@ -248,7 +289,7 @@ mod tests {
     #[test]
     fn queue_and_transition_happy_path() {
         let mut log = DispatchLog::new();
-        log.queue("req-1", "worker-1", None);
+        log.queue("req-1", "worker-1", None).unwrap();
         assert_eq!(log.records().len(), 1);
         assert_eq!(log.records()[0].status, DispatchStatus::Pending);
 
@@ -262,7 +303,7 @@ mod tests {
     #[test]
     fn mark_failed_from_notified() {
         let mut log = DispatchLog::new();
-        log.queue("req-1", "worker-1", None);
+        log.queue("req-1", "worker-1", None).unwrap();
         log.mark_notified("req-1", "tmux").unwrap();
         log.mark_failed("req-1", "send_error").unwrap();
         assert_eq!(log.records()[0].status, DispatchStatus::Failed);
@@ -271,7 +312,7 @@ mod tests {
     #[test]
     fn invalid_transition_errors() {
         let mut log = DispatchLog::new();
-        log.queue("req-1", "worker-1", None);
+        log.queue("req-1", "worker-1", None).unwrap();
 
         // Can't deliver from pending
         let err = log.mark_delivered("req-1").unwrap_err();
@@ -282,7 +323,7 @@ mod tests {
     fn mark_failed_from_pending() {
         // Matches TS behavior: pending -> failed allowed for target resolution failures
         let mut log = DispatchLog::new();
-        log.queue("req-1", "worker-1", None);
+        log.queue("req-1", "worker-1", None).unwrap();
         log.mark_failed("req-1", "target_resolution_failed")
             .unwrap();
         assert_eq!(log.records()[0].status, DispatchStatus::Failed);
@@ -298,9 +339,9 @@ mod tests {
     #[test]
     fn backlog_snapshot_counts() {
         let mut log = DispatchLog::new();
-        log.queue("req-1", "w1", None);
-        log.queue("req-2", "w2", None);
-        log.queue("req-3", "w3", None);
+        log.queue("req-1", "w1", None).unwrap();
+        log.queue("req-2", "w2", None).unwrap();
+        log.queue("req-3", "w3", None).unwrap();
         log.mark_notified("req-2", "tmux").unwrap();
         log.mark_notified("req-3", "tmux").unwrap();
         log.mark_delivered("req-2").unwrap();
@@ -314,10 +355,33 @@ mod tests {
     }
 
     #[test]
+    fn prune_terminal_records_keeps_pending_and_notified_records() {
+        let mut log = DispatchLog::new();
+        log.queue("pending", "w1", None).unwrap();
+        log.queue("notified", "w2", None).unwrap();
+        log.queue("delivered", "w3", None).unwrap();
+        log.queue("failed", "w4", None).unwrap();
+        log.mark_notified("notified", "tmux").unwrap();
+        log.mark_notified("delivered", "tmux").unwrap();
+        log.mark_delivered("delivered").unwrap();
+        log.mark_failed("failed", "target resolution failed")
+            .unwrap();
+
+        log.prune_terminal_records();
+
+        assert_eq!(log.records().len(), 2);
+        assert_eq!(log.records()[0].request_id, "pending");
+        assert_eq!(log.records()[0].status, DispatchStatus::Pending);
+        assert_eq!(log.records()[1].request_id, "notified");
+        assert_eq!(log.records()[1].status, DispatchStatus::Notified);
+    }
+
+    #[test]
     fn queue_with_metadata_round_trips() {
         let mut log = DispatchLog::new();
         let meta = serde_json::json!({"priority": "high", "tags": ["urgent"]});
-        log.queue("req-meta", "worker-1", Some(meta.clone()));
+        log.queue("req-meta", "worker-1", Some(meta.clone()))
+            .unwrap();
 
         assert_eq!(log.records()[0].metadata, Some(meta.clone()));
 
@@ -326,5 +390,27 @@ mod tests {
         let loaded: DispatchLog = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.records()[0].metadata, Some(meta));
         assert_eq!(loaded.records()[0].request_id, "req-meta");
+    }
+
+    #[test]
+    fn queue_rejects_duplicate_request_id_after_terminal_transition() {
+        let mut log = DispatchLog::new();
+        log.queue("req-1", "worker-1", None).unwrap();
+        log.mark_failed("req-1", "target unavailable").unwrap();
+
+        let err = log.queue("req-1", "worker-2", None).unwrap_err();
+        assert!(
+            matches!(err, DispatchError::DuplicateRequestId { request_id } if request_id == "req-1")
+        );
+        assert_eq!(log.records().len(), 1);
+    }
+
+    #[test]
+    fn queue_rejects_empty_request_id() {
+        let mut log = DispatchLog::new();
+        assert!(matches!(
+            log.queue("", "worker", None),
+            Err(DispatchError::InvalidRequestId { request_id }) if request_id.is_empty()
+        ));
     }
 }

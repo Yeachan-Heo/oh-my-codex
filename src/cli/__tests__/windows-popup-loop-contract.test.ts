@@ -29,7 +29,8 @@ describe('Windows popup loop contracts', () => {
     assert.match(updateSource, /spawnNpmSync\(\s*\[\s*'install',\s*'-g',[\s\S]*?windowsHide:\s*true/);
     assert.match(notifierSource, /execFileAsync\(cmd,\s*args,\s*\{\s*windowsHide:\s*true\s*\}\)/);
     assert.match(replyListenerSource, /spawn\('node',\s*\['-e',\s*daemonScript\],\s*\{[\s\S]*?windowsHide:\s*true/);
-    assert.match(fallbackWatcherSource, /spawnPlatformCommandSync\('tmux', \['send-keys'/);
+    assert.match(fallbackWatcherSource, /spawnPlatformCommandSync\('tmux', args/);
+    assert.match(fallbackWatcherSource, /sendKeys\(\['send-keys', '-t', binding\.paneId/);
     assert.doesNotMatch(fallbackWatcherSource, /spawnSync\('tmux'/);
   });
 });

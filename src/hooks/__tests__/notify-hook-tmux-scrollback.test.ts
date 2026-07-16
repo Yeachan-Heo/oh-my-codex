@@ -69,6 +69,7 @@ set -eu
 cmd="$1"
 shift || true
 if [[ "$cmd" == "list-panes" ]]; then
+  if [[ " $* " == *" -a "* ]]; then printf '%s\t%s\t%s\n' '%42' '0' '4242'; exit 0; fi
   echo "%42 1"
   exit 0
 fi
@@ -91,8 +92,9 @@ if [[ "$cmd" == "display-message" ]]; then
     exit 0
   fi
   if [[ "$format" == "#{pane_current_command}" ]]; then
-    echo "node"
+    echo "codex"
     exit 0
+
   fi
   if [[ "$format" == "#{pane_start_command}" ]]; then
     echo "codex --model gpt-5"
@@ -108,6 +110,10 @@ if [[ "$cmd" == "display-message" ]]; then
   fi
   echo "unsupported format: $format" >&2
   exit 1
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "› ready\n"
+  exit 0
 fi
 if [[ "$cmd" == "set-buffer" ]]; then
   printf '%s' "\${@: -1}" > "${cwd}/tmux-buffer"

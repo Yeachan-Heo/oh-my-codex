@@ -62,6 +62,7 @@ export type RuntimeCommand =
   | { command: 'MarkNotified'; request_id: string; channel: string }
   | { command: 'MarkDelivered'; request_id: string }
   | { command: 'MarkFailed'; request_id: string; reason: string }
+  | { command: 'RemoveDispatchRecords'; request_ids: string[] }
   | { command: 'RequestReplay'; cursor?: string }
   | { command: 'CaptureSnapshot' }
   | { command: 'CreateMailboxMessage'; message_id: string; from_worker: string; to_worker: string; body: string }
@@ -76,6 +77,7 @@ export type RuntimeEvent =
   | { event: 'DispatchNotified'; request_id: string; channel: string }
   | { event: 'DispatchDelivered'; request_id: string }
   | { event: 'DispatchFailed'; request_id: string; reason: string }
+  | { event: 'DispatchRecordsRemoved'; request_ids: string[] }
   | { event: 'ReplayRequested'; cursor?: string }
   | { event: 'SnapshotCaptured' }
   | { event: 'MailboxMessageCreated'; message_id: string; from_worker: string; to_worker: string; body?: string }
@@ -157,6 +159,25 @@ export function resolveBridgeStateDir(cwd: string, env: NodeJS.ProcessEnv = proc
   return resolveCanonicalTeamStateRoot(cwd, env);
 }
 
+function isStrictDispatchRecord(record: unknown): record is DispatchRecord {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
+  const value = record as Record<string, unknown>;
+  const requiredFields = [
+    'request_id', 'target', 'status', 'created_at', 'notified_at',
+    'delivered_at', 'failed_at', 'reason', 'metadata',
+  ];
+  if (requiredFields.some((field) => !Object.prototype.hasOwnProperty.call(value, field))) return false;
+  return typeof value.request_id === 'string'
+    && typeof value.target === 'string'
+    && ['pending', 'notified', 'delivered', 'failed'].includes(String(value.status))
+    && typeof value.created_at === 'string'
+    && (value.notified_at === null || typeof value.notified_at === 'string')
+    && (value.delivered_at === null || typeof value.delivered_at === 'string')
+    && (value.failed_at === null || typeof value.failed_at === 'string')
+    && (value.reason === null || typeof value.reason === 'string')
+    && (value.metadata === null || (typeof value.metadata === 'object' && !Array.isArray(value.metadata)));
+}
+
 export class RuntimeBridge {
   private binaryPath: string;
   private stateDir: string | undefined;
@@ -193,6 +214,17 @@ export class RuntimeBridge {
         { command: cmd.command, stdoutPreview: stdout.slice(0, 200), cause },
       );
     }
+  }
+
+  /** Remove dispatch records through the authoritative events-backed runtime store. */
+  removeDispatchRecords(requestIds: readonly string[]): Extract<RuntimeEvent, { event: 'DispatchRecordsRemoved' }> {
+    const event = this.execCommand({ command: 'RemoveDispatchRecords', request_ids: [...requestIds] });
+    if (event.event !== 'DispatchRecordsRemoved') {
+      throw new RuntimeBridgeError('omx-runtime returned an unexpected dispatch removal event', {
+        command: 'RemoveDispatchRecords',
+      });
+    }
+    return event;
   }
 
   /** Read the current RuntimeSnapshot. */
@@ -265,6 +297,26 @@ export class RuntimeBridge {
     return raw.records;
   }
 
+  /** Read authoritative dispatch compatibility output, failing closed on unavailable or malformed state. */
+  readDispatchRecordsStrict(): DispatchRecord[] {
+    if (!this.stateDir) throw new RuntimeBridgeError('dispatch compatibility state directory is unavailable', { command: 'dispatch-read' });
+    const filePath = join(this.stateDir, 'dispatch.json');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(filePath, 'utf-8')) as unknown;
+    } catch (cause) {
+      throw new RuntimeBridgeError('dispatch compatibility output is unavailable or malformed', { command: 'dispatch-read', cause });
+    }
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { records?: unknown }).records)) {
+      throw new RuntimeBridgeError('dispatch compatibility output has an invalid shape', { command: 'dispatch-read' });
+    }
+    const records = (parsed as { records: unknown[] }).records;
+    if (records.some((record) => !isStrictDispatchRecord(record))) {
+      throw new RuntimeBridgeError('dispatch compatibility output contains an invalid record', { command: 'dispatch-read' });
+    }
+    return records as DispatchRecord[];
+  }
+
   /** Read mailbox records from compatibility file. */
   readMailboxRecords(): MailboxRecord[] {
     const raw = this.readCompatFile<{ records: MailboxRecord[] }>('mailbox.json');
@@ -283,7 +335,7 @@ export class RuntimeBridge {
       const schema = JSON.parse(stdout);
       const expectedCommands = [
         'acquire-authority', 'renew-authority', 'queue-dispatch',
-        'mark-notified', 'mark-delivered', 'mark-failed',
+        'mark-notified', 'mark-delivered', 'mark-failed', 'remove-dispatch-records',
         'request-replay', 'capture-snapshot',
       ];
       const missing = expectedCommands.filter(

@@ -26,7 +26,6 @@ import {
   maybeNudgeTeamLeader,
   resolveLeaderStalenessThresholdMs,
 } from './notify-hook/team-leader-nudge.js';
-import { resolveManagedPaneFromAnchor, resolveManagedSessionPane } from './notify-hook/managed-tmux.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
 import { isTerminalPhase } from './notify-hook/utils.js';
 import { isSessionStale, isSessionStateAuthoritativeForCwd, readSessionState } from '../hooks/session.js';
@@ -40,6 +39,8 @@ import { validateSessionId } from '../mcp/state-paths.js';
 import { TEAM_NAME_SAFE_PATTERN } from '../team/contracts.js';
 import { shouldContinueRun } from '../runtime/run-loop.js';
 import { deliverNotifyFallback, compactNotifyFallbackDeliveries, NOTIFY_FALLBACK_LEASE_MS } from './notify-fallback-delivery.js';
+import { readExactPaneProofSync } from '../team/exact-pane.js';
+import { OMX_RALPH_PANE_OWNER_OPTION } from '../state/mode-state-context.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -72,8 +73,12 @@ function normalizeValidTeamName(value: unknown): string {
 }
 
 function parsePositivePid(value: unknown): number | null {
-  const pid = Math.trunc(asNumber(value as string | number | undefined, 0));
-  return pid > 0 ? pid : null;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^[1-9][0-9]*$/.test(trimmed)) return null;
+  const pid = Number(trimmed);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
 function parseIsoMillis(value: string | null | undefined): number | null {
@@ -771,25 +776,55 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
   };
 }
 
-async function emitRalphContinueSteer(paneId: string, message: string): Promise<void> {
-  const markedText = `${message} ${DEFAULT_MARKER}`;
-  await new Promise<void>((resolve) => {
-    const { result: typed } = spawnPlatformCommandSync('tmux', ['send-keys', '-t', paneId, '-l', markedText], { encoding: 'utf-8' });
-    if (typed.error) throw new Error(typed.error.message);
-    if (typed.status !== 0) throw new Error((typed.stderr || typed.stdout || '').trim() || 'tmux send-keys failed');
-    setTimeout(resolve, 100);
-  });
-  await new Promise<void>((resolve) => {
-    const { result: submitA } = spawnPlatformCommandSync('tmux', ['send-keys', '-t', paneId, 'C-m'], { encoding: 'utf-8' });
-    if (submitA.error) throw new Error(submitA.error.message);
-    if (submitA.status !== 0) throw new Error((submitA.stderr || submitA.stdout || '').trim() || 'tmux send-keys C-m failed');
-    setTimeout(resolve, 100);
-  });
-  const { result: submitB } = spawnPlatformCommandSync('tmux', ['send-keys', '-t', paneId, 'C-m'], { encoding: 'utf-8' });
-  if (submitB.error) throw new Error(submitB.error.message);
-  if (submitB.status !== 0) {
-    throw new Error((submitB.stderr || submitB.stdout || '').trim() || 'tmux send-keys C-m failed');
+interface RalphContinuePaneBinding {
+  paneId: string;
+  panePid: number;
+  sessionName: string;
+  paneOwnerId: string;
+}
+
+function parseRalphContinuePaneBinding(state: Record<string, unknown> | null): RalphContinuePaneBinding | null {
+  const paneId = safeString(state?.tmux_pane_id).trim();
+  const panePid = parsePositivePid(state?.tmux_pane_pid);
+  const sessionName = safeString(state?.tmux_session_name).trim();
+  const paneOwnerId = safeString(state?.tmux_pane_owner_id).trim();
+  if (!/^%[0-9]+$/.test(paneId) || panePid === null || !sessionName || !paneOwnerId) return null;
+  if (paneOwnerId.startsWith('team:')) return null;
+  return { paneId, panePid, sessionName, paneOwnerId };
+}
+
+function requireFrozenRalphPaneBinding(binding: RalphContinuePaneBinding): void {
+  const initialProof = readExactPaneProofSync(binding.paneId);
+  if (initialProof.status !== 'live' || initialProof.pid !== binding.panePid) {
+    throw new Error(`persisted Ralph pane identity unavailable: ${binding.paneId}`);
   }
+  const session = spawnPlatformCommandSync('tmux', ['display-message', '-p', '-t', binding.paneId, '#S'], { encoding: 'utf-8' }).result;
+  if (session.error || session.status !== 0 || safeString(session.stdout).trim() !== binding.sessionName) {
+    throw new Error(`persisted Ralph pane session changed: ${binding.paneId}`);
+  }
+  const owner = spawnPlatformCommandSync('tmux', ['show-option', '-qv', '-p', '-t', binding.paneId, OMX_RALPH_PANE_OWNER_OPTION], { encoding: 'utf-8' }).result;
+  if (owner.error || owner.status !== 0 || safeString(owner.stdout).trim() !== binding.paneOwnerId) {
+    throw new Error(`persisted Ralph pane owner changed: ${binding.paneId}`);
+  }
+  const finalProof = readExactPaneProofSync(binding.paneId);
+  if (finalProof.status !== 'live' || finalProof.pid !== binding.panePid) {
+    throw new Error(`persisted Ralph pane identity changed: ${binding.paneId}`);
+  }
+}
+
+async function emitRalphContinueSteer(binding: RalphContinuePaneBinding, message: string): Promise<void> {
+  const markedText = `${message} ${DEFAULT_MARKER}`;
+  const sendKeys = (args: string[], failure: string): void => {
+    requireFrozenRalphPaneBinding(binding);
+    const { result } = spawnPlatformCommandSync('tmux', args, { encoding: 'utf-8' });
+    if (result.error) throw new Error(result.error.message);
+    if (result.status !== 0) throw new Error((result.stderr || result.stdout || '').trim() || failure);
+  };
+  sendKeys(['send-keys', '-t', binding.paneId, '-l', markedText], 'tmux send-keys failed');
+  await sleep(100);
+  sendKeys(['send-keys', '-t', binding.paneId, 'C-m'], 'tmux send-keys C-m failed');
+  await sleep(100);
+  sendKeys(['send-keys', '-t', binding.paneId, 'C-m'], 'tmux send-keys C-m failed');
 }
 
 async function readRalphSteerTimestamp(): Promise<string> {
@@ -1074,89 +1109,7 @@ async function writePidFileRecord(): Promise<void> {
   await writeFile(pidFilePath, JSON.stringify(nextRecord, null, 2)).catch(() => {});
 }
 
-async function buildWatcherManagedPayload(): Promise<Record<string, string> | null> {
-  const session = await readSessionState(cwd).catch(() => null);
-  const sessionId = safeString(session?.session_id).trim();
-  if (!sessionId || !session || isSessionStale(session)) return null;
-  return { session_id: sessionId };
-}
 
-async function persistReboundRalphPaneState(
-  statePath: string,
-  state: Record<string, unknown> | null,
-  paneId: string,
-  nowIso: string,
-): Promise<Record<string, unknown>> {
-  const latestState = await readFile(statePath, 'utf-8')
-    .then((content) => JSON.parse(content) as Record<string, unknown>)
-    .catch(() => null);
-  const nextState = {
-    ...((latestState && typeof latestState === 'object') ? latestState : (state || {})),
-    tmux_pane_id: paneId,
-    tmux_pane_set_at: nowIso,
-  };
-  const tmpPath = `${statePath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
-  await writeFile(tmpPath, JSON.stringify(nextState, null, 2));
-  try {
-    await rename(tmpPath, statePath);
-  } catch (error) {
-    await unlink(tmpPath).catch(() => {});
-    throw error;
-  }
-  return nextState;
-}
-
-async function resolveRalphContinuePaneTarget(
-  activeRalph: ActiveModeResult,
-  nowIso: string,
-): Promise<{ paneId: string; state: Record<string, unknown> | null; reboundFrom: string }> {
-  const currentState = activeRalph.state && typeof activeRalph.state === 'object'
-    ? activeRalph.state as Record<string, unknown>
-    : null;
-  const anchorPaneId = safeString(currentState?.tmux_pane_id).trim();
-  if (!anchorPaneId) {
-    return {
-      paneId: '',
-      state: currentState,
-      reboundFrom: '',
-    };
-  }
-
-  const managedPayload = await buildWatcherManagedPayload();
-  if (!managedPayload) {
-    return {
-      paneId: anchorPaneId,
-      state: currentState,
-      reboundFrom: '',
-    };
-  }
-
-  let resolvedPaneId = await resolveManagedPaneFromAnchor(anchorPaneId, cwd, managedPayload, { allowTeamWorker: false });
-  if (!resolvedPaneId) {
-    resolvedPaneId = await resolveManagedSessionPane(cwd, managedPayload);
-  }
-  if (!resolvedPaneId) {
-    return {
-      paneId: '',
-      state: currentState,
-      reboundFrom: '',
-    };
-  }
-  if (resolvedPaneId === anchorPaneId) {
-    return {
-      paneId: resolvedPaneId,
-      state: currentState,
-      reboundFrom: '',
-    };
-  }
-
-  const updatedState = await persistReboundRalphPaneState(activeRalph.path, currentState, resolvedPaneId, nowIso);
-  return {
-    paneId: resolvedPaneId,
-    state: updatedState,
-    reboundFrom: anchorPaneId,
-  };
-}
 
 async function runRalphContinueSteerTick(): Promise<void> {
   const now = Date.now();
@@ -1217,24 +1170,27 @@ async function runRalphContinueSteerTick(): Promise<void> {
       return { sent: false, skipped: true };
     }
 
-    const resolvedPane = await resolveRalphContinuePaneTarget(activeRalph, nowIso);
-    activeRalph.state = resolvedPane.state;
-    const paneId = resolvedPane.paneId;
-    if (!paneId) {
-      lastRalphContinueSteer.last_reason = 'pane_missing';
+    const binding = parseRalphContinuePaneBinding(activeRalph.state);
+    if (!binding) {
+      lastRalphContinueSteer.last_reason = 'pane_binding_missing';
       lastRalphContinueSteer.pane_id = '';
       return { sent: false, skipped: true };
     }
-
-    const paneGuard = await checkPaneReadyForTeamSendKeys(paneId);
-    lastRalphContinueSteer.pane_id = paneId;
+    lastRalphContinueSteer.pane_id = binding.paneId;
+    try {
+      requireFrozenRalphPaneBinding(binding);
+    } catch (error) {
+      lastRalphContinueSteer.last_reason = 'pane_binding_changed';
+      lastRalphContinueSteer.last_error = error instanceof Error ? error.message : safeString(error);
+      return { sent: false, skipped: true };
+    }
+    const paneGuard = await checkPaneReadyForTeamSendKeys(binding.paneId, binding.paneId);
     lastRalphContinueSteer.pane_current_command = paneGuard.paneCurrentCommand || '';
     if (!paneGuard.ok) {
       lastRalphContinueSteer.last_reason = paneGuard.reason || 'pane_guard_blocked';
       return { sent: false, skipped: true };
     }
-
-    await emitRalphContinueSteer(paneId, RALPH_CONTINUE_TEXT);
+    await emitRalphContinueSteer(binding, RALPH_CONTINUE_TEXT);
     await writeRalphSteerTimestamp(nowIso);
     lastRalphContinueSteer.last_sent_at = nowIso;
     lastRalphContinueSteer.shared_last_sent_at = nowIso;
@@ -1243,8 +1199,7 @@ async function runRalphContinueSteerTick(): Promise<void> {
     await eventLog({
       type: 'ralph_continue_steer',
       reason: 'sent',
-      pane_id: paneId,
-      rebound_from: resolvedPane.reboundFrom || null,
+      pane_id: binding.paneId,
       state_path: activeRalph.path,
       current_phase: safeString(activeRalph.state?.current_phase) || null,
       cadence_ms: RALPH_CONTINUE_CADENCE_MS,

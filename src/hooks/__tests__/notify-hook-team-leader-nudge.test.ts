@@ -20,7 +20,15 @@ async function withTempWorkingDir(run: (cwd: string) => Promise<void>): Promise<
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
-  await writeFile(path, JSON.stringify(value, null, 2));
+  let persisted = value;
+  if (path.endsWith('/config.json') && value && typeof value === 'object' && !Array.isArray(value)) {
+    const config = value as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(config, 'tmux_pane_owner_id')
+      && typeof config.name === 'string' && config.name.trim()) {
+      persisted = { ...config, tmux_pane_owner_id: `team:${config.name.trim()}` };
+    }
+  }
+  await writeFile(path, JSON.stringify(persisted, null, 2));
 }
 
 async function writeCanonicalTeamFixture(
@@ -87,6 +95,8 @@ async function writeCanonicalTeamFixture(
     },
     tmux_session: `${teamName}:0`,
     leader_pane_id: '%97',
+    leader_pane_pid: 12097,
+    tmux_pane_owner_id: `team:${teamName}`,
     hud_pane_id: null,
     resize_hook_name: null,
     resize_hook_target: null,
@@ -217,9 +227,21 @@ fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
+if [[ "$cmd" == "show-option" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  node -e 'const fs=require("fs"),path=require("path"),root=process.argv[1],target=process.argv[2],teamRoot=path.join(root,".omx","state","team");for(const team of fs.readdirSync(teamRoot,{withFileTypes:true}).filter(entry=>entry.isDirectory()).map(entry=>entry.name)){const dir=path.join(teamRoot,team),manifest=path.join(dir,"manifest.v2.json"),config=path.join(dir,"config.json"),source=fs.existsSync(manifest)?manifest:config;if(!fs.existsSync(source))continue;try{const raw=JSON.parse(fs.readFileSync(source,"utf8"));if(raw.leader_pane_id===target){process.stdout.write(String(raw.tmux_pane_owner_id||"team:"+team));break;}}catch{}}' "$(dirname "$(dirname "$0")")" "$target"
+  exit 0
+fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
-  echo "%2 12346"
+  for pane in $(seq 1 200); do
+    printf '%%%s\t0\t%s\n' "$pane" "$((12000 + pane))"
+  done
   exit 0
 fi
 exit 0
@@ -266,12 +288,30 @@ fi
 if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
+if [[ "$cmd" == "show-option" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  node -e 'const fs=require("fs"),path=require("path"),root=process.argv[1],target=process.argv[2],teamRoot=path.join(root,".omx","state","team");for(const team of fs.readdirSync(teamRoot,{withFileTypes:true}).filter(entry=>entry.isDirectory()).map(entry=>entry.name)){const dir=path.join(teamRoot,team),manifest=path.join(dir,"manifest.v2.json"),config=path.join(dir,"config.json"),source=fs.existsSync(manifest)?manifest:config;if(!fs.existsSync(source))continue;try{const raw=JSON.parse(fs.readFileSync(source,"utf8"));if(raw.leader_pane_id===target){process.stdout.write(String(raw.tmux_pane_owner_id||"team:"+team));break;}}catch{}}' "$(dirname "$(dirname "$0")")" "$target"
+  exit 0
+fi
 if [[ "$cmd" == "list-panes" ]]; then
   printf "%b\\n" "${escapedLines}"
   exit 0
 fi
 exit 0
 `;
+}
+
+function fakeTmuxOwnerOptionHandler(ownerId: string): string {
+  return `if [[ "$cmd" == "show-option" ]]; then
+  echo "${ownerId}"
+  exit 0
+fi`;
 }
 
 function runNotifyHook(
@@ -339,6 +379,8 @@ describe('notify-hook leader-side authority handoff', () => {
         name: teamName,
         tmux_session: 'handoff-sess:0',
         leader_pane_id: '%91',
+        leader_pane_pid: 12091,
+        tmux_pane_owner_id: 'team:handoff-alpha',
       });
       await writeJson(join(stateDir, 'hud-state.json'), {
         last_turn_at: new Date(Date.now() - 300_000).toISOString(),
@@ -357,7 +399,10 @@ describe('notify-hook leader-side authority handoff', () => {
         ],
       });
 
-      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath).replace(
+        'if [[ "$cmd" == "show-option" ]]; then',
+        'if [[ "$cmd" == "show-option" ]]; then\n  echo "team:foreign"\n  exit 0\nfi\nif [[ "$cmd" == "show-option" ]]; then',
+      ));
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
@@ -366,8 +411,45 @@ describe('notify-hook leader-side authority handoff', () => {
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.match(tmuxLog, /send-keys/, 'current implementation nudges the leader directly in this stale-leader path');
+      assert.doesNotMatch(tmuxLog, /send-keys/, 'a same-ID/PID foreign owner must not receive leader input');
     });
+  });
+
+  it('defers leader nudges without tmux reads when the persisted owner token is missing or malformed', async () => {
+    for (const owner of [undefined, 17] as const) {
+      await withTempWorkingDir(async (cwd) => {
+        const stateDir = join(cwd, '.omx', 'state');
+        const logsDir = join(cwd, '.omx', 'logs');
+        const teamName = 'owner-required';
+        const teamDir = join(stateDir, 'team', teamName);
+        const fakeBinDir = join(cwd, 'fake-bin');
+        const tmuxLogPath = join(cwd, 'tmux.log');
+        await mkdir(logsDir, { recursive: true });
+        await mkdir(fakeBinDir, { recursive: true });
+        await mkdir(teamDir, { recursive: true });
+        await writeJson(join(stateDir, 'team-state.json'), {
+          active: true,
+          team_name: teamName,
+          current_phase: 'team-exec',
+        });
+        const config: Record<string, unknown> = {
+          name: teamName,
+          tmux_session: `${teamName}:0`,
+          leader_pane_id: '%91',
+          leader_pane_pid: 12091,
+        };
+        config.tmux_pane_owner_id = owner === undefined ? null : owner;
+        await writeJson(join(teamDir, 'config.json'), config);
+        await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+        await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+        const result = runNotifyHook(cwd, fakeBinDir, { OMX_SESSION_ID: 'sess-canonical-missing' });
+        assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+        assert.equal(existsSync(tmuxLogPath), false, 'missing or malformed persisted owner must not capture or send tmux input');
+        const delivery = await readTeamDeliveryLog(cwd);
+        assert.ok(delivery.some((entry) => entry.reason === 'leader_pane_owner_missing_no_injection'), 'owner absence must be durably deferred');
+      });
+    }
   });
 
   it('does not drain pending dispatch requests from notify-hook leader context', async () => {
@@ -423,6 +505,7 @@ describe('notify-hook leader-side authority handoff', () => {
         name: teamName,
         tmux_session: 'omx-team-beta-active-status',
         leader_pane_id: '%92',
+        leader_pane_pid: 12092,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10' },
         ],
@@ -495,6 +578,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'deep-interview-suppressed:0',
         leader_pane_id: '%97',
+        leader_pane_pid: 12097,
       });
       await writeJson(join(stateDir, 'hud-state.json'), {
         last_turn_at: new Date(Date.now() - 300_000).toISOString(),
@@ -542,6 +626,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'idle-sess:0',
         leader_pane_id: '%99',
+        leader_pane_pid: 12099,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -619,6 +704,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'idle-shutdown:0',
         leader_pane_id: '%96',
+        leader_pane_pid: 12096,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10', role: 'executor' },
           { name: 'worker-2', index: 2, pane_id: '%11', role: 'executor' },
@@ -644,7 +730,7 @@ describe('notify-hook team leader nudge', () => {
         });
       }
 
-      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%10 12345', '%11 12346']));
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%96\t0\t12096', '%10\t0\t12010', '%11\t0\t12011']));
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
@@ -688,6 +774,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'idle-followup-reuse:0',
         leader_pane_id: '%97',
+        leader_pane_pid: 12097,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10', role: 'executor' },
           { name: 'worker-2', index: 2, pane_id: '%11', role: 'executor' },
@@ -712,7 +799,7 @@ describe('notify-hook team leader nudge', () => {
         });
       }
 
-      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%10 12345', '%11 12346']));
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%97\t0\t12097', '%10\t0\t12010', '%11\t0\t12011']));
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
@@ -756,6 +843,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'idle-followup-relaunch:0',
         leader_pane_id: '%98',
+        leader_pane_pid: 12098,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10', role: 'executor' },
           { name: 'worker-2', index: 2, pane_id: '%11', role: 'executor' },
@@ -780,7 +868,7 @@ describe('notify-hook team leader nudge', () => {
         });
       }
 
-      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%98 12349']));
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%98\t0\t12098']));
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir);
@@ -823,6 +911,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'idle-global:0',
         leader_pane_id: '%97',
+        leader_pane_pid: 12097,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -963,6 +1052,7 @@ describe('notify-hook team leader nudge', () => {
         leader: { session_id: 'sess-canonical-safe', worker_id: 'leader-fixed', role: 'coordinator' },
         tmux_session: 'bad:0',
         leader_pane_id: '%666',
+        leader_pane_pid: 12666,
         hud_pane_id: null,
         resize_hook_name: null,
         resize_hook_target: null,
@@ -1035,6 +1125,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'devsess:0',
         leader_pane_id: '%91',
+        leader_pane_pid: 12091,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -1098,6 +1189,7 @@ describe('notify-hook team leader nudge', () => {
         name: teamName,
         tmux_session: 'leader-nudge-teardown-race:0',
         leader_pane_id: '%91',
+        leader_pane_pid: 12091,
         workers: [{ name: 'worker-1', index: 1, pane_id: '%11' }],
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
@@ -1140,7 +1232,11 @@ if [[ "$cmd" == "display-message" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%11 12345"
+  printf '%%91\t0\t12091\n'
+  exit 0
+fi
+if [[ "$cmd" == "show-option" ]]; then
+  echo "team:leader-nudge-teardown-race"
   exit 0
 fi
 if [[ "$cmd" == "capture-pane" ]]; then
@@ -1238,6 +1334,7 @@ exit 0
         name: teamName,
         tmux_session: 'leader-nudge-late-persist-race:0',
         leader_pane_id: '%91',
+        leader_pane_pid: 12091,
         workers: [{ name: 'worker-1', index: 1, pane_id: '%11' }],
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
@@ -1253,7 +1350,7 @@ exit 0
         ],
       });
 
-      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%11 12345']));
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%91\t0\t12091', '%11\t0\t12345']));
       await chmod(fakeTmuxPath, 0o755);
 
       try {
@@ -1436,6 +1533,8 @@ exit 0
         name: teamName,
         tmux_session: 'busy-live-pane:0',
         leader_pane_id: '%93',
+        leader_pane_pid: 12093,
+        tmux_pane_owner_id: `team:${teamName}`,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -1455,6 +1554,7 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+${fakeTmuxOwnerOptionHandler(`team:${teamName}`)}
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -1512,7 +1612,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%93\t0\t12093\n'
   exit 0
 fi
 exit 0
@@ -1572,6 +1672,7 @@ exit 0
         name: teamName,
         tmux_session: 'ack-sess:0',
         leader_pane_id: '%94',
+        leader_pane_pid: 12094,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: ['1'] },
         ],
@@ -1640,6 +1741,7 @@ exit 0
         name: teamName,
         tmux_session: 'ack-started:0',
         leader_pane_id: '%95',
+        leader_pane_pid: 12095,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: ['1'] },
         ],
@@ -1719,6 +1821,7 @@ exit 0
         name: teamName,
         tmux_session: 'fresh-mailbox-bounded:0',
         leader_pane_id: '%97',
+        leader_pane_pid: 12097,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: ['1'] },
         ],
@@ -1779,6 +1882,7 @@ exit 0
         name: teamName,
         tmux_session: 'shell-guard:0',
         leader_pane_id: '%71',
+        leader_pane_pid: 12071,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -1798,6 +1902,7 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+${fakeTmuxOwnerOptionHandler(`team:${teamName}`)}
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -1842,7 +1947,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%71\t0\t12071\n'
   exit 0
 fi
 exit 0
@@ -1891,6 +1996,7 @@ exit 0
         name: teamName,
         tmux_session: 'busy-leader-queue:0',
         leader_pane_id: '%73',
+        leader_pane_pid: 12073,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -1910,6 +2016,7 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+${fakeTmuxOwnerOptionHandler(`team:${teamName}`)}
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -1963,7 +2070,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%73\t0\t12073\n'
   exit 0
 fi
 exit 0
@@ -1994,7 +2101,7 @@ exit 0
     });
   });
 
-  it('injects leader nudge when capture-pane fails but the leader pane is a live codex pane', async () => {
+  it('defers leader nudge when capture-pane cannot verify readiness despite authoritative live-pane proof', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -2019,6 +2126,7 @@ exit 0
         name: teamName,
         tmux_session: 'capture-failure-live-leader:0',
         leader_pane_id: '%74',
+        leader_pane_pid: 12074,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -2038,6 +2146,7 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+${fakeTmuxOwnerOptionHandler(`team:${teamName}`)}
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -2091,7 +2200,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%74\t0\t12074\n'
   exit 0
 fi
 exit 0
@@ -2103,15 +2212,27 @@ exit 0
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /list-panes -a -F #\{pane_id\}\t#\{pane_dead\}\t#\{pane_pid\}/, 'should retain authoritative exact-pane live proof');
+      assert.match(tmuxLog, /display-message -p -t %74 #\{pane_current_command\}/, 'should query the exact pane command before capture readiness');
       assert.match(tmuxLog, /capture-pane -t %74 -p -S -80/);
-      assert.match(tmuxLog, /send-keys -t %74/, 'capture failures should not suppress leader injection into a live codex pane');
+      assert.doesNotMatch(tmuxLog, /(?:set-buffer|paste-buffer|send-keys)/, 'capture readiness failure must suppress all input-effect tmux commands');
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
-      if (existsSync(eventsPath)) {
-        const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-        const deferred = events.find((entry: { type?: string }) => entry.type === 'leader_notification_deferred');
-        assert.equal(deferred, undefined, 'capture failure alone should not defer a live codex leader pane');
-      }
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferred = events.find((entry: { type?: string; reason?: string; pane_current_command?: string; tmux_injection_attempted?: boolean }) =>
+        entry.type === 'leader_notification_deferred' && entry.reason === 'pane_readiness_unverified');
+      assert.ok(deferred, 'capture readiness failure should emit a fail-closed deferred event');
+      assert.equal(deferred.pane_current_command, 'codex');
+      assert.equal(deferred.tmux_injection_attempted, false);
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'nudge_triggered'
+        && entry.team === teamName
+        && entry.to_worker === 'leader-fixed'
+        && entry.transport === 'none'
+        && entry.result === 'deferred'
+        && entry.reason === 'pane_readiness_unverified'), 'capture readiness failure should record a fail-closed delivery receipt');
     });
   });
 
@@ -2140,6 +2261,7 @@ exit 0
         name: teamName,
         tmux_session: 'same-classified-state:0',
         leader_pane_id: '%75',
+        leader_pane_pid: 12075,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -2159,6 +2281,7 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+${fakeTmuxOwnerOptionHandler(`team:${teamName}`)}
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -2214,7 +2337,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%75\t0\t12075\n'
   exit 0
 fi
 exit 0
@@ -2272,6 +2395,7 @@ exit 0
         name: teamName,
         tmux_session: 'scroll-guard:0',
         leader_pane_id: '%72',
+        leader_pane_pid: 12072,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -2291,6 +2415,7 @@ set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+${fakeTmuxOwnerOptionHandler(`team:${teamName}`)}
 if [[ "$cmd" == "display-message" ]]; then
   target=""
   format=""
@@ -2340,7 +2465,7 @@ if [[ "$cmd" == "send-keys" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
-  echo "%1 12345"
+  printf '%%72\t0\t12072\n'
   exit 0
 fi
 exit 0
@@ -2436,6 +2561,7 @@ exit 0
         name: teamName,
         tmux_session: 'completed-reopen:0',
         leader_pane_id: '%91',
+        leader_pane_pid: 12091,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10', role: 'executor' },
           { name: 'worker-2', index: 2, pane_id: '%11', role: 'executor' },
@@ -2507,6 +2633,7 @@ exit 0
         },
         tmux_session: 'other-session-team:0',
         leader_pane_id: '%94',
+        leader_pane_pid: 12094,
         worker_count: 2,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10', role: 'executor' },
@@ -2584,6 +2711,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-beta',
         leader_pane_id: '%92',
+        leader_pane_pid: 12092,
       });
 
       // Leader HUD state is stale (last turn 5 minutes ago)
@@ -2637,6 +2765,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-stalled-progress',
         leader_pane_id: '%90',
+        leader_pane_pid: 12090,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10' },
           { name: 'worker-2', index: 2, pane_id: '%11' },
@@ -2762,6 +2891,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-stalled-before-stale',
         leader_pane_id: '%89',
+        leader_pane_pid: 12089,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10' },
           { name: 'worker-2', index: 2, pane_id: '%11' },
@@ -2890,6 +3020,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-worker-turn-stall-threshold',
         leader_pane_id: '%86',
+        leader_pane_pid: 12086,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10' },
         ],
@@ -2991,6 +3122,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-active-turns-no-stall',
         leader_pane_id: '%87',
+        leader_pane_pid: 12087,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10' },
           { name: 'worker-2', index: 2, pane_id: '%11' },
@@ -3109,6 +3241,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-stalled-before-stale-bounded',
         leader_pane_id: '%88',
+        leader_pane_pid: 12088,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10' },
           { name: 'worker-2', index: 2, pane_id: '%11' },
@@ -3223,6 +3356,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-stale-no-workers',
         leader_pane_id: '%92',
+        leader_pane_pid: 12092,
         hud_pane_id: '%93',
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10' },
@@ -3270,6 +3404,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-fresh',
         leader_pane_id: '%95',
+        leader_pane_pid: 12095,
       });
       await writeJson(join(stateDir, 'hud-state.json'), {
         last_turn_at: new Date().toISOString(),
@@ -3314,6 +3449,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-stale-cadence',
         leader_pane_id: '%96',
+        leader_pane_pid: 12096,
       });
 
       const staleHud = {
@@ -3390,6 +3526,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-fresh-detached-progress',
         leader_pane_id: '%99',
+        leader_pane_pid: 12099,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10', worktree_path: workerWorktree },
         ],
@@ -3489,6 +3626,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-gamma',
         leader_pane_id: '%93',
+        leader_pane_pid: 12093,
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -3636,6 +3774,7 @@ exit 0
         name: teamName,
         tmux_session: 'idle-bounded:0',
         leader_pane_id: '%98',
+        leader_pane_pid: 12098,
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -3724,6 +3863,7 @@ exit 0
         name: teamName,
         tmux_session: 'omx-team-delta',
         leader_pane_id: '%94',
+        leader_pane_pid: 12094,
       });
 
       // Leader stale
@@ -3809,6 +3949,7 @@ exit 0
         },
         tmux_session: 'valid-team:0',
         leader_pane_id: '%94',
+        leader_pane_pid: 12094,
         worker_count: 1,
         workers: [
           { name: 'worker-1', index: 1, pane_id: '%10', role: 'executor' },

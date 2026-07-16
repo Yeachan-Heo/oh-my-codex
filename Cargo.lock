@@ -57,6 +57,7 @@ dependencies = [
 name = "omx-runtime"
 version = "0.20.3"
 dependencies = [
+ "fs2",
  "omx-mux",
  "omx-runtime-core",
  "serde_json",

@@ -559,6 +559,40 @@ export async function capturePane(paneId, lines = 10) {
   }
 }
 
+async function resolveTeamWorkerNudgeBinding(stateDir: string): Promise<{
+  paneId: string;
+  panePid: number;
+  paneOwnerId: string;
+  hudPaneId: string;
+} | null> {
+  const workerContext = safeString(process.env.OMX_TEAM_WORKER || '').trim();
+  if (!workerContext) return null;
+  const match = /^([A-Za-z0-9][A-Za-z0-9_-]*)\/(worker-[1-9]\d*)$/.exec(workerContext);
+  if (!match) return null;
+  const [, teamName, workerName] = match;
+  const teamDir = join(stateDir, 'team', teamName);
+  try {
+    const manifestPath = join(teamDir, 'manifest.v2.json');
+    const configPath = join(teamDir, 'config.json');
+    let raw: any;
+    try {
+      raw = JSON.parse(await readFile(manifestPath, 'utf-8'));
+    } catch {
+      raw = JSON.parse(await readFile(configPath, 'utf-8'));
+    }
+    if (safeString(raw?.name).trim() !== teamName || !Array.isArray(raw?.workers)) return null;
+    const worker = raw.workers.find((entry: any) => safeString(entry?.name).trim() === workerName);
+    const paneId = safeString(worker?.pane_id).trim();
+    const panePid = asNumber(worker?.pid);
+    const hudPaneId = safeString(raw?.hud_pane_id).trim();
+    const paneOwnerId = typeof raw?.tmux_pane_owner_id === 'string' ? raw.tmux_pane_owner_id.trim() : '';
+    if (!/^%\d+$/.test(paneId) || !Number.isInteger(panePid) || panePid <= 0 || !paneOwnerId || paneId === hudPaneId) return null;
+    return { paneId, panePid, paneOwnerId, hudPaneId };
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveNudgePaneTarget(stateDir: any, cwd = '', payload: any = undefined, context: ResolvedPromptTurnContext | null = null) {
   const allowTeamWorker = safeString(process.env.OMX_TEAM_WORKER || '').trim() !== '';
   const managedCurrentPane = context
@@ -638,14 +672,34 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload, context 
     if (!nudgeState || typeof nudgeState !== 'object') {
       nudgeState = { nudgeCount: 0, lastNudgeAt: '', lastSignature: '', lastSemanticSignature: '' };
     }
-    const paneId = await resolveNudgePaneTarget(stateDir, cwd, payload, context);
+    const teamWorkerBinding = await resolveTeamWorkerNudgeBinding(stateDir);
+    if (safeString(process.env.OMX_TEAM_WORKER || '').trim() && !teamWorkerBinding) return;
+    const paneId = teamWorkerBinding?.paneId
+      ?? await resolveNudgePaneTarget(stateDir, cwd, payload, context);
+    const teamPaneOptions = teamWorkerBinding
+      ? {
+        exactPaneId: teamWorkerBinding.paneId,
+        expectedPanePid: teamWorkerBinding.panePid,
+        expectedPaneOwnerId: teamWorkerBinding.paneOwnerId,
+        expectedHudPaneId: teamWorkerBinding.hudPaneId,
+      }
+      : { exactPaneId: paneId };
 
     let detected = detectStallPattern(lastMessage, config.patterns, skillState?.phase);
     let source = 'payload';
     let captured = '';
 
     if (!detected && paneId) {
-      captured = await capturePane(paneId);
+      if (teamWorkerBinding) {
+        const captureGuard = await evaluatePaneInjectionReadiness(paneId, {
+          skipIfScrolling: true,
+          ...teamPaneOptions,
+        });
+        if (!captureGuard.ok) return;
+        captured = captureGuard.paneCapture;
+      } else {
+        captured = await capturePane(paneId);
+      }
       detected = detectStallPattern(filterCapturedTestLines(captured), config.patterns, skillState?.phase);
       source = 'capture-pane';
     }
@@ -706,7 +760,7 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload, context 
       return;
     }
 
-    const paneGuard = await evaluatePaneInjectionReadiness(paneId, { skipIfScrolling: true });
+    const paneGuard = await evaluatePaneInjectionReadiness(paneId, { skipIfScrolling: true, ...teamPaneOptions });
     if (!paneGuard.ok) {
       await logTmuxHookEvent(logsDir, {
         timestamp: new Date().toISOString(),
@@ -719,6 +773,18 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload, context 
       }).catch(() => {});
       return;
     }
+    const readinessPanePid = asNumber(paneGuard.exactPaneProof?.pid);
+    if (!Number.isInteger(readinessPanePid) || readinessPanePid <= 0) {
+      await logTmuxHookEvent(logsDir, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_nudge_skipped',
+        pane_id: paneId,
+        reason: 'pane_readiness_unverified',
+        source,
+      }).catch(() => {});
+      return;
+    }
+    const pinnedPaneOptions = { ...teamPaneOptions, expectedPanePid: readinessPanePid };
 
     const blockedAutoApproval = isDeepInterviewAutoApprovalLocked(skillState)
       && !releaseReason
@@ -747,6 +813,8 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload, context 
     try {
       const sendResult = await sendPaneInput({
         paneTarget: paneId,
+        exactPaneId: paneId,
+        ...pinnedPaneOptions,
         prompt: `${effectiveResponse} ${DEFAULT_MARKER}`,
         submitKeyPresses: 2,
         submitDelayMs: 100,

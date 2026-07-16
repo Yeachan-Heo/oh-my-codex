@@ -22,6 +22,7 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "mark-notified",
     "mark-delivered",
     "mark-failed",
+    "remove-dispatch-records",
     "request-replay",
     "capture-snapshot",
     "create-mailbox-message",
@@ -35,6 +36,7 @@ pub const RUNTIME_EVENT_NAMES: &[&str] = &[
     "dispatch-notified",
     "dispatch-delivered",
     "dispatch-failed",
+    "dispatch-records-removed",
     "replay-requested",
     "snapshot-captured",
     "mailbox-message-created",
@@ -216,6 +218,9 @@ pub enum RuntimeCommand {
         request_id: String,
         reason: String,
     },
+    RemoveDispatchRecords {
+        request_ids: Vec<String>,
+    },
     RequestReplay {
         cursor: Option<String>,
     },
@@ -262,6 +267,9 @@ pub enum RuntimeEvent {
     DispatchFailed {
         request_id: String,
         reason: String,
+    },
+    DispatchRecordsRemoved {
+        request_ids: Vec<String>,
     },
     ReplayRequested {
         cursor: Option<String>,

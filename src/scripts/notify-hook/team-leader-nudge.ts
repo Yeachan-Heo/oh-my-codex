@@ -11,8 +11,7 @@ import { asNumber, safeString, isTerminalPhase } from './utils.js';
 import { readJsonIfExists, getScopedStateDirsForCurrentSession } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
-import { evaluatePaneInjectionReadiness, queuePaneInput, sendPaneInput } from './team-tmux-guard.js';
-import { resolvePaneTarget } from './tmux-injection.js';
+import { evaluatePaneInjectionReadiness, normalizeExactPaneId, sendPaneInput } from './team-tmux-guard.js';
 import { listNotifyCanonicalActiveTeams } from './active-team.js';
 import {
   classifyLeaderActionState,
@@ -28,6 +27,7 @@ import { isDeepInterviewStateActive } from './auto-nudge.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const TEAM_SHUTDOWN_NO_INJECTION_REASON = 'team_state_gone_or_shutdown';
+const LEADER_PANE_OWNER_MISSING_NO_INJECTION_REASON = 'leader_pane_owner_missing_no_injection';
 const LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON = 'pane_already_shows_same_classified_state';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
 const ACK_WITHOUT_START_EVIDENCE_REASON = 'ack_without_start_evidence';
@@ -36,6 +36,10 @@ const ACK_LIKE_PATTERNS = [
   /^(?:ok|okay|k|roger|copy|received|got it|understood|sounds good)[.!]*$/i,
   /^(?:on it|will do|i(?:'|')ll do it|working on it)[.!]*$/i,
 ];
+
+function positivePanePid(value) {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
+}
 
 let atomicJsonWriteCounter = 0;
 
@@ -729,6 +733,9 @@ export async function maybeNudgeTeamLeader({
     let leaderPaneId = '';
     let ownerSessionId = '';
     let workers = [];
+    let hudPaneId = '';
+    let leaderPanePid;
+    let tmuxPaneOwnerId = '';
     try {
       const manifestPath = join(omxDir, 'state', 'team', teamName, 'manifest.v2.json');
       const configPath = join(omxDir, 'state', 'team', teamName, 'config.json');
@@ -737,6 +744,9 @@ export async function maybeNudgeTeamLeader({
         const raw = JSON.parse(await readFile(srcPath, 'utf-8'));
         tmuxSession = safeString(raw && raw.tmux_session ? raw.tmux_session : '').trim();
         leaderPaneId = safeString(raw && raw.leader_pane_id ? raw.leader_pane_id : '').trim();
+        hudPaneId = safeString(raw && raw.hud_pane_id ? raw.hud_pane_id : '').trim();
+        leaderPanePid = positivePanePid(raw && raw.leader_pane_pid);
+        tmuxPaneOwnerId = typeof raw?.tmux_pane_owner_id === 'string' ? raw.tmux_pane_owner_id.trim() : '';
         ownerSessionId = safeString(raw && raw.leader && raw.leader.session_id ? raw.leader.session_id : '').trim();
         if (Array.isArray(raw && raw.workers)) workers = raw.workers;
       }
@@ -761,23 +771,20 @@ export async function maybeNudgeTeamLeader({
     const workerPaneIds = Array.isArray(workers)
       ? workers.map((w) => safeString(w && w.pane_id ? w.pane_id : '')).filter(Boolean)
       : [];
-    const canonicalLeaderPaneId = safeString(leaderPaneId).trim();
+    const normalizedLeaderPaneId = normalizeExactPaneId(leaderPaneId);
+    const canonicalLeaderPaneId = normalizedLeaderPaneId && normalizedLeaderPaneId !== normalizeExactPaneId(hudPaneId)
+      ? normalizedLeaderPaneId
+      : '';
     if (!tmuxSession && !canonicalLeaderPaneId) continue;
-    let tmuxTarget = canonicalLeaderPaneId;
-    if (canonicalLeaderPaneId) {
-      const resolvedLeaderTarget = await resolvePaneTarget(
-        { type: 'pane', value: canonicalLeaderPaneId },
-        '',
-        canonicalLeaderPaneId,
-        '',
-        {},
-      ).catch(() => null);
-      if (resolvedLeaderTarget?.paneTarget) {
-        tmuxTarget = safeString(resolvedLeaderTarget.paneTarget).trim();
-      } else if (resolvedLeaderTarget && ['target_is_hud_pane', 'pane_cwd_mismatch'].includes(safeString(resolvedLeaderTarget.reason).trim())) {
-        tmuxTarget = '';
-      }
+    if (!tmuxPaneOwnerId) {
+      await recordSuppressedLeaderNudge({ logsDir, source, teamName, reason: LEADER_PANE_OWNER_MISSING_NO_INJECTION_REASON });
+      continue;
     }
+    if (canonicalLeaderPaneId && !leaderPanePid) {
+      await recordSuppressedLeaderNudge({ logsDir, source, teamName, reason: 'leader_pane_pid_missing' });
+      continue;
+    }
+    const tmuxTarget = canonicalLeaderPaneId;
     const paneStatus = tmuxSession
       ? await checkWorkerPanesAlive(tmuxSession, workerPaneIds)
       : { alive: false, paneCount: 0 };
@@ -1087,6 +1094,10 @@ export async function maybeNudgeTeamLeader({
       requireRunningAgent: true,
       requireReady: false,
       requireIdle: false,
+      exactPaneId: canonicalLeaderPaneId,
+      expectedPanePid: leaderPanePid,
+      expectedPaneOwnerId: tmuxPaneOwnerId,
+      expectedHudPaneId: hudPaneId,
     });
     if (!paneGuard.ok) {
       const deferredReason = paneGuard.reason === 'pane_running_shell'
@@ -1188,9 +1199,16 @@ export async function maybeNudgeTeamLeader({
       const leaderHasActiveTask = paneHasActiveTask(paneGuard.paneCapture);
       let deliveryMode = 'sent';
       if (leaderHasActiveTask) {
-        const sendResult = await queuePaneInput({
+        const sendResult = await sendPaneInput({
           paneTarget: tmuxTarget,
           prompt: markedText,
+          submitKeyPresses: 1,
+          submitDelayMs: 80,
+          queueFirstSubmit: true,
+          exactPaneId: canonicalLeaderPaneId,
+          expectedPanePid: leaderPanePid,
+          expectedPaneOwnerId: tmuxPaneOwnerId,
+          expectedHudPaneId: hudPaneId,
         });
         if (!sendResult.ok) {
           throw new Error(sendResult.error || sendResult.reason);
@@ -1202,6 +1220,10 @@ export async function maybeNudgeTeamLeader({
           prompt: markedText,
           submitKeyPresses: 2,
           submitDelayMs: 100,
+          exactPaneId: canonicalLeaderPaneId,
+          expectedPanePid: leaderPanePid,
+          expectedPaneOwnerId: tmuxPaneOwnerId,
+          expectedHudPaneId: hudPaneId,
         });
         if (!sendResult.ok) {
           throw new Error(sendResult.error || sendResult.reason);

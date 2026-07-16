@@ -1,3 +1,4 @@
+use fs2::FileExt;
 use omx_mux::{canonical_contract_summary, MuxAdapter, MuxOperation, MuxTarget, TmuxAdapter};
 use omx_runtime_core::{runtime_contract_summary, RuntimeCommand, RuntimeEngine};
 use std::env;
@@ -71,9 +72,31 @@ fn run() -> Result<(), String> {
             let json_input = second.ok_or("exec requires a JSON command argument")?;
             let state_dir = args.iter().find_map(|a| a.strip_prefix("--state-dir="));
             let compact = args.iter().any(|a| a == "--compact");
+            let _mutation_lock = if let Some(dir) = state_dir {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                let lock =
+                    std::fs::File::create(std::path::Path::new(dir).join("runtime-mutation.lock"))
+                        .map_err(|e| e.to_string())?;
+                lock.lock_exclusive().map_err(|e| e.to_string())?;
+                Some(lock)
+            } else {
+                None
+            };
             let mut engine = match state_dir {
-                Some(dir) => RuntimeEngine::load(dir)
-                    .unwrap_or_else(|_| RuntimeEngine::new().with_state_dir(dir)),
+                Some(dir) => match RuntimeEngine::load(dir) {
+                    Ok(engine) => engine,
+                    Err(error) => {
+                        let has_persisted_state = ["events.json", "snapshot.json", "mailbox.json"]
+                            .iter()
+                            .any(|name| std::path::Path::new(dir).join(name).exists());
+                        if has_persisted_state {
+                            return Err(format!(
+                                "failed to load authoritative runtime state: {error}"
+                            ));
+                        }
+                        RuntimeEngine::new().with_state_dir(dir)
+                    }
+                },
                 None => RuntimeEngine::new(),
             };
 

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { initTeamState, enqueueDispatchRequest, readDispatchRequest } from '../../team/state.js';
-import { buildTmuxSessionName, buildWindowsMsysBackgroundHelperBootstrapScript } from '../../cli/index.js';
+import { buildWindowsMsysBackgroundHelperBootstrapScript } from '../../cli/index.js';
 import { writeSessionStart } from '../session.js';
 
 const DEFAULT_AUTO_NUDGE_RESPONSE = 'continue with the current task only if it is already authorized';
@@ -133,13 +133,15 @@ async function writeCanonicalWatcherTeamFixture(
     },
     tmux_session: `${teamName}:0`,
     leader_pane_id: '%42',
+    leader_pane_pid: 4242,
+    tmux_pane_owner_id: `team:${teamName}`,
     hud_pane_id: null,
     resize_hook_name: null,
     resize_hook_target: null,
     worker_count: 1,
     next_task_id: 1,
     workers: [
-      { name: 'worker-1', index: 1, pane_id: '%42', role: 'executor' },
+      { name: 'worker-1', index: 1, pane_id: '%42', pid: 4242, role: 'executor' },
     ],
     created_at: nowIso,
   };
@@ -148,8 +150,12 @@ async function writeCanonicalWatcherTeamFixture(
     name: teamName,
     tmux_session: `${teamName}:0`,
     leader_pane_id: '%42',
+    leader_pane_pid: 4242,
+    tmux_pane_owner_id: `team:${teamName}`,
+    hud_pane_id: null,
+    hud_pane_pid: null,
     workers: [
-      { name: 'worker-1', pane_id: '%42' },
+      { name: 'worker-1', pane_id: '%42', pid: 4242 },
     ],
   }, null, 2));
   await writeFile(join(teamDir, 'phase.json'), JSON.stringify({
@@ -157,6 +163,40 @@ async function writeCanonicalWatcherTeamFixture(
     updated_at: nowIso,
     transitions: terminal ? [{ from: 'team-exec', to: 'complete', at: nowIso }] : [],
   }, null, 2));
+}
+
+async function bindCanonicalDispatchWorkerFixture(
+  wd: string,
+  {
+    teamName = 'dispatch-team',
+    paneId = '%42',
+    panePid = 4242,
+    ownerId = `team:${teamName}`,
+    hudPaneId = null,
+  }: {
+    teamName?: string;
+    paneId?: string;
+    panePid?: number;
+    ownerId?: string;
+    hudPaneId?: string | null;
+  } = {},
+): Promise<void> {
+  for (const fileName of ['config.json', 'manifest.v2.json']) {
+    const statePath = join(wd, '.omx', 'state', 'team', teamName, fileName);
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>;
+    const workers = Array.isArray(state.workers) ? state.workers : [];
+    state.tmux_pane_owner_id = ownerId;
+    state.leader_pane_id = paneId;
+    state.leader_pane_pid = panePid;
+    state.hud_pane_id = hudPaneId;
+    state.hud_pane_pid = null;
+    state.workers = workers.map((worker, index) => (
+      index === 0 && worker && typeof worker === 'object'
+        ? { ...(worker as Record<string, unknown>), pane_id: paneId, pid: panePid }
+        : worker
+    ));
+    await writeFile(statePath, JSON.stringify(state, null, 2));
+  }
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -198,13 +238,26 @@ function defaultAutoNudgePattern(targetPane: string): RegExp {
 
 function buildFakeTmux(
   tmuxLogPath: string,
-  options: { failSendKeys?: boolean; failSendKeysMatch?: string } = {},
+  options: { failSendKeys?: boolean; failSendKeysMatch?: string; paneOwner?: string; panePid?: number; paneSession?: string; ralphPane?: { paneId: string; panePid: number; paneOwner: string } } = {},
 ): string {
   return `#!/usr/bin/env bash
 set -eu
 echo "$@" >> "${tmuxLogPath}"
 cmd="$1"
 shift || true
+if [[ "$cmd" == "list-panes" && "$#" -eq 3 && "$1" == "-a" && "$2" == "-F" && "$3" == "#{pane_id}\t#{pane_dead}\t#{pane_pid}" ]]; then
+  printf '%%42\t0\t${options.panePid ?? 4242}\n'
+  ${options.ralphPane ? `printf '${options.ralphPane.paneId.replace('%', '%%')}\\t0\\t${options.ralphPane.panePid}\\n'` : ''}
+  exit 0
+fi
+if [[ "$cmd" == "show-option" && "\${@: -1}" == "@omx_ralph_pane_owner_id" ]]; then
+  printf '%s\n' '${options.ralphPane?.paneOwner ?? options.paneOwner ?? 'ralph:owner'}'
+  exit 0
+fi
+if [[ "$cmd" == "show-option" && "\${@: -1}" == "@omx_team_pane_owner_id" ]]; then
+  printf '%s\n' '${options.paneOwner ?? 'team:dispatch-team'}'
+  exit 0
+fi
 if [[ "$cmd" == "capture-pane" ]]; then
   if [[ -n "\${OMX_TEST_CAPTURE_SEQUENCE_FILE:-}" && -f "\${OMX_TEST_CAPTURE_SEQUENCE_FILE}" ]]; then
     counterFile="\${OMX_TEST_CAPTURE_COUNTER_FILE:-\${OMX_TEST_CAPTURE_SEQUENCE_FILE}.idx}"
@@ -256,7 +309,7 @@ if [[ "$cmd" == "display-message" ]]; then
     exit 0
   fi
   if [[ "$fmt" == "#S" ]]; then
-    echo "\${OMX_TEST_TMUX_SESSION_NAME:-session-test}"
+    echo "${options.paneSession ?? '${OMX_TEST_TMUX_SESSION_NAME:-session-test}'}"
     exit 0
   fi
   exit 0
@@ -320,136 +373,6 @@ exit 0
 `;
 }
 
-function buildManagedRalphTmux(
-  tmuxLogPath: string,
-  options: {
-    cwd: string;
-    managedSessionName: string;
-    anchorPane: string;
-    livePane: string;
-    codexPanes?: Array<{ paneId: string; active?: boolean; currentCommand?: string; startCommand?: string }>;
-    missingAnchor?: boolean;
-  },
-): string {
-  const { cwd, managedSessionName, anchorPane, livePane, codexPanes, missingAnchor = false } = options;
-  const panes = (codexPanes && codexPanes.length > 0)
-    ? codexPanes
-    : [{ paneId: livePane, active: true, currentCommand: 'codex', startCommand: 'codex' }];
-  const listPaneOutput = panes
-    .map((pane) => {
-      const paneId = pane.paneId;
-      const active = pane.active ? '1' : '0';
-      const currentCommand = pane.currentCommand || 'codex';
-      const startCommand = pane.startCommand || 'codex';
-      return `${paneId}\t${active}\t${currentCommand}\t${startCommand}`;
-    })
-    .join('\n');
-  const paneCommandBranches = panes
-    .map((pane) => {
-      const currentCommand = (pane.currentCommand || 'codex').replace(/"/g, '\\"');
-      const startCommand = (pane.startCommand || 'codex').replace(/"/g, '\\"');
-      return `  if [[ "$format" == "#{pane_current_command}" && "$target" == "${pane.paneId}" ]]; then
-    echo "${currentCommand}"
-    exit 0
-  fi
-  if [[ "$format" == "#{pane_start_command}" && "$target" == "${pane.paneId}" ]]; then
-    echo "${startCommand}"
-    exit 0
-  fi`;
-    })
-    .join('\n');
-  return `#!/usr/bin/env bash
-set -eu
-echo "$@" >> "${tmuxLogPath}"
-cmd="$1"
-shift || true
-if [[ "$cmd" == "display-message" ]]; then
-  target=""
-  format=""
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -p) shift ;;
-      -t) target="$2"; shift 2 ;;
-      *) format="$1"; shift ;;
-    esac
-  done
-  if [[ "$target" == "${anchorPane}" && "${missingAnchor ? '1' : '0'}" == "1" ]]; then
-    echo "pane missing" >&2
-    exit 1
-  fi
-  if [[ "$format" == "#{pane_in_mode}" ]]; then
-    echo "0"
-    exit 0
-  fi
-  if [[ "$format" == "#{pane_id}" ]]; then
-    echo "$target"
-    exit 0
-  fi
-  if [[ "$format" == "#{pane_current_path}" ]]; then
-    echo "${cwd}"
-    exit 0
-  fi
-${paneCommandBranches}
-  if [[ "$format" == "#S" ]]; then
-    if [[ "$target" == "${anchorPane}" || "$target" == "${livePane}" ]]; then
-      echo "${managedSessionName}"
-      exit 0
-    fi
-    echo "unknown target" >&2
-    exit 1
-  fi
-  exit 0
-fi
-if [[ "$cmd" == "list-panes" ]]; then
-  target=""
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -F) shift 2 ;;
-      -t) shift; target="$1" ;;
-    esac
-    shift || true
-  done
-  if [[ "$target" == "${managedSessionName}" ]]; then
-    printf '%s\n' "${listPaneOutput}"
-    exit 0
-  fi
-  echo "can't find session" >&2
-  exit 1
-fi
-if [[ "$cmd" == "capture-pane" ]]; then
-  exit 0
-fi
-if [[ "$cmd" == "set-buffer" ]]; then
-  printf '%s' "\${@: -1}" > "${tmuxLogPath}.buffer"
-  exit 0
-fi
-if [[ "$cmd" == "show-buffer" ]]; then
-  if [[ -f "${tmuxLogPath}.buffer" ]]; then cat "${tmuxLogPath}.buffer"; fi
-  exit 0
-fi
-if [[ "$cmd" == "paste-buffer" ]]; then
-  target=""
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -t) target="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  if [[ -f "${tmuxLogPath}.buffer" ]]; then
-    echo "send-keys -t \${target} -l $(cat "${tmuxLogPath}.buffer")" >> "${tmuxLogPath}"
-  fi
-  exit 0
-fi
-if [[ "$cmd" == "delete-buffer" ]]; then
-  rm -f "${tmuxLogPath}.buffer"
-  exit 0
-fi
-if [[ "$cmd" == "send-keys" ]]; then
-  exit 0
-fi
-exit 0
-`;
-}
 function buildCleanNotifyEnv(
   overrides: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
@@ -1170,6 +1093,9 @@ describe('notify-fallback watcher', () => {
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(wd, '.omx', 'state', 'team-state.json'), JSON.stringify({
         active: true,
@@ -1241,6 +1167,9 @@ describe('notify-fallback watcher', () => {
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(wd, '.omx', 'state', 'team-state.json'), JSON.stringify({
         active: true,
@@ -1303,6 +1232,8 @@ describe('notify-fallback watcher', () => {
         name: 'dispatch-team',
         tmux_session: 'omx-team-dispatch-team',
         leader_pane_id: '%42',
+        leader_pane_pid: 4242,
+        tmux_pane_owner_id: 'team:dispatch-team',
       }, null, 2));
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
@@ -1597,7 +1528,7 @@ if [[ "$cmd" == "list-panes" ]]; then
     printf "%%42 12345\n%%10 12346\n%%11 12347\n"
     exit 0
   fi
-  echo "%42 1"
+  printf "%%42\t0\t12345\n%%10\t0\t12346\n%%11\t0\t12347\n"
   exit 0
 fi
 exit 0
@@ -1619,9 +1550,10 @@ exit 0
         name: 'dispatch-team',
         tmux_session: 'omx-team-dispatch-team',
         leader_pane_id: '%42',
+        leader_pane_pid: 12345,
         workers: [
-          { name: 'worker-1', index: 1, pane_id: '%10' },
-          { name: 'worker-2', index: 2, pane_id: '%11' },
+          { name: 'worker-1', index: 1, pane_id: '%10', pid: 12346 },
+          { name: 'worker-2', index: 2, pane_id: '%11', pid: 12347 },
         ],
       }, null, 2));
       await writeFile(join(wd, '.omx', 'state', 'team', 'dispatch-team', 'tasks', 'task-1.json'), JSON.stringify({
@@ -1694,7 +1626,7 @@ exit 0
       );
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
       assert.doesNotMatch(tmuxLog, /worker panes stalled/);
       assert.doesNotMatch(tmuxLog, /no progress 3m/);
       assert.doesNotMatch(tmuxLog, /leader stale/);
@@ -2126,6 +2058,7 @@ exit 0
       await writeFile(captureFile, '... ping ...');
 
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      await bindCanonicalDispatchWorkerFixture(wd);
       const queued = await enqueueDispatchRequest('dispatch-team', {
         kind: 'inbox',
         to_worker: 'worker-1',
@@ -2184,12 +2117,15 @@ exit 0
     try {
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -2259,6 +2195,37 @@ exit 0
     }
   });
 
+  it('fails closed for recycled, incomplete, HUD, and taken-over Ralph pane bindings', async () => {
+    const cases = [
+      [{ tmux_pane_pid: 4242, tmux_session_name: 'session-test', tmux_pane_owner_id: 'ralph:owner' }, { paneOwner: 'ralph:owner', panePid: 4243 }],
+      [{}, { paneOwner: 'ralph:owner' }],
+      [{ tmux_pane_pid: 4242, tmux_session_name: 'session-test', tmux_pane_owner_id: 'team:dispatch-team' }, { paneOwner: 'team:dispatch-team' }],
+      [{ tmux_pane_pid: 4242, tmux_session_name: 'session-test', tmux_pane_owner_id: 'ralph:owner' }, { paneOwner: 'ralph:owner', paneSession: 'other-session' }],
+      [{ tmux_pane_pid: 4242, tmux_session_name: 'session-test', tmux_pane_owner_id: 'ralph:owner' }, { paneOwner: 'ralph:other' }],
+      [{ tmux_pane_pid: 4242.9, tmux_session_name: 'session-test', tmux_pane_owner_id: 'ralph:owner' }, { paneOwner: 'ralph:owner' }],
+      [{ tmux_pane_pid: '4.242e3', tmux_session_name: 'session-test', tmux_pane_owner_id: 'ralph:owner' }, { paneOwner: 'ralph:owner' }],
+      [{ tmux_pane_pid: '9007199254740992', tmux_session_name: 'session-test', tmux_pane_owner_id: 'ralph:owner' }, { paneOwner: 'ralph:owner' }],
+    ] as const;
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    for (const [stateBinding, tmux] of cases) {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-binding-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const fakeBinDir = join(wd, 'fake-bin');
+      const tmuxLogPath = join(wd, 'tmux.log');
+      try {
+        await mkdir(stateDir, { recursive: true }); await mkdir(fakeBinDir, { recursive: true });
+        await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, tmux)); await chmod(join(fakeBinDir, 'tmux'), 0o755);
+        await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({ active: true, current_phase: 'executing', tmux_pane_id: '%42', ...stateBinding }));
+        await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({ last_progress_at: new Date(Date.now() - 61_000).toISOString() }));
+        await writeFile(join(stateDir, 'notify-fallback-state.json'), JSON.stringify({ ralph_continue_steer: { last_sent_at: new Date(Date.now() - 61_000).toISOString() } }));
+        const result = spawnSync(process.execPath, [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook], { encoding: 'utf-8', env: { ...buildCleanNotifyEnv(), PATH: `${fakeBinDir}:${process.env.PATH || ''}` } });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.doesNotMatch(await readFile(tmuxLogPath, 'utf-8').catch(() => ''), /send-keys -t %42/);
+      } finally { await rm(wd, { recursive: true, force: true }); }
+    }
+  });
+
   it('suppresses Ralph continue steer when hud progress is still fresh after cooldown', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-progress-fresh-'));
     const fakeBinDir = join(wd, 'fake-bin');
@@ -2274,6 +2241,9 @@ exit 0
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 5_000).toISOString(),
@@ -2318,12 +2288,15 @@ exit 0
     try {
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -2378,6 +2351,9 @@ exit 0
         current_phase: 'starting',
         started_at: new Date(Date.now() - 180_000).toISOString(),
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 180_000).toISOString(),
@@ -2431,6 +2407,9 @@ exit 0
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
         owner_omx_session_id: omxSessionId,
         owner_codex_session_id: codexSessionId,
       }, null, 2));
@@ -2513,6 +2492,9 @@ exit 0
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(statePath, JSON.stringify({
         ralph_continue_steer: {
@@ -2598,7 +2580,7 @@ exit 0
       assert.equal(run.status, 0, run.stderr || run.stdout);
 
       const watcherState = JSON.parse(await readFile(statePath, 'utf-8'));
-      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'pane_missing');
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'pane_binding_missing');
       assert.equal(watcherState.ralph_continue_steer?.pane_id, '');
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
@@ -2609,449 +2591,49 @@ exit 0
     }
   });
 
-  it('rebinds a stale-but-present session-scoped Ralph shell pane to the live pane before continue steer', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-rebind-stale-anchor-'));
-    const fakeBinDir = join(wd, 'fake-bin');
-    const stateDir = join(wd, '.omx', 'state');
-    const tmuxLogPath = join(wd, 'tmux.log');
-    const watcherStatePath = join(stateDir, 'notify-fallback-state.json');
-    const sessionId = 'sess-ralph-rebind';
-    const sessionStateDir = join(stateDir, 'sessions', sessionId);
-    const ralphStatePath = join(sessionStateDir, 'ralph-state.json');
-    const anchorPane = '%99';
-    const livePane = '%42';
-    try {
-      await mkdir(sessionStateDir, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-      await writeSessionStart(wd, sessionId);
-      const managedSessionName = buildTmuxSessionName(wd, sessionId);
-      await writeFile(join(fakeBinDir, 'tmux'), buildManagedRalphTmux(tmuxLogPath, {
-        cwd: wd,
-        managedSessionName,
-        anchorPane,
-        livePane,
-        codexPanes: [
-          { paneId: anchorPane, active: false, currentCommand: 'sh', startCommand: 'bash' },
-          { paneId: '%41', active: false, currentCommand: 'codex', startCommand: 'codex' },
-          { paneId: livePane, active: true, currentCommand: 'codex', startCommand: 'codex' },
-        ],
-      }));
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      await writeFile(ralphStatePath, JSON.stringify({
-        active: true,
-        current_phase: 'executing',
-        tmux_pane_id: anchorPane,
-      }, null, 2));
-      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
-        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
-      }, null, 2));
-      await writeFile(watcherStatePath, JSON.stringify({
-        ralph_continue_steer: {
-          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
-        },
-      }, null, 2));
+  it('fails closed without rebinding stale, degraded, or missing Ralph pane anchors', async () => {
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    for (const scenario of ['stale shell anchor', 'degraded codex anchor', 'missing anchor']) {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-no-rebind-'));
+      const fakeBinDir = join(wd, 'fake-bin');
+      const stateDir = join(wd, '.omx', 'state');
+      const tmuxLogPath = join(wd, 'tmux.log');
+      const ralphStatePath = join(stateDir, 'ralph-state.json');
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(fakeBinDir, { recursive: true });
+        await writeFile(tmuxLogPath, '');
+        await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
+        await chmod(join(fakeBinDir, 'tmux'), 0o755);
+        await writeFile(ralphStatePath, JSON.stringify({
+          active: true,
+          current_phase: 'executing',
+          tmux_pane_id: '%99',
+          tmux_pane_pid: 4242,
+          tmux_session_name: 'session-test',
+          tmux_pane_owner_id: 'ralph:owner',
+          scenario,
+        }, null, 2));
+        await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({ last_progress_at: new Date(Date.now() - 61_000).toISOString() }));
+        await writeFile(join(stateDir, 'notify-fallback-state.json'), JSON.stringify({ ralph_continue_steer: { last_sent_at: new Date(Date.now() - 61_000).toISOString() } }));
 
-      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
-      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
-      const run = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        {
+        const run = spawnSync(process.execPath, [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook], {
           encoding: 'utf-8',
-          env: buildCleanNotifyEnv({
-            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          }),
-        },
-      );
-      assert.equal(run.status, 0, run.stderr || run.stdout);
+          env: buildCleanNotifyEnv({ PATH: `${fakeBinDir}:${process.env.PATH || ''}` }),
+        });
+        assert.equal(run.status, 0, run.stderr || run.stdout);
 
-      const persistedRalph = JSON.parse(await readFile(ralphStatePath, 'utf-8'));
-      assert.equal(persistedRalph.tmux_pane_id, livePane);
-      assert.match(persistedRalph.tmux_pane_set_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
-
-      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
-      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'sent');
-      assert.equal(watcherState.ralph_continue_steer?.pane_id, livePane);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      assert.match(tmuxLog, /send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('preserves newer Ralph state fields when a pane rebound happens after the state file advances', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-rebind-state-merge-'));
-    const fakeBinDir = join(wd, 'fake-bin');
-    const stateDir = join(wd, '.omx', 'state');
-    const tmuxLogPath = join(wd, 'tmux.log');
-    const watcherStatePath = join(stateDir, 'notify-fallback-state.json');
-    const sessionId = 'sess-ralph-rebind-merge';
-    const sessionStateDir = join(stateDir, 'sessions', sessionId);
-    const ralphStatePath = join(sessionStateDir, 'ralph-state.json');
-    const anchorPane = '%99';
-    const livePane = '%42';
-    try {
-      await mkdir(sessionStateDir, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-      await writeSessionStart(wd, sessionId);
-      const managedSessionName = buildTmuxSessionName(wd, sessionId);
-      const fakeTmux = `#!/usr/bin/env bash
-set -eu
-echo "$@" >> "${tmuxLogPath}"
-cmd="$1"
-shift || true
-if [[ "$cmd" == "display-message" ]]; then
-  target=""
-  format=""
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -p) shift ;;
-      -t) target="$2"; shift 2 ;;
-      *) format="$1"; shift ;;
-    esac
-  done
-  if [[ "$format" == "#{pane_in_mode}" ]]; then
-    echo "0"
-    exit 0
-  fi
-  if [[ "$format" == "#{pane_id}" ]]; then
-    echo "$target"
-    exit 0
-  fi
-  if [[ "$format" == "#{pane_current_path}" ]]; then
-    echo "${wd}"
-    exit 0
-  fi
-  if [[ "$format" == "#{pane_current_command}" && "$target" == "${anchorPane}" ]]; then
-    echo "sh"
-    exit 0
-  fi
-  if [[ "$format" == "#{pane_start_command}" && "$target" == "${anchorPane}" ]]; then
-    echo "bash"
-    exit 0
-  fi
-  if [[ "$format" == "#S" && "$target" == "${anchorPane}" ]]; then
-    echo "${managedSessionName}"
-    exit 0
-  fi
-  exit 0
-fi
-if [[ "$cmd" == "list-panes" ]]; then
-  target=""
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -F) shift 2 ;;
-      -t) shift; target="$1" ;;
-    esac
-    shift || true
-  done
-  if [[ "$target" == "${managedSessionName}" ]]; then
-    cat > "${ralphStatePath}" <<'JSON'
-{
-  "active": true,
-  "current_phase": "reviewing",
-  "iteration": 11,
-  "owner_codex_session_id": "codex-updated-owner",
-  "tmux_pane_id": "%99"
-}
-JSON
-    printf "%%99\t0\tsh\tbash\n%%42\t1\tcodex\tcodex\n"
-    exit 0
-  fi
-  echo "can't find session" >&2
-  exit 1
-fi
-if [[ "$cmd" == "capture-pane" ]]; then
-  exit 0
-fi
-if [[ "$cmd" == "set-buffer" ]]; then
-  printf '%s' "\${@: -1}" > "${tmuxLogPath}.buffer"
-  exit 0
-fi
-if [[ "$cmd" == "show-buffer" ]]; then
-  if [[ -f "${tmuxLogPath}.buffer" ]]; then cat "${tmuxLogPath}.buffer"; fi
-  exit 0
-fi
-if [[ "$cmd" == "paste-buffer" ]]; then
-  target=""
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -t) target="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  if [[ -f "${tmuxLogPath}.buffer" ]]; then
-    echo "send-keys -t \${target} -l $(cat "${tmuxLogPath}.buffer")" >> "${tmuxLogPath}"
-  fi
-  exit 0
-fi
-if [[ "$cmd" == "delete-buffer" ]]; then
-  rm -f "${tmuxLogPath}.buffer"
-  exit 0
-fi
-if [[ "$cmd" == "send-keys" ]]; then
-  exit 0
-fi
-exit 0
-`;
-      await writeFile(join(fakeBinDir, 'tmux'), fakeTmux);
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      await writeFile(ralphStatePath, JSON.stringify({
-        active: true,
-        current_phase: 'executing',
-        iteration: 1,
-        owner_codex_session_id: 'codex-stale-owner',
-        tmux_pane_id: anchorPane,
-      }, null, 2));
-      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
-        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
-      }, null, 2));
-      await writeFile(watcherStatePath, JSON.stringify({
-        ralph_continue_steer: {
-          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
-        },
-      }, null, 2));
-
-      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
-      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
-      const run = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        {
-          encoding: 'utf-8',
-          env: buildCleanNotifyEnv({
-            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          }),
-        },
-      );
-      assert.equal(run.status, 0, run.stderr || run.stdout);
-
-      const persistedRalph = JSON.parse(await readFile(ralphStatePath, 'utf-8'));
-      assert.equal(persistedRalph.tmux_pane_id, livePane);
-      assert.equal(persistedRalph.current_phase, 'reviewing');
-      assert.equal(persistedRalph.iteration, 11);
-      assert.equal(persistedRalph.owner_codex_session_id, 'codex-updated-owner');
-      assert.match(persistedRalph.tmux_pane_set_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps the verified Ralph anchor pane when another codex pane is focused in the same managed session', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-keep-anchor-pane-'));
-    const fakeBinDir = join(wd, 'fake-bin');
-    const stateDir = join(wd, '.omx', 'state');
-    const tmuxLogPath = join(wd, 'tmux.log');
-    const watcherStatePath = join(stateDir, 'notify-fallback-state.json');
-    const sessionId = 'sess-ralph-keep-anchor';
-    const sessionStateDir = join(stateDir, 'sessions', sessionId);
-    const ralphStatePath = join(sessionStateDir, 'ralph-state.json');
-    const anchorPane = '%99';
-    const livePane = '%42';
-    try {
-      await mkdir(sessionStateDir, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-      await writeSessionStart(wd, sessionId);
-      const managedSessionName = buildTmuxSessionName(wd, sessionId);
-      await writeFile(join(fakeBinDir, 'tmux'), buildManagedRalphTmux(tmuxLogPath, {
-        cwd: wd,
-        managedSessionName,
-        anchorPane,
-        livePane,
-        codexPanes: [
-          { paneId: anchorPane, active: false, currentCommand: 'codex', startCommand: 'codex' },
-          { paneId: livePane, active: true, currentCommand: 'codex', startCommand: 'codex' },
-        ],
-      }));
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      await writeFile(ralphStatePath, JSON.stringify({
-        active: true,
-        current_phase: 'executing',
-        tmux_pane_id: anchorPane,
-      }, null, 2));
-      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
-        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
-      }, null, 2));
-      await writeFile(watcherStatePath, JSON.stringify({
-        ralph_continue_steer: {
-          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
-        },
-      }, null, 2));
-
-      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
-      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
-      const run = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        {
-          encoding: 'utf-8',
-          env: buildCleanNotifyEnv({
-            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          }),
-        },
-      );
-      assert.equal(run.status, 0, run.stderr || run.stdout);
-
-      const persistedRalph = JSON.parse(await readFile(ralphStatePath, 'utf-8'));
-      assert.equal(persistedRalph.tmux_pane_id, anchorPane);
-      assert.equal(typeof persistedRalph.tmux_pane_set_at, 'undefined');
-
-      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
-      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'sent');
-      assert.equal(watcherState.ralph_continue_steer?.pane_id, anchorPane);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      assert.match(tmuxLog, /send-keys -t %99 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('rebinds a shell-degraded codex anchor to the live pane before continue steer', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-rebind-degraded-codex-anchor-'));
-    const fakeBinDir = join(wd, 'fake-bin');
-    const stateDir = join(wd, '.omx', 'state');
-    const tmuxLogPath = join(wd, 'tmux.log');
-    const watcherStatePath = join(stateDir, 'notify-fallback-state.json');
-    const sessionId = 'sess-ralph-degraded-codex-anchor';
-    const sessionStateDir = join(stateDir, 'sessions', sessionId);
-    const ralphStatePath = join(sessionStateDir, 'ralph-state.json');
-    const anchorPane = '%99';
-    const livePane = '%42';
-    try {
-      await mkdir(sessionStateDir, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-      await writeSessionStart(wd, sessionId);
-      const managedSessionName = buildTmuxSessionName(wd, sessionId);
-      await writeFile(join(fakeBinDir, 'tmux'), buildManagedRalphTmux(tmuxLogPath, {
-        cwd: wd,
-        managedSessionName,
-        anchorPane,
-        livePane,
-        codexPanes: [
-          { paneId: anchorPane, active: true, currentCommand: 'bash', startCommand: 'codex --model gpt-5' },
-          { paneId: livePane, active: false, currentCommand: 'codex', startCommand: 'codex' },
-        ],
-      }));
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      await writeFile(ralphStatePath, JSON.stringify({
-        active: true,
-        current_phase: 'executing',
-        tmux_pane_id: anchorPane,
-      }, null, 2));
-      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
-        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
-      }, null, 2));
-      await writeFile(watcherStatePath, JSON.stringify({
-        ralph_continue_steer: {
-          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
-        },
-      }, null, 2));
-
-      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
-      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
-      const run = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        {
-          encoding: 'utf-8',
-          env: buildCleanNotifyEnv({
-            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          }),
-        },
-      );
-      assert.equal(run.status, 0, run.stderr || run.stdout);
-
-      const persistedRalph = JSON.parse(await readFile(ralphStatePath, 'utf-8'));
-      assert.equal(persistedRalph.tmux_pane_id, livePane);
-      assert.match(persistedRalph.tmux_pane_set_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
-
-      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
-      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'sent');
-      assert.equal(watcherState.ralph_continue_steer?.pane_id, livePane);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      assert.match(tmuxLog, /send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('falls back to the current managed session pane when the stored Ralph pane anchor is dead', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-rebind-dead-anchor-'));
-    const fakeBinDir = join(wd, 'fake-bin');
-    const stateDir = join(wd, '.omx', 'state');
-    const tmuxLogPath = join(wd, 'tmux.log');
-    const watcherStatePath = join(stateDir, 'notify-fallback-state.json');
-    const sessionId = 'sess-ralph-dead-anchor';
-    const sessionStateDir = join(stateDir, 'sessions', sessionId);
-    const ralphStatePath = join(sessionStateDir, 'ralph-state.json');
-    const anchorPane = '%99';
-    const livePane = '%42';
-    try {
-      await mkdir(sessionStateDir, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-      await writeSessionStart(wd, sessionId);
-      const managedSessionName = buildTmuxSessionName(wd, sessionId);
-      await writeFile(join(fakeBinDir, 'tmux'), buildManagedRalphTmux(tmuxLogPath, {
-        cwd: wd,
-        managedSessionName,
-        anchorPane,
-        livePane,
-        codexPanes: [
-          { paneId: '%41', active: false, currentCommand: 'codex', startCommand: 'codex' },
-          { paneId: livePane, active: true, currentCommand: 'codex', startCommand: 'codex' },
-        ],
-        missingAnchor: true,
-      }));
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      await writeFile(ralphStatePath, JSON.stringify({
-        active: true,
-        current_phase: 'executing',
-        tmux_pane_id: anchorPane,
-      }, null, 2));
-      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
-        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
-      }, null, 2));
-      await writeFile(watcherStatePath, JSON.stringify({
-        ralph_continue_steer: {
-          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
-        },
-      }, null, 2));
-
-      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
-      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
-      const run = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        {
-          encoding: 'utf-8',
-          env: buildCleanNotifyEnv({
-            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          }),
-        },
-      );
-      assert.equal(run.status, 0, run.stderr || run.stdout);
-
-      const persistedRalph = JSON.parse(await readFile(ralphStatePath, 'utf-8'));
-      assert.equal(persistedRalph.tmux_pane_id, livePane);
-      assert.match(persistedRalph.tmux_pane_set_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
-
-      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
-      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'sent');
-      assert.equal(watcherState.ralph_continue_steer?.pane_id, livePane);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      assert.match(tmuxLog, /display-message -p -t %99 #S/);
-      assert.match(tmuxLog, /list-panes -s -t .*sess-ralph-dead-anchor/);
-      assert.match(tmuxLog, /send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
+        const persistedRalph = JSON.parse(await readFile(ralphStatePath, 'utf-8'));
+        assert.equal(persistedRalph.tmux_pane_id, '%99', `${scenario} must retain its stored pane identity`);
+        const watcherState = JSON.parse(await readFile(join(stateDir, 'notify-fallback-state.json'), 'utf-8'));
+        assert.equal(watcherState.ralph_continue_steer?.last_reason, 'pane_binding_changed');
+        const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+        assert.doesNotMatch(tmuxLog, /send-keys -t %(42|99) -l Ralph loop active continue/);
+        assert.doesNotMatch(tmuxLog, /list-panes -s -t/, 'watcher must not discover a replacement pane');
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
     }
   });
 
@@ -3064,12 +2646,15 @@ exit 0
     try {
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -3124,12 +2709,15 @@ exit 0
     try {
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -3191,6 +2779,9 @@ exit 0
         current_phase: 'blocked_on_user',
         completed_at: new Date().toISOString(),
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -3237,12 +2828,15 @@ exit 0
     try {
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       await writeFile(ralphStatePath, JSON.stringify({
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -3278,6 +2872,9 @@ exit 0
         current_phase: 'complete',
         completed_at: new Date().toISOString(),
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
 
       const terminalRun = spawnSync(
@@ -3320,6 +2917,9 @@ exit 0
         current_phase: 'starting',
         started_at: staleStartedAt,
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 5 * 60_000).toISOString(),
@@ -3372,6 +2972,9 @@ exit 0
         current_phase: 'executing',
         run_outcome: 'blocked_on_user',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 5 * 60_000).toISOString(),
@@ -3417,12 +3020,15 @@ exit 0
     try {
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -3486,10 +3092,12 @@ exit 0
       await mkdir(fakeBinDir, { recursive: true });
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, {
         failSendKeysMatch: 'Ralph loop active continue',
+        ralphPane: { paneId: '%43', panePid: 4343, paneOwner: 'ralph:owner' },
       }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      await bindCanonicalDispatchWorkerFixture(wd);
       const queued = await enqueueDispatchRequest('dispatch-team', {
         kind: 'inbox',
         to_worker: 'worker-1',
@@ -3499,7 +3107,10 @@ exit 0
       await writeFile(join(wd, '.omx', 'state', 'ralph-state.json'), JSON.stringify({
         active: true,
         current_phase: 'executing',
-        tmux_pane_id: '%42',
+        tmux_pane_id: '%43',
+        tmux_pane_pid: 4343,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(wd, '.omx', 'state', 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -3575,6 +3186,7 @@ exit 0
       ].join('\n'));
 
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      await bindCanonicalDispatchWorkerFixture(wd);
       const queued = await enqueueDispatchRequest('dispatch-team', {
         kind: 'inbox',
         to_worker: 'worker-1',
@@ -3767,6 +3379,9 @@ exit 0
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(watcherStatePath, JSON.stringify({
         ralph_continue_steer: {
@@ -3817,6 +3432,9 @@ exit 0
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(watcherStatePath, JSON.stringify({
         ralph_continue_steer: {
@@ -3872,6 +3490,9 @@ exit 0
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
       await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
         last_progress_at: new Date(Date.now() - 61_000).toISOString(),
@@ -3881,7 +3502,7 @@ exit 0
           last_sent_at: new Date(Date.now() - 61_000).toISOString(),
         },
       }, null, 2));
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, { paneOwner: 'ralph:owner' }));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const shortLivedParent = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 10)'], {
@@ -3925,6 +3546,9 @@ exit 0
         current_phase: 'complete',
         completed_at: new Date().toISOString(),
         tmux_pane_id: '%42',
+        tmux_pane_pid: 4242,
+        tmux_session_name: 'session-test',
+        tmux_pane_owner_id: 'ralph:owner',
       }, null, 2));
 
       await waitForExit(child, 4000);

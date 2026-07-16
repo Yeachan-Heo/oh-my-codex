@@ -60,6 +60,7 @@ export { readTeamManifestV2 as teamReadManifest } from './state.js';
 export { writeTeamManifestV2 as teamWriteManifest } from './state.js';
 export { saveTeamConfig as teamSaveConfig } from './state.js';
 export { cleanupTeamState as teamCleanup } from './state.js';
+export { removeDurableFile as teamRemoveDurableFile } from './state.js';
 export { migrateV1ToV2 as teamMigrateV1ToV2 } from './state.js';
 export { normalizeTeamPolicy as teamNormalizePolicy } from './state.js';
 export { normalizeTeamGovernance as teamNormalizeGovernance } from './state.js';
@@ -94,6 +95,7 @@ export { readDispatchRequest as teamReadDispatchRequest } from './state.js';
 export { transitionDispatchRequest as teamTransitionDispatchRequest } from './state.js';
 export { markDispatchRequestNotified as teamMarkDispatchRequestNotified } from './state.js';
 export { markDispatchRequestDelivered as teamMarkDispatchRequestDelivered } from './state.js';
+export { removeDispatchRequestsForWorkers as teamRemoveDispatchRequestsForWorkers } from './state.js';
 
 // === Events ===
 export { appendTeamEvent as teamAppendEvent } from './state.js';
@@ -124,6 +126,13 @@ export { writeWorkerStatus as teamWriteWorkerStatus } from './state.js';
 
 // === Scaling lock ===
 export { withScalingLock as teamWithScalingLock } from './state.js';
+export { withTeamTaskBarrier as teamWithTaskMembershipBarrier } from './state.js';
+export {
+  recoverTeamMembershipTaskTransaction,
+  commitTeamMembershipTaskTransaction,
+  finalizeTeamMembershipTaskTransaction,
+} from './state.js';
+export type { TeamMembershipTaskTransaction } from './state.js';
 
 // === Dispatch lock helpers ===
 export { resolveDispatchLockTimeoutMs } from './state.js';

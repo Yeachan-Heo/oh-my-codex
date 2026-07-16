@@ -123,6 +123,35 @@ describe('RuntimeBridge.readCompatFile (parse guard)', () => {
   });
 });
 
+describe('RuntimeBridge.readDispatchRecordsStrict', () => {
+  it('fails closed for missing, malformed, and invalid-shaped dispatch compatibility output', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'omx-bridge-dispatch-strict-'));
+    const bridge = new RuntimeBridge({ stateDir, binaryPath: '/nonexistent-binary' });
+    try {
+      assert.throws(() => bridge.readDispatchRecordsStrict(), RuntimeBridgeError);
+      writeFileSync(join(stateDir, 'dispatch.json'), '{');
+      assert.throws(() => bridge.readDispatchRecordsStrict(), RuntimeBridgeError);
+      writeFileSync(join(stateDir, 'dispatch.json'), JSON.stringify({ records: [{}] }));
+      assert.throws(() => bridge.readDispatchRecordsStrict(), RuntimeBridgeError);
+      writeFileSync(join(stateDir, 'dispatch.json'), JSON.stringify({ records: [{
+        request_id: 'missing-required-fields',
+        target: 'worker-1',
+        status: 'pending',
+        created_at: '2026-01-01T00:00:00.000Z',
+        notified_at: null,
+        delivered_at: null,
+        failed_at: null,
+        metadata: null,
+      }] }));
+      assert.throws(() => bridge.readDispatchRecordsStrict(), RuntimeBridgeError);
+      writeFileSync(join(stateDir, 'dispatch.json'), JSON.stringify({ records: [] }));
+      assert.deepEqual(bridge.readDispatchRecordsStrict(), []);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('RuntimeBridge.execCommand / readSnapshot (parse guard)', () => {
   // The bridge's `validateSchemaOnce` is a module-level singleton: a single
   // fake-binary that returns the same string regardless of subcommand would
@@ -131,7 +160,7 @@ describe('RuntimeBridge.execCommand / readSnapshot (parse guard)', () => {
   const validSchema = JSON.stringify({
     commands: [
       'acquire-authority', 'renew-authority', 'queue-dispatch',
-      'mark-notified', 'mark-delivered', 'mark-failed',
+      'mark-notified', 'mark-delivered', 'mark-failed', 'remove-dispatch-records',
       'request-replay', 'capture-snapshot',
     ],
   });
@@ -195,6 +224,22 @@ esac
         leased_until: '2026-01-01T00:00:00Z',
       });
       assert.deepEqual(actual, event);
+    });
+  });
+
+  it('accepts the authoritative dispatch removal command', () => {
+    const event = {
+      event: 'DispatchRecordsRemoved',
+      request_ids: ['req-removed'],
+    };
+    withFakeBinary(JSON.stringify(event), (bridge) => {
+      assert.deepEqual(
+        bridge.execCommand({
+          command: 'RemoveDispatchRecords',
+          request_ids: ['req-removed'],
+        }),
+        event,
+      );
     });
   });
 

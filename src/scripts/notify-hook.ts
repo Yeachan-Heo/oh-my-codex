@@ -1218,6 +1218,7 @@ async function main() {
             const csText = `${csResult.message} ${DEFAULT_MARKER}`;
             const sendResult = await sendPaneInput({
               paneTarget: csPaneId,
+              exactPaneId: csPaneId,
               prompt: csText,
               submitKeyPresses: 2,
               submitDelayMs: 100,
