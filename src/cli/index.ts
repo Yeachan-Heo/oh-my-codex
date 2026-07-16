@@ -68,6 +68,7 @@ import {
 } from "./constants.js";
 import {
   getBaseStateDir,
+  getBaseStateDirWithSource,
   getStateDir,
   listModeStateFilesWithScopePreference,
   resolveWritableStateScope,
@@ -1635,6 +1636,25 @@ function hasErrnoCode(error: unknown, code: string): boolean {
 
 function isMissingTmuxLaunchNoise(error: unknown): boolean {
   return error instanceof Error && /spawnSync tmux ENOENT/i.test(error.message);
+}
+
+function reportOrdinaryLaunchRootConflict(
+  error: unknown,
+  cwd: string,
+  ordinaryLaunch: boolean,
+): void {
+  if (!ordinaryLaunch || !isSessionPointerLaunchAbort(error)
+    || error.code !== "session_pointer_owner_conflict"
+    || getBaseStateDirWithSource(cwd).rootSource !== "cwd-default") return;
+
+  console.error(
+    "[omx] concurrent conversations in this checkout require distinct user-specified OMX_ROOT values.\n" +
+      "[omx] Choose a distinct directory and set OMX_ROOT before launching the additional conversation.\n" +
+      "[omx] POSIX: OMX_ROOT=\"$HOME/.omx/instances/second-conversation\" omx\n" +
+      "[omx] PowerShell: $env:OMX_ROOT = \"$HOME/.omx/instances/second-conversation\"; omx\n" +
+      "[omx] cmd.exe: set \"OMX_ROOT=%USERPROFILE%\\.omx\\instances\\second-conversation\" && omx\n" +
+      "[omx] The selected OMX_ROOT is used literally; OMX does not reroute or allocate one automatically.",
+  );
 }
 
 function logCliOperationFailure(error: unknown): void {
@@ -3331,6 +3351,11 @@ export async function launchWithHud(args: string[]): Promise<void> {
   } catch (err) {
     if (isSessionPointerLaunchAbort(err)) {
       console.error(`[omx] session pointer launch aborted: ${err.code}`);
+      reportOrdinaryLaunchRootConflict(
+        err,
+        cwd,
+        cwd === launchCwd && !parsedWorktree.mode.enabled && !isResumeCodexLaunch(normalizedArgs),
+      );
       await cleanupRuntimeCodexHome(
         preparedCodexHome.runtimeCodexHomeForCleanup,
         projectLocalCodexHomeForCleanup,

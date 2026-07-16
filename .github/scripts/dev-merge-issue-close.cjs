@@ -93,6 +93,9 @@ function buildMaintainerCloseComment({ prNumber }) {
     `Closing automatically because PR #${prNumber} was merged into \`dev\` and explicitly referenced this issue in the PR title or body.`,
     '',
     'A hot-fix build is available now. Try it with `omx update --dev` and let us know whether it resolves the issue.',
+    '',
+    '—',
+    "*[repo owner's gaebal-gajae (clawdbot) 🦞]*",
   ].join('\n');
 }
 
@@ -105,6 +108,9 @@ function buildMaintainerPrComment({ issueNumbers }) {
     `Closed explicitly linked issue${issueNumbers.length === 1 ? '' : 's'} after this PR was merged into \`dev\`: ${formatIssueList(issueNumbers)}.`,
     '',
     'A hot-fix build is available now. Issue creators can try it with `omx update --dev` and let us know whether it resolves the issue.',
+    '',
+    '—',
+    "*[repo owner's gaebal-gajae (clawdbot) 🦞]*",
   ].join('\n');
 }
 

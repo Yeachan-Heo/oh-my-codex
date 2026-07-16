@@ -165,6 +165,32 @@ created and recovered. `--worktree` also moves the launch into a separate git
 checkout, which is the safer default when using `--madmax`. Replace
 `feat/task` with a branch-like name for the task.
 
+### Concurrent standard conversations
+
+A standard launch owns one writable session pointer under its selected `OMX_ROOT`. A second ordinary `omx` launch from the same checkout therefore fails closed instead of sharing or silently changing that root. Give each additional conversation an explicit, distinct root:
+
+```bash
+omx
+OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
+OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
+```
+
+PowerShell:
+
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+Command Prompt:
+
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
+User-specified roots are literal: launching twice with the same explicit `OMX_ROOT` remains a fatal owner conflict. Separate checkouts have separate default roots, while `--worktree` and `--madmax` keep their existing isolation behavior.
+
 ### Madmax and worktree launch safety
 
 `--madmax` is OMX shorthand for Codex
