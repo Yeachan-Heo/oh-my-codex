@@ -5666,7 +5666,13 @@ function firstPlanningTmpScriptExecutionTarget(cwd: string, command: string): st
             : [];
         for (const operand of operands) {
           const relativePath = normalizeExecutionTarget(operandCwd, operand);
-          if (relativePath && isPlanningTmpRelativePath(relativePath)) return relativePath;
+          if (!relativePath && /[$`]/.test(operand)) return "<unresolved-script-target>";
+          if (relativePath && (
+            isPlanningTmpRelativePath(relativePath)
+            || relativePath.startsWith(".omx/")
+            || relativePath === ".beads"
+            || relativePath.startsWith(".beads/")
+          )) return relativePath;
         }
       }
 
@@ -8605,8 +8611,6 @@ function isAllowedDeepInterviewBashWrite(
   sessionId = "",
 ): boolean {
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
-  if (extractDeepInterviewCommandWriteTargets(command).length > 0
-    && /(?:^|[;&|(){}\n]\s*)(?:bash|sh|zsh|node|nodejs|python|python3|ruby|perl|bun|tsx)(?:\s|$)/.test(stripHeredocBodiesForCommandScan(command))) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
     const stateWordIndex = words.indexOf("state");
@@ -8768,8 +8772,6 @@ function isAllowedRalplanBashWrite(
   const hasAllowedTargets = targets.length > 0
     && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target, sessionId));
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
-  if (targets.length > 0
-    && /(?:^|[;&|(){}\n]\s*)(?:bash|sh|zsh|node|nodejs|python|python3|ruby|perl|bun|tsx)(?:\s|$)/.test(stripHeredocBodiesForCommandScan(command))) return false;
 
   if (beadsCommand.present) {
     return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
