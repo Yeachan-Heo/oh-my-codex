@@ -12009,6 +12009,24 @@ exit 0
 				);
 			}
 
+			for (const [name, toolInput] of [
+				["missing session", { mode: "deep-interview", active: true, workingDirectory: cwd }],
+				["missing cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact" }],
+				["foreign session", { mode: "deep-interview", active: true, session_id: "foreign", workingDirectory: cwd }],
+				["foreign cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: join(cwd, "src") }],
+			] as const) {
+				const invalidPlanningStateWrite = await preToolUse({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-artifact",
+					tool_name: "mcp__omx_state__state_write",
+					tool_use_id: `tool-di-state-scope-${name}`,
+					tool_input: toolInput,
+				});
+				assert.equal(invalidPlanningStateWrite.outputJson?.decision, "block", name);
+				assert.match(String(invalidPlanningStateWrite.outputJson?.reason ?? ""), /canonical session and workingDirectory scope/);
+			}
+
 			const blockedReadWriteRedirect = await preToolUse({
 				hook_event_name: "PreToolUse",
 				cwd,
@@ -12084,6 +12102,12 @@ exit 0
 					tool_input: { file_path: "src/runtime.ts", content: "export {};\n" },
 				}, { cwd });
 				assert.equal(allowedTeamProductWrite.outputJson, null);
+				await mkdir(join(cwd, "src"), { recursive: true });
+
+				const protectedStateAlias = join(cwd, "src", "team-state-alias.json");
+				await symlink(join(stateDir, "sessions", "sess-di-artifact", "deep-interview-state.json"), protectedStateAlias, "file");
+				const protectedStateDirectoryAlias = join(cwd, "state-directory-alias");
+				await symlink(stateDir, protectedStateDirectoryAlias, "dir");
 
 				for (const [name, toolName, toolInput] of [
 					["session path", "Write", { file_path: join(stateDir, "sessions", "sess-di-artifact", "deep-interview-state.json"), content: "{}\n" }],
@@ -12097,6 +12121,10 @@ exit 0
 					["Bash state root delete", "Bash", { command: `rm -rf -- ${JSON.stringify(stateDir)}` }],
 					["Bash state CLI", "Bash", { command: `omx state clear --mode deep-interview --json` }],
 					["unknown Team authority mutation", "mcp__unknown__mutate", { path: join(teamRoot, "manifest.v2.json") }],
+					["symlinked protected state", "Write", { file_path: protectedStateAlias, content: "{}\n" }],
+					["symlinked Team manifest", "Write", { file_path: join(protectedStateDirectoryAlias, "team", teamName, "manifest.v2.json"), content: "{}\n" }],
+					["Bash symlinked Team manifest", "Bash", { command: `: > ${JSON.stringify(join(protectedStateDirectoryAlias, "team", teamName, "manifest.v2.json"))}` }],
+					["Bash session effective cwd", "Bash", { command: `cd ${JSON.stringify(join(stateDir, "sessions", "sess-di-artifact"))}; printf x > ultragoal-state.json` }],
 				] as const) {
 					const protectedTeamWrite = await dispatchCodexNativeHook({
 						hook_event_name: "PreToolUse",
@@ -12136,6 +12164,7 @@ exit 0
 				for (const [name, path, invalidValue, restoreValue] of [
 					["config pane mismatch", join(teamRoot, "config.json"), { ...teamAuthority, workers: [{ ...teamAuthority.workers[0], pane_id: "%foreign" }] }, teamAuthority],
 					["identity root mismatch", join(teamRoot, "workers", workerName, "identity.json"), { name: workerName, pane_id: workerPane, team_state_root: join(cwd, "foreign-state"), worktree_path: cwd }, { name: workerName, pane_id: workerPane, team_state_root: stateDir, worktree_path: cwd }],
+					["config worktree mismatch", join(teamRoot, "config.json"), { ...teamAuthority, workers: [{ ...teamAuthority.workers[0], worktree_path: join(cwd, "foreign-worktree") }] }, teamAuthority],
 				] as const) {
 					await writeJson(path, invalidValue);
 					const mismatchWrite = await dispatchCodexNativeHook({
@@ -13000,7 +13029,7 @@ exit 0
 						session_id: "sess-di-artifact",
 						tool_name: "mcp__omx_state__state_write",
 						tool_use_id: `tool-di-mcp-state-write-autopilot-alias-${phase}`,
-						tool_input: { mode: "autopilot", current_phase: phase },
+						tool_input: { mode: "autopilot", current_phase: phase, session_id: "sess-di-artifact", workingDirectory: cwd },
 					},
 					{ cwd },
 				);
@@ -13651,6 +13680,8 @@ exit 0
 						mode: "deep-interview",
 						current_phase: "intent-first",
 						active: true,
+						session_id: "sess-di-artifact",
+						workingDirectory: cwd,
 					},
 				},
 				{ cwd },
@@ -16306,6 +16337,8 @@ exit 0
 					tool_input: {
 						mode: "ralplan",
 						state: { current_phase: "critic-review", active: true },
+						session_id: "sess-ralplan-input-file",
+						workingDirectory: cwd,
 					},
 				},
 				{ cwd },
@@ -27865,6 +27898,7 @@ PY`,
             active: true,
             current_phase: "planning",
             session_id: sessionId,
+            workingDirectory: cwd,
           },
         },
         { cwd },
@@ -27884,6 +27918,7 @@ PY`,
             active: false,
             current_phase: "planning",
             session_id: sessionId,
+            workingDirectory: cwd,
           },
         },
         { cwd },
