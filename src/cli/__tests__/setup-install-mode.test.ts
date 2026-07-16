@@ -22,6 +22,7 @@ import {
 	setNativeHookTransactionFailureInjectorForTest,
 	setSetupLatePhaseFailureInjectorForTest,
 	setNativeHookTransactionPlatformForTest,
+	setNativeHookTransactionRegularFileSyncForTest,
 	setNativeHookTransactionTemporaryPathForTest,
 	setup,
 } from "../setup.js";
@@ -3186,6 +3187,46 @@ describe("omx setup install mode behavior", () => {
 				});
 			});
 		} finally {
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+	it("completes Windows native-hook transactions when regular-file fsync reports EPERM", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-fsync-eperm-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		let syncCalls = 0;
+		const stderr: string[] = [];
+		const originalStderrWrite = process.stderr.write;
+		process.stderr.write = ((chunk: string | Uint8Array) => {
+			stderr.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		const resetSync = setNativeHookTransactionRegularFileSyncForTest(async (platform) => {
+			assert.equal(platform, "win32");
+			syncCalls += 1;
+			throw Object.assign(new Error("EPERM: fsync"), { code: "EPERM" });
+		});
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({
+						scope: "user",
+						installMode: "legacy",
+						skipNativeAgentRefresh: true,
+					});
+					assert.ok(syncCalls > 0);
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
+					assert.equal(existsSync(buildManagedCodexNativeHookWindowsShimPath(codexHomeDir)), true);
+					assert.equal(existsSync(join(codexHomeDir, "config.toml")), true);
+				});
+				assert.equal(
+					stderr.filter((line) => line.includes("native-hook setup")).length,
+					1,
+				);
+			});
+		} finally {
+			process.stderr.write = originalStderrWrite;
+			resetSync();
 			resetPlatform();
 			await rm(wd, { recursive: true, force: true });
 		}

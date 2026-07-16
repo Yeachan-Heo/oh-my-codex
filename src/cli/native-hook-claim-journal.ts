@@ -1,7 +1,17 @@
 import { createHash } from "crypto";
 import { constants } from "fs";
-import { copyFile, link, open, lstat, mkdir, readFile, rm } from "fs/promises";
+import { copyFile, link, open, lstat, mkdir, readFile, rm, type FileHandle } from "fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "path";
+import {
+	syncRegularFile,
+	type RegularFileSyncOutcome,
+} from "../utils/file-durability.js";
+
+export interface NativeHookClaimJournalDurability {
+	platform: NodeJS.Platform;
+	syncRegularFile(handle: Pick<FileHandle, "sync">): Promise<RegularFileSyncOutcome>;
+	syncDirectory(path: string): Promise<void>;
+}
 
 interface ClaimJournalEntry {
 	version: 1;
@@ -47,14 +57,28 @@ async function fsyncDirectory(path: string): Promise<void> {
 	}
 }
 
-export async function syncNativeHookClaimParent(path: string): Promise<void> {
-	await fsyncDirectory(dirname(path));
+export function createNativeHookClaimJournalDurability(
+	platform: NodeJS.Platform = process.platform,
+): NativeHookClaimJournalDurability {
+	return {
+		platform,
+		syncRegularFile: (handle) => syncRegularFile(handle, platform),
+		syncDirectory: fsyncDirectory,
+	};
+}
+
+export async function syncNativeHookClaimParent(
+	path: string,
+	durability: NativeHookClaimJournalDurability,
+): Promise<void> {
+	await durability.syncDirectory(dirname(path));
 }
 
 export async function restoreNativeHookClaimNoClobber(
 	claimPath: string,
 	destinationPath: string,
-): Promise<void> {
+	durability: NativeHookClaimJournalDurability,
+): Promise<RegularFileSyncOutcome> {
 	const claimStat = await lstat(claimPath);
 	if (claimStat.isSymbolicLink() || !claimStat.isFile() || claimStat.nlink !== 1) {
 		throw new Error(`Native hook claim restore refuses unsafe claim ${claimPath}.`);
@@ -74,12 +98,13 @@ export async function restoreNativeHookClaimNoClobber(
 		await copyFile(claimPath, destinationPath, constants.COPYFILE_EXCL);
 	}
 	const destinationHandle = await open(destinationPath, "r");
+	let outcome: RegularFileSyncOutcome;
 	try {
-		await destinationHandle.sync();
+		outcome = await durability.syncRegularFile(destinationHandle);
 	} finally {
 		await destinationHandle.close();
 	}
-	await fsyncDirectory(dirname(destinationPath));
+	await durability.syncDirectory(dirname(destinationPath));
 	const [currentClaimStat, currentClaimBytes, destinationBytes, destinationStat] = await Promise.all([
 		lstat(claimPath),
 		readFile(claimPath),
@@ -96,7 +121,8 @@ export async function restoreNativeHookClaimNoClobber(
 		throw new Error(`Native hook claim changed during restore: ${claimPath}.`);
 	}
 	await rm(claimPath);
-	await fsyncDirectory(dirname(claimPath));
+	await durability.syncDirectory(dirname(claimPath));
+	return outcome;
 }
 
 async function readRegularBytes(path: string): Promise<Buffer | null> {
@@ -122,7 +148,8 @@ export async function persistNativeHookClaimJournal(
 		before: Buffer;
 		after: Buffer | null;
 	},
-): Promise<void> {
+	durability: NativeHookClaimJournalDurability,
+): Promise<RegularFileSyncOutcome> {
 	assertControlledPath(root, entry.canonicalPath);
 	assertControlledPath(root, entry.claimPath);
 	const directory = dirname(journalPath(root));
@@ -138,7 +165,7 @@ export async function persistNativeHookClaimJournal(
 	if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
 		throw new Error(`Native hook claim journal directory is unsafe: ${directory}`);
 	}
-	if (directoryCreated) await fsyncDirectory(dirname(directory));
+	if (directoryCreated) await durability.syncDirectory(dirname(directory));
 	const path = journalPath(root);
 	const payload: ClaimJournalEntry = {
 		version: 1,
@@ -149,29 +176,37 @@ export async function persistNativeHookClaimJournal(
 		afterHash: entry.after === null ? null : digest(entry.after),
 	};
 	const handle = await open(path, "wx", 0o600);
+	let outcome: RegularFileSyncOutcome;
 	try {
 		await handle.writeFile(`${JSON.stringify(payload, null, 2)}\n`, "utf-8");
-		await handle.sync();
+		outcome = await durability.syncRegularFile(handle);
 	} catch (error) {
 		await handle.close();
 		await rm(path, { force: true });
 		throw error;
 	}
 	await handle.close();
-	await fsyncDirectory(directory);
+	await durability.syncDirectory(directory);
+	return outcome;
 }
 
-export async function clearNativeHookClaimJournal(root: string): Promise<void> {
+export async function clearNativeHookClaimJournal(
+	root: string,
+	durability: NativeHookClaimJournalDurability,
+): Promise<void> {
 	const path = journalPath(root);
 	try {
 		await rm(path);
-		await fsyncDirectory(dirname(path));
+		await durability.syncDirectory(dirname(path));
 	} catch (error) {
 		if (!isMissing(error)) throw error;
 	}
 }
 
-export async function recoverNativeHookClaimJournal(root: string): Promise<boolean> {
+export async function recoverNativeHookClaimJournal(
+	root: string,
+	durability: NativeHookClaimJournalDurability,
+): Promise<{ recovered: boolean; outcome: RegularFileSyncOutcome }> {
 	const path = journalPath(root);
 	let parsed: ClaimJournalEntry;
 	try {
@@ -181,7 +216,7 @@ export async function recoverNativeHookClaimJournal(root: string): Promise<boole
 		}
 		parsed = JSON.parse(await readFile(path, "utf-8")) as ClaimJournalEntry;
 	} catch (error) {
-		if (isMissing(error)) return false;
+		if (isMissing(error)) return { recovered: false, outcome: "synced" };
 		throw error;
 	}
 	if (
@@ -199,6 +234,7 @@ export async function recoverNativeHookClaimJournal(root: string): Promise<boole
 	if (processIsAlive(parsed.ownerPid)) {
 		throw new Error("Native hook claim journal belongs to a live mutation; recovery refused to mutate it.");
 	}
+	let outcome: RegularFileSyncOutcome = "synced";
 	try {
 		const [canonicalStat, claimStat] = await Promise.all([
 			lstat(parsed.canonicalPath),
@@ -214,9 +250,9 @@ export async function recoverNativeHookClaimJournal(root: string): Promise<boole
 				throw new Error("Native hook claim journal cannot finalize a linked restore with changed bytes.");
 			}
 			await rm(parsed.claimPath);
-			await fsyncDirectory(dirname(parsed.claimPath));
-			await clearNativeHookClaimJournal(root);
-			return true;
+			await durability.syncDirectory(dirname(parsed.claimPath));
+			await clearNativeHookClaimJournal(root, durability);
+			return { recovered: true, outcome };
 		}
 	} catch (error) {
 		if (!isMissing(error)) throw error;
@@ -227,16 +263,16 @@ export async function recoverNativeHookClaimJournal(root: string): Promise<boole
 	]);
 	if (claim === null) {
 		if (canonical === null && parsed.afterHash === null) {
-			await clearNativeHookClaimJournal(root);
-			return true;
+			await clearNativeHookClaimJournal(root, durability);
+			return { recovered: true, outcome };
 		}
 		if (canonical !== null && parsed.afterHash !== null && digest(canonical) === parsed.afterHash) {
-			await clearNativeHookClaimJournal(root);
-			return true;
+			await clearNativeHookClaimJournal(root, durability);
+			return { recovered: true, outcome };
 		}
 		if (canonical !== null && digest(canonical) === parsed.beforeHash) {
-			await clearNativeHookClaimJournal(root);
-			return true;
+			await clearNativeHookClaimJournal(root, durability);
+			return { recovered: true, outcome };
 		}
 		throw new Error("Native hook claim journal cannot recover: claim is missing and canonical bytes are not the recorded original.");
 	}
@@ -244,15 +280,15 @@ export async function recoverNativeHookClaimJournal(root: string): Promise<boole
 		throw new Error("Native hook claim journal cannot recover: claim bytes do not match recorded ownership.");
 	}
 	if (canonical === null) {
-		await restoreNativeHookClaimNoClobber(parsed.claimPath, parsed.canonicalPath);
-		await clearNativeHookClaimJournal(root);
-		return true;
+		outcome = await restoreNativeHookClaimNoClobber(parsed.claimPath, parsed.canonicalPath, durability);
+		await clearNativeHookClaimJournal(root, durability);
+		return { recovered: true, outcome };
 	}
 	if (parsed.afterHash !== null && digest(canonical) === parsed.afterHash) {
 		await rm(parsed.claimPath);
-		await fsyncDirectory(dirname(parsed.claimPath));
-		await clearNativeHookClaimJournal(root);
-		return true;
+		await durability.syncDirectory(dirname(parsed.claimPath));
+		await clearNativeHookClaimJournal(root, durability);
+		return { recovered: true, outcome };
 	}
 	throw new Error("Native hook claim journal cannot recover without overwriting unrecognized canonical content.");
 }

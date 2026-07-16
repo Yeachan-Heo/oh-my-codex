@@ -4,10 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-	clearNativeHookClaimJournal,
-	persistNativeHookClaimJournal,
-	recoverNativeHookClaimJournal,
+	clearNativeHookClaimJournal as clearNativeHookClaimJournalWithDurability,
+	createNativeHookClaimJournalDurability,
+	persistNativeHookClaimJournal as persistNativeHookClaimJournalWithDurability,
+	recoverNativeHookClaimJournal as recoverNativeHookClaimJournalWithDurability,
 } from "../native-hook-claim-journal.js";
+
+const durability = createNativeHookClaimJournalDurability();
+
+const clearNativeHookClaimJournal = (root: string) =>
+	clearNativeHookClaimJournalWithDurability(root, durability);
+const persistNativeHookClaimJournal = (
+	root: string,
+	entry: Parameters<typeof persistNativeHookClaimJournalWithDurability>[1],
+) => persistNativeHookClaimJournalWithDurability(root, entry, durability);
+const recoverNativeHookClaimJournal = (root: string) =>
+	recoverNativeHookClaimJournalWithDurability(root, durability);
 
 async function markJournalOwnerDead(root: string): Promise<void> {
 	const path = join(root, ".omx", "native-hook-claim-journal.json");
@@ -32,9 +44,9 @@ test("claim journal restores an exact original after rename-away interruption", 
 		await rename(canonicalPath, claimPath);
 		await markJournalOwnerDead(root);
 
-		assert.equal(await recoverNativeHookClaimJournal(root), true);
+		assert.equal((await recoverNativeHookClaimJournal(root)).recovered, true);
 		assert.deepEqual(await readFile(canonicalPath), before);
-		assert.equal(await recoverNativeHookClaimJournal(root), false);
+		assert.equal((await recoverNativeHookClaimJournal(root)).recovered, false);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -57,7 +69,7 @@ test("claim journal finalizes an exact installed successor and removes the parke
 		});
 		await markJournalOwnerDead(root);
 
-		assert.equal(await recoverNativeHookClaimJournal(root), true);
+		assert.equal((await recoverNativeHookClaimJournal(root)).recovered, true);
 		assert.deepEqual(await readFile(canonicalPath), after);
 		await assert.rejects(readFile(claimPath), /ENOENT/);
 	} finally {
@@ -134,8 +146,91 @@ test("claim journal finalizes a completed deletion after claim removal", async (
 		});
 		await markJournalOwnerDead(root);
 
-		assert.equal(await recoverNativeHookClaimJournal(root), true);
-		assert.equal(await recoverNativeHookClaimJournal(root), false);
+		assert.equal((await recoverNativeHookClaimJournal(root)).recovered, true);
+		assert.equal((await recoverNativeHookClaimJournal(root)).recovered, false);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("claim journal treats only injected Windows regular-file EPERM as degraded", async () => {
+	const root = await mkdtemp(join(tmpdir(), "omx-claim-durability-"));
+	try {
+		const canonicalPath = join(root, "hooks.json");
+		const claimPath = join(root, ".hooks.json.claim");
+		const order: string[] = [];
+		const outcome = await persistNativeHookClaimJournalWithDurability(root, {
+			canonicalPath,
+			claimPath,
+			before: Buffer.from("before\n"),
+			after: null,
+		}, {
+			platform: "win32",
+			syncRegularFile: async () => {
+				order.push("regular");
+				return "unsupported-windows-eperm";
+			},
+			syncDirectory: async () => { order.push("directory"); },
+		});
+		assert.equal(outcome, "unsupported-windows-eperm");
+		assert.deepEqual(order, ["directory", "regular", "directory"]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("claim journal keeps POSIX regular-file and directory EPERM fatal", async () => {
+	const root = await mkdtemp(join(tmpdir(), "omx-claim-durability-fatal-"));
+	try {
+		const entry = {
+			canonicalPath: join(root, "hooks.json"),
+			claimPath: join(root, ".hooks.json.claim"),
+			before: Buffer.from("before\n"),
+			after: null,
+		};
+		const regularError = Object.assign(new Error("EPERM"), { code: "EPERM" });
+		await assert.rejects(
+			persistNativeHookClaimJournalWithDurability(root, entry, {
+				platform: "linux",
+				syncRegularFile: async () => { throw regularError; },
+				syncDirectory: async () => undefined,
+			}),
+			(error) => error === regularError,
+		);
+		const directoryError = Object.assign(new Error("EPERM"), { code: "EPERM" });
+		await assert.rejects(
+			persistNativeHookClaimJournalWithDurability(root, entry, {
+				platform: "win32",
+				syncRegularFile: async () => "synced",
+				syncDirectory: async () => { throw directoryError; },
+			}),
+			(error) => error === directoryError,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("claim journal recovery returns independent recovered and no-op outcomes", async () => {
+	const root = await mkdtemp(join(tmpdir(), "omx-claim-recovery-outcome-"));
+	try {
+		const canonicalPath = join(root, "hooks.json");
+		const claimPath = join(root, ".hooks.json.claim");
+		const before = Buffer.from("before\n");
+		await persistNativeHookClaimJournal(root, { canonicalPath, claimPath, before, after: null });
+		await rename(canonicalPath, claimPath).catch(() => undefined);
+		await writeFile(claimPath, before);
+		await markJournalOwnerDead(root);
+		const recovered = await recoverNativeHookClaimJournalWithDurability(root, {
+			platform: "win32",
+			syncRegularFile: async () => "unsupported-windows-eperm",
+			syncDirectory: async () => undefined,
+		});
+		assert.deepEqual(recovered, { recovered: true, outcome: "unsupported-windows-eperm" });
+		assert.deepEqual(
+			await recoverNativeHookClaimJournalWithDurability(root, durability),
+			{ recovered: false, outcome: "synced" },
+		);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

@@ -209,6 +209,55 @@ describe('session lifecycle manager', () => {
     }
   });
 
+  it('emits the session-end warning only after successful end finalization', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-durability-'));
+    const originalWrite = process.stderr.write;
+    const warnings: string[] = [];
+    process.stderr.write = ((value: string) => {
+      warnings.push(value);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await writeSessionEnd(cwd, 'sess-end-durability', {
+        platform: 'win32',
+        regularFileSync: async () => { throw codedError('EPERM'); },
+      });
+      assert.deepEqual(warnings, [
+        '[omx] warning: Windows EPERM regular-file fsync unsupported in session pointer end; operation succeeded with degraded durability.\n',
+      ]);
+    } finally {
+      process.stderr.write = originalWrite;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps session-end durability warnings silent when finalization or release fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-durability-failure-'));
+    const originalWrite = process.stderr.write;
+    const warnings: string[] = [];
+    process.stderr.write = ((value: string) => {
+      warnings.push(value);
+      return true;
+    }) as typeof process.stderr.write;
+    const regularFileSync = async () => { throw codedError('EPERM'); };
+    try {
+      await withPointerDependencies({
+        fs: {
+          rmdir: async () => { throw new Error('release failure'); },
+        },
+      }, async () => {
+        await assert.rejects(writeSessionEnd(cwd, 'sess-end-release-failure', {
+          platform: 'win32',
+          regularFileSync,
+        }));
+      });
+      assert.deepEqual(warnings, []);
+    } finally {
+      process.stderr.write = originalWrite;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('does not delete the current session pointer when ending a different session', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-owner-'));
     try {
@@ -872,6 +921,65 @@ describe('session pointer transaction', () => {
     }
   });
 
+  it('publishes the owner and pointer on Windows when regular-file fsync reports EPERM', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-windows-eperm-'));
+    let syncCalls = 0;
+    const regularFileSync = async (platform: NodeJS.Platform) => {
+      assert.equal(platform, 'win32');
+      syncCalls += 1;
+      throw codedError('EPERM');
+    };
+    try {
+      const state = await writeSessionStart(cwd, 'sess-windows-eperm', {
+        platform: 'win32',
+        regularFileSync,
+      });
+      const context = resolveSessionPointerContext(cwd);
+      assert.equal(state.session_id, 'sess-windows-eperm');
+      assert.equal(syncCalls, 2, 'owner publication and pointer publication must both attempt fsync');
+      assert.equal(existsSync(join(context.lockPath, 'owner.json')), false, 'lock owner is removed after commit');
+      assert.equal(JSON.parse(await readFile(context.sessionPath, 'utf8')).session_id, 'sess-windows-eperm');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('emits one post-release warning for a degraded session start and stays silent for synced or failed transactions', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-durability-warning-'));
+    const originalWrite = process.stderr.write;
+    const warnings: Array<{ value: string; lockExists: boolean }> = [];
+    process.stderr.write = ((value: string) => {
+      warnings.push({ value, lockExists: existsSync(resolveSessionPointerContext(cwd).lockPath) });
+      return true;
+    }) as typeof process.stderr.write;
+    const regularFileSync = async () => { throw codedError('EPERM'); };
+    try {
+      await writeSessionStart(cwd, 'sess-degraded-start', { platform: 'win32', regularFileSync });
+      assert.deepEqual(warnings, [{
+        value: '[omx] warning: Windows EPERM regular-file fsync unsupported in session pointer start/reconcile; operation succeeded with degraded durability.\n',
+        lockExists: false,
+      }]);
+
+      warnings.length = 0;
+      await writeSessionStart(cwd, 'sess-degraded-start', { platform: 'win32' });
+      assert.deepEqual(warnings, []);
+
+      await withPointerDependencies({
+        fs: {
+          rename: async (from, to) => {
+            if (to === resolveSessionPointerContext(cwd).sessionPath) throw new Error('rename failure');
+            await rename(from, to);
+          },
+        },
+      }, async () => {
+        await assert.rejects(writeSessionStart(cwd, 'sess-degraded-start', { platform: 'win32', regularFileSync }));
+      });
+      assert.deepEqual(warnings, []);
+    } finally {
+      process.stderr.write = originalWrite;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   it('types state-directory, pointer-read, owner-sync, owner-rename, and invalid-token failures before commit', async () => {
     const failures = [
       {
@@ -907,6 +1015,7 @@ describe('session pointer transaction', () => {
           fs: {
             openAndSync: async (path: string) => {
               if (path === join(context.lockPath, `owner.${TEST_TOKEN}.tmp`)) throw new Error('owner sync failure');
+              return 'synced' as const;
             },
           },
         }),
@@ -982,6 +1091,7 @@ describe('session pointer transaction', () => {
             },
             openAndSync: async (path) => {
               if (phase.fail === 'sync' && path === tempPath) throw new Error('pointer sync failure');
+              return 'synced' as const;
             },
             rename: async (from, to) => {
               if (phase.fail === 'rename' && from === tempPath && to === context.sessionPath) {

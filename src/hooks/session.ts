@@ -27,6 +27,13 @@ import {
   type StateRootSource,
 } from '../mcp/state-paths.js';
 import type { PromptDiagnosticDescriptor } from './prompt-session-provenance.js';
+import {
+  emitDegradedDurabilityWarning,
+  recordRegularFileSyncOutcome,
+  syncRegularFile,
+  type RegularFileDurabilityTracker,
+  type RegularFileSyncOutcome,
+} from '../utils/file-durability.js';
 
 export interface SessionState {
   session_id: string;
@@ -275,6 +282,8 @@ export interface SessionStaleCheckOptions {
 export interface SessionStartOptions {
   pid?: number;
   platform?: NodeJS.Platform;
+  /** @internal Scoped deterministic regular-file fsync seam. */
+  regularFileSync?: (platform: NodeJS.Platform) => Promise<void>;
   nativeSessionId?: string;
   previousNativeSessionId?: string;
   nativeSessionSwitchedAt?: string;
@@ -299,7 +308,11 @@ export interface SessionPointerFsDependencies {
   readdir(path: string): Promise<string[]>;
   readFile(path: string, encoding: 'utf8'): Promise<string>;
   writeFile(path: string, data: string, options?: { mode?: number; flag?: string }): Promise<void>;
-  openAndSync(path: string): Promise<void>;
+  openAndSync(
+    path: string,
+    platform: NodeJS.Platform,
+    regularFileSync?: SessionStartOptions['regularFileSync'],
+  ): Promise<RegularFileSyncOutcome>;
   rename(from: string, to: string): Promise<void>;
   unlink(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
@@ -328,10 +341,13 @@ const defaultFsDependencies: SessionPointerFsDependencies = {
   writeFile: async (path, data, options) => {
     await nodeWriteFile(path, data, options);
   },
-  openAndSync: async (path) => {
+  openAndSync: async (path, platform, regularFileSync) => {
     const handle = await open(path, 'r');
     try {
-      await handle.sync();
+      return await syncRegularFile(
+        regularFileSync ? { sync: () => regularFileSync(platform) } : handle,
+        platform,
+      );
     } finally {
       await handle.close();
     }
@@ -909,6 +925,9 @@ async function acquirePointerLock(
   context: SessionPointerContext,
   candidateSessionId: string | undefined,
   timeoutMs: number,
+  platform: NodeJS.Platform,
+  tracker: RegularFileDurabilityTracker,
+  regularFileSync?: SessionStartOptions['regularFileSync'],
 ): Promise<HeldPointerLock> {
   const deadline = transactionDependencies.nowMs() + timeoutMs;
   let attempt = 0;
@@ -1005,7 +1024,7 @@ async function acquirePointerLock(
   const ownerPath = join(context.lockPath, 'owner.json');
   try {
     await transactionDependencies.fs.writeFile(ownerTempPath, JSON.stringify(buildLockOwner(token)), { mode: 0o600 });
-    await transactionDependencies.fs.openAndSync(ownerTempPath);
+    recordRegularFileSyncOutcome(tracker, await transactionDependencies.fs.openAndSync(ownerTempPath, platform, regularFileSync));
     await transactionDependencies.fs.rename(ownerTempPath, ownerPath);
   } catch (error) {
     const primary = resolvedAbort(context, {
@@ -1178,7 +1197,7 @@ interface PointerTransactionResult<T> {
 async function writePointerTransaction<T>(
   cwd: string,
   candidateSessionId: string | undefined,
-  options: Pick<SessionStartOptions, 'context'>,
+  options: Pick<SessionStartOptions, 'context' | 'platform' | 'regularFileSync'>,
   timeoutMs: number,
   transition: (pointer: SessionPointerReadResult, context: SessionPointerContext) => T,
   pointerState: (value: T) => SessionState,
@@ -1214,10 +1233,15 @@ async function writePointerTransaction<T>(
     });
   }
 
+  const platform = options.platform ?? process.platform;
+  const tracker: RegularFileDurabilityTracker = { degraded: false };
   const lock = await acquirePointerLock(
     context,
     candidateSessionId,
     timeoutMs,
+    platform,
+    tracker,
+    options.regularFileSync,
   );
   const pointerTempPath = `${context.sessionPath}.tmp-${lock.token}`;
   let pointerCommitted = false;
@@ -1265,7 +1289,10 @@ async function writePointerTransaction<T>(
       });
     }
     try {
-      await transactionDependencies.fs.openAndSync(pointerTempPath);
+      recordRegularFileSyncOutcome(
+        tracker,
+        await transactionDependencies.fs.openAndSync(pointerTempPath, platform, options.regularFileSync),
+      );
     } catch (error) {
       throw resolvedAbort(context, {
         code: 'session_pointer_io_failure',
@@ -1292,6 +1319,7 @@ async function writePointerTransaction<T>(
 
     const releaseFailures = await releasePointerLock(lock);
     if (releaseFailures.length > 0) throw releaseFailureError(releaseFailures);
+    emitDegradedDurabilityWarning('session pointer start/reconcile', tracker);
     return { context, value: next };
   } catch (error) {
     if (pointerCommitted) throw error;
@@ -1531,7 +1559,7 @@ async function removeDeadSessionHudState(
 export async function writeSessionEnd(
   cwd: string,
   sessionId: string,
-  options: Pick<SessionStartOptions, 'context'> = {},
+  options: Pick<SessionStartOptions, 'context' | 'platform' | 'regularFileSync'> = {},
 ): Promise<void> {
   const candidateSessionId = normalizeSessionId(sessionId);
   let context: SessionPointerContext;
@@ -1564,10 +1592,15 @@ export async function writeSessionEnd(
     });
   }
 
+  const platform = options.platform ?? process.platform;
+  const tracker: RegularFileDurabilityTracker = { degraded: false };
   const lock = await acquirePointerLock(
     context,
     candidateSessionId,
     DEFAULT_POINTER_TIMEOUT_MS,
+    platform,
+    tracker,
+    options.regularFileSync,
   );
   let primary: unknown;
   try {
@@ -1642,6 +1675,7 @@ export async function writeSessionEnd(
     throw primary;
   }
   if (releaseFailures.length > 0) throw releaseFailureError(releaseFailures);
+  emitDegradedDurabilityWarning('session pointer end', tracker);
 }
 
 /** Reset session-scoped HUD/metrics files at launch. */

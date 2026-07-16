@@ -2,7 +2,16 @@
  * omx doctor - Validate oh-my-codex installation
  */
 
-import { recoverNativeHookClaimJournal } from "./native-hook-claim-journal.js";
+import {
+	createNativeHookClaimJournalDurability,
+	recoverNativeHookClaimJournal,
+	type NativeHookClaimJournalDurability,
+} from "./native-hook-claim-journal.js";
+import {
+	emitDegradedDurabilityWarning,
+	recordRegularFileSyncOutcome,
+	type RegularFileDurabilityTracker,
+} from "../utils/file-durability.js";
 import { constants, existsSync, readFileSync, type Stats } from "fs";
 import { access, chown, lstat, mkdtemp, readdir, readFile, rmdir, rm } from "fs/promises";
 import { spawnSync } from "child_process";
@@ -91,6 +100,19 @@ import {
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { getInstallableNativeAgentNames } from "../agents/policy.js";
 import { readCatalogManifest } from "../catalog/reader.js";
+
+let doctorClaimJournalDurabilityOverride: NativeHookClaimJournalDurability | undefined;
+
+/** @internal Test seam for deterministic claim-journal durability coverage. */
+export function setDoctorClaimJournalDurabilityForTest(
+	durability: NativeHookClaimJournalDurability | undefined,
+): () => void {
+	const previous = doctorClaimJournalDurabilityOverride;
+	doctorClaimJournalDurabilityOverride = durability;
+	return () => {
+		doctorClaimJournalDurabilityOverride = previous;
+	};
+}
 
 interface DoctorOptions {
 	verbose?: boolean;
@@ -266,7 +288,13 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	const cwd = process.cwd();
 	const scopeResolution = await resolveDoctorScope(cwd);
 	const paths = resolveDoctorPaths(cwd, scopeResolution.scope);
-	await recoverNativeHookClaimJournal(paths.codexHomeDir);
+	const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
+	const recovery = await recoverNativeHookClaimJournal(
+		paths.codexHomeDir,
+		doctorClaimJournalDurabilityOverride ?? createNativeHookClaimJournalDurability(),
+	);
+	recordRegularFileSyncOutcome(recoveryTracker, recovery.outcome);
+	emitDegradedDurabilityWarning("native-hook claim-journal recovery", recoveryTracker);
 	const scopeSourceMessage =
 		scopeResolution.source === "persisted"
 			? " (from .omx/setup-scope.json)"

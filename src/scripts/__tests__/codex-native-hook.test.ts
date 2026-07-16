@@ -3847,6 +3847,34 @@ PY`,
     }
   });
 
+  it("reconciles native SessionStart on Windows EPERM with one degraded-durability warning", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-start-windows-eperm-"));
+    const originalWrite = process.stderr.write;
+    const warnings: string[] = [];
+    process.stderr.write = ((value: string) => {
+      warnings.push(value);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await dispatchCodexNativeHook(
+        { hook_event_name: "SessionStart", cwd, session_id: "sess-start-windows-eperm" },
+        {
+          cwd,
+          sessionStartOptions: {
+            platform: "win32",
+            regularFileSync: async () => { throw Object.assign(new Error("EPERM"), { code: "EPERM" }); },
+          },
+        },
+      );
+      assert.deepEqual(warnings, [
+        "[omx] warning: Windows EPERM regular-file fsync unsupported in session pointer start/reconcile; operation succeeded with degraded durability.\n",
+      ]);
+    } finally {
+      process.stderr.write = originalWrite;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("adds resume-by-id instructions for persisted subagents on SessionStart resume", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-reopen-"));
     try {

@@ -30,7 +30,14 @@ import {
 	checkNativePostCompactHookRuntime,
 	checkNativeHooks,
 	classifyPostCompactHookStdout,
+	doctor,
+	setDoctorClaimJournalDurabilityForTest,
 } from "../doctor.js";
+import {
+	createNativeHookClaimJournalDurability,
+	persistNativeHookClaimJournal,
+} from "../native-hook-claim-journal.js";
+import { syncRegularFile } from "../../utils/file-durability.js";
 import {
 	buildManagedCodexNativeHookCommand,
 	buildManagedCodexNativeHookWindowsShimContent,
@@ -172,6 +179,44 @@ function buildHooksJsonWithPostCompactCommand(
 			]),
 		),
 	}, null, 2)}\n`;
+}
+
+async function withRecoverableDoctorClaimJournal<T>(
+	run: (codexHomeDir: string) => Promise<T>,
+): Promise<T> {
+	const wd = await mkdtemp(join(tmpdir(), "omx-doctor-claim-recovery-"));
+	const codexHomeDir = join(wd, ".codex");
+	const hooksPath = join(codexHomeDir, "hooks.json");
+	const claimPath = join(codexHomeDir, ".hooks.json.omx-claim-test.tmp");
+	const previousCwd = process.cwd();
+	const previousCodexHome = process.env.CODEX_HOME;
+	try {
+		await mkdir(codexHomeDir, { recursive: true });
+		await writeFile(hooksPath, "{\"hooks\":{}}\n");
+		await persistNativeHookClaimJournal(
+			codexHomeDir,
+			{
+				canonicalPath: hooksPath,
+				claimPath,
+				before: Buffer.from("{\"hooks\":{}}\n"),
+				after: null,
+			},
+			createNativeHookClaimJournalDurability(),
+		);
+		await rename(hooksPath, claimPath);
+		const journalPath = join(codexHomeDir, ".omx", "native-hook-claim-journal.json");
+		const journal = JSON.parse(await readFile(journalPath, "utf-8")) as { ownerPid: number };
+		journal.ownerPid = 2_147_483_647;
+		await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf-8");
+		process.env.CODEX_HOME = codexHomeDir;
+		process.chdir(wd);
+		return await run(codexHomeDir);
+	} finally {
+		process.chdir(previousCwd);
+		if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+		else process.env.CODEX_HOME = previousCodexHome;
+		await rm(wd, { recursive: true, force: true });
+	}
 }
 
 describe("omx doctor onboarding warning copy", () => {
@@ -2780,5 +2825,73 @@ command = "node"
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
+	});
+
+	it("recovers a claim journal after Windows regular-file EPERM with one degraded-durability warning", async () => {
+		const originalStderrWrite = process.stderr.write;
+		const stderr: string[] = [];
+		try {
+			await withRecoverableDoctorClaimJournal(async (codexHomeDir) => {
+				const restoreDurability = setDoctorClaimJournalDurabilityForTest({
+					platform: "win32",
+					syncRegularFile: async () => syncRegularFile({
+						sync: async () => {
+							throw Object.assign(new Error("injected Windows EPERM"), { code: "EPERM" });
+						},
+					}, "win32"),
+					syncDirectory: async () => undefined,
+				});
+				process.stderr.write = ((chunk: string | Uint8Array) => {
+					stderr.push(String(chunk));
+					return true;
+				}) as typeof process.stderr.write;
+				try {
+					await doctor();
+					assert.equal(await readFile(join(codexHomeDir, "hooks.json"), "utf-8"), "{\"hooks\":{}}\n");
+					await assert.rejects(
+						readFile(join(codexHomeDir, ".omx", "native-hook-claim-journal.json")),
+						/ENOENT/,
+					);
+				} finally {
+					restoreDurability();
+				}
+			});
+			assert.equal(stderr.length, 1);
+			assert.match(stderr[0]!, /Windows EPERM/);
+			assert.match(stderr[0]!, /native-hook claim-journal recovery/);
+			assert.match(stderr[0]!, /degraded durability/);
+		} finally {
+			process.stderr.write = originalStderrWrite;
+		}
+	});
+
+	it("keeps non-EPERM regular-file and directory claim-journal sync failures fatal", async () => {
+		const regularError = Object.assign(new Error("injected regular-file EIO"), { code: "EIO" });
+		await withRecoverableDoctorClaimJournal(async () => {
+			const restoreDurability = setDoctorClaimJournalDurabilityForTest({
+				platform: "win32",
+				syncRegularFile: async () => { throw regularError; },
+				syncDirectory: async () => undefined,
+			});
+			try {
+				await assert.rejects(doctor(), (error) => error === regularError);
+			} finally {
+				restoreDurability();
+			}
+		});
+
+		const directoryError = Object.assign(new Error("injected directory EPERM"), { code: "EPERM" });
+		await withRecoverableDoctorClaimJournal(async () => {
+			const restoreDurability = setDoctorClaimJournalDurabilityForTest({
+				platform: "win32",
+				syncRegularFile: async () => "synced",
+				syncDirectory: async () => { throw directoryError; },
+			});
+			try {
+				await assert.rejects(doctor(), (error) => error === directoryError);
+			} finally {
+				restoreDurability();
+			}
+		});
 	});
 });

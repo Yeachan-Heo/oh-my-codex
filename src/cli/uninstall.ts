@@ -2,17 +2,19 @@
  * omx uninstall - Remove oh-my-codex configuration and installed artifacts
  */
 
-import { chmod, copyFile, lstat, open, readFile, readdir, rename, rm, writeFile } from "fs/promises";
+import { chmod, copyFile, lstat, open, readFile, readdir, rename, rm, writeFile, type FileHandle } from "fs/promises";
 
 import { constants, existsSync } from "fs";
 import { join, basename, dirname, isAbsolute, relative } from "path";
 import { randomUUID } from "crypto";
 import {
-  clearNativeHookClaimJournal,
-  persistNativeHookClaimJournal,
+  clearNativeHookClaimJournal as clearNativeHookClaimJournalWithDurability,
+  createNativeHookClaimJournalDurability,
+  persistNativeHookClaimJournal as persistNativeHookClaimJournalWithDurability,
   recoverNativeHookClaimJournal,
-  syncNativeHookClaimParent,
-  restoreNativeHookClaimNoClobber,
+  syncNativeHookClaimParent as syncNativeHookClaimParentWithDurability,
+  restoreNativeHookClaimNoClobber as restoreNativeHookClaimNoClobberWithDurability,
+  type NativeHookClaimJournalDurability,
 } from "./native-hook-claim-journal.js";
 import {
   formatTomlStringArray,
@@ -54,6 +56,13 @@ import {
 } from "../utils/agents-md.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import TOML from "@iarna/toml";
+import {
+  emitDegradedDurabilityWarning,
+  recordRegularFileSyncOutcome,
+  syncRegularFile,
+  type RegularFileSyncOutcome,
+  type RegularFileDurabilityTracker,
+} from "../utils/file-durability.js";
 
 /** @internal Deterministic file-operation seam for uninstall transaction tests. */
 export type UninstallTransactionFailureStage =
@@ -75,6 +84,25 @@ export type UninstallTransactionFailureStage =
   | "after-staged-cleanup"
   | "after-config-commit";
 
+/** @internal Distinguishes each direct regular-file durability boundary. */
+export type UninstallRegularFileSyncSite =
+  | "replacement-temporary"
+  | "installed-destination"
+  | "staged-deletion";
+
+let uninstallClaimJournalDurabilityOverride: NativeHookClaimJournalDurability | undefined;
+
+/** @internal Test seam for deterministic claim-journal durability coverage. */
+export function setUninstallClaimJournalDurabilityForTest(
+  durability: NativeHookClaimJournalDurability | undefined,
+): () => void {
+  const previous = uninstallClaimJournalDurabilityOverride;
+  uninstallClaimJournalDurabilityOverride = durability;
+  return () => {
+    uninstallClaimJournalDurabilityOverride = previous;
+  };
+}
+
 
 export interface UninstallOptions {
   codexFeaturesProbe?: () => string | null;
@@ -95,6 +123,12 @@ export interface UninstallOptions {
     path: string,
     purpose: "write" | "delete",
   ) => string;
+  /** @internal */
+  regularFileSyncForTest?: (
+    site: UninstallRegularFileSyncSite,
+    handle: Pick<FileHandle, "sync">,
+    platform: NodeJS.Platform,
+  ) => Promise<RegularFileSyncOutcome>;
 
 
 }
@@ -864,6 +898,37 @@ function transactionTemporaryPath(
   );
 }
 
+function uninstallClaimJournalDurability() {
+  return uninstallClaimJournalDurabilityOverride
+    ?? createNativeHookClaimJournalDurability();
+}
+
+async function clearNativeHookClaimJournal(root: string): Promise<void> {
+  return clearNativeHookClaimJournalWithDurability(root, uninstallClaimJournalDurability());
+}
+
+async function persistNativeHookClaimJournal(
+  root: string,
+  entry: Parameters<typeof persistNativeHookClaimJournalWithDurability>[1],
+): Promise<RegularFileSyncOutcome> {
+  return persistNativeHookClaimJournalWithDurability(root, entry, uninstallClaimJournalDurability());
+}
+
+async function restoreNativeHookClaimNoClobber(
+  claimPath: string,
+  destinationPath: string,
+): Promise<RegularFileSyncOutcome> {
+  return restoreNativeHookClaimNoClobberWithDurability(
+    claimPath,
+    destinationPath,
+    uninstallClaimJournalDurability(),
+  );
+}
+
+async function syncNativeHookClaimParent(path: string): Promise<void> {
+  return syncNativeHookClaimParentWithDurability(path, uninstallClaimJournalDurability());
+}
+
 function transactionClaimPath(path: string): string {
   return join(
     dirname(path),
@@ -871,8 +936,15 @@ function transactionClaimPath(path: string): string {
   );
 }
 
-async function restoreUninstallClaim(claimPath: string, destinationPath: string): Promise<void> {
-  await restoreNativeHookClaimNoClobber(claimPath, destinationPath);
+async function restoreUninstallClaim(
+  claimPath: string,
+  destinationPath: string,
+  tracker: RegularFileDurabilityTracker,
+): Promise<void> {
+  recordRegularFileSyncOutcome(
+    tracker,
+    await restoreNativeHookClaimNoClobber(claimPath, destinationPath),
+  );
 }
 
 
@@ -995,6 +1067,7 @@ async function removeOwnedTemporary(
   snapshot: FileSnapshot | undefined,
   originalError: unknown,
   description: "temporary" | "staged deletion",
+  tracker: RegularFileDurabilityTracker,
 ): Promise<void> {
 
   try {
@@ -1009,7 +1082,7 @@ async function removeOwnedTemporary(
       await assertSnapshotAtPath(claimPath, snapshot, `${description} cleanup claim`);
     } catch (error) {
       try {
-        await restoreUninstallClaim(claimPath, path);
+        await restoreUninstallClaim(claimPath, path, tracker);
       } catch (recoveryError) {
         throw new Error(
           `${error instanceof Error ? error.message : String(error)}; preserved claim ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
@@ -1029,11 +1102,30 @@ async function removeOwnedTemporary(
 }
 
 
+type UninstallDurabilityOptions = Pick<
+  UninstallOptions,
+  "regularFileSyncForTest" | "transactionPlatform"
+> & {
+  durabilityTracker: RegularFileDurabilityTracker;
+};
+
+async function syncUninstallRegularFile(
+  site: UninstallRegularFileSyncSite,
+  handle: Pick<FileHandle, "sync">,
+  options: UninstallDurabilityOptions,
+): Promise<void> {
+  const platform = options.transactionPlatform ?? process.platform;
+  const outcome = options.regularFileSyncForTest
+    ? await options.regularFileSyncForTest(site, handle, platform)
+    : await syncRegularFile(handle, platform);
+  recordRegularFileSyncOutcome(options.durabilityTracker, outcome);
+}
+
 async function atomicReplaceFile(
   mutation: PlannedFileMutation,
   expectedCurrent: FileSnapshot,
   content: Buffer,
-  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath"> & UninstallDurabilityOptions,
   stage: "write" | "rollback",
   onRename: (ownership: RenamedDestinationOwnership) => void,
 
@@ -1059,7 +1151,7 @@ async function atomicReplaceFile(
     temporaryCreated = true;
     await handle.writeFile(content);
     await chmod(temporaryPath, mutation.snapshot.mode);
-    await handle.sync();
+    await syncUninstallRegularFile("replacement-temporary", handle, options);
     await handle.close();
     handle = undefined;
     temporarySnapshot = await readFileSnapshot(
@@ -1091,12 +1183,15 @@ async function atomicReplaceFile(
     claimPath = transactionClaimPath(mutation.snapshot.path);
     const controlledRoot = mutation.snapshot.topology?.root;
     if (expectedCurrent.bytes !== null && controlledRoot) {
-      await persistNativeHookClaimJournal(controlledRoot, {
-        canonicalPath: mutation.snapshot.path,
-        claimPath,
-        before: expectedCurrent.bytes,
-        after: content,
-      });
+      recordRegularFileSyncOutcome(
+        options.durabilityTracker,
+        await persistNativeHookClaimJournal(controlledRoot, {
+          canonicalPath: mutation.snapshot.path,
+          claimPath,
+          before: expectedCurrent.bytes,
+          after: content,
+        }),
+      );
       journaledClaim = true;
       await rename(mutation.snapshot.path, claimPath);
       claimCreated = true;
@@ -1107,7 +1202,7 @@ async function atomicReplaceFile(
     await chmod(mutation.snapshot.path, mutation.snapshot.mode);
     const installedHandle = await open(mutation.snapshot.path, "r");
     try {
-      await installedHandle.sync();
+      await syncUninstallRegularFile("installed-destination", installedHandle, options);
     } finally {
       await installedHandle.close();
     }
@@ -1147,7 +1242,7 @@ async function atomicReplaceFile(
     await handle?.close().catch(() => undefined);
     if (claimCreated && claimPath) {
       try {
-        await restoreUninstallClaim(claimPath, mutation.snapshot.path);
+        await restoreUninstallClaim(claimPath, mutation.snapshot.path, options.durabilityTracker);
         await syncNativeHookClaimParent(mutation.snapshot.path);
         claimCreated = false;
         const controlledRoot = mutation.snapshot.topology?.root;
@@ -1167,6 +1262,7 @@ async function atomicReplaceFile(
         temporarySnapshot,
         error,
         "temporary",
+        options.durabilityTracker,
       );
 
     }
@@ -1178,7 +1274,7 @@ async function atomicReplaceFile(
 async function stageAndRemoveFile(
   mutation: PlannedFileMutation,
   execution: MutationExecution,
-  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath"> & UninstallDurabilityOptions,
   assertApplied: () => Promise<void>,
 ): Promise<void> {
   if (mutation.snapshot.bytes === null || mutation.snapshot.mode === null) {
@@ -1195,7 +1291,7 @@ async function stageAndRemoveFile(
     stagedCreated = true;
     await handle.writeFile(mutation.snapshot.bytes);
     await chmod(stagedPath, mutation.snapshot.mode);
-    await handle.sync();
+    await syncUninstallRegularFile("staged-deletion", handle, options);
     await handle.close();
     handle = undefined;
     const stagedDeletion = await readFileSnapshot(
@@ -1221,12 +1317,15 @@ async function stageAndRemoveFile(
 
     const controlledRoot = mutation.snapshot.topology?.root;
     if (controlledRoot && mutation.snapshot.bytes !== null) {
-      await persistNativeHookClaimJournal(controlledRoot, {
-        canonicalPath: mutation.snapshot.path,
-        claimPath,
-        before: mutation.snapshot.bytes,
-        after: null,
-      });
+      recordRegularFileSyncOutcome(
+        options.durabilityTracker,
+        await persistNativeHookClaimJournal(controlledRoot, {
+          canonicalPath: mutation.snapshot.path,
+          claimPath,
+          before: mutation.snapshot.bytes,
+          after: null,
+        }),
+      );
     }
     await rename(mutation.snapshot.path, claimPath);
     if (controlledRoot) await syncNativeHookClaimParent(claimPath);
@@ -1245,7 +1344,7 @@ async function stageAndRemoveFile(
       await assertSnapshotAtPath(claimPath, mutation.snapshot, "removal claim");
     } catch (error) {
       try {
-        await restoreUninstallClaim(claimPath, mutation.snapshot.path);
+        await restoreUninstallClaim(claimPath, mutation.snapshot.path, options.durabilityTracker);
         if (controlledRoot) await syncNativeHookClaimParent(mutation.snapshot.path);
         if (controlledRoot) await clearNativeHookClaimJournal(controlledRoot);
         execution.appliedSnapshot = undefined;
@@ -1275,6 +1374,7 @@ async function stageAndRemoveFile(
         execution.stagedDeletion,
         error,
         "staged deletion",
+        options.durabilityTracker,
       );
     }
     throw error;
@@ -1284,7 +1384,7 @@ async function stageAndRemoveFile(
 async function applyFileMutation(
   execution: MutationExecution,
   executions: readonly MutationExecution[],
-  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath"> & UninstallDurabilityOptions,
 ): Promise<void> {
   const { mutation } = execution;
   if (mutation.finalContent === null) {
@@ -1339,7 +1439,7 @@ async function captureRollbackOwnedSnapshot(
 
 async function restoreFileSnapshot(
   execution: MutationExecution,
-  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath"> & UninstallDurabilityOptions,
   assertRollbackState: () => Promise<void>,
 ): Promise<void> {
   const { mutation } = execution;
@@ -1372,7 +1472,7 @@ async function restoreFileSnapshot(
       await assertSnapshotAtPath(claimPath, appliedSnapshot, "rollback removal claim");
     } catch (error) {
       try {
-        await restoreUninstallClaim(claimPath, mutation.snapshot.path);
+        await restoreUninstallClaim(claimPath, mutation.snapshot.path, options.durabilityTracker);
       } catch (recoveryError) {
         throw new Error(
           `Uninstall rollback removal claim failed (${error instanceof Error ? error.message : String(error)}) and preserved ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
@@ -1406,7 +1506,7 @@ async function restoreFileSnapshot(
 
 async function cleanupStagedDeletions(
   executions: readonly MutationExecution[],
-  options: Pick<UninstallOptions, "transactionFailureInjector">,
+  options: Pick<UninstallOptions, "transactionFailureInjector"> & UninstallDurabilityOptions,
   stage: "commit" | "rollback",
   transaction?: UninstallArtifactTransaction,
   assertRollbackState?: () => Promise<void>,
@@ -1431,7 +1531,7 @@ async function cleanupStagedDeletions(
       await assertSnapshotAtPath(claimPath, stagedDeletion, "staged deletion cleanup claim");
     } catch (error) {
       try {
-        await restoreUninstallClaim(claimPath, stagedDeletion.path);
+        await restoreUninstallClaim(claimPath, stagedDeletion.path, options.durabilityTracker);
       } catch (recoveryError) {
         throw new Error(
           `Uninstall staged deletion cleanup claim failed (${error instanceof Error ? error.message : String(error)}) and preserved ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
@@ -1459,7 +1559,7 @@ async function assertRollbackTransactionState(
 
 async function rollbackArtifactMutations(
   executions: readonly MutationExecution[],
-  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath"> & UninstallDurabilityOptions,
 ): Promise<void> {
   const failures: string[] = [];
   const restored: MutationExecution[] = [];
@@ -1539,7 +1639,7 @@ async function commitUninstallArtifactTransaction(
   options: Pick<
     UninstallOptions,
     "transactionFailureInjector" | "transactionTemporaryPath"
-  >,
+  > & UninstallDurabilityOptions,
 ): Promise<void> {
   const mutations = [transaction.hooks, transaction.shim, transaction.config]
     .filter((mutation): mutation is PlannedFileMutation => mutation !== undefined);
@@ -1723,7 +1823,14 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   const scope = options.scope ?? readPersistedSetupScope(projectRoot) ?? "user";
   const scopeDirs = resolveScopeDirectories(scope, projectRoot);
   if (!dryRun) {
-    await recoverNativeHookClaimJournal(scopeDirs.codexHomeDir);
+    const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
+    const recovery = await recoverNativeHookClaimJournal(
+      scopeDirs.codexHomeDir,
+      uninstallClaimJournalDurabilityOverride
+        ?? createNativeHookClaimJournalDurability(options.transactionPlatform ?? process.platform),
+    );
+    recordRegularFileSyncOutcome(recoveryTracker, recovery.outcome);
+    emitDegradedDurabilityWarning("native-hook claim-journal recovery", recoveryTracker);
   }
   const transactionPlatform = options.transactionPlatform ?? process.platform;
 
@@ -1832,10 +1939,15 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   console.log("[1/6] Removing native hooks artifact...");
   if (!keepConfig) console.log("[2/6] Cleaning config.toml...");
   if (!dryRun) {
+    const mutationTracker: RegularFileDurabilityTracker = { degraded: false };
     await commitUninstallArtifactTransaction(artifactTransaction, {
       transactionFailureInjector: options.transactionFailureInjector,
       transactionTemporaryPath: options.transactionTemporaryPath,
+      transactionPlatform,
+      regularFileSyncForTest: options.regularFileSyncForTest,
+      durabilityTracker: mutationTracker,
     });
+    emitDegradedDurabilityWarning("native-hook uninstall", mutationTracker);
   }
   if (verbose) {
     if (artifactTransaction.hooks) {

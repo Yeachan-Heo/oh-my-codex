@@ -3118,6 +3118,54 @@ describe('omx uninstall', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it('warns once after a successful Windows EPERM-degraded uninstall transaction', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-durability-'));
+    const originalStderrWrite = process.stderr.write;
+    const stderr: string[] = [];
+    try {
+      await withCwd(wd, async () => {
+        const codexDir = join(wd, '.codex');
+        const configPath = join(codexDir, 'config.toml');
+        const hooksPath = join(codexDir, 'hooks.json');
+        const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexDir);
+        await mkdir(codexDir, { recursive: true });
+        await mkdir(dirname(shimPath), { recursive: true });
+        await writeFile(configPath, buildOmxConfig());
+        await writeFile(
+          hooksPath,
+          `${JSON.stringify(buildManagedCodexHooksConfig(packageRoot(), {
+            platform: 'win32',
+            codexHomeDir: codexDir,
+          }), null, 2)}\n`,
+        );
+        await writeFile(shimPath, buildManagedCodexNativeHookWindowsShimContent(packageRoot()));
+        const syncSites: string[] = [];
+        process.stderr.write = ((chunk: string | Uint8Array) => {
+          stderr.push(String(chunk));
+          return true;
+        }) as typeof process.stderr.write;
+        await uninstall({
+          scope: 'project',
+          transactionPlatform: 'win32',
+          regularFileSyncForTest: async (site, _handle, platform) => {
+            assert.equal(platform, 'win32');
+            syncSites.push(site);
+            return 'unsupported-windows-eperm';
+          },
+        });
+        assert.deepEqual([...new Set(syncSites)].sort(), [
+          'installed-destination',
+          'replacement-temporary',
+          'staged-deletion',
+        ]);
+        assert.equal(stderr.filter((line) => line.includes('Windows EPERM')).length, 1);
+        assert.match(stderr[0]!, /native-hook uninstall.*degraded durability/);
+      });
+    } finally {
+      process.stderr.write = originalStderrWrite;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('stripOmxFeatureFlags', () => {
