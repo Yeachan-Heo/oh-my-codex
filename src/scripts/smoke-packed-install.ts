@@ -1618,7 +1618,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
     };
     const teamEnv: NodeJS.ProcessEnv = {
       ...hookEnv,
-      OMX_TEAM_WORKER: `${teamName}/worker-1`,
+      OMX_TEAM_WORKER: `packed-display/worker-1`,
       OMX_TEAM_STATE_ROOT: stateDir,
       OMX_TEAM_INTERNAL_WORKER: `${teamName}/worker-1`,
       OMX_TEAM_LEADER_CWD: smokeCwd,
