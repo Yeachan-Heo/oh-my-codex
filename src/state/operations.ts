@@ -13,7 +13,7 @@ import {
   getStateDir,
   getStatePath,
   resolveRuntimeStateScope,
-  resolveStateScope,
+  resolveWritableStateScope,
   resolveWorkingDirectoryForState,
   validateSessionId,
   validateStateModeSegment,
@@ -35,7 +35,9 @@ import {
   clearTerminalSkillActiveMarkers,
   getSkillActiveStatePathsForStateDir,
   isTerminalSkillActiveState,
+  isTransitionCanonicalStateOwned,
   listActiveSkills,
+  listTransitionActiveSkills,
   readSkillActiveState,
   readVisibleSkillActiveStateForStateDir,
   syncCanonicalSkillStateForMode,
@@ -545,14 +547,16 @@ export async function completeRalplanSession(options: {
   requireNativeSubagents?: boolean;
 }): Promise<boolean> {
   if (!isCompleteRalplanTerminalState(options.state)) return false;
-  const validationError = validateRalplanTerminalConsensus(options.cwd, options.state, options.explicitSessionId, {
+  const writableScope = await resolveWritableStateScope(options.cwd, options.explicitSessionId);
+  const sessionId = writableScope.sessionId;
+  const validationError = validateRalplanTerminalConsensus(options.cwd, options.state, sessionId, {
     requireNativeSubagents: options.requireNativeSubagents === true,
   });
   if (validationError) throw new Error(validationError);
 
-  const sessionId = optionalSessionId(options.explicitSessionId);
   const completedSessionId = sessionId ?? optionalSessionId(options.state.session_id);
   const rootScopeCompletion = !sessionId;
+
   const nowIso = new Date().toISOString();
   const rootState = buildRalplanTerminalState(options.state, sessionId, nowIso);
   const rootStatePath = getStatePath('ralplan', options.cwd);
@@ -661,14 +665,9 @@ export async function listActiveStateModes(
   });
   const canonicalState = await readVisibleSkillActiveStateForStateDir(getBaseStateDir(cwd), sessionId);
   const canonicalActiveModes = new Set(
-    listActiveSkills(canonicalState ?? {})
-      .filter((entry) => {
-        const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
-        return sessionId ? entrySessionId === sessionId : entrySessionId.length === 0;
-      })
-      .map((entry) => entry.skill),
+    listTransitionActiveSkills(canonicalState ?? {}, sessionId).map((entry) => entry.skill),
   );
-  const hasCanonicalVisibility = canonicalState !== null;
+  const hasCanonicalVisibility = isTransitionCanonicalStateOwned(canonicalState, sessionId);
 
   return Object.entries(statuses)
     .filter(([mode, status]) => {
@@ -685,13 +684,8 @@ async function readCanonicalActiveWorkflowModes(
   baseStateDir: string,
   sessionId?: string,
 ): Promise<TrackedWorkflowMode[]> {
-  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   const canonicalState = await readVisibleSkillActiveStateForStateDir(baseStateDir, sessionId);
-  const activeModes = listActiveSkills(canonicalState ?? {})
-    .filter((entry) => {
-      const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
-      return normalizedSessionId ? entrySessionId === normalizedSessionId : entrySessionId.length === 0;
-    })
+  const activeModes = listTransitionActiveSkills(canonicalState ?? {}, sessionId)
     .map((entry) => entry.skill)
     .filter(isTrackedWorkflowMode);
   return [...new Set(activeModes)];
@@ -761,13 +755,13 @@ export async function executeStateOperation(
       }
 
       case 'state_write': {
-        const stateScope = await resolveStateScope(cwd, explicitSessionId);
+        const stateScope = await resolveWritableStateScope(cwd, explicitSessionId);
         const effectiveSessionId = stateScope.sessionId;
+        const mode = validateStateModeSegment(rawArgs.mode);
         const { baseStateDir, rootSource } = getBaseStateDirWithSource(cwd);
         await initializeStateEnvironment(cwd, effectiveSessionId, rootSource);
-
-        const mode = validateStateModeSegment(rawArgs.mode);
         const path = getStatePath(mode, cwd, effectiveSessionId);
+
         const {
           mode: _mode,
           workingDirectory: _workingDirectory,
@@ -1020,9 +1014,10 @@ export async function executeStateOperation(
               cwd,
               baseStateDir,
               state: data,
-              explicitSessionId: effectiveSessionId,
+              explicitSessionId,
               requireNativeSubagents: true,
             });
+
           if (!ralplanCompletionHandled) {
             await syncCanonicalSkillStateForMode({
               cwd,
@@ -1047,69 +1042,71 @@ export async function executeStateOperation(
       }
 
       case 'state_clear': {
-        const stateScope = await resolveStateScope(cwd, explicitSessionId);
-        const effectiveSessionId = stateScope.sessionId;
-        const { baseStateDir, rootSource } = getBaseStateDirWithSource(cwd);
-        await initializeStateEnvironment(cwd, effectiveSessionId, rootSource);
-
         const mode = validateStateModeSegment(rawArgs.mode);
         const allSessions = rawArgs.all_sessions === true;
+        const { baseStateDir, rootSource } = getBaseStateDirWithSource(cwd);
 
-        if (!allSessions) {
-          const path = getStatePath(mode, cwd, effectiveSessionId);
-          if (
-            mode !== SKILL_ACTIVE_STATE_MODE
-            && effectiveSessionId
-            && existsSync(getStatePath(mode, cwd))
-          ) {
-            await writeClearedSessionScopedModeState(path, mode, effectiveSessionId);
-          } else if (existsSync(path)) {
+        if (allSessions) {
+          const removedPaths: string[] = [];
+          const paths = await getAllScopedStatePaths(mode, cwd);
+          for (const path of paths) {
+            if (!existsSync(path)) continue;
             await unlink(path);
+            removedPaths.push(path);
           }
-          const nativeStopCleared = effectiveSessionId
-            ? await clearSessionNativeStopState(baseStateDir, effectiveSessionId)
-            : [];
-          if (mode !== SKILL_ACTIVE_STATE_MODE) {
+          const canonicalPaths = mode === SKILL_ACTIVE_STATE_MODE
+            ? []
+            : await getAllScopedStatePaths(SKILL_ACTIVE_STATE_MODE, cwd);
+          if (canonicalPaths.some((path) => existsSync(path))) {
             await syncCanonicalSkillStateForMode({
               cwd,
               baseStateDir,
               mode,
               active: false,
-              sessionId: effectiveSessionId,
               source: 'state-operations',
+              allSessions: true,
             });
           }
-          return { payload: { cleared: true, mode, path, ...(nativeStopCleared.length > 0 ? { native_stop_cleared: nativeStopCleared } : {}) } };
+
+          return {
+            payload: {
+              cleared: true,
+              mode,
+              all_sessions: true,
+              removed: removedPaths.length,
+              paths: removedPaths,
+              warning: 'all_sessions clears global and session-scoped state files',
+            },
+          };
         }
 
-        const removedPaths: string[] = [];
-        const paths = await getAllScopedStatePaths(mode, cwd);
-        for (const path of paths) {
-          if (!existsSync(path)) continue;
+        const stateScope = await resolveWritableStateScope(cwd, explicitSessionId);
+        const effectiveSessionId = stateScope.sessionId;
+        await initializeStateEnvironment(cwd, effectiveSessionId, rootSource);
+        const path = getStatePath(mode, cwd, effectiveSessionId);
+        if (
+          mode !== SKILL_ACTIVE_STATE_MODE
+          && effectiveSessionId
+          && existsSync(getStatePath(mode, cwd))
+        ) {
+          await writeClearedSessionScopedModeState(path, mode, effectiveSessionId);
+        } else if (existsSync(path)) {
           await unlink(path);
-          removedPaths.push(path);
         }
+        const nativeStopCleared = effectiveSessionId
+          ? await clearSessionNativeStopState(baseStateDir, effectiveSessionId)
+          : [];
         if (mode !== SKILL_ACTIVE_STATE_MODE) {
           await syncCanonicalSkillStateForMode({
             cwd,
             baseStateDir,
             mode,
             active: false,
+            sessionId: effectiveSessionId,
             source: 'state-operations',
-            allSessions: true,
           });
         }
-
-        return {
-          payload: {
-            cleared: true,
-            mode,
-            all_sessions: true,
-            removed: removedPaths.length,
-            paths: removedPaths,
-            warning: 'all_sessions clears global and session-scoped state files',
-          },
-        };
+        return { payload: { cleared: true, mode, path, ...(nativeStopCleared.length > 0 ? { native_stop_cleared: nativeStopCleared } : {}) } };
       }
 
       case 'state_list_active': {

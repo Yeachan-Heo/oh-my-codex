@@ -67,6 +67,63 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'review code', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow' },
 ] as const;
 
+export interface ExplicitSkillAlias {
+  readonly source: string;
+  readonly target: string;
+}
+
+export interface ExplicitSkillDefinition {
+  readonly skill: string;
+  readonly priority: number;
+}
+
+export const EXPLICIT_SKILL_ALIASES: readonly ExplicitSkillAlias[] = Object.freeze([
+  Object.freeze({ source: 'ulw', target: 'ultrawork' }),
+  Object.freeze({ source: 'frontend-ui-ux', target: 'design' }),
+]);
+
+function createExplicitSkillLookup(): Readonly<Record<string, ExplicitSkillDefinition>> {
+  const canonical = Object.create(null) as Record<string, ExplicitSkillDefinition>;
+  for (const definition of KEYWORD_TRIGGER_DEFINITIONS) {
+    if (!definition.keyword.startsWith('$')) continue;
+    const token = definition.keyword.slice(1).toLowerCase();
+    const existing = canonical[token];
+    if (existing && (existing.skill !== definition.skill || existing.priority !== definition.priority)) {
+      throw new Error(`Conflicting canonical explicit skill definition for ${token}`);
+    }
+    canonical[token] = Object.freeze({ skill: definition.skill, priority: definition.priority });
+  }
+
+  const aliases = new Set<string>();
+  for (const alias of EXPLICIT_SKILL_ALIASES) {
+    const source = alias.source.toLowerCase();
+    const target = alias.target.toLowerCase();
+    if (!aliases.add(source)) throw new Error(`Duplicate explicit skill alias source: ${source}`);
+
+    const targetDefinition = canonical[target];
+    if (!targetDefinition) throw new Error(`Missing explicit skill alias target: ${target}`);
+
+    const sourceDefinition = canonical[source];
+    if (sourceDefinition && sourceDefinition.skill !== targetDefinition.skill) {
+      throw new Error(`Explicit skill alias shadows another skill: ${source}`);
+    }
+
+    canonical[source] = Object.freeze({
+      skill: targetDefinition.skill,
+      priority: targetDefinition.priority,
+    });
+  }
+
+  return Object.freeze(canonical);
+}
+
+/** Exact lower-case explicit-token lookup, including immutable aliases. */
+export const EXPLICIT_SKILL_LOOKUP = createExplicitSkillLookup();
+
+export function getExplicitSkillDefinition(token: string): ExplicitSkillDefinition | undefined {
+  return EXPLICIT_SKILL_LOOKUP[token.toLowerCase()];
+}
+
 export function compareKeywordMatches(a: { priority: number; keyword: string }, b: { priority: number; keyword: string }): number {
   if (b.priority !== a.priority) return b.priority - a.priority;
   if (b.keyword.length !== a.keyword.length) return b.keyword.length - a.keyword.length;

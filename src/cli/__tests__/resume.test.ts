@@ -602,7 +602,11 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
 
       await writeFile(fakeCodexPath, `#!/bin/sh
 printf 'fake-codex:%s\\n' "$*"
-find "$CODEX_HOME/sessions" -type f -name '*.jsonl' -exec stat -c '%y %n' {} \\; | sort
+if stat -c '%y %n' "$CODEX_HOME/sessions" >/dev/null 2>&1; then
+  find "$CODEX_HOME/sessions" -type f -name '*.jsonl' -exec stat -c '%y %n' {} \\;
+else
+  find "$CODEX_HOME/sessions" -type f -name '*.jsonl' -exec stat -f '%Sm %N' -t '%Y-%m-%d %H:%M:%S.000000000' {} \\;
+fi | sort
 `);
       await chmod(fakeCodexPath, 0o755);
       await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
@@ -611,6 +615,7 @@ find "$CODEX_HOME/sessions" -type f -name '*.jsonl' -exec stat -c '%y %n' {} \\;
       const result = runOmx(wd, ['resume', '--sort', 'updated'], {
         HOME: home,
         PATH: `${fakeBin}:/usr/bin:/bin`,
+        TZ: 'UTC',
         OMX_AUTO_UPDATE: '0',
         OMX_NOTIFY_FALLBACK: '0',
         OMX_HOOK_DERIVED_SIGNALS: '0',

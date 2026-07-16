@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { executeStateOperation } from '../operations.js';
 import { subagentTrackingPath } from '../../subagents/tracker.js';
 import { updateModeState } from '../../modes/base.js';
+import { WRITABLE_STATE_SCOPE_ERRORS } from '../../mcp/state-paths.js';
 
 async function withAmbientTmuxEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>): Promise<T> {
   const previousTmux = process.env.TMUX;
@@ -115,7 +116,9 @@ function validExecutionContract(stride: 'task' | 'deliverable' | 'milestone'): R
 
 async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
   const trackingPath = subagentTrackingPath(cwd);
-  const now = '2026-05-28T00:00:00.000Z';
+  const architectCompletedAt = '2026-05-28T00:00:00.000Z';
+  const criticStartedAt = '2026-05-28T00:01:00.000Z';
+  const criticCompletedAt = '2026-05-28T00:02:00.000Z';
   await mkdir(dirname(trackingPath), { recursive: true });
   await writeFile(trackingPath, JSON.stringify({
     schemaVersion: 1,
@@ -123,11 +126,11 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
       [sessionId]: {
         session_id: sessionId,
         leader_thread_id: 'thread-leader',
-        updated_at: now,
+        updated_at: criticCompletedAt,
         threads: {
-          'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: now, last_seen_at: now, turn_count: 1 },
-          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
-          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+          'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, turn_count: 1 },
+          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, completed_at: architectCompletedAt, turn_count: 1, mode: 'architect' },
+          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: criticStartedAt, last_seen_at: criticCompletedAt, completed_at: criticCompletedAt, turn_count: 1, mode: 'critic' },
         },
       },
     },
@@ -150,6 +153,7 @@ function ralplanConsensusGate(
     ralplan_architect_review: {
       agent_role: 'architect',
       verdict: 'approve',
+      sequence_index: 1,
       provenance_kind: provenanceKind,
       session_id: sessionId,
       thread_id: architectThread,
@@ -159,6 +163,7 @@ function ralplanConsensusGate(
     ralplan_critic_review: {
       agent_role: 'critic',
       verdict: 'approve',
+      sequence_index: 2,
       provenance_kind: provenanceKind,
       session_id: sessionId,
       thread_id: criticThread,
@@ -1764,7 +1769,59 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('does not promote stale session metadata when ralplan terminalizes from root scope', async () => {
+  it('activates deep-interview when terminal Team detail outranks foreign legacy mirrors', async () => {
+    await withStateRootEnv({}, async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-stale-team-transition-'));
+      try {
+        const stateDir = join(wd, '.omx', 'state');
+        await mkdir(stateDir, { recursive: true });
+        const teamState = { active: false, mode: 'team', current_phase: 'cancelled', run_outcome: 'continue' };
+        const foreignSkillState = {
+          version: 1,
+          active: true,
+          skill: 'team',
+          phase: 'team-exec',
+          current_phase: 'cancelled',
+          session_id: 'foreign-team-session',
+          active_skills: [{ skill: 'team', phase: 'team-exec', active: true }],
+        };
+        const runState = { version: 1, mode: 'team', active: true, outcome: 'continue', current_phase: 'team-exec' };
+        await writeFile(join(stateDir, 'team-state.json'), JSON.stringify(teamState, null, 2));
+        await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify(foreignSkillState, null, 2));
+        await writeFile(join(stateDir, 'run-state.json'), JSON.stringify(runState, null, 2));
+
+        const beforeList = await executeStateOperation('state_list_active', { workingDirectory: wd });
+        const beforeTeam = await executeStateOperation('state_read', { workingDirectory: wd, mode: 'team' });
+        assert.deepEqual(beforeList.payload, { active_modes: ['run'] });
+        assert.deepEqual(beforeTeam.payload, teamState);
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          mode: 'deep-interview',
+          active: true,
+          current_phase: 'deep-interview',
+          state: { interview_id: 'fixture', profile: 'quick', type: 'brownfield' },
+        });
+
+        const payload = responsePayload<{ success: boolean; path: string }>(response);
+        assert.equal(payload.success, true);
+        assert.equal(payload.path, join(stateDir, 'deep-interview-state.json'));
+        assert.deepEqual(JSON.parse(await readFile(join(stateDir, 'team-state.json'), 'utf-8')), teamState);
+        assert.deepEqual(JSON.parse(await readFile(join(stateDir, 'run-state.json'), 'utf-8')), runState);
+        assert.equal(existsSync(join(stateDir, 'sessions', 'foreign-team-session', 'deep-interview-state.json')), false);
+
+        assert.deepEqual(
+          JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')),
+          foreignSkillState,
+        );
+        const afterList = await executeStateOperation('state_list_active', { workingDirectory: wd });
+        assert.deepEqual(afterList.payload, { active_modes: ['deep-interview', 'run'] });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+  });
+  it('fails closed without mutating root state when ralplan terminalization sees a foreign session pointer', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-stale-session-'));
     try {
       const staleSessionId = 'sess-ralplan-stale';
@@ -1816,23 +1873,23 @@ describe('state operations directory initialization', () => {
         },
       });
 
-      assert.equal(response.isError, undefined);
+      assert.equal(response.isError, true);
+      assert.deepEqual(response.payload, { error: WRITABLE_STATE_SCOPE_ERRORS.unusableSession });
       const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(rootRalplan.active, false);
-      assert.equal(rootRalplan.current_phase, 'complete');
-      assert.equal(rootRalplan.status, 'complete');
-      assert.equal(rootRalplan.session_id, undefined);
+      assert.equal(rootRalplan.active, true);
+      assert.equal(rootRalplan.current_phase, 'planning');
+      assert.equal(rootRalplan.session_id, staleSessionId);
       const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(rootSkill.active, false);
-      assert.equal(rootSkill.phase, 'complete');
-      assert.deepEqual(rootSkill.active_skills, []);
+      assert.equal(rootSkill.active, true);
+      assert.equal(rootSkill.phase, 'planning');
+      assert.equal(Array.isArray(rootSkill.active_skills), true);
       assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), false);
       assert.equal(existsSync(join(sessionDir, 'skill-active-state.json')), false);
 
       const listed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
       });
-      assert.deepEqual(listed.payload, { active_modes: [] });
+      assert.deepEqual(listed.payload, { active_modes: ['ralplan'] });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

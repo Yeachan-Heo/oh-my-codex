@@ -1,23 +1,27 @@
-# oh-my-codex 0.20.1
+# oh-my-codex 0.20.2
 
-`0.20.1` is a patch release for the reliability fixes in `v0.20.0..9eadab9f191103177fb3eac1b237188ada1f503c`.
+`0.20.2` is a patch release for the reliability and workflow-safety work in the exact range `v0.20.1..f5e4753135ebc86342e7353300ac3ec5d9ae3d8d`.
 
 ## Highlights
 
-- CRLF-safe generated `AGENTS.md` marker insertion (#3107).
-- Ralplan can write normalized direct-child Markdown draft artifacts under `.omx/drafts/` without relaxing the native planning-write boundary (#3110).
-- Fresh setup stops seeding legacy multi-agent and context-window defaults, leaving user-owned configuration and native role routing intact (#3111, #3115).
-- Stop hook responses remain schema-safe (#3114).
-- Conductor execution recognizes trusted delegated collaboration-child provenance while protecting leader and planning-boundary cases (#3117; issue #3116).
-- Native delegation detection handles incomplete capability inventories safely, and quoted Bash argument values no longer misparse as write targets (#3120; issue #3119).
+- Authenticated fresh App leaders can bootstrap Ralplan role intent in-turn through durable, fail-closed leader attestation and atomic recovery (#3184; issue #3181).
+- Native `spawn_agent` role routing is surface-aware; adapted-role tracker/marker binding is transactional, recoverable, and protected by cross-process lock cleanup (#3152, #3166; issue #3118). Native subagents can stop without a generic auto-nudge (#3180).
+- Prompt/session provenance is isolated across concurrent chats, fallback notifications are deduplicated across processes, and canonical Ralplan state rejects ambiguous session aliases (#3168, #3165, #3158).
+- Setup preserves explicit `AGENTS.md` merge policy, Team honors an explicit worker policy, and stale foreign state-transition mirrors are ignored (#3164, #3136, #3172).
 
-## Merged PRs since v0.20.0
+## Additional fixes
 
-#3107 (CRLF generated AGENTS marker insertion), #3110 (Ralplan Markdown draft artifact writes), #3111 (legacy multi-agent default seeding), #3114 (schema-safe Stop responses), #3115 (legacy context-default seeding), #3117 (delegated collaboration-child provenance; issue #3116), #3120 (native delegation detection and quoted Bash target parsing; issue #3119).
+- Explicit prompt-leading workflow invocation prevents accidental activation from quoted, negated, documented, malformed, or other non-invocation mentions (#3140; issue #3133).
+- Authenticated deep-interview terminal state writes succeed (#3179); foreign Codex hook coordinates are preserved (#3151); BOM-prefixed state input is accepted (#3169); and detached panes retain tmux-owned terminal environment values (#3183; issue #3175).
 
-## Prior-release collateral corrections
+## Dependencies and release collateral
 
-`f644d2cd3ae98587942aa94f0030f083ea0bb10f` corrected the 0.20.0 collateral compare coverage, and `5d43a5bf6f008de17f9425bee4495c457c60b96a` clarified that capabilities preflight is a manual command. These direct commits are prior-release collateral corrections, not 0.20.1 product headlines.
+- Updated `actions/setup-node` 6 → 7 (#3154), TypeScript 6.0.3 → 7.0.2 (#3155), `@types/node` 26.1.0 → 26.1.1 (#3156), and `@biomejs/biome` 2.5.2 → 2.5.3 (#3157).
+- #3129 reconciled 0.20.1 post-publish evidence; its direct branch commit and merge commit are release-collateral-only. `29bdeb5c5670c133d9f2feda7512ee01e80a63d5` is the version-development preparation commit.
+
+## Merged PRs since v0.20.1
+
+#3129, #3136, #3140, #3151, #3152, #3154, #3155, #3156, #3157, #3158, #3164, #3165, #3166, #3168, #3169, #3172, #3179, #3180, #3183, #3184. Issues #3118, #3133, #3162, #3163, #3175, #3177, and #3181 are associated issues, not additional PRs.
 
 ## Compatibility
 
@@ -25,10 +29,10 @@ Patch release with no intentional breaking CLI or package-layout changes.
 
 ## Validation
 
-The pre-tag command gates, evidence schema, and pending external CI/publication evidence are declared in `docs/qa/release-readiness-0.20.1.md`. No local gate, review, CI, tag, or publication result is asserted here.
+Local build, lint, typecheck, full Node/Rust tests, packed-install smoke, independent review, `dev` and `main` candidate CI, all seven native builds, native-asset verification, GitHub release publication, npm provenance publication, and isolated public-registry install/CLI boot passed for the shipped candidate. The packed smoke used the exact Codex CLI 0.142.5 boundary. Full evidence is recorded in `docs/qa/release-readiness-0.20.2.md`.
 
 ## Contributors
 
-Thanks to the contributors who made this release possible.
+Thanks to Bellman (@Yeachan-Heo), @cristph, @terwox, and @dependabot[bot] for commits in this range.
 
-**Full Changelog**: [`v0.20.0...v0.20.1`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.20.0...v0.20.1)
+**Full Changelog**: [`v0.20.1...v0.20.2`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.20.1...v0.20.2)

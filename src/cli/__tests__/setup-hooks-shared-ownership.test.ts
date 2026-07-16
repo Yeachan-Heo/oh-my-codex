@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -26,6 +26,22 @@ type HooksFile = {
   [key: string]: unknown;
 };
 
+const MANAGED_HOOK_EVENTS = [
+  "SessionStart",
+  "PreToolUse",
+  "PostToolUse",
+  "UserPromptSubmit",
+  "PreCompact",
+  "PostCompact",
+  "Stop",
+] as const;
+
+function codexHookEventLabel(eventName: string): string {
+  return eventName
+    .replace(/([A-Z])/g, "_$1")
+    .toLowerCase()
+    .replace(/^_/, "");
+}
 function runOmx(
   cwd: string,
   argv: string[],
@@ -165,6 +181,53 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
     }
   });
 
+  it("keeps all final trust coordinates stable across a no-op rerun with interleaved foreign groups", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-hooks-final-coordinates-"));
+    try {
+      const home = join(wd, "home");
+      const codexDir = join(wd, ".codex");
+      await mkdir(home, { recursive: true });
+      await mkdir(codexDir, { recursive: true });
+
+      const hooksPath = join(codexDir, "hooks.json");
+      await writeHooksJson(hooksPath, {
+        hooks: Object.fromEntries(
+          MANAGED_HOOK_EVENTS.map((eventName) => [
+            eventName,
+            [makeUserCommandHook(`node "/custom/${eventName}.js"`)],
+          ]),
+        ),
+      });
+
+      const firstSetup = runOmx(wd, ["setup", "--scope", "project"], { HOME: home });
+      if (shouldSkipForSpawnPermissions(firstSetup.error)) return;
+      assert.equal(firstSetup.status, 0, firstSetup.stderr || firstSetup.stdout);
+
+      const firstHooks = await readFile(hooksPath, "utf-8");
+      const configPath = join(codexDir, "config.toml");
+      const firstConfig = await readFile(configPath, "utf-8");
+      const escapedHooksPath = (await realpath(hooksPath)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      for (const eventName of MANAGED_HOOK_EVENTS) {
+        assert.match(
+          firstConfig,
+          new RegExp(
+            `^\\[hooks\\.state\\."${escapedHooksPath}:${codexHookEventLabel(eventName)}:1:0"\\]$`,
+            "m",
+          ),
+          `${eventName} trust must use its final interleaved group position`,
+        );
+      }
+
+      const secondSetup = runOmx(wd, ["setup", "--scope", "project"], { HOME: home });
+      if (shouldSkipForSpawnPermissions(secondSetup.error)) return;
+      assert.equal(secondSetup.status, 0, secondSetup.stderr || secondSetup.stdout);
+      assert.equal(await readFile(hooksPath, "utf-8"), firstHooks);
+      assert.equal(await readFile(configPath, "utf-8"), firstConfig);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("setup preserves user hooks while deduping stale OMX wrappers", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-hooks-ownership-"));
     try {
@@ -182,7 +245,7 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
 
       const staleManagedSessionStart = cloneRegistration(generatedSessionStart[0]!);
       if (staleManagedSessionStart.hooks?.[0]) {
-        staleManagedSessionStart.hooks[0].command = 'node "/tmp/old/codex-native-hook.js"';
+        staleManagedSessionStart.hooks[0].command = 'node "/tmp/old/dist/scripts/codex-native-hook.js"';
         staleManagedSessionStart.hooks[0].statusMessage = "stale omx wrapper";
       }
 
@@ -267,8 +330,8 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
             ...(generated.hooks?.SessionStart ?? []),
           ],
           PostToolUse: [
-            ...(generated.hooks?.PostToolUse ?? []),
             makeUserCommandHook('node "/custom/post-tool.js"'),
+            ...(generated.hooks?.PostToolUse ?? []),
           ],
         },
       });
@@ -352,6 +415,28 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
         await readFile(join(codexDir, "agents", "custom-role.toml"), "utf-8"),
         "model = \"custom\"\n",
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+  it("preserves malformed hooks.json bytes and creates no native setup artifacts", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-invalid-hooks-"));
+    try {
+      const home = join(wd, "home");
+      const codexDir = join(wd, ".codex");
+      const hooksPath = join(codexDir, "hooks.json");
+      const invalidBytes = Buffer.from([0x7b, 0x80, 0x7d, 0x0a]);
+      await mkdir(home, { recursive: true });
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(hooksPath, invalidBytes);
+
+      const result = runOmx(wd, ["setup", "--scope", "project"], { HOME: home });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+      assert.notEqual(result.status, 0, result.stderr || result.stdout);
+      assert.match(`${result.stderr}\n${result.stdout}`, /invalid UTF-8/);
+      assert.deepEqual(await readFile(hooksPath), invalidBytes);
+      assert.equal(existsSync(join(codexDir, "config.toml")), false);
+      assert.equal(existsSync(join(wd, ".omx")), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

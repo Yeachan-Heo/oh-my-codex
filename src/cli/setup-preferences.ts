@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
+import { mkdir, rename, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import {
 	isSetupTeamMode,
@@ -20,6 +21,7 @@ export interface PersistedSetupScope {
 	installMode?: SetupInstallMode;
 	mcpMode?: SetupMcpMode;
 	teamMode?: SetupTeamMode;
+	mergeAgents?: boolean;
 }
 
 export type PartialPersistedSetupScope = Partial<PersistedSetupScope>;
@@ -44,6 +46,52 @@ export function getSetupScopeFilePath(projectRoot: string): string {
 	return join(projectRoot, ".omx", "setup-scope.json");
 }
 
+export function resolvePersistedSetupMergeAgents(
+	preferences: PartialPersistedSetupScope | undefined,
+	scope: SetupScope,
+): boolean | undefined {
+	return preferences?.scope === scope && typeof preferences.mergeAgents === "boolean"
+		? preferences.mergeAgents
+		: undefined;
+}
+
+export interface WritePersistedSetupPreferencesDependencies {
+	mkdir?: typeof mkdir;
+	writeFile?: typeof writeFile;
+	rename?: typeof rename;
+	rm?: typeof rm;
+	createTempName?: () => string;
+}
+
+export async function writePersistedSetupPreferences(
+	projectRoot: string,
+	preferences: PersistedSetupScope,
+	dependencies: WritePersistedSetupPreferencesDependencies = {},
+): Promise<void> {
+	const scopePath = getSetupScopeFilePath(projectRoot);
+	const directory = join(projectRoot, ".omx");
+	const tempPath = join(
+		directory,
+		`.setup-scope-${dependencies.createTempName?.() ?? `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`}.tmp`,
+	);
+	const mkdirFn = dependencies.mkdir ?? mkdir;
+	const writeFileFn = dependencies.writeFile ?? writeFile;
+	const renameFn = dependencies.rename ?? rename;
+	const rmFn = dependencies.rm ?? rm;
+	try {
+		await mkdirFn(directory, { recursive: true });
+		await writeFileFn(tempPath, JSON.stringify(preferences, null, 2) + "\n");
+		await renameFn(tempPath, scopePath);
+	} catch (error) {
+		try {
+			await rmFn(tempPath, { force: true });
+		} catch {
+			// Preserve the original persistence error.
+		}
+		throw error;
+	}
+}
+
 function parsePersistedSetupPreferences(
 	raw: string,
 	onLegacyScope?: (from: string, to: SetupScope) => void,
@@ -53,6 +101,7 @@ function parsePersistedSetupPreferences(
 		installMode: unknown;
 		mcpMode: unknown;
 		teamMode: unknown;
+		mergeAgents: unknown;
 	}>;
 	const persisted: PartialPersistedSetupScope = {};
 
@@ -80,6 +129,10 @@ function parsePersistedSetupPreferences(
 
 	if (typeof parsed.teamMode === "string" && isSetupTeamMode(parsed.teamMode)) {
 		persisted.teamMode = parsed.teamMode;
+	}
+
+	if (persisted.scope && typeof parsed.mergeAgents === "boolean") {
+		persisted.mergeAgents = parsed.mergeAgents;
 	}
 
 	return Object.keys(persisted).length > 0 ? persisted : undefined;

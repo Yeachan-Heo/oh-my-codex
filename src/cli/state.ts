@@ -47,9 +47,10 @@ function parseStateInputJson(
   raw: string,
   source: '--input' | '--input-file',
 ): Record<string, unknown> {
+  const json = source === '--input-file' && raw.startsWith('\uFEFF') ? raw.slice(1) : raw;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(json);
   } catch (error) {
     let message = `${source} must be valid JSON: ${(error as Error).message}`;
     if (source === '--input' && looksLikeQuoteStrippedJson(raw)) {

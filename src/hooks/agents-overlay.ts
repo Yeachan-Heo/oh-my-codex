@@ -282,9 +282,9 @@ async function readProjectMemorySummary(cwd: string): Promise<string> {
 
 function getNativeSubagentRoutingInstructions(): string {
   return [
-    "When spawning Codex native subagents, always set `agent_type` to an installed OMX role.",
-    "Use the most specific role (`architect`, `code-reviewer`, `critic`, `planner`, `debugger`, etc.); use `executor` only for generic implementation work.",
-    "Never omit `agent_type` for OMX work: untyped Task subagents appear as default subagents and lose role-specific prompts/routing.",
+    "When the native surface exposes `agent_type` role routing, set `agent_type` to an installed OMX role and never omit it for OMX work.",
+    "On that routing-capable surface, use the most specific role (`architect`, `code-reviewer`, `critic`, `planner`, `debugger`, etc.); use `executor` only for generic implementation work.",
+    "When it does not (`role_routing_unavailable`, for example a Codex App `spawn_agent` surface exposing only `task_name`, `message`, and `fork_turns`), do not fabricate `agent_type`; follow the OMX adapted role-pass protocol by recording a pre-validated role intent in the OMX subagent ledger, and never fake the role via a prompt label.",
   ].join("\n");
 }
 
@@ -383,7 +383,7 @@ export async function generateOverlay(
 
   sections.push({
     key: "native_subagent_routing",
-    text: `**Native Subagent Routing:**\n${truncate(getNativeSubagentRoutingInstructions(), 520)}`,
+    text: `**Native Subagent Routing:**\n${truncate(getNativeSubagentRoutingInstructions(), 700)}`,
     optional: false,
   });
 
@@ -477,7 +477,7 @@ export async function generateOverlay(
       { key: "session", text: truncate(sessionMeta, 200), optional: false },
       {
         key: "native_subagent_routing",
-        text: `**Native Subagent Routing:**\n${truncate(getNativeSubagentRoutingInstructions(), 520)}`,
+        text: `**Native Subagent Routing:**\n${truncate(getNativeSubagentRoutingInstructions(), 700)}`,
         optional: false,
       },
       {

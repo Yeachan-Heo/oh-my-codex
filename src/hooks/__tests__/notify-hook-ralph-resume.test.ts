@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { dirname, join } from 'path';
@@ -125,6 +125,23 @@ async function withPatchedEnv<T>(
   }
 }
 
+function authorizedRalphScope(
+  targetSessionId: string,
+  ownerCodexSessionId: string,
+  allowedStorageSessionIds: readonly string[] = [targetSessionId],
+) {
+  return {
+    targetSessionId,
+    ownerCodexSessionId,
+    allowedOwnerCodexSessionIds: [ownerCodexSessionId],
+    allowedStorageSessionIds: [...allowedStorageSessionIds],
+    targetRelation: 'pointer-alias' as const,
+    thread: { kind: 'root-or-drift' as const },
+    legacyAdoption: 'deny' as const,
+    globalSideEffects: 'allow' as const,
+  };
+}
+
 describe('notify-hook Ralph session resume', () => {
   it('does not mark normal native turn-complete notifications as subagent completion', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-subagent-normal-turn-'));
@@ -161,6 +178,9 @@ describe('notify-hook Ralph session resume', () => {
           },
         },
       });
+      const trackingPath = join(stateDir, 'subagent-tracking.json');
+      const trackingBefore = await readFile(trackingPath, 'utf-8');
+      const trackingBeforeStat = await stat(trackingPath);
 
       const result = runNotifyHook(
         buildPayload(wd, {
@@ -180,18 +200,22 @@ describe('notify-hook Ralph session resume', () => {
       );
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
-      const tracking = JSON.parse(await readFile(join(stateDir, 'subagent-tracking.json'), 'utf-8'));
+      const trackingAfter = await readFile(trackingPath, 'utf-8');
+      const trackingAfterStat = await stat(trackingPath);
+      assert.equal(trackingAfter, trackingBefore);
+      assert.equal(trackingAfterStat.mtimeMs, trackingBeforeStat.mtimeMs);
+      const tracking = JSON.parse(trackingAfter);
       const subagentThread = tracking.sessions?.[sessionId]?.threads?.[subagentThreadId];
       assert.equal(subagentThread?.completed_at, undefined);
       assert.equal(subagentThread?.last_completed_turn_id, undefined);
       assert.equal(subagentThread?.completion_source, undefined);
-      assert.equal(subagentThread?.last_turn_id, 'turn-normal-complete');
+      assert.equal(subagentThread?.last_turn_id, undefined);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('resumes a matching prior Ralph into the current OMX session and rebinds the pane', async () => {
+  it('does not resume a matching prior Ralph from unrelated storage', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-resume-'));
     try {
       const stateDir = join(wd, '.omx', 'state');
@@ -211,6 +235,9 @@ describe('notify-hook Ralph session resume', () => {
         owner_codex_session_id: 'codex-session-1',
         tmux_pane_id: '%42',
       });
+      const priorRalphPath = join(priorSessionDir, 'ralph-state.json');
+      const priorBefore = await readFile(priorRalphPath, 'utf-8');
+      const priorBeforeStat = await stat(priorRalphPath);
 
       const result = runNotifyHook(
         buildPayload(wd, {
@@ -222,17 +249,11 @@ describe('notify-hook Ralph session resume', () => {
       );
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
-      const currentState = JSON.parse(await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(currentState.active, true);
-      assert.equal(currentState.iteration, 5);
-      assert.equal(currentState.owner_omx_session_id, currentOmxSessionId);
-      assert.equal(currentState.owner_codex_session_id, 'codex-session-1');
-      assert.equal(currentState.tmux_pane_id, currentPaneId);
-
-      const priorState = JSON.parse(await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(priorState.active, false);
-      assert.equal(priorState.current_phase, 'cancelled');
-      assert.equal(priorState.stop_reason, 'ownership_transferred');
+      assert.equal(existsSync(join(currentSessionDir, 'ralph-state.json')), false);
+      const priorAfter = await readFile(priorRalphPath, 'utf-8');
+      const priorAfterStat = await stat(priorRalphPath);
+      assert.equal(priorAfter, priorBefore);
+      assert.equal(priorAfterStat.mtimeMs, priorBeforeStat.mtimeMs);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -247,7 +268,10 @@ describe('notify-hook Ralph session resume', () => {
       const currentSessionDir = join(stateDir, 'sessions', currentOmxSessionId);
       const priorSessionDir = join(stateDir, 'sessions', priorOmxSessionId);
       const currentPaneId = '%77';
-      await writeJson(join(stateDir, 'session.json'), { session_id: currentOmxSessionId });
+      await writeJson(join(stateDir, 'session.json'), {
+        session_id: currentOmxSessionId,
+        owner_codex_session_id: 'codex-session-1',
+      });
       await writeJson(join(currentSessionDir, 'ralph-state.json'), {
         active: true,
         iteration: 4,
@@ -323,8 +347,8 @@ describe('notify-hook Ralph session resume', () => {
       const currentState = JSON.parse(await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(currentState.active, true);
       assert.equal(currentState.owner_omx_session_id, currentOmxSessionId);
-      assert.equal(currentState.owner_codex_session_id, undefined);
-      assert.equal(currentState.owner_codex_thread_id, 'thread-current-legacy-1');
+      assert.equal(currentState.owner_codex_session_id, currentOmxSessionId);
+      assert.equal(currentState.owner_codex_thread_id, undefined);
       assert.equal(currentState.tmux_pane_id, currentPaneId);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -365,8 +389,8 @@ describe('notify-hook Ralph session resume', () => {
       ) as Record<string, unknown>;
       assert.equal(updatedPriorState.active, true);
       assert.equal(updatedPriorState.iteration, 5);
-      assert.equal(updatedPriorState.owner_codex_session_id, undefined);
-      assert.equal(updatedPriorState.owner_codex_thread_id, 'thread-turnover-1');
+      assert.equal(updatedPriorState.owner_codex_session_id, priorOmxSessionId);
+      assert.equal(updatedPriorState.owner_codex_thread_id, undefined);
       assert.equal(updatedPriorState.tmux_pane_id, '%81');
 
       await writeJson(join(stateDir, 'session.json'), { session_id: currentOmxSessionId });
@@ -380,22 +404,14 @@ describe('notify-hook Ralph session resume', () => {
       );
       assert.equal(secondResult.status, 0, secondResult.stderr || secondResult.stdout);
 
-      const currentState = JSON.parse(
-        await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8'),
-      ) as Record<string, unknown>;
-      assert.equal(currentState.active, true);
-      assert.equal(currentState.iteration, 6);
-      assert.equal(currentState.owner_omx_session_id, currentOmxSessionId);
-      assert.equal(currentState.owner_codex_session_id, undefined);
-      assert.equal(currentState.owner_codex_thread_id, 'thread-turnover-1');
-      assert.equal(currentState.tmux_pane_id, '%82');
+      assert.equal(existsSync(join(currentSessionDir, 'ralph-state.json')), false);
 
       const priorState = JSON.parse(
         await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8'),
       ) as Record<string, unknown>;
-      assert.equal(priorState.active, false);
-      assert.equal(priorState.current_phase, 'cancelled');
-      assert.equal(priorState.stop_reason, 'ownership_transferred');
+      assert.equal(priorState.active, true);
+      assert.equal(priorState.current_phase, 'executing');
+      assert.equal(priorState.owner_omx_session_id, priorOmxSessionId);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -422,6 +438,7 @@ describe('notify-hook Ralph session resume', () => {
 
       const result = await reconcileRalphSessionResume({
         stateDir,
+        authorization: authorizedRalphScope(currentOmxSessionId, 'codex-session-1'),
         payloadSessionId: 'codex-session-1',
         payloadThreadId: 'thread-stale-current',
         env: { OMX_RALPH_ACTIVE_STATE_STALE_MS: '1000' },
@@ -464,6 +481,7 @@ describe('notify-hook Ralph session resume', () => {
 
       const result = await reconcileRalphSessionResume({
         stateDir,
+        authorization: authorizedRalphScope(currentOmxSessionId, 'codex-session-1'),
         payloadSessionId: 'codex-session-1',
         payloadThreadId: 'thread-fresh-current',
         env: { OMX_RALPH_ACTIVE_STATE_STALE_MS: '60000' },
@@ -506,6 +524,7 @@ describe('notify-hook Ralph session resume', () => {
 
       const result = await reconcileRalphSessionResume({
         stateDir,
+        authorization: authorizedRalphScope(currentOmxSessionId, 'codex-session-1', [currentOmxSessionId, priorOmxSessionId]),
         payloadSessionId: 'codex-session-1',
         payloadThreadId: 'thread-stale-prior',
         env: { OMX_RALPH_ACTIVE_STATE_STALE_MS: '1000' },
@@ -549,6 +568,7 @@ describe('notify-hook Ralph session resume', () => {
 
       const result = await reconcileRalphSessionResume({
         stateDir,
+        authorization: authorizedRalphScope(currentOmxSessionId, 'codex-session-1', [currentOmxSessionId, priorOmxSessionId]),
         payloadSessionId: 'codex-session-1',
         payloadThreadId: 'thread-interrupted',
         env: { OMX_RALPH_ACTIVE_STATE_STALE_MS: '1000' },
@@ -625,7 +645,7 @@ describe('notify-hook Ralph session resume', () => {
     }
   });
 
-  it('resumes a legacy prior Ralph that only tracks owner_codex_thread_id', async () => {
+  it('does not resume a legacy prior Ralph from unrelated thread-only storage', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-thread-resume-'));
     try {
       const stateDir = join(wd, '.omx', 'state');
@@ -633,9 +653,9 @@ describe('notify-hook Ralph session resume', () => {
       const priorOmxSessionId = 'sess-prior';
       const currentSessionDir = join(stateDir, 'sessions', currentOmxSessionId);
       const priorSessionDir = join(stateDir, 'sessions', priorOmxSessionId);
-      const currentPaneId = '%55';
+      const priorRalphPath = join(priorSessionDir, 'ralph-state.json');
       await writeJson(join(stateDir, 'session.json'), { session_id: currentOmxSessionId });
-      await writeJson(join(priorSessionDir, 'ralph-state.json'), {
+      await writeJson(priorRalphPath, {
         active: true,
         iteration: 4,
         max_iterations: 10,
@@ -645,6 +665,8 @@ describe('notify-hook Ralph session resume', () => {
         owner_codex_thread_id: 'thread-legacy-1',
         tmux_pane_id: '%42',
       });
+      const priorBefore = await readFile(priorRalphPath, 'utf-8');
+      const priorBeforeStat = await stat(priorRalphPath);
 
       const result = runNotifyHook(
         buildPayload(wd, {
@@ -652,22 +674,15 @@ describe('notify-hook Ralph session resume', () => {
           thread_id: 'thread-legacy-1',
           turn_id: 'turn-legacy-1',
         }),
-        await setupTmuxFixture(wd, currentPaneId),
+        await setupTmuxFixture(wd, '%55'),
       );
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
-      const currentState = JSON.parse(await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(currentState.active, true);
-      assert.equal(currentState.iteration, 5);
-      assert.equal(currentState.owner_omx_session_id, currentOmxSessionId);
-      assert.equal(currentState.owner_codex_session_id, 'codex-session-1');
-      assert.equal(currentState.owner_codex_thread_id, undefined);
-      assert.equal(currentState.tmux_pane_id, currentPaneId);
-
-      const priorState = JSON.parse(await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(priorState.active, false);
-      assert.equal(priorState.current_phase, 'cancelled');
-      assert.equal(priorState.stop_reason, 'ownership_transferred');
+      assert.equal(existsSync(join(currentSessionDir, 'ralph-state.json')), false);
+      const priorAfter = await readFile(priorRalphPath, 'utf-8');
+      const priorAfterStat = await stat(priorRalphPath);
+      assert.equal(priorAfter, priorBefore);
+      assert.equal(priorAfterStat.mtimeMs, priorBeforeStat.mtimeMs);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -904,6 +919,7 @@ describe('notify-hook Ralph session resume', () => {
 
         const firstResume = reconcileRalphSessionResume({
           stateDir,
+          authorization: authorizedRalphScope(currentOmxSessionId, 'codex-session-1', [currentOmxSessionId, priorOmxSessionId]),
           payloadSessionId: 'codex-session-1',
           payloadThreadId: 'thread-concurrent-1',
           env: { ...process.env, TMUX_PANE: '%55' },
@@ -921,6 +937,7 @@ describe('notify-hook Ralph session resume', () => {
 
         const secondResume = reconcileRalphSessionResume({
           stateDir,
+          authorization: authorizedRalphScope(currentOmxSessionId, 'codex-session-1', [currentOmxSessionId, priorOmxSessionId]),
           payloadSessionId: 'codex-session-1',
           payloadThreadId: 'thread-concurrent-1',
           env: { ...process.env, TMUX_PANE: '%56' },
@@ -972,6 +989,7 @@ describe('notify-hook Ralph session resume', () => {
       await assert.rejects(
         () => reconcileRalphSessionResume({
           stateDir,
+          authorization: authorizedRalphScope(currentOmxSessionId, 'codex-session-1', [currentOmxSessionId, priorOmxSessionId]),
           payloadSessionId: 'codex-session-1',
           payloadThreadId: 'thread-rollback-1',
           env: { ...process.env, TMUX_PANE: '%57' },

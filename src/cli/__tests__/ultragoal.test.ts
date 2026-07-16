@@ -1,9 +1,19 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import {
+  LEADER_CONDUCTOR_BLOCK,
+  NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
+  buildRoleRoutingUnavailableGuidance,
+  buildUnsupportedNativeSubagentGuidance,
+} from '../../leader/contract.js';
+import {
+  NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE,
+  writeRoleRoutingMarker,
+} from '../../subagents/role-routing-marker.js';
 import { ultragoalCommand, ULTRAGOAL_HELP } from '../ultragoal.js';
 
 async function withCwd<T>(run: (cwd: string) => Promise<T>): Promise<T> {
@@ -163,6 +173,67 @@ describe('cli/ultragoal', () => {
       assert.match(goals.codexObjective ?? '', /Complete the durable ultragoal plan/);
       assert.match(goals.codexObjective ?? '', /including later accepted\/appended stories/);
       assert.doesNotMatch(goals.codexObjective ?? '', /G001-first-milestone/);
+    });
+  });
+
+  it('selects default, unsupported, and role-routing-unavailable conductor guidance from durable state', async () => {
+    await withCwd(async (cwd) => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- Native subagent guidance']));
+
+      const defaultGuidance = await capture(() => ultragoalCommand(['complete-goals']));
+      assert.equal(defaultGuidance.stdout.join('\n').includes(LEADER_CONDUCTOR_BLOCK), true);
+
+      const stateDir = join(cwd, '.omx/state');
+      const unsupportedEvidence = {
+        status: 'unsupported' as const,
+        reason: 'native_subagents_unsupported' as const,
+        source: 'persisted_support_blocker' as const,
+        cwd,
+        observed_at: '2026-07-13T00:00:00.000Z',
+        expires_at: '2099-01-01T00:00:00.000Z',
+        evidenceSummary: 'native subagents are unavailable',
+      };
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE), `${JSON.stringify(unsupportedEvidence)}\n`, 'utf-8');
+
+      const unsupportedGuidance = await capture(() => ultragoalCommand(['complete-goals']));
+      const unsupportedOutput = unsupportedGuidance.stdout.join('\n');
+      assert.equal(unsupportedOutput.includes(buildUnsupportedNativeSubagentGuidance(unsupportedEvidence)), true);
+      assert.equal(unsupportedOutput.includes(LEADER_CONDUCTOR_BLOCK), false);
+
+      await rm(join(stateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE));
+      const sessionId = 'sess-ultragoal-role-routing';
+      const roleRoutingEvidence = {
+        schema_version: 1 as const,
+        cwd,
+        session_id: sessionId,
+        parent_thread_id: 'thread-ultragoal-leader',
+        observed_at: '2026-07-13T00:00:00.000Z',
+        expires_at: '2099-01-01T00:00:00.000Z',
+        evidence: 'spawn surface has no agent_type parameter',
+      };
+      const expectedRoleRoutingSupport = {
+        status: 'role_routing_unavailable' as const,
+        source: 'persisted_role_routing_marker' as const,
+        evidenceSummary: roleRoutingEvidence.evidence,
+        observedAt: roleRoutingEvidence.observed_at,
+        expiresAt: roleRoutingEvidence.expires_at,
+      };
+      const previousSessionId = process.env.OMX_SESSION_ID;
+      process.env.OMX_SESSION_ID = sessionId;
+      try {
+        writeRoleRoutingMarker(stateDir, roleRoutingEvidence);
+        assert.equal(existsSync(join(stateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), true);
+
+        const roleRoutingGuidance = await capture(() => ultragoalCommand(['complete-goals']));
+        const roleRoutingOutput = roleRoutingGuidance.stdout.join('\n');
+        assert.equal(roleRoutingOutput.includes(buildRoleRoutingUnavailableGuidance(expectedRoleRoutingSupport)), true);
+        assert.equal(roleRoutingOutput.includes(LEADER_CONDUCTOR_BLOCK), false);
+        assert.equal(roleRoutingOutput.includes(buildUnsupportedNativeSubagentGuidance(unsupportedEvidence)), false);
+      } finally {
+        if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+        else delete process.env.OMX_SESSION_ID;
+      }
     });
   });
 

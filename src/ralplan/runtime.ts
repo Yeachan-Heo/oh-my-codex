@@ -41,7 +41,8 @@ export interface RalplanReviewResult {
   verdict: RalplanReviewVerdict;
   summary?: string;
   artifacts?: Record<string, unknown>;
-  provenance_kind?: 'native_subagent' | 'codex_exec';
+  provenance_kind?: 'native_subagent' | 'omx_adapted' | 'codex_exec';
+
   session_id?: string;
   thread_id?: string;
   native_session_id?: string;
@@ -50,6 +51,7 @@ export interface RalplanReviewResult {
   lane_id?: string;
   tracker_path?: string;
   new_lane_reason?: string;
+  sequence_index?: number;
 }
 
 export interface RalplanConsensusGate {
@@ -219,14 +221,13 @@ function buildRalplanConsensusGate(
       critic_review: ralplanCriticReview,
       blocked_reason: null,
     };
-    if (!options.requireNativeSubagents) return gate;
     const evidenceGate = buildRalplanConsensusGateFromSources([{
       source: 'runtime-result',
       value: { ralplan_consensus_gate: gate },
     }], {
       cwd: options.cwd,
       sessionId: options.sessionId,
-      requireNativeSubagents: true,
+      requireNativeSubagents: options.requireNativeSubagents,
     });
     return {
       ...gate,
@@ -264,6 +265,7 @@ function buildRalplanConsensusGate(
 
 function hasNativeOrThreadEvidence(review: RalplanReviewResult): boolean {
   return review.provenance_kind === 'native_subagent'
+    || review.provenance_kind === 'omx_adapted'
     || Boolean(review.thread_id?.trim())
     || Boolean(review.native_session_id?.trim())
     || Boolean(review.tracker_path?.trim());
@@ -273,6 +275,7 @@ function normalizeReviewForLane(
   review: RalplanReviewResult,
   laneRole: 'architect' | 'critic',
   options: { requireNativeSubagents?: boolean },
+  sequenceIndex: number,
 ): RalplanReviewResult {
   if (review.agent_role !== undefined && review.agent_role !== laneRole) {
     throw new Error(`ralplan_${laneRole}_review_role_mismatch: expected agent_role=${laneRole}, received ${String(review.agent_role)}`);
@@ -280,7 +283,13 @@ function normalizeReviewForLane(
   if (review.agent_role === undefined && (options.requireNativeSubagents || hasNativeOrThreadEvidence(review))) {
     throw new Error(`ralplan_${laneRole}_review_role_missing: native or thread-backed ${laneRole} review must declare agent_role=${laneRole}`);
   }
-  return { ...review, agent_role: laneRole };
+  return {
+    ...review,
+    agent_role: laneRole,
+    ...(review.provenance_kind === 'native_subagent' || review.provenance_kind === 'omx_adapted'
+      ? {}
+      : { sequence_index: sequenceIndex }),
+  };
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -440,13 +449,12 @@ export async function runRalplanConsensus(
       const architectReview = normalizeReviewForLane(await executor.architectReview({
         ...iterationContext,
         draft,
-      }), 'architect', gateOptions);
+      }), 'architect', gateOptions, (iteration * 2) - 1);
       assertRoleLaneReuse(reusableRoleLanes.architect, architectReview, 'architect');
       architectReviews.push(architectReview);
       if (architectReview.artifacts) Object.assign(aggregatedArtifacts, architectReview.artifacts);
       await recordRalplanSubagentTurn(cwd, options.sessionId, {
         threadId: architectReview.thread_id,
-        role: architectReview.agent_role,
         laneId: architectReview.lane_id,
         scope: options.task,
         summary: architectReview.summary,
@@ -512,13 +520,12 @@ export async function runRalplanConsensus(
         ...iterationContext,
         draft,
         architectReview,
-      }), 'critic', gateOptions);
+      }), 'critic', gateOptions, iteration * 2);
       assertRoleLaneReuse(reusableRoleLanes.critic, criticReview, 'critic');
       criticReviews.push(criticReview);
       if (criticReview.artifacts) Object.assign(aggregatedArtifacts, criticReview.artifacts);
       await recordRalplanSubagentTurn(cwd, options.sessionId, {
         threadId: criticReview.thread_id,
-        role: criticReview.agent_role,
         laneId: criticReview.lane_id,
         scope: options.task,
         summary: criticReview.summary,

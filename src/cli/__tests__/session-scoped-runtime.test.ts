@@ -57,6 +57,44 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('does not mutate an unmatched implicit OMX session, including force cleanup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-unmatched-session-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'canonical-session';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const ralphPath = join(sessionDir, 'ralph-state.json');
+      const nativeStopPath = join(sessionDir, 'native-stop-state.json');
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(ralphPath, JSON.stringify({ active: true, current_phase: 'executing' }));
+      await writeFile(nativeStopPath, JSON.stringify({
+        sessions: { [sessionId]: { last_signature: 'ralph-stop|pending' } },
+      }));
+
+      const cancelResult = runOmxWithEnv(
+        wd,
+        { OMX_SESSION_ID: 'unmatched-session' },
+        'cancel',
+        '--force',
+      );
+
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stderr, /OMX_SESSION_ID is not bound to session\.json/);
+      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.deepEqual(
+        JSON.parse(await readFile(ralphPath, 'utf-8')),
+        { active: true, current_phase: 'executing' },
+      );
+      assert.deepEqual(
+        JSON.parse(await readFile(nativeStopPath, 'utf-8')),
+        { sessions: { [sessionId]: { last_signature: 'ralph-stop|pending' } } },
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('status does not report a root fallback mode as active after current-session clear', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-session-clear-fallback-'));
     try {

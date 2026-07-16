@@ -15,17 +15,52 @@ import {
   hasExactOmxSeededBehavioralDefaultsPair,
   mergeConfig,
   repairConfigIfNeeded,
+  stripExistingOmxBlocks,
   stripManagedCodexHookTrustState,
   stripOmxFeatureFlags,
   upsertManagedCodexHookTrustState,
   stripOmxSeededBehavioralDefaults,
 } from "../generator.js";
-import { buildManagedCodexHookTrustState } from "../codex-hooks.js";
+import {
+  MANAGED_HOOK_EVENTS,
+  ManagedCodexHooksPlanError,
+  buildManagedCodexHookTrustState,
+  planManagedCodexHooksMerge,
+} from "../codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../omx-first-party-mcp.js";
 
 /** Count occurrences of a pattern in text */
 function count(text: string, pattern: RegExp): number {
   return (text.match(pattern) ?? []).length;
+}
+
+async function writeSetupGeneratedHookTrustFixture(wd: string): Promise<{
+  configPath: string;
+  hooksPath: string;
+  config: string;
+  trustState: Record<string, { trusted_hash: string }>;
+}> {
+  const configPath = join(wd, "config.toml");
+  const hooksPath = join(wd, "hooks.json");
+  const hooksPlan = planManagedCodexHooksMerge(null, wd, hooksPath);
+  if (!hooksPlan.ok || hooksPlan.finalContent === null) {
+    throw new Error("Expected setup hook plan to produce a hooks artifact.");
+  }
+
+  await writeFile(hooksPath, hooksPlan.finalContent);
+  const config = buildMergedConfig("", wd, {
+    codexHooksFile: hooksPath,
+    codexHooksContent: hooksPlan.finalContent,
+    managedHookTrustState: hooksPlan.finalTrustState,
+    priorManagedHookTrustState: hooksPlan.priorTrustState,
+  });
+  await writeFile(configPath, config);
+  return {
+    configPath,
+    hooksPath,
+    config,
+    trustState: hooksPlan.finalTrustState,
+  };
 }
 
 /** Assert the current OMX block appears exactly once */
@@ -1092,6 +1127,122 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
+  it("strips only complete exact OMX marker blocks outside TOML values", () => {
+    const start = "# oh-my-codex (OMX) Configuration";
+    const end = "# End oh-my-codex";
+    const decoys = [
+      `basic = "${start}"`,
+      `literal = '${end}'`,
+      'multiline_basic = """',
+      start,
+      end,
+      '"""',
+      "multiline_literal = '''",
+      start,
+      end,
+      "'''",
+      `# Marker-shaped text: ${start}`,
+      `# Marker-shaped text: ${end}`,
+    ];
+    const decoyOnly = [...decoys, ""].join("\n");
+    assert.deepEqual(stripExistingOmxBlocks(decoyOnly), {
+      cleaned: decoyOnly,
+      removed: 0,
+    });
+
+    const incomplete = [...decoys, "", start, "[user.incomplete]", "enabled = true", ""].join("\n");
+    assert.deepEqual(stripExistingOmxBlocks(incomplete), {
+      cleaned: incomplete,
+      removed: 0,
+    });
+
+    const managed = [
+      ...decoys,
+      "",
+      "# ============================================================",
+      start,
+      "[mcp_servers.omx_state]",
+      'command = "node"',
+      end,
+      "",
+      "[user.after]",
+      'name = "kept"',
+      "",
+    ].join("\n");
+    const expected = [...decoys, "", "[user.after]", 'name = "kept"', ""].join("\n");
+
+    assert.deepEqual(stripExistingOmxBlocks(managed), {
+      cleaned: expected,
+      removed: 1,
+    });
+    assert.doesNotThrow(() => TOML.parse(expected));
+  });
+
+  it("keeps OMX delimiter comments inert inside complete TOML assignments", () => {
+    const start = "# oh-my-codex (OMX) Configuration";
+    const end = "# End oh-my-codex";
+    const fixtures = [
+      ["root multiline array", ["root = [", start, end, "]"].join("\n")],
+      ["dotted multiline array", ["outer.value = [", start, end, "]"].join("\n")],
+      ["quoted multiline array", ['"quoted" = [', start, end, "]"].join("\n")],
+      ["empty-quoted multiline array", ['"" = [', start, end, "]"].join("\n")],
+      ["root multiline basic value", ['root_value = """', start, end, '"""'].join("\n")],
+      ["dotted multiline literal value", ["outer.literal = '''", start, end, "'''"].join("\n")],
+    ] as const;
+
+    for (const [name, assignment] of fixtures) {
+      const config = `${assignment}\n`;
+      assert.doesNotThrow(() => TOML.parse(config), `${name} fixture must be valid TOML`);
+      assert.deepEqual(stripExistingOmxBlocks(config), { cleaned: config, removed: 0 }, name);
+
+      const merged = buildMergedConfig(config, "/tmp/omx");
+      assert.ok(merged.includes(assignment), `${name} bytes must survive merging`);
+      assert.doesNotThrow(() => TOML.parse(merged), `${name} merged config must be valid TOML`);
+    }
+  });
+
+  it("rejects marker-contained hook trust state without ownership proof", () => {
+    const start = "# oh-my-codex (OMX) Configuration";
+    const end = "# End oh-my-codex";
+    const fixtures = [
+      ["table", ['[hooks.state."foreign"]', 'trusted_hash = "sha256:foreign"'].join("\n")],
+      ["dotted", 'hooks.state."foreign" = { trusted_hash = "sha256:foreign" }'],
+      ["inline", 'hooks = { state = { foreign = { trusted_hash = "sha256:foreign" } } }'],
+      ["scalar", 'hooks.state = "foreign"'],
+    ] as const;
+    const isManagedTrustConflict = (error: unknown): boolean =>
+      error instanceof ManagedCodexHooksPlanError &&
+      error.code === "managed_trust_key_conflict";
+
+    for (const [name, content] of fixtures) {
+      const config = [start, content, end, ""].join("\n");
+      assert.doesNotThrow(() => TOML.parse(config), `${name} fixture must be valid TOML`);
+      assert.throws(() => stripExistingOmxBlocks(config), isManagedTrustConflict, name);
+      assert.throws(() => buildMergedConfig(config, "/tmp/omx"), isManagedTrustConflict, name);
+    }
+  });
+
+  it("matches managed hooks.state keys case-sensitively", () => {
+    const start = "# oh-my-codex (OMX) Configuration";
+    const end = "# End oh-my-codex";
+    const variants = [
+      'Hooks.state = { foreign = { trusted_hash = "sha256:foreign" } }',
+      'hooks.State = { foreign = { trusted_hash = "sha256:foreign" } }',
+      '"Hooks"."State" = { foreign = { trusted_hash = "sha256:foreign" } }',
+    ];
+
+    for (const variant of variants) {
+      const config = [start, variant, end, ""].join("\n");
+      assert.doesNotThrow(() => TOML.parse(config));
+      assert.equal(
+        stripManagedCodexHookTrustState(config, { managedTrustState: {} }),
+        config,
+        `${variant} must remain foreign`,
+      );
+      assert.doesNotThrow(() => buildMergedConfig(config, "/tmp/omx"));
+    }
+  });
+
   it("mergeConfig removes legacy omx_team_run tables during setup upgrade", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
@@ -1200,6 +1351,100 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
+  it("repairs duplicate TUI config with setup-generated hook trust from the current hooks artifact", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const { configPath, config: setupConfig } = await writeSetupGeneratedHookTrustFixture(wd);
+      const trustBlock = setupConfig.match(
+        /# OMX-owned Codex hook trust state\n[\s\S]*?# End OMX-owned Codex hook trust state/,
+      )?.[0];
+      assert.ok(trustBlock, "setup fixture must contain fenced managed hook trust");
+      const setupTrustState = (TOML.parse(setupConfig) as {
+        hooks?: { state?: Record<string, unknown> };
+      }).hooks?.state;
+
+      await writeFile(
+        configPath,
+        `${setupConfig}\n[tui]\nstatus_line = ["git-branch"]\n`,
+      );
+
+      assert.equal(await repairConfigIfNeeded(configPath, wd), true);
+      const repaired = await readFile(configPath, "utf-8");
+      const repairedTrustState = (TOML.parse(repaired) as {
+        hooks?: { state?: Record<string, unknown> };
+      }).hooks?.state;
+
+      assert.equal(count(repaired, /^\[tui\]$/gm), 1);
+      assert.ok(repaired.includes(trustBlock), "repair must preserve setup-generated trust bytes");
+      assert.deepEqual(repairedTrustState, setupTrustState);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed without rewriting managed hook trust when launch repair cannot prove it", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const { configPath, hooksPath, config: setupConfig, trustState } =
+        await writeSetupGeneratedHookTrustFixture(wd);
+      const [firstTrustState] = Object.values(trustState);
+      assert.ok(firstTrustState);
+      const repairTarget = `${setupConfig}\n[tui]\nstatus_line = ["git-branch"]\n`;
+      const conflicting = repairTarget.replace(
+        firstTrustState.trusted_hash,
+        "sha256:conflicting-user-trust",
+      );
+      await writeFile(configPath, conflicting);
+
+      await assert.rejects(
+        repairConfigIfNeeded(configPath, wd),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+      );
+      assert.equal(await readFile(configPath, "utf-8"), conflicting);
+
+      const unprovenHooks = [
+        ["invalid", "{ not valid JSON"],
+        [
+          "ambiguous",
+          JSON.stringify({
+            hooks: {
+              SessionStart: [
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command: `NODE ${join(wd, "dist", "scripts", "codex-native-hook.js")}`,
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        ],
+        ["missing", null],
+      ] as const;
+      for (const [name, hooksContent] of unprovenHooks) {
+        await writeFile(configPath, repairTarget);
+        if (hooksContent === null) {
+          await rm(hooksPath);
+        } else {
+          await writeFile(hooksPath, hooksContent);
+        }
+
+        await assert.rejects(
+          repairConfigIfNeeded(configPath, wd),
+          (error: unknown) => error instanceof ManagedCodexHooksPlanError,
+          name,
+        );
+        assert.equal(await readFile(configPath, "utf-8"), repairTarget, name);
+      }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("preserves trailing user config after an unmatched managed hook trust-state start marker", () => {
     const malformed = [
       'model = "gpt-5.6-sol"',
@@ -1272,7 +1517,7 @@ describe("config generator idempotency (#384)", () => {
     assert.doesNotThrow(() => TOML.parse(stripped));
   });
 
-  it("preserves same-key user hook trust state and suppresses generated duplicates", () => {
+  it("fails closed on conflicting same-key hook trust state", () => {
     const hooksPath = "/tmp/codex/hooks.json";
     const config = [
       'model = "gpt-5.6-sol"',
@@ -1283,26 +1528,15 @@ describe("config generator idempotency (#384)", () => {
       "",
     ].join("\n");
 
-    const refreshed = upsertManagedCodexHookTrustState(
-      config,
-      "/tmp/omx",
-      hooksPath,
+    assert.throws(
+      () => upsertManagedCodexHookTrustState(config, "/tmp/omx", hooksPath),
+      (error: unknown) =>
+        error instanceof ManagedCodexHooksPlanError &&
+        error.code === "managed_trust_key_conflict",
     );
-
-    assert.match(refreshed, /^trusted_hash = "sha256:user"$/m);
-    assert.match(refreshed, /^enabled = false$/m);
-    assert.equal(
-      count(
-        refreshed,
-        /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:post_compact:0:0"\]$/gm,
-      ),
-      1,
-      "preserved same-key user trust state must not be duplicated",
-    );
-    assert.doesNotThrow(() => TOML.parse(refreshed));
   });
 
-  it("preserves unproven same-key hook trust-state tables", () => {
+  it("fails closed on unproven same-key hook trust-state tables", () => {
     const hooksPath = "/tmp/codex/hooks.json";
     const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
     const fixtures = [
@@ -1353,13 +1587,680 @@ describe("config generator idempotency (#384)", () => {
     ] as const;
 
     for (const [name, table] of fixtures) {
-      const stripped = stripManagedCodexHookTrustState(table.join("\n"), {
-        managedTrustState,
-      });
-      assert.match(
-        stripped,
-        /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:post_compact:0:0"\]/m,
-        `${name} should be preserved`,
+      assert.throws(
+        () =>
+          stripManagedCodexHookTrustState(table.join("\n"), {
+            managedTrustState,
+          }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+        name,
+      );
+    }
+  });
+
+  it("handles semantically equivalent TOML trust-key variants before writing a replacement", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const matchingHeaders = [
+      `[hooks.state.'${key}']`,
+      `[hooks.state."${key.replace(/\//g, "\\u002f")}"]`,
+    ];
+
+    for (const header of matchingHeaders) {
+      const matching = [header, `trusted_hash = "${hash}"`, ""].join("\n");
+      const refreshed = upsertManagedCodexHookTrustState(
+        matching,
+        "/tmp/omx",
+        hooksPath,
+        { managedTrustState },
+      );
+      assert.equal(count(refreshed, /^\[hooks\.state\./gm), Object.keys(managedTrustState).length);
+      assert.equal(
+        (TOML.parse(refreshed) as { hooks?: { state?: Record<string, unknown> } })
+          .hooks?.state?.[key] !== undefined,
+        true,
+      );
+    }
+
+    const conflicting = [
+      matchingHeaders[0],
+      'trusted_hash = "sha256:foreign"',
+      "",
+    ].join("\n");
+    assert.throws(
+      () => upsertManagedCodexHookTrustState(conflicting, "/tmp/omx", hooksPath, { managedTrustState }),
+      (error: unknown) =>
+        error instanceof ManagedCodexHooksPlanError &&
+        error.code === "managed_trust_key_conflict",
+    );
+  });
+
+  it("removes only a single exact proven managed dotted hook trust assignment", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const exactAssignments = [
+      `hooks.state."${key}".trusted_hash = "${hash}"`,
+      `hooks . state . '${key}' . trusted_hash = "${hash}"`,
+    ];
+    for (const exact of exactAssignments) {
+      assert.equal(
+        stripManagedCodexHookTrustState(exact, { managedTrustState }),
+        "",
+      );
+    }
+    const exact = exactAssignments[1]!;
+    const refreshed = upsertManagedCodexHookTrustState(
+      exact,
+      "/tmp/omx",
+      hooksPath,
+      { managedTrustState },
+    );
+    assert.doesNotMatch(refreshed, /^hooks\s*\.\s*state\s*\./m);
+    assert.equal(count(refreshed, /^\[hooks\.state\./gm), Object.keys(managedTrustState).length);
+  });
+
+  it("fails closed for conflicting, commented, or multi-field managed dotted hook trust assignments", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const assignment = `hooks.state.'${key}'.trusted_hash = "${hash}"`;
+    const fixtures = [
+      assignment.replace(hash!, "sha256:foreign"),
+      `${assignment}\nhooks.state.'${key}'.enabled = true`,
+      `${assignment} # user comment`,
+    ];
+
+    for (const fixture of fixtures) {
+      assert.throws(
+        () => stripManagedCodexHookTrustState(fixture, { managedTrustState }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+      );
+    }
+  });
+
+  it("removes exact inline hook trust state without changing adjacent TOML", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const exactWholeStatement = `hooks = { state = { "${key}" = { trusted_hash = "${hash}" } } }`;
+    assert.equal(
+      stripManagedCodexHookTrustState(exactWholeStatement, { managedTrustState }),
+      "",
+      "an exact single-field inline hooks state remains removable",
+    );
+    const inline = [
+      'model = "gpt-5.6-sol"',
+      `hooks.state.'${key}' = { trusted_hash = '${hash}' }`,
+      "",
+      "[desktop]",
+      "git-create-pull-request-as-draft = true",
+      "",
+    ].join("\n");
+
+    const stripped = stripManagedCodexHookTrustState(inline, { managedTrustState });
+    assert.doesNotMatch(stripped, /hooks\.state/);
+    assert.match(stripped, /^model = "gpt-5\.6-sol"$/m);
+    assert.match(stripped, /^\[desktop\]$/m);
+    assert.match(stripped, /^git-create-pull-request-as-draft = true$/m);
+    assert.doesNotThrow(() => TOML.parse(stripped));
+
+    const refreshed = upsertManagedCodexHookTrustState(
+      inline,
+      "/tmp/omx",
+      hooksPath,
+      { managedTrustState },
+    );
+    assert.equal(
+      Object.keys(
+        (TOML.parse(refreshed) as { hooks?: { state?: Record<string, unknown> } })
+          .hooks?.state ?? {},
+      ).filter((stateKey) => stateKey === key).length,
+      1,
+    );
+  });
+
+  it("fails closed for inline, dotted, and table hook trust representations with foreign siblings", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const fixtures = [
+      [
+        "inline",
+        `hooks = { state = { "${key}" = { trusted_hash = "${hash}" } }, foreign = "keep" }`,
+      ],
+      [
+        "dotted",
+        `hooks.state = { "${key}" = { trusted_hash = "${hash}" }, foreign = "keep" }`,
+      ],
+      [
+        "table",
+        [
+          "[hooks]",
+          `state = { "${key}" = { trusted_hash = "${hash}" } }`,
+          'foreign = "keep"',
+        ].join("\n"),
+      ],
+    ] as const;
+
+    for (const [name, fixture] of fixtures) {
+      assert.doesNotThrow(() => TOML.parse(fixture), `${name} fixture must be valid TOML`);
+      assert.throws(
+        () => stripManagedCodexHookTrustState(fixture, { managedTrustState }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+        `${name} cleanup must preserve the entire foreign-containing representation`,
+      );
+      assert.throws(
+        () => upsertManagedCodexHookTrustState(fixture, "/tmp/omx", hooksPath, { managedTrustState }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+        `${name} refresh must preserve the original bytes`,
+      );
+    }
+  });
+
+  it("fails closed for commented trust assignments inside a managed config marker", () => {
+    const fixture = [
+      "# oh-my-codex (OMX) Configuration",
+      'hooks.state."foreign-key".trusted_hash = "sha256:foreign" # preserve me',
+      "# End oh-my-codex",
+      "",
+    ].join("\n");
+
+    assert.throws(
+      () => stripManagedCodexHookTrustState(fixture, { managedTrustState: {} }),
+      (error: unknown) =>
+        error instanceof ManagedCodexHooksPlanError &&
+        error.code === "managed_trust_key_conflict",
+    );
+  });
+
+  it("fails closed on every non-record hooks.state form inside managed markers", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const fixtures = [
+      ["scalar", 'hooks.state = "foreign"'],
+      ["array", "hooks.state = []"],
+      ["quoted state key", 'hooks."state" = "foreign"'],
+      ["inline non-record", 'hooks = { state = "foreign" }'],
+      [
+        "array of tables",
+        ["[[hooks.state]]", 'trusted_hash = "sha256:foreign"'].join("\n"),
+      ],
+    ] as const;
+
+    for (const [name, value] of fixtures) {
+      const fixture = [
+        "# oh-my-codex (OMX) Configuration",
+        value,
+        "# End oh-my-codex",
+        "",
+      ].join("\n");
+      assert.doesNotThrow(() => TOML.parse(fixture), `${name} fixture must be valid TOML`);
+      assert.throws(
+        () => stripManagedCodexHookTrustState(fixture, { managedTrustState }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+        name,
+      );
+    }
+  });
+
+  it("fails closed before stripping malformed hooks.state spellings", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const spellings = [
+      ["quoted state key", 'hooks."state" ='],
+      ["quoted hooks key", '"hooks".state ='],
+      ["fully quoted dotted key", '"hooks"."state" ='],
+      ["whitespace-delimited malformed array", 'hooks \t. "state" \t= ['],
+      ["malformed inline table", 'hooks = { "state" = {'],
+      ["incomplete table header", '[ "hooks" . "state"'],
+      ["incomplete array table header", '[[ "hooks" . "state" ]'],
+      ["incomplete hooks table header prefix", "[hooks"],
+      ["incomplete hooks array table header prefix", "[[hooks"],
+      ["partial hooks array-table closer", "[[hooks] # continuation"],
+      ["whitespace-split hooks array-table closer", "[[hooks] ]"],
+      [
+        "split hooks array-table closer",
+        ["[[hooks]", "]"].join("\n"),
+      ],
+      [
+        "comment-separated hooks assignment continuation",
+        [
+          "hooks # continuation",
+          '= { "state" = { trusted_hash = "sha256:foreign" } }',
+        ].join("\n"),
+      ],
+      [
+        "bare hooks assignment continuation",
+        [
+          "hooks",
+          '= { "state" = { trusted_hash = "sha256:foreign" } }',
+        ].join("\n"),
+      ],
+      [
+        "comment-separated hooks dotted-key continuation",
+        [
+          "hooks # continuation",
+          '. "state" = { trusted_hash = "sha256:foreign" }',
+        ].join("\n"),
+      ],
+      [
+        "comment-separated hooks table-header continuation",
+        ["hooks # continuation", '[ "state" ]'].join("\n"),
+      ],
+      [
+        "comment-separated hooks array-table-header continuation",
+        ["hooks # continuation", '[[ "state" ]]'].join("\n"),
+      ],
+      [
+        "split dotted key",
+        ["hooks .", '"state" = { trusted_hash = "sha256:foreign" }'].join("\n"),
+      ],
+      [
+        "unclosed multiline inline table",
+        ["hooks = {", '"state" = { trusted_hash = "sha256:foreign" }'].join("\n"),
+      ],
+      [
+        "comment-ended inline table continuation",
+        [
+          "hooks = { # continuation",
+          '"state" = { trusted_hash = "sha256:foreign" }',
+        ].join("\n"),
+      ],
+      [
+        "bare hooks assignment with inline-table continuation",
+        [
+          "hooks =",
+          '{ "state" = { trusted_hash = "sha256:foreign" } }',
+        ].join("\n"),
+      ],
+    ] as const;
+
+    const isManagedTrustConflict = (error: unknown): boolean =>
+      error instanceof ManagedCodexHooksPlanError &&
+      error.code === "managed_trust_key_conflict";
+
+    for (const [name, spelling] of spellings) {
+      const fixture = [
+        "# oh-my-codex (OMX) Configuration",
+        spelling,
+        "# End oh-my-codex",
+        "",
+        "[user.after]",
+        'value = "preserved"',
+        "",
+      ].join("\n");
+      const original = fixture;
+
+      assert.throws(
+        () => buildMergedConfig(fixture, "/tmp/omx", { managedHookTrustState: managedTrustState }),
+        isManagedTrustConflict,
+        `${name} must fail before OMX block stripping`,
+      );
+      assert.equal(fixture, original, `${name} planning must not mutate input`);
+      assert.throws(
+        () => stripExistingOmxBlocks(fixture),
+        isManagedTrustConflict,
+        `${name} must not be erased by direct OMX block stripping`,
+      );
+      assert.equal(fixture, original, `${name} stripping must not mutate input`);
+    }
+
+    const exactQuoted = [
+      "# oh-my-codex (OMX) Configuration",
+      `["hooks"."state"."${key}"]`,
+      `trusted_hash = "${hash}"`,
+      "# End oh-my-codex",
+      "",
+    ].join("\n");
+    assert.throws(
+      () => stripExistingOmxBlocks(exactQuoted),
+      isManagedTrustConflict,
+      "direct stripping must not infer ownership without trust expectations",
+    );
+    assert.deepEqual(stripExistingOmxBlocks(exactQuoted, { managedTrustState }), {
+      cleaned: "",
+      removed: 1,
+    });
+    assert.doesNotThrow(() =>
+      buildMergedConfig(exactQuoted, "/tmp/omx", { managedHookTrustState: managedTrustState }),
+    );
+  });
+
+  it("fails closed when hooks scope crosses parsed assignments or malformed headers", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const validNestedArrayAssignment = [
+      "values = [",
+      '  ["unrelated"]',
+      "]",
+    ];
+    assert.doesNotThrow(() =>
+      TOML.parse(["[hooks]", ...validNestedArrayAssignment].join("\n")),
+    );
+    const fixtures = [
+      [
+        "parsed nested assignment",
+        ["[hooks]", ...validNestedArrayAssignment, "state ="].join("\n"),
+      ],
+      [
+        "malformed bracket-prefixed line",
+        ["[hooks]", "[broken", "state ="].join("\n"),
+      ],
+    ] as const;
+    const isManagedTrustConflict = (error: unknown): boolean =>
+      error instanceof ManagedCodexHooksPlanError &&
+      error.code === "managed_trust_key_conflict";
+
+    for (const [name, content] of fixtures) {
+      const fixture = [
+        "# oh-my-codex (OMX) Configuration",
+        content,
+        "# End oh-my-codex",
+        "",
+        "[user.after]",
+        'value = "preserved"',
+        "",
+      ].join("\n");
+      const original = fixture;
+
+      assert.throws(
+        () => stripExistingOmxBlocks(fixture),
+        isManagedTrustConflict,
+        `${name} must not be erased by direct OMX block stripping`,
+      );
+      assert.equal(fixture, original, `${name} stripping must not mutate input`);
+      assert.throws(
+        () => buildMergedConfig(fixture, "/tmp/omx", { managedHookTrustState: managedTrustState }),
+        isManagedTrustConflict,
+        `${name} must fail before OMX block stripping`,
+      );
+      assert.equal(fixture, original, `${name} planning must not mutate input`);
+    }
+
+    const validNonHooksHeaderExit = [
+      "# oh-my-codex (OMX) Configuration",
+      "[hooks]",
+      "[unrelated]",
+      "state =",
+      "# End oh-my-codex",
+      "",
+      "[user.after]",
+      'value = "preserved"',
+      "",
+    ].join("\n");
+    const expectedExit = ["[user.after]", 'value = "preserved"', ""].join("\n");
+    assert.deepEqual(stripExistingOmxBlocks(validNonHooksHeaderExit), {
+      cleaned: expectedExit,
+      removed: 1,
+    });
+    assert.doesNotThrow(() =>
+      buildMergedConfig(validNonHooksHeaderExit, "/tmp/omx", {
+        managedHookTrustState: managedTrustState,
+      }),
+    );
+  });
+
+  it("fails closed for hooks array-table openers and preserves unrelated arrays", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const arrayTableOpeners = [
+      ["adjacent", "[[hooks]]"],
+      ["space-split", "[ [hooks]]"],
+      ["tab-split", "[\t[hooks]]"],
+      ["newline-split", ["[[", "hooks]]"].join("\n")],
+      [
+        "two standalone opening brackets followed by independently parsed state",
+        [
+          "[",
+          "[",
+          "hooks]]",
+          'state = { trusted_hash = "sha256:foreign" }',
+        ].join("\n"),
+      ],
+      [
+        "three standalone opening brackets followed by independently parsed state",
+        [
+          "[",
+          "[",
+          "[",
+          "hooks]]]",
+          'state = { trusted_hash = "sha256:foreign" }',
+        ].join("\n"),
+      ],
+      [
+        "comment- and blank-separated standalone opening brackets",
+        [
+          "[",
+          "# opening bracket continuation",
+          "",
+          "[",
+          "",
+          "# another opening bracket continuation",
+          "[",
+          "hooks]]]",
+          'state = { trusted_hash = "sha256:foreign" }',
+        ].join("\n"),
+      ],
+      ["triple", "[[[hooks]]]"],
+      ["extra", "[[[[hooks]]]]"],
+      ["space-newline-split", ["[ [", "hooks]]"].join("\n")],
+      ["tab-newline-split", ["[\t[", "hooks]]"].join("\n")],
+      ["triple-newline-split", ["[[[", "hooks]]]"].join("\n")],
+      ["comment-ended", ["[[ # continuation", "hooks]]"].join("\n")],
+    ] as const;
+    const isManagedTrustConflict = (error: unknown): boolean =>
+      error instanceof ManagedCodexHooksPlanError &&
+      error.code === "managed_trust_key_conflict";
+
+    for (const [name, opener] of arrayTableOpeners) {
+      const fixture = [
+        "# oh-my-codex (OMX) Configuration",
+        opener,
+        "# End oh-my-codex",
+        "",
+        "[user.after]",
+        'value = "preserved"',
+        "",
+      ].join("\n");
+      const original = fixture;
+
+      assert.throws(
+        () =>
+          buildMergedConfig(fixture, "/tmp/omx", {
+            managedHookTrustState: managedTrustState,
+          }),
+        isManagedTrustConflict,
+        `${name} opener must fail before OMX block stripping`,
+      );
+      assert.equal(fixture, original, `${name} planning must not mutate input`);
+      assert.throws(
+        () => stripExistingOmxBlocks(fixture),
+        isManagedTrustConflict,
+        `${name} opener must not be erased by direct OMX block stripping`,
+      );
+      assert.equal(fixture, original, `${name} stripping must not mutate input`);
+    }
+
+    const unrelatedArrays = [
+      "[[user.before]]",
+      'name = "before"',
+      "",
+      "# oh-my-codex (OMX) Configuration",
+      "[[unrelated]]",
+      'name = "inside managed marker"',
+      "# End oh-my-codex",
+      "",
+      "[[user.after]]",
+      'name = "after"',
+      "",
+    ].join("\n");
+    const preservedArrays = [
+      "[[user.before]]",
+      'name = "before"',
+      "",
+      "[[user.after]]",
+      'name = "after"',
+      "",
+    ].join("\n");
+
+    assert.deepEqual(stripExistingOmxBlocks(unrelatedArrays), {
+      cleaned: preservedArrays,
+      removed: 1,
+    });
+    const merged = buildMergedConfig(unrelatedArrays, "/tmp/omx");
+    assert.match(merged, /^\[\[user\.before\]\]$/m);
+    assert.match(merged, /^\[\[user\.after\]\]$/m);
+    assert.doesNotMatch(merged, /^\[\[unrelated\]\]$/m);
+    assert.doesNotThrow(() => TOML.parse(merged));
+  });
+
+  it("removes valid nested hooks arrays inside exact managed marker ranges", () => {
+    const fixture = [
+      "# oh-my-codex (OMX) Configuration",
+      "values = [",
+      "  [",
+      "",
+      "    # a value named hooks is not a table prefix",
+      '    "hooks",',
+      "  ],",
+      "  # nor is this independently nested array",
+      "  [",
+      '    "unrelated",',
+      "  ],",
+      "  [",
+      '    [["hooks"]]',
+      "  ],",
+      "  [",
+      '    [ [ "hooks" ] ]',
+      "  ],",
+      "]",
+      "outer.values = [",
+      '  [["hooks"]]',
+      "]",
+      '"" = [',
+      '  [ [ "hooks" ] ]',
+      "]",
+      "# End oh-my-codex",
+      "",
+      "[user.after]",
+      'value = "preserved"',
+      "",
+    ].join("\n");
+    const expected = ["[user.after]", 'value = "preserved"', ""].join("\n");
+
+    assert.doesNotThrow(() => TOML.parse(fixture));
+    assert.deepEqual(stripExistingOmxBlocks(fixture), { cleaned: expected, removed: 1 });
+
+    const merged = buildMergedConfig(fixture, "/tmp/omx");
+    assert.doesNotMatch(merged, /^values = \[/m);
+    assert.match(merged, /^\[user\.after\]$/m);
+    assert.doesNotThrow(() => TOML.parse(merged));
+  });
+
+  it("ignores inert hooks.state text inside exact managed marker ranges", () => {
+    const fixture = [
+      "# oh-my-codex (OMX) Configuration",
+      '# hooks."state" =',
+      'basic = "hooks.\'state\' ="',
+      "literal = 'hooks = { state = {'",
+      'multiline = """',
+      '[[ "hooks" . "state" ]',
+      'hooks = { "state" = {',
+      '"""',
+      "# End oh-my-codex",
+      "",
+      "[user.after]",
+      'value = "preserved"',
+      "",
+    ].join("\n");
+    const expected = ["[user.after]", 'value = "preserved"', ""].join("\n");
+
+    assert.deepEqual(stripExistingOmxBlocks(fixture), { cleaned: expected, removed: 1 });
+    assert.doesNotThrow(() => buildMergedConfig(fixture, "/tmp/omx"));
+  });
+
+  it("removes an exact inline state entry within a hooks.state table", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const inline = [
+      "[hooks.state]",
+      `"${key}" = { trusted_hash = "${hash}" }`,
+      "",
+      "[desktop]",
+      "git-create-pull-request-as-draft = true",
+      "",
+    ].join("\n");
+
+    const stripped = stripManagedCodexHookTrustState(inline, { managedTrustState });
+    assert.doesNotMatch(stripped, new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(stripped, /^\[hooks\.state\]$/m);
+    assert.match(stripped, /^\[desktop\]$/m);
+    assert.doesNotThrow(() => TOML.parse(stripped));
+  });
+
+  it("fails closed on multi-field, array-like, and mixed managed trust representations", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const key = `${hooksPath}:post_compact:0:0`;
+    const hash = managedTrustState[key]?.trusted_hash;
+    assert.ok(hash);
+    const fixtures = [
+      [
+        `hooks.state."${key}" = { trusted_hash = "${hash}", enabled = false }`,
+        "",
+      ].join("\n"),
+      [
+        `hooks.state."${key}" = [{ trusted_hash = "${hash}" }]`,
+        "",
+      ].join("\n"),
+      [
+        `hooks.state."${key}" = { trusted_hash = "${hash}" }`,
+        `[hooks.state."${key}"]`,
+        `trusted_hash = "${hash}"`,
+        "",
+      ].join("\n"),
+    ];
+
+    for (const fixture of fixtures) {
+      assert.throws(
+        () => stripManagedCodexHookTrustState(fixture, { managedTrustState }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+      );
+      assert.throws(
+        () => buildMergedConfig(fixture, "/tmp/omx", { managedHookTrustState: managedTrustState }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
       );
     }
   });
@@ -1422,44 +2323,184 @@ describe("config generator idempotency (#384)", () => {
     assertSingleManagedHookTrustState(repaired);
   });
 
-  it("dedupes stale unfenced managed hook trust-state tables during legacy setup refresh", () => {
+  it("preserves managed-looking trust blocks inside multiline TOML values", () => {
     const hooksPath = "/tmp/codex/hooks.json";
-    const stalePluginModeConfig = [
-      "[features]",
-      "codex_hooks = true",
-      "goals = true",
-      "",
-      '[hooks.state."custom:/hooks.json:stop:0:0"]',
-      'trusted_hash = "sha256:user"',
-      "enabled = false",
-      "",
-      // Regression fixture for #2225: plugin-mode state could be left outside
-      // the managed fence, then legacy setup appended the same table again.
-      '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
-      'trusted_hash = "sha256:stale-plugin-mode"',
-      "",
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const embeddedTrustBlock = [
+      "# OMX-owned Codex hook trust state",
+      "# Trusts only setup-managed native hook wrappers.",
+      ...Object.entries(managedTrustState)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .flatMap(([key, state]) => [
+          `[hooks.state."${key}"]`,
+          `trusted_hash = "${state.trusted_hash}"`,
+          "",
+        ]),
+      "# End OMX-owned Codex hook trust state",
     ].join("\n");
+    const multilineBasicValue = `basic = """\n${embeddedTrustBlock}\n"""`;
+    const multilineLiteralValue = `literal = '''\n${embeddedTrustBlock}\n'''`;
+    const config = [multilineBasicValue, "", multilineLiteralValue, ""].join("\n");
 
-    const refreshed = buildMergedConfig(stalePluginModeConfig, "/tmp/omx", {
+    const first = upsertManagedCodexHookTrustState(config, "/tmp/omx", hooksPath, {
+      managedTrustState,
+    });
+    const refreshed = upsertManagedCodexHookTrustState(first, "/tmp/omx", hooksPath, {
+      managedTrustState,
+    });
+    const stripped = stripManagedCodexHookTrustState(refreshed, { managedTrustState });
+
+    assert.equal(refreshed, first, "the real managed block should still be replaced idempotently");
+    for (const preserved of [first, stripped]) {
+      assert.ok(preserved.includes(multilineBasicValue));
+      assert.ok(preserved.includes(multilineLiteralValue));
+    }
+    const parsed = TOML.parse(stripped) as {
+      basic?: unknown;
+      literal?: unknown;
+      hooks?: unknown;
+    };
+    assert.equal(parsed.basic, `${embeddedTrustBlock}\n`);
+    assert.equal(parsed.literal, `${embeddedTrustBlock}\n`);
+    assert.equal(parsed.hooks, undefined, "only the real managed trust tables should be stripped");
+
+    const unterminatedMultilineValue = multilineBasicValue.slice(0, -3);
+    assert.equal(
+      stripManagedCodexHookTrustState(unterminatedMultilineValue, { managedTrustState }),
+      unterminatedMultilineValue,
+      "an ambiguous unterminated multiline value must not lose managed-looking content",
+    );
+  });
+
+  it("uses strict final hook coordinates for precomputed managed trust", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const foreignGroup = {
+      hooks: [
+        {
+          type: "command",
+          command: "/usr/bin/python3 /tmp/user-hook.py",
+          timeout: 5,
+        },
+      ],
+    };
+    const existingHooks = JSON.stringify({
+      hooks: Object.fromEntries(
+        MANAGED_HOOK_EVENTS.map((eventName) => [eventName, [foreignGroup]]),
+      ),
+    });
+    const plan = planManagedCodexHooksMerge(
+      existingHooks,
+      "/tmp/omx",
+      hooksPath,
+    );
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+
+    const refreshed = buildMergedConfig("", "/tmp/omx", {
       codexHooksFile: hooksPath,
+      managedHookTrustState: plan.finalTrustState,
+      priorManagedHookTrustState: plan.priorTrustState,
+      legacyHookTrustState: plan.legacyTrustState,
+    });
+    const parsed = TOML.parse(refreshed) as {
+      hooks?: { state?: Record<string, { trusted_hash?: unknown }> };
+    };
+    const trustKeys = Object.keys(parsed.hooks?.state ?? {}).sort();
+
+    assert.deepEqual(trustKeys, Object.keys(plan.finalTrustState).sort());
+    for (const eventName of MANAGED_HOOK_EVENTS) {
+      const eventLabel = eventName
+        .replace(/([A-Z])/g, "_$1")
+        .toLowerCase()
+        .replace(/^_/, "");
+      assert.ok(
+        trustKeys.some((key) => key.includes(`:${eventLabel}:1:0`)),
+        `${eventName} should retain the actual final group index after foreign hooks`,
+      );
+    }
+  });
+
+  it("migrates exact legacy hooks.json state in the same precomputed config plan", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const plan = planManagedCodexHooksMerge(
+      JSON.stringify({
+        state: {
+          "legacy:/hooks.json:stop:0:0": {
+            trusted_hash: "sha256:legacy",
+            enabled: false,
+          },
+        },
+        hooks: {},
+      }),
+      "/tmp/omx",
+      hooksPath,
+    );
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+
+    const refreshed = buildMergedConfig("", "/tmp/omx", {
+      codexHooksFile: hooksPath,
+      managedHookTrustState: plan.finalTrustState,
+      priorManagedHookTrustState: plan.priorTrustState,
+      legacyHookTrustState: plan.legacyTrustState,
     });
 
-    assert.doesNotThrow(() => TOML.parse(refreshed));
-    assert.equal(
-      count(
-        refreshed,
-        /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:post_compact:0:0"\]$/gm,
-      ),
-      1,
-      "legacy refresh should replace the stale plugin-mode managed hook state",
-    );
+    assert.doesNotMatch(plan.finalContent ?? "", /"state"/);
     assert.match(
       refreshed,
-      /^\[hooks\.state\."custom:\/hooks\.json:stop:0:0"\]$/m,
-      "unrelated user hook state should be preserved",
+      /^\[hooks\.state\."legacy:\/hooks\.json:stop:0:0"\]$/m,
     );
+    assert.match(refreshed, /^trusted_hash = "sha256:legacy"$/m);
     assert.match(refreshed, /^enabled = false$/m);
-    assertSingleManagedHookTrustState(refreshed);
+  });
+
+  it("migrates a legacy __proto__ trust key into config.toml", () => {
+    const plan = planManagedCodexHooksMerge(
+      '{"state":{"__proto__":{"trusted_hash":"sha256:legacy","enabled":true}}}',
+      "/tmp/omx",
+      "/tmp/codex/hooks.json",
+    );
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    const config = buildMergedConfig("", "/tmp/omx", {
+      legacyHookTrustState: plan.legacyTrustState,
+    });
+    assert.match(config, /^\[hooks\.state\."__proto__"\]$/m);
+    assert.match(config, /^trusted_hash = "sha256:legacy"$/m);
+    assert.match(config, /^enabled = true$/m);
+  });
+
+  it("coalesces matching legacy hook trust config tables and rejects hash or enabled collisions", () => {
+    const key = "legacy:/hooks.json:stop:0:0";
+    const legacyHookTrustState = {
+      [key]: { trusted_hash: "sha256:legacy", enabled: false },
+    };
+    const matchingConfig = [
+      `[hooks.state."${key}"]`,
+      'trusted_hash = "sha256:legacy"',
+      "enabled = false",
+      "",
+    ].join("\n");
+    const matching = buildMergedConfig(matchingConfig, "/tmp/omx", {
+      legacyHookTrustState,
+    });
+    assert.equal(
+      count(matching, /^\[hooks\.state\."legacy:\/hooks\.json:stop:0:0"\]$/gm),
+      1,
+    );
+
+    for (const conflictingConfig of [
+      matchingConfig.replace("sha256:legacy", "sha256:other"),
+      matchingConfig.replace("enabled = false", "enabled = true"),
+      matchingConfig.replace("\nenabled = false", ""),
+    ]) {
+      assert.throws(
+        () => buildMergedConfig(conflictingConfig, "/tmp/omx", { legacyHookTrustState }),
+        (error: unknown) =>
+          error instanceof ManagedCodexHooksPlanError &&
+          error.code === "managed_trust_key_conflict",
+      );
+    }
   });
 
   it("syncs shared MCP registry entries in a dedicated managed block", async () => {

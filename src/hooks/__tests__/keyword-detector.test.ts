@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import {
   detectKeywords,
   detectPrimaryKeyword,
+  classifyKeywordInput,
+  KEYWORD_INERT_DIAGNOSTIC_ORDER,
   recordSkillActivation,
   DEEP_INTERVIEW_STATE_FILE,
   DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
@@ -15,7 +17,12 @@ import {
 } from '../keyword-detector.js';
 import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
-import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
+import {
+  EXPLICIT_SKILL_ALIASES,
+  getExplicitSkillDefinition,
+  KEYWORD_TRIGGER_DEFINITIONS,
+} from '../keyword-registry.js';
+import { evaluateResolvedPromptTurn } from '../prompt-session-provenance.js';
 
 async function withIsolatedHome<T>(prefix: string, run: (homeDir: string) => Promise<T>): Promise<T> {
   const homeDir = await mkdtemp(join(tmpdir(), `omx-keyword-home-${prefix}-`));
@@ -493,6 +500,1383 @@ describe('keyword detector team compatibility', () => {
   });
 });
 
+describe('keyword input classification direct grammar', () => {
+  it('classifies prompt-leading direct forms, aliases, priority, and block order', () => {
+    const cases = [
+      { text: '$ralplan implement this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
+      { text: '\u00a0$RALPLAN implement this', skills: ['ralplan'], keywords: ['$RALPLAN'], priorities: [11] },
+      { text: '- $team $ralph ship this', skills: ['team', 'ralph'], keywords: ['$team', '$ralph'], priorities: [8, 9] },
+      { text: '12) $oh-my-codex:ralplan build this', skills: ['ralplan'], keywords: ['$oh-my-codex:ralplan'], priorities: [11] },
+      { text: '$ulw $frontend-ui-ux build this', skills: ['ultrawork', 'design'], keywords: ['$ulw', '$frontend-ui-ux'], priorities: [10, 6] },
+      { text: '$ralplan $unknown $ralplan $ralph ship this', skills: ['ralplan', 'ralph'], keywords: ['$ralplan', '$ralph'], priorities: [11, 9] },
+      { text: '$ㅕㅣㅈ 병렬 작업', skills: ['ultrawork'], keywords: ['$ulw'], priorities: [10] },
+      { text: 'use $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
+      { text: 'please use $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
+      { text: 'run $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
+      { text: '- use $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
+      { text: 'run $analyze', skills: ['analyze'], keywords: ['$analyze'], priorities: [7] },
+      { text: 'run $code-review', skills: ['code-review'], keywords: ['$code-review'], priorities: [6] },
+      { text: 'please use $code-review', skills: ['code-review'], keywords: ['$code-review'], priorities: [6] },
+      { text: 'please run $team', skills: ['team'], keywords: ['$team'], priorities: [8] },
+      { text: 'start $deep-interview', skills: ['deep-interview'], keywords: ['$deep-interview'], priorities: [8] },
+      { text: 'enable $ultragoal', skills: ['ultragoal'], keywords: ['$ultragoal'], priorities: [10] },
+      { text: 'launch $autopilot', skills: ['autopilot'], keywords: ['$autopilot'], priorities: [10] },
+      { text: 'invoke $ralph', skills: ['ralph'], keywords: ['$ralph'], priorities: [9] },
+      { text: 'activate $ultrawork', skills: ['ultrawork'], keywords: ['$ultrawork'], priorities: [10] },
+      { text: 'resume $team', skills: ['team'], keywords: ['$team'], priorities: [8] },
+      { text: 'continue $code-review', skills: ['code-review'], keywords: ['$code-review'], priorities: [6] },
+    ] as const;
+
+    for (const testCase of cases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.equal(classification.reservedInput, null, testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.skill), testCase.skills, testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.keyword), testCase.keywords, testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.priority), testCase.priorities, testCase.text);
+    }
+  });
+
+
+  it('does not extend discourse negation beyond a comma-separated directive', () => {
+    for (const text of [
+      'No worries, use autopilot mode.',
+      "I'm not sure, please use autopilot mode.",
+    ] as const) {
+      assert.deepEqual(classifyKeywordInput(text).matches.map((match) => match.skill), ['autopilot'], text);
+    }
+
+    for (const text of ['Do not use autopilot mode.', 'No autopilot mode.'] as const) {
+      assert.deepEqual(classifyKeywordInput(text).matches, [], text);
+    }
+  });
+
+
+  it('accepts every directive verb and polite prefix for every explicit token and alias', () => {
+    const tokens = new Set([
+      ...KEYWORD_TRIGGER_DEFINITIONS
+        .filter((definition) => definition.keyword.startsWith('$'))
+        .map((definition) => definition.keyword.slice(1)),
+      ...EXPLICIT_SKILL_ALIASES.map((alias) => alias.source),
+    ]);
+    const directiveVerbs = ['use', 'run', 'start', 'enable', 'launch', 'invoke', 'activate', 'resume', 'continue'] as const;
+
+    for (const token of tokens) {
+      const definition = getExplicitSkillDefinition(token);
+      assert.ok(definition, token);
+      const tokenForms = [`$${token}`];
+      if (/^[A-Za-z]/u.test(token)) tokenForms.push(`$oh-my-codex:${token}`);
+      for (const tokenForm of tokenForms) {
+        for (const directiveVerb of directiveVerbs) {
+          for (const politePrefix of ['', 'please '] as const) {
+            const text = `${politePrefix}${directiveVerb} ${tokenForm} now`;
+            const classification = classifyKeywordInput(text);
+            assert.deepEqual(classification.matches.map((match) => match.skill), [definition.skill], text);
+            assert.deepEqual(classification.matches.map((match) => match.priority), [definition.priority], text);
+            assert.deepEqual(classification.candidates[0]?.reasons, [], text);
+          }
+        }
+      }
+    }
+  });
+
+  it('keeps directive-looking documentation and non-leading prose inert', () => {
+    for (const text of [
+      'use $ralplan is the consensus-planning command',
+      'please run $team is a workflow command',
+      'use $ralplan is the workflow command for autopilot mode',
+      'use $ralplan is the consensus-planning command\nAutopilot mode is its alias.',
+      'use $ralplan, $autopilot, and $team are workflow commands',
+      'use $ralplan is the consensus-planning command; $team is its alias',
+      'use $ralplan，$autopilot are workflow commands',
+      'use $ralplan， $autopilot， and $team are workflow commands',
+      'use $ralplan is the consensus-planning command; $team is also its alias',
+      'use $ralplan is the consensus-planning command\nAutopilot mode is also its alias.',
+      'use $ralplan is the workflow command; $team appears in the documentation.',
+      'use $ralplan، $autopilot are workflow commands',
+      '$ralplan، $autopilot are prohibited',
+      '$ralplan,$autopilot are prohibited',
+      'Autopilot mode، deep interview are prohibited.',
+      'Autopilot mode،deep interview are prohibited.',
+      'use $ralplan is the workflow command, e.g. use $autopilot in examples.',
+      'use $ralplan is the workflow command; autopilot mode appears in the documentation.',
+      '$ralplan、 $autopilot are prohibited',
+      'Autopilot mode、 deep interview are prohibited.',
+      'uſe $ralplan plan it',
+      'pleaſe use $ralplan plan it',
+      'Do not use deep interview but uſe autopilot mode.',
+      'For instance： use autopilot mode.',
+      'For instance， use autopilot mode.',
+      'For instance، use autopilot mode.',
+      'For instance、 use autopilot mode.',
+      'use $ralplan is the workflow command; $autopilot is documented in the guide.',
+      '$autopilot is described in the manual.',
+      'The docs say use $ralplan plan this',
+      'I think we should run $code-review before merge',
+    ]) {
+      assert.deepEqual(classifyKeywordInput(text).matches, [], text);
+    }
+  });
+
+  it('contains nested predecessors, preserves first-block and reserved dominance', () => {
+    const nested = classifyKeywordInput('"`x`\n$ralplan plan it');
+    assert.deepEqual(nested.matches, []);
+    assert.deepEqual(nested.candidates[0]?.reasons, ['not-leading-region']);
+
+    const firstBlock = classifyKeywordInput('$ralplan plan it\n"x"\n$autopilot build it');
+    assert.deepEqual(firstBlock.matches.map((match) => match.skill), ['ralplan']);
+    assert.deepEqual(firstBlock.candidates[1]?.reasons, ['not-leading-region']);
+
+    const reserved = classifyKeywordInput('/prompts:architect\n"x"\n$ralplan plan it');
+    assert.equal(reserved.reservedInput, 'prompts');
+    assert.deepEqual(reserved.matches, []);
+
+    for (const text of [
+      '/prompts:architect— use autopilot mode',
+      '/prompts:architect， use autopilot mode',
+    ]) {
+      const classification = classifyKeywordInput(text);
+      assert.equal(classification.reservedInput, 'prompts', text);
+      assert.deepEqual(classification.matches, [], text);
+    }
+
+    const confusablePrompts = classifyKeywordInput('/promptſ:architect; use autopilot mode.');
+    assert.equal(confusablePrompts.reservedInput, null);
+    assert.deepEqual(confusablePrompts.matches.map((match) => match.skill), ['autopilot']);
+  });
+
+  it('tracks list fence closer identity and relative indentation', () => {
+    const rootFence = classifyKeywordInput('- ```\n  sample\n```\n$ralplan plan it');
+    assert.deepEqual(rootFence.matches, []);
+    assert.ok(rootFence.candidates[0]?.reasons.includes('fenced-code'));
+
+    const relativeCloser = classifyKeywordInput('- ```\n  sample\n    ```\n$ralplan plan it');
+    assert.deepEqual(relativeCloser.matches.map((match) => match.skill), ['ralplan']);
+  });
+
+  it('binds B3 through B5 fence candidates exactly', () => {
+    const cases = [
+      {
+        text: '```\n$ralph\n````\n$ralplan plan it',
+        skills: ['ralplan'],
+        candidates: [
+          { rawKeyword: '$ralph', reasons: ['fenced-code', 'not-leading-region'] },
+          { rawKeyword: '$ralplan', reasons: [] },
+        ],
+      },
+      {
+        text: '````\n$ralplan\n```\n$ralph ship it',
+        skills: [],
+        candidates: [
+          { rawKeyword: '$ralplan', reasons: ['fenced-code', 'not-leading-region'] },
+          { rawKeyword: '$ralph', reasons: ['fenced-code', 'not-leading-region'] },
+        ],
+      },
+      {
+        text: '```\n$ralplan\n~~~\n$ralph ship it',
+        skills: [],
+        candidates: [
+          { rawKeyword: '$ralplan', reasons: ['fenced-code', 'not-leading-region'] },
+          { rawKeyword: '$ralph', reasons: ['fenced-code', 'not-leading-region'] },
+        ],
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.equal(classification.reservedInput, null, testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.skill), testCase.skills, testCase.text);
+      assert.deepEqual(
+        classification.candidates.map((candidate) => ({ rawKeyword: candidate.rawKeyword, reasons: candidate.reasons })),
+        testCase.candidates,
+        testCase.text,
+      );
+    }
+  });
+
+  it('masks multiline Markdown reference titles', () => {
+    for (const text of [
+      '[docs]: /target "title\nuse /prompts:architect\n$ralplan plan it"',
+      '[docs]: /target "title\nuse autopilot mode"',
+      '[docs]: ./target\n  (autopilot mode)',
+      '[docs]:\n  ./target\n  (autopilot mode)',
+      '[docs]: ./target\n(autopilot mode)',
+    ]) {
+      assert.deepEqual(classifyKeywordInput(text).matches, [], text);
+    }
+
+    const closedPromptsTitle = classifyKeywordInput('[docs]: /target "title\nUse /prompts:architect"\n$ralplan plan it');
+    assert.deepEqual(closedPromptsTitle.matches.map((match) => match.skill), ['ralplan']);
+  });
+
+  it('fails closed for Unicode case-fold and confusable explicit-token continuations', () => {
+    for (const testCase of [
+      { text: '$ultraworK execute', rawKeyword: '$ultraworK' },
+      { text: '$ralplan・suffix plan it', rawKeyword: '$ralplan・suffix' },
+      { text: '$ralplan･suffix plan it', rawKeyword: '$ralplan･suffix' },
+      { text: '$ralplan٪docs', rawKeyword: '$ralplan٪docs' },
+      { text: '$ralplan∕config', rawKeyword: '$ralplan∕config' },
+    ]) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.deepEqual(classification.matches, [], testCase.text);
+      assert.equal(classification.candidates[0]?.rawKeyword, testCase.rawKeyword, testCase.text);
+      assert.equal(classification.candidates[0]?.skill, null, testCase.text);
+    }
+  });
+
+  it('composes V11 malformed-token, documentation, directive, and Arabic-clause controls', () => {
+    for (const text of ["$ralplan's", '$ralplan’s', '$ralplan＇s']) {
+      const classification = classifyKeywordInput(text);
+      assert.equal(classification.hasExplicitLikeInvocation, true, text);
+      assert.equal(classification.candidates[0]?.rawKeyword, text, text);
+      assert.equal(classification.candidates[0]?.skill, null, text);
+      assert.deepEqual(classification.matches, [], text);
+    }
+
+    const possessivePrompts = classifyKeywordInput("/prompts:architect's");
+    assert.equal(possessivePrompts.reservedInput, null);
+    assert.deepEqual(possessivePrompts.matches, []);
+
+    for (const text of ['$・autopilot mode', '$･autopilot mode', '$٪autopilot mode', '$∕autopilot mode']) {
+      const classification = classifyKeywordInput(text);
+      assert.equal(classification.hasExplicitLikeInvocation, true, text);
+      assert.equal(classification.candidates[0]?.skill, null, text);
+      assert.deepEqual(classification.matches, [], text);
+    }
+
+    for (const testCase of [
+      { text: 'use $autopilot is documented but use $ralplan plan it', skills: ['ralplan'] },
+      { text: '- use $ralplan： consensus-planning workflow', skills: [] },
+      { text: 'use $ralplan is the workflow command؟ run $autopilot', skills: ['autopilot'] },
+      { text: '$ralplan؛ $autopilot is prohibited', skills: ['ralplan'] },
+      { text: '$ralplan is prohibited but uſe autopilot mode.', skills: [] },
+      { text: '$ralplan is prohibited but use autopilot mode.', skills: ['autopilot'] },
+      { text: '[docs]: /target "title\nplain text"\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '[docs]: ./target\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'Do not run $ralplan; use the $autopilot build it', skills: ['autopilot'] },
+      { text: '"quoted"\ncontinue with $ralplan', skills: ['ralplan'] },
+      { text: 'use $ralplan is documented; advance to $ultragoal', skills: ['ultragoal'] },
+    ] as const) {
+      assert.deepEqual(classifyKeywordInput(testCase.text).matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+  });
+
+  it('masks mixed postposed negation and documentary subject chains without reopening prose', () => {
+    for (const text of [
+      'Autopilot mode and $ralplan are prohibited.',
+      'use $ralplan and autopilot mode are workflow commands',
+      '$ralplan is prohibited because docs use $autopilot.',
+    ]) {
+      assert.deepEqual(classifyKeywordInput(text).matches, [], text);
+    }
+
+    assert.deepEqual(
+      classifyKeywordInput('use $ralplan and autopilot mode are workflow commands; use $team execute it').matches.map((match) => match.skill),
+      ['team'],
+    );
+
+    for (const punctuation of ['．', ';'] as const) {
+      const text = `Do not run $ralplan${punctuation} use $autopilot build it`;
+      assert.deepEqual(classifyKeywordInput(text).matches.map((match) => match.skill), ['autopilot'], text);
+      assert.deepEqual(classifyKeywordInput(`Do not run $ralplan${punctuation}suffix`).matches, [], `${text} attached suffix`);
+    }
+  });
+
+  it('classifies adversarial explicit candidate families without repeated tail scans', () => {
+    const count = 4_096;
+    const cases = [
+      Array.from({ length: count }, () => '$team is prohibited').join('; '),
+      `Do not run ${'$team '.repeat(count)}`,
+      `Mode | Meaning\n--- | ---\n${Array.from({ length: count }, () => '$team | workflow documentation').join('\n')}`,
+      `use ${Array.from({ length: count }, () => '$team').join(', ')} are workflow commands`,
+    ] as const;
+
+    for (const text of cases) {
+      const classification = classifyKeywordInput(text);
+      assert.equal(classification.candidates.length, count);
+      assert.deepEqual(classification.matches, [], text.slice(0, 80));
+    }
+  });
+
+  it('repairs V13 Unicode grammar, coordinated negation, documentation, and Markdown-table probes', () => {
+    const cases = [
+      { text: 'Do not use deep interview яbut use autopilot mode.', skills: [] },
+      { text: 'Do not use deep interview but use autopilot mode.', skills: ['autopilot'] },
+      { text: '$ralplan, autopilot mode, $team are prohibited.', skills: [] },
+      { text: 'Autopilot mode and $ralplan are workflow commands; use $team execute it', skills: ['team'] },
+      { text: 'Use autopilot mode; "note"; use $ralplan is the workflow command.', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command: use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Mode | Meaning\n--- | ---\nmanual | documentation\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'Do not run $ralplan but advance to $ultragoal', skills: ['ultragoal'] },
+      { text: 'Do not run $ralplan but jump straight to $ultragoal', skills: ['ultragoal'] },
+      { text: 'Do not run $ralplan яbut advance to $ultragoal', skills: [] },
+      { text: 'use $ralplan is the workflow command яbut use $autopilot build it', skills: [] },
+    ] as const;
+
+    for (const testCase of cases) {
+      assert.deepEqual(classifyKeywordInput(testCase.text).matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+
+    for (const separator of [', ', '，', '،', '、', ' / ', ' and '] as const) {
+      const text = `Do not run $ralplan${separator}$autopilot; use $team execute it`;
+      assert.deepEqual(classifyKeywordInput(text).matches.map((match) => match.skill), ['team'], text);
+    }
+  });
+
+  it('keeps V13 coordinated scans near-linear at 4096 explicit candidates', () => {
+    const count = 4_096;
+    const families = [
+      { text: '$team; '.repeat(count), skills: ['team'] },
+      { text: `Do not run ${Array.from({ length: count }, () => '$team').join(', ')}`, skills: [] },
+      { text: `${Array.from({ length: count }, () => '$team, autopilot mode').join(', ')} are prohibited`, skills: [] },
+    ] as const;
+
+    for (const family of families) {
+      const startedAt = Date.now();
+      const classification = classifyKeywordInput(family.text);
+      assert.equal(classification.candidates.length, count, family.text.slice(0, 80));
+      assert.deepEqual(classification.matches.map((match) => match.skill), family.skills, family.text.slice(0, 80));
+      assert.ok(Date.now() - startedAt < 2_000, 'V13 coordinated scan must stay bounded');
+    }
+  });
+
+  it('repairs V14 mixed subject chains and semicolon-local documentation', () => {
+    const cases = [
+      { text: 'Both autopilot mode and $ralplan are prohibited.', skills: [] },
+      { text: 'Both autopilot mode and $ralplan are workflow commands; use $team execute it', skills: ['team'] },
+      { text: 'Use autopilot mode; use $ralplan is the workflow command.', skills: ['autopilot'] },
+    ] as const;
+
+    for (const testCase of cases) {
+      assert.deepEqual(classifyKeywordInput(testCase.text).matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+
+    const bareDollarPrefixes = classifyKeywordInput('$ $ $team');
+    assert.equal(bareDollarPrefixes.candidates.length, 1);
+    assert.equal(bareDollarPrefixes.candidates[0]?.rawKeyword, '$team');
+    assert.equal(bareDollarPrefixes.candidates[0]?.skill, 'team');
+    assert.deepEqual(bareDollarPrefixes.matches, []);
+  });
+  it('keeps V14 explicit scans bounded at 4096 candidates', () => {
+    const count = 4_096;
+    const families = [
+      {
+        name: 'bare-dollar prefixes before a canonical token',
+        text: `${'$ '.repeat(count)}$team`,
+        candidates: 1,
+        skills: [],
+      },
+      {
+        name: 'non-leading same-line canonical candidates',
+        text: `ordinary prose ${'$team '.repeat(count)}`,
+        candidates: count,
+        skills: [],
+      },
+      {
+        name: 'implicit-leading coordinated documentary candidates',
+        text: `The docs mention autopilot mode, ${'$team, '.repeat(count)}are workflow commands`,
+        candidates: count,
+        skills: [],
+      },
+    ] as const;
+
+    for (const family of families) {
+      const startedAt = Date.now();
+      const classification = classifyKeywordInput(family.text);
+      assert.equal(classification.candidates.length, family.candidates, family.name);
+      assert.deepEqual(classification.matches.map((match) => match.skill), family.skills, family.name);
+      assert.ok(Date.now() - startedAt < 2_000, `${family.name} must stay bounded`);
+    }
+  });
+
+  it('keeps V15 documentary chains, compact candidates, and repeated predicates bounded', () => {
+    const count = 4_096;
+    const implicitSubjects = Array.from({ length: count }, () => 'autopilot mode').join(', ');
+    const compactCandidates = Array.from({ length: count }, () => '$team').join(',');
+    const families = [
+      {
+        name: 'implicit-only documentary comma chain',
+        text: `The docs mention ${implicitSubjects} are workflow commands`,
+        candidates: 0,
+        maximumMilliseconds: 2_000,
+      },
+      {
+        name: 'compact documentary explicit comma chain',
+        text: `${compactCandidates} are workflow commands`,
+        candidates: count,
+        maximumMilliseconds: 2_000,
+      },
+      {
+        name: 'repeated postposed predicates',
+        text: `${compactCandidates}${' are prohibited'.repeat(count)}`,
+        candidates: count,
+        maximumMilliseconds: 4_000,
+      },
+    ] as const;
+
+    for (const family of families) {
+      const startedAt = Date.now();
+      const classification = classifyKeywordInput(family.text);
+      assert.equal(classification.candidates.length, family.candidates, family.name);
+      assert.deepEqual(classification.matches, [], family.name);
+      assert.ok(Date.now() - startedAt < family.maximumMilliseconds, `${family.name} must stay bounded`);
+    }
+
+    const laterMixedDocumentaryChain = classifyKeywordInput(
+      'The docs mention autopilot mode, deep interview; $team and autopilot mode are workflow commands',
+    );
+    assert.deepEqual(laterMixedDocumentaryChain.matches, []);
+  });
+
+  it('repairs V16 documentary clause, reference, and negation composition', () => {
+    for (const testCase of [
+      { text: 'Use autopilot mode, and $ralplan is documented in the guide.', skills: ['autopilot'] },
+      { text: '[docs]: "target\n$autopilot build it', skills: [] },
+      { text: '[docs]: `target\n$autopilot build it', skills: [] },
+      { text: 'Do not run $ralplan and use autopilot mode.', skills: [] },
+      { text: '$team is prohibited and is forbidden; use $ralplan plan it', skills: ['ralplan'] },
+      { text: 'Use $ralplan, autopilot mode and $team are workflow commands.', skills: [] },
+    ] as const) {
+      assert.deepEqual(classifyKeywordInput(testCase.text).matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+  });
+
+  it('keeps V16 documentary and implicit-negative families subquadratic through 8192 items', () => {
+    const families = [
+      {
+        name: 'documentary followup chain',
+        text: (count: number) => `Autopilot mode is documented, ${Array.from({ length: count }, () => '$team').join(', ')} are workflow commands`,
+        candidates: (count: number) => count,
+      },
+      {
+        name: 'implicit prefix negation',
+        text: (count: number) => 'Do not use autopilot mode. '.repeat(count),
+        candidates: () => 0,
+      },
+      {
+        name: 'implicit postposed negation',
+        text: (count: number) => 'Autopilot mode is prohibited. '.repeat(count),
+        candidates: () => 0,
+      },
+    ] as const;
+
+    for (const family of families) {
+      const elapsed = new Map<number, bigint>();
+      for (const count of [4_096, 8_192] as const) {
+        const startedAt = process.hrtime.bigint();
+        const classification = classifyKeywordInput(family.text(count));
+        elapsed.set(count, process.hrtime.bigint() - startedAt);
+        assert.equal(classification.candidates.length, family.candidates(count), `${family.name}: ${count}`);
+        assert.deepEqual(classification.matches, [], `${family.name}: ${count}`);
+        assert.deepEqual(classification.implicitMatches, [], `${family.name}: ${count}`);
+      }
+      assert.ok(
+        (elapsed.get(8_192) ?? 0n) < (elapsed.get(4_096) ?? 0n) * 4n,
+        `${family.name} must remain subquadratic when the input doubles`,
+      );
+    }
+  });
+
+  it('accepts only direct punctuation and list boundaries', () => {
+    const cases = [
+      { text: '* $ralph', skills: ['ralph'] },
+      { text: '+ $team', skills: ['team'] },
+      { text: '1. $ralplan', skills: ['ralplan'] },
+      { text: '999) $ultrawork', skills: ['ultrawork'] },
+      { text: '($ralplan)', skills: [] },
+      { text: '[$ralplan]', skills: [] },
+      { text: '1,$ralplan', skills: [] },
+    ] as const;
+
+    for (const testCase of cases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.skill), testCase.skills, testCase.text);
+      if (testCase.skills.length === 0) {
+        assert.deepEqual(classification.candidates[0]?.reasons, ['not-leading-region'], testCase.text);
+      }
+    }
+  });
+
+  it('lexes malformed maximal tokens without activating canonical prefixes', () => {
+    for (const text of [
+      '$ralplan- plan this',
+      '$oh-my-codex:ralplan- plan this',
+      '$ralplan_invalid plan this',
+      '$ralplan@docs plan this',
+      '$ralplan#docs plan this',
+      '$ralplan=docs plan this',
+      '$ralplan＠docs plan this',
+      '$ralplan＃docs plan this',
+      '$ralplan＝docs plan this',
+    ]) {
+      const classification = classifyKeywordInput(text);
+      assert.deepEqual(classification.matches, [], text);
+      assert.equal(classification.reservedInput, null, text);
+      assert.equal(classification.hasExplicitLikeInvocation, true, text);
+      assert.equal(classification.candidates.length, 1, text);
+      assert.equal(classification.candidates[0]?.rawKeyword, text.split(' ')[0], text);
+      assert.equal(classification.candidates[0]?.skill, null, text);
+      assert.deepEqual(classification.candidates[0]?.reasons, [], text);
+    }
+  });
+
+  it('scans maximal explicit tokens and rejects documentation, paths, Unicode, compatibility, and control suffixes', () => {
+    const cases = [
+      { text: '$ralplan.md is the workflow documentation file', rawKeyword: '$ralplan.md' },
+      { text: '$autopilot/config', rawKeyword: '$autopilot/config' },
+      { text: '$ralplan한글', rawKeyword: '$ralplan한글' },
+      { text: '$oh-my-codex:ralplan.md', rawKeyword: '$oh-my-codex:ralplan.md' },
+      { text: '$ralplan..md', rawKeyword: '$ralplan..md' },
+      { text: '$ralplan‐suffix', rawKeyword: '$ralplan‐suffix' },
+      { text: '$ralplan\u200B.md', rawKeyword: '$ralplan\u200B.md' },
+      { text: '$ralplan／config', rawKeyword: '$ralplan／config' },
+      { text: '$ralplan\u0000md', rawKeyword: '$ralplan\u0000md' },
+      { text: '$ralplan\u202Emd', rawKeyword: '$ralplan\u202Emd' },
+      { text: '$ralplan\uFEFF.md', rawKeyword: '$ralplan\uFEFF.md' },
+      { text: '$ralplan．md', rawKeyword: '$ralplan．md' },
+      { text: '$ralplan·suffix plan it', rawKeyword: '$ralplan·suffix' },
+      { text: '$ralplan%docs', rawKeyword: '$ralplan%docs' },
+      { text: '$ralplan％docs', rawKeyword: '$ralplan％docs' },
+    ] as const;
+
+    for (const testCase of cases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.deepEqual(classification.matches, [], testCase.text);
+      assert.equal(classification.candidates.length, 1, testCase.text);
+      assert.equal(classification.candidates[0]?.rawKeyword, testCase.rawKeyword, testCase.text);
+      assert.equal(classification.candidates[0]?.skill, null, testCase.text);
+      assert.deepEqual(classification.candidates[0]?.reasons, [], testCase.text);
+    }
+
+    for (const text of ['$ralplan, plan this', '$ralplan； plan this', '$ralplan\nplan this']) {
+      assert.deepEqual(classifyKeywordInput(text).matches.map((match) => match.skill), ['ralplan'], text);
+    }
+  });
+
+  it('accepts later directives after structurally separated inert or negative mentions', () => {
+    const cases = [
+      { text: 'Do not run $ralplan; instead $autopilot build issue #3140', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan, instead $autopilot build it', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan; use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan but use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan but instead use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan — instead use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Quoted inline-code `$ralplan`; use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Without $ralplan.\n$autopilot build it', skills: ['autopilot'] },
+      { text: 'Quoted example: "$ralplan plan it".\n$autopilot build it', skills: ['autopilot'] },
+      { text: '`$ralplan` is inert.\n$autopilot build it', skills: ['autopilot'] },
+      { text: '"Use /prompts:architect"\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '> quoted context\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '```text\nquoted context\n```\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '    quoted context\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '"quoted context"\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'Use /prompts:architect.\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '- Use /prompts:architect.\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '- - ```\n    quoted context\n    ```\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '> quoted context\n$ralplan plan it\nLater discussion.\n$autopilot build it', skills: ['ralplan'] },
+    ] as const;
+
+    for (const testCase of cases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.skill), testCase.skills, testCase.text);
+      assert.equal(classification.reservedInput, null, testCase.text);
+    }
+
+    for (const text of [
+      'Do not run $ralplan and use $autopilot build it',
+      'Do not run $ralplan; do not run $autopilot',
+      'Do not run $ralplan, $autopilot',
+      '"$ralplan" mentions $autopilot without a clause boundary',
+      'Do not run $ralplan. We only document $autopilot behavior',
+      '"$ralplan". The $autopilot workflow is documented',
+      '```text\nquoted context\n$ralplan plan it',
+      '```text\nquoted context\n~~~\n$ralplan plan it',
+      '"quoted context\n$ralplan plan it',
+      '> quoted context\nThe docs mention $ralplan only',
+      '"quoted context"\nDo not run $ralplan',
+      '> quoted context\nProse\n$ralplan implement this',
+      '> quoted context\nProse\nUse $ralplan plan this',
+      '> quoted context\n/prompts:architect\n$ralplan plan this',
+      'Do not run $ralplan.\n"unclosed context\n$autopilot build it',
+      '[$ralplan]: ./docs\n"unclosed context\n$autopilot build it',
+      '"Use /prompts:architect\n$ralplan plan it',
+      '/prompts:architect한글\n$ralplan plan it',
+      '[docs]:\nautopilot',
+    ]) {
+      assert.deepEqual(classifyKeywordInput(text).matches, [], text);
+    }
+  });
+
+  it('keeps prompt reservations and list documentation structural and composable', () => {
+    const reserved = classifyKeywordInput('/prompts:architect analyze this issue');
+    assert.equal(reserved.reservedInput, 'prompts');
+    assert.deepEqual(reserved.matches, []);
+
+    for (const text of [
+      'Documentation mentions /prompts:architect and asks to analyze this issue',
+      '"/prompts:architect" is quoted documentation',
+      '- $ralplan is the consensus-planning command',
+      '1. $autopilot refers to the autonomous workflow command',
+      '- /prompts:architect is the prompt command documentation',
+      '- $ralplan: consensus-planning workflow',
+      '- $ralplan： consensus-planning workflow',
+      '- $ralplan — consensus-planning command',
+      '- $ralplan, $autopilot are workflow commands',
+      '- $ralplan and $autopilot are workflow commands',
+      '- $ralplan, $autopilot, and $team are workflow commands',
+      '- $ralplan / $autopilot are workflow commands',
+      '- $ralplan/$autopilot are workflow commands',
+    ]) {
+      const classification = classifyKeywordInput(text);
+      assert.equal(classification.reservedInput, null, text);
+      assert.deepEqual(classification.matches, [], text);
+    }
+
+    for (const testCase of [
+      { text: '- $ralplan is the consensus-planning command\n$autopilot build it', skills: ['autopilot'] },
+      { text: '- /prompts:architect is the prompt command documentation\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '- $ralplan, $autopilot are workflow commands\n$team execute it', skills: ['team'] },
+      { text: '- $ralplan and $autopilot are workflow commands\n$team execute it', skills: ['team'] },
+      { text: '- $ralplan, $autopilot, and $team are workflow commands\n$ralph execute it', skills: ['ralph'] },
+      { text: '- $ralplan / $autopilot are workflow commands\n$team execute it', skills: ['team'] },
+      { text: '- $ralplan/$autopilot are workflow commands\n$team execute it', skills: ['team'] },
+      { text: 'use $ralplan is the consensus-planning command\n$autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command; $autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command for planning\n$autopilot build it', skills: ['autopilot'] },
+      { text: '- use $ralplan and $autopilot are workflow commands\n$team execute it', skills: ['team'] },
+      { text: 'use $ralplan is the consensus-planning command; use $autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command\nuse $autopilot is the autonomous workflow command\n$team execute it', skills: ['team'] },
+      { text: 'use $ralplan is the workflow command for $team\n$autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command; use $autopilot update the documentation', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command; use autopilot mode.', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command; then use $autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command\nAutopilot mode is its alias.\n$team execute it', skills: ['team'] },
+      { text: 'use $ralplan/$autopilot are workflow commands\n$team execute it', skills: ['team'] },
+      { text: 'use $ralplan is the consensus-planning command. Use autopilot mode.', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command; autopilot mode.', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command； use $autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command; but use $autopilot build it', skills: ['autopilot'] },
+      { text: '$ralplan; $autopilot is prohibited', skills: ['ralplan'] },
+      { text: '$ralplan; $autopilot is documented in the guide.', skills: ['ralplan'] },
+      { text: `use $ralplan is the workflow command;${' '.repeat(161)}use $autopilot build it`, skills: ['autopilot'] },
+      { text: `$ralplan; $autopilot${' '.repeat(193)}is prohibited`, skills: ['ralplan'] },
+      { text: 'For instance: manual mode is slower。 Use autopilot mode.', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command; autopilot mode is its alias; $team execute it', skills: ['team'] },
+      { text: 'use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it', skills: ['team'] },
+      { text: 'use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ralph execute it', skills: ['ralph'] },
+      { text: `use $ralplan is the workflow command; use${' '.repeat(161)}$autopilot build it`, skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command! run $autopilot', skills: ['autopilot'] },
+      { text: 'use $ralplan is the consensus-planning command？ run $autopilot', skills: ['autopilot'] },
+      { text: 'Autopilot mode is workflow documentation.\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'use $ralplan is the workflow command, but use $autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command， but use $autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command، but use $autopilot build it', skills: ['autopilot'] },
+      { text: 'use $ralplan is the workflow command、 but use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan، use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan、 use $autopilot build it', skills: ['autopilot'] },
+      { text: 'The docs mention autopilot mode.\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'The docs mention autopilot mode; use $ralplan plan it', skills: ['ralplan'] },
+      { text: 'Autopilot mode is workflow documentation; use $ralplan plan it', skills: ['ralplan'] },
+      { text: '[docs]: $ralplan\n$autopilot build it', skills: ['autopilot'] },
+      { text: '[docs]: /prompts:architect\n$autopilot build it', skills: ['autopilot'] },
+    ] as const) {
+      assert.deepEqual(classifyKeywordInput(testCase.text).matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+
+    assert.deepEqual(detectKeywords('- $ralplan plan this').map((match) => match.skill), ['ralplan']);
+  });
+
+  it('requires implicit workflow phrases to be active, unmasked, and non-negated', () => {
+    for (const text of [
+      'Do not use autopilot mode.',
+      'Do not use deep interview, autopilot mode.',
+      'Do not use deep interview, nor autopilot mode.',
+      'Avoid autopilot mode.',
+      'Neither deep interview nor autopilot mode.',
+      'Autopilot mode is not allowed.',
+      "Autopilot mode isn't allowed.",
+      'Autopilot mode cannot be used.',
+      'Autopilot mode is prohibited.',
+      'No autopilot mode.',
+      'The docs call this "autopilot mode".',
+      '```\nautopilot mode\n```',
+      '- ```\n  autopilot mode\n  ```',
+      '- ```\n  first example\n- ```\n  autopilot mode\n  ```',
+      'use /prompts:architect autopilot mode',
+      '- autopilot mode is a workflow command',
+      'The reference describes autopilot mode.',
+      'This documents autopilot mode.',
+      'The guide says do not use deep interview but instead use autopilot mode.',
+      '[autopilot mode](./docs.md)',
+      '## Autopilot mode',
+      '| autopilot mode | workflow command |',
+      'Autopilot mode — autonomous workflow command',
+      'Autopilot mode / deep interview are workflow commands.',
+      'autopilot mode is workflow documentation.',
+      '- autopilot mode： autonomous workflow command',
+      '`autopilot mode`',
+      '> autopilot mode',
+      '„autopilot mode“',
+      '‚autopilot mode‘',
+      '문서autopilot mode한글',
+      'autopilot mode는 사용하지 마세요',
+      'Autopilot mode and deep interview are prohibited.',
+      'Autopilot mode should be avoided.',
+      'Example: do not use deep interview but instead use autopilot mode.',
+      '＇autopilot mode＇',
+      '\\$oh-my-codex:autopilot mode',
+      'Autopilot mode, deep interview, and team are prohibited.',
+      'For example, do not use deep interview but instead use autopilot mode.',
+      'According to the docs, do not use deep interview but instead use autopilot mode.',
+      'Don’t use autopilot mode.',
+      'Don＇t use autopilot mode.',
+      'Autopilot mode isn’t allowed.',
+      'Autopilot mode is to be avoided.',
+      'Autopilot mode was to be disabled.',
+      'Autopilot mode and the deep interview workflow are prohibited.',
+      'As an example, do not use deep interview but instead use autopilot mode.',
+      'For instance, do not use deep interview but instead use autopilot mode.',
+      '[autopilot mode][docs]',
+      'Autopilot mode and deep interview workflows are prohibited.',
+      'As an example, ignore the docs and use autopilot mode.',
+      'For instance, ignore the docs and use autopilot mode.',
+      '[autopilot mode]: ./docs',
+      '[autopilot mode]',
+      'Autopilot mode\n===',
+      '$ralplan | workflow\n--- | ---',
+      'Mode | Meaning\n--- | ---\nautopilot mode | autonomous workflow command',
+      'Autopilot mode as well as deep interview workflows are prohibited.',
+      'Autopilot mode along with deep interview workflows are prohibited.',
+      'Autopilot mode together with deep interview workflows are prohibited.',
+      'Autopilot mode & deep interview workflows are prohibited.',
+      'As an example: ignore the docs and use autopilot mode.',
+      'For instance — ignore the docs and use autopilot mode.',
+      'For example - ignore the docs and use autopilot mode.',
+      'For instance: use autopilot mode.',
+      'For instance — use autopilot mode.',
+      'Mode | Meaning\n--- | ---\nmanual | docs\nautopilot mode | autonomous workflow command',
+      'See [autopilot mode] for details.\n\n[autopilot mode]: ./docs',
+      'Autopilot mode, as well as deep interview workflows, are prohibited.',
+      'Autopilot mode, along with deep interview workflows, are prohibited.',
+      'Autopilot mode, together with deep interview workflows, are prohibited.',
+      'See [autopilot   mode] for details.\n\n[autopilot mode]: ./docs',
+      'Ignore autopilot mode.',
+      'Skip autopilot mode.',
+      'Exclude autopilot mode.',
+      '$ralplan is prohibited.',
+      '$ralplan should not be run.',
+      '$ralplan and $autopilot are prohibited.',
+      'See [ẞ autopilot mode] for details.\n\n[SS autopilot mode]: ./docs',
+      'See [foo\\] autopilot mode] for details.\n\n[foo\\] autopilot mode]: ./docs',
+      'For instance: in version 1.2, use autopilot mode.',
+      'For instance: e.g. use autopilot mode.',
+      '$ralplan and the $autopilot workflow are prohibited.',
+      '$ralplan and autopilot mode are prohibited.',
+      'See [autopilot mode] for details.\n\n> [autopilot mode]: ./docs',
+      'See [autopilot mode] for details.\n\n- [autopilot mode]: ./docs',
+      'See [autopilot mode] for details.\n\n>   [autopilot mode]: ./docs',
+      '-     $ralplan',
+      '1.     autopilot mode',
+      'See [autopilot mode] for details.\n\n>    [autopilot mode]: ./docs',
+      'See [autopilot mode] for details.\n\n[autopilot mode]:\n  ./docs',
+      '-   \t$ralplan',
+      '- -     autopilot mode',
+      '$ralplan is also prohibited.',
+      'Autopilot mode is still prohibited.',
+      '- > autopilot mode',
+      '- - - - - - - - -     autopilot mode',
+      '1234. > autopilot mode',
+    ]) {
+      const classification = classifyKeywordInput(text);
+      assert.deepEqual(classification.matches, [], text);
+      assert.deepEqual(classification.implicitMatches, [], text);
+    }
+
+    for (const testCase of [
+      { text: 'Use autopilot mode.', skills: ['autopilot'] },
+      { text: 'List files and use autopilot mode.', skills: ['autopilot'] },
+      { text: "No, don't stop.", skills: ['ralph'] },
+      { text: 'Do not use deep interview, but use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Do not use deep interview but use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Do not use deep interview but instead use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Do not use deep interview — instead use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Autopilot mode is workflow documentation.\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: 'Use /prompts:architect.\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore the quoted "/prompts:architect" and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore the quoted "/prompts:architect" then use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Do not run $ralplan but instead use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore "$ralplan" and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore \\/prompts:architect and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'See https://example.com/prompts:architect and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Autopilot mode should be used.', skills: ['autopilot'] },
+      { text: 'Autopilot mode must be enabled.', skills: ['autopilot'] },
+      { text: 'Autopilot mode can be run.', skills: ['autopilot'] },
+      { text: 'User＇s request: use autopilot mode.', skills: ['autopilot'] },
+      { text: 'See [/prompts:architect](./docs.md) and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Use autopilot mode, while deep interview is prohibited.', skills: ['autopilot'] },
+      { text: 'Read the docs. Use autopilot mode.', skills: ['autopilot'] },
+      { text: 'The docs are stale; use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore the docs, use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore \\/prompts:architect\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'See https://example.com/prompts:architect\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'See [/prompts:architect](./docs.md)\n$ralplan plan it', skills: ['ralplan'] },
+      { text: 'See [$ralplan](./docs.md) and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'See https://example.com/$ralplan and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Use autopilot mode, and deep interview is prohibited.', skills: ['autopilot'] },
+      { text: 'Ignore the docs and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore \\/prompts:architect; use $ralplan plan it', skills: ['ralplan'] },
+      { text: 'See https://example.com/prompts:architect; use $ralplan plan it', skills: ['ralplan'] },
+      { text: 'See [/prompts:architect](./docs.md); use $ralplan plan it', skills: ['ralplan'] },
+      { text: 'See [/prompts:architect][docs]; use $ralplan plan it', skills: ['ralplan'] },
+      { text: '## /prompts:architect\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '| /prompts:architect |\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '## $ralplan\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: '| $ralplan |\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: 'See [$ralplan][docs] and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'See C:\\docs\\$ralplan and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Users＇ request: use autopilot mode.', skills: ['autopilot'] },
+      { text: 'Use autopilot mode, and deep interview should be avoided.', skills: ['autopilot'] },
+      { text: 'Ignore the docs but use autopilot mode.', skills: ['autopilot'] },
+      { text: '[/prompts:architect]: ./docs\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '[/prompts:architect]\n$ralplan plan it', skills: ['ralplan'] },
+      { text: '[$ralplan]: ./docs\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: '[$ralplan]\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: '$ralplan\n===\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: '$ralplan | workflow\n--- | ---\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: '## $ralplan\n$autopilot build it', skills: ['autopilot'] },
+      { text: 'See [$ralplan](./docs.md); use $autopilot build it', skills: ['autopilot'] },
+      { text: 'See C:\\docs\\$ralplan; use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Mode | Meaning\n--- | ---\n$ralplan | planning\n$autopilot build it', skills: ['autopilot'] },
+      { text: 'See [$ralplan] for details.\n\n[$ralplan]: ./docs\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: 'Ignore "$ralplan" and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Ignore `$ralplan` and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'See [$ralplan   ] for details.\n\n[$ralplan]: ./docs\nUse autopilot mode.', skills: ['autopilot'] },
+      { text: 'For instance: manual mode is slower. Use autopilot mode.', skills: ['autopilot'] },
+      { text: 'See [`$ralplan`](./docs.md) and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'Ignore deep interview and use autopilot mode.', skills: ['autopilot'] },
+      { text: 'See [docs](https://example.com/$ralplan) and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'See [docs](./docs.md "$ralplan reference") and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'See [docs](https://example.com/(v1)/$ralplan) and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'See [$ralplan](https://example.com/(v1)) and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'See [docs](./docs.md "$ralplan (reference") and use $autopilot build it', skills: ['autopilot'] },
+      { text: 'See [autopilot mode] for details.\n\n>     [autopilot mode]: ./docs', skills: ['autopilot'] },
+      { text: '-\t $ralplan', skills: ['ralplan'] },
+      { text: '$ralplan is prohibited but use $autopilot build it', skills: ['autopilot'] },
+      { text: '$ralplan is prohibited and use $autopilot build it', skills: ['autopilot'] },
+      { text: '- - $ralplan plan it', skills: ['ralplan'] },
+      { text: '1234. $ralplan plan it', skills: ['ralplan'] },
+      { text: '- ```\n  $ralplan\n  ```\n$autopilot build it', skills: ['autopilot'] },
+      { text: '- - $ralplan is the consensus-planning command\n$autopilot build it', skills: ['autopilot'] },
+    ] as const) {
+      assert.deepEqual(classifyKeywordInput(testCase.text).matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+  });
+
+  it('defines punctuation-separated workflow directives as one ordered block', () => {
+    assert.deepEqual(
+      detectKeywords('$ralplan, $autopilot; $team build it').map((match) => match.skill),
+      ['ralplan', 'autopilot', 'team'],
+    );
+    assert.deepEqual(
+      detectKeywords('$ralplan plan it, then $team execute').map((match) => match.skill),
+      ['ralplan'],
+    );
+  });
+
+  it('fails closed for balanced and unbalanced quote pairs', () => {
+    const quotePairs = [
+      { name: 'ASCII double', opening: '"', closing: '"' },
+      { name: 'ASCII single', opening: "'", closing: "'" },
+      { name: 'curly double', opening: '“', closing: '”' },
+      { name: 'curly single', opening: '‘', closing: '’' },
+      { name: 'guillemets', opening: '«', closing: '»' },
+      { name: 'Japanese corner', opening: '「', closing: '」' },
+      { name: 'Japanese nested', opening: '『', closing: '』' },
+      { name: 'fullwidth', opening: '＂', closing: '＂' },
+      { name: 'fullwidth single', opening: '＇', closing: '＇' },
+      { name: 'single guillemets', opening: '‹', closing: '›' },
+    ] as const;
+
+    for (const quotePair of quotePairs) {
+      for (const closing of [quotePair.closing, ''] as const) {
+        const text = `${quotePair.opening}$ralplan${closing}`;
+        const classification = classifyKeywordInput(text);
+        assert.deepEqual(classification.matches, [], `${quotePair.name}: ${JSON.stringify(text)}`);
+        assert.deepEqual(
+          classification.candidates[0]?.reasons,
+          ['quote', 'not-leading-region'],
+          `${quotePair.name}: ${JSON.stringify(text)}`,
+        );
+      }
+    }
+  });
+
+  it('keeps fences and escape parity inert without semantic phrase matching', () => {
+    const structuralCases = [
+      { text: '```\n$ralplan\n```', reason: 'fenced-code' },
+      { text: '~~~\n$ralplan\n~~~', reason: 'fenced-code' },
+      { text: '```\n$ralplan', reason: 'fenced-code' },
+      { text: '~~~\n$ralplan', reason: 'fenced-code' },
+      { text: '    $ralplan plan this change', reason: 'indented-code' },
+      { text: '\t$ralplan plan this change', reason: 'indented-code' },
+      { text: ' \t$ralplan plan this change', reason: 'indented-code' },
+      { text: '  \t$ralplan plan this change', reason: 'indented-code' },
+      { text: '   \t$ralplan plan this change', reason: 'indented-code' },
+    ] as const;
+    for (const testCase of structuralCases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.deepEqual(classification.matches, [], testCase.text);
+      assert.deepEqual(classification.candidates[0]?.reasons, [testCase.reason, 'not-leading-region'], testCase.text);
+    }
+
+    const escapeCases = [
+      { text: '\\$ralplan', reasons: ['escaped', 'not-leading-region'] },
+      { text: '\\\\$ralplan', reasons: ['not-leading-region'] },
+      { text: '\\\\\\$ralplan', reasons: ['escaped', 'not-leading-region'] },
+    ] as const;
+    for (const testCase of escapeCases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.deepEqual(classification.matches, [], testCase.text);
+      assert.deepEqual(classification.candidates[0]?.reasons, testCase.reasons, testCase.text);
+    }
+  });
+
+  it('respects quote escape parity and fence container prefixes', () => {
+    const escapedQuote = '"$ralplan \\"; $autopilot build it';
+    const escapedQuoteClassification = classifyKeywordInput(escapedQuote);
+    assert.deepEqual(escapedQuoteClassification.matches, []);
+    assert.deepEqual(escapedQuoteClassification.candidates.map((candidate) => candidate.reasons), [
+      ['quote', 'not-leading-region'],
+      ['quote', 'not-leading-region'],
+    ]);
+
+    const evenBackslashQuote = '"$ralplan \\\\"; use $autopilot build it';
+    assert.deepEqual(classifyKeywordInput(evenBackslashQuote).matches.map((match) => match.skill), ['autopilot']);
+
+    const unquotedFence = '```\n$ralplan\n> ```\n$autopilot build it';
+    assert.deepEqual(classifyKeywordInput(unquotedFence).matches, []);
+    const unquotedFenceCandidates = classifyKeywordInput(unquotedFence).candidates;
+    assert.ok(unquotedFenceCandidates.every((candidate) => candidate.reasons.includes('fenced-code')));
+
+    const quotedFence = '> ```\n> $ralplan\n```\n> $autopilot build it';
+    assert.deepEqual(classifyKeywordInput(quotedFence).matches, []);
+    assert.ok(classifyKeywordInput(quotedFence).candidates.every((candidate) => candidate.reasons.length > 0));
+
+    const matchingQuotedFence = '> ```\n> $ralplan\n> ```\n$autopilot build it';
+    assert.deepEqual(classifyKeywordInput(matchingQuotedFence).matches.map((match) => match.skill), ['autopilot']);
+
+    const nestedQuotedFence = '> > ```\n> > $ralplan\n> ```\n$autopilot build it';
+    assert.deepEqual(classifyKeywordInput(nestedQuotedFence).matches, []);
+  });
+
+  it('requires valid fence closers and directive clause prefixes after inert mentions', () => {
+    for (const text of [
+      '```\n$ralplan\n``` still code\n$autopilot build it',
+      '> ```\n> $ralplan\n> ``` still code\n> $autopilot build it',
+    ]) {
+      const classification = classifyKeywordInput(text);
+      assert.deepEqual(classification.matches, [], text);
+      assert.ok(classification.candidates.every((candidate) => candidate.reasons.length > 0), text);
+    }
+
+    for (const testCase of [
+      { text: '"$ralplan"; now $autopilot build it', skills: ['autopilot'] },
+      { text: '"$ralplan"; please use $autopilot build it', skills: ['autopilot'] },
+      { text: '"$ralplan". We only document $autopilot behavior', skills: [] },
+      { text: '"$ralplan". The $autopilot workflow is documented', skills: [] },
+    ] as const) {
+      assert.deepEqual(classifyKeywordInput(testCase.text).matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+  });
+
+  it('terminates fenced, inline, quote, and blockquote regions on every logical line ending', () => {
+    const lineTerminators = ['\r', '\r\n', '\u2028', '\u2029'] as const;
+    for (const lineTerminator of lineTerminators) {
+      const label = JSON.stringify(lineTerminator);
+      const fenced = classifyKeywordInput(`~~~${lineTerminator}$ralplan${lineTerminator}~~~`);
+      assert.deepEqual(fenced.candidates[0]?.reasons, ['fenced-code', 'not-leading-region'], label);
+
+      const blockquoted = classifyKeywordInput(`> $ralplan${lineTerminator}$team`);
+      assert.deepEqual(blockquoted.candidates[0]?.reasons, ['blockquote', 'not-leading-region'], label);
+      assert.deepEqual(blockquoted.candidates[1]?.reasons, [], label);
+      assert.deepEqual(blockquoted.matches.map((match) => match.skill), ['team'], label);
+
+      const inline = classifyKeywordInput(`\`$ralplan${lineTerminator}$team`);
+      assert.deepEqual(inline.candidates[0]?.reasons, ['inline-code', 'not-leading-region'], label);
+      assert.deepEqual(inline.candidates[1]?.reasons, [], label);
+      assert.deepEqual(inline.matches.map((match) => match.skill), ['team'], label);
+
+      const quoted = classifyKeywordInput(`"$ralplan${lineTerminator}$team`);
+      assert.deepEqual(quoted.candidates[0]?.reasons, ['quote', 'not-leading-region'], label);
+      assert.deepEqual(quoted.candidates[1]?.reasons, [], label);
+      assert.deepEqual(quoted.matches.map((match) => match.skill), ['team'], label);
+    }
+  });
+
+  it('keeps candidate diagnostics bounded across thousands of inert ranges', () => {
+    const count = 4_096;
+    const classification = classifyKeywordInput('`$ralplan` '.repeat(count).trimEnd());
+    assert.equal(classification.candidates.length, count);
+    assert.deepEqual(classification.candidates[0]?.reasons, ['inline-code', 'not-leading-region']);
+    assert.deepEqual(classification.candidates.at(-1)?.reasons, ['inline-code', 'not-leading-region']);
+    assert.deepEqual(classification.matches, []);
+    const shortcuts = classifyKeywordInput('See [$ralplan] for details.\n'.repeat(count) + '\n[$ralplan]: ./docs');
+    assert.equal(shortcuts.candidates.length, count + 1);
+    assert.deepEqual(shortcuts.matches, []);
+    const nestedParents = classifyKeywordInput('"`x`\n'.repeat(count) + '$ralplan plan it');
+    assert.deepEqual(nestedParents.matches, []);
+    const unclosedTitles = classifyKeywordInput('[docs]: /target (\n'.repeat(count) + '$ralplan plan it');
+    assert.deepEqual(unclosedTitles.matches, []);
+    const documentationTokens = classifyKeywordInput(`use $ralplan is the workflow command for ${'$team '.repeat(count)}`);
+    assert.equal(documentationTokens.candidates.length, count + 1);
+    assert.deepEqual(documentationTokens.matches, []);
+    const semicolonDocumentation = classifyKeywordInput(`use $ralplan is the workflow command${'; explanatory note'.repeat(count)}`);
+    assert.deepEqual(semicolonDocumentation.matches, []);
+    const candidateTailDocumentation = classifyKeywordInput(`use $ralplan is the workflow command${'; $team is filler'.repeat(count)} documentation`);
+    assert.equal(candidateTailDocumentation.candidates.length, count + 1);
+    assert.deepEqual(candidateTailDocumentation.matches.map((match) => match.skill), ['team']);
+    const periodDocumentationStart = Date.now();
+    const periodDocumentation = classifyKeywordInput('Autopilot mode is documented. '.repeat(count) + 'use $ralplan plan it');
+    assert.deepEqual(periodDocumentation.matches.map((match) => match.skill), ['ralplan']);
+    assert.ok(Date.now() - periodDocumentationStart < 2_000, 'period-heavy documentation scan must stay bounded');
+    const contiguousChainStart = Date.now();
+    const contiguousChain = classifyKeywordInput('$ralplan '.repeat(count).trimEnd());
+    assert.equal(contiguousChain.candidates.length, count);
+    assert.deepEqual(contiguousChain.matches.map((match) => match.skill), ['ralplan']);
+    assert.ok(Date.now() - contiguousChainStart < 2_000, 'contiguous explicit chains must stay bounded');
+
+    const coordinatedNegationStart = Date.now();
+    const coordinatedNegation = classifyKeywordInput(Array.from({ length: count }, () => '$team').join(',') + ' are prohibited');
+    assert.equal(coordinatedNegation.candidates.length, count);
+    assert.deepEqual(coordinatedNegation.matches, []);
+    assert.ok(Date.now() - coordinatedNegationStart < 2_000, 'coordinated postposed negation must stay bounded');
+  });
+
+  it('suppresses prose, multilingual, documentation, quoted, escaped, and code candidates without a phrase classifier', () => {
+    const cases = [
+      'Do not run $autopilot',
+      "don't use $autopilot",
+      'without $ralplan',
+      'Не запускай $autopilot',
+      'Не используй $autopilot',
+      '実行しないで $autopilot',
+      '使わないで $autopilot',
+
+      'Documentation example: $ralplan',
+      '($ralplan) is an example',
+      '"$autopilot" is an example',
+      '`$ralph` is a literal',
+      '```\n$team\n```',
+      '    $ralplan plan this change',
+      '\t$ralplan plan this change',
+      '> $ultrawork is quoted',
+      '\\$autopilot',
+      'Prose\n$ralplan implement this',
+      'Prose\n$ralplan\n$team',
+    ] as const;
+
+    for (const text of cases) {
+      const classification = classifyKeywordInput(text);
+      assert.deepEqual(classification.matches, [], text);
+      assert.equal(classification.hasExplicitLikeInvocation, true, text);
+      assert.ok(classification.candidates.every((candidate) => candidate.reasons.includes('not-leading-region')), text);
+    }
+  });
+
+  it('applies marked-answer, accepted-direct, prompts, and explicit-like precedence in order', () => {
+    const cases = [
+      { text: '[omx question answered] $ralplan', reservedInput: 'omx-question-answered', skills: [] },
+      { text: '$ralplan plan this; /prompts:architect review', reservedInput: null, skills: ['ralplan'] },
+      { text: '$unknown /prompts:architect review', reservedInput: null, skills: [] },
+      { text: '/prompts:architect, keep going', reservedInput: 'prompts', skills: [] },
+      { text: '/prompts:unknown $ralplan plan this', reservedInput: 'prompts', skills: [] },
+      { text: 'Prose\n/prompts:architect\n$ralplan plan this', reservedInput: null, skills: [] },
+      { text: 'Do not run $autopilot', reservedInput: null, skills: [] },
+    ] as const;
+
+    for (const testCase of cases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.equal(classification.reservedInput, testCase.reservedInput, testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.skill), testCase.skills, testCase.text);
+    }
+  });
+
+  it('binds G1 and G2 direct classification fields exactly', () => {
+    const cases = [
+      {
+        text: '$ralplan, $autopilot; $team',
+        reservedInput: null,
+        skills: ['ralplan', 'autopilot', 'team'],
+        candidates: [
+          { rawKeyword: '$ralplan', reasons: [] },
+          { rawKeyword: '$autopilot', reasons: [] },
+          { rawKeyword: '$team', reasons: [] },
+        ],
+      },
+      {
+        text: '$ultrawork $ulw',
+        reservedInput: null,
+        skills: ['ultrawork'],
+        candidates: [
+          { rawKeyword: '$ultrawork', reasons: [] },
+          { rawKeyword: '$ulw', reasons: [] },
+        ],
+      },
+      {
+        text: 'use $ralplan is the consensus-planning command',
+        reservedInput: null,
+        skills: [],
+        candidates: [{ rawKeyword: '$ralplan', reasons: ['not-leading-region'] }],
+      },
+      {
+        text: 'do not start $autopilot — café',
+        reservedInput: null,
+        skills: [],
+        candidates: [{ rawKeyword: '$autopilot', reasons: ['not-leading-region'] }],
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const classification = classifyKeywordInput(testCase.text);
+      assert.equal(classification.reservedInput, testCase.reservedInput, testCase.text);
+      assert.deepEqual(classification.matches.map((match) => match.skill), testCase.skills, testCase.text);
+      assert.deepEqual(
+        classification.candidates.map((candidate) => ({ rawKeyword: candidate.rawKeyword, reasons: candidate.reasons })),
+        testCase.candidates,
+        testCase.text,
+      );
+    }
+  });
+
+  it('deduplicates implicit aliases by skill without changing the stable winner', () => {
+    const text = 'autopilot mode; build me a dashboard';
+    const classification = classifyKeywordInput(text);
+    assert.deepEqual(classification.implicitMatches, [
+      { keyword: 'autopilot', skill: 'autopilot', priority: 10 },
+    ]);
+    assert.deepEqual(classification.matches, classification.implicitMatches);
+    assert.deepEqual(detectKeywords(text), classification.implicitMatches);
+  });
+
+  it('freezes classifications and retains ordered inert diagnostics', () => {
+    assert.equal(Object.isFrozen(KEYWORD_INERT_DIAGNOSTIC_ORDER), true);
+    assert.deepEqual(KEYWORD_INERT_DIAGNOSTIC_ORDER, [
+      'fenced-code',
+      'indented-code',
+      'blockquote',
+      'inline-code',
+      'quote',
+      'escaped',
+      'not-leading-region',
+    ]);
+    const classification = classifyKeywordInput('"\\$ralph and $team"');
+    assert.equal(Object.isFrozen(classification), true);
+    assert.equal(Object.isFrozen(classification.candidates), true);
+    assert.equal(Object.isFrozen(classification.candidates[0]), true);
+    assert.equal(Object.isFrozen(classification.candidates[0]?.reasons), true);
+    assert.deepEqual(classification.candidates[0]?.reasons, ['quote', 'escaped', 'not-leading-region']);
+    assert.deepEqual(classification.candidates[1]?.reasons, ['quote', 'not-leading-region']);
+
+    const quotedFence = classifyKeywordInput('> ```\n> $ralph\n> ```');
+    assert.deepEqual(quotedFence.candidates[0]?.reasons, ['fenced-code', 'blockquote', 'not-leading-region']);
+
+    const blockquotedInline = classifyKeywordInput('> `$ralplan`\n$team');
+    assert.deepEqual(blockquotedInline.candidates[0]?.reasons, ['blockquote', 'inline-code', 'not-leading-region']);
+    assert.deepEqual(blockquotedInline.candidates[1]?.reasons, []);
+    assert.deepEqual(blockquotedInline.matches.map((match) => match.skill), ['team']);
+  });
+
+  it('passes a supplied classification through recording, rejects mismatched text, and leaves rejected state bytes untouched', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-classification-state-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'session-classification-state';
+    const sessionDir = join(stateDir, 'sessions', sessionId);
+    const statePath = join(sessionDir, SKILL_ACTIVE_STATE_FILE);
+    const detailPath = join(sessionDir, 'autopilot-state.json');
+    const rawState = '{"version":1,"active":true,"skill":"autopilot","keyword":"$autopilot","phase":"deep-interview","activated_at":"2026-01-01T00:00:00.000Z","updated_at":"2026-01-01T00:00:00.000Z"}';
+    const rawDetail = '{"active":true,"mode":"autopilot","current_phase":"deep-interview"}';
+    try {
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(statePath, rawState);
+      await writeFile(detailPath, rawDetail);
+      const text = 'Do not run $autopilot';
+      const classification = classifyKeywordInput(text);
+      const result = await recordSkillActivation({ stateDir, sourceCwd: cwd, sessionId, text, classification });
+      assert.equal(result, null);
+      assert.equal(await readFile(statePath, 'utf-8'), rawState);
+      assert.equal(await readFile(detailPath, 'utf-8'), rawDetail);
+      assert.equal(existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)), false);
+
+      await assert.rejects(
+        recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$ralph',
+          classification,
+        }),
+        /classification text does not match activation text/,
+      );
+      assert.equal(await readFile(statePath, 'utf-8'), rawState);
+      assert.equal(await readFile(detailPath, 'utf-8'), rawDetail);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not create or mutate tracked workflow state for ineligible explicit candidates', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ineligible-explicit-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const cases = [
+      { name: 'no canonical state', text: '“$ralplan”', existingSkill: null },
+      { name: 'active Ralplan same skill', text: 'without $ralplan', existingSkill: 'ralplan' },
+      { name: 'active Autopilot same skill', text: "don't use $autopilot", existingSkill: 'autopilot' },
+      { name: 'active Autopilot cross skill', text: 'without $ralplan', existingSkill: 'autopilot' },
+    ] as const;
+    try {
+      for (const [index, testCase] of cases.entries()) {
+        const sessionId = `ineligible-${index}`;
+        const sessionDir = join(stateDir, 'sessions', sessionId);
+        const statePath = join(sessionDir, SKILL_ACTIVE_STATE_FILE);
+        const detailPath = join(sessionDir, 'autopilot-state.json');
+        const rawState = testCase.existingSkill
+          ? JSON.stringify({
+              version: 1,
+              active: true,
+              skill: testCase.existingSkill,
+              keyword: `$${testCase.existingSkill}`,
+              phase: 'planning',
+              session_id: sessionId,
+              active_skills: [{ skill: testCase.existingSkill, phase: 'planning', active: true, session_id: sessionId }],
+            })
+          : null;
+        const rawDetail = testCase.existingSkill === 'autopilot'
+          ? '{"active":true,"mode":"autopilot","current_phase":"ralplan"}'
+          : null;
+        if (rawState) {
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(statePath, rawState);
+        }
+        if (rawDetail) await writeFile(detailPath, rawDetail);
+
+        const classification = classifyKeywordInput(testCase.text);
+        assert.equal(classification.hasExplicitLikeInvocation, true, testCase.name);
+        const result = await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          sessionId,
+          text: testCase.text,
+          classification,
+        });
+        assert.equal(result, null, testCase.name);
+        assert.equal(existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)), false, testCase.name);
+        if (rawState) assert.equal(await readFile(statePath, 'utf-8'), rawState, testCase.name);
+        else assert.equal(existsSync(statePath), false, testCase.name);
+        if (rawDetail) assert.equal(await readFile(detailPath, 'utf-8'), rawDetail, testCase.name);
+        else assert.equal(existsSync(detailPath), false, testCase.name);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('persists marked answers only for eligible active workflows', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-marked-answer-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const cases = [
+      { skill: 'autopilot', persists: true },
+      { skill: 'ralplan', persists: false },
+    ] as const;
+    try {
+      for (const [index, testCase] of cases.entries()) {
+        const sessionId = `marked-answer-${index}`;
+        const sessionDir = join(stateDir, 'sessions', sessionId);
+        const statePath = join(sessionDir, SKILL_ACTIVE_STATE_FILE);
+        const rawState = JSON.stringify({
+          version: 1,
+          active: true,
+          skill: testCase.skill,
+          keyword: `$${testCase.skill}`,
+          phase: 'planning',
+          activated_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+          session_id: sessionId,
+          active_skills: [{ skill: testCase.skill, phase: 'planning', active: true, session_id: sessionId }],
+        });
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(statePath, rawState);
+
+        const text = '[omx question answered] yes';
+        const classification = classifyKeywordInput(text);
+        assert.equal(classification.reservedInput, 'omx-question-answered');
+        const result = await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          sessionId,
+          text,
+          classification,
+          nowIso: '2026-02-01T00:00:00.000Z',
+        });
+        if (testCase.persists) {
+          assert.equal(result?.skill, 'autopilot');
+          assert.notEqual(await readFile(statePath, 'utf-8'), rawState);
+          assert.equal(existsSync(join(sessionDir, 'autopilot-state.json')), true);
+        } else {
+          assert.equal(result, null);
+          assert.equal(await readFile(statePath, 'utf-8'), rawState);
+          assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), false);
+        }
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps terminal marked answers from restarting stale active workflows', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-terminal-marked-answer-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'terminal-marked-answer';
+    const sessionDir = join(stateDir, 'sessions', sessionId);
+    const statePath = join(sessionDir, SKILL_ACTIVE_STATE_FILE);
+    const detailPath = join(sessionDir, 'autopilot-state.json');
+    const rawState = JSON.stringify({
+      version: 1,
+      active: true,
+      skill: 'autopilot',
+      keyword: '$autopilot',
+      phase: 'completing',
+      activated_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      session_id: sessionId,
+      active_skills: [{ skill: 'autopilot', phase: 'completing', active: true, session_id: sessionId }],
+    });
+    const rawDetail = JSON.stringify({
+      mode: 'autopilot',
+      active: false,
+      current_phase: 'complete',
+      completed_at: '2026-01-01T00:00:00.000Z',
+      session_id: sessionId,
+    });
+    try {
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(statePath, rawState);
+      await writeFile(detailPath, rawDetail);
+      const text = '[omx question answered] yes';
+      const result = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        sessionId,
+        text,
+        classification: classifyKeywordInput(text),
+      });
+      assert.equal(result, null);
+      assert.equal(await readFile(statePath, 'utf-8'), rawState);
+      assert.equal(await readFile(detailPath, 'utf-8'), rawDetail);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('autoresearch keyword detection', () => {
   it('detects explicit $autoresearch invocation', () => {
     const match = detectPrimaryKeyword('please run $autoresearch now');
@@ -558,6 +1942,25 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('$prometheus-strict'));
     assert.ok(registryKeywords.has('ultragoal'));
     assert.ok(registryKeywords.has('autopilot'));
+  });
+
+  it('resolves immutable aliases without duplicate sources or skill collisions', () => {
+    assert.equal(Object.isFrozen(EXPLICIT_SKILL_ALIASES), true);
+    assert.equal(
+      new Set(EXPLICIT_SKILL_ALIASES.map((alias) => alias.source.toLowerCase())).size,
+      EXPLICIT_SKILL_ALIASES.length,
+    );
+    for (const alias of EXPLICIT_SKILL_ALIASES) {
+      const target = getExplicitSkillDefinition(alias.target);
+      const source = getExplicitSkillDefinition(alias.source.toUpperCase());
+      assert.ok(target, alias.target);
+      assert.deepEqual(source, target, alias.source);
+
+      const canonicalSource = KEYWORD_TRIGGER_DEFINITIONS.find(
+        (definition) => definition.keyword.toLowerCase() === `$${alias.source.toLowerCase()}`,
+      );
+      if (canonicalSource) assert.equal(canonicalSource.skill, target.skill, alias.source);
+    }
   });
 });
 
@@ -4258,8 +5661,8 @@ describe('applyRalplanGate', () => {
         ralplan_consensus_gate: {
           complete: true,
           sequence: ['architect-review', 'critic-review'],
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1, sequence_index: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1, sequence_index: 2 },
         },
       }));
 
@@ -4330,8 +5733,8 @@ describe('applyRalplanGate', () => {
         ralplan_consensus_gate: {
           complete: true,
           sequence: ['architect-review', 'critic-review'],
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1, sequence_index: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1, sequence_index: 2 },
         },
       }));
 
@@ -4478,5 +5881,99 @@ describe('applyRalplanGate', () => {
     const result = applyRalplanGate(['ralph', 'ultrawork'], 'ralph ultrawork build');
     assert.ok(result.gatedKeywords.includes('ralph'));
     assert.ok(result.gatedKeywords.includes('ultrawork'));
+  });
+});
+
+describe('recordSkillActivation prompt provenance', () => {
+  it('writes only the authorized explicit payload session and stamps its owner', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-provenance-'));
+    try {
+      const context = evaluateResolvedPromptTurn({
+        producer: 'native',
+        payloadSessionId: 'payload-session',
+        selectedPointer: { status: 'absent' },
+        nowIso: '2026-07-14T00:00:00.000Z',
+      });
+      const state = await recordSkillActivation({
+        stateDir,
+        text: '$ralplan implement the scoped change',
+        sessionId: 'payload-session',
+        resolvedPromptTurnContext: context,
+      });
+      assert.equal(state?.owner_codex_session_id, 'payload-session');
+      assert.equal(existsSync(join(stateDir, 'sessions', 'payload-session', SKILL_ACTIVE_STATE_FILE)), true);
+      assert.equal(existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)), false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects nested foreign owners before direct activation writes', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-nested-owner-'));
+    try {
+      const targetDir = join(stateDir, 'sessions', 'target');
+      await mkdir(targetDir, { recursive: true });
+      const statePath = join(targetDir, SKILL_ACTIVE_STATE_FILE);
+      const original = JSON.stringify({
+        skill: 'ralph', active: true, session_id: 'target', owner_codex_session_id: 'target',
+        active_skills: [{ skill: 'ralph', session_id: 'target', owner_codex_session_id: 'foreign' }],
+      });
+      await writeFile(statePath, original);
+      const context = evaluateResolvedPromptTurn({ producer: 'native', payloadSessionId: 'target', selectedPointer: { status: 'absent' } });
+      let rejections = 0;
+      const result = await recordSkillActivation({
+        stateDir, text: '$ralph continue', sessionId: 'target', resolvedPromptTurnContext: context,
+        onProvenanceRejected: () => { rejections += 1; },
+      });
+      assert.equal(result, null);
+      assert.equal(rejections, 1);
+      assert.equal(await readFile(statePath, 'utf8'), original);
+      assert.equal(existsSync(join(targetDir, 'ralph-state.json')), false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed target state before direct activation writes', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-malformed-owner-'));
+    try {
+      const targetDir = join(stateDir, 'sessions', 'target');
+      await mkdir(targetDir, { recursive: true });
+      const malformedPath = join(targetDir, 'ralph-state.json');
+      await writeFile(malformedPath, '{ malformed');
+      const context = evaluateResolvedPromptTurn({ producer: 'native', payloadSessionId: 'target', selectedPointer: { status: 'absent' } });
+      let rejections = 0;
+      const result = await recordSkillActivation({
+        stateDir, text: '$ralph continue', sessionId: 'target', resolvedPromptTurnContext: context,
+        onProvenanceRejected: () => { rejections += 1; },
+      });
+      assert.equal(result, null);
+      assert.equal(rejections, 1);
+      assert.equal(await readFile(malformedPath, 'utf8'), '{ malformed');
+      assert.equal(existsSync(join(targetDir, SKILL_ACTIVE_STATE_FILE)), false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects target enumeration failures before direct activation writes', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-keyword-enumeration-owner-'));
+    try {
+      const sessionsDir = join(stateDir, 'sessions');
+      await mkdir(sessionsDir, { recursive: true });
+      const targetPath = join(sessionsDir, 'target');
+      await writeFile(targetPath, 'not-a-directory');
+      const context = evaluateResolvedPromptTurn({ producer: 'native', payloadSessionId: 'target', selectedPointer: { status: 'absent' } });
+      let rejections = 0;
+      const result = await recordSkillActivation({
+        stateDir, text: '$ralph continue', sessionId: 'target', resolvedPromptTurnContext: context,
+        onProvenanceRejected: () => { rejections += 1; },
+      });
+      assert.equal(result, null);
+      assert.equal(rejections, 1);
+      assert.equal(await readFile(targetPath, 'utf8'), 'not-a-directory');
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 });

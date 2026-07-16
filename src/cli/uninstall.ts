@@ -2,15 +2,25 @@
  * omx uninstall - Remove oh-my-codex configuration and installed artifacts
  */
 
-import { readFile, writeFile, readdir, rm } from "fs/promises";
-import { existsSync } from "fs";
-import { join, basename, dirname } from "path";
+import { chmod, copyFile, lstat, open, readFile, readdir, rename, rm, writeFile } from "fs/promises";
+
+import { constants, existsSync } from "fs";
+import { join, basename, dirname, isAbsolute, relative } from "path";
+import { randomUUID } from "crypto";
+import {
+  clearNativeHookClaimJournal,
+  persistNativeHookClaimJournal,
+  recoverNativeHookClaimJournal,
+  syncNativeHookClaimParent,
+  restoreNativeHookClaimNoClobber,
+} from "./native-hook-claim-journal.js";
 import {
   formatTomlStringArray,
   getRootTomlArray,
   isOmxManagedNotifyCommand,
   sanitizePreviousNotifyCommand,
   stripExistingOmxBlocks,
+  stripManagedCodexHookTrustState,
   stripOmxEnvSettings,
   stripOmxTopLevelKeys,
   stripOmxFeatureFlags,
@@ -18,18 +28,53 @@ import {
   stripOmxSeededBehavioralDefaults,
 } from "../config/generator.js";
 import {
-  hasUserCodexHooksAfterManagedRemoval,
-  parseCodexHooksConfig,
-  removeManagedCodexHooks,
+  buildManagedCodexNativeHookWindowsShimContent,
+  buildManagedCodexNativeHookWindowsShimPath,
+  classifyManagedCodexNativeHookWindowsShimOwnership,
+  planManagedCodexHooksRemoval,
+  ManagedCodexHooksPlanError,
+  type ManagedCodexHookTrustState,
+  type ManagedCodexHooksPlan,
 } from "../config/codex-hooks.js";
 import { getPackageRoot } from "../utils/package.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { detectLegacySkillRootOverlap } from "../utils/paths.js";
-import { resolveScopeDirectories, type SetupScope } from "./setup.js";
+import {
+  decideWindowsNativeHookShimReference,
+  resolveScopeDirectories,
+  type SetupScope,
+} from "./setup.js";
+
 import { resolveCodexHookFeatureFlagForCli } from "./codex-feature-probe.js";
 import { readPersistedSetupScope } from "./index.js";
-import { isOmxGeneratedAgentsMd } from "../utils/agents-md.js";
+import {
+  isOmxGeneratedAgentsMd,
+  OMX_MANAGED_AGENTS_END_MARKER,
+  OMX_MANAGED_AGENTS_START_MARKER,
+} from "../utils/agents-md.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
+import TOML from "@iarna/toml";
+
+/** @internal Deterministic file-operation seam for uninstall transaction tests. */
+export type UninstallTransactionFailureStage =
+  | "before-hooks-commit"
+  | "before-shim-removal"
+  | "before-config-commit"
+  | "before-temp-write"
+  | "before-rename"
+  | "after-final-rename-validation"
+  | "after-rename"
+  | "before-remove"
+  | "after-final-remove-validation"
+  | "after-remove"
+  | "before-rollback"
+  | "before-rollback-rename"
+  | "after-final-restore-validation"
+  | "before-rollback-remove"
+  | "before-staged-cleanup"
+  | "after-staged-cleanup"
+  | "after-config-commit";
+
 
 export interface UninstallOptions {
   codexFeaturesProbe?: () => string | null;
@@ -39,6 +84,19 @@ export interface UninstallOptions {
   verbose?: boolean;
   purge?: boolean;
   scope?: SetupScope;
+  /** @internal */
+  transactionFailureInjector?: (
+    stage: UninstallTransactionFailureStage,
+  ) => void | Promise<void>;
+  /** @internal */
+  transactionPlatform?: NodeJS.Platform;
+  /** @internal */
+  transactionTemporaryPath?: (
+    path: string,
+    purpose: "write" | "delete",
+  ) => string;
+
+
 }
 
 interface UninstallSummary {
@@ -63,7 +121,6 @@ function detectOmxConfigArtifacts(config: string): {
   hasTuiSection: boolean;
   hasTopLevelKeys: boolean;
   hasFeatureFlags: boolean;
-  hasExploreRoutingEnv: boolean;
 } {
   const hasMcpServers = OMX_FIRST_PARTY_MCP_SERVER_NAMES.filter((name) =>
     new RegExp(`\\[mcp_servers\\.${name}\\]`).test(config),
@@ -93,7 +150,6 @@ function detectOmxConfigArtifacts(config: string): {
     /^\s*codex_hooks\s*=\s*true/m.test(config) ||
     /^\s*goals\s*=\s*true/m.test(config) ||
     /^\s*goal\s*=\s*true/m.test(config);
-  const hasExploreRoutingEnv = /^\s*USE_OMX_EXPLORE_CMD\s*=/m.test(config);
 
   return {
     hasMcpServers,
@@ -101,7 +157,6 @@ function detectOmxConfigArtifacts(config: string): {
     hasTuiSection,
     hasTopLevelKeys,
     hasFeatureFlags,
-    hasExploreRoutingEnv,
   };
 }
 
@@ -125,17 +180,249 @@ function hasNativeHooksFeatureFlag(config: string): boolean {
     .some((line) => /^\s*(?:hooks|codex_hooks)\s*=\s*true/.test(line));
 }
 
-async function shouldPreserveHooksFeatureFlag(
-  hooksFilePath: string,
-): Promise<boolean> {
-  if (!existsSync(hooksFilePath)) return false;
+type FileIdentityScalar = number | bigint;
 
-  try {
-    const existing = await readFile(hooksFilePath, "utf-8");
-    return hasUserCodexHooksAfterManagedRemoval(existing);
-  } catch {
-    return false;
+interface FileIdentity {
+  dev: FileIdentityScalar;
+  ino: FileIdentityScalar;
+  size: FileIdentityScalar;
+  mode: FileIdentityScalar;
+  mtimeMs: FileIdentityScalar;
+  ctimeMs: FileIdentityScalar;
+  links: FileIdentityScalar;
+}
+
+interface DirectoryTopologyEntry {
+  path: string;
+  identity: Pick<FileIdentity, "dev" | "ino"> | null;
+}
+
+interface FileTopology {
+  root: string;
+  ancestors: DirectoryTopologyEntry[];
+}
+
+interface FileSnapshot {
+  path: string;
+  content: string | null;
+  bytes: Buffer | null;
+  mode: number | null;
+  identity: FileIdentity | null;
+  topology: FileTopology | null;
+}
+
+interface PlannedHooksRemoval {
+  hooks: FileSnapshot;
+  plan?: ManagedCodexHooksPlan;
+  shim?: FileSnapshot;
+  preservedShimPrecondition?: FileSnapshot;
+}
+
+function fileIdentity(stat: Awaited<ReturnType<typeof lstat>>): FileIdentity {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mode: stat.mode,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    links: stat.nlink,
+  };
+}
+
+function hasSameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mode === right.mode &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
+    left.links === right.links;
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
+async function captureControlledTopology(
+  root: string,
+  path: string,
+): Promise<FileTopology> {
+  const parentPath = dirname(path);
+  const relativeParent = relative(root, parentPath);
+  if (
+    isAbsolute(relativeParent) ||
+    relativeParent === ".." ||
+    relativeParent.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    relativeParent.startsWith("/")
+  ) {
+    throw new Error(`Refusing to process ${path}: it is outside controlled Codex scope ${root}.`);
   }
+
+  const ancestors: DirectoryTopologyEntry[] = [];
+  let currentPath = root;
+  for (const segment of ["", ...relativeParent.split(/[\\/]/).filter(Boolean)]) {
+    if (segment) currentPath = join(currentPath, segment);
+    try {
+      const stat = await lstat(currentPath);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new Error(`Refusing to process ${path}: controlled ancestor ${currentPath} must be a non-symbolic-link directory.`);
+      }
+      ancestors.push({
+        path: currentPath,
+        identity: { dev: stat.dev, ino: stat.ino },
+      });
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      ancestors.push({ path: currentPath, identity: null });
+      break;
+    }
+  }
+  return { root, ancestors };
+}
+
+async function assertControlledTopologyCurrent(topology: FileTopology | null): Promise<void> {
+  if (!topology) return;
+  for (const ancestor of topology.ancestors) {
+    try {
+      const stat = await lstat(ancestor.path);
+      if (
+        ancestor.identity === null ||
+        stat.isSymbolicLink() ||
+        !stat.isDirectory() ||
+        stat.dev !== ancestor.identity.dev ||
+        stat.ino !== ancestor.identity.ino
+      ) {
+        throw new Error(`Refusing uninstall because controlled ancestor ${ancestor.path} changed topology after planning.`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("changed topology")) {
+        throw error;
+      }
+      if (isMissingPathError(error) && ancestor.identity === null) continue;
+      if (isMissingPathError(error)) {
+        throw new Error(`Refusing uninstall because controlled ancestor ${ancestor.path} changed topology after planning.`);
+      }
+      throw error;
+    }
+  }
+}
+
+function decodeStrictUtf8(path: string, bytes: Buffer): string {
+  try {
+    const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    if (!Buffer.from(content, "utf-8").equals(bytes)) {
+      throw new Error("decoded text did not round-trip to the original bytes");
+    }
+    return content;
+  } catch {
+    throw new ManagedCodexHooksPlanError(
+      "invalid_document",
+      `Refusing to process ${path}: it is not valid UTF-8.`,
+      { path },
+    );
+  }
+}
+
+async function readFileSnapshot(
+  path: string,
+  options: { strictUtf8?: boolean; controlledRoot?: string } = {},
+): Promise<FileSnapshot> {
+  const topology = options.controlledRoot
+    ? await captureControlledTopology(options.controlledRoot, path)
+    : null;
+  let before: Awaited<ReturnType<typeof lstat>>;
+  try {
+    before = await lstat(path);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      await assertControlledTopologyCurrent(topology);
+      return {
+        path,
+        content: null,
+        bytes: null,
+        mode: null,
+        identity: null,
+        topology,
+      };
+    }
+    throw error;
+  }
+  if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1) {
+    throw new Error(`Refusing to process ${path}: expected a regular file, not a symbolic link or other filesystem object.`);
+  }
+  const bytes = await readFile(path);
+  const after = await lstat(path);
+  await assertControlledTopologyCurrent(topology);
+  if (after.isSymbolicLink() || !after.isFile() || after.nlink !== 1 || !hasSameFileIdentity(fileIdentity(before), fileIdentity(after))) {
+    throw new Error(`Refusing to process ${path}: it changed while uninstall was planning.`);
+  }
+  return {
+    path,
+    content: options.strictUtf8 === false ? bytes.toString("utf-8") : decodeStrictUtf8(path, bytes),
+    bytes,
+    mode: after.mode & 0o7777,
+    identity: fileIdentity(after),
+    topology,
+  };
+}
+
+async function planHooksRemoval(
+  hooks: FileSnapshot,
+  pkgRoot: string,
+  platform: NodeJS.Platform,
+  controlledRoot: string,
+): Promise<PlannedHooksRemoval> {
+  let plan: ManagedCodexHooksPlan | undefined;
+  if (hooks.content !== null) {
+    const result = planManagedCodexHooksRemoval(hooks.content, hooks.path, {
+      platform,
+      codexHomeDir: dirname(hooks.path),
+    });
+    if (!result.ok) throw result.error;
+    plan = result;
+  }
+
+  if (platform !== "win32") return { hooks, plan };
+
+  const shimPath = buildManagedCodexNativeHookWindowsShimPath(dirname(hooks.path));
+  const shim = await readFileSnapshot(shimPath, {
+    strictUtf8: false,
+    // On non-Windows hosts the test-only platform seam intentionally produces
+    // a win32 path that the host filesystem cannot place under this root.
+    controlledRoot: platform === process.platform ? controlledRoot : undefined,
+  });
+  if (shim.bytes !== null) {
+    const expectedShim = Buffer.from(
+      buildManagedCodexNativeHookWindowsShimContent(pkgRoot),
+      "utf-8",
+    );
+    if (
+      classifyManagedCodexNativeHookWindowsShimOwnership(
+        shim.bytes,
+        expectedShim,
+      ) === "modified"
+    ) {
+      throw new Error(
+        `Refusing to remove modified native hook Windows shim at ${shim.path}.`,
+      );
+    }
+    const shimReference = decideWindowsNativeHookShimReference(
+      plan?.finalContent ?? null,
+      shim.path,
+    );
+    if (shimReference !== "not_referenced") {
+      return { hooks, plan, preservedShimPrecondition: shim };
+    }
+
+  }
+
+  return { hooks, plan, shim };
 }
 
 function insertRootTomlKey(config: string, line: string): string {
@@ -148,82 +435,181 @@ function insertRootTomlKey(config: string, line: string): string {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
-async function restorePreviousNotifyIfDispatcher(
-  configPath: string,
-  strippedConfig: string,
-  originalConfig: string,
-): Promise<string> {
-  const currentNotify = getRootTomlArray(originalConfig, "notify");
-  if (
-    !isOmxManagedNotifyCommand(currentNotify, getPackageRoot()) ||
-    !currentNotify?.some((part) =>
-      /(?:^|[\\/])notify-dispatcher\.js$/.test(part),
-    )
-  ) {
-    return strippedConfig;
-  }
-
-  const metadataPath = join(dirname(configPath), ".omx", "notify-dispatch.json");
-  try {
-    const metadata = JSON.parse(await readFile(metadataPath, "utf-8")) as {
-      previousNotify?: unknown;
-    };
-    const previousNotify = metadata.previousNotify;
-    if (
-      Array.isArray(previousNotify) &&
-      previousNotify.every((item) => typeof item === "string")
-    ) {
-      const sanitizedPreviousNotify = sanitizePreviousNotifyCommand(
-        previousNotify,
-        getPackageRoot(),
-      );
-      if (sanitizedPreviousNotify) {
-        return insertRootTomlKey(
-          strippedConfig,
-          `notify = ${formatTomlStringArray(sanitizedPreviousNotify)}`,
-        );
-      }
-    }
-  } catch {
-    // Missing or malformed metadata means uninstall falls back to removing OMX notify.
-  }
-  return strippedConfig;
+interface PlannedNotifyMetadata {
+  snapshot: FileSnapshot;
+  previousNotify: string[] | null;
 }
 
-async function cleanConfig(
-  configPath: string,
+function isManagedDispatcherNotify(config: string): boolean {
+  const currentNotify = getRootTomlArray(config, "notify");
+  return Boolean(
+    isOmxManagedNotifyCommand(currentNotify, getPackageRoot()) &&
+      currentNotify?.some((part) =>
+        /(?:^|[\\/])notify-dispatcher\.js$/.test(part),
+      ),
+  );
+}
+
+function invalidNotifyMetadata(path: string, reason: string): ManagedCodexHooksPlanError {
+  return new ManagedCodexHooksPlanError(
+    "invalid_document",
+    `Refusing to use notification metadata ${path}: ${reason}.`,
+    { path },
+  );
+}
+
+function parseNotifyMetadata(
+  snapshot: FileSnapshot,
+  currentNotify: readonly string[],
+): PlannedNotifyMetadata {
+  if (snapshot.content === null) {
+    throw invalidNotifyMetadata(snapshot.path, "the managed dispatcher metadata is missing");
+  }
+  if (!currentNotify.includes(snapshot.path)) {
+    throw invalidNotifyMetadata(snapshot.path, "the managed dispatcher does not reference the controlled metadata path");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(snapshot.content);
+  } catch (error) {
+    throw invalidNotifyMetadata(
+      snapshot.path,
+      `invalid JSON (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw invalidNotifyMetadata(snapshot.path, "expected a JSON object");
+  }
+  const metadata = parsed as Record<string, unknown>;
+  if (metadata.managedBy !== "oh-my-codex" || metadata.version !== 1) {
+    throw invalidNotifyMetadata(snapshot.path, "expected OMX ownership and version 1");
+  }
+  const validateStringArray = (value: unknown, name: string): string[] => {
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      throw invalidNotifyMetadata(snapshot.path, `${name} must be an array of strings`);
+    }
+    return [...value];
+  };
+  const previousNotify = metadata.previousNotify;
+  if (
+    !Object.hasOwn(metadata, "previousNotify") ||
+    (previousNotify !== null &&
+      (!Array.isArray(previousNotify) ||
+        !previousNotify.every((item) => typeof item === "string")))
+  ) {
+    throw invalidNotifyMetadata(snapshot.path, "previousNotify must be null or an array of strings");
+  }
+  validateStringArray(metadata.omxNotify, "omxNotify");
+  const dispatcherNotify = validateStringArray(
+    metadata.dispatcherNotify,
+    "dispatcherNotify",
+  );
+  if (
+    dispatcherNotify.length !== currentNotify.length ||
+    dispatcherNotify.some((part, index) => part !== currentNotify[index])
+  ) {
+    throw invalidNotifyMetadata(snapshot.path, "dispatcherNotify does not match the managed dispatcher command");
+  }
+  return {
+    snapshot,
+    previousNotify: Array.isArray(previousNotify) ? [...previousNotify] : null,
+  };
+}
+
+async function planNotifyMetadata(
+  configSnapshot: FileSnapshot,
+  codexHomeDir: string,
+): Promise<PlannedNotifyMetadata | undefined> {
+  if (configSnapshot.content === null || !isManagedDispatcherNotify(configSnapshot.content)) {
+    return undefined;
+  }
+  const currentNotify = getRootTomlArray(configSnapshot.content, "notify");
+  if (!currentNotify) {
+    throw invalidNotifyMetadata(
+      join(codexHomeDir, ".omx", "notify-dispatch.json"),
+      "the managed dispatcher command is invalid",
+    );
+  }
+  let snapshot: FileSnapshot;
+  try {
+    snapshot = await readFileSnapshot(
+      join(codexHomeDir, ".omx", "notify-dispatch.json"),
+      { controlledRoot: codexHomeDir },
+    );
+  } catch (error) {
+    if (error instanceof ManagedCodexHooksPlanError) throw error;
+    throw invalidNotifyMetadata(
+      join(codexHomeDir, ".omx", "notify-dispatch.json"),
+      `unreadable (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  return parseNotifyMetadata(snapshot, currentNotify);
+}
+
+function restorePreviousNotifyIfDispatcher(
+  strippedConfig: string,
+  originalConfig: string,
+  metadataPlan?: PlannedNotifyMetadata,
+): string {
+  if (!isManagedDispatcherNotify(originalConfig)) return strippedConfig;
+  if (!metadataPlan) {
+    throw new Error("Missing planned notification metadata for a managed dispatcher.");
+  }
+  const sanitizedPreviousNotify = sanitizePreviousNotifyCommand(
+    metadataPlan.previousNotify,
+    getPackageRoot(),
+  );
+  return sanitizedPreviousNotify
+    ? insertRootTomlKey(
+        strippedConfig,
+        `notify = ${formatTomlStringArray(sanitizedPreviousNotify)}`,
+      )
+    : strippedConfig;
+}
+
+type ConfigCleanupSummary = Pick<
+  UninstallSummary,
+  | "configCleaned"
+  | "mcpServersRemoved"
+  | "agentEntriesRemoved"
+  | "tuiSectionRemoved"
+  | "topLevelKeysRemoved"
+  | "featureFlagsRemoved"
+>;
+
+interface PlannedConfigCleanup {
+  config: FileSnapshot;
+  finalContent: string | null;
+  result: ConfigCleanupSummary;
+}
+
+async function planConfigCleanup(
+  configSnapshot: FileSnapshot,
   options: Pick<
     UninstallOptions,
-    "dryRun" | "verbose" | "codexFeaturesProbe" | "codexVersionProbe"
+    "codexFeaturesProbe" | "codexVersionProbe"
   > & {
     preserveHooksFeatureFlag?: boolean;
+    priorHookTrustState?: Record<string, ManagedCodexHookTrustState>;
+    finalHookTrustState?: Record<string, ManagedCodexHookTrustState>;
+    notifyMetadata?: PlannedNotifyMetadata;
   },
-): Promise<
-  Pick<
-    UninstallSummary,
-    | "configCleaned"
-    | "mcpServersRemoved"
-    | "agentEntriesRemoved"
-    | "tuiSectionRemoved"
-    | "topLevelKeysRemoved"
-    | "featureFlagsRemoved"
-  >
-> {
-  const result = {
+): Promise<PlannedConfigCleanup> {
+  const result: ConfigCleanupSummary = {
     configCleaned: false,
-    mcpServersRemoved: [] as string[],
+    mcpServersRemoved: [],
     agentEntriesRemoved: 0,
     tuiSectionRemoved: false,
     topLevelKeysRemoved: false,
     featureFlagsRemoved: false,
   };
 
-  if (!existsSync(configPath)) {
-    if (options.verbose) console.log("  config.toml not found, skipping.");
-    return result;
+  const original = configSnapshot.content;
+  if (original === null) {
+    return { config: configSnapshot, finalContent: null, result };
   }
 
-  const original = await readFile(configPath, "utf-8");
   const detected = detectOmxConfigArtifacts(original);
   const shouldRestoreHooksFeatureFlag =
     options.preserveHooksFeatureFlag && hasNativeHooksFeatureFlag(original);
@@ -234,18 +620,39 @@ async function cleanConfig(
   result.topLevelKeysRemoved = detected.hasTopLevelKeys;
   result.featureFlagsRemoved = detected.hasFeatureFlags;
 
+  // Verify proof ownership against the untouched source before marker stripping
+  // can hide a foreign sibling in an otherwise OMX-looking trust declaration.
+  stripManagedCodexHookTrustState(original, {
+    priorManagedHookTrustState: options.priorHookTrustState,
+    managedTrustState: options.finalHookTrustState,
+  });
+
   // Strip OMX tables block (MCP servers, agents, tui)
   let config = original;
-  const { cleaned } = stripExistingOmxBlocks(config);
+  const { cleaned } = stripExistingOmxBlocks(config, {
+    managedTrustState: options.finalHookTrustState,
+    priorManagedHookTrustState: options.priorHookTrustState,
+  });
   config = cleaned;
 
   // Strip OMX top-level keys, then restore a pre-existing user notify when
   // setup had wrapped it in the OMX dispatcher.
   config = stripOmxTopLevelKeys(config);
-  config = await restorePreviousNotifyIfDispatcher(configPath, config, original);
+  config = restorePreviousNotifyIfDispatcher(
+    config,
+    original,
+    options.notifyMetadata,
+  );
 
   // Strip OMX-seeded behavioral defaults only when the seeded pair is unchanged.
   config = stripOmxSeededBehavioralDefaults(config);
+
+  // Remove only trust tables whose hashes and coordinates match the planned
+  // managed hooks before their removal. User-owned conflicts remain intact.
+  config = stripManagedCodexHookTrustState(config, {
+    priorManagedHookTrustState: options.priorHookTrustState,
+    managedTrustState: options.finalHookTrustState,
+  });
 
   // Strip feature flags
   config = stripOmxFeatureFlags(config, { preserveMultiAgent: true });
@@ -264,22 +671,9 @@ async function cleanConfig(
 
   // Normalize trailing whitespace
   config = config.trimEnd() + "\n";
+  result.configCleaned = config !== original;
 
-  if (config !== original) {
-    result.configCleaned = true;
-    if (!options.dryRun) {
-      await writeFile(configPath, config);
-    }
-    if (options.verbose) {
-      console.log(
-        `  ${options.dryRun ? "Would clean" : "Cleaned"} ${configPath}`,
-      );
-    }
-  } else {
-    if (options.verbose) console.log("  No OMX config entries found.");
-  }
-
-  return result;
+  return { config: configSnapshot, finalContent: config, result };
 }
 
 async function removeInstalledPrompts(
@@ -387,6 +781,17 @@ async function removeAgentsMd(
 
   try {
     const content = await readFile(agentsMdPath, "utf-8");
+    const startIndex = content.indexOf(OMX_MANAGED_AGENTS_START_MARKER);
+    const endIndex = content.indexOf(OMX_MANAGED_AGENTS_END_MARKER);
+    if (startIndex >= 0 && endIndex > startIndex) {
+      const blockEnd = endIndex + OMX_MANAGED_AGENTS_END_MARKER.length;
+      const preserved = `${content.slice(0, startIndex).trimEnd()}\n${content.slice(blockEnd).trimStart()}`.trim();
+      if (preserved) {
+        if (!options.dryRun) await writeFile(agentsMdPath, `${preserved}\n`, "utf-8");
+        if (options.verbose) console.log("  Removed OMX-managed AGENTS.md sections and preserved user guidance.");
+        return false;
+      }
+    }
     if (!isOmxGeneratedAgentsMd(content)) {
       if (options.verbose)
         console.log("  AGENTS.md is not OMX-generated, skipping.");
@@ -404,35 +809,787 @@ async function removeAgentsMd(
   return true;
 }
 
-async function removeHooksFile(
-  hooksFilePath: string,
-  options: Pick<UninstallOptions, "dryRun" | "verbose">,
-): Promise<boolean> {
-  if (!existsSync(hooksFilePath)) return false;
+type UninstallArtifactKind = "hooks" | "shim" | "config";
 
-  const existing = await readFile(hooksFilePath, "utf-8");
-  const { nextContent, removedCount } = removeManagedCodexHooks(existing);
-  const parsed = parseCodexHooksConfig(existing);
-  const emptyManagedArtifact =
-    parsed !== null &&
-    Object.keys(parsed.hooks).length === 0 &&
-    Object.keys(parsed.root).every((key) => key === "hooks");
+interface PlannedFileMutation {
+  kind: UninstallArtifactKind;
+  snapshot: FileSnapshot;
+  finalContent: string | null;
+  validate?: (content: string) => void;
+}
 
-  if (removedCount === 0 && !emptyManagedArtifact) return false;
+interface UninstallArtifactTransaction {
+  preconditions: FileSnapshot[];
+  hooks?: PlannedFileMutation;
+  shim?: PlannedFileMutation;
+  config?: PlannedFileMutation;
+}
 
-  if (!options.dryRun) {
-    if (nextContent === null || emptyManagedArtifact) {
-      await rm(hooksFilePath, { force: true });
-    } else {
-      await writeFile(hooksFilePath, nextContent);
-    }
+interface RenamedDestinationOwnership {
+  path: string;
+  bytes: Buffer;
+  mode: number;
+  identity: Pick<FileIdentity, "dev" | "ino">;
+  topology: FileTopology | null;
+}
+
+interface MutationExecution {
+  mutation: PlannedFileMutation;
+  phase: "prepared" | "destructive" | "verified";
+  appliedSnapshot?: FileSnapshot;
+  renamedOwnership?: RenamedDestinationOwnership;
+  stagedDeletion?: FileSnapshot;
+  stagedDeletionCleaned?: boolean;
+}
+
+
+
+
+function assertValidHooksJson(content: string): void {
+  JSON.parse(content);
+}
+
+function assertValidToml(content: string): void {
+  TOML.parse(content);
+}
+
+function transactionTemporaryPath(
+  path: string,
+  purpose: "write" | "delete",
+  options: Pick<UninstallOptions, "transactionTemporaryPath">,
+): string {
+  return options.transactionTemporaryPath?.(path, purpose) ?? join(
+    dirname(path),
+    `.${basename(path)}.omx-uninstall-${purpose}-${process.pid}-${randomUUID()}.tmp`,
+  );
+}
+
+function transactionClaimPath(path: string): string {
+  return join(
+    dirname(path),
+    `.${basename(path)}.omx-uninstall-claim-${process.pid}-${randomUUID()}.tmp`,
+  );
+}
+
+async function restoreUninstallClaim(claimPath: string, destinationPath: string): Promise<void> {
+  await restoreNativeHookClaimNoClobber(claimPath, destinationPath);
+}
+
+
+function snapshotReadOptions(snapshot: FileSnapshot): {
+  strictUtf8: false;
+  controlledRoot?: string;
+} {
+  return {
+    strictUtf8: false,
+    controlledRoot: snapshot.topology?.root,
+  };
+}
+
+async function captureCurrentSnapshot(reference: FileSnapshot): Promise<FileSnapshot> {
+  return readFileSnapshot(reference.path, snapshotReadOptions(reference));
+}
+
+function renamedDestinationOwnership(
+  snapshot: FileSnapshot,
+  destinationPath: string,
+  topology: FileTopology | null,
+): RenamedDestinationOwnership {
+  if (snapshot.bytes === null || snapshot.mode === null || snapshot.identity === null) {
+    throw new Error(`Replacement temporary ${snapshot.path} was not fully captured before rename.`);
   }
-  if (options.verbose) {
-    console.log(
-      `  ${options.dryRun ? "Would clean" : nextContent === null || emptyManagedArtifact ? "Removed" : "Cleaned"} ${basename(hooksFilePath)}`,
+  return {
+    path: destinationPath,
+    bytes: snapshot.bytes,
+    mode: snapshot.mode,
+    identity: { dev: snapshot.identity.dev, ino: snapshot.identity.ino },
+    topology,
+  };
+}
+
+async function captureRenamedDestinationOwnership(
+  ownership: RenamedDestinationOwnership,
+): Promise<FileSnapshot> {
+  await assertControlledTopologyCurrent(ownership.topology);
+  const current = await readFileSnapshot(ownership.path, {
+    strictUtf8: false,
+    controlledRoot: ownership.topology?.root,
+  });
+  if (
+    current.bytes === null ||
+    current.mode !== ownership.mode ||
+    !current.bytes.equals(ownership.bytes) ||
+    current.identity === null ||
+    current.identity.dev !== ownership.identity.dev ||
+    current.identity.ino !== ownership.identity.ino
+  ) {
+    throw new Error(`Uninstall replacement ownership changed for ${ownership.path}.`);
+  }
+  return current;
+}
+
+
+async function assertSnapshotCurrent(snapshot: FileSnapshot): Promise<void> {
+  await assertControlledTopologyCurrent(snapshot.topology);
+  const current = await captureCurrentSnapshot(snapshot);
+  if (snapshot.bytes === null && current.bytes === null) return;
+  if (
+    snapshot.bytes !== null &&
+    current.bytes !== null &&
+    snapshot.identity !== null &&
+    current.identity !== null &&
+    snapshot.bytes.equals(current.bytes) &&
+    hasSameFileIdentity(snapshot.identity, current.identity)
+  ) {
+    return;
+  }
+  throw new Error(`Refusing uninstall because planned artifact ${snapshot.path} changed, was created, or was removed after planning.`);
+}
+
+async function assertSnapshotAtPath(
+  path: string,
+  expected: FileSnapshot,
+  context: string,
+): Promise<FileSnapshot> {
+  await assertControlledTopologyCurrent(expected.topology);
+  const actual = await readFileSnapshot(path, snapshotReadOptions(expected));
+  if (
+    expected.bytes === null ||
+    actual.bytes === null ||
+    expected.identity === null ||
+    actual.identity === null ||
+    !expected.bytes.equals(actual.bytes) ||
+    actual.mode !== expected.mode ||
+    actual.identity.dev !== expected.identity.dev ||
+    actual.identity.ino !== expected.identity.ino
+  ) {
+    throw new Error(`Refusing uninstall because ${context} ${path} is not the planned artifact.`);
+  }
+  return actual;
+
+}
+
+
+async function assertSnapshotMatchesPlannedContent(
+  actual: FileSnapshot,
+  expected: FileSnapshot,
+  context: string,
+): Promise<void> {
+  await assertControlledTopologyCurrent(expected.topology);
+  if (
+    actual.bytes === null ||
+    expected.bytes === null ||
+    actual.mode !== expected.mode ||
+    !actual.bytes.equals(expected.bytes)
+  ) {
+    throw new Error(`Uninstall ${context} mismatch for ${expected.path}.`);
+  }
+}
+
+async function assertSnapshotsCurrent(snapshots: readonly FileSnapshot[]): Promise<void> {
+  for (const snapshot of snapshots) await assertSnapshotCurrent(snapshot);
+}
+
+async function removeOwnedTemporary(
+  path: string,
+  snapshot: FileSnapshot | undefined,
+  originalError: unknown,
+  description: "temporary" | "staged deletion",
+): Promise<void> {
+
+  try {
+    if (!snapshot) {
+      throw new Error(`${description} path was not fully captured after writing.`);
+    }
+    await assertSnapshotCurrent(snapshot);
+    const claimPath = transactionClaimPath(path);
+
+    await rename(path, claimPath);
+    try {
+      await assertSnapshotAtPath(claimPath, snapshot, `${description} cleanup claim`);
+    } catch (error) {
+      try {
+        await restoreUninstallClaim(claimPath, path);
+      } catch (recoveryError) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; preserved claim ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        );
+      }
+      throw error;
+    }
+    await rm(claimPath);
+  } catch (cleanupError) {
+    const message = originalError instanceof Error
+      ? originalError.message
+      : String(originalError);
+    throw new Error(
+      `Uninstall artifact transaction failed (${message}) and preserved ${description} ${path} for manual recovery after cleanup verification failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
     );
   }
-  return true;
+}
+
+
+async function atomicReplaceFile(
+  mutation: PlannedFileMutation,
+  expectedCurrent: FileSnapshot,
+  content: Buffer,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  stage: "write" | "rollback",
+  onRename: (ownership: RenamedDestinationOwnership) => void,
+
+  assertApplied?: () => Promise<void>,
+): Promise<FileSnapshot> {
+  if (mutation.snapshot.mode === null) {
+    throw new Error(`Refusing to replace ${mutation.snapshot.path}: uninstall did not plan a regular-file mode.`);
+  }
+  const temporaryPath = transactionTemporaryPath(mutation.snapshot.path, "write", options);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let temporaryCreated = false;
+  let temporarySnapshot: FileSnapshot | undefined;
+  let claimPath: string | undefined;
+  let claimCreated = false;
+  let journaledClaim = false;
+  try {
+    await options.transactionFailureInjector?.(
+      stage === "write" ? "before-temp-write" : "before-rollback",
+    );
+    await assertApplied?.();
+    await assertSnapshotCurrent(expectedCurrent);
+    handle = await open(temporaryPath, "wx", mutation.snapshot.mode);
+    temporaryCreated = true;
+    await handle.writeFile(content);
+    await chmod(temporaryPath, mutation.snapshot.mode);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    temporarySnapshot = await readFileSnapshot(
+      temporaryPath,
+      snapshotReadOptions(mutation.snapshot),
+    );
+    if (
+      temporarySnapshot.bytes === null ||
+      temporarySnapshot.mode !== mutation.snapshot.mode ||
+      !temporarySnapshot.bytes.equals(content)
+    ) {
+      throw new Error(`Read-back verification failed for replacement temporary ${temporaryPath}.`);
+    }
+    await options.transactionFailureInjector?.(
+      stage === "write" ? "before-rename" : "before-rollback-rename",
+    );
+    await assertApplied?.();
+    await assertControlledTopologyCurrent(mutation.snapshot.topology);
+    await assertSnapshotCurrent(expectedCurrent);
+    await assertSnapshotCurrent(temporarySnapshot);
+    await options.transactionFailureInjector?.(
+      stage === "write"
+        ? "after-final-rename-validation"
+        : "after-final-restore-validation",
+    );
+    if (!temporarySnapshot) {
+      throw new Error(`Replacement temporary ${temporaryPath} was not fully captured before install.`);
+    }
+    claimPath = transactionClaimPath(mutation.snapshot.path);
+    const controlledRoot = mutation.snapshot.topology?.root;
+    if (expectedCurrent.bytes !== null && controlledRoot) {
+      await persistNativeHookClaimJournal(controlledRoot, {
+        canonicalPath: mutation.snapshot.path,
+        claimPath,
+        before: expectedCurrent.bytes,
+        after: content,
+      });
+      journaledClaim = true;
+      await rename(mutation.snapshot.path, claimPath);
+      claimCreated = true;
+      await syncNativeHookClaimParent(claimPath);
+      await assertSnapshotAtPath(claimPath, expectedCurrent, "replacement claim");
+    }
+    await copyFile(temporaryPath, mutation.snapshot.path, constants.COPYFILE_EXCL);
+    await chmod(mutation.snapshot.path, mutation.snapshot.mode);
+    const installedHandle = await open(mutation.snapshot.path, "r");
+    try {
+      await installedHandle.sync();
+    } finally {
+      await installedHandle.close();
+    }
+    await syncNativeHookClaimParent(mutation.snapshot.path);
+    const actual = await captureCurrentSnapshot(mutation.snapshot);
+    if (actual.bytes === null || actual.mode !== mutation.snapshot.mode || !actual.bytes.equals(content)) {
+      throw new Error(`Read-back verification failed for replacement ${mutation.snapshot.path}.`);
+    }
+    if (claimCreated && claimPath) {
+      await rm(claimPath);
+      await syncNativeHookClaimParent(claimPath);
+      claimCreated = false;
+    }
+    if (journaledClaim && controlledRoot) {
+      await clearNativeHookClaimJournal(controlledRoot);
+      journaledClaim = false;
+    }
+    await rm(temporaryPath);
+    temporaryCreated = false;
+    const ownership = renamedDestinationOwnership(
+      actual,
+      mutation.snapshot.path,
+      mutation.snapshot.topology,
+    );
+    onRename(ownership);
+
+    if (stage === "write") {
+      await options.transactionFailureInjector?.("after-rename");
+    }
+
+    const verified = await captureRenamedDestinationOwnership(ownership);
+    if (stage === "write" && mutation.validate) {
+      mutation.validate(decodeStrictUtf8(mutation.snapshot.path, verified.bytes!));
+    }
+    return verified;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if (claimCreated && claimPath) {
+      try {
+        await restoreUninstallClaim(claimPath, mutation.snapshot.path);
+        await syncNativeHookClaimParent(mutation.snapshot.path);
+        claimCreated = false;
+        const controlledRoot = mutation.snapshot.topology?.root;
+        if (journaledClaim && controlledRoot) {
+          await clearNativeHookClaimJournal(controlledRoot);
+          journaledClaim = false;
+        }
+      } catch (recoveryError) {
+        throw new Error(
+          `Uninstall replacement failed (${error instanceof Error ? error.message : String(error)}) and preserved ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        );
+      }
+    }
+    if (temporaryCreated) {
+      await removeOwnedTemporary(
+        temporaryPath,
+        temporarySnapshot,
+        error,
+        "temporary",
+      );
+
+    }
+    throw error;
+  }
+}
+
+
+async function stageAndRemoveFile(
+  mutation: PlannedFileMutation,
+  execution: MutationExecution,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  assertApplied: () => Promise<void>,
+): Promise<void> {
+  if (mutation.snapshot.bytes === null || mutation.snapshot.mode === null) {
+    throw new Error(`Refusing to remove ${mutation.snapshot.path}: uninstall did not plan a regular-file snapshot.`);
+  }
+  const stagedPath = transactionTemporaryPath(mutation.snapshot.path, "delete", options);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let stagedCreated = false;
+  try {
+    await options.transactionFailureInjector?.("before-temp-write");
+    await assertApplied();
+    await assertSnapshotCurrent(mutation.snapshot);
+    handle = await open(stagedPath, "wx", mutation.snapshot.mode);
+    stagedCreated = true;
+    await handle.writeFile(mutation.snapshot.bytes);
+    await chmod(stagedPath, mutation.snapshot.mode);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    const stagedDeletion = await readFileSnapshot(
+      stagedPath,
+      snapshotReadOptions(mutation.snapshot),
+    );
+    await assertSnapshotMatchesPlannedContent(
+      stagedDeletion,
+      mutation.snapshot,
+      "staged deletion",
+    );
+    execution.stagedDeletion = stagedDeletion;
+
+    await options.transactionFailureInjector?.("before-remove");
+    await assertControlledTopologyCurrent(mutation.snapshot.topology);
+    await assertSnapshotCurrent(mutation.snapshot);
+    await assertSnapshotCurrent(stagedDeletion);
+    await assertApplied();
+    await options.transactionFailureInjector?.("after-final-remove-validation");
+    await assertSnapshotCurrent(stagedDeletion);
+    const claimPath = transactionClaimPath(mutation.snapshot.path);
+
+
+    const controlledRoot = mutation.snapshot.topology?.root;
+    if (controlledRoot && mutation.snapshot.bytes !== null) {
+      await persistNativeHookClaimJournal(controlledRoot, {
+        canonicalPath: mutation.snapshot.path,
+        claimPath,
+        before: mutation.snapshot.bytes,
+        after: null,
+      });
+    }
+    await rename(mutation.snapshot.path, claimPath);
+    if (controlledRoot) await syncNativeHookClaimParent(claimPath);
+    execution.appliedSnapshot = {
+      path: mutation.snapshot.path,
+      content: null,
+      bytes: null,
+      mode: null,
+      identity: null,
+      topology: mutation.snapshot.topology,
+    };
+    execution.phase = "destructive";
+    try {
+
+
+      await assertSnapshotAtPath(claimPath, mutation.snapshot, "removal claim");
+    } catch (error) {
+      try {
+        await restoreUninstallClaim(claimPath, mutation.snapshot.path);
+        if (controlledRoot) await syncNativeHookClaimParent(mutation.snapshot.path);
+        if (controlledRoot) await clearNativeHookClaimJournal(controlledRoot);
+        execution.appliedSnapshot = undefined;
+        execution.phase = "prepared";
+      } catch (recoveryError) {
+        throw new Error(
+          `Uninstall removal claim failed (${error instanceof Error ? error.message : String(error)}) and preserved ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        );
+      }
+      throw error;
+    }
+    await rm(claimPath);
+    if (controlledRoot) await syncNativeHookClaimParent(claimPath);
+    if (controlledRoot) await clearNativeHookClaimJournal(controlledRoot);
+    await options.transactionFailureInjector?.("after-remove");
+    await assertControlledTopologyCurrent(mutation.snapshot.topology);
+    const absent = await captureCurrentSnapshot(mutation.snapshot);
+    if (absent.bytes !== null) {
+      throw new Error(`Read-back verification failed for ${mutation.snapshot.path}: expected absence.`);
+    }
+    execution.phase = "verified";
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if (stagedCreated && execution.phase === "prepared") {
+      await removeOwnedTemporary(
+        stagedPath,
+        execution.stagedDeletion,
+        error,
+        "staged deletion",
+      );
+    }
+    throw error;
+  }
+}
+
+async function applyFileMutation(
+  execution: MutationExecution,
+  executions: readonly MutationExecution[],
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+): Promise<void> {
+  const { mutation } = execution;
+  if (mutation.finalContent === null) {
+    await stageAndRemoveFile(
+      mutation,
+      execution,
+      options,
+      () => assertAppliedTransactionSnapshots(executions),
+    );
+    return;
+  }
+  const appliedSnapshot = await atomicReplaceFile(
+    mutation,
+    mutation.snapshot,
+    Buffer.from(mutation.finalContent, "utf-8"),
+    options,
+    "write",
+    (ownership) => {
+      execution.renamedOwnership = ownership;
+      execution.phase = "destructive";
+    },
+    () => assertAppliedTransactionSnapshots(executions),
+  );
+  execution.appliedSnapshot = appliedSnapshot;
+  execution.renamedOwnership = undefined;
+  execution.phase = "verified";
+}
+
+function mutationStage(kind: UninstallArtifactKind): UninstallTransactionFailureStage {
+  switch (kind) {
+    case "hooks":
+      return "before-hooks-commit";
+    case "shim":
+      return "before-shim-removal";
+    case "config":
+      return "before-config-commit";
+  }
+}
+
+async function captureRollbackOwnedSnapshot(
+  execution: MutationExecution,
+): Promise<FileSnapshot> {
+  if (execution.appliedSnapshot) {
+    await assertSnapshotCurrent(execution.appliedSnapshot);
+    return execution.appliedSnapshot;
+  }
+  if (execution.renamedOwnership) {
+    return captureRenamedDestinationOwnership(execution.renamedOwnership);
+  }
+  throw new Error(`Refusing stale rollback for ${execution.mutation.snapshot.path}: the mutation did not produce a verifiable state.`);
+}
+
+async function restoreFileSnapshot(
+  execution: MutationExecution,
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+  assertRollbackState: () => Promise<void>,
+): Promise<void> {
+  const { mutation } = execution;
+  const appliedSnapshot = await captureRollbackOwnedSnapshot(execution);
+  if (execution.stagedDeletion && !execution.stagedDeletionCleaned) {
+    await assertSnapshotCurrent(execution.stagedDeletion);
+  }
+
+  if (mutation.snapshot.bytes === null) {
+    await options.transactionFailureInjector?.("before-rollback");
+    await options.transactionFailureInjector?.("before-rollback-remove");
+    await assertRollbackState();
+    await assertControlledTopologyCurrent(mutation.snapshot.topology);
+    await assertSnapshotCurrent(appliedSnapshot);
+    await options.transactionFailureInjector?.("after-final-restore-validation");
+    const claimPath = transactionClaimPath(mutation.snapshot.path);
+
+    await rename(mutation.snapshot.path, claimPath);
+    execution.appliedSnapshot = {
+      path: mutation.snapshot.path,
+      content: null,
+      bytes: null,
+      mode: null,
+      identity: null,
+      topology: mutation.snapshot.topology,
+    };
+    execution.renamedOwnership = undefined;
+    try {
+
+      await assertSnapshotAtPath(claimPath, appliedSnapshot, "rollback removal claim");
+    } catch (error) {
+      try {
+        await restoreUninstallClaim(claimPath, mutation.snapshot.path);
+      } catch (recoveryError) {
+        throw new Error(
+          `Uninstall rollback removal claim failed (${error instanceof Error ? error.message : String(error)}) and preserved ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        );
+      }
+      throw error;
+    }
+    await rm(claimPath);
+    const absent = await captureCurrentSnapshot(mutation.snapshot);
+    if (absent.bytes !== null) {
+      throw new Error(`Uninstall rollback mismatch for ${mutation.snapshot.path}: expected absence.`);
+    }
+    return;
+  }
+
+  const restored = await atomicReplaceFile(
+    mutation,
+    appliedSnapshot,
+    mutation.snapshot.bytes,
+    options,
+    "rollback",
+    (ownership) => {
+      execution.renamedOwnership = ownership;
+    },
+    assertRollbackState,
+  );
+  execution.appliedSnapshot = restored;
+  execution.renamedOwnership = undefined;
+  await assertSnapshotMatchesPlannedContent(restored, mutation.snapshot, "rollback");
+}
+
+async function cleanupStagedDeletions(
+  executions: readonly MutationExecution[],
+  options: Pick<UninstallOptions, "transactionFailureInjector">,
+  stage: "commit" | "rollback",
+  transaction?: UninstallArtifactTransaction,
+  assertRollbackState?: () => Promise<void>,
+): Promise<void> {
+  for (const execution of executions) {
+    if (!execution.stagedDeletion || execution.stagedDeletionCleaned) continue;
+    if (stage === "rollback") {
+      await options.transactionFailureInjector?.("before-rollback-remove");
+    }
+    await options.transactionFailureInjector?.("before-staged-cleanup");
+    if (transaction) {
+      await assertUnmutatedTransactionPreconditions(transaction, executions);
+      await assertAppliedTransactionSnapshots(executions);
+    }
+    await assertRollbackState?.();
+
+    const stagedDeletion = execution.stagedDeletion;
+    await assertSnapshotCurrent(stagedDeletion);
+    const claimPath = transactionClaimPath(stagedDeletion.path);
+    await rename(stagedDeletion.path, claimPath);
+    try {
+      await assertSnapshotAtPath(claimPath, stagedDeletion, "staged deletion cleanup claim");
+    } catch (error) {
+      try {
+        await restoreUninstallClaim(claimPath, stagedDeletion.path);
+      } catch (recoveryError) {
+        throw new Error(
+          `Uninstall staged deletion cleanup claim failed (${error instanceof Error ? error.message : String(error)}) and preserved ${claimPath} for manual recovery: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        );
+      }
+      throw error;
+    }
+    await rm(claimPath);
+    execution.stagedDeletionCleaned = true;
+    await assertRollbackState?.();
+  }
+}
+
+async function assertRollbackTransactionState(
+  executions: readonly MutationExecution[],
+): Promise<void> {
+  for (const execution of executions) {
+    if (execution.phase === "prepared") continue;
+    if (execution.stagedDeletion && !execution.stagedDeletionCleaned) {
+      await assertSnapshotCurrent(execution.stagedDeletion);
+    }
+    await captureRollbackOwnedSnapshot(execution);
+  }
+}
+
+async function rollbackArtifactMutations(
+  executions: readonly MutationExecution[],
+  options: Pick<UninstallOptions, "transactionFailureInjector" | "transactionTemporaryPath">,
+): Promise<void> {
+  const failures: string[] = [];
+  const restored: MutationExecution[] = [];
+  try {
+    await assertRollbackTransactionState(executions);
+  } catch (error) {
+    failures.push(`recovery preflight: ${String(error)}`);
+  }
+  if (failures.length === 0) {
+    for (const execution of [...executions].reverse()) {
+      if (execution.phase === "prepared") continue;
+      try {
+        await assertRollbackTransactionState(executions);
+        await restoreFileSnapshot(
+          execution,
+          options,
+          () => assertRollbackTransactionState(executions),
+        );
+        restored.push(execution);
+        await assertRollbackTransactionState(executions);
+      } catch (error) {
+        failures.push(`${execution.mutation.kind}: ${String(error)}`);
+      }
+    }
+  }
+  if (failures.length === 0) {
+    try {
+      await assertRollbackTransactionState(executions);
+      await cleanupStagedDeletions(
+        restored,
+        options,
+        "rollback",
+        undefined,
+        () => assertRollbackTransactionState(executions),
+      );
+      await assertRollbackTransactionState(executions);
+    } catch (error) {
+      failures.push(`staged deletion cleanup: ${String(error)}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `Uninstall artifact rollback failed; manual recovery is required: ${failures.join("; ")}`,
+    );
+  }
+}
+
+async function assertUnmutatedTransactionPreconditions(
+  transaction: UninstallArtifactTransaction,
+  executions: readonly MutationExecution[],
+): Promise<void> {
+  const mutatedPaths = new Set(
+    executions
+      .filter((execution) => execution.phase !== "prepared")
+      .map((execution) => execution.mutation.snapshot.path),
+  );
+  await assertSnapshotsCurrent(
+    transaction.preconditions.filter((snapshot) => !mutatedPaths.has(snapshot.path)),
+  );
+}
+
+async function assertAppliedTransactionSnapshots(
+  executions: readonly MutationExecution[],
+): Promise<void> {
+  for (const execution of executions) {
+    if (execution.phase === "prepared") continue;
+    if (!execution.appliedSnapshot) {
+      throw new Error(`Refusing uninstall because ${execution.mutation.snapshot.path} did not register an applied snapshot.`);
+    }
+    await assertSnapshotCurrent(execution.appliedSnapshot);
+  }
+}
+
+
+async function commitUninstallArtifactTransaction(
+  transaction: UninstallArtifactTransaction,
+  options: Pick<
+    UninstallOptions,
+    "transactionFailureInjector" | "transactionTemporaryPath"
+  >,
+): Promise<void> {
+  const mutations = [transaction.hooks, transaction.shim, transaction.config]
+    .filter((mutation): mutation is PlannedFileMutation => mutation !== undefined);
+  for (const mutation of mutations) {
+    if (mutation.finalContent !== null) mutation.validate?.(mutation.finalContent);
+  }
+  await assertSnapshotsCurrent(transaction.preconditions);
+  if (mutations.length === 0) return;
+
+  const executions: MutationExecution[] = [];
+  let stagedCleanupStarted = false;
+  try {
+    for (const mutation of mutations) {
+      await options.transactionFailureInjector?.(mutationStage(mutation.kind));
+      await assertUnmutatedTransactionPreconditions(transaction, executions);
+      await assertAppliedTransactionSnapshots(executions);
+      const execution: MutationExecution = { mutation, phase: "prepared" };
+      executions.push(execution);
+      await applyFileMutation(execution, executions, options);
+      if (mutation.kind === "config") {
+        await options.transactionFailureInjector?.("after-config-commit");
+      }
+      await assertUnmutatedTransactionPreconditions(transaction, executions);
+      await assertAppliedTransactionSnapshots(executions);
+    }
+    await assertUnmutatedTransactionPreconditions(transaction, executions);
+    await assertAppliedTransactionSnapshots(executions);
+    stagedCleanupStarted = true;
+    await cleanupStagedDeletions(executions, options, "commit", transaction);
+    await options.transactionFailureInjector?.("after-staged-cleanup");
+    await assertUnmutatedTransactionPreconditions(transaction, executions);
+    await assertAppliedTransactionSnapshots(executions);
+  } catch (error) {
+    if (
+      stagedCleanupStarted &&
+      executions.some((execution) => execution.stagedDeletionCleaned)
+    ) {
+      throw new Error(
+        `Uninstall artifact transaction committed but staged deletion cleanup failed during finalization: ${String(error)}`,
+      );
+    }
+    try {
+      await rollbackArtifactMutations(executions, options);
+    } catch (rollbackError) {
+      throw new Error(
+        `Uninstall artifact transaction failed (${String(error)}); ${String(rollbackError)}`,
+      );
+    }
+    throw error;
+  }
 }
 
 async function removeCacheDirectory(
@@ -506,7 +1663,7 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
         "    Feature flags (child_agents_md, goals; multi_agent and hooks are preserved when user-owned)",
       );
     }
-  } else if (!summary.configCleaned && summary.mcpServersRemoved.length === 0) {
+  } else if (summary.mcpServersRemoved.length === 0) {
     console.log("  config.toml: no OMX entries found (or --keep-config used)");
   }
 
@@ -565,6 +1722,82 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   // Resolve scope (explicit --scope overrides persisted scope)
   const scope = options.scope ?? readPersistedSetupScope(projectRoot) ?? "user";
   const scopeDirs = resolveScopeDirectories(scope, projectRoot);
+  if (!dryRun) {
+    await recoverNativeHookClaimJournal(scopeDirs.codexHomeDir);
+  }
+  const transactionPlatform = options.transactionPlatform ?? process.platform;
+
+  // Precompute and validate every artifact before the first uninstall write.
+  const hooksSnapshot = await readFileSnapshot(scopeDirs.codexHooksFile, {
+    controlledRoot: scopeDirs.codexHomeDir,
+  });
+  const configSnapshot = await readFileSnapshot(scopeDirs.codexConfigFile, {
+    controlledRoot: scopeDirs.codexHomeDir,
+  });
+  const hooksRemoval = await planHooksRemoval(
+    hooksSnapshot,
+    pkgRoot,
+    transactionPlatform,
+    scopeDirs.codexHomeDir,
+  );
+  const notifyMetadata = keepConfig
+    ? undefined
+    : await planNotifyMetadata(configSnapshot, scopeDirs.codexHomeDir);
+  const preserveHooksFeatureFlag = hooksRemoval.plan?.hasForeignHooks ?? false;
+  const configCleanup = keepConfig
+    ? undefined
+    : await planConfigCleanup(
+        configSnapshot,
+        {
+          preserveHooksFeatureFlag,
+          priorHookTrustState: hooksRemoval.plan?.priorTrustState,
+          finalHookTrustState: hooksRemoval.plan?.finalTrustState,
+          notifyMetadata,
+          codexFeaturesProbe: options.codexFeaturesProbe,
+          codexVersionProbe: options.codexVersionProbe,
+        },
+      );
+  const artifactTransaction: UninstallArtifactTransaction = {
+    preconditions: [
+      hooksRemoval.hooks,
+      ...(hooksRemoval.shim
+        ? [hooksRemoval.shim]
+        : hooksRemoval.preservedShimPrecondition
+          ? [hooksRemoval.preservedShimPrecondition]
+          : []),
+      configSnapshot,
+      ...(notifyMetadata ? [notifyMetadata.snapshot] : []),
+    ],
+    ...(hooksRemoval.plan?.changed
+      ? {
+          hooks: {
+            kind: "hooks",
+            snapshot: hooksRemoval.hooks,
+            finalContent: hooksRemoval.plan.finalContent,
+            validate: assertValidHooksJson,
+          },
+        }
+      : {}),
+    ...(hooksRemoval.shim !== undefined && hooksRemoval.shim.bytes !== null
+      ? {
+          shim: {
+            kind: "shim",
+            snapshot: hooksRemoval.shim,
+            finalContent: null,
+          },
+        }
+      : {}),
+    ...(configCleanup?.result.configCleaned && configCleanup.finalContent !== null
+      ? {
+          config: {
+            kind: "config",
+            snapshot: configCleanup.config,
+            finalContent: configCleanup.finalContent,
+            validate: assertValidToml,
+          },
+        }
+      : {}),
+  };
 
   console.log("oh-my-codex uninstall");
   console.log("=====================\n");
@@ -590,35 +1823,49 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   };
 
   summary.legacySkillRootWarning = await detectLegacySkillRootWarning(scope);
-  const preserveHooksFeatureFlag = await shouldPreserveHooksFeatureFlag(
-    scopeDirs.codexHooksFile,
-  );
+  summary.hooksFileRemoved =
+    artifactTransaction.hooks !== undefined || artifactTransaction.shim !== undefined;
+  if (configCleanup) Object.assign(summary, configCleanup.result);
 
-  // Step 1: Clean config.toml
-  if (keepConfig) {
-    console.log("[1/5] Skipping config.toml cleanup (--keep-config).");
-  } else {
-    console.log("[1/5] Cleaning config.toml...");
-    const configResult = await cleanConfig(scopeDirs.codexConfigFile, {
-      dryRun,
-      verbose,
-      preserveHooksFeatureFlag,
-      codexFeaturesProbe: options.codexFeaturesProbe,
-      codexVersionProbe: options.codexVersionProbe,
+  // Hooks, proof-owned shim, and config are one compensating transaction. The
+  // config mutation is intentionally last so hooks never reference unwritten trust.
+  console.log("[1/6] Removing native hooks artifact...");
+  if (!keepConfig) console.log("[2/6] Cleaning config.toml...");
+  if (!dryRun) {
+    await commitUninstallArtifactTransaction(artifactTransaction, {
+      transactionFailureInjector: options.transactionFailureInjector,
+      transactionTemporaryPath: options.transactionTemporaryPath,
     });
-    Object.assign(summary, configResult);
   }
-  console.log();
-
-  // Step 2: Remove installed prompts
-  console.log("[2/6] Removing native hooks artifact...");
-  summary.hooksFileRemoved = await removeHooksFile(scopeDirs.codexHooksFile, {
-    dryRun,
-    verbose,
-  });
+  if (verbose) {
+    if (artifactTransaction.hooks) {
+      console.log(
+        `  ${dryRun ? "Would clean" : artifactTransaction.hooks.finalContent === null ? "Removed" : "Cleaned"} ${basename(scopeDirs.codexHooksFile)}`,
+      );
+    }
+    if (artifactTransaction.shim) {
+      console.log(
+        `  ${dryRun ? "Would remove" : "Removed"} ${basename(artifactTransaction.shim.snapshot.path)}`,
+      );
+    }
+  }
   console.log(
     `  ${dryRun ? "Would clean" : "Cleaned"} ${summary.hooksFileRemoved ? 1 : 0} hooks artifact(s).`,
   );
+  console.log();
+
+  // Step 2: config cleanup is calculated before Step 1 and committed last.
+  if (keepConfig) {
+    console.log("[2/6] Skipping config.toml cleanup (--keep-config).");
+  } else if (verbose) {
+    if (configCleanup?.config.content === null) {
+      console.log("  config.toml not found, skipping.");
+    } else if (configCleanup?.result.configCleaned) {
+      console.log(`  ${dryRun ? "Would clean" : "Cleaned"} ${scopeDirs.codexConfigFile}`);
+    } else {
+      console.log("  No OMX config entries found.");
+    }
+  }
   console.log();
 
   // Step 3: Remove installed prompts

@@ -1120,11 +1120,49 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         await mkdir(join(wd, ".omx", "state"), { recursive: true });
         await mkdir(join(wd, ".codex"), { recursive: true });
         const configPath = join(wd, ".codex", "config.toml");
-        await writeFile(configPath, `${fixture.lines.join("\n")}\n`);
+        const original = `${fixture.lines.join("\n")}\n`;
+        await writeFile(configPath, original);
+        if (fixture.markers) {
+          await assert.rejects(
+            runSetupInTempDir(wd, { scope: "project" }),
+            /Refusing to write invalid planned config\.toml/,
+          );
+          assert.equal(await readFile(configPath, "utf-8"), original);
+          assert.equal(existsSync(join(wd, ".codex", "hooks.json")), false);
+          continue;
+        }
         await runSetupInTempDir(wd, { scope: "project" });
         const refreshed = await readFile(configPath, "utf-8");
         for (const line of fixture.preservedLines) assert.ok(refreshed.includes(line), `missing preserved line: ${line}`);
-        fixture.markers ? assert.match(refreshed, /seeded behavioral defaults/) : assert.doesNotMatch(refreshed, /seeded behavioral defaults/);
+        assert.doesNotMatch(refreshed, /seeded behavioral defaults/);
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+  it("rejects malformed config.toml and hooks.json bytes before any setup mutation", async () => {
+    const fixtures = [
+      { name: "config.toml", path: [".codex", "config.toml"] },
+      { name: "hooks.json", path: [".codex", "hooks.json"] },
+    ] as const;
+    for (const fixture of fixtures) {
+      const wd = await mkdtemp(join(tmpdir(), "omx-setup-invalid-utf8-"));
+      try {
+        const artifactPath = join(wd, ...fixture.path);
+        const invalidBytes = Buffer.from([0x7b, 0x80, 0x7d, 0x0a]);
+        await mkdir(join(wd, ".codex"), { recursive: true });
+        await writeFile(artifactPath, invalidBytes);
+
+        await assert.rejects(
+          runSetupInTempDir(wd, { scope: "project", skipNativeAgentRefresh: true }),
+          /invalid UTF-8/,
+        );
+
+        assert.deepEqual(await readFile(artifactPath), invalidBytes, fixture.name);
+        assert.equal(existsSync(join(wd, ".codex", "config.toml")), fixture.name === "config.toml");
+        assert.equal(existsSync(join(wd, ".codex", "hooks.json")), fixture.name === "hooks.json");
+        assert.equal(existsSync(join(wd, ".omx")), false);
+        assert.equal(existsSync(join(wd, "AGENTS.md")), false);
       } finally {
         await rm(wd, { recursive: true, force: true });
       }

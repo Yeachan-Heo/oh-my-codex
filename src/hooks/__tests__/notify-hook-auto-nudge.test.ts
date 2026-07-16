@@ -6,6 +6,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildTmuxSessionName } from '../../cli/index.js';
+import { classifyKeywordInput, recordSkillActivation } from '../keyword-detector.js';
+import { recordNotifySkillActivation, recordNotifySkillActivationNonFatal } from '../../scripts/notify-hook.js';
+import { normalizeSkillActiveState } from '../../scripts/notify-hook/auto-nudge.js';
 
 const NOTIFY_HOOK_SCRIPT = new URL('../../../dist/scripts/notify-hook.js', import.meta.url);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
@@ -19,6 +22,18 @@ const INHERITED_OMX_ENV_KEYS = [
   'OMX_STARTUP_CWD',
   'OMX_ENTRY_PATH',
 ] as const;
+
+describe('notify lifecycle owner normalization', () => {
+  it('preserves the stored Codex owner for lifecycle authorization checks', () => {
+    const state = normalizeSkillActiveState({
+      skill: 'ralph',
+      active: true,
+      phase: 'executing',
+      owner_codex_session_id: 'codex-owner-a',
+    });
+    assert.equal(state?.owner_codex_session_id, 'codex-owner-a');
+  });
+});
 
 async function withTempWorkingDir(run: (cwd: string) => Promise<void>): Promise<void> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-auto-nudge-'));
@@ -2331,6 +2346,686 @@ exit 0
     });
   });
 
+  it('shares immutable classification across the terminal replay activation matrix', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-notify-replay-matrix';
+      const sessionStateDir = join(stateDir, 'sessions', sessionId);
+      const terminalThreadId = 'thread-autopilot-complete';
+      const terminalTurnId = 'turn-autopilot-complete';
+      const terminalPayload = {
+        type: 'agent-turn-complete',
+        'thread-id': terminalThreadId,
+        'turn-id': terminalTurnId,
+        'last-assistant-message': 'Autopilot complete.',
+      };
+
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeJson(join(sessionStateDir, 'autopilot-state.json'), {
+        mode: 'autopilot',
+        active: false,
+        current_phase: 'complete',
+        completed_at: '2026-05-31T20:24:39.005Z',
+        session_id: sessionId,
+        thread_id: terminalThreadId,
+        turn_id: terminalTurnId,
+      });
+      const terminalAutopilotStatePath = join(sessionStateDir, 'autopilot-state.json');
+      const terminalSessionSkillStatePath = join(sessionStateDir, 'skill-active-state.json');
+      const terminalRootSkillStatePath = join(stateDir, 'skill-active-state.json');
+
+
+      for (const text of ['$autopilot replay task café\r\n', 'autopilot mode — replay café']) {
+        const bytesBefore = Buffer.from(text, 'utf8');
+        const terminalStateBefore = await readFile(terminalAutopilotStatePath);
+
+        let classifierCalls = 0;
+        let classifierText = '';
+        let writerCalls = 0;
+        const result = await recordNotifySkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text,
+          sessionId,
+          threadId: terminalThreadId,
+          turnId: terminalTurnId,
+          payload: terminalPayload,
+        }, {
+          classifyKeywordInput: (input) => {
+            classifierCalls += 1;
+            classifierText = input;
+            return classifyKeywordInput(input);
+          },
+          recordSkillActivation: async () => {
+            writerCalls += 1;
+            return null;
+          },
+        });
+
+        assert.equal(classifierCalls, 1, 'notify should classify each latest input once');
+        assert.equal(writerCalls, 0, 'same-turn terminal replay must not reach the writer');
+        assert.equal(result, null);
+        assert.deepEqual(Buffer.from(classifierText, 'utf8'), bytesBefore, 'classifier must receive the original input bytes');
+        assert.deepEqual(await readFile(terminalAutopilotStatePath), terminalStateBefore, 'same-turn replay must preserve terminal detail bytes');
+        assert.equal(existsSync(terminalSessionSkillStatePath), false, 'same-turn replay must not create session canonical state');
+        assert.equal(existsSync(terminalRootSkillStatePath), false, 'same-turn replay must not create root canonical state');
+      }
+
+      const markedSessionId = 'sess-notify-terminal-marked-answer';
+      const markedThreadId = 'thread-notify-terminal-marked-answer';
+      const markedTurnId = 'turn-notify-terminal-marked-answer';
+      const markedSessionDir = join(stateDir, 'sessions', markedSessionId);
+      const markedSkillPath = join(markedSessionDir, 'skill-active-state.json');
+      const markedDetailPath = join(markedSessionDir, 'autopilot-state.json');
+      await mkdir(markedSessionDir, { recursive: true });
+      await writeJson(markedSkillPath, {
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        keyword: '$autopilot',
+        phase: 'completing',
+        activated_at: '2026-05-31T20:24:39.005Z',
+        updated_at: '2026-05-31T20:24:39.005Z',
+        session_id: markedSessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'completing', active: true, session_id: markedSessionId }],
+      });
+      await writeJson(markedDetailPath, {
+        mode: 'autopilot',
+        active: false,
+        current_phase: 'complete',
+        completed_at: '2026-05-31T20:24:39.005Z',
+        session_id: markedSessionId,
+      });
+      const markedSkillBefore = await readFile(markedSkillPath);
+      const markedDetailBefore = await readFile(markedDetailPath);
+      let markedWriterCalls = 0;
+      const markedResult = await recordNotifySkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '[omx question answered] yes',
+        sessionId: markedSessionId,
+        threadId: markedThreadId,
+        turnId: markedTurnId,
+        payload: {
+          type: 'agent-turn-complete',
+          'thread-id': markedThreadId,
+          'turn-id': markedTurnId,
+          'last-assistant-message': 'Autopilot complete.',
+        },
+      }, {
+        recordSkillActivation: async (input) => {
+          markedWriterCalls += 1;
+          return recordSkillActivation(input);
+        },
+      });
+      assert.equal(markedWriterCalls, 1);
+      assert.equal(markedResult, null);
+      assert.deepEqual(await readFile(markedSkillPath), markedSkillBefore);
+      assert.deepEqual(await readFile(markedDetailPath), markedDetailBefore);
+
+      for (const orderedCase of [
+        { text: '$ralplan $autopilot plan this change', skill: 'ralplan' },
+        { text: '$ralph $autopilot ship this change', skill: 'ralph' },
+      ]) {
+        const orderedSessionId = `sess-notify-primary-${orderedCase.skill}`;
+        const orderedThreadId = `thread-notify-primary-${orderedCase.skill}`;
+        const orderedTurnId = `turn-notify-primary-${orderedCase.skill}`;
+        const orderedSessionDir = join(stateDir, 'sessions', orderedSessionId);
+        await mkdir(orderedSessionDir, { recursive: true });
+        await writeJson(join(orderedSessionDir, 'autopilot-state.json'), {
+          mode: 'autopilot',
+          active: false,
+          current_phase: 'complete',
+          completed_at: '2026-05-31T20:24:39.005Z',
+          session_id: orderedSessionId,
+          thread_id: orderedThreadId,
+          turn_id: orderedTurnId,
+        });
+        const orderedAutopilotPath = join(orderedSessionDir, 'autopilot-state.json');
+        const orderedAutopilotBefore = await readFile(orderedAutopilotPath);
+        await writeJson(join(orderedSessionDir, 'skill-active-state.json'), {
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: '$autopilot',
+          phase: 'completing',
+          activated_at: '2026-05-31T20:24:39.005Z',
+          updated_at: '2026-05-31T20:24:39.005Z',
+          session_id: orderedSessionId,
+          thread_id: orderedThreadId,
+          turn_id: orderedTurnId,
+          active_skills: [{
+            skill: 'autopilot',
+            phase: 'completing',
+            active: true,
+            session_id: orderedSessionId,
+            thread_id: orderedThreadId,
+            turn_id: orderedTurnId,
+          }],
+        });
+        let orderedWriterCalls = 0;
+        const orderedResult = await recordNotifySkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: orderedCase.text,
+          sessionId: orderedSessionId,
+          threadId: orderedThreadId,
+          turnId: orderedTurnId,
+          payload: {
+            type: 'agent-turn-complete',
+            'thread-id': orderedThreadId,
+            'turn-id': orderedTurnId,
+            'last-assistant-message': 'Autopilot complete.',
+          },
+        }, {
+          recordSkillActivation: async (input) => {
+            orderedWriterCalls += 1;
+            return recordSkillActivation(input);
+          },
+        });
+
+        assert.equal(orderedWriterCalls, 1, `leading ${orderedCase.skill} must reach the writer`);
+        assert.equal(orderedResult?.skill, orderedCase.skill, orderedCase.text);
+        assert.equal(orderedResult?.active, true, orderedCase.text);
+        assert.equal(existsSync(join(orderedSessionDir, 'skill-active-state.json')), true, orderedCase.text);
+        assert.equal(orderedResult?.active_skills?.some((entry) => entry.skill === 'autopilot'), false, orderedCase.text);
+        assert.deepEqual(await readFile(orderedAutopilotPath), orderedAutopilotBefore, orderedCase.text);
+      }
+
+      const filteredSessionId = 'sess-notify-disabled-team-terminal-autopilot';
+      const filteredThreadId = 'thread-notify-disabled-team-terminal-autopilot';
+      const filteredTurnId = 'turn-notify-disabled-team-terminal-autopilot';
+      const filteredSessionDir = join(stateDir, 'sessions', filteredSessionId);
+      const filteredAutopilotPath = join(filteredSessionDir, 'autopilot-state.json');
+      await mkdir(filteredSessionDir, { recursive: true });
+      await writeJson(filteredAutopilotPath, {
+        mode: 'autopilot',
+        active: false,
+        current_phase: 'complete',
+        completed_at: '2026-05-31T20:24:39.005Z',
+        session_id: filteredSessionId,
+        thread_id: filteredThreadId,
+        turn_id: filteredTurnId,
+      });
+      const filteredAutopilotBefore = await readFile(filteredAutopilotPath);
+      const previousTeamMode = process.env.OMX_TEAM_MODE;
+      process.env.OMX_TEAM_MODE = 'disabled';
+      try {
+        const filteredResult = await recordNotifySkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$team $autopilot retry',
+          sessionId: filteredSessionId,
+          threadId: filteredThreadId,
+          turnId: filteredTurnId,
+          payload: {
+            type: 'agent-turn-complete',
+            'thread-id': filteredThreadId,
+            'turn-id': filteredTurnId,
+            'last-assistant-message': 'Autopilot complete.',
+          },
+        });
+        assert.equal(filteredResult, null);
+        assert.deepEqual(await readFile(filteredAutopilotPath), filteredAutopilotBefore);
+        assert.equal(existsSync(join(filteredSessionDir, 'skill-active-state.json')), false);
+        assert.equal(existsSync(join(stateDir, 'skill-active-state.json')), false);
+      } finally {
+        if (previousTeamMode === undefined) delete process.env.OMX_TEAM_MODE;
+        else process.env.OMX_TEAM_MODE = previousTeamMode;
+      }
+
+      const restartText = '$autopilot new task — café';
+      const restartBytes = Buffer.from(restartText, 'utf8');
+      let restartClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerResult: Awaited<ReturnType<typeof recordSkillActivation>> | undefined;
+      let writerCalls = 0;
+      let writerText = '';
+      const restartResult = await recordNotifySkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: restartText,
+        sessionId,
+        threadId: terminalThreadId,
+        turnId: 'turn-autopilot-restart',
+        payload: {
+          ...terminalPayload,
+          'turn-id': 'turn-autopilot-restart',
+          'last-assistant-message': 'Autopilot complete text from a prior turn.',
+        },
+      }, {
+        classifyKeywordInput: (input) => {
+          restartClassification = classifyKeywordInput(input);
+          return restartClassification;
+        },
+        recordSkillActivation: async (input) => {
+          writerCalls += 1;
+          writerText = input.text;
+          writerClassification = input.classification;
+          writerResult = await recordSkillActivation(input);
+          return writerResult;
+        },
+      });
+
+      assert.equal(writerCalls, 1, 'a different turn must reach the writer');
+      assert.strictEqual(writerClassification, restartClassification, 'writer must receive the classifier object by identity');
+      assert.strictEqual(restartResult, writerResult, 'notify must return the writer result unchanged');
+      assert.deepEqual(Buffer.from(writerText, 'utf8'), restartBytes, 'writer must receive the original input bytes');
+      const reactivatedAutopilot = JSON.parse(await readFile(join(sessionStateDir, 'autopilot-state.json'), 'utf-8')) as {
+        active: boolean;
+        current_phase: string;
+        turn_id?: string;
+      };
+      assert.equal(reactivatedAutopilot.active, true);
+      assert.equal(reactivatedAutopilot.current_phase, 'deep-interview');
+      assert.equal(reactivatedAutopilot.turn_id, 'turn-autopilot-restart');
+
+      const sessionSkillStatePath = join(sessionStateDir, 'skill-active-state.json');
+      const autopilotStatePath = join(sessionStateDir, 'autopilot-state.json');
+      const rootSkillStatePath = join(stateDir, 'skill-active-state.json');
+      for (const [index, text] of ['do not start $autopilot — café', '"$autopilot" — quoted only'].entries()) {
+        const bytesBefore = Buffer.from(text, 'utf8');
+        const skillStateBefore = await readFile(sessionSkillStatePath);
+        const autopilotStateBefore = await readFile(autopilotStatePath);
+        let rejectedClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+        let rejectedWriterClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+        let rejectedWriterResult: Awaited<ReturnType<typeof recordSkillActivation>> | undefined;
+        let rejectedWriterCalls = 0;
+        let rejectedWriterText = '';
+        const rejectedResult = await recordNotifySkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text,
+          sessionId,
+          threadId: terminalThreadId,
+          turnId: `turn-rejected-${index}`,
+          payload: {
+            type: 'agent-turn-complete',
+            'thread-id': terminalThreadId,
+            'turn-id': `turn-rejected-${index}`,
+            'last-assistant-message': 'Normal nonterminal reply.',
+          },
+        }, {
+          classifyKeywordInput: (input) => {
+            rejectedClassification = classifyKeywordInput(input);
+            return rejectedClassification;
+          },
+          recordSkillActivation: async (input) => {
+            rejectedWriterCalls += 1;
+            rejectedWriterText = input.text;
+            rejectedWriterClassification = input.classification;
+            rejectedWriterResult = await recordSkillActivation(input);
+            return rejectedWriterResult;
+          },
+        });
+
+        assert.equal(rejectedWriterCalls, 1, 'rejected nonterminal text must still reach the real writer once');
+        assert.strictEqual(rejectedResult, rejectedWriterResult, 'notify must return the real writer result unchanged');
+        assert.equal(rejectedResult, null);
+        assert.strictEqual(rejectedWriterClassification, rejectedClassification, 'rejected input must retain classification identity');
+        assert.deepEqual(rejectedClassification?.matches, [], 'negated and quoted text must not activate a workflow');
+        assert.deepEqual(Buffer.from(rejectedWriterText, 'utf8'), bytesBefore, 'writer must receive rejected input bytes unchanged');
+        assert.deepEqual(await readFile(sessionSkillStatePath), skillStateBefore, 'rejected input must preserve canonical state bytes');
+        assert.deepEqual(await readFile(autopilotStatePath), autopilotStateBefore, 'rejected input must preserve detail state bytes');
+        assert.equal(existsSync(rootSkillStatePath), false, 'rejected session input must not create root canonical state');
+      }
+    });
+  });
+
+  it('G1a-N preserves ordered multi-skill classification and seeds only the ralplan primary when Team is enabled', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-g1a-notify-ordered';
+      const threadId = 'thread-g1a-notify-ordered';
+      const turnId = 'turn-g1a-notify-ordered';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const text = '$ralplan, $autopilot; $team';
+      let classification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerCalls = 0;
+      const previousTeamMode = process.env.OMX_TEAM_MODE;
+      process.env.OMX_TEAM_MODE = 'enabled';
+
+      try {
+        const result = await recordNotifySkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text,
+          sessionId,
+          threadId,
+          turnId,
+          payload: { type: 'agent-turn-complete', 'thread-id': threadId, 'turn-id': turnId },
+        }, {
+          classifyKeywordInput: (input) => {
+            classification = classifyKeywordInput(input);
+            return classification;
+          },
+          recordSkillActivation: async (input) => {
+            writerCalls += 1;
+            writerClassification = input.classification;
+            return recordSkillActivation(input);
+          },
+        });
+
+        assert.equal(writerCalls, 1);
+        assert.strictEqual(writerClassification, classification, 'notify must pass the ordered classifier output to the writer');
+        assert.deepEqual(classification?.matches.map((match) => match.skill), ['ralplan', 'autopilot', 'team']);
+        assert.equal(result?.skill, 'ralplan');
+        assert.deepEqual(result?.deferred_skills, ['autopilot', 'team']);
+        assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralplan']);
+        assert.equal(existsSync(join(sessionDir, 'ralplan-state.json')), true);
+        assert.equal(existsSync(join(sessionDir, 'autopilot-state.json')), false);
+        assert.equal(existsSync(join(stateDir, 'team-state.json')), false);
+      } finally {
+        if (previousTeamMode === undefined) delete process.env.OMX_TEAM_MODE;
+        else process.env.OMX_TEAM_MODE = previousTeamMode;
+      }
+    });
+  });
+
+  it('G1c-N deduplicates exact canonical and alias Autopilot invocations across classifier, writer, canonical state, and detail state', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-g1c-notify-duplicate';
+      const threadId = 'thread-g1c-notify-duplicate';
+      const turnId = 'turn-g1c-notify-duplicate';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const text = '$autopilot $oh-my-codex:autopilot build it';
+      let classification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerCalls = 0;
+
+      const result = await recordNotifySkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text,
+        sessionId,
+        threadId,
+        turnId,
+        payload: { type: 'agent-turn-complete', 'thread-id': threadId, 'turn-id': turnId },
+      }, {
+        classifyKeywordInput: (input) => {
+          classification = classifyKeywordInput(input);
+          return classification;
+        },
+        recordSkillActivation: async (input) => {
+          writerCalls += 1;
+          writerClassification = input.classification;
+          return recordSkillActivation(input);
+        },
+      });
+
+      assert.equal(writerCalls, 1);
+      assert.strictEqual(writerClassification, classification, 'writer must receive the deduplicated classifier output');
+      assert.deepEqual(classification?.matches.map((match) => match.skill), ['autopilot']);
+      assert.equal(result?.skill, 'autopilot');
+      assert.deepEqual(result?.deferred_skills ?? [], []);
+      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['autopilot']);
+      const canonical = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf8')) as { active_skills?: Array<{ skill: string }> };
+      assert.deepEqual(canonical.active_skills?.map((entry) => entry.skill), ['autopilot']);
+      assert.equal(existsSync(join(sessionDir, 'autopilot-state.json')), true);
+    });
+  });
+
+  // Notify Stop is N/A: it has no user-prompt activation transport to replay.
+
+  it('G1b-N filters disabled Team before suppressing an exact same-turn terminal Autopilot replay without changing state bytes', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-g1b-notify-terminal';
+      const threadId = 'thread-g1b-notify-terminal';
+      const turnId = 'turn-g1b-notify-terminal';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const sessionSkillPath = join(sessionDir, 'skill-active-state.json');
+      const sessionAutopilotPath = join(sessionDir, 'autopilot-state.json');
+      const rootSkillPath = join(stateDir, 'skill-active-state.json');
+      const rootAutopilotPath = join(stateDir, 'autopilot-state.json');
+      const seededPaths = [sessionSkillPath, sessionAutopilotPath, rootSkillPath, rootAutopilotPath];
+
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(sessionSkillPath, {
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        keyword: '$autopilot',
+        phase: 'completing',
+        session_id: sessionId,
+        thread_id: threadId,
+        turn_id: turnId,
+        active_skills: [{ skill: 'autopilot', phase: 'completing', active: true, session_id: sessionId, thread_id: threadId, turn_id: turnId }],
+      });
+      await writeJson(sessionAutopilotPath, {
+        mode: 'autopilot',
+        active: false,
+        current_phase: 'complete',
+        completed_at: '2026-05-31T20:24:39.005Z',
+        session_id: sessionId,
+        thread_id: threadId,
+        turn_id: turnId,
+      });
+      await writeJson(rootSkillPath, {
+        version: 1,
+        active: true,
+        skill: 'autopilot',
+        keyword: '$autopilot',
+        phase: 'completing',
+        scope: 'root-copy',
+        session_id: sessionId,
+        thread_id: threadId,
+        turn_id: turnId,
+      });
+      await writeJson(rootAutopilotPath, {
+        mode: 'autopilot',
+        active: false,
+        current_phase: 'complete',
+        completed_at: '2026-05-31T20:24:39.005Z',
+        scope: 'root-copy',
+        session_id: sessionId,
+        thread_id: threadId,
+        turn_id: turnId,
+      });
+      const bytesBefore = new Map(await Promise.all(seededPaths.map(async (path) => [path, await readFile(path)] as const)));
+
+      const previousTeamMode = process.env.OMX_TEAM_MODE;
+      process.env.OMX_TEAM_MODE = 'disabled';
+      try {
+        let classification: ReturnType<typeof classifyKeywordInput> | undefined;
+        let writerCalls = 0;
+        const result = await recordNotifySkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$team $autopilot retry',
+          sessionId,
+          threadId,
+          turnId,
+          payload: {
+            type: 'agent-turn-complete',
+            'thread-id': threadId,
+            'turn-id': turnId,
+            'last-assistant-message': 'Autopilot complete.',
+          },
+        }, {
+          classifyKeywordInput: (text) => {
+            classification = classifyKeywordInput(text);
+            return classification;
+          },
+          recordSkillActivation: async () => {
+            writerCalls += 1;
+            return null;
+          },
+        });
+
+        assert.deepEqual(classification?.matches.map((match) => match.skill), ['team', 'autopilot'], 'the source classification must retain Team before runtime filtering');
+        assert.equal(writerCalls, 0, 'disabled Team filtering must expose the same-turn terminal Autopilot replay for suppression');
+        assert.equal(result, null);
+        for (const path of seededPaths) {
+          assert.deepEqual(await readFile(path), bytesBefore.get(path), `same-turn notify replay must preserve ${path} byte-for-byte`);
+        }
+      } finally {
+        if (previousTeamMode === undefined) delete process.env.OMX_TEAM_MODE;
+        else process.env.OMX_TEAM_MODE = previousTeamMode;
+      }
+    });
+  });
+
+  it('G2a sends the exact stale predecessor prompt through the shared classification and writer boundary without state', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, 'isolated-g2a-state-root');
+      const sessionId = 'sess-g2a-stale-predecessor';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const rootSkillPath = join(stateDir, 'skill-active-state.json');
+      const sessionSkillPath = join(sessionDir, 'skill-active-state.json');
+      const rootRalplanPath = join(stateDir, 'ralplan-state.json');
+      const sessionRalplanPath = join(sessionDir, 'ralplan-state.json');
+      const text = 'use $ralplan is the consensus-planning command';
+      const textBytes = Buffer.from(text, 'utf8');
+      let classification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerText = '';
+      let writerCalls = 0;
+
+      const result = await recordNotifySkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text,
+        sessionId,
+        threadId: 'thread-g2a-stale-predecessor',
+        turnId: 'turn-g2a-stale-predecessor',
+        payload: { type: 'agent-turn-complete' },
+      }, {
+        classifyKeywordInput: (input) => {
+          classification = classifyKeywordInput(input);
+          return classification;
+        },
+        recordSkillActivation: async (input) => {
+          writerCalls += 1;
+          writerText = input.text;
+          writerClassification = input.classification;
+          return recordSkillActivation(input);
+        },
+      });
+
+      assert.equal(writerCalls, 1, 'notify must invoke the shared writer boundary once');
+      assert.strictEqual(writerClassification, classification, 'notify must pass the original classification object to the writer');
+      assert.deepEqual(Buffer.from(writerText, 'utf8'), textBytes, 'notify must pass the stale predecessor bytes unchanged');
+      assert.deepEqual(classification?.matches, [], 'the stale predecessor wording must not activate ralplan');
+      assert.equal(result, null);
+      assert.equal(existsSync(stateDir), false, 'the stale predecessor wording must not create isolated state');
+      assert.equal(existsSync(rootSkillPath), false, 'the stale predecessor wording must not create root canonical state');
+      assert.equal(existsSync(sessionSkillPath), false, 'the stale predecessor wording must not create session canonical state');
+      assert.equal(existsSync(rootRalplanPath), false, 'the stale predecessor wording must not create root ralplan detail state');
+      assert.equal(existsSync(sessionRalplanPath), false, 'the stale predecessor wording must not create session ralplan detail state');
+    });
+  });
+
+  it('G2b-N preserves five distinct terminal state files for the exact negated notify prompt without a fabricated Stop signal', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-g2b-negated-terminal';
+      const threadId = 'thread-g2b-negated-terminal';
+      const turnId = 'turn-g2b-negated-terminal';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const sessionJsonPath = join(stateDir, 'session.json');
+      const rootSkillPath = join(stateDir, 'skill-active-state.json');
+      const rootAutopilotPath = join(stateDir, 'autopilot-state.json');
+      const sessionSkillPath = join(sessionDir, 'skill-active-state.json');
+      const sessionAutopilotPath = join(sessionDir, 'autopilot-state.json');
+      const seededPaths = [sessionJsonPath, rootSkillPath, rootAutopilotPath, sessionSkillPath, sessionAutopilotPath];
+      const terminalBytes = [
+        Buffer.from(`{\n  "session_id": "${sessionId}",\n  "started_at": "2026-06-01T00:00:01.001Z",\n  "turn_id": "turn-g2b-session-pointer"\n}\n`),
+        Buffer.from(`{\n  "version": 1,\n  "active": true,\n  "skill": "autopilot",\n  "phase": "completing",\n  "updated_at": "2026-06-01T00:00:02.002Z",\n  "turn_id": "turn-g2b-root-skill"\n}\n`),
+        Buffer.from(`{\n  "mode": "autopilot",\n  "active": false,\n  "current_phase": "complete",\n  "completed_at": "2026-06-01T00:00:03.003Z",\n  "turn_id": "turn-g2b-root-detail"\n}\n`),
+        Buffer.from(`{\n  "version": 1,\n  "active": true,\n  "skill": "autopilot",\n  "phase": "completing",\n  "updated_at": "2026-06-01T00:00:04.004Z",\n  "turn_id": "turn-g2b-session-skill"\n}\n`),
+        Buffer.from(`{\n  "mode": "autopilot",\n  "active": false,\n  "current_phase": "complete",\n  "completed_at": "2026-06-01T00:00:05.005Z",\n  "turn_id": "turn-g2b-session-detail"\n}\n`),
+      ];
+
+      await mkdir(sessionDir, { recursive: true });
+      await Promise.all(seededPaths.map((path, index) => writeFile(path, terminalBytes[index]!)));
+      const text = 'do not start $autopilot — café';
+      const textBytes = Buffer.from(text, 'utf8');
+      let classification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerClassification: ReturnType<typeof classifyKeywordInput> | undefined;
+      let writerText = '';
+      let writerCalls = 0;
+
+      const result = await recordNotifySkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text,
+        sessionId,
+        threadId,
+        turnId,
+        payload: {
+          type: 'agent-turn-complete',
+          'thread-id': threadId,
+          'turn-id': turnId,
+        },
+      }, {
+        classifyKeywordInput: (input) => {
+          classification = classifyKeywordInput(input);
+          return classification;
+        },
+        recordSkillActivation: async (input) => {
+          writerCalls += 1;
+          writerText = input.text;
+          writerClassification = input.classification;
+          return recordSkillActivation(input);
+        },
+      });
+
+      assert.equal(writerCalls, 1, 'the negated notify input must reach the shared writer boundary once');
+      assert.strictEqual(writerClassification, classification, 'notify must retain classification identity for negated input');
+      assert.deepEqual(Buffer.from(writerText, 'utf8'), textBytes, 'notify must retain the exact negated input bytes');
+      assert.deepEqual(classification?.matches, [], 'the exact negated input must not restart Autopilot');
+      assert.equal(result, null);
+      for (const [index, path] of seededPaths.entries()) {
+        assert.deepEqual(await readFile(path), terminalBytes[index], `negated notify input must preserve ${path} byte-for-byte`);
+      }
+    });
+  });
+
+  it('logs injected skill activation writer failures without failing the notify hook boundary', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const sessionId = 'sess-notify-writer-failure';
+      const threadId = 'thread-notify-writer-failure';
+      const turnId = 'turn-notify-writer-failure';
+      let writerCalls = 0;
+
+      await mkdir(logsDir, { recursive: true });
+      const result = await recordNotifySkillActivationNonFatal({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$ralplan plan this change',
+        sessionId,
+        threadId,
+        turnId,
+        payload: { type: 'agent-turn-complete' },
+      }, logsDir, {
+        recordSkillActivation: async () => {
+          writerCalls += 1;
+          throw new Error(`injected writer failure ${'x'.repeat(1_000)}`);
+        },
+      });
+
+      assert.equal(result, null);
+      assert.equal(writerCalls, 1);
+      const logPath = join(logsDir, `notify-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const events = (await readFile(logPath, 'utf8')).trim().split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const failure = events.find((event) => event.type === 'notify_skill_activation_failure');
+      assert.ok(failure);
+      assert.equal(failure.level, 'warn');
+      assert.equal(failure.session_id, sessionId);
+      assert.equal(failure.thread_id, threadId);
+      assert.equal(failure.turn_id, turnId);
+      assert.match(String(failure.error), /^injected writer failure /);
+      assert.ok(String(failure.error).length <= 512);
+      assert.equal(Number.isNaN(Date.parse(String(failure.timestamp))), false);
+    });
+  });
+
   it('writes skill-active-state.json when keyword activation is detected', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
@@ -2354,7 +3049,7 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'input-messages': ['please use $autopilot for this task'],
+        'input-messages': ['$autopilot handle this task'],
         'last-assistant-message': 'Here is the plan I will follow.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
@@ -2811,12 +3506,14 @@ exit 0
         phase: 'executing',
         source: 'keyword-detector',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
       });
       await writeJson(join(sessionStateDir, 'autoresearch-state.json'), {
         active: true,
         mode: 'autoresearch',
         current_phase: 'executing',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
         validation_mode: 'mission-validator-script',
         mission_validator_command: 'node scripts/validate.js',
         completion_artifact_path: '.omx/specs/autoresearch-demo/completion.json',
@@ -2869,12 +3566,14 @@ exit 0
         phase: 'reviewing',
         source: 'keyword-detector',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
       });
       await writeJson(join(sessionStateDir, 'autoresearch-state.json'), {
         active: true,
         mode: 'autoresearch',
         current_phase: 'reviewing',
         session_id: 'sess-managed',
+        owner_codex_session_id: 'sess-managed',
         validation_mode: 'mission-validator-script',
         mission_validator_command: 'node scripts/validate.js',
         completion_artifact_path: '.omx/specs/autoresearch-demo/completion.json',

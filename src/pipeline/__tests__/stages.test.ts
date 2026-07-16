@@ -106,7 +106,10 @@ function decodeRuntimeCliInstructionPayload(instruction: string): Record<string,
 
 async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
   const trackingPath = subagentTrackingPath(cwd);
-  const now = '2026-05-28T00:00:00.000Z';
+  const architectStart = '2026-05-28T00:00:00.000Z';
+  const architectDone = '2026-05-28T00:01:00.000Z';
+  const criticStart = '2026-05-28T00:02:00.000Z';
+  const criticDone = '2026-05-28T00:03:00.000Z';
   await mkdir(dirname(trackingPath), { recursive: true });
   await writeFile(trackingPath, JSON.stringify({
     schemaVersion: 1,
@@ -114,11 +117,11 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
       [sessionId]: {
         session_id: sessionId,
         leader_thread_id: 'thread-leader',
-        updated_at: now,
+        updated_at: criticDone,
         threads: {
-          'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: now, last_seen_at: now, turn_count: 1 },
-          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
-          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+          'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: architectStart, last_seen_at: criticDone, turn_count: 1 },
+          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', role: 'architect', mode: 'architect', first_seen_at: architectStart, last_seen_at: architectDone, completed_at: architectDone, turn_count: 1 },
+          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', role: 'critic', mode: 'critic', first_seen_at: criticStart, last_seen_at: criticDone, completed_at: criticDone, turn_count: 1 },
         },
       },
     },
@@ -192,8 +195,8 @@ describe('RALPLAN Stage', () => {
           ralplanConsensusGate: {
             complete: true,
             sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
-            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1 },
+            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2 },
           },
         },
       },
@@ -216,8 +219,8 @@ describe('RALPLAN Stage', () => {
         ralplan: {
           ralplanConsensusGate: {
             complete: true,
-            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect approved' },
-            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic approved after architect' },
+            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1, summary: 'architect approved' },
+            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2, summary: 'critic approved after architect' },
           },
         },
       },
@@ -359,8 +362,8 @@ describe('RALPLAN Stage', () => {
     await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
       state: {
         handoff_artifacts: {
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2 },
         },
       },
     }));
@@ -837,8 +840,8 @@ describe('RALPLAN Stage', () => {
     assert.deepEqual(artifacts.ralplanConsensusGate, {
       complete: true,
       sequence: ['architect-review', 'critic-review'],
-      ralplan_architect_review: { agent_role: 'architect', iteration: 1, verdict: 'approve', summary: 'architect ok' },
-      ralplan_critic_review: { agent_role: 'critic', iteration: 1, verdict: 'approve', summary: 'critic ok' },
+      ralplan_architect_review: { agent_role: 'architect', iteration: 1, sequence_index: 1, verdict: 'approve', summary: 'architect ok' },
+      ralplan_critic_review: { agent_role: 'critic', iteration: 1, sequence_index: 2, verdict: 'approve', summary: 'critic ok' },
       source: 'runtime-result',
       blockedReason: null,
     });

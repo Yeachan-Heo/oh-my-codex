@@ -137,6 +137,46 @@ describe('stateCommand', () => {
     }
   });
 
+  it('reads UTF-8 BOM-prefixed structured input from --input-file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-state-input-file-bom-'));
+    const file = join(dir, 'payload.json');
+    await writeFile(file, `\uFEFF${JSON.stringify({ mode: 'ralph', all_sessions: true })}`, 'utf-8');
+    try {
+      let capturedOperation: string | undefined;
+      let capturedInput: Record<string, unknown> | undefined;
+      await stateCommand(['clear', '--input-file', file, '--json'], {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        execute: async (operation, input) => {
+          capturedOperation = operation;
+          capturedInput = input;
+          return { payload: { cleared: true } };
+        },
+      });
+      assert.equal(capturedOperation, 'state_clear');
+      assert.deepEqual(capturedInput, { mode: 'ralph', all_sessions: true });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('strips only one leading BOM from --input-file JSON', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-state-input-file-double-bom-'));
+    const file = join(dir, 'payload.json');
+    await writeFile(file, '\uFEFF\uFEFF{"mode":"ralph"}', 'utf-8');
+    try {
+      await assert.rejects(
+        stateCommand(['read', '--input-file', file], {
+          stdout: () => undefined,
+          stderr: () => undefined,
+        }),
+        /valid JSON/i,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects an unreadable --input-file path', async () => {
     await assert.rejects(
       stateCommand(['read', '--input-file', join(tmpdir(), 'omx-state-missing-does-not-exist.json')], {

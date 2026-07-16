@@ -4728,3 +4728,18 @@ setInterval(() => {}, 1000);
   });
 
 });
+
+describe('notify fallback delivery protocol wiring', () => {
+  it('routes rollout completions through durable delivery authority before spawning', async () => {
+    const source = await readFile(new URL('../../scripts/notify-fallback-watcher.js', import.meta.url), 'utf-8');
+    assert.match(source, /deliverNotifyFallback\(/);
+    assert.match(source, /fallback_notify_claim/);
+    assert.match(source, /authorityDeadlineAtMs/);
+    assert.match(source, /setTimeout\(\(\) => \{ void stopForTimeout\(false\); \}, 10_000\)/);
+    assert.match(source, /compactNotifyFallbackDeliveries\(stateDir\)/);
+    assert.doesNotMatch(source, /spawnSync\(process\.execPath, \[notifyScript/);
+    assert.match(source, /spawn\(process\.execPath, \[notifyScript/);
+    assert.match(source, /SIGTERM/);
+    assert.match(source, /SIGKILL/);
+  });
+});

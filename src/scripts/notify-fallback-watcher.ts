@@ -2,7 +2,7 @@
 
 import { existsSync } from 'fs';
 import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises';
-import { spawnSync } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { StringDecoder } from 'string_decoder';
@@ -39,6 +39,7 @@ import { sameFilePath } from '../utils/paths.js';
 import { validateSessionId } from '../mcp/state-paths.js';
 import { TEAM_NAME_SAFE_PATTERN } from '../team/contracts.js';
 import { shouldContinueRun } from '../runtime/run-loop.js';
+import { deliverNotifyFallback, compactNotifyFallbackDeliveries, NOTIFY_FALLBACK_LEASE_MS } from './notify-fallback-delivery.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -132,15 +133,18 @@ const parentPid = Math.trunc(asNumber(argValue('--parent-pid', String(process.pp
 const startedAt = Date.now();
 const fileWindowMs = runOnce ? 15000 : 30000;
 const defaultMaxLifetimeMs = 6 * 60 * 60 * 1000;
-const maxLifetimeMs = runOnce
-  ? 0
-  : Math.max(
-    pollMs,
-    asNumber(
-      argValue('--max-lifetime-ms', process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS || String(defaultMaxLifetimeMs)),
-      defaultMaxLifetimeMs
-    )
-  );
+const requestedMaxLifetimeMs = asNumber(
+  argValue('--max-lifetime-ms', process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS || String(defaultMaxLifetimeMs)),
+  defaultMaxLifetimeMs,
+);
+const configuredMaxLifetimeMs = Number.isSafeInteger(requestedMaxLifetimeMs) && requestedMaxLifetimeMs > 0
+  ? requestedMaxLifetimeMs
+  : defaultMaxLifetimeMs;
+const maxLifetimeMs = runOnce ? 0 : Math.max(pollMs, configuredMaxLifetimeMs);
+const authorityLifetimeMs = runOnce
+  ? NOTIFY_FALLBACK_LEASE_MS
+  : Math.min(Math.max(pollMs, configuredMaxLifetimeMs), 24 * 60 * 60 * 1000);
+const authorityDeadlineAtMs = startedAt + authorityLifetimeMs;
 
 const runtimeRoot = resolve(process.env.OMX_ROOT || process.env.OMX_STATE_ROOT || cwd);
 const omxDir = join(runtimeRoot, '.omx');
@@ -284,6 +288,28 @@ const fileState = new Map<string, WatcherFileMeta>();
 const seenTurnKeys = new Set<string>();
 let stopping = false;
 let shutdownPromise: Promise<void> | null = null;
+let activeNotifyHookChild: ChildProcess | null = null;
+let activeNotifyHookClose: Promise<{ status: number | null; signal: string | null }> | null = null;
+let activeNotifyHookTermination: Promise<boolean> | null = null;
+let activeDeliveryPromise: Promise<unknown> | null = null;
+async function terminateActiveNotifyHookChild(): Promise<boolean> {
+  if (activeNotifyHookTermination) return activeNotifyHookTermination;
+  const child = activeNotifyHookChild;
+  const close = activeNotifyHookClose;
+  if (!child || !close) return true;
+  activeNotifyHookTermination = (async () => {
+    child.kill('SIGTERM');
+    const termResult = await Promise.race([close.then(() => true), sleep(1_000).then(() => false)]);
+    if (termResult) return true;
+    child.kill('SIGKILL');
+    return Promise.race([close.then(() => true), sleep(2_000).then(() => false)]);
+  })();
+  try {
+    return await activeNotifyHookTermination;
+  } finally {
+    activeNotifyHookTermination = null;
+  }
+}
 const dispatchTickMax = Math.max(1, asNumber(argValue('--dispatch-max-per-tick', '5'), 5));
 let dispatchDrainRuns = 0;
 let lastDispatchDrain: DispatchDrainState = {
@@ -1485,6 +1511,8 @@ async function requestShutdown(reason: string, signal: string | null = null): Pr
   if (shutdownPromise) return shutdownPromise;
   stopping = true;
   shutdownPromise = (async () => {
+    await terminateActiveNotifyHookChild();
+    await activeDeliveryPromise?.catch(() => undefined);
     await writeState({ stop_reason: reason, stop_signal: signal, stopping: true });
     await eventLog({
       type: 'watcher_stop',
@@ -1633,10 +1661,13 @@ function turnKey(threadId: string, turnId: string): string {
   return `${threadId || 'no-thread'}|${turnId || 'no-turn'}`;
 }
 
-function buildNotifyPayload(threadId: string, turnId: string, lastMessage: string): Record<string, unknown> {
+async function buildNotifyPayload(threadId: string, turnId: string, lastMessage: string): Promise<Record<string, unknown>> {
+  const session = await readSessionState(cwd).catch(() => null);
+  const payloadSessionId = normalizeValidSessionId(session?.session_id) || threadId;
   return {
     type: 'agent-turn-complete',
     cwd,
+    session_id: payloadSessionId,
     'thread-id': threadId,
     'turn-id': turnId,
     'input-messages': ['[notify-fallback] synthesized from rollout task_complete'],
@@ -1645,25 +1676,48 @@ function buildNotifyPayload(threadId: string, turnId: string, lastMessage: strin
   };
 }
 
-async function invokeNotifyHook(payload: Record<string, unknown>, filePath: string): Promise<void> {
-  const result = spawnSync(process.execPath, [notifyScript, JSON.stringify(payload)], {
-    cwd,
-    encoding: 'utf-8',
-    env: {
-      ...process.env,
-      OMX_NOTIFY_HOOK_TRUSTED_MANAGED_CWD: cwd,
-    },
-    windowsHide: true,
-  });
-  const ok = result.status === 0;
-  await eventLog({
-    type: 'fallback_notify',
-    ok,
-    thread_id: (payload as Record<string, string>)['thread-id'],
-    turn_id: (payload as Record<string, string>)['turn-id'],
-    file: filePath,
-    reason: ok ? 'sent' : 'notify_hook_failed',
-    error: ok ? undefined : (result.stderr || result.stdout || '').trim().slice(0, 240),
+async function invokeNotifyHook(payload: Record<string, unknown>): Promise<{ spawned: boolean; childPid?: number; status?: number | null; signal?: string | null; error?: unknown; timedOut?: boolean; authorityDeadline?: boolean; terminationUnconfirmed?: boolean }> {
+  return new Promise((resolveInvoke) => {
+    let settled = false;
+    let spawned = false;
+    let timedOut = false;
+    let deadlineTimedOut = false;
+    const child = spawn(process.execPath, [notifyScript, JSON.stringify(payload)], {
+      cwd,
+      stdio: 'ignore',
+      env: { ...process.env, OMX_NOTIFY_HOOK_TRUSTED_MANAGED_CWD: cwd },
+      windowsHide: true,
+    });
+    const close = new Promise<{ status: number | null; signal: string | null }>((resolveClose) => {
+      child.once('close', (status, signal) => resolveClose({ status, signal }));
+    });
+    activeNotifyHookChild = child;
+    activeNotifyHookClose = close;
+    const finish = (result: { spawned: boolean; childPid?: number; status?: number | null; signal?: string | null; error?: unknown; timedOut?: boolean; authorityDeadline?: boolean; terminationUnconfirmed?: boolean }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hookTimeout);
+      clearTimeout(deadlineTimeout);
+      if (activeNotifyHookChild === child) {
+        activeNotifyHookChild = null;
+        activeNotifyHookClose = null;
+        activeNotifyHookTermination = null;
+      }
+      resolveInvoke(result);
+    };
+    const stopForTimeout = async (isDeadline: boolean) => {
+      if (settled) return;
+      if (isDeadline) deadlineTimedOut = true;
+      else timedOut = true;
+      const confirmed = await terminateActiveNotifyHookChild();
+      const closed = await Promise.race([close, sleep(2_000).then(() => null)]);
+      finish({ spawned: true, childPid: child.pid, status: closed?.status ?? null, signal: closed?.signal ?? null, timedOut, authorityDeadline: deadlineTimedOut, terminationUnconfirmed: !confirmed || closed === null, error: isDeadline ? new Error('authority_deadline') : new Error('hook_timeout') });
+    };
+    const hookTimeout = setTimeout(() => { void stopForTimeout(false); }, 10_000);
+    const deadlineTimeout = setTimeout(() => { void stopForTimeout(true); }, Math.max(0, authorityDeadlineAtMs - Date.now()));
+    child.once('error', (error) => finish({ spawned, childPid: child.pid, error }));
+    child.once('spawn', () => { spawned = true; });
+    void close.then(({ status, signal }) => finish({ spawned, childPid: child.pid, status, signal }));
   });
 }
 
@@ -1677,23 +1731,58 @@ async function processLine(meta: WatcherFileMeta, line: string, filePath: string
 
   if (!parsed || parsed.type !== 'event_msg' || !parsed.payload) return;
   if ((parsed.payload as Record<string, unknown>).type !== 'task_complete') return;
-
   const turnId = safeString((parsed.payload as Record<string, unknown>).turn_id);
-  if (!turnId) return;
-
   const evtTs = Date.parse(safeString(parsed.timestamp));
-  if (Number.isFinite(evtTs) && evtTs < startedAt - 3000) return;
-
   const key = turnKey(meta.threadId, turnId);
+  if (!turnId || !Number.isFinite(evtTs) || evtTs > Date.now() + 5 * 60 * 1000 || evtTs < startedAt - 3000) {
+    seenTurnKeys.add(key);
+    return;
+  }
   if (seenTurnKeys.has(key)) return;
-  seenTurnKeys.add(key);
-
-  const payload = buildNotifyPayload(
+  const payload = await buildNotifyPayload(
     meta.threadId,
     turnId,
-    safeString((parsed.payload as Record<string, unknown>).last_agent_message)
+    safeString((parsed.payload as Record<string, unknown>).last_agent_message),
   );
-  await invokeNotifyHook(payload, filePath);
+  let spawnResult: Awaited<ReturnType<typeof invokeNotifyHook>> | undefined;
+  const deliveryPromise = deliverNotifyFallback({
+    stateDir,
+    threadId: meta.threadId,
+    turnId,
+    eventTimestampMs: evtTs,
+    rolloutPath: filePath,
+    watcherMode: runOnce ? 'once' : 'persistent',
+    deadlineAtMs: authorityDeadlineAtMs,
+    stopping: () => stopping,
+    spawnHook: async () => {
+      spawnResult = await invokeNotifyHook(payload);
+      return spawnResult;
+    },
+  });
+  activeDeliveryPromise = deliveryPromise;
+  const result = await deliveryPromise.finally(() => {
+    if (activeDeliveryPromise === deliveryPromise) activeDeliveryPromise = null;
+  });
+  if (result.kind === 'retry_eligible' && !stopping && Date.now() + 250 < authorityDeadlineAtMs) {
+    await sleep(250);
+    await processLine(meta, line, filePath);
+    return;
+  }
+  seenTurnKeys.add(key);
+  if (result.kind !== 'acquired_effect') {
+    await eventLog({ type: 'fallback_notify_claim', thread_id: meta.threadId, turn_id: turnId, file: filePath, reason: 'reason' in result ? result.reason : result.kind, attempt: 'attempt' in result ? result.attempt : undefined });
+  }
+  if (spawnResult?.spawned) {
+    await eventLog({
+      type: 'fallback_notify',
+      ok: spawnResult.status === 0,
+      thread_id: meta.threadId,
+      turn_id: turnId,
+      file: filePath,
+      reason: spawnResult.status === 0 ? 'sent' : 'notify_hook_failed',
+      error: spawnResult.status === 0 ? undefined : String(spawnResult.error || '').slice(0, 240),
+    });
+  }
 }
 
 async function ensureTrackedFiles(): Promise<void> {
@@ -1916,6 +2005,9 @@ async function pumpTeamControlPlaneTick(): Promise<CycleActivitySummary> {
 
 
 async function runWatcherCycle(): Promise<number> {
+  await compactNotifyFallbackDeliveries(stateDir).catch(async (error) => {
+    await eventLog({ type: 'fallback_notify_claim', reason: 'compaction_io_skip', error: error instanceof Error ? error.message : String(error) });
+  });
   let processedRolloutCount = 0;
   if (authorityOnly) {
     const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
