@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -69,6 +69,101 @@ const WGET_IMPLICIT_BODY_COMMANDS = [
   ["wget-end-of-options-spider-operand", "wget -- --spider https://example.test/file"],
   ["wget-short-option-argument-smuggling", "wget -U --spider https://example.test/file"],
   ["wget-long-option-argument-smuggling", "wget --user-agent --spider https://example.test/file"],
+  ["xargs-wget-short-stdout-body-override", `printf '%s\n' '--output-document=src/xargs-wget-owned.ts' 'https://example.test/file' | xargs wget -O -`],
+  ["xargs-wget-long-stdout-body-override", `printf '%s\n' '--output-document=src/xargs-wget-owned.ts' 'https://example.test/file' | xargs wget --output-document=-`],
+  ["xargs-wget-stdout-log-injection", `printf '%s\n' '--output-file=src/xargs-wget.log' 'https://example.test/file' | xargs wget -O -`],
+  ["dynamic-wget-stdout-body-override", `WGET_OPT=--output-document=src/dynamic-wget-owned.ts; wget -O - $WGET_OPT https://example.test/file`],
+  ["dynamic-wget-stdout-log-injection", `WGET_OPT=--output-file=src/dynamic-wget.log; wget -O - $WGET_OPT https://example.test/file`],
+  ["posix-wget-option-ordering", `POSIXLY_CORRECT=1 wget -O src/posix-wget-owned.ts https://example.test/file -O -`],
+  ["posix-wget-append-assignment", `POSIXLY_CORRECT+=1 wget --no-config -O src/plus-prefix-owned.ts https://example.test/file -O -`],
+  ["export-posix-wget-append-assignment", `export POSIXLY_CORRECT+=1; wget --no-config -O src/plus-export-owned.ts https://example.test/file -O -`],
+  ["declare-posix-wget-append-assignment", `declare -x POSIXLY_CORRECT+=1; wget --no-config -O src/plus-declare-owned.ts https://example.test/file -O -`],
+  ["function-posix-wget-append-assignment", `f(){ export POSIXLY_CORRECT+=1; }; f; wget --no-config -O src/plus-function-owned.ts https://example.test/file -O -`],
+  ["wrapper-posix-wget-append-assignment", `command env POSIXLY_CORRECT+=1 wget --no-config -O src/plus-wrapper-owned.ts https://example.test/file -O -`],
+  ["quoted-posix-wget-append-assignment", `export "POSIXLY_CORRECT+=1"; wget --no-config -O src/plus-quoted-owned.ts https://example.test/file -O -`],
+  ["function-local-posix-wget-append-assignment", `f(){ local -x POSIXLY_CORRECT+=1; wget --no-config -O src/plus-local-owned.ts https://example.test/file -O -; }; f`],
+  ["unset-posix-then-append-wget", `export POSIXLY_CORRECT=1; unset POSIXLY_CORRECT; export POSIXLY_CORRECT+=1; wget --no-config -O src/unset-append-owned.ts https://example.test/file -O -`],
+  ["braced-wget-stdout-body-override", `WGET_OPT=--output-document=src/braced-wget-owned.ts; wget -O - \${WGET_OPT} https://example.test/file`],
+  ["command-substitution-wget-log-injection", `wget -O - $(printf '%s' '--output-file=src/substitution-wget.log') https://example.test/file`],
+  ["exported-posix-wget-ordering", `export POSIXLY_CORRECT=1; wget -O src/exported-posix-owned.ts https://example.test/file -O -`],
+  ["nested-posix-wget-ordering", `POSIXLY_CORRECT=1 sh -c 'wget -O src/nested-posix-owned.ts https://example.test/file -O -'`],
+  ["quote-concatenated-posix-wget-ordering", `export POSIXLY_''CORRECT=1; wget -O src/quoted-posix-owned.ts https://example.test/file -O -`],
+  ["escaped-posix-wget-ordering", `export POSIXLY_\\CORRECT=1; wget -O src/escaped-posix-owned.ts https://example.test/file -O -`],
+  ["ansi-c-posix-wget-ordering", `export $'POSIXLY_CORRECT'=1; wget -O src/ansi-posix-owned.ts https://example.test/file -O -`],
+  ["dynamic-name-posix-wget-ordering", `POSIX_NAME=POSIXLY_CORRECT; export "$POSIX_NAME=1"; wget -O src/dynamic-posix-owned.ts https://example.test/file -O -`],
+  ["split-dynamic-name-posix-wget-ordering", `A=POSIXLY; B=_CORRECT; export "$A$B=1"; wget -O src/split-dynamic-posix-owned.ts https://example.test/file -O -`],
+  ["command-export-posix-wget-ordering", `command export POSIXLY_CORRECT=1; wget -O src/command-export-posix-owned.ts https://example.test/file -O -`],
+  ["command-env-posix-wget-ordering", `command env POSIXLY_CORRECT=1 wget -O src/command-env-posix-owned.ts https://example.test/file -O -`],
+  ["command-double-dash-export-posix-wget-ordering", `command -- export POSIXLY_CORRECT=1; wget -O src/command-dash-posix-owned.ts https://example.test/file -O -`],
+  ["compound-dynamic-export-posix-wget-ordering", `N=POSIXLY_CORRECT; if export "$N=1"; then wget -O src/compound-posix-owned.ts https://example.test/file -O -; fi`],
+  ["time-env-posix-wget-ordering", `time env POSIXLY_CORRECT=1 wget -O src/time-posix-owned.ts https://example.test/file -O -`],
+  ["function-export-posix-wget-ordering", `f(){ export POSIXLY_CORRECT=1; }; f; wget -O src/function-posix-owned.ts https://example.test/file -O -`],
+  ["function-dynamic-export-posix-wget-ordering", `f(){ N=POSIXLY_CORRECT; export "$N=1"; }; f; wget -O src/function-dynamic-posix-owned.ts https://example.test/file -O -`],
+  ["function-local-export-posix-wget-ordering", `f(){ local -x POSIXLY_CORRECT=1; wget -O src/local-posix-owned.ts https://example.test/file -O -; }; f`],
+  ["function-local-dynamic-export-posix-wget-ordering", `f(){ N=POSIXLY_CORRECT; local -x "$N=1"; wget -O src/local-dynamic-posix-owned.ts https://example.test/file -O -; }; f`],
+  ["case-arm-function-wget", `f(){ wget https://example.test/file; }; case true in true) f;; esac`],
+  ["multi-case-arm-function-wget", `f(){ wget https://example.test/file; }; case x in a) true;; x) f;; esac`],
+  ["direct-case-arm-wget-log", `case true in true) wget --no-config -o src/case-wget.log -O - http://127.0.0.1:1/;; esac`],
+  ["direct-case-arm-mutator", `case true in true) touch src/case-mutator.ts;; esac`],
+  ["pre-redefinition-posix-wget", `f(){ export POSIXLY_CORRECT=1; }; f; f(){ :; }; wget --no-config -O src/redefined-posix-owned.ts https://example.test/file -O -`],
+  ["nested-shadowed-builtin-posix-wget", `echo(){ export POSIXLY_CORRECT=1; }; f(){ echo; }; f; wget --no-config -O src/nested-posix-owned.ts https://example.test/file -O -`],
+  ["deep-nested-shadowed-builtin-posix-wget", `echo(){ export POSIXLY_CORRECT=1; }; f(){ g(){ echo; }; g; }; f; wget --no-config -O src/deep-nested-posix-owned.ts https://example.test/file -O -`],
+  ["case-pattern-alternation-posix-wget", `f(){ export POSIXLY_CORRECT=1; }; case true in true|false) f;; esac; wget --no-config -O src/case-posix-owned.ts https://example.test/file -O -`],
+  ["env-chdir-wget-log", `env -C src wget --no-config -o .omx/state/env-c.log -O - http://127.0.0.1:1/`],
+  ["wgetrc-logfile-write", `printf '%s\n' 'logfile = src/wgetrc.log' | WGETRC=/dev/stdin wget -O - http://127.0.0.1:1/`],
+  ["wgetrc-output-document-write", `printf '%s\n' 'output_document = src/wgetrc-output.ts' | WGETRC=/dev/stdin wget -O - http://127.0.0.1:1/`],
+  ["wgetrc-directory-prefix-write", `printf '%s\n' 'dir_prefix = src/wgetrc-directory' | WGETRC=/dev/stdin wget -O - http://127.0.0.1:1/`],
+  ["command-wrapper-function-shadow", `touch(){ :; }; command touch src/wrapped-shadow-owned.ts`],
+  ["short-circuit-posix-unset", `export POSIXLY_CORRECT=1; false && unset POSIXLY_CORRECT; wget --no-config -O src/short-circuit-owned.ts http://127.0.0.1:1/ -O -`],
+  ["conditional-function-rebind", `f(){ export POSIXLY_CORRECT=1; }; if false; then f(){ :; }; fi; f; wget --no-config -O src/conditional-rebind-owned.ts http://127.0.0.1:1/ -O -`],
+  ["readonly-posix-unset", `export POSIXLY_CORRECT=1; readonly POSIXLY_CORRECT; unset POSIXLY_CORRECT; wget --no-config -O src/readonly-unset-owned.ts http://127.0.0.1:1/ -O -`],
+  ["prefix-posix-function", `f(){ wget --no-config -O src/prefix-function-owned.ts http://127.0.0.1:1/ -O -; }; POSIXLY_CORRECT=1 f`],
+  ["prefix-posix-append-function", `f(){ wget --no-config -O src/prefix-append-function-owned.ts http://127.0.0.1:1/ -O -; }; POSIXLY_CORRECT+=1 f`],
+  ["declare-global-posix", `f(){ declare -gx POSIXLY_CORRECT=1; }; f; wget --no-config -O src/declare-global-owned.ts http://127.0.0.1:1/ -O -`],
+  ["export-before-local-posix", `f(){ export POSIXLY_CORRECT=1; local POSIXLY_CORRECT=1; }; f; wget --no-config -O src/export-before-local-owned.ts http://127.0.0.1:1/ -O -`],
+  ["process-substitution-current-shell", `f(){ export POSIXLY_CORRECT=1; }; f <(true); wget --no-config -O src/process-substitution-owned.ts http://127.0.0.1:1/ -O -`],
+  ["coproc-ordinary-argument", `f(){ export POSIXLY_CORRECT=1; }; f coproc; wget --no-config -O src/coproc-argument-owned.ts http://127.0.0.1:1/ -O -`],
+  ["subshell-function-rebind", `g(){ export POSIXLY_CORRECT=1; }; f(){ g(){ :; }; }; ( f ); g; wget --no-config -O src/subshell-rebind-owned.ts http://127.0.0.1:1/ -O -`],
+  ["background-function-rebind", `g(){ export POSIXLY_CORRECT=1; }; f(){ g(){ :; }; }; f & wait; g; wget --no-config -O src/background-rebind-owned.ts http://127.0.0.1:1/ -O -`],
+  ["pipeline-function-rebind", `g(){ export POSIXLY_CORRECT=1; }; f(){ g(){ :; }; }; f | cat; g; wget --no-config -O src/pipeline-rebind-owned.ts http://127.0.0.1:1/ -O -`],
+  ["coproc-function-rebind", `g(){ export POSIXLY_CORRECT=1; }; f(){ g(){ :; }; }; coproc f; wait; g; wget --no-config -O src/coproc-rebind-owned.ts http://127.0.0.1:1/ -O -`],
+  ["later-case-pattern-posix", `f(){ export POSIXLY_CORRECT=1; }; case true in false) :;; true|false) f;; esac; wget --no-config -o src/later-case.log http://127.0.0.1:1/ -o .omx/state/final.log -O -`],
+  ["optional-case-pattern-posix", `f(){ export POSIXLY_CORRECT=1; }; case true in (true) f;; esac; wget --no-config -O src/optional-case-owned.ts http://127.0.0.1:1/ -O -`],
+  ["nested-case-pattern-posix", `f(){ export POSIXLY_CORRECT=1; }; case true in false) case true in true) :;; esac;; true|false) f;; esac; wget --no-config -O src/nested-case-owned.ts http://127.0.0.1:1/ -O -`],
+  ["env-chdir-curl", `env -C src curl -q -o .omx/state/curl-owned.log http://127.0.0.1:1/`],
+  ["env-chdir-mutator", `env -C src mkdir -p .omx/state/cwd-owned`],
+  ["env-long-chdir-mutator", `env --chdir=src touch .omx/state/env-touch-owned`],
+  ["persistent-wgetrc-config", `export WGETRC=/dev/stdin; printf '%s\n' 'logfile = src/persistent-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["nested-posix-shell-environment", `POSIXLY_CORRECT=1 sh -c 'wget --no-config -o src/nested-posix.log http://127.0.0.1:1/ -o .omx/state/final.log -O -'`],
+  ["lastpipe-posix", `bash -O lastpipe -c 'f(){ export POSIXLY_CORRECT=1; }; true | f; wget --no-config -o src/lastpipe.log http://127.0.0.1:1/ -o .omx/state/final.log -O -'`],
+  ["subshell-definition-scope", `f(){ export POSIXLY_CORRECT=1; }; ( :; f(){ :; }; ); f; wget --no-config -o src/redefinition-scope.log http://127.0.0.1:1/ -o .omx/state/final.log -O -`],
+  ["shadowed-env-function", `env(){ export POSIXLY_CORRECT=1; }; env; wget --no-config -o src/shadow-env.log http://127.0.0.1:1/ -o .omx/state/final.log -O -`],
+  ["command-suppressed-shadow", `export POSIXLY_CORRECT=1; echo(){ unset POSIXLY_CORRECT; }; command echo safe; wget --no-config -o src/command-shadow.log http://127.0.0.1:1/ -o .omx/state/final.log -O -`],
+  ["assignment-shaped-wget-operand", `POSIXLY_CORRECT=1 wget --no-config -o src/assignment-operand.log NAME=value -o .omx/state/final.log -O -`],
+  ["wrapped-xargs-wget", `printf '%s\n' '--output-file=src/wrapped-xargs.log' 'http://127.0.0.1:1/' | env xargs wget --no-config -O -`],
+  ["wrapped-xargs-empty-eof-mutator", `printf '%s\n' src/wrapped-xargs-owned.ts | env xargs -E '' touch .omx/state/anchor`],
+  ["nested-chdir-shell", `env --chdir=src sh -c 'touch .omx/state/env-nested-owned'`],
+  ["case-branch-posix-unset", `case true in true) export POSIXLY_CORRECT=1;; false) unset POSIXLY_CORRECT;; esac; wget --no-config -O src/case-branch-owned.ts http://127.0.0.1:1/ -O -`],
+  ["subshell-direct-posix-unset", `export POSIXLY_CORRECT=1; ( unset POSIXLY_CORRECT ); wget --no-config -o src/subshell-unset.log http://127.0.0.1:1/ -o .omx/state/final.log -O -`],
+  ["env-long-chdir-wget", `env --chdir=src wget --no-config -o .omx/state/env-long-wget.log -O - http://127.0.0.1:1/`],
+  ["env-long-chdir-curl", `env --chdir=src curl -q -o .omx/state/env-long-curl.log http://127.0.0.1:1/`],
+  ["posix-no-config-after-operand", `POSIXLY_CORRECT=1 wget --spider https://example.test/file --no-config`],
+  ["posix-no-hsts-after-operand", `HOME=src POSIXLY_CORRECT=1 wget --no-config --spider https://example.test/file --no-hsts`],
+  ["bare-bash-login-shell", `bash -lc "printf safe"`],
+
+
+  ["wget-stdout-short-directory-prefix", `wget -O - -P src https://example.test/file`],
+  ["wget-stdout-long-directory-prefix", `wget --output-document=- --directory-prefix=src https://example.test/file`],
+  ["wget-stdout-short-log-target", `wget -O - -o src/wget-stdout.log https://example.test/file`],
+  ["wget-stdout-long-log-target", `wget --output-document=- --output-file=src/wget-stdout.log https://example.test/file`],
+  ["wget-repeated-output-last-file", `wget -O - https://example.test/file -O src/wget-last-output.ts`],
+  ["wget-repeated-log-last-file", `wget -o .omx/state/ignored.log -o src/wget-final.log -O - https://example.test/file`],
+  ["wget-repeated-directory-last-file", `wget -P .omx/state -P src https://example.test/file`],
+  ["wget-repeated-long-directory-last-file", `wget --directory-prefix=.omx/state --directory-prefix=src https://example.test/file`],
+
+
+
+
 ] as const;
 
 const XARGS_FAIL_CLOSED_OPTION_COMMANDS = [
@@ -77,17 +172,541 @@ const XARGS_FAIL_CLOSED_OPTION_COMMANDS = [
   ["xargs-eof-no-value-mutator", `printf '%s\n' src/victim.ts | xargs --eof rm`],
   ["xargs-replace-no-value-mutator", `printf '%s\n' src/victim.ts | xargs --replace rm {}`],
   ["xargs-max-lines-no-value-wget", `printf '%s\n' 'https://example.test/file' | xargs --max-lines wget true`],
+  ["xargs-single-quoted-empty-eof-mutator", `printf '%s\n' src/xargs-owned.ts | xargs -E '' touch true`],
+  ["xargs-double-quoted-empty-eof-mutator", `printf '%s\n' src/xargs-owned.ts | xargs -E "" touch true`],
+] as const;
+
+const ARGUMENT_PRODUCING_RUNTIME_DENIAL_COMMANDS = [
+  ["node-xargs-wrapper-read", `printf x | xargs node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
 ] as const;
 
 const WGET_REVIEW_MUTATION_COMMANDS = [
   ...WGET_IMPLICIT_BODY_COMMANDS,
   ...XARGS_WGET_REQUIRED_ARGUMENT_COMMANDS,
   ...XARGS_FAIL_CLOSED_OPTION_COMMANDS,
+  ["wget-dot-slash-dash-is-a-file-target", "wget --no-config --no-hsts -O ./- https://example.test/file"],
+  ["subshell-sequence-posix-wget", `( export POSIXLY_CORRECT=1; wget --no-config -O src/subshell-sequence-owned.ts http://127.0.0.1:1/ -O - )`],
+  ["conditional-unbound-touch", `if false; then :; touch(){ :; }; fi; touch src/conditional-binding-owned.ts`],
+  ["reassigned-exported-wgetrc", `export WGETRC=/dev/null; WGETRC=/dev/stdin; printf '%s\n' 'logfile = src/reassigned-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["function-local-wgetrc-restoration", `export WGETRC=/dev/stdin; f(){ local -x WGETRC=/dev/null; export POSIXLY_CORRECT=1; }; f; printf '%s\n' 'logfile = src/function-scope-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["short-circuit-wgetrc", `export WGETRC=/dev/stdin; false && export WGETRC=/dev/null; printf '%s\n' 'logfile = src/short-circuit-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["short-circuit-function-rebind", `f(){ export POSIXLY_CORRECT=1; }; false && f(){ :; }; f; wget --no-config -O src/short-rebind-owned.ts http://127.0.0.1:1/ -O -`],
+  ["case-arm-pipeline-touch", `case x in x) : | touch src/case-pipeline-owned.ts;; esac`],
+  ["case-pipeline-function-rebind", `g(){ export POSIXLY_CORRECT=1; }; f(){ g(){ :; }; }; case true in true) f | cat;; esac; g; wget --no-config -O src/case-pipeline-rebind-owned.ts http://127.0.0.1:1/ -O -`],
+  ["process-substitution-wgetrc-state", `export WGETRC=/dev/stdin; : <(export WGETRC=/dev/null); printf '%s\n' 'logfile = src/process-sub-state.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["background-group-wgetrc-state", `export WGETRC=/dev/stdin; { export WGETRC=/dev/null; } & wait; printf '%s\n' 'logfile = src/background-group.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["readonly-wgetrc-unset", `export WGETRC=/dev/stdin; readonly WGETRC; unset WGETRC; printf '%s\n' 'logfile = src/readonly-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["unset-function-mode-wgetrc", `export WGETRC=/dev/stdin; unset -f WGETRC; printf '%s\n' 'logfile = src/unset-mode-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["quoted-empty-wget-operand", `env -u POSIXLY_CORRECT wget --no-config -O - '' -o src/quoted-empty.log http://127.0.0.1:1/`],
+  ["assignment-shaped-mutator-argv", `env -C src touch ../.omx/state/final.log OWNED=value`],
+  ["comment-function-binding", `true # ; touch(){ :; }\ntouch src/comment-binding-owned.ts`],
+  ["skipped-if-wgetrc", `export WGETRC=/dev/stdin; if false; then export WGETRC=/dev/null; fi; printf '%s\n' 'logfile = src/skipped-if-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["mutually-exclusive-case-home", `export HOME=/dev/stdin; case true in true) export HOME=/dev/null;; false) :;; esac; wget -O - http://127.0.0.1:1/`],
+  ["dangling-symlink-touch", `touch .omx/state/inbox/dangling`],
+  ["dangling-symlink-wget-output", `wget --no-config --no-hsts -P .omx/state/inbox https://example.test/dangling`],
+  ["synchronous-brace-posix", `f(){ export POSIXLY_CORRECT=1; }; { f; }; WGETRC=/dev/null wget -O src/synchronous-brace-owned.ts https://example.test/file -O -`],
+  ["nested-isolation-parent-state", `( export POSIXLY_CORRECT=1; ( wget --no-config -O src/nested-region-owned.ts http://127.0.0.1:1/ -O - ) )`],
+  ["function-alternative-state-join", `f(){ export WGETRC=/dev/stdin; }; if false; then f(){ export WGETRC=/dev/null; }; fi; f; printf '%s\n' 'logfile = src/function-alt-join.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["function-binding-alternative-join", `g(){ :; }; f(){ g(){ export POSIXLY_CORRECT=1; }; }; if false; then f(){ :; }; fi; f; g; wget --no-config -O src/function-binding-join-owned.ts http://127.0.0.1:1/ -O -`],
+  ["conditional-wrapper-unbound", `if false; then :; env(){ :; }; fi; env touch src/conditional-env-owned.ts`],
+  ["shadowed-false-status", `false(){ :; }; false && export POSIXLY_CORRECT=1; wget --no-config -O src/shadow-false-owned.ts http://127.0.0.1:1/ -O -`],
+  ["path-conditional-readonly", `export WGETRC=/dev/null; if false; then readonly WGETRC; fi; WGETRC=/dev/stdin; printf '%s\n' 'logfile = src/maybe-readonly-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["readonly-function-mode", `export WGETRC=/dev/null; readonly -f WGETRC; WGETRC=/dev/stdin; printf '%s\n' 'logfile = src/readonly-function-mode.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["local-inherit-wgetrc", `export WGETRC=/dev/stdin; f(){ local -I WGETRC; printf '%s\n' 'logfile = src/local-inherit-wgetrc.log' | HOME=/dev/null wget -O - http://127.0.0.1/; }; f`],
+  ["case-fallthrough-touch", `case x in x) : ;& true) touch src/case-fallthrough-owned.ts;; esac`],
+  ["case-reserved-word-touch", `case case in case) touch src/case-reserved-word-owned.ts;; esac`],
+  ["parameter-length-comment-touch", `: \${#x}; touch src/parameter-length-comment-owned.ts`],
+  ["touch-mode-arity", `touch .omx/state/final.log -m src/touch-option-owned.ts`],
+  ["nested-export-posix", `export POSIXLY_CORRECT=1; sh -c 'wget --no-config -O src/nested-export-owned.ts http://127.0.0.1:1/ -O -'`],
+  ["process-substitution-inherited-posix", `export POSIXLY_CORRECT=1; cat <(wget --no-config -O src/process-inherited-owned.ts http://127.0.0.1:1/ -O -)`],
+  ["bashopts-lastpipe", `env BASHOPTS=lastpipe bash -c 'f(){ export POSIXLY_CORRECT=1; }; true | f; wget --no-config -O src/bashopts-lastpipe-owned.ts http://127.0.0.1:1/ -O -'`],
+  ["skipped-function-call-state", `export WGETRC=/dev/stdin; f(){ export WGETRC=/dev/null; }; if false; then f; fi; printf '%s\n' 'logfile = src/skipped-function.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["nested-isolation-wgetrc", `export WGETRC=/dev/null; ( export WGETRC=/dev/stdin; ( printf '%s\n' 'logfile = src/nested-isolation.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/ ) )`],
+  ["declare-function-local", `export WGETRC=/dev/stdin; f(){ declare -x WGETRC=/dev/null; }; f; printf '%s\n' 'logfile = src/declare-local.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["readonly-branch-join", `export WGETRC=/dev/null; if true; then :; else readonly WGETRC; fi; WGETRC=/dev/stdin; printf '%s\n' 'logfile = src/readonly-join.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["nested-background-isolation-parent-state", `( export POSIXLY_CORRECT=1; ( wget --no-config -O src/nested-background-owned.ts http://127.0.0.1:1/ -O - ) ) & wait`],
+  ["case-retest-fallthrough-touch", `case x in x) : ;;& x) touch src/case-retest-owned.ts;; esac`],
+  ["recursive-nested-cwd-root", `env --chdir=src sh -c "sh -c 'mkdir -p .omx/state/nested-cwd-owned'"`],
+  ["process-substitution-lexical-cwd", `cd src; cat <(mkdir -p .omx/state/process-cwd-owned)`],
+  ["nameref-posix-wget", `f(){ declare -n ref=POSIXLY_CORRECT; export ref=1; }; f; wget --no-config -O src/nameref-posix-owned.ts https://example.test/file -O -`],
+  ["global-nameref-posix-wget", `f(){ declare -gn ref=POSIXLY_CORRECT; }; f; export ref=1; wget --no-config -O src/global-nameref-posix-owned.ts https://example.test/file -O -`],
+  ["arithmetic-expansion-posix-wget", `export POSIXLY_CORRECT; : $((POSIXLY_CORRECT=1)); wget --no-config https://example.test/file -O src/arithmetic-posix-owned.ts`],
+  ["curl-header-sink", `curl -q --dump-header src/curl-header-owned.txt https://example.test/file`],
+  ["rsync-remote-sink", `rsync .omx/state/conductor-ledger.json example.test:state/`],
+  ["rsync-remote-log-sink", `rsync --log-file=.omx/state/rsync.log .omx/state/conductor-ledger.json example.test:state/`],
+  ["failed-cd-rsync-metadata-control", `cd .omx/missing; rsync --log-file=.omx/state/failed-cd-rsync.log .omx/state/conductor-ledger.json .omx/state/failed-cd-rsync-copy`],
+  ["failed-pushd-rsync-metadata-control", `pushd .omx/missing; rsync --log-file=.omx/state/failed-pushd-rsync.log .omx/state/conductor-ledger.json .omx/state/failed-pushd-rsync-copy`],
+  ["function-cwd-state", `f(){ cd src; }; f; mkdir -p .omx/state/function-cwd-owned`],
+  ["function-caller-local-state", `export WGETRC=/dev/null; g(){ WGETRC=/dev/stdin; }; f(){ local -x WGETRC=/dev/null; g; printf '%s\n' 'logfile = src/function-caller-local-owned.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/; }; f`],
+  ["process-substitution-before-inline-unset", `export POSIXLY_CORRECT=1; unset POSIXLY_CORRECT <(wget --no-config -O src/process-inline-unset-owned.ts http://127.0.0.1:1/ -O -)`],
+  ["process-substitution-before-function", `export POSIXLY_CORRECT=1; f(){ unset POSIXLY_CORRECT; }; f <(wget --no-config -O src/process-before-function-owned.ts http://127.0.0.1:1/ -O -)`],
+  ["nested-process-substitution-touch", `cat <(cat <(touch src/nested-process-owned.ts))`],
+  ["conditional-job-control-lastpipe", `export POSIXLY_CORRECT=1; shopt -s lastpipe; if true; then set -m; fi; f(){ unset POSIXLY_CORRECT; }; true | f; wget --no-config -O src/jobcontrol-owned.ts http://127.0.0.1:1/ -O -`],
+  ["unsupported-shopt-option", `shopt -s extglob; touch .omx/state/final.log`],
+  ["dynamic-shopt-lastpipe", `mode=lastpipe; shopt -s "$mode"; touch .omx/state/final.log`],
+  ["loop-function-definition", `while false; do touch(){ :; }; done; touch src/loop-definition-owned.ts`],
+  ["background-function-definition", `{ touch(){ :; }; } & wait; touch src/background-definition-owned.ts`],
+  ["pipeline-function-definition", `{ touch(){ :; }; } | cat; touch src/pipeline-definition-owned.ts`],
+  ["coproc-function-definition", `coproc { touch(){ :; }; }; wait; touch src/coproc-definition-owned.ts`],
+  ["coproc-external-touch-mutation", `coproc touch src/coproc-external-owned.ts; wait`],
+  ["coproc-function-runtime-does-not-leak", `coproc { local_read(){ :; }; local_read; }; wait; local_read`],
+  ["subshell-function-definition", `( touch(){ :; }; ); touch src/subshell-definition-owned.ts`],
+  ["conditional-readonly-function", `f(){ :; }; if false; then readonly -f f; fi; f(){ export POSIXLY_CORRECT=1; }; f; wget --no-config -O src/conditional-readonly-function-owned.ts http://127.0.0.1:1/ -O -`],
+  ["readonly-unbound-function", `readonly -f touch; touch src/readonly-unbound-owned.ts`],
+  ["unexported-child-function", `touch(){ :; }; bash -c 'touch src/unexported-child-function-owned.ts'`],
+  ["export-nf-removes-child-function", `f(){ :; }; export -f f; export -nf f; bash -c 'f; wget --no-config -O - https://example.test/file'`],
+  ["exported-child-function-uninspected-body", `f(){ source src/exported-child-uninspected.sh; }; export -f f; bash -c 'f'`],
+  ["env-child-unset", `export POSIXLY_CORRECT=1; env unset POSIXLY_CORRECT; wget --no-config -O src/env-child-unset-owned.ts http://127.0.0.1:1/ -O -`],
+  ["global-attribute-under-local", `WGETRC=/dev/stdin; f(){ local WGETRC=/dev/null; declare -gx WGETRC; }; f; printf '%s\n' 'logfile = src/global-attribute-owned.log' | HOME=/dev/null wget -O - http://127.0.0.1:1/`],
+  ["nameref-unset-referent", `export HOME=src; export WGETRC=/dev/null; declare -n ref=WGETRC; unset ref; wget -O - http://127.0.0.1:1/`],
+  ["arithmetic-compound-posix", `unset POSIXLY_CORRECT; export POSIXLY_CORRECT; : x$((POSIXLY_CORRECT+=1)); wget --no-config -O src/arithmetic-compound-owned.ts http://127.0.0.1:1/ -O -`],
+  ["parameter-nameref-posix", `unset POSIXLY_CORRECT; export POSIXLY_CORRECT; declare -n ref=POSIXLY_CORRECT; : x\${ref:=1}; wget --no-config -O src/parameter-nameref-owned.ts https://example.test/file -O -`],
+  ["case-escaped-esac", `case x in \\esac|x) touch src/case-escaped-esac-owned.ts;; esac`],
+  ["reserved-filename-touch", `touch .omx/state/final.log case`],
+  ["reserved-filename-copy", `cp .omx/state/conductor-ledger.json case`],
+  ["chmod-reference-product", `chmod --reference=.omx/state/session.json src/chmod-reference-owned.ts .omx/state/session.json`],
+  ["chown-reference-product", `chown --reference=.omx/state/session.json src/chown-reference-owned.ts .omx/state/session.json`],
+  ["chgrp-reference-product", `chgrp --reference=.omx/state/session.json src/chgrp-reference-owned.ts .omx/state/session.json`],
+  ["chmod-reference-separated-product", `chmod --reference .omx/state/session.json src/chmod-reference-separated-owned.ts`],
+  ["chown-reference-separated-product", `chown --reference .omx/state/session.json src/chown-reference-separated-owned.ts`],
+  ["chgrp-reference-separated-product", `chgrp --reference .omx/state/session.json src/chgrp-reference-separated-owned.ts`],
+  ["curl-cluster-header-sink", `curl -q -sD src/curl-cluster-owned.txt -o - http://127.0.0.1:1/`],
+  ["curl-config-sink", `curl -q -K src/curl-config-owned.txt http://127.0.0.1:1/`],
+  ["rsync-log-sink", `rsync --log-file=src/rsync-owned.log .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["rsync-partial-sink", `rsync --partial-dir=src/rsync-partial .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["rsync-write-batch-sink", `rsync --write-batch=src/rsync-owned.batch .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["cleared-exported-child-function", `touch(){ :; }; export -f touch; env -u BASH_FUNC_touch%% bash -c 'touch src/cleared-exported-child-owned.ts'`],
+  ["cdpath-relative-cwd", `CDPATH=src; cd team; mkdir -p ../.omx/state/cdpath-owned`],
+  ["cdpath-absolute-cwd-product", `CDPATH=src; cd /tmp; touch src/cdpath-absolute-owned.ts`],
+  ["cdpath-balanced-stack-product", `CDPATH=src; pushd ./src; popd; touch src/cdpath-balanced-stack-owned.ts`],
+  ["unbalanced-popd-product", `popd; touch src/unbalanced-popd-owned.ts`],
+  ["reference-without-target", `chmod --reference=.omx/state/session.json`],
+  ["chown-reference-without-target", `chown --reference=.omx/state/session.json`],
+  ["chgrp-reference-without-target", `chgrp --reference=.omx/state/session.json`],
+  ["chmod-reference-separated-without-target", `chmod --reference .omx/state/session.json`],
+  ["chown-reference-separated-without-target", `chown --reference .omx/state/session.json`],
+  ["chgrp-reference-separated-without-target", `chgrp --reference .omx/state/session.json`],
+  ["exported-bashopts-lastpipe", `shopt -s lastpipe; export BASHOPTS; bash -c 'f(){ export POSIXLY_CORRECT=1; }; true | f; wget --no-config -O src/exported-bashopts-owned.ts http://127.0.0.1:1/ -O -'`],
+  ["depth-process-substitution-prefix", `f4(){ export POSIXLY_CORRECT=1; cat <(true); cat <(wget --no-config -O src/depth-prefix-owned.ts http://127.0.0.1:1/ -O -); }; f3(){ f4; }; f2(){ f3; }; f1(){ f2; }; f1`],
+  ["wget-short-execute-output-sink", `wget --no-config -e 'output_document=src/wget-execute-owned.ts' https://example.test/file`],
+  ["wget-long-execute-log-sink", `wget --no-config --execute='logfile=src/wget-execute.log' -O - https://example.test/file`],
+  ["wget-execute-directory-prefix-sink", `wget --no-config --execute='dir_prefix=src/wget-execute-directory' https://example.test/file`],
+  ["wget-execute-unknown-directive", `wget --no-config --execute='future_directive=src/wget-unknown.ts' -O - https://example.test/file`],
+  ["stdbuf-i-retains-environment", `export POSIXLY_CORRECT=1; stdbuf -i 0 sh -c 'wget --no-config -O src/stdbuf-posix-owned.ts https://example.test/file -O -'`],
+  ["env-i-reapplies-prefix-environment", `export POSIXLY_CORRECT=1; env -i POSIXLY_CORRECT=1 sh -c 'wget --no-config -O src/env-i-posix-owned.ts https://example.test/file -O -'`],
+  ["curl-startup-config-unresolved", `curl https://example.test/file`],
+  ["curl-write-out-output-sink", `curl -q --write-out '%output{src/curl-write-out-owned.log}' https://example.test/file`],
+  ["curl-short-write-out-output-sink", `curl -q -w '%output{src/curl-short-write-out-owned.log}' https://example.test/file`],
+  ["curl-write-out-append-sink", `curl -q --write-out '%output{>>src/curl-write-out-append.log}' https://example.test/file`],
+  ["time-short-output-sink", `time -o src/time-output-owned.log printf safe`],
+  ["time-long-output-sink", `time --output=src/time-long-output-owned.log printf safe`],
+  ["command-substitution-later-cwd", `cd src; printf '%s' "$(mkdir -p .omx/state/command-substitution-cwd-owned)"; cd ..`],
+  ["backtick-substitution-later-cwd", "cd src; printf '%s' \`mkdir -p .omx/state/backtick-substitution-cwd-owned\`; cd .."],
+  ["command-substitution-later-posix-unset", `export POSIXLY_CORRECT=1; printf '%s' "$(wget --no-config -O src/command-substitution-posix-owned.ts http://127.0.0.1:1/ -O -)"; unset POSIXLY_CORRECT`],
+  ["command-substitution-later-function-unset", `export POSIXLY_CORRECT=1; printf '%s' "$(wget --no-config -O src/command-substitution-function-owned.ts http://127.0.0.1:1/ -O -)"; f(){ unset POSIXLY_CORRECT; }; f`],
+  ["grouped-command-substitution-cwd", `( cd src; printf '%s' "$(mkdir -p .omx/state/group-command-substitution-owned)" )`],
+  ["grouped-process-substitution-cwd", `( cd src; cat <(mkdir -p .omx/state/group-process-substitution-owned) )`],
+  ["printf-v-cdpath-writer", `printf -v CDPATH '%s' src; cd shared; mkdir -p .omx/state/printf-v-cdpath-owned`],
+  ["read-posix-writer", `export POSIXLY_CORRECT; read POSIXLY_CORRECT <<< 1; wget --no-config -O src/read-posix-writer-owned.ts http://127.0.0.1:1/ -O -`],
+  ["printf-v-wgetrc-writer", `printf -v WGETRC '%s' src/wgetrc; export WGETRC; wget -O - https://example.test/file`],
+  ["getopts-wgetrc-writer", `export WGETRC; getopts a WGETRC; wget -O - https://example.test/file`],
+  ["for-cdpath-writer", `for CDPATH in src; do :; done; cd shared; mkdir -p .omx/state/for-cdpath-owned`],
+  ["select-cdpath-writer", `select CDPATH in src; do break; done; cd shared; mkdir -p .omx/state/select-cdpath-owned`],
+  ["curl-dynamic-output", `OUT=src/curl-dynamic-output.log; curl -q -o "$OUT" https://example.test/file`],
+  ["curl-dynamic-write-out", `FMT='%output{src/curl-dynamic-write-out.log}'; curl -q -w "$FMT" https://example.test/file`],
+  ["curl-write-out-at-file", `curl -q --write-out @.omx/state/curl-format https://example.test/file`],
+  ["curl-dynamic-argv-injection", `CURL_OPTIONS='--upload-file=.omx/state/conductor-ledger.json'; curl -q $CURL_OPTIONS https://example.test/file`],
+  ["wget-dynamic-argv-injection", `WGET_OPTIONS='--post-data=mode=write'; wget --no-config $WGET_OPTIONS -O - https://example.test/file`],
+  ["curl-post-data", `curl -q --data 'mode=write' https://example.test/file`],
+  ["curl-request-post", `curl -q --request POST https://example.test/file`],
+  ["curl-upload-file", `curl -q --upload-file .omx/state/conductor-ledger.json https://example.test/file`],
+  ["wget-post-data", `wget --no-config --post-data='mode=write' -O - https://example.test/file`],
+  ["wget-method-post", `wget --no-config --method=POST -O - https://example.test/file`],
+  ["wget-background", `wget --no-config --background -O - https://example.test/file`],
+  ["rsync-dynamic-option", `OPTS='--log-file=src/rsync-dynamic.log'; rsync $OPTS .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["rsync-short-cluster-temp-dir", `rsync -aTsrc/rsync-cluster-temp .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["rsync-short-cluster-temp-dir-next-argv", `rsync -aT src/rsync-cluster-temp .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["rsync-short-cluster-unknown", `rsync -aZ .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["time-abbreviated-output-sink", `time --out=src/time-abbreviated-output.log printf safe`],
+  ["time-exact-separate-output-sink", `time --output src/time-exact-separate-output.log printf safe`],
+  ["time-separate-abbreviated-output-sink", `time --out src/time-separate-output.log printf safe`],
+  ["time-attached-output-sink", `time -osrc/time-attached-output.log printf safe`],
+  ["time-wrapper-attached-output-sink", `env time -osrc/time-wrapper-attached-output.log printf safe`],
+  ["time-append-attached-output-sink", `time -aosrc/time-append-attached-output.log printf safe`],
+  ["time-dynamic-output-sink", `OUT=src/time-dynamic-output.log; time -o "$OUT" printf safe`],
+  ["time-malformed-output-sink", `time --output= printf safe`],
+  ["path-repository-shadow", `cp -p /usr/bin/touch .omx/state/cat; PATH=.omx/state; cat src/conductor-owned.ts`],
+  ["path-prefix-repository-shadow", `cp -p /usr/bin/touch .omx/state/cat; PATH=.omx/state cat src/conductor-owned.ts`],
+  ["path-env-repository-shadow", `cp -p /usr/bin/touch .omx/state/cat; env PATH=.omx/state cat src/conductor-owned.ts`],
+  ["cdpath-global-dirty-function", `CDPATH=.omx; f(){ local CDPATH=.omx; declare -g CDPATH=src; }; f; cd shared; mkdir -p .omx/state/cdpath-global-dirty-owned`],
+  ["cp-hardlink-then-reference", `cp -l .omx/state/conductor-ledger.json .omx/state/linked-ledger; chmod --reference=.omx/state/conductor-ledger.json .omx/state/linked-ledger`],
+  ["curl-method-override-header", `curl -q -H 'X-HTTP-Method-Override: POST' -o .omx/state/curl-method-override.log https://example.test/file`],
+  ["curl-next-transfer-product-output", `curl -q --output-dir src -o first.log https://example.test/first --next --output-dir .omx/state -o second.log https://example.test/second`],
+  ["wget-warc-cdx-standalone-sink", `wget --no-config --warc-cdx .omx/state/wget-cdx.log https://example.test/file`],
+  ["wget-no-proxy-standalone-sink", `wget --no-config --no-proxy .omx/state/wget-proxy.log https://example.test/file`],
+  ["wget-short-x-standalone-sink", `wget --no-config -x .omx/state/wget-x.log https://example.test/file`],
+  ["rsync-rsync-path-helper-execution", `rsync --rsync-path=.omx/state/helper .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["rmdir-invalidates-static-cwd-proof", `rmdir .omx/state/tmp; cd .omx/state/tmp; touch .omx/state/final.log`],
+  ["posix-special-builtin-prefix-persistence", `set -o posix; POSIXLY_CORRECT=1 export POSIXLY_CORRECT; wget --no-config -O src/posix-special-owned.ts https://example.test/file -O -`],
+  ["wget-late-no-config", `wget -q --no-config -O - https://example.test/file`],
+  ["curl-output-template-traversal", `curl -q -o .omx/state/curl-#1.log https://example.test/file[..]`],
+  ["native-child-dead-reference-marker", `f(){ chmod --reference=.omx/state/session.json .omx/state/dead-reference.log; }; touch src/live-after-dead-marker.log`],
+  ["reference-looking-post-end-of-options", `chmod 600 -- --reference=.omx/state/session.json`],
+  ["curl-quote-request-control", `curl -q --quote 'DELE state' https://example.test/file`],
+  ["curl-short-quote-request-control", `curl -q -Q 'DELE state' https://example.test/file`],
+  ["curl-postquote-request-control", `curl -q --postquote 'DELE state' https://example.test/file`],
+  ["curl-dynamic-prequote-request-control", `OP='NOOP'; curl -q --prequote "$OP" https://example.test/file`],
+  ["curl-unknown-request-control", `curl -q --request-target=/state https://example.test/file`],
+  ["wget-header-method-override", `wget --no-config --header='X-HTTP-Method-Override: POST' -O - https://example.test/file`],
+  ["wget-dynamic-header-method-override", `HEADER='X-HTTP-Method-Override: POST'; wget --no-config --header="$HEADER" -O - https://example.test/file`],
+  ["curl-brace-template-traversal", `curl -q -o .omx/state/curl-#1.log 'https://example.test/{safe,../escape}'`],
+  ["rsync-archive-then-reference", `rsync -a --log-file=.omx/state/rsync-alias.log .omx/state/conductor-ledger.json .omx/state/rsync-alias-copy; chmod --reference=.omx/state/session.json .omx/state/rsync-alias-copy`],
+  ["cp-archive-then-reference", `cp -a .omx/state/conductor-ledger.json .omx/state/archive-ledger; chmod --reference=.omx/state/session.json .omx/state/archive-ledger`],
+  ["nested-rmdir-invalidates-cwd-proof", `rmdir .omx/state/tmp; sh -c 'cd .omx/state/tmp; touch .omx/state/final.log'`],
+  ["nested-chmod-invalidates-cwd-proof", `chmod --reference=.omx/state/session.json .omx/state/tmp; sh -c 'cd .omx/state/tmp; touch .omx/state/final.log'`],
+  ["relative-slash-command", `./src/conductor-owned.ts`],
+  ["unresolved-arithmetic-expansion", `touch .omx/state/unresolved-arithmetic.log $((UNFINISHED)`],
+  ["elif-mutation-reachability", `if false; then :; elif true; then touch src/elif-reachable-owned.ts; fi`],
+  ["dynamic-loader-preload-wrapper", `LD_PRELOAD=.omx/state/mutator.so cat src/conductor-owned.ts`],
+  ["dynamic-loader-audit-env-wrapper", `env LD_AUDIT=.omx/state/audit.so cat src/conductor-owned.ts`],
+  ["curl-clustered-form-mutation", `curl -q -sF field=value https://example.test/file`],
+  ["curl-clustered-quote-mutation", `curl -q -sQ 'DELE state' https://example.test/file`],
+  ["curl-proxy-header-method-override", `curl -q --proxy-header 'X-HTTP-Method-Override: POST' https://example.test/file`],
+
+  ["recursive-reference-metadata", `chmod -R --reference=.omx/state/session.json .omx/state`],
+  ["rsync-directory-tree-metadata", `rsync -a --log-file=.omx/state/rsync-tree.log .omx/state/ .omx/state/rsync-tree-copy/`],
+  ["rsync-keep-dirlinks-metadata", `rsync --keep-dirlinks --log-file=.omx/state/rsync-dirlinks.log .omx/state/conductor-ledger.json .omx/state/rsync-dirlinks-copy`],
+  ["rsync-explicit-links-metadata", `rsync --links --log-file=.omx/state/rsync-links.log .omx/state/conductor-ledger.json .omx/state/rsync-links-copy`],
+  ["rsync-product-destination", `rsync README.md src/readme.md`],
+  ["recursive-arithmetic-substitution", `arith='slot[$(touch src/arithmetic-owned.ts)0]'; : $((arith))`],
+  ["arithmetic-array-subscript", `slot=1; : $((slot[$(touch src/arithmetic-array-owned.ts)0]))`],
+  ["numeric-binding-arithmetic", `N=1; : $((N << 2))`],
+  ["conditional-numeric-binding-arithmetic", `arith='slot[$(touch src/arithmetic-conditional-owned.ts)0]'; if false; then arith=1; fi; : $((arith))`],
+  ["printf-v-numeric-binding-arithmetic", `N=1; printf -v N '%s' 'slot[$(touch src/arithmetic-printf-owned.ts)0]'; : $((N))`],
+  ["loader-conditional-clear", `declare -n loader=LD_PRELOAD; export loader; loader=.omx/state/mutator.so; false && unset loader; /usr/bin/cat /dev/null`],
+  ["loader-function-clear", `declare -n loader=LD_PRELOAD; export loader; loader=.omx/state/mutator.so; clear_loader(){ unset loader; }; false && clear_loader; /usr/bin/cat /dev/null`],
+  ["node-persistent-v8-coverage-output", `export NODE_V8_COVERAGE=src; node -e "console.log('ok')"`],
+  ["node-function-compile-cache-output", `configure_node(){ export NODE_COMPILE_CACHE=src; }; configure_node; node -e "console.log('ok')"`],
+  ["cp-parents-path-shaping", `cp --parents src/runtime.ts .omx/state`],
+  ["cp-hardlink-cross-boundary", `cp --link src/runtime.ts .omx/state/runtime-link.ts`],
+  ["curl-template-unbounded-capture", `curl -q -o .omx/state/curl-glob-#1.log https://example.test/file[1-999]`],
+  ["gh-dynamic-web-helper", `OPT=--web; GH_BROWSER=.omx/state/mutator PATH=/usr/bin:/bin gh issue create --title x --body y $OPT`],
+  ["gh-command-prefix-pager-helper", `GH_PAGER=cat PATH=/usr/bin:/bin gh issue create --title x --body y`],
+  ["loader-nameref-preload", `declare -n loader=LD_PRELOAD; export loader; loader=.omx/state/mutator.so; cat src/conductor-owned.ts`],
+  ["loader-debug-output", `LD_DEBUG=libs LD_DEBUG_OUTPUT=src/ld-debug cat src/conductor-owned.ts`],
+  ["loader-profile-output", `LD_PROFILE=cat LD_PROFILE_OUTPUT=src/ld-profile cat src/conductor-owned.ts`],
+  ["node-cpu-profile-output", `node --cpu-prof --cpu-prof-dir=src -e "console.log('ok')"`],
+  ["node-v8-coverage-output", `NODE_V8_COVERAGE=src node -e "console.log('ok')"`],
+  ["node-compile-cache-output", `NODE_COMPILE_CACHE=src node -e "console.log('ok')"`],
+  ["curl-expand-data-request", `curl -q --expand-data 'mode=write' https://example.test/state`],
+  ["curl-expand-output-sink", `curl -q --variable OUT=src/curl-expand-owned.txt --expand-output '{{OUT}}' file:///etc/hosts`],
+  ["curl-unknown-long-option", `curl -q --future-option https://example.test/file`],
+  ["gh-repo-create-interactive", `PATH=/usr/bin:/bin gh repo create`],
+  ["gh-repo-fork-local-remote", `PATH=/usr/bin:/bin gh repo fork OWNER/REPO`],
+  ["curl-header-file-source", `curl -q --header @.omx/state/headers -o .omx/state/header.log https://example.test/file`],
+  ["wget-warc-tempdir-sink", `wget --no-config --warc-tempdir=src -O - https://example.test/file`],
+  ["install-strip-program-execution", `install --strip-program=.omx/state/mutator package.json .omx/state/install-copy`],
+  ["python-unsafe-x-option", `python3 -I -X importtime -c "print('ok')"`],
+  ["perl-debugger-option", `perl -d -e 'print'`],
+  ["rg-config-file", `rg --config .omx/state/rg-config pattern`],
+  ["git-trace-output", `GIT_TRACE=src/git-trace git diff`],
+  ["python-pycache-prefix", `PYTHONPYCACHEPREFIX=src python3 -I -c "print('ok')"`],
+  ["allexport-node-output", `set -a; NODE_V8_COVERAGE=src; node -e "console.log('ok')"`],
+  ["loader-command-wrapper", `command env LD_PRELOAD=.omx/state/mutator.so cat src/conductor-owned.ts`],
+  ["loader-before-env-clear", `LD_PRELOAD=.omx/state/mutator.so /usr/bin/env -i /usr/bin/cat src/conductor-owned.ts`],
+  ["loader-in-background-pipeline", `LD_PRELOAD=.omx/state/mutator.so /usr/bin/cat src/conductor-owned.ts | cat &`],
+  ["loader-in-later-pipeline-member", `printf x | LD_DEBUG=libs LD_DEBUG_OUTPUT=src/pipe-loader /usr/bin/cat /dev/null`],
+  ["dynamic-set-option", `PS4='$(touch src/dynamic-set-owned.ts)'; OPTION=-x; set $OPTION; :`],
+  ["prompt-parameter-transform", `PS4='$(touch src/prompt-transform-owned.ts)'; : \${PS4@P}`],
+  ["dynamic-declaration-attribute", `ATTRIBUTE=i; declare -$ATTRIBUTE 'slot[$(touch src/dynamic-declare-owned.ts)0]=1'`],
+  ["perl-regex-assertion-in-place", `perl -pi -e 's/(?!safe)/x/' .omx/state/conductor-ledger.json`],
+  ["uniq-second-output-operand", `uniq src/conductor-owned.ts src/uniq-owned.ts`],
+  ["rg-hostname-helper", `rg --hostname-bin=.omx/state/inbox/helper needle src`],
+  ["escaped-time-path-shadow", `PATH=.omx/state/inbox:/usr/bin:/bin \\time printf safe`],
+  ["quoted-time-path-shadow", `PATH=.omx/state/inbox:/usr/bin:/bin 'time' printf safe`],
+  ["ansi-c-time-path-shadow", `PATH=.omx/state/inbox:/usr/bin:/bin $'time' printf safe`],
+  ["concatenated-time-path-shadow", `PATH=.omx/state/inbox:/usr/bin:/bin "ti"me printf safe`],
+  ["coproc-path-shadow", `PATH=.omx/state/inbox:/usr/bin:/bin 'coproc' printf safe`],
+  ["env-chdir-product-mutation", `env --chdir=src touch ../.omx/state/final.log`],
+  ["rsync-permissions-alias", `rsync -p .omx/state/conductor-ledger.json .omx/state/rsync-copy`],
+  ["reference-directory-target", `chmod --reference=.omx/state/session.json .omx/state`],
+  ["reference-glob-target", `chmod --reference=.omx/state/session.json .omx/state/*`],
+  ["wget-startup-options-after-end", `WGETRC=/dev/stdin wget -O - http://127.0.0.1:1/ -- --no-config --no-hsts`],
+  ["wget-recursive-metadata-transfer", `wget --no-config --no-hsts --recursive --page-requisites --directory-prefix=.omx/state https://example.test/index.html`],
+  ["wget-ssl-key-log-output", `SSLKEYLOGFILE=src/wget-tls.keys wget --no-config --no-hsts -O - https://example.test/file`],
+  ["curl-ssl-key-log-output", `SSLKEYLOGFILE=src/curl-tls.keys curl -q -o - https://example.test/file`],
+  ["curl-ssl-key-log-persistent-output", `export SSLKEYLOGFILE=src/curl-tls.keys; curl -q -o - https://example.test/file`],
+  ["wget-ssl-key-log-persistent-output", `export SSLKEYLOGFILE=src/wget-tls.keys; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["curl-ssl-key-log-dynamic-output", `SSLKEYLOGFILE="$TLS_KEY_LOG" curl -q -o - https://example.test/file`],
+  ["rsync-partial-environment-output", `RSYNC_PARTIAL_DIR=src/rsync-partials rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+  ["rsync-exported-runtime-output", `export RSYNC_PARTIAL_DIR=src/rsync-partials; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+  ["shellopts-allexport-posix-ordering", `env SHELLOPTS=allexport bash -c 'POSIXLY_CORRECT=1; wget --no-config --no-hsts -O src/shellopts-owned.ts https://example.test/file -O -'`],
+  ["bash-posix-path-persistence", `bash -o posix -c 'PATH=.omx/state export PATH; cat src/conductor-owned.ts'`],
+  ["bash-long-posix-path-persistence", `bash --posix -c 'PATH=.omx/state export PATH; cat src/conductor-owned.ts'`],
+  ["bashopts-allexport-posix-ordering", `env BASHOPTS=allexport bash -c 'POSIXLY_CORRECT=1; wget --no-config --no-hsts -O src/bashopts-owned.ts https://example.test/file -O -'`],
+  ["unresolved-path-command-not-found", `command_not_found_handle(){ /usr/bin/touch src/path-owned.ts; }; PATH=/definitely/not-present; cat README.md`],
+  ["curl-command-protocol-local-listener", `printf 'set state\n' | curl -q -m 1 telnet://127.0.0.1:9`],
+  ["curl-command-protocol-gopher", `curl -q -m 1 gopher://127.0.0.1:9/1/state`],
+  ["curl-command-protocol-smtp", `curl -q -m 1 smtp://127.0.0.1:9`],
+  ["curl-command-protocol-unknown", `curl -q -m 1 mutator://127.0.0.1/state`],
+  ["curl-remote-header-name-cluster", `curl -q -OJ https://example.test/payload`],
+  ["curl-remote-header-name-long", `curl -q --remote-header-name -O https://example.test/payload`],
+  ["wget-execute-recursive-directive", `wget --no-config --no-hsts -e 'recursive=on' -O - https://example.test/file`],
+  ["mixed-scheme-wget-directory-prefix", `wget --no-config --no-hsts --directory-prefix=.omx/state https://example.test/file file:///etc/hosts`],
+  ["mixed-scheme-curl-remote-name", `curl -q --output-dir=.omx/state -O https://example.test/file file:///etc/hosts`],
+  ["unsupported-bashopts-localvar-inherit", `CDPATH=src env BASHOPTS=localvar_inherit bash --noprofile --norc -c 'f(){ local CDPATH; cd state; touch ../.omx/state/owned; }; f'`],
+  ["curl-schemeless-extra-operand-remote-name", `curl -q --output-dir=.omx/state/inbox -O https://example.test/payload ftp.example.test/payload`],
+  ["wget-schemeless-extra-operand-directory-prefix", `wget --no-config --no-hsts --directory-prefix=.omx/state/inbox https://example.test/payload ftp.example.test/payload`],
+  ["curl-multiple-static-urls-remote-name", `curl -q --output-dir=.omx/state/inbox -O https://example.test/first https://example.test/second`],
+  ["wget-multiple-static-urls-directory-prefix", `wget --no-config --no-hsts --directory-prefix=.omx/state/inbox https://example.test/first https://example.test/second`],
+  ["wget-short-input-file-decoy-url", `wget --no-config --no-hsts -i urls.txt -O - https://example.test/file`],
+  ["wget-attached-input-file-decoy-url", `wget --no-config --no-hsts -iurls.txt -O - https://example.test/file`],
+  ["wget-clustered-input-file-decoy-url", `wget --no-config --no-hsts -qiurls.txt -O - https://example.test/file`],
+  ["wget-long-input-file-decoy-url", `wget --no-config --no-hsts --input-file=urls.txt -O - https://example.test/file`],
+  ["wget-execute-tries-zero", `wget --no-config --no-hsts -e 'tries=0' -O - https://example.test/file`],
+  ["wget-execute-timeout-zero", `wget --no-config --no-hsts -e 'timeout=0' -O - https://example.test/file`],
+  ["wget-direct-tries-zero", `wget --no-config --no-hsts --tries=0 -O - https://example.test/file`],
+  ["wget-short-tries-zero", `wget --no-config --no-hsts -t0 -O - https://example.test/file`],
+  ["wget-direct-timeout-zero", `wget --no-config --no-hsts --timeout=0 -O - https://example.test/file`],
+  ["wget-direct-wait-excessive", `wget --no-config --no-hsts --wait=61 -O - https://example.test/file`],
+  ["wget-execute-waitretry-infinite", `wget --no-config --no-hsts -e 'waitretry=infinite' -O - https://example.test/file`],
+  ["wget-short-timeout-zero", `wget --no-config --no-hsts -T0 -O - https://example.test/file`],
+  ["wget-short-wait-zero", `wget --no-config --no-hsts -w0 -O - https://example.test/file`],
+  ["wget-direct-waitretry-zero", `wget --no-config --no-hsts --waitretry=0 -O - https://example.test/file`],
+  ["wget-malformed-wait", `wget --no-config --no-hsts --wait=one -O - https://example.test/file`],
+  ["wget-dynamic-timeout", `wget --no-config --no-hsts --timeout="$WGET_TIMEOUT" -O - https://example.test/file`],
+  ["wget-connect-timeout-zero", `wget --no-config --no-hsts --connect-timeout=0 -O - https://example.test/file`],
+  ["wget-dns-timeout-excessive", `wget --no-config --no-hsts --dns-timeout=61 -O - https://example.test/file`],
+  ["wget-read-timeout-dynamic", `wget --no-config --no-hsts --read-timeout="$WGET_TIMEOUT" -O - https://example.test/file`],
+  ["wget-execute-connect-timeout-zero", `wget --no-config --no-hsts -e 'connecttimeout=0' -O - https://example.test/file`],
+  ["wget-late-no-config-wgetrc-product-log", `WGETRC=/dev/stdin; printf 'output = src/late-no-config-wgetrc.log\n' | wget -O - https://example.test/file --no-config --no-hsts`],
+  ["curl-glob-cumulative-cardinality", `curl -q -o .omx/state/curl-explosive.log 'https://example.test/{a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p}{a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p}{a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p}{a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p}'`],
+  ["select-conditional-touch", `select choice in safe; do touch src/select-owned.ts; done </dev/null`],
+  ["allexport-posix-wget", `set -a; POSIXLY_CORRECT=1; wget --no-config --no-hsts -O src/allexport-posix-owned.ts https://example.test/file -O -`],
+  ["allexport-ssl-keylog-curl", `set -o allexport; SSLKEYLOGFILE=src/allexport-curl.keys; curl -q -o - https://example.test/file`],
+  ["nested-allexport-ssl-keylog-curl", `bash -a -c 'SSLKEYLOGFILE=src/nested-allexport-curl.keys; curl -q -o - https://example.test/file'`],
+  ["composed-ssl-keylog-export", `NAME=SSLKEYLOGFILE; export "$NAME"; SSLKEYLOGFILE=src/composed-curl.keys; curl -q -o - https://example.test/file`],
+  ["dynamic-export-name", `export "$UNRESOLVED_NAME"; cat src/conductor-owned.ts`],
+  ["curl-unquoted-glob-output-sink", `curl -q -o .omx/state/*.log https://example.test/file`],
+  ["curl-unquoted-brace-url", `curl -q -o .omx/state/curl-brace-#1.log https://example.test/{one,two}`],
+  ["nested-bash-shopt-localvar-inherit-cdpath", `CDPATH=src bash -O localvar_inherit -c 'f(){ local CDPATH; cd state; touch ../.omx/state/owned; }; f'`],
+  ["nested-bash-shopt-localvar-inherit-posix", `POSIXLY_CORRECT=1 bash -Olocalvar_inherit -c 'f(){ local POSIXLY_CORRECT; wget --no-config --no-hsts -O - https://example.test/file; }; f'`],
+  ["nested-bash-shopt-plus-localvar-inherit-cdpath", `CDPATH=src bash +O localvar_inherit -c 'f(){ local CDPATH; cd state; touch ../.omx/state/owned; }; f'`],
+  ["nested-bash-shopt-plus-attached-localvar-inherit-posix", `POSIXLY_CORRECT=1 bash +Olocalvar_inherit -c 'f(){ local POSIXLY_CORRECT; wget --no-config --no-hsts -O - https://example.test/file; }; f'`],
+  ["git-cat-file-filters", `git cat-file --filters HEAD:filtered.txt`],
+  ["xtrace-ps4-command-substitution", `PS4='$(touch src/ps4-owned.ts)'; set -x; :`],
+  ["keyword-late-environment-assignment", `set -o keyword; wget --no-config --no-hsts -U POSIXLY_CORRECT=1 -O src/keyword-owned.ts https://example.test/file -O -`],
+  ["interactive-bash-startup", `HOME=.omx/state/bash-home bash -ic ':'`],
+  ["clustered-allexport-posix-ordering", `set -ae; POSIXLY_CORRECT=1; wget --no-config --no-hsts -O src/cluster-owned.ts https://example.test/file -O -`],
+  ["nested-clustered-allexport-posix-ordering", `bash -ae -c 'POSIXLY_CORRECT=1; wget --no-config --no-hsts -O src/nested-cluster-owned.ts https://example.test/file -O -'`],
+  ["local-shell-option-snapshot", `set -a; f(){ local -; set +a; }; f; POSIXLY_CORRECT=1; wget --no-config --no-hsts -O src/local-option-owned.ts https://example.test/file -O -`],
+  ["monitor-disables-lastpipe", `export POSIXLY_CORRECT=1; shopt -s lastpipe; set -o monitor; f(){ unset POSIXLY_CORRECT; }; true | f; wget --no-config --no-hsts -O src/monitor-owned.ts https://example.test/file -O -`],
+  ["generic-glob-mutation-target", `truncate --size=0 .omx/state/*.log`],
+  ["generic-brace-mutation-target", `touch .omx/state/{conductor,ledger}.log`],
+  ["generic-glob-directory-destination", `mv .omx/state/conductor-ledger.json .omx/state/inbox/*`],
+  ["physical-cd-symlink-escape", `cd -P .omx/state/link; cd ..; touch physical-owned.ts`],
+  ["physical-shell-mode-symlink-escape", `set -P; cd .omx/state/link; cd ..; touch physical-mode-owned.ts`],
+  ["python-metadata-copy-eval-alias", `python3 -I - <<'PY'
+import shutil
+shutil.copyfile('a', '.omx/state/inbox/py-control')
+print=eval
+print("'Pa' + 'th'('src/python-alias-owned.ts').write_text('x')")
+PY`],
+  ["literal quote metadata path", "mkdir -p \\'.omx/handoffs/run-1"],
+  ["external dispatcher time wrapper", `PATH=.omx/state/inbox:/usr/bin:/bin env time printf safe`],
+  ["Python interactive short cluster stdin", `python3 -Ii -c "print('safe')" <<'PY'
+__import__('os').system('touch src/python-interactive-owned.ts')
+PY`],
+  ["Perl trailing substitution statement", `perl -pi -e 's/a/b/;system("touch src/perl-owned.ts") #/' .omx/state/conductor.log`],
+  ["multiple Perl substitution programs", `perl -pi -e 's/a/b/' -e 's/b/c/' .omx/state/conductor.log`],
+  ["multiple sed substitution programs", `sed -i -e 's/a/b/' -e 's/b/c/' .omx/state/conductor.log`],
+  ["integer declaration secondary expansion", `declare -a slot; declare -i sink='slot[$(touch src/declare-integer-owned.ts)0]'`],
+  ["zsh HOME startup", `HOME=.omx/state/zsh-home zsh -c ':'`],
+  ["interactive Bash no-rc startup", `PS0='$(touch src/ps0-owned.ts)' bash --noprofile --norc -ic ':'`],
+  ["background lastpipe pipeline", `export POSIXLY_CORRECT=1; shopt -s lastpipe; f(){ unset POSIXLY_CORRECT; }; true | f & wait; wget --no-config --no-hsts -o src/async-lastpipe.log http://127.0.0.1:1/ -o - -O -`],
+  ["sed in-place backup sink", `printf x > .omx/state/runtime.ts; cd .omx/state; command sed --in-place='../../src/*' -e 's/x/y/' runtime.ts`],
+  ["unbounded Python metadata copy", `python3 -I - <<'PY'
+import shutil
+shutil.copyfile('/dev/zero', '.omx/state/inbox/unbounded')
+PY`],
+  ["unbounded dd metadata copy", `dd if=/dev/zero of=.omx/state/inbox/unbounded`],
+  ["wait-p-posix-tracked-write", `export POSIXLY_CORRECT; sleep 0 & wait -n -p POSIXLY_CORRECT; wget --no-config --no-hsts -O src/wait-owned.ts https://example.test/file -O -`],
+  ["clustered-wait-p-posix-tracked-write", `export POSIXLY_CORRECT; sleep 0 & wait -np POSIXLY_CORRECT; wget --no-config --no-hsts -O src/wait-cluster-owned.ts https://example.test/file -O -`],
+  ["fd-redirect-source-sink", `printf pwn >& src/native-child-owned.ts`],
+  ["fd-redirect-protected-state-sink", `printf pwn >& .omx/state/sessions/sess-conductor-hook-native-agent-id/ultragoal-state.json`],
+  ["function-return-cwd-flow", `f(){ cd src; return; cd ..; }; f; touch .omx/state/inbox/return-owned`],
+  ["protected-state-ancestor-removal", `rm -rf .omx/state/sessions/sess-conductor-hook-native-agent-id`],
+  ["ordered-metadata-append-overflow", `truncate --size=16777216 .omx/state/inbox/oversized; printf x >> .omx/state/inbox/oversized`],
+  ["rsync-aliased-source-log", `rsync --log-file=.omx/state/conductor-ledger.json .omx/state/conductor-ledger.json .omx/state/inbox/rsync-alias-copy`],
+  ["exec-login-shell-startup", `HOME=.omx/state/bash-home exec -l /bin/bash -c ':'`],
+  ["env-argv0-login-shell-startup", `HOME=.omx/state/bash-home env --argv0=-bash /bin/bash -c ':'`],
+  ["function-keyword-command-not-found", `function command_not_found_handle { /usr/bin/touch src/path-keyword-owned.ts; }; PATH=/definitely/not-present; cat README.md`],
+  ["shadowed-printf-bounded-redirect", `printf(){ /usr/bin/head -c 16777217 /dev/zero; }; printf safe > .omx/state/inbox/oversized`],
+  ["shadowed-cat-heredoc-redirect", `cat(){ /usr/bin/head -c 16777217 /dev/zero; }; cat <<'EOF' > .omx/state/inbox/oversized-heredoc
+safe
+EOF`],
+  ["glob-bounded-redirect-producer", `echo .omx/state/* > .omx/state/inbox/glob-producer`],
+  ["brace-bounded-redirect-producer", `echo {a,b} > .omx/state/inbox/brace-producer`],
+  ["tilde-bounded-redirect-producer", `echo ~/metadata > .omx/state/inbox/tilde-producer`],
+  ["truncate-oversized-metadata", `truncate --size=16777217 .omx/state/inbox/oversized`],
+  ["truncate-attached-oversized-metadata", `truncate -s16777217 .omx/state/inbox/oversized-attached`],
+  ["truncate-relative-size-metadata", `truncate --size=+1 .omx/state/inbox/relative`],
+  ["wget-file-sink-without-hard-cap", `wget --no-config --no-hsts -O .omx/state/inbox/stream https://example.test/file`],
+  ["wget-non-http-file-sink", `wget --no-config --no-hsts -O .omx/state/inbox/ftp ftp://example.test/file`],
+  ["wget-multiple-file-sink-urls", `wget --no-config --no-hsts -O .omx/state/inbox/multiple https://example.test/one https://example.test/two`],
+  ["curl-file-sink-with-timeout-but-no-hard-cap", `curl -q --max-time 1 -o .omx/state/inbox/stream https://example.test/file`],
+  ["curl-file-sink-with-size-but-no-total-deadline", `curl -q --max-filesize 1 -o .omx/state/inbox/stream https://example.test/file`],
+  ["trusted-script-env-interpreter-path-shadow", `PATH=.omx/state/inbox:/usr/bin:/bin /usr/bin/npm --version`],
+] as const;
+
+const NATIVE_CHILD_MIXED_REFERENCE_STATE_WRITE = [
+  "native-child-mixed-reference-state-write",
+  `chmod --reference=.omx/state/session.json .omx/state/reference-copy; omx state write --input '{"mode":"ultragoal"}' --json`,
+] as const;
+
+const NATIVE_CHILD_REFERENCE_UNKNOWN_COMMAND = [
+  "native-child-reference-plus-unknown-command",
+  `chmod --reference=.omx/state/session.json .omx/state/reference-copy; unknown-mutation-transport`,
+] as const;
+
+const NATIVE_CHILD_RSYNC_AUTHORITY_TARGET = [
+  "native-child-rsync-authority-target",
+  `rsync .omx/state/conductor-ledger.json .omx/state/session.json`,
 ] as const;
 
 const WGET_READ_ONLY_CONTROL_COMMANDS = [
-  ["wget-spider-no-body", "wget --spider https://example.test/file"],
+  ["wget-spider-no-body", "wget --no-config --no-hsts --spider https://example.test/file"],
+  ["wget-stdout-short-output-document", "wget --no-config --no-hsts -O - https://example.test/file"],
+  ["wget-stdout-long-output-document", "wget --no-config --no-hsts --output-document=- https://example.test/file"],
+  ["wget-stdout-attached-short-output-document", "wget --no-config --no-hsts -O- https://example.test/file"],
+  ["wget-repeated-output-last-stdout", "wget --no-config --no-hsts -O src/wget-first-output.ts https://example.test/file -O -"],
+  ["posix-wget-literal-data", `printf '%s\n' 'POSIXLY_CORRECT wget -O src/not-executed.ts -O -'`],
+  ["posix-url-data-before-stdout-wget", `printf '%s\n' 'https://example.test/POSIXLY_CORRECT'; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["function-after-wget-no-posix-taint", `f(){ export POSIXLY_CORRECT=1; }; wget --no-config --no-hsts -O src/function-after.ts https://example.test/file -O -; f`],
+  ["subshell-function-no-posix-taint", `f(){ export POSIXLY_CORRECT=1; }; ( f ); wget --no-config --no-hsts -O src/function-subshell.ts https://example.test/file -O -`],
+  ["returned-local-posix-control", `f(){ local -x POSIXLY_CORRECT=1; }; f; wget --no-config --no-hsts -O src/local-scope-control.ts https://example.test/file -O -`],
+  ["background-posix-control", `f(){ export POSIXLY_CORRECT=1; }; f & wait; wget --no-config --no-hsts -O src/background-control.ts https://example.test/file -O -`],
+  ["pipeline-posix-control", `f(){ export POSIXLY_CORRECT=1; }; f | cat; wget --no-config --no-hsts -O src/pipeline-control.ts https://example.test/file -O -`],
+  ["coproc-posix-control", `f(){ export POSIXLY_CORRECT=1; }; coproc f; wait; WGETRC=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["nested-subshell-posix-control", `f(){ export POSIXLY_CORRECT=1; }; if ( f ); then :; fi; wget --no-config --no-hsts -O src/nested-subshell-control.ts https://example.test/file -O -`],
+  ["wrapper-only-posix-control", `env POSIXLY_CORRECT=1 true; wget --no-config --no-hsts -O src/wrapper-control.ts https://example.test/file -O -`],
+  ["wgetrc-null-control", `WGETRC=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["home-null-control", `HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["case-arm-stdout-control", `case true in true) wget --no-config --no-hsts -O - https://example.test/file;; esac`],
+  ["xargs-empty-eof-read-only-control", `printf '%s\n' safe | xargs -E '' printf`],
+  ["env-chdir-stdout-control", `env -C src wget --no-config --no-hsts -O - https://example.test/file`],
+  ["nonexported-declare-posix-control", `declare POSIXLY_CORRECT=1; WGETRC=/dev/null wget --no-config --no-hsts -O src/declare-control.ts https://example.test/file -O -`],
+  ["persistent-wgetrc-null-control", `export WGETRC=/dev/null; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["restored-wgetrc-control", `export WGETRC=/dev/stdin; unset WGETRC; HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["dynamic-case-subject-stdout-control", `mode=true; case "$mode" in true) wget --no-config --no-hsts -O - https://example.test/file;; esac`],
+  ["case-arm-pipeline-read-only", `case x in x) : | true;; esac`],
+  ["later-optional-case-pattern-stdout", `case x in a) :;; (x) wget --no-config --no-hsts -O - https://example.test/file;; esac`],
+  ["successful-posix-unset-stdout", `export POSIXLY_CORRECT=1; unset POSIXLY_CORRECT; WGETRC=/dev/null wget --no-config --no-hsts -O src/unset-posix-first.ts https://example.test/file -O -`],
+  ["nested-posix-stdout", `POSIXLY_CORRECT=1 sh -c 'wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["nested-chdir-stdout", `env --chdir=src sh -c 'wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["nested-lastpipe-stdout", `bash -O lastpipe -c 'wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["nested-lastpipe-pipeline-stdout", `bash -O lastpipe -c 'printf safe | cat; wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["process-substitution-static-read-only", `cat <(printf safe)`],
+  ["process-substitution-wget-stdout", `cat <(wget --no-config --no-hsts -O - https://example.test/file)`],
+  ["background-brace-posix-control", `f(){ export POSIXLY_CORRECT=1; }; { f; } & wait; WGETRC=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["background-function-definition-child-control", `{ touch(){ :; }; touch src/background-child-shadowed.ts; } & wait`],
+  ["pipeline-function-definition-child-control", `{ touch(){ :; }; touch src/pipeline-child-shadowed.ts; } | cat`],
+  ["coproc-function-definition-child-control", `coproc { touch(){ :; }; touch src/coproc-child-shadowed.ts; }; wait`],
+  ["coproc-inherited-function-runtime-child-control", `inherited_read(){ :; }; coproc { inherited_read; }; wait`],
+  ["subshell-function-definition-child-control", `( touch(){ :; }; touch src/subshell-child-shadowed.ts )`],
+  ["background-function-lifecycle-child-control", `touch(){ :; }; { unset -f touch; } & wait; touch src/background-lifecycle-shadowed.ts`],
+  ["pipeline-function-lifecycle-child-control", `touch(){ :; }; { unset -f touch; } | cat; touch src/pipeline-lifecycle-shadowed.ts`],
+  ["subshell-function-lifecycle-child-control", `touch(){ :; }; ( unset -f touch; ); touch src/subshell-lifecycle-shadowed.ts`],
+  ["nested-isolation-stdout-control", `( export POSIXLY_CORRECT=1; ( wget --no-config --no-hsts -O - https://example.test/file ) )`],
+  ["function-alternative-null-control", `f(){ export WGETRC=/dev/null; }; if false; then f(){ export WGETRC=/dev/null; }; fi; f; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["readonly-function-mode-control", `export WGETRC=/dev/null; readonly -f WGETRC; HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["case-fallthrough-read-only", `case x in x) : ;& true) printf safe;; esac`],
+  ["export-n-wgetrc-control", `export WGETRC=/dev/stdin; export -n WGETRC; HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["nested-export-posix-stdout", `export POSIXLY_CORRECT=1; sh -c 'wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["bashopts-lastpipe-stdout", `env BASHOPTS=lastpipe bash -c 'true | printf safe; wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["wget-quiet-cluster-stdout", `wget --no-config --no-hsts -qO- https://example.test/file`],
+  ["case-retest-fallthrough-read-only", `case x in x) : ;;& x) printf safe;; esac`],
+  ["declare-plus-x-wgetrc-control", `export WGETRC=/dev/stdin; declare +x WGETRC; HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["declare-function-local-stdout", `f(){ declare -x WGETRC=/dev/null; wget --no-config --no-hsts -O - https://example.test/file; }; f`],
+  ["arithmetic-expansion-stdout-control", `: $((1 << 2)); wget --no-config --no-hsts -O - https://example.test/file`],
+  ["legacy-arithmetic-expansion-stdout-control", `: $[1 << 2]; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["parameter-length-expansion-stdout-control", `: \${#x}; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["parameter-expansion-stdout-control", `: \${x:-safe}; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["nested-clear-environment-stdout", `export POSIXLY_CORRECT=1; env -i sh -c 'wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["parameter-assignment-expansion-stdout", `export POSIXLY_CORRECT; : \${POSIXLY_CORRECT:=1}; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["nested-exec-clear-environment-stdout", `export POSIXLY_CORRECT=1; exec -c sh -c 'wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["curl-header-stdout-control", `curl -q --dump-header - https://example.test/file`],
+  ["unset-wgetrc-then-append-null-control", `export WGETRC=/dev/stdin; unset WGETRC; WGETRC+=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["process-substitution-nested-read-only", `cat <(cat <(printf safe))`],
+  ["sed-read-only-control", `sed -n '1,20p' src/runtime.ts`],
+  ["exported-child-function-read-only", `f(){ :; }; export -f f; bash -c 'f; wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["cleared-child-function-read-only", `f(){ :; }; export -f f; env -i bash -c 'wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["wgetrc-unset-control", `export WGETRC=/dev/null; unset WGETRC; HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["cdpath-explicit-relative-control", `CDPATH=src; cd ./src; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["cdpath-pushd-popd-control", `CDPATH=src; pushd ./src; popd; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["chmod-reference-separated-metadata-control", `chmod --reference .omx/state/reference-copy .omx/state/reference-copy`],
+  ["chown-reference-separated-metadata-control", `chown --reference .omx/state/reference-copy .omx/state/reference-copy`],
+  ["chgrp-reference-separated-metadata-control", `chgrp --reference .omx/state/reference-copy .omx/state/reference-copy`],
+  ["python-isolated-metadata-cwd-control", `cd .omx/state && python3 -I -c "print('ok')"`],
+  ["reference-metadata-control", `chmod --reference=.omx/state/reference-copy .omx/state/reference-copy`],
+  ["chown-reference-metadata-control", `chown --reference=.omx/state/reference-copy .omx/state/reference-copy`],
+  ["chgrp-reference-metadata-control", `chgrp --reference=.omx/state/reference-copy .omx/state/reference-copy`],
+  ["curl-cluster-stdout-control", `curl -q -sD - -o - https://example.test/file`],
+  ["rsync-metadata-log-control", `rsync --quiet --log-file=.omx/state/rsync.log .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+  ["rsync-metadata-separated-log-control", `rsync --log-file .omx/state/rsync.log .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+  ["nonrecursive-rsync-metadata", `rsync --compress --log-file=.omx/state/rsync-recursive.log .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+  ["rsync-metadata-no-log-control", `rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+  ["function-unset-rsync-runtime-control", `export RSYNC_PARTIAL_DIR=src/rsync-partials; clear(){ unset RSYNC_PARTIAL_DIR; }; clear; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+  ["rsync-product-source-metadata-control", `rsync ${resolve(process.cwd(), "README.md")} .omx/state/inbox/readme.md`],
+  ["wget-version-control", `wget --no-config --no-hsts -V`],
+  ["wget-value-option-stdout-control", `wget --no-config --no-hsts -t 1 -O - https://example.test/file`],
+  ["wget-help-control", `wget --no-config --no-hsts --help`],
+  ["cdpath-absolute-control", `CDPATH=src; cd /tmp; wget --no-config --no-hsts -O - https://example.test/file`],
+  ["function-lastpipe-option-control", `export POSIXLY_CORRECT=1; f(){ shopt -s lastpipe; }; f; g(){ unset POSIXLY_CORRECT; }; true | g; wget --no-config --no-hsts -O src/function-lastpipe-first.ts https://example.test/file -O -`],
+  ["wget-execute-static-nonsink-stdout", `wget --no-config --no-hsts -e 'timeout=1' -O - https://example.test/file`],
+  ["wget-bounded-connect-dns-read-timeout-control", `wget --no-config --no-hsts --connect-timeout=1 --dns-timeout=1 --read-timeout=1 -O - https://example.test/file`],
+  ["nested-bash-shopt-lastpipe-control", `bash -O lastpipe -c 'true | printf safe'`],
+  ["curl-disabled-startup-stdout", `curl -q --write-out '%output{-}' https://example.test/file`],
+  ["curl-short-write-out-stdout", `curl -q -w '%output{-}' https://example.test/file`],
+  ["curl-disable-startup-stdout", `curl --disable --write-out '%output{-}' https://example.test/file`],
+  ["curl-inline-write-out-stdout", `curl -q --write-out='%output{-}' https://example.test/file`],
+  ["static-benign-export-control", `export GJC_SESSION_ID; cat src/conductor-owned.ts`],
+  ["curl-ssl-key-log-unset-control", `SSLKEYLOGFILE=src/curl-tls.keys env -u SSLKEYLOGFILE curl -q -o - https://example.test/file`],
+  ["wget-ssl-key-log-unset-control", `SSLKEYLOGFILE=src/wget-tls.keys env -u SSLKEYLOGFILE wget --no-config --no-hsts -O - https://example.test/file`],
+  ["exported-readonly-child-function-control", `f(){ :; }; declare -frx f; bash -c 'f; wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["exported-redefined-child-function-control", `f(){ :; }; export -f f; f(){ :; }; bash -c 'f; wget --no-config --no-hsts -O - https://example.test/file'`],
+  ["cdpath-rsync-metadata-control", `CDPATH=.omx; cd state; rsync --log-file=rsync-cdpath.log conductor-ledger.json inbox/rsync-cdpath-copy`],
+  ["pushd-cdpath-rsync-metadata-control", `CDPATH=.omx; pushd state; rsync --log-file=rsync-pushd.log conductor-ledger.json inbox/rsync-pushd-copy`],
+  ["cdpath-prefix-cd-metadata-control", `CDPATH=src cd state; rsync --log-file=../../.omx/state/rsync-prefix-cdpath.log ../../.omx/state/conductor-ledger.json ../../.omx/state/inbox/rsync-prefix-cdpath-copy`],
+  ["cdpath-local-function-restores", `CDPATH=.omx; f(){ local CDPATH=src; cd shared; cd ../..; }; f; cd state; rsync --log-file=rsync-local-cdpath.log conductor-ledger.json inbox/rsync-local-cdpath-copy`],
+  ["cdpath-nested-local-function-restores", `CDPATH=.omx; f(){ local CDPATH=src; g(){ local CDPATH=.omx; cd state; cd ../..; }; g; cd shared; cd ../..; }; f; cd state; rsync --log-file=rsync-nested-local-cdpath.log conductor-ledger.json inbox/rsync-nested-local-cdpath-copy`],
+  ["curl-static-head-stdout", `curl -q --request HEAD https://example.test/file`],
+  ["wget-no-proxy-standalone-stdout-control", `wget --no-config --no-hsts --no-proxy -O - https://example.test/file`],
+  ["wget-quiet-standalone-stdout-control", `wget --no-config --no-hsts -q -O - https://example.test/file`],
+  ["wget-short-quiet-standalone-stdout-control", `wget --no-config --no-hsts -qO- https://example.test/file`],
+  ["wget-static-head-stdout", `wget --no-config --no-hsts --method=HEAD -O - https://example.test/file`],
+  ["path-inherited-system-control", `cat src/conductor-owned.ts`],
+  ["absolute-system-path-control", `/usr/bin/cat src/conductor-owned.ts`],
+  ["loader-clear-environment-control", `env -i /usr/bin/cat src/conductor-owned.ts`],
+  ["node-output-clear-environment-control", `NODE_V8_COVERAGE=src env -i node -e "console.log('ok')"`],
+  ["node-persistent-output-clear-environment-control", `export NODE_V8_COVERAGE=src; env -i node -e "console.log('ok')"`],
+  ["loader-unrelated-declaration-control", `export WGETRC=/dev/stdin; declare +x WGETRC; HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
+  ["zsh-fast-startup-control", `zsh -f -c ':'`],
 ] as const;
+
+const WGET_MAIN_METADATA_MUTATION_COMMANDS = [
+  ["hardlink-metadata-source-control", `ln .omx/state/conductor-ledger.json .omx/handoffs/run-1/ledger-link`],
+  ["nested-chdir-metadata", `env --chdir=src sh -c 'touch ../.omx/state/final.log'`],
+  ["touch-mode-metadata", `touch .omx/state/final.log -m`],
+  ["time-output-metadata", `time --output=.omx/state/time-output.log printf safe`],
+  ["bounded-dd-metadata-copy-control", `dd if=a of=.omx/state/inbox/dd-copy bs=1 count=1`],
+  ["bounded-truncate-metadata-control", `truncate --size=16777216 .omx/state/inbox/truncate`],
+] as const;
+
+const WGET_INHERITED_POSIX_COMMANDS = [
+  ["wget-inherited-posix-option-ordering", `wget -O src/posix-inherited-wget-owned.ts https://example.test/file -O -`],
+] as const;
+
 
 function nativeHookScriptPath(): string {
   return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
@@ -139,11 +758,27 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+async function withTrustedWorkspaceOmxCli<T>(
+  cwd: string,
+  action: (omxCommand: string, trustedPath: string) => Promise<T>,
+  commandForm: "assignment" | "env" = "assignment",
+): Promise<T> {
+  const cliPath = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+  const binDir = join(cwd, "node_modules", ".bin");
+  const shimPath = join(binDir, "omx");
+  await mkdir(binDir, { recursive: true });
+  await rm(shimPath, { force: true });
+  await symlink(cliPath, shimPath);
+  const path = `${binDir}:/usr/bin:/bin`;
+  return await action(commandForm === "env" ? `env PATH="${path}" omx` : `PATH="${path}" omx`, path);
+}
+
 async function writeNativeMappedSessionState(
   cwd: string,
   stateDir: string,
   sessionId: string,
   nativeSessionId: string,
+  leaderThreadId?: string,
 ): Promise<void> {
   await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
   await writeJson(join(stateDir, "session.json"), {
@@ -151,6 +786,20 @@ async function writeNativeMappedSessionState(
     native_session_id: nativeSessionId,
     cwd,
   });
+  if (leaderThreadId) {
+    await writeJson(join(stateDir, "subagent-tracking.json"), {
+      schemaVersion: 1,
+      sessions: {
+        [sessionId]: {
+          session_id: sessionId,
+          leader_thread_id: leaderThreadId,
+          threads: {
+            [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" },
+          },
+        },
+      },
+    });
+  }
 }
 
 async function writeLiveNativeMappedSessionState(
@@ -158,6 +807,7 @@ async function writeLiveNativeMappedSessionState(
   stateDir: string,
   sessionId: string,
   nativeSessionId: string,
+  leaderThreadId?: string,
 ): Promise<void> {
   await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
   const liveState = await writeSessionStart(cwd, sessionId, { nativeSessionId });
@@ -165,6 +815,20 @@ async function writeLiveNativeMappedSessionState(
   const targetStatePath = join(stateDir, "session.json");
   if (liveStatePath !== targetStatePath) {
     await writeFile(targetStatePath, JSON.stringify(liveState, null, 2));
+  }
+  if (leaderThreadId) {
+    await writeJson(join(stateDir, "subagent-tracking.json"), {
+      schemaVersion: 1,
+      sessions: {
+        [sessionId]: {
+          session_id: sessionId,
+          leader_thread_id: leaderThreadId,
+          threads: {
+            [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" },
+          },
+        },
+      },
+    });
   }
 }
 
@@ -611,10 +1275,20 @@ describe("codex native hook dispatch", () => {
         hookSpecificOutput?: unknown;
       };
 
+      const hookSpecificOutput = output.hookSpecificOutput as {
+        hookEventName?: string;
+        permissionDecision?: string;
+        permissionDecisionReason?: string;
+      } | undefined;
       assert.equal(output.continue, undefined);
       assert.equal(output.decision, undefined);
       assert.equal(output.stopReason, undefined);
-      assert.equal(output.hookSpecificOutput, undefined);
+      assert.equal(hookSpecificOutput?.hookEventName, "PreToolUse");
+      assert.equal(hookSpecificOutput?.permissionDecision, "deny");
+      assert.equal(
+        hookSpecificOutput?.permissionDecisionReason,
+        "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.",
+      );
       assert.match(
         String(output.systemMessage ?? ""),
         /stdin JSON parsing failed inside codex-native-hook:/,
@@ -896,6 +1570,129 @@ describe("codex native hook dispatch", () => {
       assert.equal(mixedOutput.decision, undefined);
       assert.equal(mixedOutput.reason, undefined);
       assert.equal(mixedOutput.systemMessage, undefined);
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await symlink(join(cwd, "src"), join(cwd, ".omx", "drafts"));
+      const linkedPlanningBashPayload = {
+        hook_event_name: "PreToolUse" as const,
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-cli-ralplan-draft-linked-path",
+        tool_name: "Bash" as const,
+        tool_input: { command: "printf owned > .omx/drafts/linked-plan.md" },
+      };
+      const linkedPlanningCli = runNativeHookCliResult(linkedPlanningBashPayload, { cwd });
+      assert.equal(linkedPlanningCli.status, 0, linkedPlanningCli.stderr || linkedPlanningCli.stdout);
+      assert.equal(
+        (parseSingleJsonStdout(linkedPlanningCli.stdout).hookSpecificOutput as { permissionDecision?: string }).permissionDecision,
+        "deny",
+      );
+      const linkedPlanningDirect = await dispatchCodexNativeHook(linkedPlanningBashPayload, { cwd });
+      assert.equal(linkedPlanningDirect.outputJson?.decision, "block");
+      const boxedRoot = join(cwd, "boxed-planning-root");
+      const boxedStateDir = join(boxedRoot, ".omx", "state");
+      const boxedPlanningStatePath = join(boxedStateDir, "sessions", sessionId, "ralplan-state.json");
+      const previousOmxRoot = process.env.OMX_ROOT;
+      const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+      const previousOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+      await writeFile(join(cwd, "src", "runtime.ts"), JSON.stringify({ active: true, mode: "ralplan", current_phase: "planning", session_id: sessionId }), "utf-8");
+      await writeJson(join(boxedStateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(boxedStateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await symlink(join(cwd, "src", "runtime.ts"), boxedPlanningStatePath);
+      const boxedPlanningHardLinkPath = join(boxedStateDir, "sessions", sessionId, "deep-interview-state.json");
+      await link(join(cwd, "src", "runtime.ts"), boxedPlanningHardLinkPath);
+      const boxedPlanningSiblingSessionId = `${sessionId}-sibling`;
+      const boxedPlanningSiblingPath = join(boxedStateDir, "sessions", boxedPlanningSiblingSessionId, "ralplan-state.json");
+      await writeJson(boxedPlanningSiblingPath, { active: true, mode: "ralplan", current_phase: "planning", session_id: boxedPlanningSiblingSessionId });
+      const boxedPlanningPayload = {
+        hook_event_name: "PreToolUse" as const,
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-cli-ralplan-boxed-state-link",
+        tool_name: "Write" as const,
+        tool_input: { file_path: boxedPlanningStatePath, content: "owned\n" },
+      };
+      try {
+        process.env.OMX_ROOT = boxedRoot;
+        delete process.env.OMX_STATE_ROOT;
+        delete process.env.OMX_TEAM_STATE_ROOT;
+        const boxedPlanningCli = runNativeHookCliResult(boxedPlanningPayload, {
+          cwd,
+          env: { ...process.env, OMX_ROOT: boxedRoot, OMX_STATE_ROOT: "", OMX_TEAM_STATE_ROOT: "" },
+        });
+        assert.equal(boxedPlanningCli.status, 0, boxedPlanningCli.stderr || boxedPlanningCli.stdout);
+        assert.equal(
+          (parseSingleJsonStdout(boxedPlanningCli.stdout).hookSpecificOutput as { permissionDecision?: string }).permissionDecision,
+          "deny",
+        );
+        const boxedPlanningHardLinkCli = runNativeHookCliResult({
+          ...boxedPlanningPayload,
+          tool_use_id: "thread-cli-ralplan-boxed-state-hardlink",
+          tool_input: { file_path: boxedPlanningHardLinkPath, content: "owned\n" },
+        }, { cwd, env: { ...process.env, OMX_ROOT: boxedRoot, OMX_STATE_ROOT: "", OMX_TEAM_STATE_ROOT: "" } });
+        assert.equal(boxedPlanningHardLinkCli.status, 0, boxedPlanningHardLinkCli.stderr || boxedPlanningHardLinkCli.stdout);
+        assert.equal(
+          (parseSingleJsonStdout(boxedPlanningHardLinkCli.stdout).hookSpecificOutput as { permissionDecision?: string }).permissionDecision,
+          "deny",
+        );
+        const boxedPlanningDirect = await dispatchCodexNativeHook(boxedPlanningPayload, { cwd });
+        assert.equal(boxedPlanningDirect.outputJson?.decision, "block");
+        const boxedPlanningHardLink = await dispatchCodexNativeHook({
+          ...boxedPlanningPayload,
+          tool_use_id: "thread-direct-ralplan-boxed-state-hardlink",
+          tool_input: { file_path: boxedPlanningHardLinkPath, content: "owned\n" },
+        }, { cwd });
+        assert.equal(boxedPlanningHardLink.outputJson?.decision, "block");
+        const boxedPlanningSiblingCli = runNativeHookCliResult({
+          ...boxedPlanningPayload,
+          tool_use_id: "thread-cli-ralplan-boxed-state-sibling",
+          tool_input: { file_path: boxedPlanningSiblingPath, content: "owned\n" },
+        }, { cwd, env: { ...process.env, OMX_ROOT: boxedRoot, OMX_STATE_ROOT: "", OMX_TEAM_STATE_ROOT: "" } });
+        assert.equal(boxedPlanningSiblingCli.status, 0, boxedPlanningSiblingCli.stderr || boxedPlanningSiblingCli.stdout);
+        assert.equal(
+          (parseSingleJsonStdout(boxedPlanningSiblingCli.stdout).hookSpecificOutput as { permissionDecision?: string }).permissionDecision,
+          "deny",
+        );
+        const boxedPlanningSibling = await dispatchCodexNativeHook({
+          ...boxedPlanningPayload,
+          tool_use_id: "thread-direct-ralplan-boxed-state-sibling",
+          tool_input: { file_path: boxedPlanningSiblingPath, content: "owned\n" },
+        }, { cwd });
+        assert.equal(boxedPlanningSibling.outputJson?.decision, "block");
+      } finally {
+        if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+        else process.env.OMX_ROOT = previousOmxRoot;
+        if (previousOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+        else process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+        if (previousOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+        else process.env.OMX_TEAM_STATE_ROOT = previousOmxTeamStateRoot;
+      }
+      const trustedPlanningCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+      const trustedPlanningBin = join(cwd, "node_modules", ".bin", "omx");
+      await mkdir(dirname(trustedPlanningBin), { recursive: true });
+      await symlink(trustedPlanningCli, trustedPlanningBin);
+      const poisonedPlanningStateWrite = `OMX_STATE_ROOT=${join(cwd, "src", "state")} PATH=${dirname(trustedPlanningBin)}:/usr/bin:/bin omx state write --input '{"mode":"ralplan","active":true}' --json`;
+      const poisonedPlanningCli = runNativeHookCliResult({
+        ...linkedPlanningBashPayload,
+        tool_use_id: "thread-cli-ralplan-poisoned-state-write",
+        tool_input: { command: poisonedPlanningStateWrite },
+      }, { cwd });
+      assert.equal(poisonedPlanningCli.status, 0, poisonedPlanningCli.stderr || poisonedPlanningCli.stdout);
+      assert.equal(
+        (parseSingleJsonStdout(poisonedPlanningCli.stdout).hookSpecificOutput as { permissionDecision?: string }).permissionDecision,
+        "deny",
+      );
+      const poisonedPlanningDirect = await dispatchCodexNativeHook({
+        ...linkedPlanningBashPayload,
+        tool_use_id: "thread-direct-ralplan-poisoned-state-write",
+        tool_input: { command: poisonedPlanningStateWrite },
+      }, { cwd });
+      assert.equal(poisonedPlanningDirect.outputJson?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -907,6 +1704,10 @@ describe("codex native hook dispatch", () => {
     const leaderThreadId = "thread-team-worker-pretool-identity-leader";
     const teamName = "team-worker-pretool-identity";
     const stateDir = join(cwd, ".omx", "state");
+    const originalTmuxPane = process.env.TMUX_PANE;
+    const originalTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const originalTeamWorker = process.env.OMX_TEAM_WORKER;
+    const originalInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
     const workerPayload = {
       hook_event_name: "PreToolUse",
       cwd,
@@ -929,6 +1730,16 @@ describe("codex native hook dispatch", () => {
         session_id: sessionId,
         native_session_id: leaderThreadId,
       });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            threads: { [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" } },
+          },
+        },
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -939,7 +1750,15 @@ describe("codex native hook dispatch", () => {
 
       const unmarkedWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
       assert.equal(unmarkedWorker.outputJson?.decision, "block");
-      assert.match(String(unmarkedWorker.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      assert.match(String(unmarkedWorker.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      const identitylessRemoteMutation = await dispatchCodexNativeHook({
+        ...workerPayload,
+        tool_name: "Bash",
+        tool_use_id: "tool-team-worker-identityless-remote-mutation",
+        tool_input: { command: "PATH=/usr/bin:/bin gh issue create --title x --body y" },
+      }, { cwd });
+      assert.equal(identitylessRemoteMutation.outputJson?.decision, "block");
+      assert.match(String(identitylessRemoteMutation.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
 
       for (const teamWorkerEnv of ["OMX_TEAM_INTERNAL_WORKER", "OMX_TEAM_WORKER"] as const) {
         process.env[teamWorkerEnv] = `${teamName}/worker-1`;
@@ -959,16 +1778,14 @@ describe("codex native hook dispatch", () => {
           session_id: leaderThreadId,
           tool_use_id: "tool-team-worker-pretool-identity-root-session",
         }, { cwd });
-        assert.equal(identitylessRootWithWorkerEnvironment.outputJson?.decision, "block", teamWorkerEnv);
-        assert.match(String(identitylessRootWithWorkerEnvironment.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+        assert.equal(identitylessRootWithWorkerEnvironment.outputJson, null, teamWorkerEnv);
         delete process.env[teamWorkerEnv];
       }
 
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
       process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
       const unanchoredWorker = await dispatchCodexNativeHook(workerPayload, { cwd });
-      assert.equal(unanchoredWorker.outputJson?.decision, "block");
-      assert.match(String(unanchoredWorker.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      assert.equal(unanchoredWorker.outputJson, null);
 
       await writeJson(join(stateDir, "session.json"), {
         session_id: sessionId,
@@ -991,6 +1808,14 @@ describe("codex native hook dispatch", () => {
       assert.equal(teamPlanningRoot.outputJson?.decision, "block");
       assert.match(String(teamPlanningRoot.outputJson?.reason ?? ""), /Ralplan is active \(phase: planning\)/);
     } finally {
+      if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
+      else process.env.TMUX_PANE = originalTmuxPane;
+      if (originalTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
+      if (originalTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
+      else process.env.OMX_TEAM_WORKER = originalTeamWorker;
+      if (originalInternalTeamWorker === undefined) delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      else process.env.OMX_TEAM_INTERNAL_WORKER = originalInternalTeamWorker;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -1002,6 +1827,30 @@ describe("codex native hook dispatch", () => {
     const leaderAgentId = "agent-cli-issue-3127-leader";
     const teamName = "cli-issue-3127";
     try {
+      await mkdir(join(cwd, "src", "shared"), { recursive: true });
+      await mkdir(join(cwd, "src", "state"), { recursive: true });
+      await mkdir(join(cwd, ".omx", "state", "tmp"), { recursive: true });
+      await mkdir(join(cwd, ".omx", "state", "inbox"), { recursive: true });
+      await symlink(join(cwd, "src", "dangling-target.ts"), join(cwd, ".omx", "state", "inbox", "dangling"));
+      await mkdir(join(cwd, "src", "subdir"), { recursive: true });
+      await mkdir(join(cwd, ".omx", "state", "bash-home"), { recursive: true });
+      await writeFile(join(cwd, "src", "runtime.ts"), "export {};\n", "utf-8");
+      await writeFile(join(cwd, "a"), "finite metadata source\n", "utf-8");
+      await writeFile(join(cwd, "src", "large.bin"), Buffer.alloc(16 * 1024 * 1024 + 1));
+      await mkdir(join(cwd, ".omx", "state", "zsh-home"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "state", "zsh-home", ".zshenv"), "touch src/zsh-owned.ts\n", "utf-8");
+      await writeFile(join(cwd, ".omx", "state", "inbox", "time"), "#!/bin/sh\ntouch src/time-wrapper-owned.ts\n", "utf-8");
+      await chmod(join(cwd, ".omx", "state", "inbox", "time"), 0o755);
+      await writeFile(join(cwd, ".omx", "state", "inbox", "node"), "#!/bin/sh\ntouch src/shebang-owned.ts\n", "utf-8");
+      await chmod(join(cwd, ".omx", "state", "inbox", "node"), 0o755);
+      await writeFile(join(cwd, ".omx", "state", "bash-home", ".bashrc"), "touch src/interactive-owned.ts\n", "utf-8");
+      await symlink(join(cwd, "src", "subdir"), join(cwd, ".omx", "state", "link"));
+      await symlink(join(cwd, "src"), join(cwd, ".omx", "state", "inbox", "product-dir"));
+      await symlink(join(cwd, "src", "runtime.ts"), join(cwd, ".omx", "state", "curl-glob-1.log"));
+      await writeFile(join(cwd, "README.md"), "read-only source\n", "utf-8");
+      await writeFile(join(stateDir, "conductor-ledger.json"), "{}\n", "utf-8");
+      await writeFile(join(stateDir, "reference-copy"), "metadata reference target\n", "utf-8");
+
       await initTeamState(teamName, "compiled hook actor identity", "executor", 1, cwd);
       const teamConfig = await readTeamConfig(teamName, cwd);
       assert.ok(teamConfig);
@@ -1010,6 +1859,16 @@ describe("codex native hook dispatch", () => {
       await saveTeamConfig(teamConfig, cwd);
       await writeWorkerIdentity(teamName, "worker-1", teamConfig.workers[0]!, cwd);
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderAgentId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderAgentId,
+            threads: { [leaderAgentId]: { thread_id: leaderAgentId, kind: "leader" } },
+          },
+        },
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -1042,6 +1901,8 @@ describe("codex native hook dispatch", () => {
         ...officialRootPayload,
         session_id: leaderAgentId,
         tool_use_id: "tool-cli-issue-3127-team-leader",
+        agent_id: leaderAgentId,
+        thread_id: leaderAgentId,
       }, { cwd, env: teamEnv });
       assert.equal(leaderWithWorkerEnv.status, 0, leaderWithWorkerEnv.stderr || leaderWithWorkerEnv.stdout);
       const leaderHookOutput = parseSingleJsonStdout(leaderWithWorkerEnv.stdout).hookSpecificOutput as Record<string, unknown>;
@@ -1051,6 +1912,7 @@ describe("codex native hook dispatch", () => {
       const childEnv = {
         ...process.env,
         OMX_ROOT: cwd,
+        GJC_SESSION_ID: sessionId,
         OMX_TEAM_STATE_ROOT: "",
         OMX_TEAM_WORKER: "",
         OMX_TEAM_INTERNAL_WORKER: "",
@@ -1066,7 +1928,9 @@ describe("codex native hook dispatch", () => {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: actor === "main-root" ? leaderAgentId : sessionId,
-          ...(actor === "native-child" ? { agent_id: "agent-cli-issue-3127-child" } : {}),
+          ...(actor === "main-root"
+            ? { agent_id: leaderAgentId, thread_id: leaderAgentId }
+            : { agent_id: "agent-cli-issue-3127-child" }),
           tool_name: toolName,
           tool_use_id: `tool-cli-issue-3127-${actor}-${name}`,
           tool_input: toolInput,
@@ -1096,9 +1960,116 @@ describe("codex native hook dispatch", () => {
         const output = runActorProbe("native-child", name, toolName, toolInput);
         requireActorDeny("native-child", name, output);
       }
+      for (const [name, toolInput] of [
+        ["state-write-foreign-routing", { mode: "ultragoal", workingDirectory: "src", session_id: "foreign", active: false }],
+        ["state-write-unknown-key", { mode: "ultragoal", active: true, child_marker: "forbidden" }],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "mcp__omx_state__state_write", toolInput));
+        }
+      }
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          "state-clear-active-workflow",
+          runActorProbe(actor, "state-clear-active-workflow", "mcp__omx_state__state_clear", { mode: "ultragoal" }),
+        );
+      }
+      for (const fileName of [
+        "autopilot-state.json",
+        "autoresearch-state.json",
+        "deep-interview-state.json",
+        "ralplan-state.json",
+        "ralph-state.json",
+        "ultrawork-state.json",
+        "team-state.json",
+        "ultraqa-state.json",
+        "ultragoal-state.json",
+        "skill-active-state.json",
+        "release-readiness-state.json",
+        "run-state.json",
+        "session.json",
+        "subagent-tracking.json",
+        "native-stop-state.json",
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(
+            actor,
+            `raw-gate-state-write-${fileName}`,
+            runActorProbe(actor, `raw-gate-state-write-${fileName}`, "Write", {
+              file_path: `.omx/state/sessions/${sessionId}/${fileName}`,
+              content: JSON.stringify({ active: false, mode: fileName.slice(0, -"-state.json".length), current_phase: "complete", session_id: sessionId }),
+            }),
+          );
+        }
+      }
+      for (const filePath of [
+        `.omx/state/team/${teamName}/phase.json`,
+        `.omx/state/team/${teamName}/manifest.v2.json`,
+        `.omx/state/team/${teamName}/config.json`,
+        `.omx/state/team/${teamName}/workers/worker-1/identity.json`,
+      ]) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(
+            actor,
+            `raw-Team-authority-write-${filePath}`,
+            runActorProbe(actor, `raw-Team-authority-write-${filePath}`, "Write", { file_path: filePath, content: "{}" }),
+          );
+        }
+      }
+      for (const filePath of [
+        `.omx/state/sessions/${sessionId}/ULTRAGOAL-STATE.JSON`,
+        `.omx/state/sessions/${sessionId}/ultragoal-state.json. `,
+      ]) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(
+            actor,
+            `raw-gate-state-filesystem-alias-${filePath}`,
+            runActorProbe(actor, `raw-gate-state-filesystem-alias-${filePath}`, "Write", { file_path: filePath, content: "{}" }),
+          );
+        }
+      }
+      for (const [name, command] of [
+        ["gate-state-redirect", `printf x > .omx/state/sessions/${sessionId}/ultragoal-state.json`],
+        ["gate-state-editor", `sed -i 's/executing/complete/' .omx/state/sessions/${sessionId}/ultragoal-state.json`],
+        ["gate-state-interpreter", `node -e "require('fs').writeFileSync('.omx/state/sessions/${sessionId}/ultragoal-state.json','{}')"`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
+        }
+      }
+      const identitylessRemoteMutation = runNativeHookCliResult({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        tool_name: "Bash",
+        tool_use_id: "tool-cli-identityless-remote-mutation",
+        tool_input: { command: "PATH=/usr/bin:/bin gh issue create --title x --body y" },
+      }, { cwd, env: childEnv });
+      assert.equal(identitylessRemoteMutation.status, 0, identitylessRemoteMutation.stderr || identitylessRemoteMutation.stdout);
+      assert.match(
+        String((parseSingleJsonStdout(identitylessRemoteMutation.stdout).hookSpecificOutput as { permissionDecisionReason?: string }).permissionDecisionReason ?? ""),
+        /OWNER_CONFIRMATION_REQUIRED/,
+      );
 
       for (const [name, command] of [
         ["node-rm-sync", `node -e "require('fs').rmSync('src/victim.ts')"`],
+        ["node-create-read-stream-write", `node -e "require('fs').createReadStream('src/victim.ts',{flags:'w'})"`],
+        ["node-bound-create-read-stream-append", `node -e "const {createReadStream: stream}=require('fs');stream('src/victim.ts',{flags:'a'})"`],
+        ["posix-uniq-output-after-operand", `cd src; POSIXLY_CORRECT=1 uniq runtime.ts --count`],
+        ["posix-touch-reference-after-operand", `POSIXLY_CORRECT=1 touch .omx/state/inbox/marker --reference src/runtime.ts`],
+        ["nested-sh-posix-special-builtin", `sh -c 'POSIXLY_CORRECT=1 export POSIXLY_CORRECT; wget --no-config --no-hsts -O src/sh-posix-owned.ts https://example.test/file -O -'`],
+        ["nested-exec-argv0-sh-posix", `exec -a sh bash -c 'POSIXLY_CORRECT=1 export POSIXLY_CORRECT; wget --no-config --no-hsts -O src/exec-argv0-posix-owned.ts https://example.test/file -O -'`],
+        ["nested-env-argv0-sh-posix", `env --argv0 sh bash -c 'POSIXLY_CORRECT=1 export POSIXLY_CORRECT; wget --no-config --no-hsts -O src/env-argv0-posix-owned.ts https://example.test/file -O -'`],
+        ["bare-arithmetic-command-secondary-expansion", `true='slot[$(touch src/arithmetic-command-owned.ts)0]'; ((true))`],
+        ["arithmetic-for-secondary-expansion", `for ((i=$(touch src/arithmetic-for-owned.ts); i<1; i++)); do :; done`],
+        ["let-secondary-expansion", `let 'slot[$(touch src/let-owned.ts)0]=1'`],
+        ["oversized-metadata-redirect", `head -c 16777217 /dev/zero > .omx/state/inbox/oversized`],
+        ["unbounded-metadata-redirect", `cat /dev/zero > .omx/state/inbox/unbounded`],
+        ["unbounded-metadata-redirect-with-unrelated-heredoc", `cat /dev/zero > .omx/state/inbox/unbounded-with-heredoc; cat <<'EOF'
+bounded
+EOF`],
+        ["oversized-rsync-metadata-source", `rsync src/large.bin .omx/state/inbox/large-copy`],
         ["node-rename-sync", `node -e "require('fs').renameSync('src/a.ts','src/b.ts')"`],
         ["node-template-interpolation", "node -e '" + '`${require("fs").rmSync("src/template.ts")}`' + "'"],
         ["node-computed-mutation", `node -e "const fs=require('fs');const op='rmSync';fs[op]('src/computed.ts')"`],
@@ -1168,6 +2139,8 @@ describe("codex native hook dispatch", () => {
         ["python-path-sitecustomize-preload", `PYTHONPATH=./.omx/state python3 -c "print('ok')"`],
         ["python-dynamic-open-mode", `python3 -c "m='w';open('src/python-dynamic-open.ts',m)"`],
         ["python-warnings-module-preload", `PYTHONWARNINGS='ignore::Mutator.Warning' python3 -c "print('ok')"`],
+        ["python-nonisolation-read-only", `python3 -c "print('ok')"`],
+        ["python-nonisolation-modeled-metadata-copy", "python3 - <<'PY'\nimport shutil\nshutil.copyfile('a', '.omx/state/foo')\nPY"],
         ["ruby-uninspected-runtime", `ruby -e "File.delete('src/ruby-delete.ts')"`],
         ["python-fstring-side-effect", `python3 -c "import subprocess;f'{subprocess.run([\\"touch\\",\\"src/python-fstring.ts\\"])}'"`],
         ["python-isolated-script", `python3 -I .omx/tmp/session/run.py`],
@@ -1184,6 +2157,13 @@ describe("codex native hook dispatch", () => {
         ["gh-global-repo-release-download", `gh -R owner/repo release download --dir src`],
         ["git-external-diff-env", `GIT_EXTERNAL_DIFF=./.omx/state/mutator git diff`],
         ["git-config-external-diff", `git -c diff.external=./.omx/state/mutator diff`],
+        ["git-config-env-helper", `HELPER=/usr/bin/touch git --config-env=diff.external=HELPER diff --no-index README.md src/scripts/codex-native-hook.ts`],
+        ["rg-search-zip-helper", `rg -z never .omx/state/input.gz`],
+        ["sensitive-printf-v-runtime-writer", `printf -v NODE_V8_COVERAGE '%s' src; export NODE_V8_COVERAGE; node -e "console.log('ok')"`],
+        ["sensitive-read-runtime-writer", `set -a; read GIT_TRACE <<< src/git-trace.log; git status`],
+        ["bash-login-startup", `HOME=.omx/state/login-home bash -lc 'printf safe'`],
+        ["wget-prefix-home-hsts", `WGETRC=/dev/null HOME=src wget --no-config -O - https://example.test/file`],
+        ["reference-precedes-reference-option", `chmod src/victim.ts --reference=.omx/state/session.json .omx/state/reference-copy`],
         ["awk-uninspected-runtime", `awk 'BEGIN { print \"x\" > \"src/awk-write.ts\" }'`],
         ["npm-restart-script", "npm restart"],
         ["bash-env-stdin-preload", `printf 'touch src/bash-env-preload.ts\\n' | BASH_ENV=/dev/stdin bash -c 'printf safe\\n'`],
@@ -1224,11 +2204,14 @@ PY`],
         ["python-escaped-path-bypass", `python3 -c "from pathlib import Path;Path('.omx/state/\\x2e\\x2e/\\x2e\\x2e/src/python-escape.ts').write_text('x')"`],
         ["clobber-redirect-bypass", `true >| src/clobber-bypass.ts`],
         ["cross-boundary-hardlink-bypass", `ln src/source.ts .omx/state/source-link.ts`],
+        ["target-directory-cross-boundary-hardlink-bypass", `ln src/source.ts -t .omx/handoffs/run-1`],
+        ["symbolic-link-metadata-bypass", `ln -s .omx/state/conductor-ledger.json .omx/state/ledger-symlink`],
         ["node-env-file-preload-bypass", `node --env-file=.omx/state/node.env -e "console.log('ok')"`],
         ["python-cwd-startup-bypass", `cd .omx/state && python3 -c "print('ok')"`],
         ["sed-in-place-execute-bypass", `sed -i '1e touch src/sed-exec.ts' .omx/state/conductor.log`],
         ["npm-run-build", "npm run build"],
         ...WGET_REVIEW_MUTATION_COMMANDS,
+        ...ARGUMENT_PRODUCING_RUNTIME_DENIAL_COMMANDS,
         ["unknown-extensionless-executable", "./.omx/state/mutator"],
         ["heredoc-delimiter-executable-collision", `cat <<'MUTATOR' > .omx/state/conductor.log\nsafe\nMUTATOR\n./.omx/state/mutator`],
         ["path-executable-function-name-collision", `mutator() { printf safe; }; ./.omx/state/mutator`],
@@ -1241,48 +2224,598 @@ PY`],
           requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
         }
       }
-      const cliStateWrite = `omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"executing","child_marker":"unauthorized"}' --json`;
-      assert.deepEqual(runActorProbe("main-root", "cli-state-write-main", "Bash", { command: cliStateWrite }), {});
-      requireActorDeny("native-child", "cli-state-write-native-child", runActorProbe("native-child", "cli-state-write-native-child", "Bash", { command: cliStateWrite }));
+      const cliStateWrite = `omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"executing"}' --json`;
+      const modeCliStateWrite = `OMX_SESSION_ID=${sessionId} omx state write --mode ultragoal --input '{"active":true,"current_phase":"blocked","reason":"native delegation unavailable -> terminalized"}' --json`;
+      const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+      const trustedPackageBinDirectory = join(cwd, "node_modules", ".bin");
+      const trustedPackageBin = join(trustedPackageBinDirectory, "omx");
+      const trustedPackageGjcBin = join(trustedPackageBinDirectory, "gjc");
+      await mkdir(trustedPackageBinDirectory, { recursive: true });
+      await symlink(resolve(workspacePackageCli), trustedPackageBin);
+      await symlink(resolve(workspacePackageCli), trustedPackageGjcBin);
+      const selfAssertedWorkspaceCli = join(cwd, "bin", "omx.js");
+      await mkdir(dirname(selfAssertedWorkspaceCli), { recursive: true });
+      await writeFile(join(cwd, "package.json"), JSON.stringify({ name: "oh-my-codex", bin: { omx: "bin/omx.js" } }), "utf-8");
+      await writeFile(selfAssertedWorkspaceCli, "#!/usr/bin/env node\n", "utf-8");
+      await chmod(selfAssertedWorkspaceCli, 0o755);
+      await rm(trustedPackageBin, { force: true });
+      await symlink(selfAssertedWorkspaceCli, trustedPackageBin);
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          "workspace self-asserted package CLI",
+          runActorProbe(actor, "workspace self-asserted package CLI", "Bash", { command: cliStateWrite }, { PATH: `${trustedPackageBinDirectory}:/usr/bin:/bin` }),
+        );
+      }
+      await rm(trustedPackageBin, { force: true });
+      await symlink(workspacePackageCli, trustedPackageBin);
+      const workspacePackageNodeShadow = join(trustedPackageBinDirectory, "node");
+      await writeFile(workspacePackageNodeShadow, "#!/bin/sh\ntouch src/omx-status-owned.ts\n", "utf-8");
+      await chmod(workspacePackageNodeShadow, 0o755);
+      for (const actor of ["main-root", "native-child"] as const) {
+        for (const command of [cliStateWrite, "omx status"] as const) {
+          requireActorDeny(
+            actor,
+            `workspace npm bin Node shadow ${command}`,
+            runActorProbe(actor, `workspace npm bin Node shadow ${command}`, "Bash", { command }, { PATH: `${trustedPackageBinDirectory}:/usr/bin:/bin` }),
+          );
+        }
+      }
+      await rm(workspacePackageNodeShadow, { force: true });
+      const trustedPackagePath = `${trustedPackageBinDirectory}:${process.env.PATH || "/usr/bin:/bin"}`;
+      const trustedPackageCommandPrefix = `PATH="${trustedPackageBinDirectory}:/usr/bin:/bin"`;
+      const npmBinPathShadow = join(cwd, ".omx", "state", "inbox", "cat");
+      await symlink("/usr/bin/touch", npmBinPathShadow);
+      const npmBinMissingCandidatePath = `${trustedPackageBinDirectory}:${join(cwd, ".omx", "state", "inbox")}:/usr/bin:/bin`;
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          "npm bin missing candidate continues PATH scan",
+          runActorProbe(actor, "npm bin missing candidate continues PATH scan", "Bash", { command: "cat src/path-owned.ts" }, { PATH: npmBinMissingCandidatePath }),
+        );
+      }
+      const nonexistentAbsoluteNpmBin = join(cwd, "node_modules", "oh-my-codex", "node_modules", ".bin");
+      const trustedPackagePathWithMissingNpmBin = `${nonexistentAbsoluteNpmBin}:${trustedPackagePath}`;
+      for (const [name, command, path] of [
+        ["absolute-workspace-npm-bin-cat-parity", "cat src/conductor-owned.ts", trustedPackagePath],
+        ["absolute-workspace-npm-bin-wrapped-cat-parity", "env cat src/conductor-owned.ts", trustedPackagePath],
+        ["nonexistent-absolute-npm-bin-cat-control", "cat src/conductor-owned.ts", trustedPackagePathWithMissingNpmBin],
+        ["nonexistent-absolute-npm-bin-wrapped-cat-control", "env cat src/conductor-owned.ts", trustedPackagePathWithMissingNpmBin],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          assert.deepEqual(
+            runActorProbe(actor, name, "Bash", { command }, { PATH: path }),
+            {},
+            `${actor}/${name}`,
+          );
+        }
+      }
+      const currentRuntimeNodePath = process.execPath;
+      const currentRuntimeNodePathEnvironment = { PATH: `${dirname(currentRuntimeNodePath)}:/usr/bin:/bin` };
+      const untrustedExternalBin = await mkdtemp(join(tmpdir(), "omx-native-hook-compiled-external-path-"));
+      const untrustedExternalCat = join(untrustedExternalBin, "cat");
+      const untrustedExternalGh = join(untrustedExternalBin, "gh");
+      const untrustedExternalNode = join(untrustedExternalBin, "node");
+      const untrustedExternalNodeLookalike = join(untrustedExternalBin, "node-copy");
+      try {
+        for (const actor of ["main-root", "native-child"] as const) {
+          assert.deepEqual(
+            runActorProbe(actor, "external-path-without-cat-candidate", "Bash", {
+              command: `PATH=${untrustedExternalBin}:${process.env.PATH || "/usr/bin:/bin"} cat src/conductor-owned.ts`,
+            }),
+            {},
+            actor,
+          );
+        }
+
+        await symlink("/bin/cat", untrustedExternalCat);
+        await writeFile(untrustedExternalGh, "#!/bin/sh\nexit 0\n", "utf-8");
+        await chmod(untrustedExternalGh, 0o755);
+        await writeFile(untrustedExternalNode, "#!/bin/sh\nexit 0\n", "utf-8");
+        await chmod(untrustedExternalNode, 0o755);
+        await writeFile(untrustedExternalNodeLookalike, "#!/bin/sh\nexit 0\n", "utf-8");
+        await chmod(untrustedExternalNodeLookalike, 0o755);
+        for (const actor of ["main-root", "native-child"] as const) {
+          for (const command of [
+            `${untrustedExternalCat} src/conductor-owned.ts`,
+            `PATH=${untrustedExternalBin}:${process.env.PATH || "/usr/bin:/bin"} cat src/conductor-owned.ts`,
+            `${untrustedExternalGh} issue create --title x --body y`,
+            `PATH=${untrustedExternalBin}:${process.env.PATH || "/usr/bin:/bin"} gh issue create --title x --body y`,
+            `${untrustedExternalNode} -e "require('fs').readFileSync('src/victim.ts','utf8')"`,
+            `PATH=${untrustedExternalBin}:/usr/bin:/bin node -e "require('fs').readFileSync('src/victim.ts','utf8')"`,
+            `${untrustedExternalNodeLookalike} -e "require('fs').readFileSync('src/victim.ts','utf8')"`,
+
+          ]) {
+            requireActorDeny(actor, `untrusted-external-${actor}`, runActorProbe(actor, `untrusted-external-${actor}`, "Bash", { command }));
+          }
+        }
+      } finally {
+        await rm(untrustedExternalBin, { recursive: true, force: true });
+      }
+      for (const [name, command] of [
+        ["trusted-package-cli-state-write", cliStateWrite],
+        ["trusted-package-cli-mode-state-write", modeCliStateWrite],
+      ] as const) {
+        assert.deepEqual(
+          runActorProbe("main-root", name, "Bash", { command }, { PATH: trustedPackagePath }),
+          {},
+        );
+        requireActorDeny(
+          "native-child",
+          name,
+          runActorProbe("native-child", name, "Bash", { command }, { PATH: trustedPackagePath }),
+        );
+      }
+      assert.deepEqual(
+        runActorProbe(
+          "main-root",
+          "trusted-package-cli-system-node",
+          "Bash",
+          { command: cliStateWrite },
+          { PATH: `${trustedPackageBinDirectory}:/usr/bin:/bin` },
+        ),
+        {},
+      );
+      const benignOrchestrationRuntimeEnvironment = {
+        PATH: trustedPackagePath,
+        GJC_SESSION_CWD: cwd,
+        GJC_SESSION_FILE: join(stateDir, "session.json"),
+        GJC_SESSION_ID: sessionId,
+        OMX_OPENCLAW: "1",
+        OMX_OPENCLAW_COMMAND: "resume",
+        OMX_OPENCLAW_DEBUG: "1",
+        OMX_TEST_RELAX_TMUX_TIMEOUT: "1",
+      };
+      assert.deepEqual(
+        runActorProbe("main-root", "trusted-package-cli-benign-runtime-environment", "Bash", { command: cliStateWrite }, benignOrchestrationRuntimeEnvironment),
+        {},
+      );
+      assert.deepEqual(
+        runActorProbe("main-root", "trusted-package-cli-benign-runtime-read-only", "Bash", { command: "omx status" }, benignOrchestrationRuntimeEnvironment),
+        {},
+      );
+      for (const [name, prefix] of [
+        ["poisoned-omx-root", `OMX_ROOT=${join(cwd, "src")} PATH=${trustedPackagePath}`],
+        ["poisoned-omx-state-root", `OMX_STATE_ROOT=${join(cwd, "src", "state")} PATH=${trustedPackagePath}`],
+        ["unknown-omx-runtime-output", `OMX_UNREVIEWED_OUTPUT=src/output PATH=${trustedPackagePath}`],
+        ["unknown-omx-runtime-environment", `OMX_UNREVIEWED_HELPER=src/mutator PATH=${trustedPackagePath}`],
+        ["unknown-gjc-runtime-environment", `GJC_UNREVIEWED_HELPER=src/mutator PATH=${trustedPackagePath}`],
+      ] as const) {
+        for (const command of [cliStateWrite, "omx status"] as const) {
+          const surface = command === cliStateWrite ? "state-write" : "read-only-omx";
+          requireActorDeny(
+            "main-root",
+            `${name}-${surface}`,
+            runActorProbe("main-root", `${name}-${surface}`, "Bash", { command: `${prefix} ${command}` }),
+          );
+        }
+      }
+      const functionPersistedRsyncEnvironment = `poison(){ export RSYNC_PARTIAL_DIR=${join(cwd, "src", "rsync-partials")}; }; poison; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`;
+      const functionPersistedOmxEnvironment = `poison(){ export OMX_STATE_ROOT=${join(cwd, "src", "state")}; }; poison; ${trustedPackageCommandPrefix} omx state write --input '{"mode":"ultragoal","active":true}' --json`;
+      for (const [name, command] of [
+        ["function-persisted-rsync-runtime-environment", functionPersistedRsyncEnvironment],
+        ["function-persisted-omx-runtime-environment", functionPersistedOmxEnvironment],
+        ["function-persisted-gjc-runtime-environment", `poison(){ export GJC_UNREVIEWED_HELPER=src/mutator; }; poison; ${trustedPackageCommandPrefix} omx status`],
+        ["nameref-rsync-runtime-environment", `declare -n poison=RSYNC_PARTIAL_DIR; poison=src/rsync-partials; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+        ["joined-rsync-runtime-environment", `if true; then export RSYNC_PARTIAL_DIR=src/rsync-partials; fi; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+        ["nested-omx-runtime-environment", `export OMX_STATE_ROOT=${join(cwd, "src", "state")}; bash --noprofile --norc -c 'omx status'`],
+        ["function-readonly-omx-root-failed-unset", `poison(){ readonly OMX_ROOT=${join(cwd, "src")}; unset OMX_ROOT; }; poison; ${trustedPackageCommandPrefix} omx status`],
+        ["function-readonly-rsync-runtime-failed-unset", `poison(){ readonly RSYNC_PARTIAL_DIR=src/rsync-partials; unset RSYNC_PARTIAL_DIR; }; poison; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+        ["function-readonly-gjc-runtime-failed-unset", `poison(){ readonly GJC_UNREVIEWED_HELPER=src/mutator; unset GJC_UNREVIEWED_HELPER; }; poison; ${trustedPackageCommandPrefix} omx status`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }, { PATH: trustedPackagePath }));
+        }
+      }
+      const dynamicCliStateWrite = `omx state write --input "$STATE_INPUT" --json`;
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `dynamic-cli-state-write-${actor}`,
+          runActorProbe(actor, `dynamic-cli-state-write-${actor}`, "Bash", { command: dynamicCliStateWrite }, { PATH: trustedPackagePath }),
+        );
+      }
+      const unknownStateWriteFlag = `omx state write --unexpected --input '{"mode":"ultragoal","active":true}' --json`;
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `unknown-state-write-flag-${actor}`,
+          runActorProbe(actor, `unknown-state-write-flag-${actor}`, "Bash", { command: unknownStateWriteFlag }, { PATH: trustedPackagePath }),
+        );
+      }
+      for (const [name, command] of [
+        ["state-write-foreign-routing", `omx state write --input '{"mode":"ultragoal","workingDirectory":"src","session_id":"foreign","active":false}' --json`],
+        ["state-write-unknown-payload-key", `omx state write --input '{"mode":"ultragoal","active":true,"child_marker":"forbidden"}' --json`],
+        ["state-write-conflicting-mode", `omx state write --mode=ultragoal --input '{"mode":"ralph","active":true}' --json`],
+        ["state-write-foreign-session-environment", `OMX_SESSION_ID=foreign omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+        ["state-write-unset-session-environment", `env -uOMX_SESSION_ID omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+        ["state-write-shell-unset-session", `unset OMX_SESSION_ID; omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+        ["state-write-noncanonical-cwd", `cd src; omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }, { PATH: trustedPackagePath }));
+        }
+      }
+      for (const [name, inheritedEnv] of [
+        ["inherited-foreign-omx-session-selector", { OMX_SESSION_ID: "foreign" }],
+        ["inherited-foreign-gjc-session-selector", { GJC_SESSION_ID: "foreign" }],
+        ["inherited-conflicting-session-selectors", { OMX_SESSION_ID: sessionId, GJC_SESSION_ID: "foreign" }],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(
+            actor,
+            name,
+            runActorProbe(actor, name, "Bash", { command: `omx state write --input '{"mode":"ultragoal","active":true}' --json` }, { PATH: trustedPackagePath, ...inheritedEnv }),
+          );
+        }
+      }
+      const fakeOmxDirectory = join(cwd, ".omx", "state");
+      const fakeOmxPath = join(fakeOmxDirectory, "omx");
+      const fakeGjcPath = join(fakeOmxDirectory, "gjc");
+      await writeFile(fakeOmxPath, "#!/bin/sh\nexit 0\n", "utf-8");
+      await writeFile(fakeGjcPath, "#!/bin/sh\nexit 0\n", "utf-8");
+      await chmod(fakeOmxPath, 0o755);
+      await chmod(fakeGjcPath, 0o755);
+      const fakeOmxStateWrite = `omx state write --input '{"mode":"ultragoal","active":true}' --json`;
+      const fakeGjcCheckpoint = `gjc ultragoal checkpoint --goal-id G001 --status failed --evidence unauthorized`;
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `repository-omx-shadow-${actor}`,
+          runActorProbe(actor, `repository-omx-shadow-${actor}`, "Bash", { command: fakeOmxStateWrite }, {
+            PATH: `${fakeOmxDirectory}:${trustedPackagePath}`,
+          }),
+        );
+        requireActorDeny(
+          actor,
+          `repository-gjc-shadow-${actor}`,
+          runActorProbe(actor, `repository-gjc-shadow-${actor}`, "Bash", { command: fakeGjcCheckpoint }, {
+            PATH: `${fakeOmxDirectory}:${trustedPackagePath}`,
+          }),
+        );
+      }
+      const fakeEnvPath = join(fakeOmxDirectory, "env");
+      await writeFile(fakeEnvPath, "#!/bin/sh\nexit 0\n", "utf-8");
+      await chmod(fakeEnvPath, 0o755);
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `repository-external-wrapper-shadow-${actor}`,
+          runActorProbe(actor, `repository-external-wrapper-shadow-${actor}`, "Bash", {
+            command: `PATH=${fakeOmxDirectory}:/usr/bin:/bin env cat src/conductor-owned.ts`,
+          }),
+        );
+      }
+      await rm(fakeEnvPath, { force: true });
+      await rm(fakeOmxPath, { force: true });
+      await rm(fakeGjcPath, { force: true });
+      await rm(trustedPackageBin, { force: true });
+      await writeFile(trustedPackageBin, "#!/bin/sh\nexit 0\n", "utf-8");
+      await chmod(trustedPackageBin, 0o755);
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `workspace-npm-bin-omx-shadow-${actor}`,
+          runActorProbe(actor, `workspace-npm-bin-omx-shadow-${actor}`, "Bash", { command: fakeOmxStateWrite }, { PATH: trustedPackagePath }),
+        );
+      }
+      await rm(trustedPackageBin, { force: true });
+      await symlink(workspacePackageCli, trustedPackageBin);
+      await rm(trustedPackageGjcBin, { force: true });
+      await writeFile(trustedPackageGjcBin, "#!/bin/sh\nexit 0\n", "utf-8");
+      await chmod(trustedPackageGjcBin, 0o755);
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `workspace-npm-bin-gjc-shadow-${actor}`,
+          runActorProbe(actor, `workspace-npm-bin-gjc-shadow-${actor}`, "Bash", { command: fakeGjcCheckpoint }, { PATH: trustedPackagePath }),
+        );
+      }
+      await rm(trustedPackageGjcBin, { force: true });
+      await symlink(workspacePackageCli, trustedPackageGjcBin);
+      const workspaceNpmBinChmodShadowCommand = `chmod --reference=.omx/state/session.json .omx/state/reference-copy; omx state write --input '{"mode":"ultragoal"}' --json`;
+      const workspaceNpmBinChmodShadow = join(dirname(trustedPackageBin), "chmod");
+      await writeFile(workspaceNpmBinChmodShadow, "#!/bin/sh\nexit 0\n", "utf-8");
+      await chmod(workspaceNpmBinChmodShadow, 0o755);
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `workspace-npm-bin-chmod-shadow-${actor}`,
+          runActorProbe(actor, `workspace-npm-bin-chmod-shadow-${actor}`, "Bash", { command: workspaceNpmBinChmodShadowCommand }, { PATH: trustedPackagePath }),
+        );
+      }
+      await rm(workspaceNpmBinChmodShadow, { force: true });
+      const [mixedReferenceStateName, mixedReferenceStateCommand] = NATIVE_CHILD_MIXED_REFERENCE_STATE_WRITE;
+      assert.deepEqual(
+        runActorProbe("main-root", `${mixedReferenceStateName}-main`, "Bash", { command: mixedReferenceStateCommand }, { PATH: trustedPackagePath }),
+        {},
+        mixedReferenceStateName,
+      );
+      requireActorDeny(
+        "native-child",
+        `${mixedReferenceStateName}-native-child`,
+        runActorProbe("native-child", `${mixedReferenceStateName}-native-child`, "Bash", { command: mixedReferenceStateCommand }, { PATH: trustedPackagePath }),
+      );
+      const [referenceUnknownName, referenceUnknownCommand] = NATIVE_CHILD_REFERENCE_UNKNOWN_COMMAND;
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          `${referenceUnknownName}-${actor}`,
+          runActorProbe(actor, `${referenceUnknownName}-${actor}`, "Bash", { command: referenceUnknownCommand }),
+        );
+      }
+      const [nativeChildRsyncAuthorityName, nativeChildRsyncAuthorityCommand] = NATIVE_CHILD_RSYNC_AUTHORITY_TARGET;
+      requireActorDeny(
+        "native-child",
+        nativeChildRsyncAuthorityName,
+        runActorProbe("native-child", nativeChildRsyncAuthorityName, "Bash", { command: nativeChildRsyncAuthorityCommand }),
+      );
+      for (const identity of [
+        { agent_id: leaderAgentId, thread_id: "thread-cli-issue-3127-foreign" },
+        { agent_id: "agent-cli-issue-3127-foreign", thread_id: leaderAgentId },
+      ]) {
+        const result = runNativeHookCliResult({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          ...identity,
+          tool_name: "Write",
+          tool_use_id: `tool-cli-issue-3127-conflict-${identity.agent_id}`,
+          tool_input: { file_path: "src/conflicting-identity.ts", content: "escaped" },
+        }, { cwd, env: childEnv });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const output = parseSingleJsonStdout(result.stdout);
+        const hookOutput = output.hookSpecificOutput as Record<string, unknown>;
+        assert.equal(hookOutput.permissionDecision, "deny");
+        assert.match(String(hookOutput.permissionDecisionReason ?? ""), /PROVENANCE_DENIED/);
+      }
+      for (const [name, identity] of [
+        ["conflicting-owner-and-current-thread", { owner_codex_thread_id: leaderAgentId, thread_id: "thread-cli-issue-3127-child" }],
+        ["conflicting-session-aliases", { session_id: sessionId, sessionId: "foreign-session", agent_id: leaderAgentId, thread_id: leaderAgentId }],
+        ["reversed-conflicting-session-aliases", { session_id: "foreign-session", sessionId, agent_id: leaderAgentId, thread_id: leaderAgentId }],
+        ["conflicting-owner-and-agent", { owner_codex_thread_id: "foreign-owner", agent_id: leaderAgentId }],
+      ] as const) {
+        const result = runNativeHookCliResult({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: leaderAgentId,
+          ...identity,
+          tool_name: "Bash",
+          tool_use_id: `tool-cli-issue-3127-${name}`,
+          tool_input: { command: "PATH=/usr/bin:/bin gh issue create --title x --body y" },
+        }, { cwd, env: childEnv });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const hookOutput = parseSingleJsonStdout(result.stdout).hookSpecificOutput as Record<string, unknown>;
+        assert.equal(hookOutput.permissionDecision, "deny");
+        assert.match(String(hookOutput.permissionDecisionReason ?? ""), /PROVENANCE_DENIED/);
+      }
+      for (const [name, aliases] of [
+        ["canonical-first", { session_id: sessionId, sessionId: "foreign-session" }],
+        ["foreign-first", { session_id: "foreign-session", sessionId }],
+      ] as const) {
+        for (const [transport, toolName, toolInput] of [
+          ["path", "Write", { file_path: "src/alias-bypass.ts", content: "owned\n" }],
+          ["bash", "Bash", { command: "printf pwn >& src/alias-bypass.ts" }],
+          ["state", "mcp__omx_state__state_write", { mode: "ultragoal", active: true }],
+        ] as const) {
+          const result = runNativeHookCliResult({
+            hook_event_name: "PreToolUse",
+            cwd,
+            ...aliases,
+            agent_id: leaderAgentId,
+            thread_id: leaderAgentId,
+            tool_name: toolName,
+            tool_use_id: `tool-cli-issue-3127-${name}-${transport}`,
+            tool_input: toolInput,
+          }, { cwd, env: childEnv });
+          assert.equal(result.status, 0, result.stderr || result.stdout);
+          const hookOutput = parseSingleJsonStdout(result.stdout).hookSpecificOutput as Record<string, unknown>;
+          assert.equal(hookOutput.permissionDecision, "deny", `${name}/${transport}`);
+          assert.match(String(hookOutput.permissionDecisionReason ?? ""), /PROVENANCE_DENIED/, `${name}/${transport}`);
+        }
+      }
+      for (const [name, identity] of [
+        ["foreign-active-session", { session_id: "foreign-session", agent_id: leaderAgentId, thread_id: leaderAgentId }],
+        ["absent-active-session", { agent_id: leaderAgentId, thread_id: leaderAgentId }],
+      ] as const) {
+        const result = runNativeHookCliResult({
+          hook_event_name: "PreToolUse",
+          cwd,
+          ...identity,
+          tool_name: "Write",
+          tool_use_id: `tool-cli-issue-3127-${name}`,
+          tool_input: { file_path: "src/session-bypass.ts", content: "owned\n" },
+        }, { cwd, env: childEnv });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const hookOutput = parseSingleJsonStdout(result.stdout).hookSpecificOutput as Record<string, unknown>;
+        assert.equal(hookOutput.permissionDecision, "deny", name);
+        assert.match(String(hookOutput.permissionDecisionReason ?? ""), /PROVENANCE_DENIED/, name);
+      }
+      const identitylessNativeSessionRemoteMutation = runNativeHookCliResult({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: leaderAgentId,
+        tool_name: "Bash",
+        tool_use_id: "tool-cli-issue-3127-identityless-native-session-remote",
+        tool_input: { command: "PATH=/usr/bin:/bin gh issue create --title x --body y" },
+      }, { cwd, env: childEnv });
+      assert.equal(identitylessNativeSessionRemoteMutation.status, 0, identitylessNativeSessionRemoteMutation.stderr || identitylessNativeSessionRemoteMutation.stdout);
+      const identitylessNativeSessionRemoteOutput = parseSingleJsonStdout(identitylessNativeSessionRemoteMutation.stdout).hookSpecificOutput as Record<string, unknown>;
+      assert.equal(identitylessNativeSessionRemoteOutput.permissionDecision, "deny");
+      assert.match(String(identitylessNativeSessionRemoteOutput.permissionDecisionReason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      const ownerSessionClaim = runNativeHookCliResult({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        owner_codex_session_id: leaderAgentId,
+        owner_omx_session_id: sessionId,
+        tool_name: "Write",
+        tool_use_id: "tool-cli-issue-3127-owner-session-claim",
+        tool_input: { file_path: "src/owner-session-claim.ts", content: "escaped" },
+      }, { cwd, env: childEnv });
+      assert.equal(ownerSessionClaim.status, 0, ownerSessionClaim.stderr || ownerSessionClaim.stdout);
+      const ownerSessionClaimOutput = parseSingleJsonStdout(ownerSessionClaim.stdout).hookSpecificOutput as Record<string, unknown>;
+      assert.equal(ownerSessionClaimOutput.permissionDecision, "deny");
+      assert.match(String(ownerSessionClaimOutput.permissionDecisionReason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+
       for (const [name, command, inheritedEnv] of [
         ["python-inherited-sitecustomize-preload", `python3 -c "print('ok')"`, { PYTHONPATH: "./.omx/state" }],
         ["perl-inherited-module-preload", `perl -e 'print;'`, { PERL5LIB: "./.omx/state", PERL5OPT: "-MMutator" }],
         ["bash-inherited-env-preload", `bash -c 'printf safe\\n'`, { BASH_ENV: "./.omx/state/mutator.sh" }],
+        ["bash-inherited-env-plain-read-only", `cat src/conductor-owned.ts`, { BASH_ENV: "./.omx/state/mutator.sh" }],
         ["zsh-inherited-startup-preload", `zsh -c 'printf safe'`, { ZDOTDIR: "./.omx/state" }],
+        ["curl-inherited-ssl-key-log-output", `curl -q -o - https://example.test/file`, { SSLKEYLOGFILE: "src/curl-tls.keys" }],
+        ["wget-inherited-ssl-key-log-output", `wget --no-config --no-hsts -O - https://example.test/file`, { SSLKEYLOGFILE: "src/wget-tls.keys" }],
+        ["inherited-empty-path", `cat src/conductor-owned.ts`, { PATH: "" }],
+        ["inherited-relative-path", `cat src/conductor-owned.ts`, { PATH: "." }],
+        ["inherited-unresolved-path", `cat src/conductor-owned.ts`, { PATH: "$UNKNOWN_PATH" }],
+        ["inherited dynamic loader library path", `cat src/conductor-owned.ts`, { LD_LIBRARY_PATH: "./.omx/state" }],
+        ["inherited dynamic loader audit path", `cat src/conductor-owned.ts`, { DYLD_LIBRARY_PATH: "./.omx/state" }],
+        ["inherited xtrace shell option", `cat src/conductor-owned.ts`, { SHELLOPTS: "xtrace" }],
+        ["inherited keyword shell option", `cat src/conductor-owned.ts`, { SHELLOPTS: "keyword" }],
+        ...WGET_INHERITED_POSIX_COMMANDS.map(([name, command]) => [name, command, { POSIXLY_CORRECT: "1" }] as const),
       ] as const) {
         for (const actor of ["main-root", "native-child"] as const) {
           requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }, inheritedEnv));
         }
       }
-      for (const [name, command] of [
-        ["gh-issue-create", `gh issue create --title x --body y`],
-        ["gh-api-post", `gh api --method POST /repos/OWNER/REPO/issues -f title=x`],
-        ["gh-api-attached-post", `gh api -XPOST --input .omx/state/create-repo.json /user/repos`],
-        ["omx-ultragoal-checkpoint", `omx ultragoal checkpoint --goal-id G001 --status failed --evidence unauthorized`],
-        ["wrapped-gh-issue-create", `bash -lc 'gh issue create --title x --body y'`],
-        ["wrapped-omx-ultragoal-checkpoint", `bash -lc 'omx ultragoal checkpoint --goal-id G001 --status failed --evidence unauthorized'`],
-        ["wrapped-gjc-ultragoal-checkpoint", `bash -lc 'gjc ultragoal checkpoint --goal-id G001 --status failed --evidence unauthorized'`],
-        ["performance-goal-complete", `omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done`],
-        ["wrapped-performance-goal-complete", `bash -lc 'omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done'`],
-        ["autoresearch-goal-complete", `gjc autoresearch-goal complete --slug safety --evidence done`],
-        ["wrapped-autoresearch-goal-complete", `bash -lc 'gjc autoresearch-goal complete --slug safety --evidence done'`],
-        ["pipeline-read-then-mutate", `omx status | omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done`],
-        ["xargs-gh-api-mutation", `printf '%s' '-XPOST /repos/OWNER/REPO/issues' | xargs gh api`],
+      for (const actor of ["main-root", "native-child"] as const) {
+        for (const [name, command] of [
+          ["python-inherited-unbuffered-read-only-control", `python3 -I -c "print('ok')"`],
+          ["python-inherited-unbuffered-isolated-metadata-cwd-control", `cd .omx/state && python3 -I -c "print('ok')"`],
+        ] as const) {
+          assert.deepEqual(
+            runActorProbe(actor, name, "Bash", { command }, { PYTHONUNBUFFERED: "1" }),
+            {},
+            `${actor}/${name}`,
+          );
+        }
+      }
+      assert.deepEqual(
+        runActorProbe(
+          "main-root",
+          "python-inherited-unbuffered-modeled-metadata-control",
+          "Bash",
+          { command: "python3 -I - <<'PY'\nimport shutil\nshutil.copyfile('a', '.omx/state/foo')\nPY" },
+          { PYTHONUNBUFFERED: "1" },
+        ),
+        {},
+        "python-inherited-unbuffered-modeled-metadata-control",
+      );
+      for (const actor of ["main-root", "native-child"] as const) {
+        assert.deepEqual(
+          runActorProbe(actor, "repository-path-without-cat-candidate", "Bash", { command: "cat src/conductor-owned.ts" }, {
+            PATH: `${cwd}:${process.env.PATH || "/usr/bin:/bin"}`,
+          }),
+          {},
+          actor,
+        );
+      }
+
+      for (const [name, command, inheritedEnv] of [
+        ["inherited-bash-function-shadow", `cat src/conductor-owned.ts`, { "BASH_FUNC_cat%%": "() { touch src/inherited-function-owned.ts; }" }],
       ] as const) {
-        assert.deepEqual(runActorProbe("main-root", `${name}-main`, "Bash", { command }), {});
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }, inheritedEnv));
+        }
+      }
+      for (const actor of ["main-root", "native-child"] as const) {
+        assert.deepEqual(
+          runActorProbe(actor, "cleared-inherited-bash-function-control", "Bash", { command: `env -i cat src/conductor-owned.ts` }, { "BASH_FUNC_cat%%": "() { touch src/inherited-function-owned.ts; }" }),
+          {},
+          actor,
+        );
+      }
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          "loader-before-external-env-clear",
+          runActorProbe(actor, "loader-before-external-env-clear", "Bash", { command: `env -i cat src/conductor-owned.ts` }, { LD_LIBRARY_PATH: "./.omx/state" }),
+        );
+      }
+      for (const [name, command] of [
+        ["cleared-environment-empty-path", `env -i PATH= sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-environment-relative-path", `env -i PATH=. sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-environment-repository-path", `env -i PATH=${cwd} sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-exec-empty-path", `exec -c env PATH= sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-exec-relative-path", `exec -c env PATH=. sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-exec-repository-path", `exec -c env PATH=${cwd} sh -c 'wget --no-config -O - https://example.test/file'`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
+        }
+      }
+      const trustedSystemGhAvailable = existsSync("/usr/bin/gh");
+      for (const [name, command] of [
+        ["gh-issue-create", `PATH=/usr/bin:/bin gh issue create --title x --body y`],
+        ["gh-issue-quoted-regex-body", "PATH=/usr/bin:/bin gh issue create --title x --body 'Guard regex /[^>]+>{1,2}/ is data, not a redirect'"],
+        ["gh-api-post", `PATH=/usr/bin:/bin gh api --method POST /repos/OWNER/REPO/issues -f title=x`],
+        ["gh-api-attached-post", `PATH=/usr/bin:/bin gh api -XPOST --input .omx/state/create-repo.json /user/repos`],
+        ["gh-api-attached-field-post", `PATH=/usr/bin:/bin gh api -ftitle=x /repos/OWNER/REPO/issues`],
+        ["omx-ultragoal-final-checkpoint", `${trustedPackageCommandPrefix} omx ultragoal checkpoint --goal-id G001 --status complete --codex-goal-json goal.json --quality-gate-json quality.json --evidence unauthorized --json`],
+        ["wrapped-gh-issue-create", `bash --noprofile --norc -lc 'PATH=/usr/bin:/bin gh issue create --title x --body y'`],
+        ["wrapped-omx-ultragoal-final-checkpoint", `${trustedPackageCommandPrefix} bash --noprofile --norc -lc '${trustedPackageCommandPrefix} omx ultragoal checkpoint --goal-id G001 --status complete --codex-goal-json goal.json --quality-gate-json quality.json --evidence unauthorized --json'`],
+        ["wrapped-gjc-ultragoal-final-checkpoint", `${trustedPackageCommandPrefix} bash --noprofile --norc -lc '${trustedPackageCommandPrefix} gjc ultragoal checkpoint --goal-id G001 --status complete --codex-goal-json goal.json --quality-gate-json quality.json --evidence unauthorized --json'`],
+        ["performance-goal-complete", `${trustedPackageCommandPrefix} omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done --json`],
+        ["wrapped-performance-goal-complete", `${trustedPackageCommandPrefix} bash --noprofile --norc -lc '${trustedPackageCommandPrefix} omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done --json'`],
+        ["autoresearch-goal-complete", `${trustedPackageCommandPrefix} gjc autoresearch-goal complete --slug safety --codex-goal-json goal.json --json`],
+        ["wrapped-autoresearch-goal-complete", `${trustedPackageCommandPrefix} bash --noprofile --norc -lc '${trustedPackageCommandPrefix} gjc autoresearch-goal complete --slug safety --codex-goal-json goal.json --json'`],
+        ["pipeline-read-then-mutate", `${trustedPackageCommandPrefix} omx status | ${trustedPackageCommandPrefix} omx performance-goal complete --slug latency --codex-goal-json goal.json --evidence done --json`],
+
+      ] as const) {
+        if (name.includes("gh") && !trustedSystemGhAvailable) {
+          requireActorDeny("main-root", `${name}-main`, runActorProbe("main-root", `${name}-main`, "Bash", { command }));
+          requireActorDeny("native-child", `${name}-native-child`, runActorProbe("native-child", `${name}-native-child`, "Bash", { command }));
+          continue;
+        }
+        assert.deepEqual(runActorProbe("main-root", `${name}-main`, "Bash", { command }), {}, `${name}-main`);
         requireActorDeny("native-child", `${name}-native-child`, runActorProbe("native-child", `${name}-native-child`, "Bash", { command }));
+      }
+      const inheritedGhHelperEnvironment = { GH_BROWSER: "true", GH_PAGER: "cat", GIT_EDITOR: "true" };
+      for (const [name, command] of [
+        ["gh-issue-create-inherited-helper-control", `PATH=/usr/bin:/bin gh issue create --title x --body y`],
+        ["gh-api-inherited-helper-control", `PATH=/usr/bin:/bin gh api --method POST /repos/OWNER/REPO/issues -f title=x`],
+      ] as const) {
+        if (!trustedSystemGhAvailable) {
+          requireActorDeny("main-root", name, runActorProbe("main-root", name, "Bash", { command }, inheritedGhHelperEnvironment));
+          continue;
+        }
+        assert.deepEqual(
+          runActorProbe("main-root", name, "Bash", { command }, inheritedGhHelperEnvironment),
+          {},
+          name,
+        );
+      }
+      for (const [name, command] of [
+        ["gh-api-dynamic-method", `gh api --method "$GH_METHOD" /repos/OWNER/REPO/issues`],
+        ["xargs-gh-api-mutation", `printf '%s' '-XPOST /repos/OWNER/REPO/issues' | PATH=/usr/bin:/bin xargs gh api`],
+        ["omx-unknown-mutation", `omx unrecognized mutate --status failed`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
+        }
+      }
+      for (const [name, command] of [
+        ["omx-checkpoint-unknown-option", `${trustedPackageCommandPrefix} omx ultragoal checkpoint --goal-id G001 --status failed --evidence x --future-output=src/owned.ts`],
+        ["omx-node-options-preload", `NODE_OPTIONS='--require ./.omx/state/mutator.cjs' ${trustedPackageCommandPrefix} omx status`],
+        ["omx-node-coverage-output", `NODE_V8_COVERAGE=src ${trustedPackageCommandPrefix} omx status`],
+      ] as const) {
+        for (const actor of ["main-root", "native-child"] as const) {
+          requireActorDeny(actor, name, runActorProbe(actor, name, "Bash", { command }));
+        }
       }
 
       for (const [name, command] of [
+        ["node-current-runtime-absolute-read-file", `${currentRuntimeNodePath} -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
         ["node-read-file", `node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
         ["node-mutation-text", `node -e 'console.log("require(\\"fs\\").rmSync(\\"src/victim.ts\\")")'`],
         ["node-write-mutation-text", `node -e 'console.log("require(\\"fs\\").writeFileSync(\\"src/victim.ts\\", \\"x\\")")'`],
         ["node-esm-read-file", `node --input-type=module -e "import fs from 'node:fs';fs.readFileSync('src/victim.ts','utf8')"`],
         ["node-open-read-only", `node -e "require('fs').openSync('src/victim.ts','r')"`],
+        ["node-create-read-stream-read-only", `node -e "require('fs').createReadStream('src/victim.ts',{flags:'r'})"`],
         ["node-regex-mutation-text", `node -e 'console.log(/require\\("fs"\\)\\.rmSync\\("src\\/victim.ts"\\)/.test("x"))'`],
         ["node-static-unrelated-computed-member", `node -e "console.log(module['filename'])"`],
         ["node-attached-short-read", `node -e"require('fs').readFileSync('src/victim.ts','utf8')"`],
-        ["node-xargs-wrapper-read", `printf x | xargs node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
         ["node-read-only-path-module", `node -e "console.log(require('path').join('src','victim.ts'))"`],
         ["node-array-index", `node -e "const a=[1];console.log(a[0])"`],
         ["node-dynamic-object-read", `node -e "const o={x:1};const k='x';console.log(o[k])"`],
@@ -1290,12 +2823,46 @@ PY`],
         ["node-reflect-get", `node -e "console.log(Reflect.get({x:1},'x'))"`],
         ["node-object-computed-get-prototype-of", `node -e "Object['getPrototypeOf']({x:1})"`],
         ["node-object-computed-constructor", `node -e "const o={constructor:7};console.log(o['constructor'])"`],
+        ["python-isolated-read-only", `python3 -I -c "print('ok')"`],
+        ["sort-numeric-read-only", `sort -n README.md`],
+        ["isolated-bash-login-read-only", `bash --noprofile --norc -lc "printf safe"`],
         ...WGET_READ_ONLY_CONTROL_COMMANDS,
       ] as const) {
         for (const actor of ["main-root", "native-child"] as const) {
           assert.deepEqual(runActorProbe(actor, name, "Bash", { command }), {}, `${actor}/${name}`);
         }
       }
+      for (const actor of ["main-root", "native-child"] as const) {
+        assert.deepEqual(
+          runActorProbe(
+            actor,
+            "node-current-runtime-bare-read-file",
+            "Bash",
+            { command: `node -e "require('fs').readFileSync('src/victim.ts','utf8')"` },
+            currentRuntimeNodePathEnvironment,
+          ),
+          {},
+          actor,
+        );
+      }
+
+      for (const actor of ["main-root", "native-child"] as const) {
+        requireActorDeny(
+          actor,
+          "current-runtime-node-loader",
+          runActorProbe(
+            actor,
+            "current-runtime-node-loader",
+            "Bash",
+            { command: `LD_PRELOAD=.omx/state/mutator.so ${currentRuntimeNodePath} -e "require('fs').readFileSync('src/victim.ts','utf8')"` },
+          ),
+        );
+      }
+      for (const [name, command] of WGET_MAIN_METADATA_MUTATION_COMMANDS) {
+        assert.deepEqual(runActorProbe("main-root", `${name}-main`, "Bash", { command }), {}, name);
+        requireActorDeny("native-child", `${name}-child`, runActorProbe("native-child", `${name}-child`, "Bash", { command }));
+      }
+
 
       for (const actor of ["main-root", "native-child"] as const) {
         requireActorDeny(actor, "unknown", runActorProbe(actor, "unknown", "mcp__example__future_mutation", { target: "src/unknown.ts" }));
@@ -1401,6 +2968,25 @@ PY`],
           hookSpecificOutput.permissionDecisionReason,
           String(output.systemMessage ?? "").trim(),
         );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it("emits canonical PreToolUse denies for malformed and oversized stdin", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-unparseable-pretool-"));
+    try {
+      for (const input of [
+        '{"hook_event_name":"PreToolUse",',
+        `{"hook_event_name":"PreToolUse","transcript":"${"x".repeat(MAX_NATIVE_STDIN_JSON_BYTES + 1)}"}`,
+      ]) {
+        const result = runNativeHookCliResult(input, { cwd });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const output = parseSingleJsonStdout(result.stdout);
+        const hookSpecificOutput = output.hookSpecificOutput as Record<string, unknown>;
+        assert.equal(hookSpecificOutput.hookEventName, "PreToolUse");
+        assert.equal(hookSpecificOutput.permissionDecision, "deny");
+        assert.match(String(hookSpecificOutput.permissionDecisionReason ?? ""), /OMX native hook/);
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -5882,6 +7468,11 @@ standardMaxRounds = 15
       const stateDir = join(cwd, ".omx", "state");
       const sessionDir = join(stateDir, "sessions", "sess-ultragoal-handoff");
       await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: "sess-ultragoal-handoff",
+        native_session_id: "thread-ultragoal-handoff",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { "sess-ultragoal-handoff": { session_id: "sess-ultragoal-handoff", leader_thread_id: "thread-ultragoal-handoff", threads: { "thread-ultragoal-handoff": { thread_id: "thread-ultragoal-handoff", kind: "leader" } } } } });
       await writeJson(join(sessionDir, "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -5936,6 +7527,7 @@ standardMaxRounds = 15
           cwd,
           session_id: "sess-ultragoal-handoff",
           thread_id: "thread-ultragoal-handoff",
+          agent_id: "thread-ultragoal-handoff",
           tool_name: "Edit",
           tool_use_id: "tool-ultragoal-post-handoff-edit",
           tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
@@ -8160,6 +9752,8 @@ exit 0
         session_id: "sess-di-artifact",
         thread_id: threadId,
       }, { cwd });
+      const omxCommand = await withTrustedWorkspaceOmxCli(cwd, async (command) => command);
+
 
       const allowedWrite = await preToolUse(
         {
@@ -8346,7 +9940,7 @@ exit 0
               "cat > .omx/specs/deep-interview-demo.md <<'EOF'",
               "# Spec",
               "EOF",
-              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+              `node "${join(resolve(nativeHookScriptPath(), "../../.."), "dist", "cli", "omx.js")}" state write --input '${deepInterviewRalplanHandoffState}' --json`,
             ].join("\n"),
           },
         },
@@ -8367,7 +9961,7 @@ exit 0
               "cat > .omx/tmp/sess-di-artifact/only.md <<'EOF'",
               "# Tmp-only scratch",
               "EOF",
-              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+              `${omxCommand} state write --input '${deepInterviewRalplanHandoffState}' --json`,
             ].join("\n"),
           },
         },
@@ -8390,7 +9984,7 @@ exit 0
               "printf '%s\\n' same-command-artifact-executed",
               "EOF",
               "sh .omx/context/run.sh",
-              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+              `${omxCommand} state write --input '${deepInterviewRalplanHandoffState}' --json`,
             ].join("\n"),
           },
         },
@@ -8413,7 +10007,7 @@ exit 0
               "Path('.omx/context/run.sh').write_text('echo ran')",
               "PY",
               "sh .omx/context/run.sh",
-              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+              `${omxCommand} state write --input '${deepInterviewRalplanHandoffState}' --json`,
             ].join("\n"),
           },
         },
@@ -8504,7 +10098,7 @@ exit 0
                 "printf '%s\\n' same-command-cwd-relative-artifact-executed",
                 "EOF",
                 executionLine,
-                `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+                `${omxCommand} state write --input '${deepInterviewRalplanHandoffState}' --json`,
               ].join("\n"),
             },
           },
@@ -8530,7 +10124,7 @@ exit 0
               "cat > src/runtime.ts <<'EOF'",
               "export const changed = true;",
               "EOF",
-              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+              `${omxCommand} state write --input '${deepInterviewRalplanHandoffState}' --json`,
             ].join("\n"),
           },
         },
@@ -8552,7 +10146,7 @@ exit 0
               "cat > .omx/context/deep-interview-demo.md <<'EOF'",
               "# Context",
               "EOF",
-              `omx state write --input '${deepInterviewRalplanHandoffState}' --json`,
+              `${omxCommand} state write --input '${deepInterviewRalplanHandoffState}' --json`,
             ].join("\n"),
           },
         },
@@ -8618,6 +10212,8 @@ exit 0
         ".omx/state/sessions/sess-di-artifact/autopilot-state.json",
         ".omx/state/sessions/sess-di-artifact/deep-interview-state.json",
         ".omx/state/sessions/sess-di-artifact/skill-active-state.json",
+        ".omx/state/sessions/sess-di-artifact/ralph-state.json",
+        ".omx/state/sessions/sess-di-artifact/ultragoal-state.json",
         ".omx/state/deep-interview-state.json",
       ];
       for (const [index, filePath] of protectedStateFiles.entries()) {
@@ -8674,7 +10270,7 @@ exit 0
           tool_use_id: "tool-di-runtime-state-write",
           tool_input: { file_path: join(runtimeSessionDir, "deep-interview-state.json"), content: "{}\n" },
         }, { cwd });
-        assert.equal(allowedRuntimeStateWrite.outputJson, null);
+        assert.equal(allowedRuntimeStateWrite.outputJson?.decision, "block");
 
         const blockedRuntimeStatePeerWrite = await dispatchCodexNativeHook({
           hook_event_name: "PreToolUse",
@@ -8712,7 +10308,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-write",
-          tool_input: { command: "omx state write --input '{\"mode\":\"ralph\",\"current_phase\":\"executing\"}' --json" },
+          tool_input: { command: `${omxCommand} state write --input '{"mode":"ralph","current_phase":"executing"}' --json` },
         },
         { cwd },
       );
@@ -8750,33 +10346,33 @@ exit 0
         );
       }
 
-      const allowedQuotedModeMentionInPayload = await preToolUse(
+      const blockedQuotedModeMentionInPayload = await preToolUse(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-mode-mention-in-json",
-          tool_input: { command: "omx state write --input '{\"mode\":\"ralph\",\"note\":\"--mode deep-interview\",\"active\":false}' --json" },
+          tool_input: { command: `${omxCommand} state write --input '{"mode":"ralph","note":"--mode deep-interview","active":false}' --json` },
         },
         { cwd },
       );
-      assert.equal(allowedQuotedModeMentionInPayload.outputJson, null);
+      assert.equal((blockedQuotedModeMentionInPayload.outputJson as { decision?: string } | null)?.decision, "block");
 
-      const allowedStateInputFile = join(cwd, "allowed-state-input.json");
-      await writeJson(allowedStateInputFile, { mode: "deep-interview", current_phase: "intent-first", active: true });
-      const allowedStateInputFileMutation = await preToolUse(
+      const unsupportedStateInputFile = join(cwd, "unsupported-state-input.json");
+      await writeJson(unsupportedStateInputFile, { mode: "deep-interview", current_phase: "intent-first", active: true });
+      const unsupportedStateInputFileMutation = await preToolUse(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: "sess-di-artifact",
           tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-input-file-allowed",
-          tool_input: { command: `omx state write --input-file ${allowedStateInputFile} --json` },
+          tool_use_id: "tool-di-state-cli-input-file-denied",
+          tool_input: { command: `${omxCommand} state write --input-file ${unsupportedStateInputFile} --json` },
         },
         { cwd },
       );
-      assert.equal(allowedStateInputFileMutation.outputJson, null);
+      assert.equal((unsupportedStateInputFileMutation.outputJson as { decision?: string } | null)?.decision, "block");
 
       const standaloneAutopilotRalplanHandoffPayload = {
         mode: "autopilot",
@@ -8801,7 +10397,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-standalone-autopilot-ralplan-handoff-without-evidence",
-          tool_input: { command: `omx state write --input-file ${standaloneAutopilotRalplanHandoffInputFile} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${standaloneAutopilotRalplanHandoffInputFile} --json` },
         },
         { cwd },
       );
@@ -8820,7 +10416,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-standalone-autopilot-ralplan-handoff-with-evidence",
-          tool_input: { command: `omx state write --input-file ${standaloneAutopilotRalplanHandoffInputFile} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${standaloneAutopilotRalplanHandoffInputFile} --json` },
         },
         { cwd },
       );
@@ -8840,7 +10436,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-deactivate",
-          tool_input: { command: "omx state write --input '{\"mode\":\"deep-interview\",\"active\":false}' --json" },
+          tool_input: { command: `${omxCommand} state write --input '{"mode":"deep-interview","active":false}' --json` },
         },
         { cwd },
       );
@@ -8855,7 +10451,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-input-file-blocked",
-          tool_input: { command: `omx state write --input-file ${blockedStateInputFile} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${blockedStateInputFile} --json` },
         },
         { cwd },
       );
@@ -8868,7 +10464,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-mode-flag-deactivate",
-          tool_input: { command: "omx state write --mode deep-interview --input '{\"active\":false}' --json" },
+          tool_input: { command: `${omxCommand} state write --mode deep-interview --input '{"active":false}' --json` },
         },
         { cwd },
       );
@@ -8883,7 +10479,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-mode-flag-file-deactivate",
-          tool_input: { command: `omx state write --mode deep-interview --input-file ${conflictingModeFlagPayload} --json` },
+          tool_input: { command: `${omxCommand} state write --mode deep-interview --input-file ${conflictingModeFlagPayload} --json` },
         },
         { cwd },
       );
@@ -8896,7 +10492,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-repeated-mode-flag-deactivate",
-          tool_input: { command: "omx state write --mode ralph --mode deep-interview --input '{\"active\":false}' --json" },
+          tool_input: { command: `${omxCommand} state write --mode ralph --mode deep-interview --input '{"active":false}' --json` },
         },
         { cwd },
       );
@@ -8911,7 +10507,7 @@ exit 0
           tool_use_id: "tool-di-state-cli-repeated-input-deactivate",
           tool_input: {
             command:
-              "omx state write --input '{\"mode\":\"deep-interview\",\"active\":true}' "
+              `${omxCommand} state write --input '{"mode":"deep-interview","active":true}' `
               + "--input '{\"mode\":\"deep-interview\",\"active\":false}' --json",
           },
         },
@@ -8930,7 +10526,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-repeated-input-file-deactivate",
-          tool_input: { command: `omx state write --input-file ${repeatedInputFileSafe} --input-file ${repeatedInputFileBlocked} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${repeatedInputFileSafe} --input-file ${repeatedInputFileBlocked} --json` },
         },
         { cwd },
       );
@@ -8946,7 +10542,7 @@ exit 0
             tool_name: "Bash",
             tool_use_id: `tool-di-state-cli-current-phase-alias-${alias}`,
             tool_input: {
-              command: `omx state write --input '${JSON.stringify({ mode: "deep-interview", current_phase: alias })}' --json`,
+              command: `${omxCommand} state write --input '${JSON.stringify({ mode: "deep-interview", current_phase: alias })}' --json`,
             },
           },
           { cwd },
@@ -8967,7 +10563,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-current-phase-alias-input-file",
-          tool_input: { command: `omx state write --input-file ${blockedCurrentPhaseAliasInputFile} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${blockedCurrentPhaseAliasInputFile} --json` },
         },
         { cwd },
       );
@@ -8987,7 +10583,7 @@ exit 0
             tool_name: "Bash",
             tool_use_id: `tool-di-state-cli-camel-terminal-outcome-${index}`,
             tool_input: {
-              command: `omx state write --input '${JSON.stringify({ mode: "deep-interview", ...aliasPayload })}' --json`,
+              command: `${omxCommand} state write --input '${JSON.stringify({ mode: "deep-interview", ...aliasPayload })}' --json`,
             },
           },
           { cwd },
@@ -9008,7 +10604,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-camel-terminal-outcome-input-file",
-          tool_input: { command: `omx state write --input-file ${blockedCamelCaseOutcomeInputFile} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${blockedCamelCaseOutcomeInputFile} --json` },
         },
         { cwd },
       );
@@ -9021,7 +10617,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-cross-mode-activation",
-          tool_input: { command: "omx state write --input '{\"mode\":\"ralph\",\"active\":true}' --json" },
+          tool_input: { command: `${omxCommand} state write --input '{"mode":"ralph","active":true}' --json` },
         },
         { cwd },
       );
@@ -9039,7 +10635,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-cwd-relative-input-file-after-cd",
-          tool_input: { command: "cd cwd-relative-input-file-subdir && omx state write --input-file payload.json --json" },
+          tool_input: { command: `cd cwd-relative-input-file-subdir && ${omxCommand} state write --input-file payload.json --json` },
         },
         { cwd },
       );
@@ -9057,7 +10653,7 @@ exit 0
           tool_input: {
             command:
               "printf '{\"mode\":\"deep-interview\",\"active\":false}' > rewritten-input-file.json && "
-              + "omx state write --input-file rewritten-input-file.json --json",
+              + `${omxCommand} state write --input-file rewritten-input-file.json --json`,
           },
         },
         { cwd },
@@ -9071,7 +10667,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-nested-state-deactivate",
-          tool_input: { command: "omx state write --mode deep-interview --input '{\"state\":{\"active\":false}}' --json" },
+          tool_input: { command: `${omxCommand} state write --mode deep-interview --input '{"state":{"active":false}}' --json` },
         },
         { cwd },
       );
@@ -9086,8 +10682,8 @@ exit 0
           tool_use_id: "tool-di-state-cli-multiple-writes",
           tool_input: {
             command:
-              "omx state write --input '{\"mode\":\"deep-interview\",\"active\":true}' --json && "
-              + "omx state write --input '{\"mode\":\"deep-interview\",\"active\":false}' --json",
+              `${omxCommand} state write --input '{"mode":"deep-interview","active":true}' --json && `
+              + `${omxCommand} state write --input '{"mode":"deep-interview","active":false}' --json`,
           },
         },
         { cwd },
@@ -9104,7 +10700,7 @@ exit 0
           tool_input: {
             command:
               "printf '%s\\n' \"--input '{\\\"mode\\\":\\\"deep-interview\\\",\\\"active\\\":false}'\" && "
-              + "omx state write --input '{\"mode\":\"deep-interview\",\"active\":true}' --json",
+              + `${omxCommand} state write --input '{"mode":"deep-interview","active":true}' --json`,
           },
         },
         { cwd },
@@ -9122,7 +10718,7 @@ exit 0
           tool_use_id: "tool-di-state-cli-bounded-segment",
           tool_input: {
             command:
-              `omx state write --input-file ${blockedFileWriteWithLaterSafeDecoy} --json && `
+              `${omxCommand} state write --input-file ${blockedFileWriteWithLaterSafeDecoy} --json && `
               + "printf '%s\\n' \"--input '{\\\"mode\\\":\\\"deep-interview\\\",\\\"active\\\":true}'\"",
           },
         },
@@ -9227,7 +10823,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-clear",
-          tool_input: { command: "omx state clear --json" },
+          tool_input: { command: `${omxCommand} state clear --json` },
         },
         { cwd },
       );
@@ -9251,110 +10847,110 @@ exit 0
         ["env-argv0-short-wrapper-clear", "env -a fake node dist/cli/omx.js state clear --json"],
         ["env-argv0-long-wrapper-clear", "env --argv0 fake node dist/cli/omx.js state clear --json"],
         ["node-title-wrapper-clear", "node --title foo dist/cli/omx.js state clear --json"],
-        ["time-wrapper-clear", "time omx state clear --json"],
-        ["time-format-wrapper-clear", "/usr/bin/time -f x omx state clear --json"],
-        ["time-output-wrapper-clear", "time -o out omx state clear --json"],
-        ["time-cluster-output-wrapper-clear", "/usr/bin/time -ao out omx state clear --json"],
-        ["time-cluster-format-wrapper-clear", "/usr/bin/time -af fmt omx state clear --json"],
-        ["nice-wrapper-clear", "nice -n 5 omx state clear --json"],
-        ["nice-wrapper-write", `nice -n 5 omx state write --input ${stateDeactivationInput} --json`],
-        ["stdbuf-wrapper-clear", "stdbuf -o0 omx state clear --json"],
-        ["stdbuf-wrapper-write", `stdbuf -o0 omx state write --input ${stateDeactivationInput} --json`],
-        ["timeout-wrapper-clear", "timeout 5 omx state clear --json"],
-        ["timeout-wrapper-write", `timeout 5 omx state write --input ${stateDeactivationInput} --json`],
-        ["setsid-wrapper-clear", "setsid omx state clear --json"],
-        ["setsid-wrapper-write", `setsid omx state write --input ${stateDeactivationInput} --json`],
-        ["setsid-wait-wrapper-clear", "setsid -w omx state clear --json"],
-        ["setsid-wait-wrapper-write", `setsid -w omx state write --input ${stateDeactivationInput} --json`],
-        ["time-brace-group-clear", "time { omx state clear --json; }"],
-        ["time-if-condition-clear", "time if omx state clear --json; then :; fi"],
-        ["time-subshell-clear", "time ( omx state clear --json )"],
+        ["time-wrapper-clear", `time ${omxCommand} state clear --json`],
+        ["time-format-wrapper-clear", `/usr/bin/time -f x ${omxCommand} state clear --json`],
+        ["time-output-wrapper-clear", `time -o out ${omxCommand} state clear --json`],
+        ["time-cluster-output-wrapper-clear", `/usr/bin/time -ao out ${omxCommand} state clear --json`],
+        ["time-cluster-format-wrapper-clear", `/usr/bin/time -af fmt ${omxCommand} state clear --json`],
+        ["nice-wrapper-clear", `nice -n 5 ${omxCommand} state clear --json`],
+        ["nice-wrapper-write", `nice -n 5 ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["stdbuf-wrapper-clear", `stdbuf -o0 ${omxCommand} state clear --json`],
+        ["stdbuf-wrapper-write", `stdbuf -o0 ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["timeout-wrapper-clear", `timeout 5 ${omxCommand} state clear --json`],
+        ["timeout-wrapper-write", `timeout 5 ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["setsid-wrapper-clear", `setsid ${omxCommand} state clear --json`],
+        ["setsid-wrapper-write", `setsid ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["setsid-wait-wrapper-clear", `setsid -w ${omxCommand} state clear --json`],
+        ["setsid-wait-wrapper-write", `setsid -w ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["time-brace-group-clear", `time { ${omxCommand} state clear --json; }`],
+        ["time-if-condition-clear", `time if ${omxCommand} state clear --json; then :; fi`],
+        ["time-subshell-clear", `time ( ${omxCommand} state clear --json )`],
         ["time-command-env-node-wrapper-clear", "time command env node dist/cli/omx.js state clear --json"],
-        ["command-time-subshell-clear", "command time ( omx state clear --json )"],
-        ["coproc-wrapper-clear", "coproc omx state clear --json"],
-        ["coproc-wrapper-write", `coproc omx state write --input ${stateDeactivationInput} --json`],
-        ["coproc-name-brace-wrapper-clear", "coproc worker { omx state clear --json; }"],
-        ["coproc-name-brace-wrapper-write", `coproc worker { omx state write --input ${stateDeactivationInput} --json; }`],
-        ["xargs-wrapper-clear", "xargs omx state clear --json </dev/null"],
-        ["xargs-wrapper-write", `xargs omx state write --input ${stateDeactivationInput} --json </dev/null`],
-        ["case-arm-clear", "case x in x) omx state clear --json;; esac"],
-        ["case-arm-write", `case x in x) omx state write --input ${stateDeactivationInput} --json;; esac`],
-        ["case-late-arm-clear", "case y in x) :;; y) omx state clear --json;; esac"],
-        ["case-late-arm-write", `case y in x) :;; y) omx state write --input ${stateDeactivationInput} --json;; esac`],
-        ["subshell-function-body-clear", "f() ( omx state clear --json ); f"],
-        ["subshell-function-body-write", `f() ( omx state write --input ${stateDeactivationInput} --json ); f`],
+        ["command-time-subshell-clear", `command time ( ${omxCommand} state clear --json )`],
+        ["coproc-wrapper-clear", `coproc ${omxCommand} state clear --json`],
+        ["coproc-wrapper-write", `coproc ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["coproc-name-brace-wrapper-clear", `coproc worker { ${omxCommand} state clear --json; }`],
+        ["coproc-name-brace-wrapper-write", `coproc worker { ${omxCommand} state write --input ${stateDeactivationInput} --json; }`],
+        ["xargs-wrapper-clear", `xargs ${omxCommand} state clear --json </dev/null`],
+        ["xargs-wrapper-write", `xargs ${omxCommand} state write --input ${stateDeactivationInput} --json </dev/null`],
+        ["case-arm-clear", `case x in x) ${omxCommand} state clear --json;; esac`],
+        ["case-arm-write", `case x in x) ${omxCommand} state write --input ${stateDeactivationInput} --json;; esac`],
+        ["case-late-arm-clear", `case y in x) :;; y) ${omxCommand} state clear --json;; esac`],
+        ["case-late-arm-write", `case y in x) :;; y) ${omxCommand} state write --input ${stateDeactivationInput} --json;; esac`],
+        ["subshell-function-body-clear", `f() ( ${omxCommand} state clear --json ); f`],
+        ["subshell-function-body-write", `f() ( ${omxCommand} state write --input ${stateDeactivationInput} --json ); f`],
         ["path-qualified-env-wrapper-clear", "/usr/bin/env node dist/cli/omx.js state clear --json"],
-        ["path-qualified-env-split-wrapper-clear", "/usr/bin/env -S 'omx state clear --json'"],
-        ["npm-exec-wrapper-clear", "npm exec -- omx state clear --json"],
-        ["npm-exec-wrapper-write", `npm exec -- omx state write --input ${stateDeactivationInput} --json`],
-        ["npm-prefix-exec-wrapper-clear", "npm --prefix . exec -- omx state clear --json"],
-        ["npm-prefix-exec-wrapper-write", `npm --prefix . exec -- omx state write --input ${stateDeactivationInput} --json`],
-        ["npm-exec-call-wrapper-clear", "npm exec -c 'omx state clear --json'"],
-        ["pnpm-exec-wrapper-clear", "pnpm exec omx state clear --json"],
-        ["pnpm-exec-wrapper-write", `pnpm exec omx state write --input ${stateDeactivationInput} --json`],
-        ["pnpm-dir-exec-wrapper-clear", "pnpm -C . exec omx state clear --json"],
-        ["pnpm-dir-exec-wrapper-write", `pnpm -C . exec omx state write --input ${stateDeactivationInput} --json`],
-        ["path-qualified-npm-exec-wrapper-clear", `${absolutePathQualifiedNpm} exec -- omx state clear --json`],
-        ["path-qualified-npm-exec-wrapper-write", `${absolutePathQualifiedNpm} exec -- omx state write --input ${stateDeactivationInput} --json`],
-        ["npx-wrapper-clear", "npx omx state clear --json"],
-        ["nohup-trailing-clear", "true && nohup omx state clear --json"],
-        ["nohup-trailing-write", `true && nohup omx state write --input ${stateDeactivationInput} --json`],
+        ["path-qualified-env-split-wrapper-clear", `/usr/bin/env -S '${omxCommand} state clear --json'`],
+        ["npm-exec-wrapper-clear", `npm exec -- ${omxCommand} state clear --json`],
+        ["npm-exec-wrapper-write", `npm exec -- ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["npm-prefix-exec-wrapper-clear", `npm --prefix . exec -- ${omxCommand} state clear --json`],
+        ["npm-prefix-exec-wrapper-write", `npm --prefix . exec -- ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["npm-exec-call-wrapper-clear", `npm exec -c '${omxCommand} state clear --json'`],
+        ["pnpm-exec-wrapper-clear", `pnpm exec ${omxCommand} state clear --json`],
+        ["pnpm-exec-wrapper-write", `pnpm exec ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["pnpm-dir-exec-wrapper-clear", `pnpm -C . exec ${omxCommand} state clear --json`],
+        ["pnpm-dir-exec-wrapper-write", `pnpm -C . exec ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["path-qualified-npm-exec-wrapper-clear", `${absolutePathQualifiedNpm} exec -- ${omxCommand} state clear --json`],
+        ["path-qualified-npm-exec-wrapper-write", `${absolutePathQualifiedNpm} exec -- ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["npx-wrapper-clear", `npx ${omxCommand} state clear --json`],
+        ["nohup-trailing-clear", `true && nohup ${omxCommand} state clear --json`],
+        ["nohup-trailing-write", `true && nohup ${omxCommand} state write --input ${stateDeactivationInput} --json`],
         ["env-unset-wrapper-clear", "env -u FOO node dist/cli/omx.js state clear --json"],
         ["env-chdir-wrapper-clear", `env -C ${cwd} node dist/cli/omx.js state clear --json`],
         ["command-wrapper-write", `command node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
         ["exec-wrapper-clear", "exec node dist/cli/omx.js state clear --json"],
-        ["pipeline-clear", "printf 'x' | omx state clear --json"],
-        ["pipeline-write", `printf 'x' | omx state write --input ${stateDeactivationInput} --json`],
+        ["pipeline-clear", `printf 'x' | ${omxCommand} state clear --json`],
+        ["pipeline-write", `printf 'x' | ${omxCommand} state write --input ${stateDeactivationInput} --json`],
         ["pipeline-node-wrapper-clear", "printf 'x' | node dist/cli/omx.js state clear --json"],
         ["pipeline-node-wrapper-write", `printf 'x' | node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
         ["pipeline-command-wrapper-clear", "printf 'x' | command node dist/cli/omx.js state clear --json"],
-        ["pipeline-stderr-clear", "printf 'x' |& omx state clear --json"],
-        ["pipeline-stderr-write", `printf 'x' |& omx state write --input ${stateDeactivationInput} --json`],
+        ["pipeline-stderr-clear", `printf 'x' |& ${omxCommand} state clear --json`],
+        ["pipeline-stderr-write", `printf 'x' |& ${omxCommand} state write --input ${stateDeactivationInput} --json`],
         ["pipeline-stderr-node-wrapper-clear", "printf 'x' |& node dist/cli/omx.js state clear --json"],
         ["pipeline-stderr-node-wrapper-write", `printf 'x' |& node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
-        ["subshell-clear", "(omx state clear --json)"],
-        ["subshell-write", `(omx state write --input ${stateDeactivationInput} --json)`],
+        ["subshell-clear", `(${omxCommand} state clear --json)`],
+        ["subshell-write", `(${omxCommand} state write --input ${stateDeactivationInput} --json)`],
         ["subshell-node-wrapper-clear", "(node dist/cli/omx.js state clear --json)"],
         ["subshell-node-wrapper-write", `(node dist/cli/omx.js state write --input ${stateDeactivationInput} --json)`],
-        ["bash-wrapper-trailing-clear", "bash -c 'true'; omx state clear --json"],
-        ["sh-wrapper-trailing-write", `sh -c 'true' && omx state write --input ${stateDeactivationInput} --json`],
-        ["function-body-clear", "f(){ omx state clear --json; }; f"],
-        ["function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; f`],
-        ["timed-function-body-clear", "f(){ omx state clear --json; }; time f"],
-        ["timed-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time f`],
-        ["negated-function-body-clear", "f(){ omx state clear --json; }; ! f"],
-        ["negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; ! f`],
-        ["conditional-function-body-clear", "f(){ omx state clear --json; }; if f; then :; fi"],
-        ["conditional-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; if f; then :; fi`],
-        ["while-function-body-clear", "f(){ omx state clear --json; }; while f; do break; done"],
-        ["while-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; while f; do break; done`],
-        ["until-function-body-clear", "f(){ omx state clear --json; }; until f; do break; done"],
-        ["until-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; until f; do break; done`],
-        ["time-negated-function-body-clear", "f(){ omx state clear --json; }; time ! f"],
-        ["time-negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time ! f`],
-        ["time-brace-function-body-clear", "f(){ omx state clear --json; }; time { f; }"],
-        ["time-brace-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time { f; }`],
-        ["time-subshell-function-body-clear", "f(){ omx state clear --json; }; time ( f )"],
-        ["time-subshell-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time ( f )`],
-        ["time-if-function-body-clear", "f(){ omx state clear --json; }; time if f; then :; fi"],
-        ["time-if-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; time if f; then :; fi`],
-        ["command-time-negated-function-body-clear", "f(){ omx state clear --json; }; command time ! f"],
-        ["command-time-negated-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; command time ! f`],
-        ["coproc-function-body-clear", "f(){ omx state clear --json; }; coproc f"],
-        ["coproc-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; coproc f`],
-        ["setsid-function-body-clear", "f(){ omx state clear --json; }; setsid f"],
-        ["setsid-function-body-write", `f(){ omx state write --input ${stateDeactivationInput} --json; }; setsid f`],
-        ["leading-redirection-clear", ">/dev/null omx state clear --json"],
-        ["leading-redirection-write", `>/dev/null omx state write --input ${stateDeactivationInput} --json`],
-        ["env-split-trailing-clear", "env -S FOO=bar omx state clear --json"],
-        ["env-split-string-trailing-write", `env --split-string 'FOO=bar' omx state write --input ${stateDeactivationInput} --json`],
-        ["brace-group-clear", "{ omx state clear --json; }"],
-        ["brace-group-write", `{ omx state write --input ${stateDeactivationInput} --json; }`],
-        ["pipeline-to-subshell-clear", "printf 'x' | (omx state clear --json)"],
+        ["bash-wrapper-trailing-clear", `bash -c 'true'; ${omxCommand} state clear --json`],
+        ["sh-wrapper-trailing-write", `sh -c 'true' && ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["function-body-clear", `f(){ ${omxCommand} state clear --json; }; f`],
+        ["function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; f`],
+        ["timed-function-body-clear", `f(){ ${omxCommand} state clear --json; }; time f`],
+        ["timed-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; time f`],
+        ["negated-function-body-clear", `f(){ ${omxCommand} state clear --json; }; ! f`],
+        ["negated-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; ! f`],
+        ["conditional-function-body-clear", `f(){ ${omxCommand} state clear --json; }; if f; then :; fi`],
+        ["conditional-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; if f; then :; fi`],
+        ["while-function-body-clear", `f(){ ${omxCommand} state clear --json; }; while f; do break; done`],
+        ["while-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; while f; do break; done`],
+        ["until-function-body-clear", `f(){ ${omxCommand} state clear --json; }; until f; do break; done`],
+        ["until-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; until f; do break; done`],
+        ["time-negated-function-body-clear", `f(){ ${omxCommand} state clear --json; }; time ! f`],
+        ["time-negated-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; time ! f`],
+        ["time-brace-function-body-clear", `f(){ ${omxCommand} state clear --json; }; time { f; }`],
+        ["time-brace-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; time { f; }`],
+        ["time-subshell-function-body-clear", `f(){ ${omxCommand} state clear --json; }; time ( f )`],
+        ["time-subshell-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; time ( f )`],
+        ["time-if-function-body-clear", `f(){ ${omxCommand} state clear --json; }; time if f; then :; fi`],
+        ["time-if-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; time if f; then :; fi`],
+        ["command-time-negated-function-body-clear", `f(){ ${omxCommand} state clear --json; }; command time ! f`],
+        ["command-time-negated-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; command time ! f`],
+        ["coproc-function-body-clear", `f(){ ${omxCommand} state clear --json; }; coproc f`],
+        ["coproc-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; coproc f`],
+        ["setsid-function-body-clear", `f(){ ${omxCommand} state clear --json; }; setsid f`],
+        ["setsid-function-body-write", `f(){ ${omxCommand} state write --input ${stateDeactivationInput} --json; }; setsid f`],
+        ["leading-redirection-clear", `>/dev/null ${omxCommand} state clear --json`],
+        ["leading-redirection-write", `>/dev/null ${omxCommand} state write --input ${stateDeactivationInput} --json`],
+        ["env-split-trailing-clear", `env -S FOO=bar ${omxCommand} state clear --json`],
+        ["env-split-string-trailing-write", `env --split-string 'FOO=bar ${omxCommand} state write --input ${stateDeactivationInput} --json'`],
+        ["brace-group-clear", `{ ${omxCommand} state clear --json; }`],
+        ["brace-group-write", `{ ${omxCommand} state write --input ${stateDeactivationInput} --json; }`],
+        ["pipeline-to-subshell-clear", `printf 'x' | (${omxCommand} state clear --json)`],
         ["pipeline-stderr-to-subshell-write", `printf 'x' |& (node dist/cli/omx.js state write --input ${stateDeactivationInput} --json)`],
-        ["if-condition-clear", "if omx state clear --json; then :; fi"],
+        ["if-condition-clear", `if ${omxCommand} state clear --json; then :; fi`],
         ["if-condition-write", `if node dist/cli/omx.js state write --input ${stateDeactivationInput} --json; then :; fi`],
-        ["background-clear", "sleep 0 & omx state clear --json"],
+        ["background-clear", `sleep 0 & ${omxCommand} state clear --json`],
         ["background-node-wrapper-write", `sleep 0 & node dist/cli/omx.js state write --input ${stateDeactivationInput} --json`],
         ["nested-command-env-wrapper-clear", "command env node dist/cli/omx.js state clear --json"],
         ["nested-exec-env-wrapper-clear", "exec env node dist/cli/omx.js state clear --json"],
@@ -9494,7 +11090,7 @@ exit 0
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-pnpm-chdir-relative-input-file-write",
           tool_input: {
-            command: `pnpm -C ${pnpmChdirRelativeInputFileSubdir} exec omx state write --input-file payload.json --json`,
+            command: `pnpm -C ${pnpmChdirRelativeInputFileSubdir} exec ${omxCommand} state write --input-file payload.json --json`,
           },
         },
         { cwd },
@@ -9509,10 +11105,10 @@ exit 0
       await mkdir(dirname(rewrittenArtifactInputFile), { recursive: true });
       await writeJson(rewrittenArtifactInputFile, { mode: "deep-interview", active: true });
       const blockedNestedArtifactInputFileRewriteBeforeStateWriteCommands = [
-        ["bash-c", `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && bash -c 'omx state write --input-file ${rewrittenArtifactInputFile} --json'`],
-        ["env-split", `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && env -S 'omx state write --input-file ${rewrittenArtifactInputFile} --json'`],
-        ["command-substitution", `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && echo $(omx state write --input-file ${rewrittenArtifactInputFile} --json)`],
-        ["backtick-substitution", "printf '{\"mode\":\"deep-interview\",\"active\":false}' > " + rewrittenArtifactInputFile + " && echo `omx state write --input-file " + rewrittenArtifactInputFile + " --json`"],
+        ["bash-c", `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && bash -c '${omxCommand} state write --input-file ${rewrittenArtifactInputFile} --json'`],
+        ["env-split", `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && env -S '${omxCommand} state write --input-file ${rewrittenArtifactInputFile} --json'`],
+        ["command-substitution", `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && echo $(${omxCommand} state write --input-file ${rewrittenArtifactInputFile} --json)`],
+        ["backtick-substitution", `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && echo \`${omxCommand} state write --input-file ${rewrittenArtifactInputFile} --json\``],
       ] as const;
 
       for (const [name, command] of blockedNestedArtifactInputFileRewriteBeforeStateWriteCommands) {
@@ -9544,7 +11140,7 @@ exit 0
           tool_input: {
             command:
               `printf '{"mode":"deep-interview","active":false}' > ${rewrittenArtifactInputFile} && `
-              + `omx state write --input-file ${rewrittenArtifactInputFile} --json`,
+              + `${omxCommand} state write --input-file ${rewrittenArtifactInputFile} --json`,
           },
         },
         { cwd },
@@ -9565,9 +11161,9 @@ exit 0
           tool_use_id: "tool-di-state-cli-repeated-artifact-input-file-rewrite",
           tool_input: {
             command:
-              `omx state write --input-file ${repeatedArtifactInputFile} --json && `
+              `${omxCommand} state write --input-file ${repeatedArtifactInputFile} --json && `
               + `printf '{"mode":"deep-interview","active":false}' > ${repeatedArtifactInputFile} && `
-              + `omx state write --input-file ${repeatedArtifactInputFile} --json`,
+              + `${omxCommand} state write --input-file ${repeatedArtifactInputFile} --json`,
           },
         },
         { cwd },
@@ -9593,23 +11189,23 @@ exit 0
       assert.equal((blockedChainedWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
       const blockedSourceGeneratedScriptCommands = [
-        ["source-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && source .omx/context/x.sh"],
-        ["bash-redirect", "printf 'omx state clear --json\n' > .omx/context/x.sh && bash .omx/context/x.sh"],
-        ["direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && ./.omx/context/x.sh"],
-        ["time-direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && time ./.omx/context/x.sh"],
-        ["command-direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && command ./.omx/context/x.sh"],
-        ["env-direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && env FOO=bar ./.omx/context/x.sh"],
-        ["timeout-direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && timeout 5 ./.omx/context/x.sh"],
-        ["nohup-direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && nohup ./.omx/context/x.sh"],
-        ["xargs-direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && xargs ./.omx/context/x.sh"],
-        ["coproc-direct-exec", "printf '#!/bin/sh\nomx state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && coproc ./.omx/context/x.sh"],
-        ["sh-c-generated-script", "printf 'omx state clear --json\n' > .omx/context/x.sh && sh -c '. .omx/context/x.sh'"],
-        ["sh-c-at-generated-script", "printf 'omx state clear --json\n' > .omx/context/x.sh && sh -c '. \"$@\"' ignored .omx/context/x.sh"],
-        ["sh-c-positional-generated-script", "printf 'omx state clear --json\n' > .omx/context/x.sh && sh -c '. \"$0\"' .omx/context/x.sh"],
-        ["source-tee", "printf 'omx state clear --json\n' | tee .omx/context/x.sh >/dev/null && source .omx/context/x.sh"],
-        ["source-variable", "tmp=.omx/context/x.sh; printf 'omx state clear --json\n' > \"$tmp\"; source \"$tmp\""],
-        ["source-tee-second-target", "printf 'omx state clear --json\n' | tee .omx/context/x.sh .omx/context/y.sh >/dev/null && source .omx/context/y.sh"],
-        ["bash-tee-append-second-target", "printf 'omx state clear --json\n' | tee -a .omx/context/x.sh .omx/context/y.sh >/dev/null && bash .omx/context/y.sh"],
+        ["source-redirect", `printf '${omxCommand} state clear --json\n' > .omx/context/x.sh && source .omx/context/x.sh`],
+        ["bash-redirect", `printf '${omxCommand} state clear --json\n' > .omx/context/x.sh && bash .omx/context/x.sh`],
+        ["direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && ./.omx/context/x.sh`],
+        ["time-direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && time ./.omx/context/x.sh`],
+        ["command-direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && command ./.omx/context/x.sh`],
+        ["env-direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && env FOO=bar ./.omx/context/x.sh`],
+        ["timeout-direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && timeout 5 ./.omx/context/x.sh`],
+        ["nohup-direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && nohup ./.omx/context/x.sh`],
+        ["xargs-direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && xargs ./.omx/context/x.sh`],
+        ["coproc-direct-exec", `printf '#!/bin/sh\n${omxCommand} state clear --json\n' > .omx/context/x.sh && chmod +x .omx/context/x.sh && coproc ./.omx/context/x.sh`],
+        ["sh-c-generated-script", `printf '${omxCommand} state clear --json\n' > .omx/context/x.sh && sh -c '. .omx/context/x.sh'`],
+        ["sh-c-at-generated-script", `printf '${omxCommand} state clear --json\n' > .omx/context/x.sh && sh -c '. "$@"' ignored .omx/context/x.sh`],
+        ["sh-c-positional-generated-script", `printf '${omxCommand} state clear --json\n' > .omx/context/x.sh && sh -c '. "$0"' .omx/context/x.sh`],
+        ["source-tee", `printf '${omxCommand} state clear --json\n' | tee .omx/context/x.sh >/dev/null && source .omx/context/x.sh`],
+        ["source-variable", `tmp=.omx/context/x.sh; printf '${omxCommand} state clear --json\n' > "$tmp"; source "$tmp"`],
+        ["source-tee-second-target", `printf '${omxCommand} state clear --json\n' | tee .omx/context/x.sh .omx/context/y.sh >/dev/null && source .omx/context/y.sh`],
+        ["bash-tee-append-second-target", `printf '${omxCommand} state clear --json\n' | tee -a .omx/context/x.sh .omx/context/y.sh >/dev/null && bash .omx/context/y.sh`],
       ] as const;
       for (const [name, command] of blockedSourceGeneratedScriptCommands) {
         const blockedSourceGeneratedScript = await preToolUse(
@@ -9636,8 +11232,8 @@ exit 0
           cwd,
           session_id: "sess-di-artifact",
           tool_name: "Bash",
-          tool_use_id: "tool-di-state-cli-read",
-          tool_input: { command: "omx state read --json" },
+          tool_use_id: "tool-di-state-file-read",
+          tool_input: { command: "cat .omx/state/skill-active-state.json" },
         },
         { cwd },
       );
@@ -9676,7 +11272,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-unquoted-heredoc-substitution",
-          tool_input: { command: "cat > .omx/context/state-example.md <<EOF\n$(omx state clear --json)\nEOF" },
+          tool_input: { command: `cat > .omx/context/state-example.md <<EOF\n$(${omxCommand} state clear --json)\nEOF` },
         },
         { cwd },
       );
@@ -9689,7 +11285,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-unquoted-heredoc-hyphen-delimiter",
-          tool_input: { command: "cat > .omx/context/state-example.md <<EOF-1\nsafe\nEOF-1\nomx state clear --json" },
+          tool_input: { command: `cat > .omx/context/state-example.md <<EOF-1\nsafe\nEOF-1\n${omxCommand} state clear --json` },
         },
         { cwd },
       );
@@ -9702,7 +11298,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-escaped-newline-clear",
-          tool_input: { command: "omx \\\nstate \\\nclear --json" },
+          tool_input: { command: `${omxCommand} \\\nstate \\\nclear --json` },
         },
         { cwd },
       );
@@ -9715,7 +11311,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-escaped-newline-write-input",
-          tool_input: { command: "omx state write \\\n--mode deep-interview \\\n--input '{\\\"active\\\":false}' --json" },
+          tool_input: { command: `${omxCommand} state write \\\n--mode deep-interview \\\n--input '{"active":false}' --json` },
         },
         { cwd },
       );
@@ -9730,7 +11326,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-escaped-newline-write-input-file",
-          tool_input: { command: `omx state write \\\n--mode ralplan \\\n--input-file ${escapedNewlineInputFile} --json` },
+          tool_input: { command: `${omxCommand} state write \\\n--mode ralplan \\\n--input-file ${escapedNewlineInputFile} --json` },
         },
         { cwd },
       );
@@ -9743,7 +11339,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-shell-stdin-heredoc",
-          tool_input: { command: "bash <<'EOF'\nomx state clear --json\nEOF" },
+          tool_input: { command: `bash <<'EOF'\n${omxCommand} state clear --json\nEOF` },
         },
         { cwd },
       );
@@ -9756,7 +11352,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-shell-stdin-herestring",
-          tool_input: { command: "bash<<<'omx state clear --json'" },
+          tool_input: { command: `bash<<<'${omxCommand} state clear --json'` },
         },
         { cwd },
       );
@@ -9769,7 +11365,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-shell-stdin-pipe",
-          tool_input: { command: "printf 'omx state clear --json' | bash" },
+          tool_input: { command: `printf '${omxCommand} state clear --json' | bash` },
         },
         { cwd },
       );
@@ -9782,16 +11378,16 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-heredoc-pipe-to-shell",
-          tool_input: { command: "cat <<'EOF' | bash\nomx state clear --json\nEOF" },
+          tool_input: { command: `cat <<'EOF' | bash\n${omxCommand} state clear --json\nEOF` },
         },
         { cwd },
       );
       assert.equal((blockedHeredocPipeToShell.outputJson as { decision?: string } | null)?.decision, "block");
 
       for (const [index, command] of [
-        "printf 'omx state clear --json'|bash",
-        "printf 'omx state clear --json' |bash",
-        "printf 'omx state clear --json'| bash",
+        `printf '${omxCommand} state clear --json'|bash`,
+        `printf '${omxCommand} state clear --json' |bash`,
+        `printf '${omxCommand} state clear --json'| bash`,
       ].entries()) {
         const blockedCompactShellStdinPipe = await preToolUse(
           {
@@ -9818,7 +11414,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-dispatcher-shell",
-          tool_input: { command: "env FOO=bar bash -c \"omx state clear --json\"" },
+          tool_input: { command: `env FOO=bar bash -c "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -9831,7 +11427,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-split-string-clear",
-          tool_input: { command: "env -S 'omx state clear --json'" },
+          tool_input: { command: `env -S '${omxCommand} state clear --json'` },
         },
         { cwd },
       );
@@ -9844,7 +11440,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-split-string-shell-clear",
-          tool_input: { command: "env -S 'bash -c \"omx state clear --json\"'" },
+          tool_input: { command: `env -S 'bash -c "${omxCommand} state clear --json"'` },
         },
         { cwd },
       );
@@ -9858,7 +11454,7 @@ exit 0
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-split-string-write",
           tool_input: {
-            command: "env --split-string 'omx state write --input \"{\\\"mode\\\":\\\"deep-interview\\\",\\\"current_phase\\\":\\\"done\\\"}\" --json'",
+            command: `env --split-string '${omxCommand} state write --input "{\"mode\":\"deep-interview\",\"current_phase\":\"done\"}" --json'`,
           },
         },
         { cwd },
@@ -9872,7 +11468,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-split-string-equals-clear",
-          tool_input: { command: "env --split-string='omx state clear --json'" },
+          tool_input: { command: `env --split-string='${omxCommand} state clear --json'` },
         },
         { cwd },
       );
@@ -9885,7 +11481,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-split-string-attached-clear",
-          tool_input: { command: "env -S'omx state clear --json'" },
+          tool_input: { command: `env -S'${omxCommand} state clear --json'` },
         },
         { cwd },
       );
@@ -9898,7 +11494,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-split-string-prefixed-options-clear",
-          tool_input: { command: "env -S '-i omx state clear --json'" },
+          tool_input: { command: `env -S '-i ${omxCommand} state clear --json'` },
         },
         { cwd },
       );
@@ -9911,7 +11507,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-env-split-string-prefixed-options-split-clear",
-          tool_input: { command: "env --split-string '-i omx state clear --json'" },
+          tool_input: { command: `env --split-string '-i ${omxCommand} state clear --json'` },
         },
         { cwd },
       );
@@ -9924,16 +11520,16 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-shell-stdin-stderr-pipe",
-          tool_input: { command: "printf 'omx state clear --json' |& bash" },
+          tool_input: { command: `printf '${omxCommand} state clear --json' |& bash` },
         },
         { cwd },
       );
       assert.equal((blockedShellStdinStderrPipe.outputJson as { decision?: string } | null)?.decision, "block");
 
       for (const [index, command] of [
-        "printf 'omx state clear --json'|&bash",
-        "printf 'omx state clear --json' |&bash",
-        "printf 'omx state clear --json'|& bash",
+        `printf '${omxCommand} state clear --json'|&bash`,
+        `printf '${omxCommand} state clear --json' |&bash`,
+        `printf '${omxCommand} state clear --json'|& bash`,
       ].entries()) {
         const blockedCompactShellStdinStderrPipe = await preToolUse(
           {
@@ -9960,7 +11556,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-dot-process-substitution",
-          tool_input: { command: ". <(printf 'omx state clear --json')" },
+          tool_input: { command: `. <(printf '${omxCommand} state clear --json')` },
         },
         { cwd },
       );
@@ -9973,7 +11569,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-bash-process-substitution",
-          tool_input: { command: "bash <(printf 'omx state clear --json')" },
+          tool_input: { command: `bash <(printf '${omxCommand} state clear --json')` },
         },
         { cwd },
       );
@@ -9986,7 +11582,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-cat-process-substitution",
-          tool_input: { command: "cat <(omx state clear --json)" },
+          tool_input: { command: `cat <(${omxCommand} state clear --json)` },
         },
         { cwd },
       );
@@ -9999,7 +11595,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-diff-process-substitution",
-          tool_input: { command: `diff <(omx state write --input ${stateDeactivationInput} --json) /dev/null` },
+          tool_input: { command: `diff <(${omxCommand} state write --input ${stateDeactivationInput} --json) /dev/null` },
         },
         { cwd },
       );
@@ -10012,7 +11608,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-quoted-substitution-clear",
-          tool_input: { command: "echo \"$(omx state clear --json)\"" },
+          tool_input: { command: `echo "$(${omxCommand} state clear --json)"` },
         },
         { cwd },
       );
@@ -10025,7 +11621,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-quoted-substitution-write",
-          tool_input: { command: "echo \"$(omx state write --input '{\\\"mode\\\":\\\"deep-interview\\\",\\\"active\\\":false}' --json)\"" },
+          tool_input: { command: `echo "$(${omxCommand} state write --input '{"mode":"deep-interview","active":false}' --json)"` },
         },
         { cwd },
       );
@@ -10038,7 +11634,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-quoted-backtick-clear",
-          tool_input: { command: "echo \"`omx state clear --json`\"" },
+          tool_input: { command: `echo "\`${omxCommand} state clear --json\`"` },
         },
         { cwd },
       );
@@ -10051,7 +11647,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-raw-nested-substitution-clear",
-          tool_input: { command: "echo $(bash -c 'omx state clear --json')" },
+          tool_input: { command: `echo $(bash -c '${omxCommand} state clear --json')` },
         },
         { cwd },
       );
@@ -10064,7 +11660,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-raw-nested-eval-substitution-clear",
-          tool_input: { command: "echo $(eval 'omx state clear --json')" },
+          tool_input: { command: `echo $(eval '${omxCommand} state clear --json')` },
         },
         { cwd },
       );
@@ -10077,7 +11673,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-raw-nested-backtick-clear",
-          tool_input: { command: "echo `bash -c 'omx state clear --json'`" },
+          tool_input: { command: `echo \`bash -c '${omxCommand} state clear --json'\`` },
         },
         { cwd },
       );
@@ -10090,7 +11686,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-backtick-write",
-          tool_input: { command: "echo `omx state write --input '{\"mode\":\"deep-interview\",\"active\":false}' --json`" },
+          tool_input: { command: `echo \`${omxCommand} state write --input '{"mode":"deep-interview","active":false}' --json\`` },
         },
         { cwd },
       );
@@ -10103,7 +11699,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-nested-bash-clear",
-          tool_input: { command: "bash -c \"omx state clear --json\"" },
+          tool_input: { command: `bash -c "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -10116,7 +11712,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-nested-sh-write",
-          tool_input: { command: "sh -c \"omx state write --mode deep-interview --input '{\\\"active\\\":false}' --json\"" },
+          tool_input: { command: `sh -c "${omxCommand} state write --mode deep-interview --input '{"active":false}' --json"` },
         },
         { cwd },
       );
@@ -10129,7 +11725,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-path-bash-clear",
-          tool_input: { command: "/bin/bash -c \"omx state clear --json\"" },
+          tool_input: { command: `/bin/bash -c "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -10142,7 +11738,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-login-bash-clear",
-          tool_input: { command: "bash -lc \"omx state clear --json\"" },
+          tool_input: { command: `bash -lc "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -10155,7 +11751,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-dash-clear",
-          tool_input: { command: "dash -c \"omx state clear --json\"" },
+          tool_input: { command: `dash -c "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -10168,7 +11764,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-rcfile-bash-clear",
-          tool_input: { command: "bash --rcfile /tmp/empty -c \"omx state clear --json\"" },
+          tool_input: { command: `bash --rcfile /tmp/empty -c "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -10181,7 +11777,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-shell-option-value-before-c",
-          tool_input: { command: "bash -o pipefail -c \"omx state clear --json\"" },
+          tool_input: { command: `bash -o pipefail -c "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -10194,7 +11790,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-eval-clear",
-          tool_input: { command: "eval \"omx state clear --json\"" },
+          tool_input: { command: `eval "${omxCommand} state clear --json"` },
         },
         { cwd },
       );
@@ -10207,7 +11803,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-dynamic-eval-clear",
-          tool_input: { command: "payload='omx state clear --json'; eval \"$payload\"" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; eval "$payload"` },
         },
         { cwd },
       );
@@ -10220,7 +11816,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-dynamic-shell-write",
-          tool_input: { command: "payload='omx state write --mode deep-interview --input \"{\\\"active\\\":false}\" --json'; bash -c \"$payload\"" },
+          tool_input: { command: `payload='${omxCommand} state write --mode deep-interview --input "{\"active\":false}" --json'; bash -c "$payload"` },
         },
         { cwd },
       );
@@ -10233,7 +11829,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-dynamic-top-level-payload",
-          tool_input: { command: "payload='omx state clear --json'; $payload" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; $payload` },
         },
         { cwd },
       );
@@ -10246,7 +11842,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-exec-payload",
-          tool_input: { command: "payload='omx state clear --json'; exec $payload" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; exec $payload` },
         },
         { cwd },
       );
@@ -10259,7 +11855,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-command-payload",
-          tool_input: { command: "payload='omx state clear --json'; command $payload" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; command $payload` },
         },
         { cwd },
       );
@@ -10272,7 +11868,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-exec-dashdash-payload",
-          tool_input: { command: "payload='omx state clear --json'; exec -- $payload" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; exec -- $payload` },
         },
         { cwd },
       );
@@ -10285,7 +11881,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-exec-option-payload",
-          tool_input: { command: "payload='omx state clear --json'; exec -c $payload" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; exec -c $payload` },
         },
         { cwd },
       );
@@ -10298,7 +11894,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-command-dashdash-payload",
-          tool_input: { command: "payload='omx state clear --json'; command -- $payload" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; command -- $payload` },
         },
         { cwd },
       );
@@ -10311,7 +11907,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-command-option-payload",
-          tool_input: { command: "payload='omx state clear --json'; command -p $payload" },
+          tool_input: { command: `payload='${omxCommand} state clear --json'; command -p $payload` },
         },
         { cwd },
       );
@@ -10324,7 +11920,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-dynamic-shell-substitution",
-          tool_input: { command: "bash -c \"$(printf 'omx state clear --json')\"" },
+          tool_input: { command: `bash -c "$(printf '${omxCommand} state clear --json')"` },
         },
         { cwd },
       );
@@ -10337,7 +11933,7 @@ exit 0
           session_id: "sess-di-artifact",
           tool_name: "Bash",
           tool_use_id: "tool-di-state-cli-dynamic-eval-backtick",
-          tool_input: { command: "eval \"`printf 'omx state clear --json'`\"" },
+          tool_input: { command: `eval "\`printf '${omxCommand} state clear --json'\`"` },
         },
         { cwd },
       );
@@ -10433,21 +12029,23 @@ exit 0
         current_phase: "critic-review",
         session_id: "sess-ralplan-input-file",
       });
+      const omxCommand = await withTrustedWorkspaceOmxCli(cwd, async (command) => command);
 
-      const allowedPayload = join(cwd, "ralplan-allowed-state.json");
-      await writeJson(allowedPayload, { mode: "ralplan", current_phase: "critic-review", active: true });
-      const allowed = await dispatchCodexNativeHook(
+
+      const activeInputFilePayload = join(cwd, "ralplan-active-input-file.json");
+      await writeJson(activeInputFilePayload, { mode: "ralplan", current_phase: "critic-review", active: true });
+      const activeInputFileWrite = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: "sess-ralplan-input-file",
           tool_name: "Bash",
-          tool_use_id: "tool-ralplan-state-input-file-allowed",
-          tool_input: { command: `omx state write --input-file ${allowedPayload} --json` },
+          tool_use_id: "tool-ralplan-state-input-file-denied",
+          tool_input: { command: `${omxCommand} state write --input-file ${activeInputFilePayload} --json` },
         },
         { cwd },
       );
-      assert.equal(allowed.outputJson, null);
+      assert.equal((activeInputFileWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
       const blockedPayload = join(cwd, "ralplan-blocked-state.json");
       await writeJson(blockedPayload, { mode: "ralplan", current_phase: "complete" });
@@ -10458,7 +12056,7 @@ exit 0
           session_id: "sess-ralplan-input-file",
           tool_name: "Bash",
           tool_use_id: "tool-ralplan-state-input-file-blocked",
-          tool_input: { command: `omx state write --input-file ${blockedPayload} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${blockedPayload} --json` },
         },
         { cwd },
       );
@@ -10472,18 +12070,18 @@ exit 0
         session_id: "sess-ralplan-input-file",
         terminal_reason: "consensus approved bounded no-op",
       });
-      const allowedTerminalFile = await dispatchCodexNativeHook(
+      const blockedTerminalInputFile = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: "sess-ralplan-input-file",
           tool_name: "Bash",
-          tool_use_id: "tool-ralplan-state-input-file-terminal-allowed",
-          tool_input: { command: `omx state write --input-file ${terminalPayload} --json` },
+          tool_use_id: "tool-ralplan-state-input-file-terminal-denied",
+          tool_input: { command: `${omxCommand} state write --input-file ${terminalPayload} --json` },
         },
         { cwd },
       );
-      assert.equal(allowedTerminalFile.outputJson, null);
+      assert.equal((blockedTerminalInputFile.outputJson as { decision?: string } | null)?.decision, "block");
 
       const mismatchedTerminalPayload = join(cwd, "ralplan-terminal-state-mismatched.json");
       await writeJson(mismatchedTerminalPayload, {
@@ -10499,7 +12097,7 @@ exit 0
           session_id: "sess-ralplan-input-file",
           tool_name: "Bash",
           tool_use_id: "tool-ralplan-state-input-file-terminal-mismatched",
-          tool_input: { command: `omx state write --input-file ${mismatchedTerminalPayload} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${mismatchedTerminalPayload} --json` },
         },
         { cwd },
       );
@@ -10516,7 +12114,7 @@ exit 0
             session_id: "sess-ralplan-input-file",
             tool_name: "Bash",
             tool_use_id: `tool-ralplan-state-input-file-blocked-alias-${alias}`,
-            tool_input: { command: `omx state write --input-file ${blockedAliasPayload} --json` },
+            tool_input: { command: `${omxCommand} state write --input-file ${blockedAliasPayload} --json` },
           },
           { cwd },
         );
@@ -10534,7 +12132,7 @@ exit 0
           session_id: "sess-ralplan-input-file",
           tool_name: "Bash",
           tool_use_id: "tool-ralplan-state-mode-flag-terminal",
-          tool_input: { command: "omx state write --mode ralplan --input '{\"current_phase\":\"complete\"}' --json" },
+          tool_input: { command: `${omxCommand} state write --mode ralplan --input '{"current_phase":"complete"}' --json` },
         },
         { cwd },
       );
@@ -10548,7 +12146,7 @@ exit 0
           tool_name: "Bash",
           tool_use_id: "tool-ralplan-state-mode-flag-terminal-allowed",
           tool_input: {
-            command: "omx state write --mode ralplan --input '{\"active\":false,\"current_phase\":\"complete\"}' --json",
+            command: `${omxCommand} state write --mode ralplan --input '{"active":false,"current_phase":"complete"}' --json`,
           },
         },
         { cwd },
@@ -10563,7 +12161,7 @@ exit 0
           tool_name: "Bash",
           tool_use_id: "tool-ralplan-state-terminal-then-implementation-write",
           tool_input: {
-            command: "omx state write --mode ralplan --input '{\"active\":false,\"current_phase\":\"complete\"}' --json && printf bad > src/leak.ts",
+            command: `${omxCommand} state write --mode ralplan --input '{"active":false,"current_phase":"complete"}' --json && printf bad > src/leak.ts`,
           },
         },
         { cwd },
@@ -10589,7 +12187,7 @@ exit 0
             tool_name: "Bash",
             tool_use_id: toolUseId,
             tool_input: {
-              command: `omx state write --mode ralplan --input '{"active":false,"current_phase":"complete"}' --json ${suffix}`,
+              command: `${omxCommand} state write --mode ralplan --input '{"active":false,"current_phase":"complete"}' --json ${suffix}`,
             },
           },
           { cwd },
@@ -10609,7 +12207,7 @@ exit 0
             session_id: "sess-ralplan-input-file",
             tool_name: "Bash",
             tool_use_id: `tool-ralplan-state-mode-flag-terminal-alias-${alias}`,
-            tool_input: { command: `omx state write --mode ralplan --input '${JSON.stringify({ current_phase: alias })}' --json` },
+            tool_input: { command: `${omxCommand} state write --mode ralplan --input '${JSON.stringify({ current_phase: alias })}' --json` },
           },
           { cwd },
         );
@@ -10633,7 +12231,7 @@ exit 0
             session_id: "sess-ralplan-input-file",
             tool_name: "Bash",
             tool_use_id: `tool-ralplan-state-mode-flag-terminal-outcome-${index}`,
-            tool_input: { command: `omx state write --mode ralplan --input '${JSON.stringify(aliasPayload)}' --json` },
+            tool_input: { command: `${omxCommand} state write --mode ralplan --input '${JSON.stringify(aliasPayload)}' --json` },
           },
           { cwd },
         );
@@ -10653,7 +12251,7 @@ exit 0
           session_id: "sess-ralplan-input-file",
           tool_name: "Bash",
           tool_use_id: "tool-ralplan-state-input-file-blocked-camel-terminal-outcome",
-          tool_input: { command: `omx state write --input-file ${blockedOutcomeAliasPayload} --json` },
+          tool_input: { command: `${omxCommand} state write --input-file ${blockedOutcomeAliasPayload} --json` },
         },
         { cwd },
       );
@@ -10666,7 +12264,7 @@ exit 0
           session_id: "sess-ralplan-input-file",
           tool_name: "Bash",
           tool_use_id: "tool-ralplan-state-mode-flag-safe",
-          tool_input: { command: "omx state write --mode ralplan --input '{\"current_phase\":\"critic-review\",\"active\":true}' --json" },
+          tool_input: { command: `${omxCommand} state write --mode ralplan --input '{"current_phase":"critic-review","active":true}' --json` },
         },
         { cwd },
       );
@@ -11342,6 +12940,8 @@ exit 0
         },
         { cwd },
       );
+      const omxCommand = await withTrustedWorkspaceOmxCli(cwd, async (command) => command);
+
 
       const readOnlyCommands = [
         "git status --short",
@@ -11406,7 +13006,7 @@ exit 0
       // A non-deactivating `omx state write` defers to the gate-enforcing
       // state_write backend (same enforcement for CLI and MCP).
       const allowedStateCliMutation = await preToolUse("Bash", "tool-ralplan-state-cli-write", {
-        command: "omx state write --input '{\"mode\":\"autopilot\",\"current_phase\":\"ultragoal\"}' --json",
+        command: `${omxCommand} state write --input '{"mode":"autopilot","current_phase":"ultragoal"}' --json`,
       });
       assert.equal(allowedStateCliMutation.outputJson, null);
 
@@ -11414,7 +13014,7 @@ exit 0
       // at the transport boundary; complete consensus terminal writes are
       // covered by the state-write closeout tests.
       const blockedStateClear = await preToolUse("Bash", "tool-ralplan-state-cli-clear", {
-        command: "omx state clear --json",
+        command: `${omxCommand} state clear --json`,
       });
       assert.equal((blockedStateClear.outputJson as { decision?: string } | null)?.decision, "block");
 
@@ -22095,7 +23695,13 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ralplan-native-map-handoff";
       const nativeSessionId = "019e-ralplan-native-map-handoff";
-      await writeNativeMappedSessionState(cwd, stateDir, sessionId, nativeSessionId);
+      await writeNativeMappedSessionState(
+        cwd,
+        stateDir,
+        sessionId,
+        nativeSessionId,
+        "thread-ralplan-native-map-handoff",
+      );
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,
         skill: "ultragoal",
@@ -22330,7 +23936,7 @@ PY`,
     }
   });
 
-  it("does not block unrelated native Codex ids when current OMX session mapping does not match", async () => {
+  it("blocks foreign native Codex ids when current OMX session mapping does not match", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-native-map-unrelated-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -22358,7 +23964,8 @@ PY`,
       );
 
       assert.equal(result.omxEventName, "pre-tool-use");
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -22406,7 +24013,7 @@ PY`,
     }
   });
 
-  it("does not block unrelated native Codex ids from the authoritative team state root", async () => {
+  it("blocks foreign native Codex ids from the authoritative team state root", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralplan-team-root-unrelated-"));
     const teamStateRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-team-root-unrelated-"));
     const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -22437,7 +24044,8 @@ PY`,
       );
 
       assert.equal(result.omxEventName, "pre-tool-use");
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
     } finally {
       if (typeof previousTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;
@@ -22573,7 +24181,11 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ralplan-pretool-handoff";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-ralplan-pretool-handoff",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: "thread-ralplan-pretool-handoff", threads: { "thread-ralplan-pretool-handoff": { thread_id: "thread-ralplan-pretool-handoff", kind: "leader" } } } } });
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,
         skill: "ultragoal",
@@ -22603,6 +24215,7 @@ PY`,
           cwd,
           session_id: sessionId,
           thread_id: "thread-ralplan-pretool-handoff",
+          agent_id: "thread-ralplan-pretool-handoff",
           tool_name: "Edit",
           tool_input: { file_path: "src/runtime.ts" },
         },
@@ -22623,7 +24236,13 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ralph-conductor-native-map";
       const nativeSessionId = "019e-ralph-conductor-native-map";
-      await writeNativeMappedSessionState(cwd, stateDir, sessionId, nativeSessionId);
+      await writeNativeMappedSessionState(
+        cwd,
+        stateDir,
+        sessionId,
+        nativeSessionId,
+        "thread-ralph-conductor-native-map",
+      );
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -22657,7 +24276,11 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ultragoal-standalone-conductor";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-ultragoal-standalone-conductor",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: "thread-ultragoal-standalone-conductor", threads: { "thread-ultragoal-standalone-conductor": { thread_id: "thread-ultragoal-standalone-conductor", kind: "leader" } } } } });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -22672,6 +24295,7 @@ PY`,
           cwd,
           session_id: sessionId,
           thread_id: "thread-ultragoal-standalone-conductor",
+          agent_id: "thread-ultragoal-standalone-conductor",
           tool_name: "Write",
           tool_input: { file_path: "src/runtime.ts" },
         },
@@ -22691,7 +24315,11 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-unsupported-conductor-source";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-unsupported-conductor-source",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: "thread-unsupported-conductor-source", threads: { "thread-unsupported-conductor-source": { thread_id: "thread-unsupported-conductor-source", kind: "leader" } } } } });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -22715,6 +24343,7 @@ PY`,
           cwd,
           session_id: sessionId,
           thread_id: "thread-unsupported-conductor-source",
+          agent_id: "thread-unsupported-conductor-source",
           tool_name: "Write",
           tool_input: { file_path: "src/runtime.ts", content: "export const value = 1;\n" },
         },
@@ -22740,7 +24369,11 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-3119-quote-deadlock";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-conductor-3119-quote-deadlock",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: "thread-conductor-3119-quote-deadlock", threads: { "thread-conductor-3119-quote-deadlock": { thread_id: "thread-conductor-3119-quote-deadlock", kind: "leader" } } } } });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -22766,6 +24399,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-3119-quote-deadlock",
+            agent_id: "thread-conductor-3119-quote-deadlock",
             tool_name: "Bash",
             tool_input: { command },
           },
@@ -22775,15 +24409,15 @@ PY`,
       // Deadlock prevention (defect B): the Conductor must still terminalize its
       // own workflow state even when delegation is genuinely unsupported, even
       // when the JSON payload contains a `>` character.
-      const terminalBlockedWrite = await dispatch(
-        "omx state write --mode ultragoal --input '{\"active\":true,\"current_phase\":\"blocked\",\"reason\":\"native delegation unavailable -> terminalized\"}' --json",
-      );
+      const terminalBlockedWrite = await withTrustedWorkspaceOmxCli(cwd, (omxCommand) => dispatch(
+        `OMX_SESSION_ID=${sessionId} ${omxCommand} state write --mode ultragoal --input '{"active":true,"current_phase":"blocked","reason":"native delegation unavailable -> terminalized"}' --json`,
+      ));
       assert.notEqual((terminalBlockedWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
       // Defect C: quoted regex/source text with redirect metacharacters is not a
       // write target, so issue creation is not falsely blocked.
       const issueCreate = await dispatch(
-        "gh issue create --title x --body 'Guard misparsed regex /[^>]+>{1,2}/ as a redirect target'",
+        "printf '%s\\n' 'Guard regex /[^>]+>{1,2}/ is quoted data, not a redirect'",
       );
       assert.notEqual((issueCreate.outputJson as { decision?: string } | null)?.decision, "block");
 
@@ -22793,7 +24427,7 @@ PY`,
       assert.equal((realRedirect.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(
         String((realRedirect.outputJson as { reason?: string } | null)?.reason ?? ""),
-        /not workflow state\/ledger\/mailbox\/handoff metadata/,
+        /not workflow state\/ledger\/mailbox\/handoff metadata|Bash redirect target is not a static workflow metadata leaf/,
       );
 
       // A real unquoted redirect to allowed workflow metadata still passes.
@@ -22810,7 +24444,11 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-3119-escaped-quote";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-conductor-3119-escaped-quote",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: "thread-conductor-3119-escaped-quote", threads: { "thread-conductor-3119-escaped-quote": { thread_id: "thread-conductor-3119-escaped-quote", kind: "leader" } } } } });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -22826,6 +24464,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-3119-escaped-quote",
+            agent_id: "thread-conductor-3119-escaped-quote",
             tool_name: "Bash",
             tool_input: { command },
           },
@@ -22847,7 +24486,7 @@ PY`,
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
         assert.match(
           String((result.outputJson as { reason?: string } | null)?.reason ?? ""),
-          /not workflow state\/ledger\/mailbox\/handoff metadata/,
+          /not workflow state\/ledger\/mailbox\/handoff metadata|Bash redirect target is not a static workflow metadata leaf/,
           command,
         );
       }
@@ -22855,7 +24494,6 @@ PY`,
       // Legitimate quoted DATA metacharacters (single quotes, double quotes,
       // ANSI-C) are not redirects and must not be falsely blocked.
       const mustNotBlock = [
-        "gh issue create --title x --body 'a > b regex /[^>]+>{1,2}/'",
         "echo \"value > threshold\"",
         "printf $'a>b'",
       ];
@@ -22874,7 +24512,10 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ralplan-agent-role-main";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-ralplan-agent-role-main",
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralplan", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
         active: true,
@@ -22903,13 +24544,16 @@ PY`,
     }
   });
 
-  it("blocks Main-root conductor writes even when payload has only a typed agent_role", async () => {
+  it("requires owner confirmation when only a typed agent_role is present", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-agent-role-main-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-agent-role-main";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-conductor-agent-role-main",
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -22932,7 +24576,7 @@ PY`,
       );
 
       assert.equal(result.outputJson?.decision, "block");
-      assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+      assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -22953,6 +24597,7 @@ PY`,
       const childThreadId = "thread-conductor-child";
       const nowIso = new Date().toISOString();
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeFile(join(cwd, "README.md"), "read-only source\n", "utf-8");
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
@@ -23065,7 +24710,7 @@ PY`,
           thread_id: childThreadId,
           agent_role: "executor",
           tool_name: "Bash",
-          tool_input: { command: "git status --short" },
+          tool_input: { command: "cat src/conductor-owned.ts" },
         },
         { cwd },
       );
@@ -23088,6 +24733,8 @@ PY`,
     const originalOmxRoot = process.env.OMX_ROOT;
     const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
     const originalOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const originalOmxSessionId = process.env.OMX_SESSION_ID;
+    const originalGjcSessionId = process.env.GJC_SESSION_ID;
 
     try {
       process.env.OMX_ROOT = cwd;
@@ -23097,8 +24744,41 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-hook-native-agent-id";
       const leaderThreadId = "thread-conductor-hook-native-agent-id-leader";
+      delete process.env.OMX_SESSION_ID;
+      process.env.GJC_SESSION_ID = sessionId;
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await mkdir(join(cwd, "src", "shared"), { recursive: true });
+      await mkdir(join(cwd, "src", "state"), { recursive: true });
+      await mkdir(join(cwd, ".omx", "state", "tmp"), { recursive: true });
+      await mkdir(join(cwd, ".omx", "state", "inbox"), { recursive: true });
+      await symlink(join(cwd, "src", "dangling-target.ts"), join(cwd, ".omx", "state", "inbox", "dangling"));
+      await mkdir(join(cwd, "src", "subdir"), { recursive: true });
+      await mkdir(join(stateDir, "bash-home"), { recursive: true });
+      await writeFile(join(cwd, "src", "runtime.ts"), "export {};\n", "utf-8");
+      await writeFile(join(cwd, "a"), "finite metadata source\n", "utf-8");
+      await mkdir(join(stateDir, "zsh-home"), { recursive: true });
+      await writeFile(join(stateDir, "zsh-home", ".zshenv"), "touch src/zsh-owned.ts\n", "utf-8");
+      await writeFile(join(stateDir, "inbox", "time"), "#!/bin/sh\ntouch src/time-wrapper-owned.ts\n", "utf-8");
+      await chmod(join(stateDir, "inbox", "time"), 0o755);
+      await writeFile(join(stateDir, "inbox", "node"), "#!/bin/sh\ntouch src/shebang-owned.ts\n", "utf-8");
+      await chmod(join(stateDir, "inbox", "node"), 0o755);
+      await writeFile(join(stateDir, "bash-home", ".bashrc"), "touch src/interactive-owned.ts\n", "utf-8");
+      await symlink(join(cwd, "src", "subdir"), join(stateDir, "link"));
+      await symlink(join(cwd, "src"), join(stateDir, "inbox", "product-dir"));
+      await symlink(join(cwd, "src", "runtime.ts"), join(stateDir, "curl-glob-1.log"));
+      await writeFile(join(stateDir, "conductor-ledger.json"), "{}\n", "utf-8");
+      await writeFile(join(stateDir, "reference-copy"), "metadata reference target\n", "utf-8");
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            threads: { [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" } },
+          },
+        },
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -23106,6 +24786,11 @@ PY`,
         current_phase: "executing",
         session_id: sessionId,
       });
+      const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+      const trustedPackageBin = join(cwd, "node_modules", ".bin", "omx");
+      await mkdir(dirname(trustedPackageBin), { recursive: true });
+      await symlink(workspacePackageCli, trustedPackageBin);
+      const trustedPackagePath = `${dirname(trustedPackageBin)}:/usr/bin:/bin`;
 
       const dispatchWrite = (identity: Record<string, unknown>) => dispatchCodexNativeHook(
         {
@@ -23130,6 +24815,50 @@ PY`,
         },
         { cwd },
       );
+      const dispatchBashWithTrustedPackageCli = async (name: string, identity: Record<string, unknown>, command: string) => {
+        const inheritedPath = process.env.PATH;
+        process.env.PATH = trustedPackagePath;
+        try {
+          return await dispatchBash(name, identity, command);
+        } finally {
+          if (inheritedPath === undefined) delete process.env.PATH;
+          else process.env.PATH = inheritedPath;
+        }
+      };
+      const directNpmBinPathShadow = join(stateDir, "inbox", "cat");
+      await symlink("/usr/bin/touch", directNpmBinPathShadow);
+      const inheritedPathForNpmBinPathScan = process.env.PATH;
+      process.env.PATH = `${dirname(trustedPackageBin)}:${join(stateDir, "inbox")}:/usr/bin:/bin`;
+      try {
+        for (const [name, identity] of [
+          ["main", { agent_id: leaderThreadId }],
+          ["native-child", { agent_id: "agent-hook-native-npm-bin-path-scan" }],
+        ] as const) {
+          const result = await dispatchBash(`npm-bin-path-scan-${name}`, identity, "cat src/path-owned.ts");
+          assert.equal(result.outputJson?.decision, "block", name);
+        }
+      } finally {
+        if (inheritedPathForNpmBinPathScan === undefined) delete process.env.PATH;
+        else process.env.PATH = inheritedPathForNpmBinPathScan;
+      }
+      const directPackageNodeShadow = join(dirname(trustedPackageBin), "node");
+      await writeFile(directPackageNodeShadow, "#!/bin/sh\ntouch src/omx-status-owned.ts\n", "utf-8");
+      await chmod(directPackageNodeShadow, 0o755);
+      const inheritedPathForPackageRead = process.env.PATH;
+      process.env.PATH = `${dirname(trustedPackageBin)}:/usr/bin:/bin`;
+      try {
+        for (const [name, identity] of [
+          ["main", { agent_id: leaderThreadId }],
+          ["native-child", { agent_id: "agent-hook-native-package-read" }],
+        ] as const) {
+          const result = await dispatchBash(`package-read-node-shadow-${name}`, identity, "omx status");
+          assert.equal(result.outputJson?.decision, "block", name);
+        }
+      } finally {
+        if (inheritedPathForPackageRead === undefined) delete process.env.PATH;
+        else process.env.PATH = inheritedPathForPackageRead;
+        await rm(directPackageNodeShadow, { force: true });
+      }
 
 
       delete process.env.OMX_TEAM_INTERNAL_WORKER;
@@ -23149,17 +24878,239 @@ PY`,
       assert.equal(conflictingIdentity.outputJson?.decision, "block");
       assert.match(String(conflictingIdentity.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
       assert.doesNotMatch(String(conflictingIdentity.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED|Main-root/);
+      for (const identity of [
+        { agent_id: leaderThreadId, thread_id: "thread-hook-native-foreign" },
+        { agent_id: "agent-hook-native-foreign", thread_id: leaderThreadId },
+      ]) {
+        const conflict = await dispatchWrite(identity);
+        assert.equal(conflict.outputJson?.decision, "block");
+        assert.match(String(conflict.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
+      }
+      for (const [name, identity] of [
+        ["owner-current-thread", { owner_codex_thread_id: leaderThreadId, thread_id: "thread-hook-native-owner-conflict" }],
+        ["session-alias", { sessionId: "foreign-session", agent_id: leaderThreadId, thread_id: leaderThreadId }],
+        ["reversed-session-alias", { session_id: "foreign-session", sessionId, agent_id: leaderThreadId, thread_id: leaderThreadId }],
+        ["owner-agent", { owner_codex_thread_id: "thread-hook-native-owner-conflict", agent_id: leaderThreadId }],
+      ] as const) {
+        const conflict = await dispatchWrite(identity);
+        assert.equal(conflict.outputJson?.decision, "block", name);
+        assert.match(String(conflict.outputJson?.reason ?? ""), /PROVENANCE_DENIED/, name);
+      }
+      for (const [name, sessionAliases] of [
+        ["canonical-first", { session_id: sessionId, sessionId: "foreign-session" }],
+        ["foreign-first", { session_id: "foreign-session", sessionId }],
+      ] as const) {
+        for (const [transport, toolName, toolInput] of [
+          ["path", "Write", { file_path: "src/alias-bypass.ts", content: "owned\n" }],
+          ["bash", "Bash", { command: "printf pwn >& src/alias-bypass.ts" }],
+          ["state", "mcp__omx_state__state_write", { mode: "ultragoal", active: true }],
+        ] as const) {
+          const result = await dispatchCodexNativeHook({
+            hook_event_name: "PreToolUse",
+            cwd,
+            ...sessionAliases,
+            agent_id: leaderThreadId,
+            thread_id: leaderThreadId,
+            tool_name: toolName,
+            tool_input: toolInput,
+          }, { cwd });
+          assert.equal(result.outputJson?.decision, "block", `${name}/${transport}`);
+          assert.match(String(result.outputJson?.reason ?? ""), /PROVENANCE_DENIED/, `${name}/${transport}`);
+        }
+      }
+      const consistentLeaderIdentity = await dispatchWrite({ agent_id: leaderThreadId, thread_id: leaderThreadId });
+      assert.equal(consistentLeaderIdentity.outputJson?.decision, "block");
+      assert.match(String(consistentLeaderIdentity.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      const sessionClaimedAsLeader = await dispatchWrite({
+        owner_codex_session_id: leaderThreadId,
+        owner_omx_session_id: sessionId,
+      });
+      assert.equal(sessionClaimedAsLeader.outputJson?.decision, "block");
+      assert.match(String(sessionClaimedAsLeader.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(sessionClaimedAsLeader.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
+
 
       if (originalTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
       else process.env.OMX_TEAM_WORKER = originalTeamWorker;
       if (originalInternalTeamWorker === undefined) delete process.env.OMX_TEAM_INTERNAL_WORKER;
       else process.env.OMX_TEAM_INTERNAL_WORKER = originalInternalTeamWorker;
+      for (const [name, identity] of [
+        ["foreign-active-session", { session_id: "foreign-session", agent_id: leaderThreadId, thread_id: leaderThreadId }],
+        ["absent-active-session", { agent_id: leaderThreadId, thread_id: leaderThreadId }],
+      ] as const) {
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          ...identity,
+          tool_name: "Write",
+          tool_input: { file_path: "src/session-bypass.ts", content: "owned\n" },
+        }, { cwd });
+        assert.equal(result.outputJson?.decision, "block", name);
+        assert.match(String(result.outputJson?.reason ?? ""), /PROVENANCE_DENIED/, name);
+      }
+      const identitylessNativeSessionRemote = await dispatchBash(
+        "identityless-native-session-remote",
+        { session_id: leaderThreadId },
+        "PATH=/usr/bin:/bin gh issue create --title x --body y",
+      );
+      assert.equal(identitylessNativeSessionRemote.outputJson?.decision, "block");
+      assert.match(String(identitylessNativeSessionRemote.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      for (const [name, toolInput] of [
+        ["direct-state-write-foreign-routing", { mode: "ultragoal", workingDirectory: "src", session_id: "foreign", active: false }],
+        ["direct-state-write-unknown-key", { mode: "ultragoal", active: true, child_marker: "forbidden" }],
+      ] as const) {
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          agent_id: leaderThreadId,
+          thread_id: leaderThreadId,
+          tool_name: "mcp__omx_state__state_write",
+          tool_input: toolInput,
+        }, { cwd });
+        assert.equal(result.outputJson?.decision, "block", name);
+        assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active/, name);
+      }
+      const directCanonicalStateWrite = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        agent_id: leaderThreadId,
+        thread_id: leaderThreadId,
+        tool_name: "mcp__omx_state__state_write",
+        tool_input: { mode: "ultragoal", active: true, current_phase: "executing" },
+      }, { cwd });
+      assert.equal(directCanonicalStateWrite.outputJson, null);
+      const directStateClear = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        agent_id: leaderThreadId,
+        thread_id: leaderThreadId,
+        tool_name: "mcp__omx_state__state_clear",
+        tool_input: { mode: "ultragoal" },
+      }, { cwd });
+      assert.equal(directStateClear.outputJson?.decision, "block");
+      assert.match(String(directStateClear.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      const inheritedOmxSessionId = process.env.OMX_SESSION_ID;
+      const inheritedGjcSessionId = process.env.GJC_SESSION_ID;
+      try {
+        process.env.OMX_SESSION_ID = "foreign";
+        process.env.GJC_SESSION_ID = "foreign";
+        const inheritedSessionWrite = await dispatchBashWithTrustedPackageCli(
+          "inherited-foreign-session-state-write",
+          { agent_id: leaderThreadId, thread_id: leaderThreadId },
+          `omx state write --input '{"mode":"ultragoal","active":true}' --json`,
+        );
+        assert.equal(inheritedSessionWrite.outputJson?.decision, "block");
+        assert.match(String(inheritedSessionWrite.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
+      } finally {
+        if (inheritedOmxSessionId === undefined) delete process.env.OMX_SESSION_ID;
+        else process.env.OMX_SESSION_ID = inheritedOmxSessionId;
+        if (inheritedGjcSessionId === undefined) delete process.env.GJC_SESSION_ID;
+        else process.env.GJC_SESSION_ID = inheritedGjcSessionId;
+      }
+      const noncanonicalCwdPathWrite = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd: join(cwd, "src"),
+        session_id: sessionId,
+        agent_id: leaderThreadId,
+        thread_id: leaderThreadId,
+        tool_name: "Write",
+        tool_input: { file_path: ".omx/state/inbox/cwd-bypass", content: "owned\n" },
+      }, { cwd: join(cwd, "src") });
+      assert.equal(noncanonicalCwdPathWrite.outputJson?.decision, "block");
+      assert.match(String(noncanonicalCwdPathWrite.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
 
       const executorAgentId = await dispatchWrite({ agent_id: "agent-hook-native-executor", agent_role: "executor" });
       assert.equal(executorAgentId.outputJson?.decision, "block");
       assert.match(String(executorAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
       assert.doesNotMatch(String(executorAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
-      for (const [name, command] of WGET_REVIEW_MUTATION_COMMANDS) {
+      const currentRuntimeNodePath = process.execPath;
+      const untrustedExternalBin = await mkdtemp(join(tmpdir(), "omx-native-hook-external-path-"));
+      const untrustedExternalCat = join(untrustedExternalBin, "cat");
+      const untrustedExternalGh = join(untrustedExternalBin, "gh");
+      const untrustedExternalNode = join(untrustedExternalBin, "node");
+      const untrustedExternalNodeLookalike = join(untrustedExternalBin, "node-copy");
+      const untrustedExternalEnv = join(untrustedExternalBin, "env");
+      for (const [nodeName, nodeCommand] of [
+        ["current-runtime-node-bare-read", `node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
+        ["current-runtime-node-absolute-read", `${currentRuntimeNodePath} -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
+      ] as const) {
+        for (const [actor, identity] of [
+          ["main", { agent_id: leaderThreadId }],
+          ["native-child", { agent_id: "agent-hook-native-current-runtime" }],
+        ] as const) {
+          const result = await dispatchBash(nodeName, identity, nodeCommand);
+          assert.equal(result.outputJson, null, `${actor}/${nodeName}`);
+        }
+      }
+      for (const [actor, identity] of [
+        ["main", { agent_id: leaderThreadId }],
+        ["native-child", { agent_id: "agent-hook-native-current-runtime-loader" }],
+      ] as const) {
+        const result = await dispatchBash(
+          "current-runtime-node-loader",
+          identity,
+          `LD_PRELOAD=.omx/state/mutator.so ${currentRuntimeNodePath} -e "require('fs').readFileSync('src/victim.ts','utf8')"`,
+        );
+        assert.equal(result.outputJson?.decision, "block", actor);
+        assert.match(
+          String(result.outputJson?.reason ?? ""),
+          actor === "main" ? /Main-root Conductor mode is active/ : /OWNER_CONFIRMATION_REQUIRED/,
+          actor,
+        );
+      }
+
+
+      try {
+        for (const [name, identity] of [
+          ["main", { agent_id: leaderThreadId }],
+          ["native-child", { agent_id: "agent-hook-native-external-path" }],
+        ] as const) {
+          const result = await dispatchBash(
+            `external-path-without-cat-candidate-${name}`,
+            identity,
+            `PATH=${untrustedExternalBin}:${process.env.PATH || "/usr/bin:/bin"} cat src/conductor-owned.ts`,
+          );
+          assert.equal(result.outputJson, null, name);
+        }
+        await symlink("/bin/cat", untrustedExternalCat);
+        await writeFile(untrustedExternalGh, "#!/bin/sh\nexit 0\n", "utf-8");
+        await chmod(untrustedExternalGh, 0o755);
+        await writeFile(untrustedExternalNode, "#!/bin/sh\nexit 0\n", "utf-8");
+        await chmod(untrustedExternalNode, 0o755);
+        await writeFile(untrustedExternalNodeLookalike, "#!/bin/sh\nexit 0\n", "utf-8");
+        await chmod(untrustedExternalNodeLookalike, 0o755);
+        await writeFile(untrustedExternalEnv, "#!/bin/sh\nexit 0\n", "utf-8");
+        await chmod(untrustedExternalEnv, 0o755);
+        for (const [name, identity] of [
+          ["main", { agent_id: leaderThreadId }],
+          ["native-child", { agent_id: "agent-hook-native-external-path" }],
+        ] as const) {
+          for (const command of [
+            `${untrustedExternalCat} src/conductor-owned.ts`,
+            `PATH=${untrustedExternalBin}:${process.env.PATH || "/usr/bin:/bin"} cat src/conductor-owned.ts`,
+            `${untrustedExternalGh} issue create --title x --body y`,
+            `PATH=${untrustedExternalBin}:${process.env.PATH || "/usr/bin:/bin"} gh issue create --title x --body y`,
+            `${untrustedExternalNode} -e "require('fs').readFileSync('src/victim.ts','utf8')"`,
+            `PATH=${untrustedExternalBin}:/usr/bin:/bin node -e "require('fs').readFileSync('src/victim.ts','utf8')"`,
+            `${untrustedExternalNodeLookalike} -e "require('fs').readFileSync('src/victim.ts','utf8')"`,
+            `PATH=${untrustedExternalBin}:/usr/bin:/bin env cat src/conductor-owned.ts`,
+          ]) {
+            const result = await dispatchBash(`untrusted-external-${name}`, identity, command);
+            assert.equal(result.outputJson?.decision, "block", `${name}/${command}`);
+            assert.match(
+              String(result.outputJson?.reason ?? ""),
+              name === "main" ? /Main-root Conductor mode is active/ : /OWNER_CONFIRMATION_REQUIRED/,
+              `${name}/${command}`,
+            );
+          }
+        }
+      } finally {
+        await rm(untrustedExternalBin, { recursive: true, force: true });
+      }
+      for (const [name, command] of [...WGET_REVIEW_MUTATION_COMMANDS, ...ARGUMENT_PRODUCING_RUNTIME_DENIAL_COMMANDS]) {
         const nativeChildBash = await dispatchBash(`${name}-child`, { agent_id: `agent-hook-native-${name}` }, command);
         assert.equal(nativeChildBash.outputJson?.decision, "block", name);
         assert.match(String(nativeChildBash.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, name);
@@ -23168,12 +25119,228 @@ PY`,
         assert.equal(mainRootBash.outputJson?.decision, "block", name);
         assert.match(String(mainRootBash.outputJson?.reason ?? ""), /Main-root Conductor mode is active/, name);
       }
+      for (const [name, command] of WGET_MAIN_METADATA_MUTATION_COMMANDS) {
+        const nativeChildBash = await dispatchBash(`${name}-child`, { agent_id: `agent-hook-native-${name}` }, command);
+        assert.equal(nativeChildBash.outputJson?.decision, "block", name);
+        assert.match(String(nativeChildBash.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, name);
+
+        const mainRootBash = await dispatchBash(`${name}-main`, { agent_id: leaderThreadId }, command);
+        assert.equal(mainRootBash.outputJson, null, name);
+      }
+      const compiledCliStateWrite = `omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"executing"}' --json`;
+      const nativeChildCliStateWrite = await dispatchBashWithTrustedPackageCli(
+        "cli-state-write-child",
+        { agent_id: "agent-hook-native-cli-state-write" },
+        compiledCliStateWrite,
+      );
+      assert.equal(nativeChildCliStateWrite.outputJson?.decision, "block", "cli-state-write-child");
+      assert.match(String(nativeChildCliStateWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "cli-state-write-child");
+      const mainRootCliStateWrite = await dispatchBashWithTrustedPackageCli(
+        "cli-state-write-main",
+        { agent_id: leaderThreadId },
+        compiledCliStateWrite,
+      );
+      assert.equal(mainRootCliStateWrite.outputJson, null, "cli-state-write-main");
+      for (const [name, prefix] of [
+        ["poisoned-omx-root", `OMX_ROOT=${join(cwd, "src")} PATH=${trustedPackagePath}`],
+        ["poisoned-omx-state-root", `OMX_STATE_ROOT=${join(cwd, "src", "state")} PATH=${trustedPackagePath}`],
+        ["unknown-omx-runtime-output", `OMX_UNREVIEWED_OUTPUT=src/output PATH=${trustedPackagePath}`],
+        ["unknown-omx-runtime-environment", `OMX_UNREVIEWED_HELPER=src/mutator PATH=${trustedPackagePath}`],
+        ["unknown-gjc-runtime-environment", `GJC_UNREVIEWED_HELPER=src/mutator PATH=${trustedPackagePath}`],
+      ] as const) {
+        for (const [surface, command] of [
+          ["state-write", compiledCliStateWrite],
+          ["read-only-omx", "omx status"],
+        ] as const) {
+          const result = await dispatchBash(`${name}-${surface}`, { agent_id: leaderThreadId }, `${prefix} ${command}`);
+          assert.equal(result.outputJson?.decision, "block", `${name}-${surface}`);
+          assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active/, `${name}-${surface}`);
+        }
+      }
+      const compiledFunctionPersistedRsyncEnvironment = `poison(){ export RSYNC_PARTIAL_DIR=${join(cwd, "src", "rsync-partials")}; }; poison; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`;
+      const compiledFunctionPersistedOmxEnvironment = `poison(){ export OMX_STATE_ROOT=${join(cwd, "src", "state")}; }; poison; omx state write --input '{"mode":"ultragoal","active":true}' --json`;
+      for (const [name, command] of [
+        ["function-persisted-rsync-runtime-environment", compiledFunctionPersistedRsyncEnvironment],
+        ["function-persisted-omx-runtime-environment", compiledFunctionPersistedOmxEnvironment],
+        ["function-persisted-gjc-runtime-environment", `poison(){ export GJC_UNREVIEWED_HELPER=src/mutator; }; poison; omx status`],
+        ["nameref-rsync-runtime-environment", `declare -n poison=RSYNC_PARTIAL_DIR; poison=src/rsync-partials; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+        ["joined-rsync-runtime-environment", `if true; then export RSYNC_PARTIAL_DIR=src/rsync-partials; fi; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+        ["nested-omx-runtime-environment", `export OMX_STATE_ROOT=${join(cwd, "src", "state")}; bash --noprofile --norc -c 'omx status'`],
+        ["function-readonly-omx-root-failed-unset", `poison(){ readonly OMX_ROOT=${join(cwd, "src")}; unset OMX_ROOT; }; poison; omx status`],
+        ["function-readonly-rsync-runtime-failed-unset", `poison(){ readonly RSYNC_PARTIAL_DIR=src/rsync-partials; unset RSYNC_PARTIAL_DIR; }; poison; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+        ["function-readonly-gjc-runtime-failed-unset", `poison(){ readonly GJC_UNREVIEWED_HELPER=src/mutator; unset GJC_UNREVIEWED_HELPER; }; poison; omx status`],
+      ] as const) {
+        for (const [actor, identity] of [
+          ["main-root", { agent_id: leaderThreadId }],
+          ["native-child", { agent_id: "agent-hook-native-function-persisted-environment" }],
+        ] as const) {
+          const result = await dispatchBashWithTrustedPackageCli(`${name}-${actor}`, identity, command);
+          assert.equal(result.outputJson?.decision, "block", `${name}-${actor}`);
+          assert.match(String(result.outputJson?.reason ?? ""), actor === "main-root" ? /Main-root Conductor mode is active/ : /OWNER_CONFIRMATION_REQUIRED/, `${name}-${actor}`);
+        }
+      }
+      const compiledModeCliStateWrite = `OMX_SESSION_ID=${sessionId} omx state write --mode=ultragoal --input '{"active":true,"current_phase":"blocked","reason":"native delegation unavailable -> terminalized"}' --json`;
+      const nativeChildModeCliStateWrite = await dispatchBashWithTrustedPackageCli(
+        "mode-cli-state-write-child",
+        { agent_id: "agent-hook-native-mode-cli-state-write" },
+        compiledModeCliStateWrite,
+      );
+      assert.equal(nativeChildModeCliStateWrite.outputJson?.decision, "block", "mode-cli-state-write-child");
+      assert.match(String(nativeChildModeCliStateWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "mode-cli-state-write-child");
+      const mainRootModeCliStateWrite = await dispatchBashWithTrustedPackageCli(
+        "mode-cli-state-write-main",
+        { agent_id: leaderThreadId },
+        compiledModeCliStateWrite,
+      );
+      assert.equal(mainRootModeCliStateWrite.outputJson, null, "mode-cli-state-write-main");
+      const compiledDynamicCliStateWrite = `omx state write --input "$STATE_INPUT" --json`;
+      for (const [actor, identity] of [
+        ["native-child", { agent_id: "agent-hook-native-dynamic-cli-state-write" }],
+        ["main-root", { agent_id: leaderThreadId }],
+      ] as const) {
+        const dynamicCliStateWrite = await dispatchBashWithTrustedPackageCli(`dynamic-cli-state-write-${actor}`, identity, compiledDynamicCliStateWrite);
+        assert.equal(dynamicCliStateWrite.outputJson?.decision, "block", `dynamic-cli-state-write-${actor}`);
+        assert.match(
+          String(dynamicCliStateWrite.outputJson?.reason ?? ""),
+          actor === "native-child" ? /OWNER_CONFIRMATION_REQUIRED/ : /Main-root Conductor mode is active/,
+          `dynamic-cli-state-write-${actor}`,
+        );
+      }
+      const compiledUnknownStateWriteFlag = `omx state write --unexpected --input '{"mode":"ultragoal","active":true}' --json`;
+      for (const [actor, identity] of [
+        ["native-child", { agent_id: "agent-hook-native-unknown-state-write-flag" }],
+        ["main-root", { agent_id: leaderThreadId }],
+      ] as const) {
+        const unknownStateWriteFlag = await dispatchBashWithTrustedPackageCli(`unknown-state-write-flag-${actor}`, identity, compiledUnknownStateWriteFlag);
+        assert.equal(unknownStateWriteFlag.outputJson?.decision, "block", `unknown-state-write-flag-${actor}`);
+        assert.match(
+          String(unknownStateWriteFlag.outputJson?.reason ?? ""),
+          actor === "native-child" ? /OWNER_CONFIRMATION_REQUIRED/ : /Main-root Conductor mode is active/,
+          `unknown-state-write-flag-${actor}`,
+        );
+      }
+      for (const [name, command] of [
+        ["foreign-routing-state-write", `omx state write --input '{"mode":"ultragoal","workingDirectory":"src","session_id":"foreign","active":false}' --json`],
+        ["unknown-state-write-payload-key", `omx state write --input '{"mode":"ultragoal","active":true,"child_marker":"forbidden"}' --json`],
+        ["conflicting-mode-state-write", `omx state write --mode=ultragoal --input '{"mode":"ralph","active":true}' --json`],
+        ["foreign-session-environment-state-write", `OMX_SESSION_ID=foreign omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+        ["unset-session-environment-state-write", `env -uOMX_SESSION_ID omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+        ["shell-unset-session-state-write", `unset OMX_SESSION_ID; omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+        ["noncanonical-cwd-state-write", `cd src; omx state write --input '{"mode":"ultragoal","active":true}' --json`],
+      ] as const) {
+        for (const [actor, identity] of [
+          ["main-root", { agent_id: leaderThreadId }],
+          ["native-child", { agent_id: `agent-hook-native-${name}` }],
+        ] as const) {
+          const result = await dispatchBashWithTrustedPackageCli(`${name}-${actor}`, identity, command);
+          assert.equal(result.outputJson?.decision, "block", `${name}-${actor}`);
+          assert.match(
+            String(result.outputJson?.reason ?? ""),
+            actor === "main-root" ? /Main-root Conductor mode is active/ : /OWNER_CONFIRMATION_REQUIRED/,
+            `${name}-${actor}`,
+          );
+        }
+      }
+      const [mixedReferenceStateName, mixedReferenceStateCommand] = NATIVE_CHILD_MIXED_REFERENCE_STATE_WRITE;
+      const referenceOnlyCommand = `chmod --reference=.omx/state/session.json .omx/state/reference-copy`;
+      for (const [actor, identity] of [
+        ["main", { agent_id: leaderThreadId }],
+        ["native-child", { agent_id: "agent-hook-native-reference-only" }],
+      ] as const) {
+        const referenceOnly = await dispatchBash(`${mixedReferenceStateName}-${actor}-reference-only`, identity, referenceOnlyCommand);
+        assert.equal(referenceOnly.outputJson, null, `${mixedReferenceStateName}-${actor}-reference-only`);
+      }
+      const nativeChildMixedReferenceState = await dispatchBashWithTrustedPackageCli(
+        `${mixedReferenceStateName}-child`,
+        { agent_id: `agent-hook-native-${mixedReferenceStateName}` },
+        mixedReferenceStateCommand,
+      );
+      assert.equal(nativeChildMixedReferenceState.outputJson?.decision, "block", mixedReferenceStateName);
+      assert.match(String(nativeChildMixedReferenceState.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, mixedReferenceStateName);
+      const mainRootMixedReferenceState = await dispatchBashWithTrustedPackageCli(
+        `${mixedReferenceStateName}-main`,
+        { agent_id: leaderThreadId },
+        mixedReferenceStateCommand,
+      );
+      assert.equal(mainRootMixedReferenceState.outputJson, null, mixedReferenceStateName);
+      const [nativeChildRsyncAuthorityName, nativeChildRsyncAuthorityCommand] = NATIVE_CHILD_RSYNC_AUTHORITY_TARGET;
+      const nativeChildRsyncAuthority = await dispatchBash(
+        nativeChildRsyncAuthorityName,
+        { agent_id: `agent-hook-native-${nativeChildRsyncAuthorityName}` },
+        nativeChildRsyncAuthorityCommand,
+      );
+      assert.equal(nativeChildRsyncAuthority.outputJson?.decision, "block", nativeChildRsyncAuthorityName);
+      assert.match(String(nativeChildRsyncAuthority.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, nativeChildRsyncAuthorityName);
+      const [referenceUnknownName, referenceUnknownCommand] = NATIVE_CHILD_REFERENCE_UNKNOWN_COMMAND;
+      const nativeChildReferenceUnknown = await dispatchBash(
+        `${referenceUnknownName}-child`,
+        { agent_id: `agent-hook-native-${referenceUnknownName}` },
+        referenceUnknownCommand,
+      );
+      assert.equal(nativeChildReferenceUnknown.outputJson?.decision, "block", referenceUnknownName);
+      assert.match(String(nativeChildReferenceUnknown.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, referenceUnknownName);
+      const mainRootReferenceUnknown = await dispatchBash(
+        `${referenceUnknownName}-main`,
+        { agent_id: leaderThreadId },
+        referenceUnknownCommand,
+      );
+      assert.equal(mainRootReferenceUnknown.outputJson?.decision, "block", referenceUnknownName);
+      assert.match(String(mainRootReferenceUnknown.outputJson?.reason ?? ""), /Main-root Conductor mode is active/, referenceUnknownName);
+      for (const [name, command] of [
+        ["gh-api-dynamic-method", `gh api --method "$GH_METHOD" /repos/OWNER/REPO/issues`],
+        ["omx-unknown-mutation", `omx unrecognized mutate --status failed`],
+      ] as const) {
+        for (const [actor, identity] of [
+          ["native-child", { agent_id: `agent-hook-native-${name}` }],
+          ["main-root", { agent_id: leaderThreadId }],
+        ] as const) {
+          const result = await dispatchBash(`${name}-${actor}`, identity, command);
+          assert.equal(result.outputJson?.decision, "block", `${name}-${actor}`);
+          assert.match(
+            String(result.outputJson?.reason ?? ""),
+            actor === "native-child" ? /OWNER_CONFIRMATION_REQUIRED/ : /Main-root Conductor mode is active/,
+            `${name}-${actor}`,
+          );
+        }
+      }
+
+      const originalPosixlyCorrect = process.env.POSIXLY_CORRECT;
+      try {
+        process.env.POSIXLY_CORRECT = "1";
+        for (const [name, command] of WGET_INHERITED_POSIX_COMMANDS) {
+          const nativeChildBash = await dispatchBash(`${name}-child`, { agent_id: `agent-hook-native-${name}` }, command);
+          assert.equal(nativeChildBash.outputJson?.decision, "block", name);
+          assert.match(String(nativeChildBash.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, name);
+
+          const mainRootBash = await dispatchBash(`${name}-main`, { agent_id: leaderThreadId }, command);
+          assert.equal(mainRootBash.outputJson?.decision, "block", name);
+          assert.match(String(mainRootBash.outputJson?.reason ?? ""), /Main-root Conductor mode is active/, name);
+        }
+      } finally {
+        if (originalPosixlyCorrect === undefined) delete process.env.POSIXLY_CORRECT;
+        else process.env.POSIXLY_CORRECT = originalPosixlyCorrect;
+      }
       for (const [name, command] of WGET_READ_ONLY_CONTROL_COMMANDS) {
         const nativeChildBash = await dispatchBash(`${name}-child`, { agent_id: `agent-hook-native-${name}` }, command);
         assert.equal(nativeChildBash.outputJson, null, name);
 
         const mainRootBash = await dispatchBash(`${name}-main`, { agent_id: leaderThreadId }, command);
         assert.equal(mainRootBash.outputJson, null, name);
+      }
+      for (const [name, command] of [
+        ["cleared-environment-empty-path", `env -i PATH= sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-environment-relative-path", `env -i PATH=. sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-environment-repository-path", `env -i PATH=${cwd} sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-exec-empty-path", `exec -c env PATH= sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-exec-relative-path", `exec -c env PATH=. sh -c 'wget --no-config -O - https://example.test/file'`],
+        ["cleared-exec-repository-path", `exec -c env PATH=${cwd} sh -c 'wget --no-config -O - https://example.test/file'`],
+      ] as const) {
+        const nativeChildBash = await dispatchBash(`${name}-child`, { agent_id: `agent-hook-native-${name}` }, command);
+        assert.equal(nativeChildBash.outputJson?.decision, "block", name);
+        assert.match(String(nativeChildBash.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, name);
+        const mainRootBash = await dispatchBash(`${name}-main`, { agent_id: leaderThreadId }, command);
+        assert.equal(mainRootBash.outputJson?.decision, "block", name);
+        assert.match(String(mainRootBash.outputJson?.reason ?? ""), /Main-root Conductor mode is active/, name);
       }
 
       const genericAgentId = await dispatchWrite({ agent_id: "agent-hook-native-default", agent_type: "default" });
@@ -23183,13 +25350,13 @@ PY`,
 
       const unofficialCamelCaseAgentId = await dispatchWrite({ agentId: "agent-hook-native-camel-case", agent_role: "executor" });
       assert.equal(unofficialCamelCaseAgentId.outputJson?.decision, "block");
-      assert.match(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
-      assert.doesNotMatch(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.match(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
 
       const agentTypeOnly = await dispatchWrite({ agent_type: "writer" });
       assert.equal(agentTypeOnly.outputJson?.decision, "block");
-      assert.match(String(agentTypeOnly.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
-      assert.doesNotMatch(String(agentTypeOnly.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.match(String(agentTypeOnly.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(agentTypeOnly.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
 
       const leaderAgentId = await dispatchWrite({ agent_id: leaderThreadId, agent_role: "executor" });
       assert.equal(leaderAgentId.outputJson?.decision, "block");
@@ -23202,8 +25369,7 @@ PY`,
       });
       const foreignRootPointer = await dispatchWrite({ agent_id: "agent-hook-native-foreign-root", agent_role: "writer" });
       assert.equal(foreignRootPointer.outputJson?.decision, "block");
-      assert.match(String(foreignRootPointer.outputJson?.reason ?? ""), /Main-root Conductor mode is active/);
-      assert.doesNotMatch(String(foreignRootPointer.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.match(String(foreignRootPointer.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
     } finally {
       if (originalTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
       else process.env.OMX_TEAM_WORKER = originalTeamWorker;
@@ -23215,6 +25381,56 @@ PY`,
       else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
       if (originalOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
       else process.env.OMX_TEAM_STATE_ROOT = originalOmxTeamStateRoot;
+      if (originalOmxSessionId === undefined) delete process.env.OMX_SESSION_ID;
+      else process.env.OMX_SESSION_ID = originalOmxSessionId;
+      if (originalGjcSessionId === undefined) delete process.env.GJC_SESSION_ID;
+      else process.env.GJC_SESSION_ID = originalGjcSessionId;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps active Ralph starting phase behind the PreToolUse write guard", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-starting-pretool-"));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const previousOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      process.env.OMX_ROOT = cwd;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-ralph-starting-pretool";
+      const leaderThreadId = "thread-ralph-starting-leader";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: leaderThreadId, threads: { [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" } } } },
+      });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "starting");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "starting",
+        session_id: sessionId,
+      });
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        agent_id: "agent-ralph-starting-child",
+        tool_name: "Write",
+        tool_input: { file_path: "src/starting-bypass.ts", content: "owned\n" },
+      }, { cwd });
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      if (previousOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      if (previousOmxTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousOmxTeamStateRoot;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -23346,7 +25562,7 @@ PY`,
     }
   });
 
-  it("blocks a corrupt kind:subagent leader while requiring owner confirmation for a real non-leader child (#3117 P2)", async () => {
+  it("requires owner confirmation when a corrupt kind:subagent tracker is the only apparent leader source (#3117 P2)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3117-corrupt-leader-no-lead-"));
     process.env.OMX_ROOT = cwd;
     try {
@@ -23355,8 +25571,7 @@ PY`,
       const leaderThreadId = "thread-3117-corrupt-leader-no-lead-leader";
       const childThreadId = "thread-3117-corrupt-leader-no-lead-child";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      // native_session_id anchors the leader identity even though the tracker omits
-      // leader_thread_id and corruptly labels the leader kind:"subagent".
+      // A native session id is a shared routing alias, not a per-actor leader identity.
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
@@ -23378,8 +25593,7 @@ PY`,
         },
       });
 
-      // Untyped leader payload must stay blocked: leader identity is anchored to
-      // native_session_id, not the corrupt tracker kind.
+      // Without a tracker-recorded leader identity, the untyped caller must fail closed.
       const untypedLeader = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -23392,7 +25606,7 @@ PY`,
         { cwd },
       );
       assert.equal(untypedLeader.outputJson?.decision, "block");
-      assert.match(String(untypedLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(untypedLeader.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
 
       // A genuine non-leader child is identified separately but still lacks write authority.
       const untypedChild = await dispatchCodexNativeHook(
@@ -23459,7 +25673,8 @@ PY`,
           { cwd },
         );
         assert.equal(result.outputJson?.decision, "block", threadId);
-        assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+        assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+        assert.doesNotMatch(String(result.outputJson?.reason ?? ""), /Main-root/);
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -23516,17 +25731,18 @@ PY`,
       await writeJson(sessionPath, { session_id: foreignSessionId, native_session_id: foreignLeaderThreadId });
       const foreignLeader = await dispatchThread(leaderThreadId);
       assert.equal(foreignLeader.outputJson?.decision, "block");
-      assert.match(String(foreignLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(foreignLeader.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(foreignLeader.outputJson?.reason ?? ""), /Main-root/);
       const foreignChild = await dispatchThread(childThreadId);
       assert.equal(foreignChild.outputJson?.decision, "block");
-      assert.match(String(foreignChild.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(foreignChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(foreignChild.outputJson?.reason ?? ""), /Main-root/);
 
-      // Once a genuine native_session_id leader thread anchor exists, the leader remains
-      // blocked and a real child receives an owner-confirmation denial.
+      // A matching native_session_id remains a routing alias, not a leader identity.
       await writeJson(sessionPath, { session_id: sessionId, native_session_id: leaderThreadId });
       const ownedLeader = await dispatchThread(leaderThreadId);
       assert.equal(ownedLeader.outputJson?.decision, "block");
-      assert.match(String(ownedLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(ownedLeader.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
       const ownedChild = await dispatchThread(childThreadId);
       assert.equal(ownedChild.outputJson?.decision, "block");
       assert.match(String(ownedChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
@@ -23590,17 +25806,17 @@ PY`,
       });
       const ownerOnlyLeader = await dispatchThread(leaderThreadId);
       assert.equal(ownerOnlyLeader.outputJson?.decision, "block");
-      assert.match(String(ownerOnlyLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(ownerOnlyLeader.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(ownerOnlyLeader.outputJson?.reason ?? ""), /Main-root/);
       // Control: an untracked thread also stays blocked under the same state.
       const ownerOnlyUntracked = await dispatchThread(untrackedThreadId);
       assert.equal(ownerOnlyUntracked.outputJson?.decision, "block");
 
-      // Once a genuine native_session_id leader thread anchor exists, the leader remains
-      // blocked and a real child receives an owner-confirmation denial.
+      // A matching native_session_id remains insufficient without a leader thread anchor.
       await writeJson(sessionPath, { session_id: sessionId, native_session_id: leaderThreadId });
       const anchoredLeader = await dispatchThread(leaderThreadId);
       assert.equal(anchoredLeader.outputJson?.decision, "block");
-      assert.match(String(anchoredLeader.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(anchoredLeader.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
       const anchoredChild = await dispatchThread(childThreadId);
       assert.equal(anchoredChild.outputJson?.decision, "block");
       assert.match(String(anchoredChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
@@ -23939,7 +26155,8 @@ PY`,
       assert.equal(leaderEdit.outputJson?.decision, "block");
       assert.match(String(leaderEdit.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
 
-      // The guard reads the session-pinned phase: flipping it to "starting" releases the leader too.
+      // The active Ralph starting guard remains in force; only terminal state can
+      // release the leader from the active workflow write boundary.
       await writeJson(ralphStatePath, {
         active: true,
         mode: "ralph",
@@ -23957,7 +26174,8 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(leaderEditAfterStarting.outputJson, null);
+      assert.equal(leaderEditAfterStarting.outputJson?.decision, "block");
+      assert.match(String(leaderEditAfterStarting.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: starting\)/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -24057,7 +26275,7 @@ PY`,
         },
       });
 
-      // (a) Untracked thread whose declared parent is neither the leader nor a tracked thread.
+      // (a) Explicit non-anchor thread identity with an untrusted declared parent.
       const orphanParent = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -24076,9 +26294,10 @@ PY`,
         { cwd },
       );
       assert.equal(orphanParent.outputJson?.decision, "block");
-      assert.match(String(orphanParent.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(orphanParent.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(orphanParent.outputJson?.reason ?? ""), /Main-root/);
 
-      // (b) Untyped child with no provenance at all (no tracker thread, no spawn source).
+      // (b) Explicit non-anchor thread identity with no provenance at all.
       const noProvenance = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -24092,9 +26311,10 @@ PY`,
         { cwd },
       );
       assert.equal(noProvenance.outputJson?.decision, "block");
-      assert.match(String(noProvenance.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ralph phase: executing\)/);
+      assert.match(String(noProvenance.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+      assert.doesNotMatch(String(noProvenance.outputJson?.reason ?? ""), /Main-root/);
 
-      // (c) Spawn provenance attached to the leader thread cannot promote the main root.
+      // (c) The positive leader anchor retains Main-root authority despite self-spawn provenance.
       const leaderSelfSpawn = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -24125,7 +26345,11 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ralph-conductor-write";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-ralph-conductor-write",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: "thread-ralph-conductor-write", threads: { "thread-ralph-conductor-write": { thread_id: "thread-ralph-conductor-write", kind: "leader" } } } } });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -24140,6 +26364,7 @@ PY`,
           cwd,
           session_id: sessionId,
           thread_id: "thread-ralph-conductor-write",
+          agent_id: "thread-ralph-conductor-write",
           tool_name: "Edit",
           tool_input: { file_path: "src/runtime.ts" },
         },
@@ -24158,6 +26383,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-ralph-conductor-write",
+            agent_id: "thread-ralph-conductor-write",
             tool_name: toolName,
             tool_input: { file_path: filePath },
           },
@@ -24173,12 +26399,13 @@ PY`,
           cwd,
           session_id: sessionId,
           thread_id: "thread-ralph-conductor-write",
+          agent_id: "thread-ralph-conductor-write",
           tool_name: "Write",
           tool_input: { file_path: ".omx/state/sessions/sess-ralph-conductor-write/ralph-state.json" },
         },
         { cwd },
       );
-      assert.equal(allowed.outputJson, null);
+      assert.equal(allowed.outputJson?.decision, "block");
 
       const protectedRawState = await dispatchCodexNativeHook(
         {
@@ -24186,6 +26413,7 @@ PY`,
           cwd,
           session_id: sessionId,
           thread_id: "thread-ralph-conductor-write",
+          agent_id: "thread-ralph-conductor-write",
           tool_name: "Write",
           tool_input: { file_path: ".omx/state/sessions/sess-ralph-conductor-write/autopilot-state.json" },
         },
@@ -24193,30 +26421,34 @@ PY`,
       );
       assert.equal(protectedRawState.outputJson?.decision, "block");
 
-      const safeTransport = await dispatchCodexNativeHook(
+      const safeTransport = await withTrustedWorkspaceOmxCli(cwd, (omxCommand) => dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: sessionId,
           thread_id: "thread-ralph-conductor-write",
+          agent_id: "thread-ralph-conductor-write",
           tool_name: "Bash",
-          tool_input: { command: "omx state write --input '{\"mode\":\"ralph\",\"current_phase\":\"executing\",\"active\":true}' --json" },
+          tool_input: { command: `OMX_SESSION_ID=${sessionId} ${omxCommand} state write --input '{"mode":"ralph","current_phase":"executing","active":true}' --json` },
         },
         { cwd },
-      );
+      ));
       assert.equal(safeTransport.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("allows structured ultragoal steering cleanup through dynamic nested shell loops", async () => {
+  it("blocks dynamic ultragoal steering cleanup through nested shell loops", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-steer-cleanup-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ultragoal-steer-cleanup";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-ultragoal-steer-cleanup",
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
       await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
         active: true,
@@ -24225,21 +26457,26 @@ PY`,
         session_id: sessionId,
       });
 
-      const result = await dispatchCodexNativeHook(
-        {
-          hook_event_name: "PreToolUse",
-          cwd,
-          session_id: sessionId,
-          thread_id: "thread-ultragoal-steer-cleanup",
-          tool_name: "Bash",
-          tool_input: {
-            command: `bash -lc 'for goal_id in G001-atomized G002-atomized; do omx ultragoal steer --kind mark_blocked_superseded --target-goal-id "$goal_id" --evidence ".omx/ultragoal cleanup supersedes atomized pseudo-goals." --rationale "Structured steering cleanup keeps durable Ultragoal metadata auditable." --json; done'`,
+      const result = await withTrustedWorkspaceOmxCli(
+        cwd,
+        (_omxCommand, trustedPath) => dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-ultragoal-steer-cleanup",
+            tool_name: "Bash",
+            tool_input: {
+              command: `PATH="${trustedPath}" bash -c 'for goal_id in G001-atomized G002-atomized; do omx ultragoal steer --kind mark_blocked_superseded --target-goal-id "$goal_id" --evidence ".omx/ultragoal cleanup supersedes atomized pseudo-goals." --rationale "Structured steering cleanup keeps durable Ultragoal metadata auditable." --json; done'`,
+            },
           },
-        },
-        { cwd },
+          { cwd },
+        ),
+        "assignment",
       );
 
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /Bash nested shell execution is dynamic and cannot be validated/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -24285,7 +26522,18 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-bash-mutations";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeFile(join(stateDir, "conductor-ledger.json"), "{}\n", "utf-8");
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: "thread-conductor-bash-mutations" });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: "thread-conductor-bash-mutations",
+            threads: { "thread-conductor-bash-mutations": { thread_id: "thread-conductor-bash-mutations", kind: "leader" } },
+          },
+        },
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -24293,6 +26541,9 @@ PY`,
         current_phase: "executing",
         session_id: sessionId,
       });
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await writeFile(join(cwd, "a"), "finite metadata source\n", "utf-8");
+      await writeFile(join(cwd, "src", "source.ts"), "export {};\n", "utf-8");
 
       const blockedCommands = [
         "mv src/old.ts src/new.ts",
@@ -24319,8 +26570,8 @@ PY`,
         "printf ok; cp package.json src/package-copy.json",
         "(cp .omx/state/foo src/foo)",
         "{ cp .omx/state/foo src/foo; }",
-        "curl -o src/downloaded.json https://example.invalid/data.json",
-        "curl -O https://example.invalid/data.json",
+        "curl -q -o src/downloaded.json https://example.invalid/data.json",
+        "curl -q -O https://example.invalid/data.json",
         "wget -O src/downloaded.json https://example.invalid/data.json",
         "wget -o src/wget.log https://example.invalid/data.json",
         "cd /tmp && cp .omx/state/foo src/foo",
@@ -24332,13 +26583,14 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-bash-mutations",
+            agent_id: "thread-conductor-bash-mutations",
             tool_name: "Bash",
             tool_input: { command },
           },
           { cwd },
         );
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
-        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:.* mutation target|.*write target) .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:.* mutation target|.*write target) .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash redirect target is not a static workflow metadata leaf|target <unresolved>/);
       }
 
       const allowedCommands = [
@@ -24350,11 +26602,9 @@ PY`,
         "exec cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/exec-ledger.json",
         "cp src/source.ts .omx/state/source-copy.ts",
         "cat <<'EOF' > .omx/state/conductor-heredoc.json\n{}\nEOF",
-        "bash -lc \"printf safe\"",
+        "bash --noprofile --norc -lc \"printf safe\"",
         "sh -c 'printf safe'",
-        "curl https://example.invalid/data.json",
-        "curl -o .omx/state/downloaded.json https://example.invalid/data.json",
-        "wget -O .omx/state/downloaded.json https://example.invalid/data.json",
+        "curl -q https://example.invalid/data.json",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -24363,6 +26613,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-bash-mutations",
+            agent_id: "thread-conductor-bash-mutations",
             tool_name: "Bash",
             tool_input: { command },
           },
@@ -24415,7 +26666,10 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ralph-conductor-write";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-ralph-conductor-write",
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -24449,7 +26703,7 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(allowed.outputJson, null);
+      assert.equal(allowed.outputJson?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -24461,7 +26715,14 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-bash-mutations";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeLiveNativeMappedSessionState(cwd, stateDir, sessionId, "native-conductor-bash-mutations");
+      await writeFile(join(cwd, "a"), "finite metadata source\n", "utf-8");
+      await writeLiveNativeMappedSessionState(
+        cwd,
+        stateDir,
+        sessionId,
+        "native-conductor-bash-mutations",
+        "thread-conductor-bash-mutations",
+      );
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -24473,13 +26734,13 @@ PY`,
       const blockedCommands = [
         "node -e \"require('fs').appendFileSync('src/runtime.ts','x')\"",
         "python3 -c \"open('src/runtime.ts','a').write('x')\"",
-        "curl -fsSL https://example.test/runtime.ts -o src/runtime.ts",
-        "curl -fsSL -O https://example.test/runtime.ts --output-dir src",
-        "curl -fsSL -LO https://example.test/runtime.ts --output-dir src",
-        "curl -fsSL --remote-name --output-dir=src https://example.test/runtime.ts",
+        "curl -q -fsSL https://example.test/runtime.ts -o src/runtime.ts",
+        "curl -q -fsSL -O https://example.test/runtime.ts --output-dir src",
+        "curl -q -fsSL -LO https://example.test/runtime.ts --output-dir src",
+        "curl -q -fsSL --remote-name --output-dir=src https://example.test/runtime.ts",
         "wget -O src/runtime.ts https://example.test/runtime.ts",
-        "curl --output-dir src -O https://example.test/runtime.ts",
-        "curl --create-dirs --output-dir src -o .omx/state/out https://example.test/runtime.ts",
+        "curl -q --output-dir src -O https://example.test/runtime.ts",
+        "curl -q --create-dirs --output-dir src -o .omx/state/out https://example.test/runtime.ts",
         "wget -P src https://example.test/runtime.ts",
         "wget --directory-prefix=src https://example.test/runtime.ts",
         "git rm src/runtime.ts",
@@ -24492,6 +26753,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-bash-mutations",
+            agent_id: "thread-conductor-bash-mutations",
             tool_name: "Bash",
             tool_input: { command },
           },
@@ -24500,22 +26762,29 @@ PY`,
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
         assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash (?:node|python) write target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:curl|wget) (?:output|mutation) target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash git worktree mutation is not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
+      for (const command of [
+        "python3 -c \"print('ok')\"",
+        "python3 - <<'PY'\nimport shutil\nshutil.copyfile('a', '.omx/state/foo')\nPY",
+      ]) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-conductor-bash-mutations",
+            agent_id: "thread-conductor-bash-mutations",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
+      }
 
       const allowedCommands = [
         "node -e \"console.log('ok')\"",
-        "python3 -c \"print('ok')\"",
-        "python3 - <<'PY'\nimport shutil\nshutil.copyfile('a', '.omx/state/foo')\nPY",
-        "curl -fsSL https://example.test/runtime.ts -o .omx/state/download.log",
-        "curl -fsSL https://example.test/runtime.ts --output=.omx/state/download-inline.log",
-        "curl -fsSL -O https://example.test/runtime.ts --output-dir .omx/state",
-        "curl -fsSL -OL https://example.test/runtime.ts --output-dir .omx/state",
-        "curl -fsSL --remote-name --output-dir=.omx/state https://example.test/runtime.ts",
-        "wget -O .omx/state/download.log https://example.test/runtime.ts",
-        "wget --output-document=.omx/state/download-inline.log https://example.test/runtime.ts",
-        "curl --output-dir .omx/state -O https://example.test/runtime.ts",
-        "curl --create-dirs --output-dir .omx/state -o out https://example.test/runtime.ts",
-        "wget -P .omx/state https://example.test/runtime.ts",
-        "wget --directory-prefix=.omx/state https://example.test/runtime.ts",
+        "python3 -I -c \"print('ok')\"",
+        "python3 -I - <<'PY'\nimport shutil\nshutil.copyfile('a', '.omx/state/foo')\nPY",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -24524,6 +26793,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-bash-mutations",
+            agent_id: "thread-conductor-bash-mutations",
             tool_name: "Bash",
             tool_input: { command },
           },
@@ -24543,7 +26813,13 @@ PY`,
       const sessionId = "sess-root-team-conductor-write";
       const teamName = "root-team-conductor-write";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeLiveNativeMappedSessionState(cwd, stateDir, sessionId, "native-root-team-conductor-write");
+      await writeLiveNativeMappedSessionState(
+        cwd,
+        stateDir,
+        sessionId,
+        "native-root-team-conductor-write",
+        "thread-root-team-conductor-write",
+      );
       await writeSessionSkillActiveState(stateDir, sessionId, "team", "team-exec");
       await writeJson(join(stateDir, "team-state.json"), {
         active: true,
@@ -24620,7 +26896,10 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ralph-conductor-write";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-ralph-conductor-write",
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -24648,7 +26927,13 @@ PY`,
         const nativeMappedStateDir = join(nativeMappedCwd, ".omx", "state");
         const canonicalSessionId = "omx-canonical-ralph-conductor-write";
         const nativeSessionId = "codex-native-ralph-conductor-write";
-        await writeNativeMappedSessionState(nativeMappedCwd, nativeMappedStateDir, canonicalSessionId, nativeSessionId);
+        await writeNativeMappedSessionState(
+          nativeMappedCwd,
+          nativeMappedStateDir,
+          canonicalSessionId,
+          nativeSessionId,
+          "thread-native-ralph-conductor-write",
+        );
         await writeSessionSkillActiveState(nativeMappedStateDir, canonicalSessionId, "ralph", "executing");
         await writeJson(join(nativeMappedStateDir, "sessions", canonicalSessionId, "ralph-state.json"), {
           active: true,
@@ -24685,7 +26970,7 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(allowed.outputJson, null);
+      assert.equal(allowed.outputJson?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -24697,7 +26982,28 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-bash-mutations";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeFile(join(cwd, "README.md"), "read-only source\n", "utf-8");
+      await mkdir(join(stateDir, "inbox"), { recursive: true });
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await writeFile(join(stateDir, "payload"), "metadata payload\n", "utf-8");
+      await writeFile(join(cwd, "src", "runtime.ts"), "export {};\n", "utf-8");
+      await writeFile(join(cwd, "src", "source.ts"), "export {};\n", "utf-8");
+      await symlink(join(cwd, "src", "runtime.ts"), join(stateDir, "inbox", "payload"));
+      await symlink(join(cwd, "src", "runtime.ts"), join(stateDir, "curl-glob-1.log"));
+      await symlink(join(cwd, "src", "dangling-target.ts"), join(stateDir, "inbox", "dangling"));
+      await writeFile(join(stateDir, "conductor-ledger.json"), "{}\n", "utf-8");
+      await writeFile(join(stateDir, "line-one.json"), "{}\n", "utf-8");
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: "thread-conductor-bash-mutations" });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: "thread-conductor-bash-mutations",
+            threads: { "thread-conductor-bash-mutations": { thread_id: "thread-conductor-bash-mutations", kind: "leader" } },
+          },
+        },
+      });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -24718,18 +27024,31 @@ PY`,
         "exec cp package.json src/package-copy.json",
         "env FOO=1 mv src/a.ts src/b.ts",
         "git reset --hard > .omx/state/reset.log",
+        "touch .omx/state/inbox/dangling",
+        "wget --no-config --no-hsts -P .omx/state/inbox https://example.test/dangling",
         "npm install > .omx/state/install.log",
         "printf ok; cp package.json src/package-copy.json",
         "printf ok && mv src/a.ts src/b.ts",
         "printf ok\ncp package.json src/package-copy.json",
         "printf ok > .omx/state/log\nmv src/a src/b",
         "cp package.json --target-directory src/generated",
+        "cp .omx/state/payload .omx/state/inbox",
+        "ln src/source.ts -t .omx/handoffs/run-1",
+        "curl -q --output-dir .omx/state/inbox -O https://example.test/payload",
+        "wget --no-config --no-hsts -P .omx/state/inbox https://example.test/payload",
+        "curl -q --output-dir .omx/state/inbox -O https://example.test/payload ftp.example.test/payload",
+        "wget --no-config --no-hsts -P .omx/state/inbox https://example.test/payload ftp.example.test/payload",
+        "curl -q -o .omx/state/curl-glob-#1.log 'https://example.test/file[1-2]'",
         "mv src/a.ts --target-directory=src/generated",
         "mv src/a.ts --target-directory=.omx/state",
         "install package.json -t src/generated",
         "install -d .omx/state src/generated",
         "ln package.json -t src/generated",
         "cp package.json --target-directory",
+        "cp package.json --target-directory=",
+        "mv src/a.ts --target-directory",
+        "install --target-directory= .omx/state/conductor-ledger.json",
+        "ln .omx/state/conductor-ledger.json -t --",
         "if true; then mv src/a.ts src/b.ts; fi",
         "(cp package.json src/package-copy.json)",
         "bash -lc \"mv src/old.ts src/new.ts\"",
@@ -24752,20 +27071,20 @@ PY`,
         "xargs -n 1 rm src/generated.ts </dev/null",
         "xargs --max-args=1 rm src/generated.ts </dev/null",
         "printf '%s\\n' src/generated.ts | xargs -I {} rm {}",
-        "curl --output-dir src -O https://example.test/archive.tgz",
-        "curl --output-dir=src -O https://example.test/archive.tgz",
-        "curl -LO --output-dir src https://example.test/archive.tgz",
+        "curl -q --output-dir src -O https://example.test/archive.tgz",
+        "curl -q --output-dir=src -O https://example.test/archive.tgz",
+        "curl -q -LO --output-dir src https://example.test/archive.tgz",
         "wget -P src https://example.test/archive.tgz",
         "wget --directory-prefix=src https://example.test/archive.tgz",
-        "curl -O https://example.test/archive.tgz",
-        "curl --remote-name https://example.test/archive.tgz",
+        "curl -q -O https://example.test/archive.tgz",
+        "curl -q --remote-name https://example.test/archive.tgz",
         "git worktree rm ../stale-worktree",
         "git worktree mv ../old-worktree ../new-worktree",
         "git worktree clean ../stale-worktree",
         "sed -i 's/old/new/' .omx/state/conductor-ledger.json src/runtime.ts",
         "perl -pi -e 's/old/new/' .omx/state/conductor-ledger.json src/runtime.ts",
         "rsync --remove-source-files src/a.ts .omx/state/",
-        "curl --create-dirs --output-dir src -o .omx/state/out https://example.test/archive.tgz",
+        "curl -q --create-dirs --output-dir src -o .omx/state/out https://example.test/archive.tgz",
       ];
       for (const command of blockedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -24774,17 +27093,19 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-bash-mutations",
+            agent_id: "thread-conductor-bash-mutations",
             tool_name: "Bash",
             tool_input: { command },
           },
           { cwd },
         );
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
-        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* mutation target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:git worktree mutation|package manager install|unquoted heredoc expansion) is not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
+        assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* mutation target .*not workflow state\/ledger\/mailbox\/handoff metadata|Bash (?:git worktree mutation|package manager install|unquoted heredoc expansion) is not workflow state\/ledger\/mailbox\/handoff metadata|Bash redirect target is not a static workflow metadata leaf|Bash metadata redirects require a statically bounded producer|target <unresolved>/);
       }
 
       const allowedCommands = [
         "touch .omx/state/conductor-ledger.json",
+        "cp .omx/state/payload .omx/handoffs/run-1/payload",
         "mkdir -p .omx/handoffs/run-1",
         "cp .omx/state/conductor-ledger.json .omx/handoffs/run-1/conductor-ledger.json",
         "mv .omx/handoffs/run-1/conductor-ledger.json .omx/handoffs/run-1/ledger.json",
@@ -24794,7 +27115,7 @@ PY`,
         "printf safe > .omx/state/conductor.log",
         "printf one > .omx/state/one.log\nprintf two > .omx/handoffs/run-1/two.log",
         "touch .omx/state/line-one.json\ncp .omx/state/line-one.json .omx/handoffs/run-1/line-two.json",
-        "bash -lc \"printf safe\"",
+        "bash --noprofile --norc -lc \"printf safe\"",
         "sh -c 'printf safe'",
         "cp .omx/state/conductor-ledger.json --target-directory .omx/handoffs/run-1",
         "mv .omx/state/conductor-ledger.json --target-directory=.omx/handoffs/run-1",
@@ -24809,11 +27130,6 @@ PY`,
         "sed -Ei 's/old/new/' .omx/state/conductor-ledger.json",
         "cp src/source.ts .omx/state/source-copy.ts",
         "install src/source.ts -t .omx/state",
-        "ln src/source.ts -t .omx/handoffs/run-1",
-        "curl --output-dir .omx/state -O https://example.test/archive.tgz",
-        "curl -OL --output-dir .omx/state https://example.test/archive.tgz",
-        "wget -P .omx/state https://example.test/archive.tgz",
-        "curl --create-dirs --output-dir .omx/state -o out https://example.test/archive.tgz",
         "install -d .omx/state .omx/handoffs/run-1",
         "rsync README.md .omx/state/readme.md",
         "xargs env printf safe </dev/null",
@@ -24827,6 +27143,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-bash-mutations",
+            agent_id: "thread-conductor-bash-mutations",
             tool_name: "Bash",
             tool_input: { command },
           },
@@ -24845,7 +27162,11 @@ PY`,
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-sed-perl-metadata";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: "thread-conductor-sed-perl-metadata",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: "thread-conductor-sed-perl-metadata", threads: { "thread-conductor-sed-perl-metadata": { thread_id: "thread-conductor-sed-perl-metadata", kind: "leader" } } } } });
       await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
       await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
         active: true,
@@ -24857,8 +27178,8 @@ PY`,
       const allowedCommands = [
         "sed -i 's/old/new/' .omx/state/conductor.log",
         "perl -pi -e 's/old/new/' .omx/state/conductor.log",
-        "bash -lc \"sed -i 's/old/new/' .omx/state/conductor.log\"",
-        "bash -lc \"perl -pi -e 's/old/new/' .omx/state/conductor.log\"",
+        "bash --noprofile --norc -lc \"sed -i 's/old/new/' .omx/state/conductor.log\"",
+        "bash --noprofile --norc -lc \"perl -pi -e 's/old/new/' .omx/state/conductor.log\"",
       ];
       for (const command of allowedCommands) {
         const result = await dispatchCodexNativeHook(
@@ -24867,6 +27188,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-sed-perl-metadata",
+            agent_id: "thread-conductor-sed-perl-metadata",
             tool_name: "Bash",
             tool_input: { command },
           },
@@ -24888,6 +27210,7 @@ PY`,
             cwd,
             session_id: sessionId,
             thread_id: "thread-conductor-sed-perl-metadata",
+            agent_id: "thread-conductor-sed-perl-metadata",
             tool_name: "Bash",
             tool_input: { command },
           },
