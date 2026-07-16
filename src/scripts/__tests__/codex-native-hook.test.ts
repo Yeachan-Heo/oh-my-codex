@@ -12034,6 +12034,23 @@ exit 0
 				if (previousOmxRootForPolicy === undefined) delete process.env.OMX_ROOT;
 				else process.env.OMX_ROOT = previousOmxRootForPolicy;
 			}
+			const blockedRepeatedNodeEval = await preToolUse({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "sess-di-artifact",
+				tool_name: "Bash",
+				tool_input: { command: `node -e "0" -e "require('fs').writeFileSync('src/owned.ts','x')"` },
+			});
+			assert.equal(blockedRepeatedNodeEval.outputJson?.decision, "block");
+
+			const allowedAstGrepSearch = await preToolUse({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "sess-di-artifact",
+				tool_name: "mcp__omx_code_intel__ast_grep_search",
+				tool_input: { pattern: "function $F($$$A) { $$$B }", path: "src" },
+			});
+			assert.equal(allowedAstGrepSearch.outputJson, null);
 			const blockedFilesystemMcpWrite = await preToolUse({
 				hook_event_name: "PreToolUse",
 				cwd,

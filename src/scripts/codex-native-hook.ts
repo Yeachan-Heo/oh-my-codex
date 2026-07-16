@@ -4826,6 +4826,7 @@ const READ_ONLY_PRETOOLUSE_MCP_CONTRACT = {
     "mcp__omx_code_intel__lsp_workspace_symbols",
     "mcp__omx_code_intel__lsp_hover",
     "mcp__omx_code_intel__lsp_find_references",
+    "mcp__omx_code_intel__ast_grep_search",
   ],
   wiki: [
     "mcp__omx_wiki__wiki_query",
@@ -11185,20 +11186,16 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
         for (let argIndex = commandIndex + 1; argIndex < words.length; argIndex += 1) {
           const arg = words[argIndex] ?? "";
           if (!arg || isShellCommandSeparator(arg)) break;
-          if (arg === "-pe" || arg === "-e" || arg === "--eval") {
+          if (arg === "-pe" || arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print") {
             const script = words[argIndex + 1] ?? "";
-            if (script && !isShellCommandSeparator(script)) inspection.nodeInlineEvalScripts.push(script);
-            else inspection.uninspectedNodeRuntimeCount += 1;
+            if (script && !isShellCommandSeparator(script) && !runtimeOptionIsInlineCode(script)) {
+              inspection.nodeInlineEvalScripts.push(script);
+              argIndex += 1;
+            } else {
+              inspection.uninspectedNodeRuntimeCount += 1;
+            }
             foundInlineEval = true;
-            break;
-          }
-          if (arg === "-p" || arg === "--print") {
-            const nextArg = words[argIndex + 1] ?? "";
-            if (nextArg === "-e" || nextArg === "--eval") continue;
-            if (nextArg && !isShellCommandSeparator(nextArg)) inspection.nodeInlineEvalScripts.push(nextArg);
-            else inspection.uninspectedNodeRuntimeCount += 1;
-            foundInlineEval = true;
-            break;
+            continue;
           }
           const attachedShortPrefix = (["-pe", "-e", "-p"] as const).find(
             (prefix) => arg.startsWith(prefix) && arg.length > prefix.length,
@@ -11206,7 +11203,7 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
           if (attachedShortPrefix) {
             inspection.nodeInlineEvalScripts.push(arg.slice(attachedShortPrefix.length));
             foundInlineEval = true;
-            break;
+            continue;
           }
           const inlinePrefix = (["--eval=", "--print="] as const).find(
             (prefix) => arg.startsWith(prefix) && arg.length > prefix.length,
@@ -11214,7 +11211,7 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
           if (inlinePrefix) {
             inspection.nodeInlineEvalScripts.push(arg.slice(inlinePrefix.length));
             foundInlineEval = true;
-            break;
+            continue;
           }
         }
         if (!foundInlineEval) inspection.uninspectedNodeRuntimeCount += 1;
