@@ -12134,6 +12134,9 @@ exit 0
 					["symlinked Team manifest", "Write", { file_path: join(protectedStateDirectoryAlias, "team", teamName, "manifest.v2.json"), content: "{}\n" }],
 					["Bash symlinked Team manifest", "Bash", { command: `: > ${JSON.stringify(join(protectedStateDirectoryAlias, "team", teamName, "manifest.v2.json"))}` }],
 					["Bash session effective cwd", "Bash", { command: `cd ${JSON.stringify(join(stateDir, "sessions", "sess-di-artifact"))}; printf x > ultragoal-state.json` }],
+					["failed cd keeps canonical cwd", "Bash", { command: "cd definitely-missing; printf x > .omx/state/session.json" }],
+					["cd redirect mutates before transition", "Bash", { command: "cd src > .omx/state/session.json" }],
+					["pushd protected state", "Bash", { command: `pushd ${JSON.stringify(join(stateDir, "sessions", "sess-di-artifact"))}; printf x > ultragoal-state.json` }],
 				] as const) {
 					const protectedTeamWrite = await dispatchCodexNativeHook({
 						hook_event_name: "PreToolUse",

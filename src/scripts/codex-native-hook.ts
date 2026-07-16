@@ -8844,11 +8844,26 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
   if (toolName === "Bash") {
     if (collectOmxStateCommandOperations(command, "write").length > 0
       || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
+    if (/(?:^|[;&|(){}\n]\s*)(?:pushd|popd)(?:\s|$)/.test(command)
+      && commandHasDeepInterviewWriteIntent(command, 0, cwd)) return true;
     let effectiveCwd = cwd;
     for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
       const words = tokenizeShellWords(segment);
       const changedCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
       if (changedCwd !== null) {
+        const commandIndex = findWrappedCommandPositionIndex(words, 0);
+        const cdSegmentWrites = [
+          ...extractDeepInterviewCommandWriteTargets(segment),
+          ...extractConductorEditorWriteTargets(segment),
+          ...extractConductorInterpreterWrites(segment).flatMap((write) => write.targets),
+        ];
+        if (commandIndex === null || words.length !== commandIndex + 2 || cdSegmentWrites.length > 0) return true;
+        try {
+          const target = lstatSync(changedCwd);
+          if (!target.isDirectory() || target.isSymbolicLink()) return true;
+        } catch {
+          return true;
+        }
         effectiveCwd = changedCwd;
         continue;
       }
