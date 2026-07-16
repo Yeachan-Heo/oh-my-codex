@@ -4889,7 +4889,7 @@ function classifyPreToolUseMutationTransport(
 }
 
 function extractDeepInterviewCommandWriteTargets(command: string, cwd = process.cwd(), rootCwd = cwd): string[] {
-  const assignments = extractCommandLiteralAssignments(command);
+  const assignments = new Map<string, string>();
   const targets = extractDeepInterviewCommandRedirectTargets(command)
     .map((target) => resolveCommandRedirectTarget(target, assignments));
   targets.push(...extractConductorEditorWriteTargets(command));

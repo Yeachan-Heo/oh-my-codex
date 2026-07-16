@@ -16979,7 +16979,7 @@ exit 0
 		}
 	});
 
-	it("allows deep-interview same-command literal variable redirects to artifacts while blocking variable redirects outside them", async () => {
+	it("allows direct literal planning redirects while blocking all variable redirect targets", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-pretool-deep-interview-var-redirect-"),
 		);
@@ -17020,6 +17020,18 @@ exit 0
 			);
 
 
+			const allowedLiteralRedirect = await dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "sess-di-var-redirect",
+				agent_id: "thread-di-var-redirect",
+				thread_id: "thread-di-var-redirect",
+				tool_name: "Bash",
+				tool_use_id: "tool-di-literal-redirect-allow",
+				tool_input: { command: "cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF" },
+			}, { cwd });
+			assert.equal(allowedLiteralRedirect.outputJson, null);
+
 			const allowedVarRedirect = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "PreToolUse",
@@ -17036,7 +17048,7 @@ exit 0
 				},
 				{ cwd },
 			);
-			assert.equal(allowedVarRedirect.outputJson, null);
+			assert.equal(allowedVarRedirect.outputJson?.decision, "block");
 
 			const blockedVarRedirect = await dispatchCodexNativeHook(
 				{
