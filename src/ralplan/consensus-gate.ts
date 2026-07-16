@@ -407,7 +407,7 @@ function resolveDirectGate(record: Record<string, unknown>): ConsensusResolution
         blockedDetails.push('consensus review sequence is not architect-review then critic-review');
       }
       if (!isCriticNotBeforeArchitect(architectReview, criticReview)) {
-        blockedDetails.push('critic review is ordered before architect review');
+        blockedDetails.push('direct review order is not proven strictly architect-before-critic');
       }
       if (blockedDetails.length > 0) {
         return {
@@ -483,7 +483,8 @@ function isConsensusEvidenceNewerThanSelected(
   if (evidenceOrder !== null || selectedOrder !== null) {
     if (selectedOrder === null) return true;
     if (evidenceOrder === null) return false;
-    if (evidenceOrder !== selectedOrder) return evidenceOrder > selectedOrder;
+    if (evidenceOrder.domain !== selectedOrder.domain) return false;
+    if (evidenceOrder.value !== selectedOrder.value) return evidenceOrder.value > selectedOrder.value;
   }
 
   return false;
@@ -496,11 +497,13 @@ function consensusEvidenceReviewCycle(evidence: ConsensusResolution): number | n
   );
 }
 
-function consensusEvidenceOrder(evidence: ConsensusResolution): number | null {
-  return maxKnownNumber(
-    reviewOrderValue(evidence.ralplan_architect_review ?? {}),
-    reviewOrderValue(evidence.ralplan_critic_review ?? {}),
-  );
+function consensusEvidenceOrder(evidence: ConsensusResolution): ReviewOrder | null {
+  const architectOrder = reviewOrderValue(evidence.ralplan_architect_review ?? {});
+  const criticOrder = reviewOrderValue(evidence.ralplan_critic_review ?? {});
+  if (architectOrder === null) return criticOrder;
+  if (criticOrder === null) return architectOrder;
+  if (architectOrder.domain !== criticOrder.domain) return null;
+  return architectOrder.value >= criticOrder.value ? architectOrder : criticOrder;
 }
 
 function maxKnownNumber(left: number | null, right: number | null): number | null {
@@ -588,26 +591,57 @@ function hasArchitectThenCriticSequence(value: Record<string, unknown>): boolean
   return value.sequence[0] === 'architect-review' && value.sequence[1] === 'critic-review';
 }
 
+interface ReviewOrder {
+  domain: 'sequence' | 'timestamp';
+  value: number;
+}
+
 function isCriticNotBeforeArchitect(
   architectReview: Record<string, unknown> | null,
   criticReview: Record<string, unknown> | null,
 ): boolean {
   if (!architectReview || !criticReview) return false;
-  const architectOrder = reviewOrderValue(architectReview);
-  const criticOrder = reviewOrderValue(criticReview);
-  return architectOrder === null || criticOrder === null || criticOrder >= architectOrder;
+  if (isTrackerBackedReview(architectReview) || isTrackerBackedReview(criticReview)) return true;
+
+  const architectSequence = reviewSequenceValue(architectReview);
+  const criticSequence = reviewSequenceValue(criticReview);
+  if (architectSequence !== null || criticSequence !== null) {
+    if (architectSequence === null || criticSequence === null || criticSequence <= architectSequence) return false;
+    const architectTimestamp = reviewTimestampValue(architectReview);
+    const criticTimestamp = reviewTimestampValue(criticReview);
+    return architectTimestamp === null || criticTimestamp === null || criticTimestamp > architectTimestamp;
+  }
+
+  const architectTimestamp = reviewTimestampValue(architectReview);
+  const criticTimestamp = reviewTimestampValue(criticReview);
+  return architectTimestamp !== null && criticTimestamp !== null && criticTimestamp > architectTimestamp;
 }
 
-function reviewOrderValue(review: Record<string, unknown>): number | null {
+function isTrackerBackedReview(review: Record<string, unknown>): boolean {
+  return review.provenance_kind === 'native_subagent' || review.provenance_kind === 'omx_adapted';
+}
+
+function reviewOrderValue(review: Record<string, unknown>): ReviewOrder | null {
+  const sequence = reviewSequenceValue(review);
+  if (sequence !== null) return { domain: 'sequence', value: sequence };
+  const timestamp = reviewTimestampValue(review);
+  return timestamp === null ? null : { domain: 'timestamp', value: timestamp };
+}
+
+function reviewSequenceValue(review: Record<string, unknown>): number | null {
+  for (const key of ['sequence_index', 'order', 'review_order']) {
+    const raw = review[key];
+    const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN;
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function reviewTimestampValue(review: Record<string, unknown>): number | null {
   for (const key of ['completed_at', 'created_at', 'updated_at', 'timestamp', 'ts']) {
     const raw = review[key];
     if (typeof raw !== 'string') continue;
     const parsed = Date.parse(raw);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  for (const key of ['sequence_index', 'order', 'review_order', 'iteration']) {
-    const raw = review[key];
-    const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN;
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;

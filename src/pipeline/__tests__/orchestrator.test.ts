@@ -577,8 +577,8 @@ describe('Pipeline Orchestrator', () => {
         planning_complete: true,
         ralplan_consensus_gate: {
           complete: true,
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect ok' },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic ok' },
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1, summary: 'architect ok' },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2, summary: 'critic ok' },
         },
       }));
 
@@ -598,8 +598,8 @@ describe('Pipeline Orchestrator', () => {
       assert.deepEqual(handoffs.ralplan_consensus_gate, {
         complete: true,
         sequence: ['architect-review', 'critic-review'],
-        ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect ok' },
-        ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic ok' },
+        ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1, summary: 'architect ok' },
+        ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2, summary: 'critic ok' },
         source: join(tempDir, '.omx', 'state', 'ralplan-state.json'),
         blockedReason: null,
       });

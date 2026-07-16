@@ -153,6 +153,7 @@ function ralplanConsensusGate(
     ralplan_architect_review: {
       agent_role: 'architect',
       verdict: 'approve',
+      sequence_index: 1,
       provenance_kind: provenanceKind,
       session_id: sessionId,
       thread_id: architectThread,
@@ -162,6 +163,7 @@ function ralplanConsensusGate(
     ralplan_critic_review: {
       agent_role: 'critic',
       verdict: 'approve',
+      sequence_index: 2,
       provenance_kind: provenanceKind,
       session_id: sessionId,
       thread_id: criticThread,

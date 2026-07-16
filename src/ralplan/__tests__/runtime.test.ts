@@ -189,6 +189,7 @@ describe('ralplan runtime', () => {
         ralplan_architect_review: {
           agent_role: 'architect',
           iteration: 1,
+          sequence_index: 1,
           verdict: 'approve',
           summary: 'architect-ok',
           artifacts: { architected: true },
@@ -196,6 +197,7 @@ describe('ralplan runtime', () => {
         ralplan_critic_review: {
           agent_role: 'critic',
           iteration: 1,
+          sequence_index: 2,
           verdict: 'approve',
           summary: 'critic-ok',
           artifacts: { critiqued: true },
@@ -203,6 +205,7 @@ describe('ralplan runtime', () => {
         architect_review: {
           agent_role: 'architect',
           iteration: 1,
+          sequence_index: 1,
           verdict: 'approve',
           summary: 'architect-ok',
           artifacts: { architected: true },
@@ -210,6 +213,7 @@ describe('ralplan runtime', () => {
         critic_review: {
           agent_role: 'critic',
           iteration: 1,
+          sequence_index: 2,
           verdict: 'approve',
           summary: 'critic-ok',
           artifacts: { critiqued: true },

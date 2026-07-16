@@ -5661,8 +5661,8 @@ describe('applyRalplanGate', () => {
         ralplan_consensus_gate: {
           complete: true,
           sequence: ['architect-review', 'critic-review'],
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1, sequence_index: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1, sequence_index: 2 },
         },
       }));
 
@@ -5733,8 +5733,8 @@ describe('applyRalplanGate', () => {
         ralplan_consensus_gate: {
           complete: true,
           sequence: ['architect-review', 'critic-review'],
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1, sequence_index: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1, sequence_index: 2 },
         },
       }));
 
