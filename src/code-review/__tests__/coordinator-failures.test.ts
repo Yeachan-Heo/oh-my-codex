@@ -15,6 +15,7 @@ import type {
 } from '../contract.js';
 import {
   applyLaneStart,
+  assertDurableConsumptionFresh,
   createInitialReviewRecord,
   createLaneResultProposal,
   finalizeReview,
@@ -27,7 +28,7 @@ import {
   type DurableReviewCoordinatorHostDependencies,
 } from '../coordinator.js';
 import * as coordinatorModule from '../coordinator.js';
-import { canonicalLanePayloadDigest } from '../evidence.js';
+import { canonicalLanePayloadDigest, type DiagnosticToolEvent } from '../evidence.js';
 import {
   atomicCreatePrivateJson,
   readReviewConsumptionMarkers,
@@ -183,6 +184,20 @@ function activity(eventRef: string, observedAt: string, overrides: Partial<LaneA
   };
 }
 
+function diagnosticEvent(eventRef: string, observedAt: string): DiagnosticToolEvent {
+  return {
+    schema_version: 1,
+    session_id: 'session-1',
+    review_id: REVIEW_ID,
+    attempt: 1,
+    lane_id: 'reviewer-batch-1',
+    child_thread_id: 'child-reviewer',
+    event_ref: eventRef,
+    observed_at: observedAt,
+    tool_name: 'mcp__code_intel__lsp',
+  };
+}
+
 function resultProposal(record: ReviewRecord): LaneResultProposal {
   return createLaneResultProposal({
     review: record,
@@ -239,6 +254,14 @@ function publication(proposal: LaneResultProposal, at: string): ResultPostToolPu
 }
 
 describe('review coordinator failure and concurrency invariants', () => {
+  it('rejects an identity already present in durable consumption state', () => {
+    assert.doesNotThrow(() => assertDurableConsumptionFresh(new Set(), 'NONCE:value', 'NONCE'));
+    assert.throws(
+      () => assertDurableConsumptionFresh(new Set(['NONCE:value']), 'NONCE:value', 'NONCE'),
+      /nonce.*already consumed/i,
+    );
+  });
+
   it('returns the immutable START receipt across replay, conflict, and transport death', async () => {
     const plan: BatchPlan = {
       review_flags: [],
@@ -539,16 +562,22 @@ describe('review coordinator failure and concurrency invariants', () => {
     });
   });
 
-  it('loads ordinary activity and combined RESULT publications from the hook journal', async () => {
+  it('loads ordinary activity, diagnostic provenance, and combined RESULT publications from the hook journal', async () => {
     await withTemporaryReviewRoot(async (root) => {
       const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
       const proposal = resultProposal(running());
       const ordinary = activity('tool-start-1', '2026-07-14T00:00:20.000Z', { event_kind: 'TOOL_START' });
+      const diagnostic = diagnosticEvent('diagnostic-tool-1', '2026-07-14T00:00:25.000Z');
       const resultPublication = publication(proposal, '2026-07-14T00:00:30.000Z');
       const ordinaryFile = `${createHash('sha256').update(`${ordinary.event_ref}:${ordinary.event_kind}`).digest('hex')}.json`;
+      const diagnosticFile = `${createHash('sha256').update(diagnostic.event_ref).digest('hex')}.json`;
       await atomicCreatePrivateJson(
         join(paths.reviewRoot, REVIEW_ID, 'activity', 'child-reviewer', ordinaryFile),
         ordinary,
+      );
+      await atomicCreatePrivateJson(
+        join(paths.reviewRoot, REVIEW_ID, 'diagnostics', 'child-reviewer', diagnosticFile),
+        diagnostic,
       );
       await atomicCreatePrivateJson(
         join(paths.reviewRoot, REVIEW_ID, 'submissions', RESULT_KEY, 'post-tool'),
@@ -564,6 +593,7 @@ describe('review coordinator failure and concurrency invariants', () => {
       });
 
       assert.deepEqual(snapshot.publication_ids, [RESULT_KEY]);
+      assert.deepEqual(snapshot.diagnostic_events, [diagnostic]);
       assert.deepEqual(
         (snapshot.events as LaneActivityEvent[]).map((event) => event.event_ref),
         ['tool-start-1', resultPublication.activity.event_ref],
@@ -724,14 +754,20 @@ describe('review coordinator failure and concurrency invariants', () => {
     }), /ownership is invalid/i);
 
     const withJournal = async (
-      setup: (root: string, activityRoot: string, submissionsRoot: string) => Promise<void>,
+      setup: (
+        root: string,
+        activityRoot: string,
+        submissionsRoot: string,
+        diagnosticRoot: string,
+      ) => Promise<void>,
       pattern: RegExp,
     ): Promise<void> => {
       await withTemporaryReviewRoot(async (root) => {
         const paths = await resolveReviewPersistencePaths({ workingDirectory: root, session_id: 'session-1' });
         const activityRoot = join(paths.reviewRoot, REVIEW_ID, 'activity');
         const submissionsRoot = join(paths.reviewRoot, REVIEW_ID, 'submissions');
-        await setup(root, activityRoot, submissionsRoot);
+        const diagnosticRoot = join(paths.reviewRoot, REVIEW_ID, 'diagnostics');
+        await setup(root, activityRoot, submissionsRoot, diagnosticRoot);
         await assert.rejects(load(root), pattern);
       });
     };
@@ -793,6 +829,33 @@ describe('review coordinator failure and concurrency invariants', () => {
         attestation: { ...persisted.attestation, root_thread_id: 'other-root' },
       }));
     }, /publication ownership is invalid/i);
+
+    await withJournal(async (_root, _activityRoot, _submissionsRoot, diagnosticRoot) => {
+      await mkdir(diagnosticRoot, { recursive: true });
+      await writeFile(join(diagnosticRoot, 'not-a-child-directory'), 'x');
+    }, /diagnostic directory is malformed/i);
+    await withJournal(async (_root, _activityRoot, _submissionsRoot, diagnosticRoot) => {
+      await mkdir(join(diagnosticRoot, 'child-reviewer', 'not-a-file.json'), { recursive: true });
+    }, /diagnostic path is malformed/i);
+    await withJournal(async (_root, _activityRoot, _submissionsRoot, diagnosticRoot) => {
+      const child = join(diagnosticRoot, 'child-reviewer');
+      await mkdir(child, { recursive: true });
+      await writeFile(join(child, `${'a'.repeat(64)}.json`), 'x'.repeat(1_048_577));
+    }, /diagnostic event exceeds the size limit/i);
+    await withJournal(async (_root, _activityRoot, _submissionsRoot, diagnosticRoot) => {
+      const child = join(diagnosticRoot, 'child-reviewer');
+      await mkdir(child, { recursive: true });
+      await writeFile(join(child, `${'a'.repeat(64)}.json`), '{not-json');
+    }, /diagnostic event is malformed/i);
+    await withJournal(async (_root, _activityRoot, _submissionsRoot, diagnosticRoot) => {
+      const event = diagnosticEvent('diagnostic-tool-foreign', '2026-07-14T00:00:25.000Z');
+      const child = join(diagnosticRoot, 'another-child');
+      await mkdir(child, { recursive: true });
+      await writeFile(
+        join(child, `${createHash('sha256').update(event.event_ref).digest('hex')}.json`),
+        JSON.stringify(event),
+      );
+    }, /diagnostic ownership is invalid/i);
   });
 
   it('folds earlier activity before validating a RESULT regardless of input order', () => {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -80,6 +81,244 @@ function host(overrides: Partial<ReviewOperationHostContext> = {}): ReviewOperat
 }
 
 describe('review operation control plane', () => {
+  it('freezes base TypeScript compiler and lint configuration into start and replay plans', async () => {
+    await withRepository(async (workingDirectory) => {
+      await mkdir(join(workingDirectory, 'src'), { recursive: true });
+      await writeFile(join(workingDirectory, 'package.json'), JSON.stringify({
+        scripts: {
+          typecheck: 'tsc --noEmit',
+          lint: 'eslint src',
+        },
+      }), 'utf8');
+      await writeFile(join(workingDirectory, 'tsconfig.json'), '{"compilerOptions":{"strict":true}}\n', 'utf8');
+      await writeFile(join(workingDirectory, 'eslint.config.js'), 'export default [];\n', 'utf8');
+      await writeFile(join(workingDirectory, 'src', 'app.ts'), 'export const value = 1;\n', 'utf8');
+      git(workingDirectory, ['add', 'package.json', 'tsconfig.json', 'eslint.config.js', 'src/app.ts']);
+      git(workingDirectory, ['commit', '-q', '-m', 'add TypeScript contract']);
+      await writeFile(join(workingDirectory, 'src', 'app.ts'), 'export const value = 2;\n', 'utf8');
+
+      const input = {
+        workingDirectory,
+        session_id: 'session-frozen-capabilities',
+        invocation: ['$code-review', '--base', 'HEAD'],
+        idempotency_key: START_KEY,
+      };
+      const startHost = host({ root_thread_id: 'root-frozen-capabilities' });
+      const startedResponse = await executeReviewOperation('review_start', input, startHost);
+      const started = payload(startedResponse);
+      const startedPayload = startedResponse.payload as {
+        capability_plan: { capabilities: Array<{ capability: string; required_for: string[] }> };
+        scope: { frozen_capability_config?: {
+          typescript_javascript: { compiler_or_typecheck: boolean; lint: boolean };
+        } };
+      };
+      const required = startedPayload.capability_plan.capabilities
+        .filter((entry) => entry.required_for.length > 0)
+        .map((entry) => entry.capability);
+      assert.deepEqual(required, ['LSP', 'AST', 'COMPILER', 'LINT']);
+      assert.deepEqual(startedPayload.scope.frozen_capability_config?.typescript_javascript, {
+        compiler_or_typecheck: true,
+        lint: true,
+      });
+
+      await writeFile(join(workingDirectory, 'package.json'), '{"scripts":{}}\n', 'utf8');
+      const replayedResponse = await executeReviewOperation('review_start', input, startHost);
+      const replayed = payload(replayedResponse);
+      const replayedPayload = replayedResponse.payload as typeof startedPayload;
+      assert.equal(replayed.review_id, started.review_id);
+      assert.deepEqual(replayedPayload.capability_plan, startedPayload.capability_plan);
+      assert.deepEqual(
+        replayedPayload.scope.frozen_capability_config,
+        startedPayload.scope.frozen_capability_config,
+      );
+    }, false);
+  });
+
+  it('resolves base-commit equivalent requests into the durable effective config', async () => {
+    await withChangedRepository(async (workingDirectory) => {
+      await writeFile(join(workingDirectory, 'code-review-equivalents.json'), JSON.stringify({
+        schema_version: 1,
+        equivalents: [{
+          capability: 'LSP',
+          program: 'npm',
+          args: ['run', 'typecheck'],
+          rule_id: 'typescript-project-typecheck',
+        }],
+      }), 'utf8');
+      git(workingDirectory, ['add', 'code-review-equivalents.json']);
+      git(workingDirectory, ['commit', '-q', '-m', 'add trusted equivalent contract']);
+      const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: workingDirectory,
+        encoding: 'utf8',
+      }).trim();
+      const sourceRef = `${baseSha}:code-review-equivalents.json#typescript-project-typecheck`;
+      const started = payload(await executeReviewOperation('review_start', {
+        workingDirectory,
+        session_id: 'session-equivalent-contract',
+        invocation: ['$code-review', '--base', 'HEAD'],
+        idempotency_key: START_KEY,
+        accepted_equivalent_requests: [{ capability: 'LSP', source_ref: sourceRef }],
+      }, host({ root_thread_id: 'root-equivalent-contract' })));
+      const paths = await resolveReviewPersistencePaths({
+        workingDirectory,
+        session_id: 'session-equivalent-contract',
+      });
+      const record = JSON.parse(await readFile(
+        join(paths.reviewRoot, started.review_id, 'review.json'),
+        'utf8',
+      )) as { effective_config: { accepted_equivalents: unknown[] } };
+      assert.deepEqual(record.effective_config.accepted_equivalents, [{
+        capability: 'LSP',
+        program: 'npm',
+        args: ['run', 'typecheck'],
+        source: 'REPO_CONTRACT',
+        source_ref: sourceRef,
+      }]);
+    });
+  });
+
+  it('consumes a hook-owned explicit equivalent in the same durable activation transaction', async () => {
+    await withChangedRepository(async (workingDirectory) => {
+      const sessionId = 'session-explicit-equivalent';
+      const rootThreadId = 'root-explicit-equivalent';
+      const turnId = 'turn-explicit-equivalent';
+      const sourceRef = 'explicit-typescript-lsp';
+      const nonce = 'approval-nonce-explicit-equivalent';
+      const seeded = await seedCreatedReviewIntent({
+        workingDirectory,
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        invocation_turn_id: turnId,
+        normalized_invocation: '$code-review README.md',
+        now: START,
+      });
+      const paths = await resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const ledgerRoot = join(paths.approvalsRoot, 'ledger');
+      const ledgerName = `${createHash('sha256').update('explicit-ledger-entry').digest('hex')}.json`;
+      await mkdir(ledgerRoot, { recursive: true });
+      await writeFile(join(ledgerRoot, ledgerName), JSON.stringify({
+        approval: {
+          schema_version: 1,
+          session_id: sessionId,
+          root_thread_id: rootThreadId,
+          turn_id: turnId,
+          capability: 'AST',
+          source_ref: sourceRef,
+          program: 'node',
+          args: ['scripts/ast-check.mjs'],
+          approved_at: START.toISOString(),
+          nonce,
+        },
+        provenance: { event_ref: 'host-approval-event-1', nonce },
+      }), 'utf8');
+
+      const startInput = {
+        workingDirectory,
+        session_id: sessionId,
+        invocation: ['$code-review', 'README.md'],
+        idempotency_key: START_KEY,
+        accepted_equivalent_requests: [{ capability: 'AST', source_ref: sourceRef }],
+      };
+      const startHost = host({ seeded_review_id: seeded.review.review_id, root_thread_id: rootThreadId });
+      const started = payload(await executeReviewOperation('review_start', startInput, startHost));
+      const record = JSON.parse(await readFile(
+        join(paths.reviewRoot, started.review_id, 'review.json'),
+        'utf8',
+      )) as { effective_config: { accepted_equivalents: unknown[] } };
+      assert.deepEqual(record.effective_config.accepted_equivalents, [{
+        capability: 'AST',
+        program: 'node',
+        args: ['scripts/ast-check.mjs'],
+        source: 'EXPLICIT_USER',
+        source_ref: sourceRef,
+      }]);
+      const consumptions = await readdir(join(paths.approvalsRoot, 'consumptions'));
+      assert.equal(consumptions.length, 1);
+      assert.equal(
+        (JSON.parse(await readFile(join(paths.approvalsRoot, 'consumptions', consumptions[0]), 'utf8')) as { state?: unknown }).state,
+        'COMMITTED',
+      );
+      const replayed = payload(await executeReviewOperation('review_start', startInput, startHost));
+      assert.equal(replayed.review_id, started.review_id);
+      assert.equal(replayed.revision, started.revision);
+      assert.equal((await readdir(join(paths.approvalsRoot, 'consumptions'))).length, 1);
+
+      const reviewerLane = started.required_lane_plan!.find((lane) => lane.role === 'code-reviewer')!;
+      const laneStarted = payload(await executeReviewOperation('review_record_lane', {
+        workingDirectory,
+        session_id: sessionId,
+        event: 'START',
+        review_id: started.review_id,
+        attempt: 1,
+        lane_id: reviewerLane.lane_id,
+        thread_id: 'child-explicit-equivalent-reviewer',
+        idempotency_key: '77777777-7777-4777-8777-777777777777',
+      }, host({
+        root_thread_id: rootThreadId,
+        loadTracker: async () => ({
+          schema_version: 1,
+          session_id: sessionId,
+          thread_id: 'child-explicit-equivalent-reviewer',
+          tracker_lane_id: reviewerLane.lane_id,
+          tracker_path: '.omx/tracker/child-explicit-equivalent-reviewer.json',
+          first_seen_at: START.toISOString(),
+        }),
+      })));
+      assert.equal(laneStarted.lanes?.find((lane) => lane.lane_id === reviewerLane.lane_id)?.status, 'RUNNING');
+    });
+  });
+
+  it('rejects more equivalent approval consumptions than one transaction can bind', async () => {
+    await withChangedRepository(async (workingDirectory) => {
+      const sessionId = 'session-equivalent-limit';
+      const rootThreadId = 'root-equivalent-limit';
+      const turnId = 'turn-equivalent-limit';
+      const seeded = await seedCreatedReviewIntent({
+        workingDirectory,
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        invocation_turn_id: turnId,
+        normalized_invocation: '$code-review README.md',
+        now: START,
+      });
+      const paths = await resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const ledgerRoot = join(paths.approvalsRoot, 'ledger');
+      await mkdir(ledgerRoot, { recursive: true });
+      const requests = await Promise.all(Array.from({ length: 121 }, async (_, index) => {
+        const sourceRef = `explicit-ast-${index}`;
+        const nonce = `approval-nonce-${index}`;
+        const ledgerName = `${createHash('sha256').update(`approval-${index}`).digest('hex')}.json`;
+        await writeFile(join(ledgerRoot, ledgerName), JSON.stringify({
+          approval: {
+            schema_version: 1,
+            session_id: sessionId,
+            root_thread_id: rootThreadId,
+            turn_id: turnId,
+            capability: 'AST',
+            source_ref: sourceRef,
+            program: 'node',
+            args: [`scripts/ast-check-${index}.mjs`],
+            approved_at: START.toISOString(),
+            nonce,
+          },
+          provenance: { event_ref: `host-approval-event-${index}`, nonce },
+        }));
+        return { capability: 'AST' as const, source_ref: sourceRef };
+      }));
+
+      const response = await executeReviewOperation('review_start', {
+        workingDirectory,
+        session_id: sessionId,
+        invocation: ['$code-review', 'README.md'],
+        idempotency_key: START_KEY,
+        accepted_equivalent_requests: requests,
+      }, host({ seeded_review_id: seeded.review.review_id, root_thread_id: rootThreadId }));
+      assert.equal(response.isError, true);
+      assert.equal((response.payload as { code?: unknown }).code, 'INVALID_CONFIGURATION');
+      assert.match(JSON.stringify(response.payload), /transaction limit/i);
+    });
+  });
+
   it('runs START, lane binding, blocking finalization, Stop consumption, and resume through public operations', async () => {
     await withChangedRepository(async (workingDirectory) => {
       const startInput = {
@@ -163,6 +402,24 @@ describe('review operation control plane', () => {
       await writeFile(receiptPath, originalReceipt, 'utf8');
 
       const reviewerLane = started.required_lane_plan!.find((lane) => lane.role === 'code-reviewer')!;
+      const oversizedHostError = await executeReviewOperation('review_record_lane', {
+        workingDirectory,
+        session_id: 'session-1',
+        event: 'START',
+        review_id: started.review_id,
+        attempt: 1,
+        lane_id: reviewerLane.lane_id,
+        thread_id: 'child-oversized-error',
+        idempotency_key: '12121212-1212-4212-8212-121212121212',
+      }, host({
+        loadTracker: async () => { throw new Error('x'.repeat(1_048_577)); },
+      }));
+      assert.equal(oversizedHostError.isError, true);
+      assert.deepEqual(oversizedHostError.payload, {
+        error: 'review operation failed',
+        code: 'REVIEW_OPERATION_FAILED',
+      });
+
       const bound = payload(await executeReviewOperation('review_record_lane', {
         workingDirectory,
         session_id: 'session-1',
@@ -601,6 +858,74 @@ describe('review operation control plane', () => {
         review_id: activated.review_id,
         status: 'FINALIZED',
       });
+    });
+  });
+
+  it('fails closed for unavailable, excessive, malformed, oversized, and invalid equivalent state', async () => {
+    await withChangedRepository(async (workingDirectory) => {
+      const cases: Array<{
+        name: string;
+        pattern: RegExp;
+        setup: (approvalRoot: string, consumptionRoot: string) => Promise<void>;
+      }> = [
+        {
+          name: 'unavailable',
+          pattern: /consumption directory is unavailable/i,
+          setup: async (approvalRoot, consumptionRoot) => {
+            await mkdir(approvalRoot, { recursive: true });
+            await writeFile(consumptionRoot, 'not-a-directory');
+          },
+        },
+        {
+          name: 'excessive',
+          pattern: /consumption directory exceeds the entry limit/i,
+          setup: async (_approvalRoot, consumptionRoot) => {
+            await mkdir(consumptionRoot, { recursive: true });
+            await Promise.all(Array.from({ length: 129 }, async (_, index) => {
+              await writeFile(join(consumptionRoot, `entry-${index}`), '{}');
+            }));
+          },
+        },
+        {
+          name: 'bad-path',
+          pattern: /consumption path is malformed/i,
+          setup: async (_approvalRoot, consumptionRoot) => {
+            await mkdir(consumptionRoot, { recursive: true });
+            await writeFile(join(consumptionRoot, 'bad-name.json'), '{}');
+          },
+        },
+        {
+          name: 'oversized',
+          pattern: /consumption entry exceeds the size limit/i,
+          setup: async (_approvalRoot, consumptionRoot) => {
+            await mkdir(consumptionRoot, { recursive: true });
+            await writeFile(join(consumptionRoot, `${'a'.repeat(64)}.json`), 'x'.repeat(1_048_577));
+          },
+        },
+        {
+          name: 'invalid-json',
+          pattern: /consumption entry is malformed/i,
+          setup: async (_approvalRoot, consumptionRoot) => {
+            await mkdir(consumptionRoot, { recursive: true });
+            await writeFile(join(consumptionRoot, `${'a'.repeat(64)}.json`), '{not-json');
+          },
+        },
+      ];
+
+      for (const [index, testCase] of cases.entries()) {
+        const sessionId = `session-equivalent-state-${index}`;
+        const paths = await resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+        const consumptionRoot = join(paths.approvalsRoot, 'consumptions');
+        await testCase.setup(paths.approvalsRoot, consumptionRoot);
+        const response = await executeReviewOperation('review_start', {
+          workingDirectory,
+          session_id: sessionId,
+          invocation: ['$code-review', '--base', 'HEAD'],
+          idempotency_key: START_KEY,
+        }, host({ root_thread_id: `root-equivalent-state-${index}` }));
+        assert.equal(response.isError, true, testCase.name);
+        assert.match(JSON.stringify(response.payload), testCase.pattern, testCase.name);
+      }
     });
   });
 

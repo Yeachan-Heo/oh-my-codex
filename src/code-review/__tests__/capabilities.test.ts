@@ -126,6 +126,9 @@ interface TrustedEquivalentDependencies {
 interface CapabilitiesApi {
   classifyReviewFile(file: ScopeFile): FileKind;
   parseFrozenCapabilityConfig(value: unknown): FrozenCapabilityConfig;
+  deriveFrozenCapabilityConfigFromBaseFiles(
+    files: ReadonlyArray<{ path: string; content: string | undefined }>,
+  ): FrozenCapabilityConfig;
   buildCapabilityPlan(
     files: readonly ScopeFile[],
     options?: { trustedFrozenConfig?: FrozenCapabilityConfig },
@@ -305,6 +308,27 @@ describe('file-kind capability planning', () => {
     assert.deepEqual(cases.map(([value]) => api.classifyReviewFile(value)), cases.map(([, kind]) => kind));
   });
 
+  it('derives TypeScript tooling from script names and rejects malformed package metadata', async () => {
+    const api = await loadCapabilitiesApi();
+    const malformed = api.deriveFrozenCapabilityConfigFromBaseFiles([
+      { path: 'package.json', content: '{not-json' },
+    ]);
+    assert.equal(malformed.typescript_javascript.compiler_or_typecheck, false);
+    assert.equal(malformed.typescript_javascript.lint, false);
+
+    const scripted = api.deriveFrozenCapabilityConfigFromBaseFiles([{
+      path: 'package.json',
+      content: JSON.stringify({
+        scripts: {
+          typecheck: 'custom-type-runner',
+          lint: 'eslint src',
+        },
+      }),
+    }]);
+    assert.equal(scripted.typescript_javascript.compiler_or_typecheck, true);
+    assert.equal(scripted.typescript_javascript.lint, true);
+  });
+
   it('separates inherent TypeScript requirements from absent, partial, and full frozen-base tools', async () => {
     const api = await loadCapabilitiesApi();
     const files = [file('src/a.ts'), file('src/b.js')];
@@ -350,9 +374,13 @@ describe('file-kind capability planning', () => {
     assert.deepEqual(applicable(full), ['LSP', 'AST', 'COMPILER', 'LINT']);
   });
 
-  it('derives shell and structured-data applicability only from trusted frozen-base ownership', async () => {
+  it('always requires the shell parser and bounded rg while deriving structured-data applicability from trusted frozen-base ownership', async () => {
     const api = await loadCapabilitiesApi();
-    assert.deepEqual(applicable(api.buildCapabilityPlan([file('run.sh')])), []);
+    // ASSERTION-CHANGE-JUSTIFIED: spec §7 makes the shell parser and bounded rg unconditional for any
+    // in-scope shell file (only lint is "configured"). Gating them on base-tree ownership let a change
+    // that adds the repository's first shell script reach a clean APPROVE with zero diagnostics — a
+    // scope-omission fail-open weaker than the UNKNOWN_TEXT path. Shell now always requires COMPILER + RG_FALLBACK.
+    assert.deepEqual(applicable(api.buildCapabilityPlan([file('run.sh')])), ['COMPILER', 'RG_FALLBACK']);
     assert.deepEqual(applicable(api.buildCapabilityPlan([file('config.json')])), []);
 
     const partial = frozenConfig({ shellParser: true, shellRg: true, structuredSchema: true });
@@ -381,6 +409,20 @@ describe('file-kind capability planning', () => {
       applicable(api.buildCapabilityPlan([file('config.json')], { trustedFrozenConfig: full })),
       ['COMPILER', 'LINT'],
     );
+  });
+
+  it('requires the shell parser and bounded rg for a repo-first shell script even with no frozen shell tooling', async () => {
+    const api = await loadCapabilitiesApi();
+    // A change that introduces the repository's first shell file (base tree owned none, so the derived
+    // frozen config leaves shell.parser/shell.rg false) must still demand an objective diagnostic. Any
+    // required capability for the SHELL kind blocks the zero-diagnostic clean APPROVE fail-open.
+    const plan = api.buildCapabilityPlan([file('deploy/install.sh')]);
+    const shellEntries = plan.capabilities.filter((entry) => entry.required_for.includes('SHELL'));
+    assert.deepEqual(
+      shellEntries.map((entry) => entry.capability).sort(),
+      ['COMPILER', 'RG_FALLBACK'],
+    );
+    assert.ok(shellEntries.every((entry) => entry.applicability === 'APPLICABLE'));
   });
 
   it('keeps docs, assets, links, and binary files diagnostic-free while degrading unknown text', async () => {
@@ -919,6 +961,24 @@ describe('trusted diagnostic equivalents', () => {
     }
   });
 
+  it('distinguishes duplicate approvals with different nonces from a usable explicit approval', async () => {
+    const api = await loadCapabilitiesApi();
+    const result = await api.resolveTrustedEquivalents({
+      requests: [{ capability: 'LSP', source_ref: 'approval:event-1' }],
+      context: explicitContext(),
+    }, {
+      loadHookOwnedApprovalLedger: async () => [
+        hookOwnedApproval(),
+        hookOwnedApproval({ nonce: 'hook-nonce-2' }),
+      ],
+      now: NOW,
+      approvalTtlMs: 5 * 60_000,
+    });
+    assert.deepEqual(result.accepted_equivalents, []);
+    assert.deepEqual(result.prepared_consumptions, []);
+    assert.match(result.reasons.join('\n'), /EXPLICIT_APPROVAL_DUPLICATE/u);
+  });
+
   it('makes approval consumption prepare/apply/recovery idempotent and rejects conflicting nonce reuse', async () => {
     const api = await loadCapabilitiesApi();
     const input = {
@@ -1118,17 +1178,40 @@ describe('trusted diagnostic equivalents', () => {
     assert.deepEqual(approvalFailure.accepted_equivalents, []);
 
     const baseSha = 'a'.repeat(40);
-    for (const sourceRef of [
-      `other:code-review-equivalents.json#typescript-lsp`,
-      `${baseSha}:code-review-equivalents.json#bad/rule`,
+    let reads = 0;
+    for (const [sourceRef, expectedReason] of [
+      [`${'b'.repeat(40)}:code-review-equivalents.json#typescript-lsp`, 'TRUSTED_SOURCE_UNAVAILABLE'],
+      [`${baseSha}:code-review-equivalents.json#bad/rule`, 'REPO_CONTRACT_UNAVAILABLE'],
     ]) {
       const result = await api.resolveTrustedEquivalents({
         requests: [{ capability: 'LSP', source_ref: sourceRef }],
         context: { ...explicitContext(), base_sha: baseSha },
-      }, { now: NOW });
+      }, {
+        readBaseContract: async () => {
+          reads += 1;
+          return JSON.stringify({
+            schema_version: 1,
+            equivalents: [{
+              capability: 'LSP', program: 'npm', args: ['run', 'typecheck'],
+              rule_id: 'typescript-lsp',
+            }],
+          });
+        },
+        now: NOW,
+      });
       assert.deepEqual(result.accepted_equivalents, []);
-      assert.ok(result.reasons.length > 0);
+      assert.match(result.reasons.join('\n'), new RegExp(expectedReason, 'u'));
     }
+    assert.equal(reads, 0, 'invalid source identities must be rejected before reading the base contract');
+
+    const missingReader = await api.resolveTrustedEquivalents({
+      requests: [{
+        capability: 'LSP',
+        source_ref: `${baseSha}:code-review-equivalents.json#typescript-lsp`,
+      }],
+      context: { ...explicitContext(), base_sha: baseSha },
+    }, { now: NOW });
+    assert.match(missingReader.reasons.join('\n'), /REPO_CONTRACT_UNAVAILABLE/u);
   });
 
   it('rejects non-object base revisions before invoking the base-contract reader', async () => {

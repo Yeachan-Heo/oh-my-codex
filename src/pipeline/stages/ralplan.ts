@@ -177,7 +177,8 @@ function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
   if (typeof artifacts.return_to_ralplan_reason === 'string' && artifacts.return_to_ralplan_reason.trim() !== '') {
     return true;
   }
-  if (isNonCleanReviewVerdict(artifacts.review_verdict)) {
+  if (Object.hasOwn(artifacts, 'review_verdict')
+    && isNonCleanReviewVerdict(artifacts.review_verdict)) {
     return true;
   }
 
@@ -190,6 +191,7 @@ function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
   return (
     (typeof reviewArtifacts.return_to_ralplan_reason === 'string'
       && reviewArtifacts.return_to_ralplan_reason.trim() !== '')
-    || isNonCleanReviewVerdict(reviewArtifacts.review_verdict)
+    || (Object.hasOwn(reviewArtifacts, 'review_verdict')
+      && isNonCleanReviewVerdict(reviewArtifacts.review_verdict))
   );
 }

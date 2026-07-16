@@ -1,7 +1,7 @@
 /**
  * Pipeline Orchestrator for oh-my-codex
  *
- * Sequences configurable stages (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa)
+ * Sequences configurable stages (deep-interview -> ralplan -> ultragoal -> rework -> code-review -> ultraqa)
  * and persists state through the ModeState system.
  *
  * Mirrors OMC #1130 pipeline design with OMX-specific adaptations:
@@ -14,9 +14,19 @@ import { startMode, readModeState, updateModeState, cancelMode } from '../modes/
 import { createDeepInterviewStage } from './stages/deep-interview.js';
 import { createRalplanStage } from './stages/ralplan.js';
 import { createUltragoalStage } from './stages/ultragoal.js';
-import { createCodeReviewStage } from './stages/code-review.js';
+import { createReworkStage } from './stages/rework.js';
+import {
+  reworkEvidenceCompletedAt,
+  reviewArtifactIdentityFromStageArtifacts,
+  validateFreshReworkEvidence,
+  type ReviewArtifactIdentity,
+} from './stages/rework.js';
+import {
+  createCodeReviewStage,
+  validateCodeReviewStageArtifacts,
+} from './stages/code-review.js';
 import { createUltraqaStage } from './stages/ultraqa.js';
-import { isNonCleanReviewVerdict } from './review-verdict.js';
+import { isCleanCodeReviewStageArtifacts } from './review-verdict.js';
 import type {
   PipelineConfig,
   PipelineResult,
@@ -88,6 +98,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   let previousResult: StageResult | undefined;
   let lastStageName: string | undefined;
   let reviewCycle = 0;
+  let blockingReviewIdentity: ReviewArtifactIdentity | undefined;
+  let blockingReviewFinalizedAt: string | undefined;
+  let acceptedReworkEvidence: unknown;
+  let awaitingSuccessorReview = false;
 
   for (let i = 0; i < config.stages.length; i++) {
     const stage = config.stages[i];
@@ -157,6 +171,75 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       };
     }
 
+    const validatedCodeReviewArtifact = stage.name === 'code-review'
+      && result.status === 'completed'
+      ? await validateCodeReviewStageArtifacts(result.artifacts, cwd)
+      : null;
+    if (stage.name === 'code-review' && result.status === 'completed') {
+      const projectedVerdict = result.artifacts.review_verdict;
+      const claimsClean = !!projectedVerdict
+        && typeof projectedVerdict === 'object'
+        && !Array.isArray(projectedVerdict)
+        && (projectedVerdict as Record<string, unknown>).clean === true;
+      const requestsTrustedArtifact = claimsClean
+        || result.artifacts.suggested_next_phase === 'ultraqa'
+        || (result.artifacts.suggested_next_phase === 'rework'
+          && config.stages.some((candidate) => candidate.name === 'rework'));
+      if (requestsTrustedArtifact && validatedCodeReviewArtifact === null) {
+        result = {
+          ...result,
+          status: 'failed',
+          error: 'code_review_artifact_invalid_or_stale',
+        };
+      }
+    }
+
+    const validatedReworkEvidence = stage.name === 'rework' && blockingReviewIdentity !== undefined
+      && result.status === 'completed'
+      ? await validateFreshReworkEvidence(
+        result.artifacts.rework_evidence,
+        blockingReviewIdentity,
+        reviewCycle,
+        cwd,
+        blockingReviewFinalizedAt,
+      )
+      : null;
+    if (stage.name === 'rework' && blockingReviewIdentity !== undefined
+      && result.status === 'completed'
+      && validatedReworkEvidence === null) {
+      result = {
+        ...result,
+        status: 'failed',
+        error: 'rework_execution_evidence_missing_or_stale',
+      };
+    }
+    if (stage.name === 'rework' && blockingReviewIdentity !== undefined
+      && result.status === 'completed') {
+      acceptedReworkEvidence = validatedReworkEvidence;
+      awaitingSuccessorReview = true;
+    }
+    if (stage.name === 'code-review' && awaitingSuccessorReview && result.status === 'completed') {
+      const successorValid = blockingReviewIdentity === undefined
+        ? false
+        : await hasValidSuccessorReviewEvidence(
+          result.artifacts,
+          blockingReviewIdentity,
+          acceptedReworkEvidence,
+          cwd,
+        );
+      if (!successorValid) {
+        result = {
+          ...result,
+          status: 'failed',
+          error: 'successor_review_evidence_missing_or_reused',
+        };
+      } else {
+        blockingReviewIdentity = undefined;
+        blockingReviewFinalizedAt = undefined;
+        awaitingSuccessorReview = false;
+      }
+    }
+
     stageResults[stage.name] = result;
 
     // Merge artifacts
@@ -173,14 +256,20 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       : undefined;
     const reviewIsNotClean = stage.name === 'code-review'
       && result.status === 'completed'
-      && isNonCleanReviewVerdict(reviewVerdict);
+      && (validatedCodeReviewArtifact === null
+        || !isCleanCodeReviewStageArtifacts(resultArtifacts));
     const qaIsNotClean = stage.name === 'ultraqa'
       && result.status === 'completed'
       && isNonCleanQaVerdict(qaVerdict);
     const suggestedNextPhase = stage.name === 'code-review'
-      ? normalizeCodeReviewNextPhase(resultArtifacts.suggested_next_phase)
+      ? normalizeCodeReviewNextPhase(resultArtifacts.suggested_next_phase, config.stages)
       : 'ralplan';
     const qualityGateNextPhase = reviewIsNotClean ? suggestedNextPhase : (qaIsNotClean ? 'ralplan' : null);
+
+    if (qualityGateNextPhase === 'rework') {
+      blockingReviewIdentity = resultArtifacts.code_review_artifact_identity as ReviewArtifactIdentity;
+      blockingReviewFinalizedAt = validatedCodeReviewArtifact?.finalized_at;
+    }
 
     if (stage.name === 'code-review') {
       artifacts.review_verdict = reviewVerdict ?? null;
@@ -365,6 +454,33 @@ function normalizeHandoffArtifactKeys(artifacts: Record<string, unknown>): Recor
   return normalized;
 }
 
+async function hasValidSuccessorReviewEvidence(
+  artifacts: unknown,
+  blockingReviewIdentity: ReviewArtifactIdentity,
+  reworkEvidence: unknown,
+  cwd: string,
+): Promise<boolean> {
+  if (!isCleanCodeReviewStageArtifacts(artifacts)) return false;
+  const successorIdentity = reviewArtifactIdentityFromStageArtifacts(artifacts);
+  const successorArtifact = await validateCodeReviewStageArtifacts(artifacts, cwd);
+  const reworkCompletedAt = reworkEvidenceCompletedAt(reworkEvidence);
+  if (successorIdentity === null
+    || successorArtifact === null
+    || reworkCompletedAt === null
+    || successorIdentity.review_id === blockingReviewIdentity.review_id
+    || successorArtifact.supersedes_review_id !== blockingReviewIdentity.review_id) {
+    return false;
+  }
+  const finalizedAtMs = Date.parse(successorArtifact.finalized_at);
+  const reworkCompletedAtMs = Date.parse(reworkCompletedAt);
+  if (Number.isNaN(finalizedAtMs)
+    || Number.isNaN(reworkCompletedAtMs)
+    || finalizedAtMs <= reworkCompletedAtMs) {
+    return false;
+  }
+  return true;
+}
+
 function toHandoffArtifactKey(stageName: string): string {
   switch (stageName) {
     case 'code-review':
@@ -378,11 +494,17 @@ function toHandoffArtifactKey(stageName: string): string {
 
 function findStageIndex(stages: readonly PipelineStage[], stageName: string): number {
   const index = stages.findIndex((stage) => stage.name === stageName);
-  return index >= 0 ? index : 0;
+  if (index < 0) throw new Error(`Pipeline stage is not configured: ${stageName}`);
+  return index;
 }
 
-function normalizeCodeReviewNextPhase(value: unknown): 'rework' | 'ralplan' {
-  return value === 'rework' ? 'rework' : 'ralplan';
+function normalizeCodeReviewNextPhase(
+  value: unknown,
+  stages: readonly PipelineStage[],
+): 'rework' | 'ralplan' {
+  return value === 'rework' && stages.some((stage) => stage.name === 'rework')
+    ? 'rework'
+    : 'ralplan';
 }
 
 function validateConfig(config: PipelineConfig): void {
@@ -428,7 +550,7 @@ function validateConfig(config: PipelineConfig): void {
 /**
  * Create the default autopilot pipeline configuration.
  *
- * Sequences: deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa.
+ * Sequences: deep-interview -> ralplan -> ultragoal -> conditional rework -> code-review -> ultraqa.
  * This is the default Autopilot loop required by the skill contract.
  * Custom stages can still preserve explicit legacy Ralph execution paths.
  */
@@ -475,6 +597,7 @@ export function createStrictAutopilotStages(
     createDeepInterviewStage(),
     createRalplanStage({ requireNativeSubagents: true }),
     createUltragoalStage(),
+    createReworkStage(),
     createCodeReviewStage(reviewArtifact),
     createUltraqaStage(),
   ];

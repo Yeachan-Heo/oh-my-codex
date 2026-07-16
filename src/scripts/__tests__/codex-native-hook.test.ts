@@ -2476,6 +2476,158 @@ PY`,
     }
   });
 
+  it("publishes a structured explicit-equivalent approval from native UserPromptSubmit", async () => {
+    const cwd = await initTempGitRepo("omx-native-hook-code-review-equivalent-approval-");
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-equivalent-approval-session";
+      const rootThreadId = "codex-review-equivalent-approval-root";
+      const turnId = "turn-review-equivalent-approval";
+      const eventRef = "host-equivalent-approval-event-1";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+
+      const payload = {
+        hook_event_name: "UserPromptSubmit",
+        cwd,
+        session_id: rootThreadId,
+        thread_id: rootThreadId,
+        turn_id: turnId,
+        prompt: "$code-review README.md",
+        code_review_equivalent_approval: {
+          schema_version: 1,
+          approved: true,
+          capability: "AST",
+          source_ref: "explicit-typescript-ast",
+          program: "node",
+          args: ["scripts/ast-check.mjs"],
+          event_ref: eventRef,
+        },
+      };
+      await dispatchCodexNativeHook(payload, { cwd });
+      await dispatchCodexNativeHook(payload, { cwd });
+
+      const ledgerDir = join(
+        stateDir,
+        "sessions",
+        sessionId,
+        "code-review",
+        "approvals",
+        "ledger",
+      );
+      const ledgerFiles = await readdir(ledgerDir);
+      assert.equal(ledgerFiles.length, 1, "host event replay must be create-once");
+      const entry = JSON.parse(
+        await readFile(join(ledgerDir, ledgerFiles[0]), "utf-8"),
+      ) as Record<string, any>;
+      assert.deepEqual({
+        session_id: entry.approval?.session_id,
+        root_thread_id: entry.approval?.root_thread_id,
+        turn_id: entry.approval?.turn_id,
+        capability: entry.approval?.capability,
+        source_ref: entry.approval?.source_ref,
+        program: entry.approval?.program,
+        args: entry.approval?.args,
+        event_ref: entry.provenance?.event_ref,
+        nonce_matches: entry.approval?.nonce === entry.provenance?.nonce,
+      }, {
+        session_id: sessionId,
+        root_thread_id: rootThreadId,
+        turn_id: turnId,
+        capability: "AST",
+        source_ref: "explicit-typescript-ast",
+        program: "node",
+        args: ["scripts/ast-check.mjs"],
+        event_ref: eventRef,
+        nonce_matches: true,
+      });
+      assert.equal(JSON.stringify(entry).includes("$code-review"), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes code-review diagnostic tool provenance from native PostToolUse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-diagnostic-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-review-diagnostic-session";
+      const rootThreadId = "codex-root-diagnostic-thread";
+      const childThreadId = "codex-child-diagnostic-thread";
+      const reviewId = "13131313-1313-4313-8313-131313131313";
+      const laneId = "reviewer-lane-diagnostic";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: rootThreadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        sessions: {
+          [sessionId]: {
+            threads: {
+              [childThreadId]: {
+                kind: "subagent",
+                leader_thread_id: rootThreadId,
+                lane_id: laneId,
+              },
+            },
+          },
+        },
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "code-review", "active.json"), {
+        schema_version: 1,
+        review_id: reviewId,
+        status: "RUNNING",
+      });
+
+      await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd,
+        session_id: rootThreadId,
+        owner_codex_thread_id: rootThreadId,
+        thread_id: childThreadId,
+        tool_use_id: "toolu-diagnostic-1",
+        tool_name: "mcp__code_intel__lsp",
+        tool_input: { path: "src/index.ts" },
+        tool_response: { diagnostics: [] },
+      }, { cwd });
+      await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd,
+        session_id: rootThreadId,
+        owner_codex_thread_id: rootThreadId,
+        thread_id: childThreadId,
+        tool_use_id: "toolu-diagnostic-2",
+        tool_name: "mcp__code_intel__ast_grep",
+        tool_input: { program: "ast-grep", args: ["scan", "src/index.ts"] },
+        tool_response: { matches: [] },
+      }, { cwd });
+
+      const diagnosticDir = join(
+        stateDir,
+        "sessions",
+        sessionId,
+        "code-review",
+        reviewId,
+        "diagnostics",
+        childThreadId,
+      );
+      const diagnosticFiles = await readdir(diagnosticDir);
+      assert.equal(diagnosticFiles.length, 2);
+      const diagnostics = await Promise.all(diagnosticFiles.map(async (file) => JSON.parse(
+        await readFile(join(diagnosticDir, file), "utf-8"),
+      ) as Record<string, unknown>));
+      const diagnostic = diagnostics.find((entry) => entry.event_ref === "toolu-diagnostic-1")!;
+      assert.equal(diagnostic.review_id, reviewId);
+      assert.equal(diagnostic.lane_id, laneId);
+      assert.equal(diagnostic.child_thread_id, childThreadId);
+      assert.equal(diagnostic.event_ref, "toolu-diagnostic-1");
+      assert.equal(diagnostic.tool_name, "mcp__code_intel__lsp");
+      assert.equal("tool_input" in diagnostic, false);
+      assert.equal("tool_response" in diagnostic, false);
+      const commandDiagnostic = diagnostics.find((entry) => entry.event_ref === "toolu-diagnostic-2")!;
+      assert.equal(commandDiagnostic.program, "ast-grep");
+      assert.deepEqual(commandDiagnostic.args, ["scan", "src/index.ts"]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("publishes code-review RESULT PostToolUse attestation only from real host child identity", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-code-review-posttool-"));
     try {
@@ -6469,7 +6621,7 @@ standardMaxRounds = 15
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
       assert.match(message, /Autopilot protocol:/);
-      assert.match(message, /deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
+      assert.match(message, /deep-interview -> ralplan -> ultragoal -> code-review -> rework -> code-review -> ultraqa/);
       assert.match(message, /structured question chain, not a one-question gate/);
       assert.match(message, /re-score ambiguity against the active threshold/);
       assert.match(message, /max_rounds as a cap/);
@@ -6490,7 +6642,7 @@ standardMaxRounds = 15
       const snapshot = await readFile(join(cwd, snapshotPath), "utf-8");
       assert.match(snapshot, /activation prompt \/ task seed: \$autopilot implement issue #2430/);
       assert.match(snapshot, /scope note: this seed captures the Autopilot activation prompt/);
-      assert.match(snapshot, /constraints: follow deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
+      assert.match(snapshot, /constraints: follow deep-interview -> ralplan -> ultragoal -> code-review -> rework -> code-review -> ultraqa/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -26019,7 +26171,7 @@ describe("codex native hook triage integration", () => {
       };
       assert.equal(modeState.active, true);
       assert.equal(modeState.current_phase, "deep-interview");
-      assert.deepEqual(modeState.state?.phase_cycle, ["deep-interview", "ralplan", "ultragoal", "code-review", "ultraqa"]);
+      assert.deepEqual(modeState.state?.phase_cycle, ["deep-interview", "ralplan", "ultragoal", "rework", "code-review", "ultraqa"]);
       assert.deepEqual(modeState.state?.deep_interview_gate, {
         status: "required",
         skip_reason: null,

@@ -2,7 +2,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -311,7 +311,18 @@ export function addUntrackedChangedLines(
 }
 
 function resolveMergeBase(cwd: string, requested?: string): string {
-  const candidates = requested === undefined ? ['origin/main', 'origin/master', 'main', 'master', 'HEAD^'] : [requested];
+  if (requested !== undefined) {
+    try {
+      const verified = execFileSync('git', ['rev-parse', '--verify', `${requested}^{commit}`], {
+        cwd,
+        encoding: 'utf8',
+      }).trim();
+      return execFileSync('git', ['merge-base', 'HEAD', verified], { cwd, encoding: 'utf8' }).trim();
+    } catch {
+      throw new Error('unable to resolve merge base; pass --base-ref');
+    }
+  }
+  const candidates = ['origin/main', 'origin/master', 'main', 'master', 'HEAD^'];
   for (const candidate of candidates) {
     try {
       return execFileSync('git', ['merge-base', 'HEAD', candidate], { cwd, encoding: 'utf8' }).trim();
@@ -459,7 +470,7 @@ export interface CoverageSpawnResult {
 export type CoverageSpawn = (
   command: string,
   args: readonly string[],
-  options: { cwd: string; stdio: 'inherit' },
+  options: { cwd: string; stdio: 'inherit'; env: NodeJS.ProcessEnv },
 ) => CoverageSpawnResult;
 
 const defaultCoverageSpawn: CoverageSpawn = (command, args, options) => {
@@ -474,16 +485,28 @@ export function measureMergeBaseCoverage(
 ): CoverageMetrics {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'omx-coverage-base-'));
   const worktree = join(temporaryRoot, 'worktree');
+  const canonicalTemporaryDirectory = realpathSync(tmpdir());
+  const baselineEnvironment = {
+    ...process.env,
+    TMPDIR: canonicalTemporaryDirectory,
+    TMP: canonicalTemporaryDirectory,
+    TEMP: canonicalTemporaryDirectory,
+  };
   let added = false;
   try {
     execFileSync('git', ['worktree', 'add', '--detach', worktree, mergeBase], { cwd, stdio: 'ignore' });
     added = true;
     symlinkSync(resolve(cwd, 'node_modules'), join(worktree, 'node_modules'), 'dir');
-    execFileSync('npm', ['run', 'build'], { cwd: worktree, stdio: 'inherit' });
+    execFileSync('npm', ['run', 'build'], {
+      cwd: worktree,
+      stdio: 'inherit',
+      env: baselineEnvironment,
+    });
     const summaryPath = join(worktree, 'coverage/ts-full/coverage-summary.json');
     const coverageRun = spawnCoverage('npm', ['run', 'coverage:ts:full:compiled'], {
       cwd: worktree,
       stdio: 'inherit',
+      env: baselineEnvironment,
     });
     if (coverageRun.error) throw coverageRun.error;
     if (!existsSync(summaryPath)) {

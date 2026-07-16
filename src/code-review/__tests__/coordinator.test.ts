@@ -473,6 +473,32 @@ describe('review coordinator lifecycle', () => {
     assert.equal(reconciled.lanes.every((lane) => lane.status === 'COMPLETE'), true);
     assert.equal(reconciled.status, 'READY_TO_SYNTHESIZE');
     assert.equal(reconciled.revision, record.revision + 1);
+
+    const replayed = reconcileResultPublications({
+      review: reconciled,
+      proposals: [reviewerProposal, architectProposal],
+      snapshot: {
+        cutoff_at: '2026-07-14T00:06:00.000Z',
+        events: [],
+        publications: [
+          publication(reviewerProposal, 'child-reviewer', '2026-07-14T00:04:00.000Z'),
+          publication(architectProposal, 'child-architect', '2026-07-14T00:04:01.000Z'),
+        ],
+      },
+      now: new Date('2026-07-14T00:06:00.000Z'),
+    });
+    assert.deepEqual(replayed, reconciled, 'completed lanes must ignore replayed publications');
+    const malformedReplay = reconcileResultPublications({
+      review: reconciled,
+      proposals: [reviewerProposal],
+      snapshot: {
+        cutoff_at: '2026-07-14T00:06:00.000Z',
+        events: [],
+        publications: [{ publication_id: reviewerProposal.idempotency_key }],
+      },
+      now: new Date('2026-07-14T00:06:00.000Z'),
+    });
+    assert.deepEqual(malformedReplay, reconciled, 'terminal lanes ignore later malformed publication copies');
   });
 
   it('uses hook-owned diagnostic events from the same cutoff and lane for full evidence', () => {
@@ -690,6 +716,49 @@ describe('review coordinator lifecycle', () => {
     const resumed = resumeReview({ review: blocked, current_scope_hash: HASH, now: START });
     assert.equal(resumed.current_attempt, 2);
     assert.equal(resumed.lanes.length, 4);
+  });
+
+  it('ignores a stale prior-attempt RESULT publication after resume instead of blocking finalization', () => {
+    // A lane that was RUNNING with a submitted RESULT proposal when the review blocked (e.g. a sibling lane
+    // went missing) is preserved append-only at its old attempt and stays RUNNING under its original id. Its
+    // durable proposal + post-tool.json survive into the resumed attempt's reconcile snapshot (publication_ids
+    // are not attempt-filtered). Reconciliation must skip that foreign-attempt pair, not throw
+    // LANE_EVIDENCE_INVALID and permanently prevent the resumed review from ever finalizing.
+    const running = startLane(initial(), 'reviewer-batch-1', 'child-reviewer');
+    const staleProposal = createLaneResultProposal({
+      review: running,
+      event: {
+        event: 'RESULT', review_id: REVIEW_ID, attempt: 1, lane_id: 'reviewer-batch-1',
+        scope_hash: HASH, result: reviewerResult(), idempotency_key: REVIEWER_KEY,
+      },
+      source: 'MCP',
+      now: START,
+    });
+    const blocked = finalizeReview({ review: running, current_scope_hash: HASH, now: new Date('2026-07-14T00:15:00.000Z') });
+    assert.equal(blocked.status, 'BLOCKED');
+    assert.equal(blocked.resumable, true);
+    const preservedLane = blocked.lanes.find((lane) => lane.lane_id === 'reviewer-batch-1' && lane.attempt === 1);
+    assert.equal(preservedLane?.status, 'RUNNING', 'attempt-1 lane with a pending proposal stays RUNNING when blocked');
+    const resumed = resumeReview({ review: blocked, current_scope_hash: HASH, now: new Date('2026-07-14T00:20:00.000Z') });
+    assert.equal(resumed.current_attempt, 2);
+    const reconciled = reconcileResultPublications({
+      review: resumed,
+      proposals: [staleProposal],
+      snapshot: {
+        cutoff_at: '2026-07-14T00:25:00.000Z',
+        events: [],
+        publications: [publication(staleProposal, 'child-reviewer', '2026-07-14T00:14:00.000Z')],
+      },
+      now: new Date('2026-07-14T00:25:00.000Z'),
+    });
+    assert.equal(reconciled.current_attempt, 2, 'the resumed review survives the stale publication');
+    assert.ok(
+      reconciled.lanes.some((lane) => lane.attempt === 2 && lane.status === 'PENDING'),
+      'resumed replacement lanes remain awaitable rather than being poisoned by the stale pair',
+    );
+    // Append-only invariant (spec §4/§8): a resumed reconcile must never rewrite a prior attempt's lane.
+    const priorLaneAfter = reconciled.lanes.find((lane) => lane.lane_id === 'reviewer-batch-1' && lane.attempt === 1);
+    assert.equal(priorLaneAfter?.status, 'RUNNING', 'the prior-attempt lane record must be left untouched');
   });
 
   it('exposes a real Task 2 durable coordinator rather than an in-memory persistence mock', () => {

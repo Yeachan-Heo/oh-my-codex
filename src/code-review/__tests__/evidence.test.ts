@@ -318,6 +318,76 @@ describe('lane evidence validation', () => {
     }
   });
 
+  it('fails each lane evidence boundary before capability evaluation can mask it', () => {
+    const current = review();
+    const plan = buildCapabilityPlan(current.scope!.files);
+    const events = [
+      toolEvent('tool-lsp-1', 'child-reviewer', 'mcp__code_intel__diagnostics'),
+      toolEvent('tool-ast-1', 'child-reviewer', 'mcp__code_intel__ast'),
+    ];
+    const oversized = validateLaneResultEvidence({
+      review: current,
+      lane: current.lanes[0]!,
+      result: reviewerResult({ padding: 'x'.repeat(3 * 1024 * 1024) }),
+      capabilityPlan: plan,
+      toolEvents: events,
+    });
+    assert.ok(oversized.reasons.includes('PAYLOAD_OVERSIZED'));
+
+    for (const invalidLane of [
+      { ...current.lanes[0]!, status: 'PENDING' as const },
+      { ...current.lanes[0]!, provenance: undefined },
+    ]) {
+      const validated = validateLaneResultEvidence({
+        review: current,
+        lane: invalidLane,
+        result: reviewerResult(),
+        capabilityPlan: plan,
+        toolEvents: events,
+      });
+      assert.equal(validated.valid, false);
+      assert.ok(validated.reasons.includes('LANE_OR_RESULT_INVALID'));
+    }
+
+    const missingPlan = validateLaneResultEvidence({
+      review: current,
+      lane: current.lanes[0]!,
+      result: reviewerResult(),
+      toolEvents: events,
+    });
+    assert.equal(missingPlan.valid, false);
+    assert.ok(missingPlan.reasons.includes('CAPABILITY_PLAN_MISSING'));
+
+    for (const diagnostics of [
+      (reviewerResult().diagnostics as unknown[]).slice(0, 1),
+      [...(reviewerResult().diagnostics as unknown[]), (reviewerResult().diagnostics as unknown[])[0]],
+    ]) {
+      const invalidCoverage = validateLaneResultEvidence({
+        review: current,
+        lane: current.lanes[0]!,
+        result: reviewerResult({ diagnostics }),
+        capabilityPlan: plan,
+        toolEvents: events,
+      });
+      assert.equal(invalidCoverage.valid, false);
+      assert.ok(invalidCoverage.reasons.includes('DIAGNOSTIC_CAPABILITY_COVERAGE_INVALID'));
+    }
+
+    const architectLane = lane({
+      lane_id: 'architect-global', role: 'architect', batch_id: 'global',
+    });
+    const architect = validateLaneResultEvidence({
+      review: review([architectLane]),
+      lane: architectLane,
+      result: {
+        role: 'architect', review_id: REVIEW_ID, attempt: 1, lane_id: 'architect-global',
+        batch_id: 'global', scope_hash: HASH, architectural_status: 'CLEAR', findings: [],
+      },
+    });
+    assert.equal(architect.valid, true);
+    assert.deepEqual(architect.diagnostics, []);
+  });
+
   it('degrades unverifiable event ownership and exact command/tool provenance', () => {
     const current = review();
     const result = validateLaneResultEvidence({

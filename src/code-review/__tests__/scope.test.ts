@@ -74,6 +74,23 @@ describe('scope normalization and parsing', () => {
     }
   });
 
+  it('rejects explicit Windows drive and UNC absolute paths on POSIX', async () => {
+    if (process.platform === 'win32') return;
+    const api = await loadScopeApi();
+    for (const path of [
+      'C:\\repo\\src\\file.ts',
+      'C:/repo/src/file.ts',
+      '\\\\server\\share\\repo\\src\\file.ts',
+      '//server/share/repo/src/file.ts',
+    ]) {
+      assert.throws(
+        () => api.normalizeExplicitPaths('/repo', [path]),
+        (error: unknown) => (error as { code?: unknown }).code === 'INVALID_PATH',
+        path,
+      );
+    }
+  });
+
   it('fails closed for unsupported and structurally malformed Git records', async () => {
     const api = await loadScopeApi();
     const invalid = [

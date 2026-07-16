@@ -106,12 +106,36 @@ export interface ScopeFile {
   deletions?: number;
 }
 
+/** Repository-owned diagnostic applicability frozen from the selected base commit. */
+export interface FrozenCapabilityConfig {
+  schema_version: 1;
+  typescript_javascript: {
+    compiler_or_typecheck: boolean;
+    lint: boolean;
+  };
+  rust: {
+    ast_backend: boolean;
+    clippy: boolean;
+  };
+  shell: {
+    parser: boolean;
+    lint: boolean;
+    rg: boolean;
+  };
+  structured_data: {
+    parser: boolean;
+    schema: boolean;
+    lint: boolean;
+  };
+}
+
 export interface ScopeManifest {
   selector: ScopeSelector;
   status: ScopeStatus;
   base_ref?: string;
   base_sha?: string;
   head_sha?: string;
+  frozen_capability_config?: FrozenCapabilityConfig;
   scope_hash: string;
   files: ScopeFile[];
   changed_lines: number;

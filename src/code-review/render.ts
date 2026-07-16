@@ -18,6 +18,7 @@ import {
   validateReviewFinding,
   validateReviewReason,
 } from './redaction.js';
+import { parseFrozenCapabilityConfig } from './capabilities.js';
 
 export class FinalArtifactValidationError extends Error {
   readonly code = 'PERSISTENCE_FAILED' as const;
@@ -153,7 +154,8 @@ function validateScopeFile(value: unknown): ScopeFile {
 
 function validateScope(value: unknown): ScopeManifest {
   const scope = object(value, 'scope', [
-    'selector', 'status', 'base_ref', 'base_sha', 'head_sha', 'scope_hash', 'files', 'changed_lines', 'reasons',
+    'selector', 'status', 'base_ref', 'base_sha', 'head_sha', 'frozen_capability_config',
+    'scope_hash', 'files', 'changed_lines', 'reasons',
   ]);
   if (!Array.isArray(scope.files) || scope.files.length > REVIEW_LIMITS.findingsPerReview) {
     invalid('scope files must be a bounded array');
@@ -167,12 +169,21 @@ function validateScope(value: unknown): ScopeManifest {
   for (const [name, sha] of [['base_sha', baseSha], ['head_sha', headSha]] as const) {
     if (sha !== undefined && !/^[0-9a-f]{40,64}$/u.test(sha)) invalid(`${name} is invalid`);
   }
+  let frozenCapabilityConfig;
+  if (scope.frozen_capability_config !== undefined) {
+    try {
+      frozenCapabilityConfig = parseFrozenCapabilityConfig(scope.frozen_capability_config);
+    } catch {
+      return invalid('scope frozen capability configuration is invalid');
+    }
+  }
   return {
     selector: validateSelector(scope.selector),
     status: enumeration(scope.status, 'scope status', ['FULL_SCOPE', 'PARTIAL_SCOPE'] as const),
     ...(baseRef === undefined ? {} : { base_ref: baseRef }),
     ...(baseSha === undefined ? {} : { base_sha: baseSha }),
     ...(headSha === undefined ? {} : { head_sha: headSha }),
+    ...(frozenCapabilityConfig === undefined ? {} : { frozen_capability_config: frozenCapabilityConfig }),
     scope_hash: hash(scope.scope_hash, 'scope_hash'),
     files: scope.files.map(validateScopeFile),
     changed_lines: integer(scope.changed_lines, 'changed_lines'),

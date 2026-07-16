@@ -68,6 +68,29 @@ export interface MutationProcessResult {
   stderr: string;
 }
 
+export interface MutationTestProcessDependencies {
+  platform?: NodeJS.Platform;
+  killProcessGroup?: (pid: number) => void;
+  killWindowsProcessTree?: (pid: number, fallback: () => void) => void;
+}
+
+function killWindowsProcessTree(pid: number, fallback: () => void): void {
+  const taskkill = spawn('taskkill.exe', ['/pid', String(pid), '/t', '/f'], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  let fallbackUsed = false;
+  const fallbackOnce = (): void => {
+    if (fallbackUsed) return;
+    fallbackUsed = true;
+    fallback();
+  };
+  taskkill.on('error', fallbackOnce);
+  taskkill.on('close', (exitCode) => {
+    if (exitCode !== 0) fallbackOnce();
+  });
+}
+
 function enclosingFunctionName(node: ts.Node): string | undefined {
   let current: ts.Node | undefined = node.parent;
   while (current) {
@@ -207,15 +230,20 @@ export async function runMutationTestProcess(
   args: readonly string[],
   timeoutMs: number,
   cwd = process.cwd(),
+  dependencies: MutationTestProcessDependencies = {},
 ): Promise<MutationProcessResult> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('mutation timeout must be a positive integer');
   return await new Promise((resolveResult, reject) => {
     const childEnvironment = { ...process.env };
     delete childEnvironment.NODE_TEST_CONTEXT;
+    const detachedProcessGroup = (dependencies.platform ?? process.platform) !== 'win32';
+    const killProcessGroup = dependencies.killProcessGroup
+      ?? ((pid: number) => process.kill(-pid, 'SIGKILL'));
     const child = spawn(command, [...args], {
       cwd,
       env: childEnvironment,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: detachedProcessGroup,
     });
     let stdout = '';
     let stderr = '';
@@ -227,7 +255,22 @@ export async function runMutationTestProcess(
     child.on('error', reject);
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      if (child.pid === undefined) return;
+      if (detachedProcessGroup) {
+        try {
+          killProcessGroup(child.pid);
+          return;
+        } catch {
+          child.kill('SIGKILL');
+          return;
+        }
+      }
+      const fallback = (): void => { child.kill('SIGKILL'); };
+      try {
+        (dependencies.killWindowsProcessTree ?? killWindowsProcessTree)(child.pid, fallback);
+      } catch {
+        fallback();
+      }
     }, timeoutMs);
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
@@ -299,10 +342,71 @@ export const PRODUCTION_MUTATION_TARGETS: readonly MutationTarget[] = [
     testFiles: ['dist/code-review/__tests__/scope.test.js', 'dist/code-review/__tests__/scope-properties.test.js'],
   },
   {
+    file: 'src/code-review/scope.ts',
+    classification: 'critical',
+    functions: ['resolveBase', 'resolveFrozenCapabilityConfig'],
+    operators: ['branch-removal'],
+    testFiles: ['dist/code-review/__tests__/scope-git.test.js'],
+  },
+  {
     file: 'src/code-review/capabilities.ts',
     classification: 'critical',
     functions: ['evaluateCapabilityEvidence'],
     testFiles: ['dist/code-review/__tests__/capabilities.test.js'],
+  },
+  {
+    file: 'src/code-review/capabilities.ts',
+    classification: 'critical',
+    functions: ['deriveFrozenCapabilityConfigFromBaseFiles', 'resolveTrustedEquivalents'],
+    operators: ['branch-removal', 'return-replacement'],
+    testFiles: [
+      'dist/code-review/__tests__/capabilities.test.js',
+      'dist/code-review/__tests__/scope-git.test.js',
+    ],
+  },
+  {
+    file: 'src/code-review/coordinator.ts',
+    classification: 'critical',
+    functions: ['reconcileResultPublicationsTrusted', 'assertDurableConsumptionFresh', 'finalizeReview'],
+    operators: ['branch-removal'],
+    testFiles: [
+      'dist/code-review/__tests__/coordinator-failures.test.js',
+      'dist/code-review/__tests__/coordinator.test.js',
+    ],
+  },
+  {
+    file: 'src/code-review/evidence.ts',
+    classification: 'critical',
+    functions: ['validateLaneResultEvidence'],
+    operators: ['branch-removal'],
+    testFiles: ['dist/code-review/__tests__/evidence.test.js'],
+  },
+  {
+    file: 'src/code-review/persistence.ts',
+    classification: 'critical',
+    functions: [
+      'runDurableTransaction',
+      'executePrepared',
+      'recoverDurableTransactions',
+      'recoverPendingReviewTransactions',
+    ],
+    operators: ['branch-removal', 'return-replacement'],
+    testFiles: [
+      'dist/code-review/__tests__/persistence.test.js',
+      'dist/code-review/__tests__/persistence-edges.test.js',
+    ],
+    testNamePattern: [
+      'automatically discovers and recovers crashed A',
+      'rejects every tampered COMMITTED identity or response',
+      'rejects tampered prepared input, effects, revision, and locator identity',
+      'skips absent effect boundaries and rejects an invalid recovery journal scope',
+      'recovers every before/after crash boundary',
+      'replays an integrity-bound historical REVIEW transaction',
+      'recovers a locator-less factory transaction',
+      'recovers batched consumption',
+      'survives abrupt termination after START locator cleanup',
+      'binds the committed START receipt response',
+    ].join('|'),
   },
   {
     file: 'src/state/skill-active.ts',
@@ -353,10 +457,46 @@ export const PRODUCTION_MUTATION_TARGETS: readonly MutationTarget[] = [
   },
   {
     file: 'src/pipeline/review-verdict.ts',
-    classification: 'other',
-    functions: ['isNonCleanReviewVerdict'],
+    classification: 'critical',
+    functions: ['isCleanReviewVerdict', 'isNonCleanReviewVerdict'],
     operators: ['boolean-negation', 'branch-removal', 'return-replacement'],
     testFiles: ['dist/pipeline/__tests__/review-verdict.test.js'],
+  },
+  {
+    file: 'src/pipeline/stages/code-review.ts',
+    classification: 'critical',
+    functions: [
+      'loadPersistedRuntimeArtifact',
+      'validateCodeReviewStageArtifacts',
+      'findSuccessorRuntimeArtifact',
+      'suggestedNextPhase',
+    ],
+    operators: ['branch-removal'],
+    testFiles: ['dist/pipeline/__tests__/stages.test.js'],
+  },
+  {
+    file: 'src/pipeline/orchestrator.ts',
+    classification: 'critical',
+    functions: ['runPipeline'],
+    operators: ['branch-removal', 'comparison-boundary'],
+    testFiles: ['dist/pipeline/__tests__/orchestrator.test.js'],
+  },
+  {
+    file: 'src/pipeline/stages/rework.ts',
+    classification: 'critical',
+    functions: ['parseReviewArtifactIdentity', 'isFreshReworkEvidence', 'validateFreshReworkEvidence'],
+    operators: ['boolean-negation', 'comparison-boundary', 'branch-removal', 'return-replacement'],
+    testFiles: [
+      'dist/pipeline/__tests__/rework-evidence.test.js',
+      'dist/pipeline/__tests__/orchestrator.test.js',
+    ],
+  },
+  {
+    file: 'src/pipeline/stages/rework.ts',
+    classification: 'other',
+    functions: ['buildReworkInstruction'],
+    operators: ['return-replacement'],
+    testFiles: ['dist/pipeline/__tests__/orchestrator.test.js'],
   },
 ];
 

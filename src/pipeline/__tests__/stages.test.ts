@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, mkdir, readFile, writeFile } from 'fs/promises';
 import { basename, dirname, join, relative } from 'path';
 import { tmpdir } from 'os';
@@ -17,6 +18,7 @@ import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
 import { packageRoot } from '../../utils/paths.js';
 import { subagentTrackingPath } from '../../subagents/tracker.js';
 import { LEADER_CONDUCTOR_BLOCK, buildUnsupportedNativeSubagentGuidance } from '../../leader/contract.js';
+import { resolveGitScope, verifyScopeDrift } from '../../code-review/scope.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1989,7 +1991,17 @@ describe('Default Autopilot Ultragoal Stage Adapters', () => {
 });
 
 describe('Code Review Stage', () => {
-  beforeEach(async () => { await setup(); });
+  beforeEach(async () => {
+    await setup();
+    execFileSync('git', ['init', '-q'], { cwd: tempDir });
+    execFileSync('git', ['config', 'user.email', 'stage@example.invalid'], { cwd: tempDir });
+    execFileSync('git', ['config', 'user.name', 'Stage Test'], { cwd: tempDir });
+    await mkdir(join(tempDir, 'src'), { recursive: true });
+    await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 1;\n');
+    execFileSync('git', ['add', '--', 'src/example.ts'], { cwd: tempDir });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: tempDir });
+    await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 2;\n');
+  });
   afterEach(async () => { await cleanup(); });
 
   function finalizedCodeReviewArtifact(options: {
@@ -2083,10 +2095,24 @@ describe('Code Review Stage', () => {
     artifactPath: string;
     artifactSha256: string;
   }> {
+    const scope = await resolveGitScope({
+      workingDirectory: tempDir,
+      selector: { requested_base: 'HEAD', explicit_paths: [] },
+    });
+    artifact.scope = scope;
+    for (const lane of artifact.lanes as Array<Record<string, unknown>>) {
+      lane.scope_hash = scope.scope_hash;
+    }
+    const batch = (artifact.batches as Array<Record<string, unknown>>)[0];
+    if (batch) {
+      batch.files = scope.files.map((file) => file.path);
+      batch.changed_lines = scope.changed_lines;
+    }
     const artifactPath = `.omx/reviews/${String(artifact.review_id)}.json`;
     const raw = `${JSON.stringify(artifact, null, 2)}\n`;
     await mkdir(join(tempDir, '.omx', 'reviews'), { recursive: true });
     await writeFile(join(tempDir, artifactPath), raw);
+    assert.equal((await verifyScopeDrift(scope, { workingDirectory: tempDir })).matches, true);
     return {
       artifactPath,
       artifactSha256: createHash('sha256').update(raw).digest('hex'),
@@ -2157,6 +2183,25 @@ describe('Code Review Stage', () => {
     });
   });
 
+  it('rejects a clean finalized runtime artifact after worktree scope drift', async () => {
+    const artifact = finalizedCodeReviewArtifact();
+    await mkdir(join(tempDir, 'src'), { recursive: true });
+    await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 1;\n');
+    const persisted = await persistFinalizedCodeReviewArtifact(artifact);
+    await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 2;\n');
+
+    const stage = createCodeReviewStage({
+      ...persisted,
+      artifactReviewId: String(artifact.review_id),
+    });
+    const result = await stage.run(makeCtx());
+    const verdict = result.artifacts.review_verdict as Record<string, unknown>;
+
+    assert.equal(verdict.clean, false);
+    assert.notEqual(result.artifacts.suggested_next_phase, 'ultraqa');
+    assert.equal(result.artifacts.code_review_artifact_identity, undefined);
+  });
+
   it('does not accept a persisted artifact without coordinator identity and digest', async () => {
     const artifact = finalizedCodeReviewArtifact();
     const persisted = await persistFinalizedCodeReviewArtifact(artifact);
@@ -2184,6 +2229,47 @@ describe('Code Review Stage', () => {
     assert.equal(result.artifacts.code_review_artifact, undefined);
   });
 
+  it('rejects path escapes and oversized persisted review artifacts before parsing', async () => {
+    const artifact = finalizedCodeReviewArtifact();
+    const reviewId = String(artifact.review_id);
+    const escaped = await createCodeReviewStage({
+      artifactPath: '.omx/reviews/../escape.json',
+      artifactReviewId: reviewId,
+      artifactSha256: 'a'.repeat(64),
+    }).run(makeCtx());
+    assert.equal((escaped.artifacts.review_verdict as Record<string, unknown>).clean, false);
+
+    const artifactPath = `.omx/reviews/${reviewId}.json`;
+    const raw = 'x'.repeat(2 * 1024 * 1024 + 1);
+    await mkdir(join(tempDir, '.omx', 'reviews'), { recursive: true });
+    await writeFile(join(tempDir, artifactPath), raw);
+    const oversized = await createCodeReviewStage({
+      artifactPath,
+      artifactReviewId: reviewId,
+      artifactSha256: createHash('sha256').update(raw).digest('hex'),
+    }).run(makeCtx());
+    assert.equal((oversized.artifacts.review_verdict as Record<string, unknown>).clean, false);
+  });
+
+  it('rejects an internally inconsistent finalized verdict and scope verification failure', async () => {
+    const inconsistentArtifact = finalizedCodeReviewArtifact({ recommendation: 'COMMENT', clean: true });
+    const inconsistentPersisted = await persistFinalizedCodeReviewArtifact(inconsistentArtifact);
+    const inconsistent = await createCodeReviewStage({
+      ...inconsistentPersisted,
+      artifactReviewId: String(inconsistentArtifact.review_id),
+    }).run(makeCtx());
+    assert.equal((inconsistent.artifacts.review_verdict as Record<string, unknown>).clean, false);
+
+    const validArtifact = finalizedCodeReviewArtifact();
+    const validPersisted = await persistFinalizedCodeReviewArtifact(validArtifact);
+    await rm(join(tempDir, '.git'), { recursive: true, force: true });
+    const unverifiable = await createCodeReviewStage({
+      ...validPersisted,
+      artifactReviewId: String(validArtifact.review_id),
+    }).run(makeCtx());
+    assert.equal((unverifiable.artifacts.review_verdict as Record<string, unknown>).clean, false);
+  });
+
   it('marks non-clean review as return-to-ralplan input', async () => {
     const artifact = finalizedCodeReviewArtifact({
       recommendation: 'REQUEST CHANGES',
@@ -2206,6 +2292,7 @@ describe('Code Review Stage', () => {
   });
 
   it('routes no-change review artifacts back to ralplan instead of ultraqa', async () => {
+    await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 1;\n');
     const noChanges = finalizedCodeReviewArtifact({ recommendation: 'COMMENT', architecturalStatus: 'CLEAR', clean: false, ruleId: 'NO_CHANGES' });
     (noChanges.scope as Record<string, unknown>).files = [];
     (noChanges.scope as Record<string, unknown>).changed_lines = 0;

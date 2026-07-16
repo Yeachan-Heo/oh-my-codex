@@ -218,6 +218,13 @@ describe('CI Rust gates', () => {
     assertJobIf(workflow, 'build', /full_suite == 'true'.*rust_changed == 'true'.*native_changed == 'true'.*shared_config_changed == 'true'/s);
   });
 
+  it('fetches full history for merge-base-dependent checked coverage jobs', () => {
+    const workflow = readCiWorkflow();
+    for (const jobName of ['coverage-workflow-critical', 'coverage-ts-full-checked']) {
+      assert.match(jobBlock(workflow, jobName), /actions\/checkout@v7[\s\S]*?fetch-depth:\s*0/);
+    }
+  });
+
   it('requires rustfmt, clippy, and Rust test coverage gates plus an explicit Rust toolchain setup for the final native build lane', () => {
     const workflow = readCiWorkflow();
     const rustTestsJob = jobBlock(workflow, 'rust-tests');

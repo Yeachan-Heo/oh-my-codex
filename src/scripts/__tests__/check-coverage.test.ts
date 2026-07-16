@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
@@ -434,6 +434,103 @@ describe('checked coverage gate', () => {
     }
   });
 
+  it('keeps pipeline orchestrator and rework in the package critical coverage prefixes', () => {
+    const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    for (const scriptName of [
+      'coverage:workflow-critical:compiled',
+      'coverage:ts:full:checked:compiled',
+    ]) {
+      const script = packageJson.scripts?.[scriptName] ?? '';
+      for (const prefix of [
+        'src/pipeline/orchestrator.ts',
+        'src/pipeline/stages/rework.ts',
+      ]) {
+        assert.match(
+          script,
+          new RegExp(`--critical-prefix ${prefix.replaceAll('/', '\\/')}`),
+          `${scriptName} missing ${prefix}`,
+        );
+      }
+    }
+  });
+
+  it('verifies an explicit base ref to a commit SHA before passing it to merge-base', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-coverage-base-sha-'));
+    const oldPath = process.env.PATH;
+    const oldGitArgLog = process.env.GIT_ARG_LOG;
+    try {
+      mkdirSync(join(cwd, 'bin'), { recursive: true });
+      mkdirSync(join(cwd, 'coverage/current'), { recursive: true });
+      mkdirSync(join(cwd, 'src'), { recursive: true });
+      const sourcePath = resolve(cwd, 'src/gate.ts');
+      const summary: CoverageSummary = {
+        total: metrics({ lines: 90, statements: 90, functions: 95, branches: 85 }),
+        [sourcePath]: metrics(),
+      };
+      const coverage: CoverageFileMap = {
+        [sourcePath]: {
+          statementMap: { '0': { start: { line: 1, column: 0 }, end: { line: 1, column: 22 } } },
+          s: { '0': 1 },
+        },
+      };
+      writeFileSync(join(cwd, 'src/gate.ts'), 'export const gate = 2;\n');
+      writeFileSync(join(cwd, 'coverage/current/summary.json'), JSON.stringify(summary));
+      writeFileSync(join(cwd, 'coverage/current/final.json'), JSON.stringify(coverage));
+      writeFileSync(join(cwd, 'coverage/current/baseline.json'), JSON.stringify({ total: summary.total }));
+      const logPath = join(cwd, 'git-args.log');
+      const verifiedSha = 'a'.repeat(40);
+      const fakeGit = join(cwd, 'bin/git');
+      writeFileSync(fakeGit, [
+        '#!/usr/bin/env node',
+        "const fs = require('node:fs');",
+        'const args = process.argv.slice(2);',
+        'fs.appendFileSync(process.env.GIT_ARG_LOG, `${JSON.stringify(args)}\\n`);',
+        `const verifiedSha = ${JSON.stringify(verifiedSha)};`,
+        "if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/heads/main^{commit}') {",
+        '  console.log(verifiedSha);',
+        '  process.exit(0);',
+        '}',
+        "if (args[0] === 'merge-base' && args[1] === 'HEAD' && args[2] === verifiedSha) {",
+        '  console.log(verifiedSha);',
+        '  process.exit(0);',
+        '}',
+        "if (args[0] === '-c' && args[1] === 'core.quotePath=false' && args[2] === 'diff') {",
+        "  process.stdout.write('+++ b/src/gate.ts\\n@@ -1 +1 @@\\n');",
+        '  process.exit(0);',
+        '}',
+        "if (args[0] === 'ls-files') process.exit(0);",
+        "console.error(`unexpected git args ${JSON.stringify(args)}`);",
+        'process.exit(7);',
+      ].join('\n'));
+      chmodSync(fakeGit, 0o755);
+      process.env.PATH = `${join(cwd, 'bin')}:${oldPath ?? ''}`;
+      process.env.GIT_ARG_LOG = logPath;
+
+      const result = runCoverageCli([
+        '--summary', 'coverage/current/summary.json',
+        '--coverage', 'coverage/current/final.json',
+        '--baseline-summary', 'coverage/current/baseline.json',
+        '--base-ref', 'refs/heads/main',
+        '--critical-prefix', 'src/gate.ts',
+      ], cwd);
+      assert.equal(result.exitCode, 0);
+      const calls = readFileSync(logPath, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as string[]);
+      assert.deepEqual(calls[0], ['rev-parse', '--verify', 'refs/heads/main^{commit}']);
+      assert.deepEqual(calls[1], ['merge-base', 'HEAD', verifiedSha]);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldGitArgLog === undefined) delete process.env.GIT_ARG_LOG;
+      else process.env.GIT_ARG_LOG = oldGitArgLog;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('measures a real detached merge base even when its historical tests report failure', () => {
     const fixture = createCoverageRepository({ baselineExitCode: 1 });
     const stderr: string[] = [];
@@ -460,11 +557,19 @@ describe('checked coverage gate', () => {
 
   it('fails closed when merge-base subprocess output is unavailable and still cleans temporary state', () => {
     const fixture = createCoverageRepository();
+    let baselineEnvironment: NodeJS.ProcessEnv | undefined;
     try {
-      assert.throws(() => measureMergeBaseCoverage(fixture.cwd, fixture.base, () => ({
-        error: new Error('spawn unavailable'),
-        status: null,
-      })), /spawn unavailable/);
+      assert.throws(() => measureMergeBaseCoverage(fixture.cwd, fixture.base, (_command, _args, options) => {
+        baselineEnvironment = options.env;
+        return {
+          error: new Error('spawn unavailable'),
+          status: null,
+        };
+      }), /spawn unavailable/);
+      const canonicalTemporaryDirectory = realpathSync(tmpdir());
+      assert.equal(baselineEnvironment?.TMPDIR, canonicalTemporaryDirectory);
+      assert.equal(baselineEnvironment?.TMP, canonicalTemporaryDirectory);
+      assert.equal(baselineEnvironment?.TEMP, canonicalTemporaryDirectory);
     } finally {
       rmSync(fixture.cwd, { recursive: true, force: true });
     }
@@ -486,6 +591,21 @@ describe('checked coverage gate', () => {
         '--base-ref', 'definitely-missing',
       ], fixture.cwd), /unable to resolve merge base/);
       assert.throws(() => measureMergeBaseCoverage(fixture.cwd, fixture.base), /did not emit a summary/);
+    } finally {
+      rmSync(fixture.cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed after exhausting every default merge-base candidate', () => {
+    const fixture = createCoverageRepository();
+    try {
+      const branch = git(fixture.cwd, ['branch', '--show-current']);
+      git(fixture.cwd, ['checkout', '--detach']);
+      git(fixture.cwd, ['branch', '-D', branch]);
+      assert.throws(() => runCoverageCli([
+        '--summary', 'coverage/current/summary.json',
+        '--coverage', 'coverage/current/final.json',
+      ], fixture.cwd), /unable to resolve merge base/);
     } finally {
       rmSync(fixture.cwd, { recursive: true, force: true });
     }

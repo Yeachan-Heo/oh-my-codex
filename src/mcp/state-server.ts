@@ -306,7 +306,7 @@ function buildReviewTools() {
 						},
 					},
 				},
-				required: ["workingDirectory", "invocation", "idempotency_key"],
+				required: ["workingDirectory", "session_id", "invocation", "idempotency_key"],
 			},
 		},
 		{

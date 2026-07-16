@@ -10,7 +10,7 @@ Autopilot is the strict autonomous delivery loop for non-trivial work. Its recom
 $deep-interview -> $ralplan -> $ultragoal (+ $team if needed) -> $code-review -> $ultraqa
 ```
 
-If `$code-review` or `$ultraqa` is not clean, Autopilot returns to `$ralplan` with the findings as the next planning input, then continues again through `$ultragoal`, `$code-review`, and `$ultraqa` until the gates are clean or a hard blocker is reported. Ralph is a legacy/explicit alternate execution loop only; do not advertise Ralph as the default Autopilot path.
+If `$code-review` requests implementation repair, Autopilot follows `$code-review -> rework -> $code-review` until the review is clean or the findings require planning changes. If review changes the plan/requirements, or `$ultraqa` is not clean, Autopilot returns to `$ralplan` with the findings as the next planning input. Ralph is a legacy/explicit alternate execution loop only; do not advertise Ralph as the default Autopilot path.
 </Purpose>
 
 <Use_When>
@@ -82,12 +82,12 @@ Before Phase `deep-interview` or `ralplan` starts or resumes:
 </Pre-context Intake>
 
 <Execution_Policy>
-- Always execute the recommended phases in order: `deep-interview`, then `ralplan`, then `ultragoal`, then `code-review`, then `ultraqa`.
+- Always execute the primary phases in order: `deep-interview`, then `ralplan`, then `ultragoal`, then `code-review`, then `ultraqa`; run conditional `rework` only after a non-clean code review requests implementation repair, then return to `code-review`.
 - `$team` is conditional and explicit: use it only within an Ultragoal story when parallel execution materially improves throughput, quality, or safety.
 - Never skip directly from vague/freeform expansion to implementation; unclear input must be clarified and planned through `$deep-interview` and `$ralplan`.
 - A non-clean `$code-review` that requires implementation repair enters Phase `rework`; a non-clean review that changes the plan/requirements, or failed `$ultraqa`, returns to `$ralplan`.
 - Each phase must write/update Autopilot state before handing off.
-- Use existing hooks, `.omx/state`, `$deep-interview`, `$ralplan`, `$ultragoal`, optional `$team`, `$code-review`, `$ultraqa`, and pipeline primitives; do not invent a separate execution framework.
+- Use existing hooks, `.omx/state`, `$deep-interview`, `$ralplan`, `$ultragoal`, optional `$team`, conditional `rework`, `$code-review`, `$ultraqa`, and pipeline primitives; do not invent a separate execution framework.
 - Preserve legacy compatibility: if a user explicitly requests the old Ralph execution lane, use `$ralph` as an intentional alternate execution phase, but do not present it as Autopilot's default recommended loop.
 - Continue automatically through safe reversible phase transitions. Ask only for destructive, credential-gated, or materially preference-dependent branches.
 - Apply the shared workflow guidance pattern: outcome-first framing, concise visible updates for multi-step execution, local overrides for the active workflow branch, validation proportional to risk, explicit stop rules, and automatic continuation for safe reversible steps. Ask only for material, destructive, credentialed, external-production, or preference-dependent branches.
@@ -108,7 +108,7 @@ Required fields:
   "iteration": 1,
   "review_cycle": 0,
   "max_iterations": 10,
-  "phase_cycle": ["deep-interview", "ralplan", "ultragoal", "code-review", "ultraqa"],
+  "phase_cycle": ["deep-interview", "ralplan", "ultragoal", "rework", "code-review", "ultraqa"],
   "handoff_artifacts": {
     "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md",
     "deep_interview": null,
@@ -132,7 +132,7 @@ Required fields:
 }
 ```
 
-- **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"deep-interview","iteration":1,"review_cycle":0,"state":{"phase_cycle":["deep-interview","ralplan","ultragoal","code-review","ultraqa"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","deep_interview":null,"ralplan":null,"ralplan_consensus_gate":{"required":true,"sequence":["architect-review","critic-review"],"planning_artifacts_are_not_consensus":true,"required_review_roles":["architect","critic"],"ralplan_architect_review":null,"ralplan_critic_review":null,"complete":false},"ultragoal":null,"code_review":null,"ultraqa":null},"review_verdict":null,"qa_verdict":null,"return_to_ralplan_reason":null}}' --json`
+- **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"deep-interview","iteration":1,"review_cycle":0,"state":{"phase_cycle":["deep-interview","ralplan","ultragoal","rework","code-review","ultraqa"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","deep_interview":null,"ralplan":null,"ralplan_consensus_gate":{"required":true,"sequence":["architect-review","critic-review"],"planning_artifacts_are_not_consensus":true,"required_review_roles":["architect","critic"],"ralplan_architect_review":null,"ralplan_critic_review":null,"complete":false},"ultragoal":null,"code_review":null,"ultraqa":null},"review_verdict":null,"qa_verdict":null,"return_to_ralplan_reason":null}}' --json`
 - **On deep-interview -> ralplan**: only after a separate gate proves the interview chain is explicitly complete or the user explicitly authorized a skip. For completion, persist `deep_interview_gate:{"status":"complete","rationale":"<why requirements are complete>","handoff_summary":"<summary>"}` (or equivalent non-empty rationale/summary) plus the clarified spec/requirements under `handoff_artifacts.deep_interview`; if a final `omx question` was involved, keep its same-session answered record linked by `question_id`/`satisfied_at`. For skip, persist `deep_interview_gate:{"status":"skipped","skip_authorized_by_user":true,"skip_reason":"<user-authorized reason>","skipped_at":"<timestamp>","source":"user","session_id":"<session>"}`. Do not leave deep-interview merely because the first `omx question` was answered or cleared.
   - **Optional execution contract foundation**: when a downstream handoff explicitly sets `execution_contract_required:true`, persist a complete structured `execution_contract` under `handoff_artifacts.deep_interview` before leaving deep-interview. The canonical schema is `version:1`, `execution_stride:"task"|"deliverable"|"milestone"`, `source:"deep-interview"`, `selected_by:"user"|"default"`, `allow_task_shrink:<boolean>`, non-empty `completion_unit`, non-empty `stop_condition`, `acceptance_coverage_scope:"task"|"deliverable"|"milestone"`, and `shrink_policy:"allowed"|"ask_before_shrink"|"deny_unless_blocked"`.
   - Stride semantics are binding only when `execution_contract_required:true`: `task` means `allow_task_shrink:true`, `acceptance_coverage_scope:"task"`, `shrink_policy:"allowed"`; `deliverable` means `allow_task_shrink:false`, `acceptance_coverage_scope:"deliverable"`, `shrink_policy:"ask_before_shrink"`; `milestone` means `allow_task_shrink:false`, `acceptance_coverage_scope:"milestone"`, `shrink_policy:"deny_unless_blocked"`.
@@ -170,6 +170,8 @@ Autopilot may be represented by the configurable pipeline orchestrator (`src/pip
 deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa
 ```
 
+The conditional repair loop is `code-review -> rework -> code-review`. The `rework` stage is present in the default stage graph but skips on the first pass and whenever the preceding review is clean; it runs only for implementation-repair findings.
+
 Pipeline state should use `current_phase` values that match the same phase names (`deep-interview`, `ralplan`, `ultragoal`, `rework`, `code-review`, `ultraqa`, `complete`, `failed`) and should carry `iteration`, `review_cycle`, `handoff_artifacts`, `review_verdict`, `qa_verdict`, and `return_to_ralplan_reason` alongside stage results. `$team` is not a default pipeline stage; it is an explicit conditional execution engine inside an Ultragoal story.
 </Pipeline_Orchestrator>
 
@@ -198,13 +200,13 @@ Pipeline state should use `current_phase` values that match the same phase names
 <Examples>
 <Good>
 User: `$autopilot implement GitHub issue #42`
-Flow: create/load context snapshot -> `$deep-interview` requirements check -> `$ralplan` issue plan -> `$ultragoal` durable implementation + tests (launch `$team` only if a story needs parallel lanes) -> `$code-review` -> `$ultraqa`; if review or QA requests changes, return to `$ralplan` with findings.
+Flow: create/load context snapshot -> `$deep-interview` requirements check -> `$ralplan` issue plan -> `$ultragoal` durable implementation + tests (launch `$team` only if a story needs parallel lanes) -> `$code-review` -> `$ultraqa`; implementation repair follows `$code-review -> rework -> $code-review`, while planning or QA findings return to `$ralplan`.
 </Good>
 
 <Good>
 User: `continue`
 Context: Autopilot state says `current_phase:"code-review"`.
-Flow: run `$code-review` on current diff, persist verdict, transition to `ultraqa` if clean or to `ralplan` with findings if not clean.
+Flow: run `$code-review` on current diff, persist verdict, transition to `ultraqa` if clean, to `rework` for implementation repair, or to `ralplan` when findings change the plan.
 </Good>
 
 <Good>
@@ -214,6 +216,6 @@ Flow: preserve the explicit legacy Ralph execution choice and run the old Ralph 
 
 <Bad>
 Autopilot invents independent "Expansion", "QA", and "Validation" phases and treats them as the primary lifecycle.
-Why bad: this bypasses the strict `$deep-interview -> $ralplan -> $ultragoal -> $code-review -> $ultraqa` contract.
+Why bad: this bypasses the primary `$deep-interview -> $ralplan -> $ultragoal -> $code-review -> $ultraqa` contract and its conditional `$code-review -> rework -> $code-review` repair loop.
 </Bad>
 </Examples>

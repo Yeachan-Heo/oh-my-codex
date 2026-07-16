@@ -124,6 +124,10 @@ describe("state-server code-review control plane", () => {
 		assert.deepEqual(Object.keys(getSchema.properties ?? {}).sort(), [
 			"lane_id", "maximum_wait_ms", "review_id", "session_id", "wait", "workingDirectory",
 		]);
+		const startSchema = reviewTools.find((tool) => tool.name === "review_start")?.inputSchema as {
+			required?: string[];
+		};
+		assert.equal(startSchema.required?.includes("session_id"), true);
 	});
 
 	it("dispatches every review operation as structured JSON instead of an unknown tool", async () => {
@@ -332,6 +336,12 @@ describe("state-server code-review control plane", () => {
 		execFileSync("git", ["add", "a.ts"], { cwd: workingDirectory });
 		execFileSync("git", ["commit", "-qm", "base"], { cwd: workingDirectory });
 		await writeFile(join(workingDirectory, "a.ts"), "export const value = 2;\n");
+		let tracking = createSubagentTrackingState();
+		tracking = recordSubagentTurn(tracking, {
+			sessionId: "session-1", threadId: "root-1", leaderThreadId: "root-1", kind: "leader",
+			timestamp: "2026-07-14T00:00:00.000Z",
+		});
+		await writeSubagentTrackingState(workingDirectory, tracking);
 		const { handleStateToolCall } = await stateServer();
 		const request = {
 			params: { name: "review_start", arguments: {
@@ -351,6 +361,24 @@ describe("state-server code-review control plane", () => {
 		assert.match(firstPayload.review_id ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 		assert.notEqual(firstPayload.review_id, request.params.arguments.idempotency_key);
 		assert.deepEqual(JSON.parse(replay.content[0]?.text ?? ""), firstPayload);
+	});
+
+	it("rejects review_start when MCP root-thread provenance is unavailable", async () => {
+		const { handleStateToolCall } = await stateServer();
+		const response = await handleStateToolCall({ params: {
+			name: "review_start",
+			arguments: {
+				workingDirectory: process.cwd(),
+				session_id: "session-without-root-provenance",
+				invocation: [],
+				idempotency_key: "10000000-0000-4000-8000-000000000008",
+			},
+		} });
+		assert.equal(response.isError, true);
+		assert.equal(
+			(JSON.parse(response.content[0]?.text ?? "") as { code?: unknown }).code,
+			"TRUSTED_IDENTITY_REQUIRED",
+		);
 	});
 
 	it("activates the exact CREATED review seeded by keyword runtime", async () => {

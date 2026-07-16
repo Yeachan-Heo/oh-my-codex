@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import type {
+  AcceptedEquivalent,
   LaneActivityEvent,
   LaneRecord,
   LaneResult,
@@ -19,7 +20,13 @@ import type {
 } from './contract.js';
 import type { BatchPlan } from './batching.js';
 import { createBatchPlan } from './batching.js';
-import { buildCapabilityPlan, parseAcceptedEquivalentRequests } from './capabilities.js';
+import {
+  buildCapabilityPlanForScope,
+  commitEquivalentConsumption,
+  parseAcceptedEquivalentRequests,
+  resolveTrustedEquivalents,
+  type PreparedEquivalentConsumption,
+} from './capabilities.js';
 import { parseCodeReviewArguments } from './arguments.js';
 import {
   canonicalLanePayloadDigest,
@@ -27,6 +34,7 @@ import {
   parseDiagnosticToolEvents,
   parseLaneActivityEvent,
   parsePostToolPublication,
+  type DiagnosticToolEvent,
   validateLaneIndependence,
   validateLaneResultEvidence,
   validateLaneStart,
@@ -213,6 +221,7 @@ export function createInitialReviewRecord(input: {
   lane_timeout_ms?: number;
   max_files_per_review?: number;
   max_changed_lines_per_review?: number;
+  accepted_equivalents?: AcceptedEquivalent[];
   batch_plan: BatchPlan;
   now: Date;
 }): ReviewRecord {
@@ -268,7 +277,7 @@ export function createInitialReviewRecord(input: {
       lane_timeout_ms: timeout,
       max_files_per_review: input.max_files_per_review ?? DEFAULT_MAX_FILES,
       max_changed_lines_per_review: input.max_changed_lines_per_review ?? DEFAULT_MAX_CHANGED_LINES,
-      accepted_equivalents: [],
+      accepted_equivalents: structuredClone(input.accepted_equivalents ?? []),
     },
     scope: structuredClone(input.scope),
     review_flags: structuredClone(plan.review_flags),
@@ -424,9 +433,16 @@ export function createLaneResultProposal(input: {
   };
 }
 
-function compareActivity(left: LaneActivityEvent, right: LaneActivityEvent): number {
+function compareObservedEvent(
+  left: Pick<LaneActivityEvent, 'observed_at' | 'event_ref'>,
+  right: Pick<LaneActivityEvent, 'observed_at' | 'event_ref'>,
+): number {
   return parseTimestamp(left.observed_at, 'activity') - parseTimestamp(right.observed_at, 'activity')
     || Buffer.from(left.event_ref).compare(Buffer.from(right.event_ref));
+}
+
+function compareActivity(left: LaneActivityEvent, right: LaneActivityEvent): number {
+  return compareObservedEvent(left, right);
 }
 
 function invalidLane(lane: LaneRecord): void {
@@ -604,6 +620,16 @@ function consumptionIdentityForValue(input: {
   return consumptionMarkerIdentity(effect.payload as ReviewConsumptionMarker);
 }
 
+export function assertDurableConsumptionFresh(
+  durableConsumptions: ReadonlySet<string>,
+  identity: string,
+  kind: ReviewConsumptionKind,
+): void {
+  if (durableConsumptions.has(identity)) {
+    throw new Error(`${kind.toLowerCase()} was already consumed by this review`);
+  }
+}
+
 export function reconcileResultPublications(input: ReconcileResultPublicationsInput): ReviewRecord {
   if (Object.hasOwn(input, 'consumedToolEventRefs')) {
     throw new ReviewCoordinatorError(
@@ -672,7 +698,11 @@ function reconcileResultPublicationsTrusted(
   let changed = false;
   for (const pair of matchedRaw) {
     const lane = currentLane(output, pair.proposal.lane_id);
-    if (lane.status === 'COMPLETE') continue;
+    // Append-only (spec §4/§8): a prior attempt's durable proposal + post-tool.json survive into a
+    // resumed attempt's snapshot (publication_ids are not attempt-filtered). Skip any pair that resolves
+    // to a non-current attempt so folding/validation never rewrites an earlier attempt's lane record or
+    // aborts the whole reconcile on its inevitable attempt mismatch.
+    if (lane.attempt !== output.current_attempt) continue;
     if (lane.status !== 'RUNNING') continue;
     matchedLaneIds.add(lane.lane_id);
     try {
@@ -704,9 +734,7 @@ function reconcileResultPublicationsTrusted(
           value,
           consumed_at: input.snapshot.cutoff_at,
         });
-        if (durableConsumptions.has(identity)) {
-          throw new Error(`${kind.toLowerCase()} was already consumed by this review`);
-        }
+        assertDurableConsumptionFresh(durableConsumptions, identity, kind);
       }
       if (nonceSet.has(publication.attestation.nonce)) {
         throw new Error('attestation nonce is reused');
@@ -726,12 +754,13 @@ function reconcileResultPublicationsTrusted(
 
   for (const { proposal, publication } of validatedPairs) {
     const lane = currentLane(output, proposal.lane_id);
-    if (lane.status !== 'RUNNING') continue;
     const evidence = validateLaneResultEvidence({
       review: output,
       lane,
       result: proposal.result,
-      ...(lane.role === 'code-reviewer' ? { capabilityPlan: buildCapabilityPlan(filesForLane(output, lane)) } : {}),
+      ...(lane.role === 'code-reviewer' && output.scope !== undefined
+        ? { capabilityPlan: buildCapabilityPlanForScope(output.scope, filesForLane(output, lane)) }
+        : {}),
       toolEvents: diagnosticEvents,
     });
     if (!evidence.valid || evidence.result === undefined) {
@@ -752,7 +781,7 @@ function reconcileResultPublicationsTrusted(
       if (evidence.evidence_status === 'DEGRADED_EVIDENCE') lane.failure_code = 'DIAGNOSTIC_DEGRADED';
     }
     else lane.architectural_status = evidence.result.architectural_status;
-    if (lane.provenance !== undefined) lane.provenance.completed_at = publication.published_at;
+    lane.provenance!.completed_at = publication.published_at;
     output.diagnostics.push(...evidence.diagnostics);
     changed = true;
   }
@@ -1038,7 +1067,9 @@ export async function loadPublishedReviewHookJournalSnapshot(
   });
   const submissionsRoot = join(paths.reviewRoot, reviewId, 'submissions');
   const activityRoot = join(paths.reviewRoot, reviewId, 'activity');
+  const diagnosticRoot = join(paths.reviewRoot, reviewId, 'diagnostics');
   const events: LaneActivityEvent[] = [];
+  const diagnosticEvents: DiagnosticToolEvent[] = [];
   try {
     const childEntries = await readdir(activityRoot, { withFileTypes: true });
     for (const childEntry of childEntries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -1081,12 +1112,56 @@ export async function loadPublishedReviewHookJournalSnapshot(
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 
+  try {
+    const childEntries = await readdir(diagnosticRoot, { withFileTypes: true });
+    for (const childEntry of childEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!childEntry.isDirectory() || childEntry.name.length === 0 || childEntry.name.length > 160) {
+        throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted diagnostic directory is malformed');
+      }
+      const childDir = join(diagnosticRoot, childEntry.name);
+      const eventEntries = await readdir(childDir, { withFileTypes: true });
+      for (const eventEntry of eventEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+        if (!eventEntry.isFile() || !/^[0-9a-f]{64}\.json$/u.test(eventEntry.name)) {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted diagnostic path is malformed');
+        }
+        let raw: Buffer;
+        try {
+          raw = await readFile(join(childDir, eventEntry.name));
+        } catch {
+          throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'trusted diagnostic event is unreadable');
+        }
+        if (raw.byteLength > 1_048_576) {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted diagnostic event exceeds the size limit');
+        }
+        let event: DiagnosticToolEvent;
+        try {
+          [event] = parseDiagnosticToolEvents([JSON.parse(raw.toString('utf8')) as unknown]);
+        } catch {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted diagnostic event is malformed');
+        }
+        const expectedEventFile = `${createHash('sha256').update(event.event_ref, 'utf8').digest('hex')}.json`;
+        if (event.session_id !== input.session_id || event.review_id !== reviewId
+          || event.child_thread_id !== childEntry.name || eventEntry.name !== expectedEventFile) {
+          throw new ReviewCoordinatorError('LANE_EVIDENCE_INVALID', 'trusted diagnostic ownership is invalid');
+        }
+        if (parseTimestamp(event.observed_at, 'trusted diagnostic') > cutoff) continue;
+        diagnosticEvents.push(event);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
   let entries;
   try {
     entries = await readdir(submissionsRoot, { withFileTypes: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { events: events.sort(compareActivity), diagnostic_events: [], publication_ids: [] };
+      return {
+        events: events.sort(compareActivity),
+        diagnostic_events: diagnosticEvents.sort(compareObservedEvent),
+        publication_ids: [],
+      };
     }
     throw new ReviewCoordinatorError('PERSISTENCE_FAILED', 'trusted publication directory is unavailable');
   }
@@ -1124,7 +1199,11 @@ export async function loadPublishedReviewHookJournalSnapshot(
     events.push(publication.activity);
     publicationIds.push(publication.publication_id);
   }
-  return { events: events.sort(compareActivity), diagnostic_events: [], publication_ids: publicationIds };
+  return {
+    events: events.sort(compareActivity),
+    diagnostic_events: diagnosticEvents.sort(compareObservedEvent),
+    publication_ids: publicationIds,
+  };
 }
 
 async function readJson(path: string): Promise<unknown | undefined> {
@@ -1281,12 +1360,14 @@ export interface DurableReviewCoordinator {
     idempotency_key: string;
     request_identity?: unknown;
     created_intent?: CreatedReviewIntent;
+    approval_effects?: DurableTransactionEffect[];
     crashAt?: DurableTransactionBoundary;
   }): Promise<ReviewRecord>;
   activate(input: {
     record: ReviewRecord;
     idempotency_key: string;
     request_identity: unknown;
+    approval_effects?: DurableTransactionEffect[];
   }): Promise<ReviewRecord>;
   get(reviewId: string): Promise<ReviewRecord>;
   recordStart(input: {
@@ -1359,6 +1440,7 @@ export function createDurableReviewCoordinator(
       idempotency_key: idempotencyKey,
       request_identity: requestIdentity,
       created_intent: createdIntent,
+      approval_effects: approvalEffects = [],
       crashAt,
     }) {
       const resolved = await paths();
@@ -1382,6 +1464,7 @@ export function createDurableReviewCoordinator(
             payload: createdIntent,
           }]),
           reviewEffect(record),
+          ...approvalEffects,
           ...(terminal ? [{
             name: 'report' as const,
             mode: 'CREATE_ONCE_JSON' as const,
@@ -1399,7 +1482,12 @@ export function createDurableReviewCoordinator(
       return validateStartTransactionResponse(transaction.response, record);
     },
 
-    async activate({ record, idempotency_key: idempotencyKey, request_identity: requestIdentity }) {
+    async activate({
+      record,
+      idempotency_key: idempotencyKey,
+      request_identity: requestIdentity,
+      approval_effects: approvalEffects = [],
+    }) {
       const resolved = await paths();
       const current = await recoverAndRead(record.review_id);
       if (current.status !== 'CREATED') {
@@ -1443,6 +1531,7 @@ export function createDurableReviewCoordinator(
         expected_revision: current.revision,
         effects: [
           reviewEffect(output),
+          ...approvalEffects,
           ...(output.status === 'FINALIZED' ? [{
             name: 'report' as const,
             mode: 'CREATE_ONCE_JSON' as const,
@@ -2218,6 +2307,9 @@ export function projectOperationReview(record: ReviewRecord): Record<string, unk
         file_count: record.scope.files.length,
         changed_lines: record.scope.changed_lines,
         reasons: record.scope.reasons,
+        ...(record.scope.frozen_capability_config === undefined ? {} : {
+          frozen_capability_config: record.scope.frozen_capability_config,
+        }),
       },
     }),
     review_flags: record.review_flags,
@@ -2291,6 +2383,60 @@ async function currentScopeHash(
   return drift.current_scope_hash;
 }
 
+async function readEquivalentStateDirectory(
+  root: string,
+  label: string,
+): Promise<unknown[]> {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', `${label} directory is unavailable`);
+  }
+  if (entries.length > 128) {
+    throw new ReviewCoordinatorError('PERSISTENCE_FAILED', `${label} directory exceeds the entry limit`);
+  }
+  const values: unknown[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/u.test(entry.name)) {
+      throw new ReviewCoordinatorError('PERSISTENCE_FAILED', `${label} path is malformed`);
+    }
+    let raw: Buffer;
+    try {
+      raw = await readFile(join(root, entry.name));
+    } catch {
+      throw new ReviewCoordinatorError('PERSISTENCE_FAILED', `${label} entry is unreadable`);
+    }
+    if (raw.byteLength > 1_048_576) {
+      throw new ReviewCoordinatorError('PERSISTENCE_FAILED', `${label} entry exceeds the size limit`);
+    }
+    try {
+      values.push(JSON.parse(raw.toString('utf8')) as unknown);
+    } catch {
+      throw new ReviewCoordinatorError('PERSISTENCE_FAILED', `${label} entry is malformed`);
+    }
+  }
+  return values;
+}
+
+function equivalentApprovalEffect(
+  prepared: PreparedEquivalentConsumption,
+  now: Date,
+): DurableTransactionEffect {
+  const committed = commitEquivalentConsumption(prepared, undefined, now);
+  return {
+    name: 'approval',
+    mode: 'CREATE_ONCE_JSON',
+    target: {
+      area: 'REVIEW_STATE',
+      path: `approvals/consumptions/${createHash('sha256')
+        .update(committed.nonce, 'utf8').digest('hex')}.json`,
+    },
+    payload: committed,
+  };
+}
+
 function operationError(
   error: unknown,
   workingDirectory: string | undefined,
@@ -2355,6 +2501,13 @@ export async function executeReviewOperation(
         if (parsed.operation !== 'start') {
           throw new ReviewCoordinatorError('INVALID_INVOCATION', 'review_start cannot resume an existing review');
         }
+        if (host.source === 'MCP'
+          && (context.session_id === undefined || host.root_thread_id === undefined)) {
+          throw new ReviewCoordinatorError(
+            'TRUSTED_IDENTITY_REQUIRED',
+            'review_start requires host-verified session and root-thread provenance',
+          );
+        }
         const paths = await resolveReviewPersistencePaths(context);
         const requestIdentity = {
           selector: parsed.selector,
@@ -2373,7 +2526,7 @@ export async function executeReviewOperation(
           return {
             payload: {
               ...projectOperationReview(started),
-              capability_plan: buildCapabilityPlan(started.scope.files),
+              capability_plan: buildCapabilityPlanForScope(started.scope),
               required_lane_plan: started.lanes
                 .filter((lane) => lane.attempt === 1)
                 .map((lane) => ({ lane_id: lane.lane_id, role: lane.role, batch_id: lane.batch_id })),
@@ -2395,11 +2548,55 @@ export async function executeReviewOperation(
         )).toString('utf8').trim();
         const batchPlan = await createBatchPlan({ repositoryRoot, files: scope.files });
         const now = operationNow(host);
+        const seededIntent = host.seeded_review_id === undefined
+          ? undefined
+          : await coordinator.get(reviewId);
+        const trustedApprovalIdentity = seededIntent?.session_id !== undefined
+          && seededIntent.root_thread_id !== undefined
+          && seededIntent.invocation_turn_id !== undefined
+          ? {
+            session_id: seededIntent.session_id,
+            root_thread_id: seededIntent.root_thread_id,
+            turn_id: seededIntent.invocation_turn_id,
+          }
+          : undefined;
+        const equivalentResolution = await resolveTrustedEquivalents({
+          requests: acceptedRequests,
+          context: {
+            workingDirectory: context.workingDirectory,
+            session_id: trustedApprovalIdentity?.session_id ?? context.session_id ?? `review-${reviewId}`,
+            root_thread_id: trustedApprovalIdentity?.root_thread_id ?? host.root_thread_id ?? `review-${reviewId}`,
+            turn_id: trustedApprovalIdentity?.turn_id ?? `unseeded-${reviewId}`,
+            review_id: reviewId,
+            ...(scope.base_sha === undefined ? {} : { base_sha: scope.base_sha }),
+          },
+        }, {
+          ...(trustedApprovalIdentity === undefined ? {} : {
+            loadHookOwnedApprovalLedger: async () => await readEquivalentStateDirectory(
+              join(paths.approvalsRoot, 'ledger'),
+              'equivalent approval ledger',
+            ),
+          }),
+          existingConsumptions: await readEquivalentStateDirectory(
+            join(paths.approvalsRoot, 'consumptions'),
+            'equivalent approval consumption',
+          ),
+          readBaseContract: async (workingDirectory, args) => (
+            await runGitCommand(workingDirectory, args)
+          ).toString('utf8'),
+          now,
+        });
+        if (equivalentResolution.prepared_consumptions.length > 120) {
+          throw new ReviewCoordinatorError('INVALID_CONFIGURATION', 'equivalent approval set exceeds the transaction limit');
+        }
+        const approvalEffects = equivalentResolution.prepared_consumptions
+          .map((prepared) => equivalentApprovalEffect(prepared, now));
         const record = createInitialReviewRecord({
           review_id: reviewId,
           ...(context.session_id === undefined ? {} : { session_id: context.session_id }),
           ...(host.root_thread_id === undefined ? {} : { root_thread_id: host.root_thread_id }),
           scope,
+          accepted_equivalents: equivalentResolution.accepted_equivalents,
           batch_plan: batchPlan,
           now,
         });
@@ -2408,16 +2605,18 @@ export async function executeReviewOperation(
             record,
             idempotency_key: key,
             request_identity: requestIdentity,
+            approval_effects: approvalEffects,
           })
           : await coordinator.activate({
             record,
             idempotency_key: key,
             request_identity: requestIdentity,
+            approval_effects: approvalEffects,
           });
         return {
           payload: {
             ...projectOperationReview(started),
-            capability_plan: buildCapabilityPlan(scope.files),
+            capability_plan: buildCapabilityPlanForScope(scope),
             required_lane_plan: batchPlan.required_lanes,
             accepted_equivalent_requests: acceptedRequests,
             state_path: `code-review/${started.review_id}/review.json`,

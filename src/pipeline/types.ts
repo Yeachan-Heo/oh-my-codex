@@ -2,7 +2,7 @@
  * Pipeline stage interfaces for oh-my-codex
  *
  * Shared stage contracts for the default Autopilot loop.
- * The pipeline sequences: deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa.
+ * The pipeline sequences: deep-interview -> ralplan -> ultragoal -> rework -> code-review -> ultraqa.
  */
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ export interface StageResult {
 
 /**
  * A single stage in the pipeline. Implementations wrap concrete execution
- * backends (deep-interview, ralplan, ultragoal, code-review, ultraqa, and legacy team/Ralph adapters) behind this uniform interface.
+ * backends (deep-interview, ralplan, ultragoal, rework, code-review, ultraqa, and legacy team/Ralph adapters) behind this uniform interface.
  */
 export interface PipelineStage {
   /** Unique name for this stage (e.g. 'deep-interview', 'ralplan', 'ultragoal', 'code-review'). */

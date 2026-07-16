@@ -91,6 +91,7 @@ interface LockPersistenceApi extends PersistenceApi {
       }) => 'live' | 'absent' | 'reused' | 'unknown' | Promise<'live' | 'absent' | 'reused' | 'unknown'>;
       waitForChange?: (lockPath: string, remainingMs: number) => void | Promise<void>;
       onAcquired?: (name: ReviewLockName) => void;
+      beforeReclaimRename?: (lockPath: string) => void | Promise<void>;
       afterReclaimRename?: (lockPath: string, quarantinePath: string) => void | Promise<void>;
     },
   ): Promise<ReviewLockHandle[]>;
@@ -177,7 +178,7 @@ interface DurablePersistenceApi extends LockPersistenceApi {
   runDurableTransaction(
     paths: ReviewPersistencePaths,
     plan: DurablePlan,
-    options?: { crashAt?: DurableBoundary; crashMode?: 'THROW' | 'SIGKILL' },
+    options?: { crashAt?: DurableBoundary; crashMode?: 'THROW' | 'SIGKILL' | 'ABORT' },
   ): Promise<{ state: 'COMMITTED'; response: unknown }>;
   runDurableReviewTransactionWithPlanFactory(
     paths: ReviewPersistencePaths,
@@ -187,7 +188,7 @@ interface DurablePersistenceApi extends LockPersistenceApi {
       root_thread_id: string;
       plan_factory(context: { current_review: ReviewRecordSnapshot }): Promise<DurablePlan | undefined>;
     },
-    options?: { crashAt?: DurableBoundary; crashMode?: 'THROW' | 'SIGKILL' },
+    options?: { crashAt?: DurableBoundary; crashMode?: 'THROW' | 'SIGKILL' | 'ABORT' },
   ): Promise<{
     transaction?: { state: 'COMMITTED'; response: unknown };
     review: ReviewRecordSnapshot;
@@ -611,7 +612,55 @@ describe('code-review persistence locks', () => {
     });
   });
 
-  it('cleans a restored nonce-mismatch quarantine but preserves it when a new owner blocks restoration', async () => {
+  it('never renames away a lock republished as live after the absent probe', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadLockPersistenceApi();
+      const sessionId = api.generateReviewId();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
+      const staleOwner = {
+        pid: 999_999,
+        hostname: hostname(),
+        process_start_marker: 'stale',
+        nonce: api.generateReviewId(),
+        acquired_at: '2026-07-14T00:00:00.000Z',
+      };
+      // A concurrent, legitimate reclaimer republishes a LIVE lock in the gap between our absent probe and
+      // our reclaim of the stale owner.
+      const liveOwner = {
+        ...staleOwner,
+        pid: process.pid,
+        process_start_marker: 'live-replacement',
+        nonce: api.generateReviewId(),
+      };
+      await api.atomicWritePrivateJson(paths.startLockPath, staleOwner);
+      let afterRenameCalls = 0;
+
+      await assert.rejects(
+        api.acquireReviewLocks(paths, undefined, ['start'], {
+          timeoutMs: 0,
+          ownerProbe: async () => {
+            await api.atomicWritePrivateJson(paths.startLockPath, liveOwner);
+            return 'absent' as const;
+          },
+          afterReclaimRename: () => { afterRenameCalls += 1; },
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_LOCKED',
+      );
+
+      // ASSERTION-CHANGE-JUSTIFIED: the prior expectation let reclaimAbsentOwner rename away a lock that a
+      // concurrent reclaimer had already republished as LIVE, opening an empty-path window a third acquirer
+      // could win — two processes believing they hold the same lock, plus an orphaned lock file. Reclaim now
+      // re-reads the on-disk nonce and refuses to touch a lock whose nonce no longer matches the probed-absent
+      // owner, so the live lock is never renamed and no quarantine window is opened.
+      assert.equal(afterRenameCalls, 0, 'a republished live lock is never renamed away');
+      const published = JSON.parse(await readFile(paths.startLockPath, 'utf8')) as { nonce: string };
+      assert.equal(published.nonce, liveOwner.nonce, 'the live lock stays intact at the canonical path');
+      const quarantines = (await readdir(paths.reviewRoot)).filter((name) => name.includes('.reap-'));
+      assert.equal(quarantines.length, 0, 'no quarantine is created and no empty-path window is opened');
+    });
+  });
+
+  it('restores or preserves a quarantined lock when the on-disk nonce changes between re-read and rename', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadLockPersistenceApi();
       for (const restoration of ['SUCCEEDS', 'BLOCKED'] as const) {
@@ -624,27 +673,30 @@ describe('code-review persistence locks', () => {
           nonce: api.generateReviewId(),
           acquired_at: '2026-07-14T00:00:00.000Z',
         };
-        const replacementOwner = {
+        // The residual race: the stale nonce still matches at re-read, but a live owner republishes in the
+        // tiny window before the rename. reclaim moves it, then detects the nonce mismatch and restores it
+        // (SUCCEEDS) unless a new owner has since taken the path (BLOCKED), where it preserves the quarantine.
+        const liveOwner = {
           ...staleOwner,
           pid: process.pid,
-          process_start_marker: 'replacement',
+          process_start_marker: 'live-replacement',
           nonce: api.generateReviewId(),
         };
         const winnerOwner = {
-          ...replacementOwner,
+          ...liveOwner,
           process_start_marker: 'winner',
           nonce: api.generateReviewId(),
         };
         await api.atomicWritePrivateJson(paths.startLockPath, staleOwner);
-        let probeCalls = 0;
+        let beforeRenameCalls = 0;
 
         await assert.rejects(
           api.acquireReviewLocks(paths, undefined, ['start'], {
             timeoutMs: 0,
-            ownerProbe: async () => {
-              probeCalls += 1;
-              await api.atomicWritePrivateJson(paths.startLockPath, replacementOwner);
-              return 'absent' as const;
+            ownerProbe: () => 'absent' as const,
+            beforeReclaimRename: async () => {
+              beforeRenameCalls += 1;
+              await api.atomicWritePrivateJson(paths.startLockPath, liveOwner);
             },
             ...(restoration === 'BLOCKED' ? {
               afterReclaimRename: async () => {
@@ -655,11 +707,11 @@ describe('code-review persistence locks', () => {
           (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_LOCKED',
           restoration,
         );
-        assert.equal(probeCalls, 1, restoration);
+        assert.equal(beforeRenameCalls, 1, restoration);
         const published = JSON.parse(await readFile(paths.startLockPath, 'utf8')) as { nonce: string };
         assert.equal(
           published.nonce,
-          restoration === 'SUCCEEDS' ? replacementOwner.nonce : winnerOwner.nonce,
+          restoration === 'SUCCEEDS' ? liveOwner.nonce : winnerOwner.nonce,
           restoration,
         );
         const quarantines = (await readdir(paths.reviewRoot)).filter((name) => name.includes('.reap-'));
@@ -668,7 +720,7 @@ describe('code-review persistence locks', () => {
           const quarantined = JSON.parse(
             await readFile(join(paths.reviewRoot, quarantines[0]!), 'utf8'),
           ) as { nonce: string };
-          assert.equal(quarantined.nonce, replacementOwner.nonce);
+          assert.equal(quarantined.nonce, liveOwner.nonce);
         }
       }
     });
@@ -1008,6 +1060,8 @@ function durableEffects(
   const result = reviewerResult(reviewId);
   const sessionId = trust.sessionId ?? key;
   const rootThreadId = trust.rootThreadId ?? 'root-thread-1';
+  const approvalNonce = `approval-${key}`;
+  const approvalSourceRef = `explicit-${key}`;
   const report = sanitizeForPersistence(finalArtifact(reviewId, repositoryRoot), { repositoryRoot });
   const typedConsumption = (kind: ReviewConsumptionKind, value: string): DurableEffect => {
     const digest = createHash('sha256')
@@ -1111,6 +1165,15 @@ function durableEffects(
       target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
       payload: {
         ...reviewRecordPayload(reviewId, 2),
+        effective_config: {
+          lane_timeout_ms: 30_000,
+          max_files_per_review: 500,
+          max_changed_lines_per_review: 50_000,
+          accepted_equivalents: [{
+            capability: 'AST', source: 'EXPLICIT_USER', source_ref: approvalSourceRef,
+            program: 'node', args: ['scripts/ast-check.mjs'],
+          }],
+        },
         status: 'FINALIZED',
         scope: reviewScope(),
         batches: [{
@@ -1144,13 +1207,19 @@ function durableEffects(
     {
       name: 'approval',
       mode: 'CREATE_ONCE_JSON',
-      target: { area: 'REVIEW_STATE', path: `approvals/${key}/consumed` },
+      target: {
+        area: 'REVIEW_STATE',
+        path: `approvals/consumptions/${createHash('sha256').update(approvalNonce).digest('hex')}.json`,
+      },
       payload: {
         schema_version: 1,
-        state: 'CONSUMED',
+        state: 'COMMITTED',
+        nonce: approvalNonce,
         review_id: reviewId,
-        idempotency_key: key,
-        consumed_at: now,
+        capability: 'AST',
+        source_ref: approvalSourceRef,
+        prepared_at: now,
+        committed_at: now,
       },
     },
     {
@@ -1174,6 +1243,14 @@ function durableEffects(
     typedConsumption('TOOL_EVENT_REF', 'events/result-post-tool-1.json'),
     typedConsumption('NONCE', key),
   ];
+}
+
+function reviewEffectWithoutExplicitApproval(effect: DurableEffect): DurableEffect {
+  const output = structuredClone(effect);
+  const payload = output.payload as Record<string, unknown>;
+  const effectiveConfig = payload.effective_config as Record<string, unknown>;
+  payload.effective_config = { ...effectiveConfig, accepted_equivalents: [] };
+  return output;
 }
 
 function consumedPublicationPlan(
@@ -1210,7 +1287,7 @@ function consumedPublicationPlan(
       name: 'review', mode: 'APPLY_REVIEW_REVISION',
       target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
       payload: {
-        ...(complete[4]!.payload as Record<string, unknown>),
+        ...(reviewEffectWithoutExplicitApproval(complete[4]!).payload as Record<string, unknown>),
         status: 'REVIEWING',
         session_id: sessionId,
         root_thread_id: 'root-thread-1',
@@ -1220,7 +1297,18 @@ function consumedPublicationPlan(
   };
 }
 
-async function runSigkillTransaction(
+function isAbruptChildExit(error: unknown): boolean {
+  const candidate = error as { signal?: unknown; code?: unknown };
+  return (typeof candidate.signal === 'string' && candidate.signal.length > 0)
+    || (typeof candidate.code === 'number' && candidate.code > 1);
+}
+
+function isAbruptClose(exitCode: unknown, signal: unknown): boolean {
+  return (typeof signal === 'string' && signal.length > 0)
+    || (typeof exitCode === 'number' && exitCode > 1);
+}
+
+async function runAbruptTransaction(
   workingDirectory: string,
   sessionId: string,
   plan: DurablePlan,
@@ -1233,7 +1321,7 @@ async function runSigkillTransaction(
       workingDirectory: process.argv[2], session_id: process.argv[3],
     });
     await persistence.runDurableTransaction(paths, JSON.parse(process.argv[4]), {
-      crashAt: process.argv[5], crashMode: 'SIGKILL',
+      crashAt: process.argv[5], crashMode: 'ABORT',
     });
   `;
   await assert.rejects(
@@ -1241,11 +1329,11 @@ async function runSigkillTransaction(
       '--input-type=module', '-e', program, moduleUrl, workingDirectory,
       sessionId, JSON.stringify(plan), crashAt,
     ]),
-    (error: unknown) => (error as { signal?: unknown }).signal === 'SIGKILL',
+    isAbruptChildExit,
   );
 }
 
-async function runSigkillFactoryTransaction(
+async function runAbruptFactoryTransaction(
   workingDirectory: string,
   sessionId: string,
   rootThreadId: string,
@@ -1263,14 +1351,14 @@ async function runSigkillFactoryTransaction(
       session_id: process.argv[3],
       root_thread_id: process.argv[4],
       plan_factory: async () => plan,
-    }, { crashAt: 'after:prepared', crashMode: 'SIGKILL' });
+    }, { crashAt: 'after:prepared', crashMode: 'ABORT' });
   `;
   await assert.rejects(
     execFileAsync(process.execPath, [
       '--input-type=module', '-e', program, moduleUrl, workingDirectory,
       sessionId, rootThreadId, JSON.stringify(plan),
     ]),
-    (error: unknown) => (error as { signal?: unknown }).signal === 'SIGKILL',
+    isAbruptChildExit,
   );
 }
 
@@ -1436,7 +1524,7 @@ describe('code-review durable transaction journal', () => {
         input: { review_id: reviewId },
         expected_revision: 1,
         effects: [
-          effects[4]!,
+          reviewEffectWithoutExplicitApproval(effects[4]!),
           effects[5]!,
           effects[8]!,
         ],
@@ -1476,7 +1564,11 @@ describe('code-review durable transaction journal', () => {
       { name: 'proposal', path: (reviewId, key) => `${reviewId}/submissions/${key}/proposal`, payload: () => ({ state: 'PENDING_HOST_ATTESTATION' }) },
       { name: 'post-tool', path: (reviewId, key) => `${reviewId}/submissions/${key}/post-tool`, payload: (_reviewId, key) => ({ publication_id: key }) },
       { name: 'lane', path: (reviewId) => `${reviewId}/lanes/reviewer-attempt-1/terminal`, payload: () => ({ status: 'COMPLETE' }) },
-      { name: 'approval', path: (_reviewId, key) => `approvals/${key}/consumed`, payload: () => ({ consumed: true }) },
+      {
+        name: 'approval',
+        path: (_reviewId, key) => `approvals/consumptions/${createHash('sha256').update(key).digest('hex')}.json`,
+        payload: () => ({ consumed: true }),
+      },
       { name: 'stop-marker', path: () => 'stop-terminal-brief.json', payload: () => ({ state: 'PENDING_BRIEF' }) },
     ];
     for (const testCase of cases) {
@@ -1529,7 +1621,7 @@ describe('code-review durable transaction journal', () => {
           mode: 'APPLY_REVIEW_REVISION',
           target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
           payload: {
-            ...(complete[4]!.payload as Record<string, unknown>),
+            ...(reviewEffectWithoutExplicitApproval(complete[4]!).payload as Record<string, unknown>),
             session_id: sessionId,
             root_thread_id: rootThreadId,
           },
@@ -2397,6 +2489,37 @@ describe('code-review durable transaction journal', () => {
     });
   });
 
+  it('skips absent effect boundaries and rejects an invalid recovery journal scope', async () => {
+    await withWorkspace(async (workingDirectory) => {
+      const api = await loadDurablePersistenceApi();
+      const paths = await api.resolveReviewPersistencePaths({ workingDirectory });
+      const reviewId = api.generateReviewId();
+      const key = api.generateReviewId();
+      const completed = await api.runDurableTransaction(paths, {
+        idempotency_key: key,
+        review_id: reviewId,
+        operation: 'NO_EFFECT_BOUNDARY',
+        input: { stable: true },
+        expected_revision: 0,
+        effects: [],
+        response: { ok: true },
+      }, { crashAt: 'before:proposal' });
+      assert.deepEqual(completed, { state: 'COMMITTED', response: { ok: true } });
+
+      await assert.rejects(
+        (api.recoverDurableTransactions as unknown as (
+          paths: ReviewPersistencePaths,
+          input: { review_id: string; idempotency_key: string; journal_scope: string },
+        ) => Promise<unknown>)(paths, {
+          review_id: reviewId,
+          idempotency_key: api.generateReviewId(),
+          journal_scope: 'INVALID',
+        }),
+        (error: unknown) => (error as { code?: unknown }).code === 'PERSISTENCE_FAILED',
+      );
+    });
+  });
+
   it('validates committed START intent and applied review state before root-scan fast-path cleanup', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
@@ -2641,7 +2764,6 @@ describe('code-review durable transaction journal', () => {
   });
 
   it('discovers an active review transaction killed after PREPARED publication but before its locator', async () => {
-    if (process.platform === 'win32') return;
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
       const sessionId = api.generateReviewId();
@@ -2682,8 +2804,7 @@ describe('code-review durable transaction journal', () => {
             crashAt: 'after:prepared',
           });
         } catch {
-          process.kill(process.pid, 'SIGKILL');
-          await new Promise(() => {});
+          process.abort();
         }
       `;
       const child = spawn(process.execPath, [
@@ -2691,8 +2812,7 @@ describe('code-review durable transaction journal', () => {
         sessionId, JSON.stringify(plan),
       ], { stdio: ['ignore', 'ignore', 'pipe'] });
       const [exitCode, signal] = await once(child, 'close');
-      assert.equal(exitCode, null);
-      assert.equal(signal, 'SIGKILL');
+      assert.equal(isAbruptClose(exitCode, signal), true);
 
       await readFile(join(transactionDirectory, 'prepared'), 'utf8');
       await assert.rejects(
@@ -3211,7 +3331,7 @@ describe('code-review durable transaction journal', () => {
           name: 'review', mode: 'APPLY_REVIEW_REVISION',
           target: { area: 'REVIEW_STATE', path: `${reviewId}/review.json` },
           payload: {
-            ...(complete[4]!.payload as Record<string, unknown>),
+            ...(reviewEffectWithoutExplicitApproval(complete[4]!).payload as Record<string, unknown>),
             session_id: sessionId,
             root_thread_id: 'root-thread-1',
           },
@@ -3419,10 +3539,13 @@ describe('code-review durable transaction journal', () => {
         const trust = { sessionId, rootThreadId: 'root-thread-1' };
         const paths = await api.resolveReviewPersistencePaths({ workingDirectory, session_id: sessionId });
         await api.claimActiveReview(paths, { schema_version: 1, review_id: reviewId, status: 'READY_TO_SYNTHESIZE' });
+        const effects = durableEffects(reviewId, key, workingDirectory, trust);
+        const proposedReview = effects[4]!.payload as Record<string, unknown>;
         const reviewPath = join(paths.reviewRoot, reviewId, 'review.json');
         await api.atomicWritePrivateJson(reviewPath, {
           ...reviewRecordPayload(reviewId, 1),
           status: 'READY_TO_SYNTHESIZE',
+          effective_config: proposedReview.effective_config,
           session_id: sessionId,
           root_thread_id: trust.rootThreadId,
         });
@@ -3432,7 +3555,7 @@ describe('code-review durable transaction journal', () => {
           operation: 'TEST_DURABLE_MUTATION',
           input: { review_id: reviewId, requested: 'bounded' },
           expected_revision: 1,
-          effects: durableEffects(reviewId, key, workingDirectory, trust),
+          effects,
           response: { review_id: reviewId, revision: 2 },
         };
 
@@ -3520,7 +3643,7 @@ describe('code-review durable transaction journal', () => {
         operation: 'TEST_CONFLICT',
         input: { value: 1 },
         expected_revision: 1,
-        effects: [durableEffects(reviewId, key, workingDirectory)[4]!],
+        effects: [reviewEffectWithoutExplicitApproval(durableEffects(reviewId, key, workingDirectory)[4]!)],
         response: { ok: true },
       };
       await api.runDurableTransaction(paths, plan);
@@ -4595,6 +4718,15 @@ describe('runtime-enforced review persistence regressions', () => {
           (plan.effects[0]!.payload as ReviewRecordSnapshot).root_thread_id = 'other-root';
           return plan;
         },
+        (current) => {
+          const plan = trustedFactoryRevisionPlan(current, api.generateReviewId());
+          const proposed = plan.effects[0]!.payload as Record<string, any>;
+          proposed.effective_config.accepted_equivalents = [{
+            capability: 'AST', program: 'node', args: ['scripts/ast-check.mjs'],
+            source: 'REPO_CONTRACT', source_ref: 'trusted-rule',
+          }];
+          return plan;
+        },
       ];
       for (const makePlan of cases) {
         await assert.rejects(
@@ -4616,7 +4748,7 @@ describe('runtime-enforced review persistence regressions', () => {
   it('recovers a locator-less factory transaction before taking the next trusted snapshot', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
-      const crashModes = process.platform === 'win32' ? ['THROW'] as const : ['THROW', 'SIGKILL'] as const;
+      const crashModes = ['THROW', 'ABORT'] as const;
       for (const crashMode of crashModes) {
         const sessionId = api.generateReviewId();
         const rootThreadId = 'root-thread-1';
@@ -4643,7 +4775,7 @@ describe('runtime-enforced review persistence regressions', () => {
             /injected crash at after:prepared/u,
           );
         } else {
-          await runSigkillFactoryTransaction(workingDirectory, sessionId, rootThreadId, plan);
+          await runAbruptFactoryTransaction(workingDirectory, sessionId, rootThreadId, plan);
         }
 
         const transactionRoot = join(paths.reviewRoot, reviewId, 'transactions', key);
@@ -5121,9 +5253,7 @@ describe('runtime-enforced review persistence regressions', () => {
     });
   });
 
-  it('survives SIGKILL after START locator cleanup using its committed receipt', {
-    skip: process.platform === 'win32',
-  }, async () => {
+  it('survives abrupt termination after START locator cleanup using its committed receipt', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
       const sessionId = api.generateReviewId();
@@ -5144,7 +5274,7 @@ describe('runtime-enforced review persistence regressions', () => {
         }],
         response: { review_id: reviewId, revision: 1, original: true },
       };
-      await runSigkillTransaction(workingDirectory, sessionId, plan, 'after:locator-cleanup');
+      await runAbruptTransaction(workingDirectory, sessionId, plan, 'after:locator-cleanup');
       assert.deepEqual(await readdir(paths.startTransactionsRoot).catch(() => []), []);
       assert.deepEqual(await api.runDurableTransaction(paths, plan), {
         state: 'COMMITTED', response: plan.response,
@@ -5273,9 +5403,7 @@ describe('runtime-enforced review persistence regressions', () => {
     });
   });
 
-  it('recovers active UPDATE, REMOVE, and RESTORE transitions after real SIGKILL', {
-    skip: process.platform === 'win32',
-  }, async () => {
+  it('recovers active UPDATE, REMOVE, and RESTORE transitions after abrupt termination', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
       const now = '2026-07-14T00:00:00.000Z';
@@ -5339,7 +5467,7 @@ describe('runtime-enforced review persistence regressions', () => {
           }, activeEffect],
           response: { review_id: reviewId, revision: 2 },
         };
-        await runSigkillTransaction(workingDirectory, sessionId, plan, 'after:active-overlay');
+        await runAbruptTransaction(workingDirectory, sessionId, plan, 'after:active-overlay');
         await api.recoverPendingReviewTransactions(paths);
         const active = await api.readActiveReview(paths);
         assert.equal(active?.status ?? null, mode === 'REMOVE' ? null : proposed.status, mode);
@@ -5351,9 +5479,7 @@ describe('runtime-enforced review persistence regressions', () => {
     });
   });
 
-  it('recovers batched consumption across PREPARED, manifest, and COMMITTED SIGKILL boundaries', {
-    skip: process.platform === 'win32',
-  }, async () => {
+  it('recovers batched consumption across PREPARED, manifest, and COMMITTED abrupt boundaries', async () => {
     await withWorkspace(async (workingDirectory) => {
       const api = await loadDurablePersistenceApi();
       for (const crashAt of ['after:prepared', 'after:manifest', 'after:committed'] as const) {
@@ -5369,7 +5495,7 @@ describe('runtime-enforced review persistence regressions', () => {
         const plan = consumedPublicationPlan(
           api, reviewId, transactionKey, publicationKey, workingDirectory, sessionId,
         );
-        await runSigkillTransaction(workingDirectory, sessionId, plan, crashAt);
+        await runAbruptTransaction(workingDirectory, sessionId, plan, crashAt);
         if (crashAt === 'after:manifest') {
           await assert.rejects(
             api.readReviewConsumptionGroups(paths, reviewId),

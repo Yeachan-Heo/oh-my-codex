@@ -13,6 +13,7 @@ export const REQUIRED_PACKED_ASSETS = [
   'dist/cli/__tests__/nested-help-routing.test.js',
   'dist/cli/omx.js',
   'dist/scripts/__tests__/smoke-packed-install.test.js',
+  'dist/scripts/__tests__/code-review-installed-contract.test.js',
   'dist/scripts/codex-native-hook.js',
   'dist/scripts/run-compiled-ci.js',
   'dist/scripts/run-release-gates.js',

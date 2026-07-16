@@ -5,12 +5,18 @@ import { type FileHandle, lstat, open, readlink } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { TextDecoder } from 'node:util';
 import type {
+  FrozenCapabilityConfig,
   ScopeFile,
   ScopeFileChange,
   ScopeFileSource,
   ScopeManifest,
   ScopeSelector,
 } from './contract.js';
+import {
+  deriveFrozenCapabilityConfigFromBaseFiles,
+  emptyFrozenCapabilityConfig,
+  type FrozenBaseConfigFile,
+} from './capabilities.js';
 
 export type ScopeResolutionErrorCode =
   | 'NOT_GIT_REPOSITORY'
@@ -89,6 +95,41 @@ interface ScopeHashMaterial {
   worktree_digest?: string;
 }
 
+function isFrozenCapabilityConfigPath(path: string): boolean {
+  const normalized = path.replaceAll('\\', '/');
+  const name = normalized.split('/').at(-1) ?? normalized;
+  return name === 'package.json'
+    || /^(?:tsconfig(?:\.[^/]+)?\.json|eslint\.config\.[cm]?[jt]s|\.eslintrc(?:\.[^/]+)?|biome\.jsonc?|oxlint\.json|\.?clippy\.toml|\.shellcheckrc)$/iu.test(name)
+    || /\.(?:sh|bash|zsh)$/iu.test(name);
+}
+
+async function resolveFrozenCapabilityConfig(
+  git: GitExecutor,
+  repositoryRoot: string,
+  baseSha: string | undefined,
+): Promise<FrozenCapabilityConfig> {
+  if (baseSha === undefined) return emptyFrozenCapabilityConfig();
+  const paths = decodeNulSegments(
+    await requiredGit(git, repositoryRoot, ['ls-tree', '-r', '-z', '--name-only', baseSha, '--']),
+    'base capability configuration paths',
+  ).filter(isFrozenCapabilityConfigPath).sort(byteCompare);
+  const files: FrozenBaseConfigFile[] = [];
+  for (const path of paths) {
+    files.push({
+      path,
+      ...(path.split('/').at(-1) === 'package.json'
+        ? {
+          content: decodeUtf8Strict(
+            await requiredGit(git, repositoryRoot, ['show', `${baseSha}:${path}`]),
+            `base capability configuration ${path}`,
+          ),
+        }
+        : {}),
+    });
+  }
+  return deriveFrozenCapabilityConfigFromBaseFiles(files);
+}
+
 const SOURCE_ORDER: ScopeFileSource[] = ['BASE', 'INDEX', 'WORKTREE', 'UNTRACKED'];
 const MAX_GIT_OUTPUT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_SCOPE_FILE_SYSTEM: ScopeFileSystem = {
@@ -103,6 +144,10 @@ function byteCompare(left: string, right: string): number {
 
 function posixPath(path: string): string {
   return path.split(sep).join('/');
+}
+
+function isWindowsAbsolutePath(path: string): boolean {
+  return /^[a-z]:[\\/]/iu.test(path) || /^(?:\\\\|\/\/)/u.test(path);
 }
 
 function literalPathspec(path: string): string {
@@ -229,6 +274,12 @@ export function normalizeExplicitPaths(
   for (const input of paths) {
     if (input.length === 0 || input.includes('\0')) {
       throw new ScopeResolutionError('INVALID_PATH', 'Review paths must be non-empty');
+    }
+    if (isWindowsAbsolutePath(input)) {
+      throw new ScopeResolutionError(
+        'INVALID_PATH',
+        `Review path escapes the repository root: ${input}`,
+      );
     }
     const absolute = isAbsolute(input) ? resolve(input) : resolve(root, input);
     const rootRelative = relative(root, absolute);
@@ -530,13 +581,16 @@ async function resolveBase(
       ['rev-parse', '--verify', '--end-of-options', `${requestedBase}^{commit}`],
       [1, 128],
     );
-    if (!verified) {
+    const verifiedBaseSha = verified === undefined
+      ? ''
+      : trimTextOutput(verified, 'explicit base commit');
+    if (verifiedBaseSha.length === 0) {
       throw new ScopeResolutionError('INVALID_BASE', `Invalid explicit base: ${requestedBase}`);
     }
     const mergeBase = await gitAllowingExitCodes(
       git,
       repositoryRoot,
-      ['merge-base', requestedBase, headSha],
+      ['merge-base', verifiedBaseSha, headSha],
       [1],
     );
     if (!mergeBase || trimTextOutput(mergeBase, 'explicit merge-base').length === 0) {
@@ -741,6 +795,11 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
     'HEAD commit',
   );
   const base = await resolveBase(git, repositoryRoot, selector.requested_base, headSha);
+  const frozenCapabilityConfig = await resolveFrozenCapabilityConfig(
+    git,
+    repositoryRoot,
+    base.baseSha,
+  );
   const reasons: string[] = base.resolved ? [] : ['BASE_UNRESOLVED'];
 
   const unmerged = await requiredGit(git, repositoryRoot, [
@@ -902,6 +961,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
         base_ref: base.baseRef,
         base_sha: base.baseSha,
         head_sha: headSha,
+        frozen_capability_config: frozenCapabilityConfig,
         scope_status: scopeStatus,
         reasons: scopeReasons,
         files,
@@ -916,6 +976,7 @@ export async function resolveGitScope(options: ResolveGitScopeOptions): Promise<
     ...(base.baseRef === undefined ? {} : { base_ref: base.baseRef }),
     ...(base.baseSha === undefined ? {} : { base_sha: base.baseSha }),
     head_sha: headSha,
+    frozen_capability_config: frozenCapabilityConfig,
     scope_hash: scopeHash,
     files,
     changed_lines: changedLines,

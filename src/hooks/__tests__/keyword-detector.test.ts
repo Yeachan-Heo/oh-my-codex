@@ -737,7 +737,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.iteration, 1);
       assert.equal(modeState.review_cycle, 0);
       assert.equal(modeState.max_iterations, 10);
-      assert.deepEqual(modeState.state.phase_cycle, ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa']);
+      assert.deepEqual(modeState.state.phase_cycle, ['deep-interview', 'ralplan', 'ultragoal', 'rework', 'code-review', 'ultraqa']);
       assert.deepEqual(modeState.state.deep_interview_gate, {
         status: 'required',
         skip_reason: null,

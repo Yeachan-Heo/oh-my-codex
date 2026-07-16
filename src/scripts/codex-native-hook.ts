@@ -140,6 +140,7 @@ import {
   extractRawCodexHookEventName,
 } from "./hook-payload-guard.js";
 import {
+  atomicCreatePrivateJson,
   executeReviewOperation,
   consumeStopTerminalBrief,
   loadPublishedReviewHookJournalSnapshot,
@@ -2260,7 +2261,7 @@ function buildAutopilotPromptActivationNote(
     ? buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)
     : `${LEADER_CONDUCTOR_BLOCK} ${LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE}`;
   return [
-    `Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal${teamHandoff} -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).`,
+    `Autopilot protocol: the durable primary chain is $deep-interview -> $ralplan -> $ultragoal${teamHandoff} -> $code-review -> $ultraqa; when review requests implementation repair, use $code-review -> rework -> $code-review (deep-interview -> ralplan -> ultragoal -> code-review -> rework -> code-review -> ultraqa), skipping rework on the first clean pass.`,
     "Start/resume at current_phase=deep-interview unless the task is clear and bounded; if deep-interview is intentionally skipped, persist and state an explicit deep_interview_gate.skip_reason before moving to ralplan.",
     "Deep-interview is a structured question chain, not a one-question gate: after an omx question answer, re-score ambiguity against the active threshold, treat max_rounds as a cap, and crystallize once ambiguity is at or below threshold and readiness gates pass.",
     options.markedQuestionAnswer
@@ -9444,6 +9445,103 @@ function readHostToolName(payload: CodexHookPayload): string {
   return safeString(payload.tool_name ?? payload.toolName ?? payload.name).trim();
 }
 
+function boundedDiagnosticJournalString(value: unknown, maximum: number): string | null {
+  if (typeof value !== "string" || value.length === 0 || [...value].length > maximum
+    || value.includes("\0") || /[\r\n]/u.test(value)) return null;
+  return value;
+}
+
+function readDiagnosticToolProvenance(
+  payload: CodexHookPayload,
+): { tool_name: string } | { program: string; args: string[] } | null {
+  const toolInput = readToolInputObject(payload);
+  if (Object.hasOwn(toolInput, "program") || Object.hasOwn(toolInput, "args")) {
+    const program = boundedDiagnosticJournalString(toolInput.program, 1_024);
+    if (program === null || !Array.isArray(toolInput.args) || toolInput.args.length > 128) return null;
+    const args = toolInput.args.map((value) => boundedDiagnosticJournalString(value, 1_024));
+    if (args.some((value) => value === null)) return null;
+    return { program, args: args as string[] };
+  }
+  const toolName = boundedDiagnosticJournalString(readHostToolName(payload), 160);
+  return toolName === null ? null : { tool_name: toolName };
+}
+
+function readExplicitEquivalentApproval(payload: CodexHookPayload): {
+  capability: "LSP" | "AST";
+  source_ref: string;
+  program: string;
+  args: string[];
+  event_ref: string;
+} | null {
+  const candidate = safeObject(payload.code_review_equivalent_approval);
+  if (!hasExactObjectKeys(candidate, [
+    "schema_version", "approved", "capability", "source_ref", "program", "args", "event_ref",
+  ]) || candidate.schema_version !== 1 || candidate.approved !== true
+    || (candidate.capability !== "LSP" && candidate.capability !== "AST")) return null;
+  const sourceRef = boundedDiagnosticJournalString(candidate.source_ref, 1_024);
+  const program = boundedDiagnosticJournalString(candidate.program, 512);
+  const eventRef = boundedDiagnosticJournalString(candidate.event_ref, 1_024);
+  if (sourceRef === null || program === null || eventRef === null
+    || !/^[a-zA-Z0-9_./:+@-]+$/u.test(program)) return null;
+  const executable = program.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase();
+  if (executable === undefined || [
+    "sh", "bash", "zsh", "dash", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe",
+    "pwsh", "pwsh.exe",
+  ].includes(executable) || !Array.isArray(candidate.args) || candidate.args.length > 128) return null;
+  const args = candidate.args.map((value) => (
+    typeof value === "string" && [...value].length <= 1_024
+      && !value.includes("\0") && !/[\r\n]/u.test(value) ? value : null
+  ));
+  if (args.some((value) => value === null)) return null;
+  return {
+    capability: candidate.capability,
+    source_ref: sourceRef,
+    program,
+    args: args as string[],
+    event_ref: eventRef,
+  };
+}
+
+async function publishCodeReviewEquivalentApproval(
+  payload: CodexHookPayload,
+  cwd: string,
+  sessionId: string,
+  rootThreadId: string,
+  turnId: string,
+): Promise<void> {
+  const candidate = readExplicitEquivalentApproval(payload);
+  if (candidate === null || !sessionId || !rootThreadId || !turnId) return;
+  const active = await readActiveReviewPointer(cwd, sessionId);
+  if (active?.status !== "CREATED") return;
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: sessionId });
+  const review = safeObject(await readJsonIfExistsRaw(join(paths.reviewRoot, active.review_id, "review.json")));
+  if (review.status !== "CREATED" || review.session_id !== sessionId
+    || review.root_thread_id !== rootThreadId || review.invocation_turn_id !== turnId) return;
+  const nonce = base64UrlNonce(24);
+  try {
+    await atomicCreatePrivateJson(
+      join(paths.approvalsRoot, "ledger", `${sha256Hex(candidate.event_ref)}.json`),
+      {
+        approval: {
+          schema_version: 1,
+          session_id: sessionId,
+          root_thread_id: rootThreadId,
+          turn_id: turnId,
+          capability: candidate.capability,
+          source_ref: candidate.source_ref,
+          program: candidate.program,
+          args: candidate.args,
+          approved_at: new Date().toISOString(),
+          nonce,
+        },
+        provenance: { event_ref: candidate.event_ref, nonce },
+      },
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+}
+
 function hasExactObjectKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   return Object.keys(value).length === expected.length
     && expected.every((key) => Object.hasOwn(value, key));
@@ -9549,6 +9647,51 @@ async function recordCodeReviewContentFreeActivity(
     reviewId: active.review_id,
     path: eventPath,
     buildValue: (observedAt) => ({ ...activity, observed_at: observedAt }),
+  });
+}
+
+async function recordCodeReviewDiagnosticEvent(
+  payload: CodexHookPayload,
+  cwd: string,
+  canonicalSessionId: string,
+): Promise<void> {
+  if (!canonicalSessionId) return;
+  const rootThreadId = readRootThreadId(payload);
+  const childThreadId = readActualChildThreadId(payload);
+  const eventRef = readToolUseId(payload);
+  const provenance = readDiagnosticToolProvenance(payload);
+  if (!rootThreadId || !childThreadId || !eventRef || provenance === null) return;
+  const tracking = await readSubagentTrackingState(cwd).catch(() => null);
+  const trackingSession = tracking?.sessions?.[canonicalSessionId] ?? tracking?.sessions?.[rootThreadId];
+  const laneId = trackingSession?.threads?.[childThreadId]?.lane_id?.trim();
+  if (!laneId) return;
+  const active = await readActiveReviewPointer(cwd, canonicalSessionId);
+  if (!active) return;
+  const paths = await resolveReviewPersistencePaths({ workingDirectory: cwd, session_id: canonicalSessionId });
+  const review = safeObject(await readJsonIfExistsRaw(join(paths.reviewRoot, active.review_id, "review.json")));
+  const attempt = typeof review.current_attempt === "number" ? review.current_attempt : 1;
+  const event = {
+    schema_version: 1,
+    session_id: canonicalSessionId,
+    review_id: active.review_id,
+    attempt,
+    lane_id: laneId,
+    child_thread_id: childThreadId,
+    event_ref: eventRef,
+    ...provenance,
+  };
+  await publishReviewJournalJson({
+    cwd,
+    sessionId: canonicalSessionId,
+    reviewId: active.review_id,
+    path: join(
+      paths.reviewRoot,
+      active.review_id,
+      "diagnostics",
+      childThreadId,
+      `${sha256Hex(eventRef)}.json`,
+    ),
+    buildValue: (observedAt) => ({ ...event, observed_at: observedAt }),
   });
 }
 
@@ -10440,6 +10583,15 @@ export async function dispatchCodexNativeHook(
         turnId,
       });
     }
+    if (!isSubagentPromptSubmit) {
+      await publishCodeReviewEquivalentApproval(
+        payload,
+        cwd,
+        canonicalSessionId,
+        threadId,
+        turnId,
+      );
+    }
     // --- Triage classifier (advisory-only, non-keyword prompts) ---
     if (prompt && skillState === null && !isSubagentPromptSubmit) {
       try {
@@ -10608,6 +10760,7 @@ export async function dispatchCodexNativeHook(
     await recordNativeSubagentCapacityBlocker(cwd, stateDir, payload).catch(() => {});
     await recordNativeSubagentSupportBlocker(cwd, stateDir, payload).catch(() => {});
     await recordCodeReviewContentFreeActivity(payload, cwd, canonicalSessionId, "TOOL_END");
+    await recordCodeReviewDiagnosticEvent(payload, cwd, canonicalSessionId);
     await publishCodeReviewResultPostToolAttestation(payload, cwd, canonicalSessionId);
     if (detectMcpTransportFailure(payload)) {
       await markTeamTransportFailure(cwd, payload);

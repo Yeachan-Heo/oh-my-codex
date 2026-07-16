@@ -85,6 +85,44 @@ function byPath(manifest: ScopeManifest): Map<string, ScopeManifest['files'][num
 }
 
 describe('real Git scope discovery', () => {
+  it('derives TypeScript compiler and lint applicability only from the frozen base commit', async () => {
+    await withRepository(async (repository, api) => {
+      await mkdir(join(repository, 'src'), { recursive: true });
+      await writeFile(join(repository, 'package.json'), JSON.stringify({
+        scripts: { typecheck: 'tsc --noEmit', lint: 'eslint src' },
+      }));
+      await writeFile(join(repository, 'tsconfig.json'), '{}\n');
+      await writeFile(join(repository, 'eslint.config.mjs'), 'export default [];\n');
+      await writeFile(join(repository, 'src', 'app.ts'), 'export const value = 1;\n');
+      await git(repository, 'add', '--', 'package.json', 'tsconfig.json', 'eslint.config.mjs', 'src/app.ts');
+      await git(repository, 'commit', '-qm', 'typescript baseline');
+      await writeFile(join(repository, 'src', 'app.ts'), 'export const value = 2;\n');
+
+      const first = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: [] },
+      }) as ScopeManifest & { frozen_capability_config?: {
+        typescript_javascript: { compiler_or_typecheck: boolean; lint: boolean };
+      } };
+      assert.deepEqual(first.frozen_capability_config?.typescript_javascript, {
+        compiler_or_typecheck: true,
+        lint: true,
+      });
+
+      await writeFile(join(repository, 'package.json'), '{"scripts":{}}\n');
+      await rm(join(repository, 'tsconfig.json'));
+      await rm(join(repository, 'eslint.config.mjs'));
+      const afterWorktreeMutation = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'HEAD', explicit_paths: [] },
+      }) as typeof first;
+      assert.deepEqual(
+        afterWorktreeMutation.frozen_capability_config,
+        first.frozen_capability_config,
+      );
+    });
+  });
+
   it('unions staged, unstaged, exclude-standard untracked, and overlapping origins', async () => {
     await withRepository(async (repository, api) => {
       await writeFile(join(repository, '.gitignore'), '*.ignored\n');
@@ -187,6 +225,64 @@ describe('real Git scope discovery', () => {
       const unresolved = await api.resolveGitScope({ workingDirectory: repository });
       assert.equal(unresolved.status, 'PARTIAL_SCOPE');
       assert.deepEqual(unresolved.reasons, ['BASE_UNRESOLVED']);
+    });
+  });
+
+  it('freezes a verified explicit base SHA before computing its merge base', async () => {
+    await withRepository(async (repository, api) => {
+      const verifiedSha = await git(repository, 'rev-parse', 'HEAD');
+      await writeFile(join(repository, 'tracked.txt'), 'changed\n');
+      const mergeBaseArgs: string[][] = [];
+      const movingRefExecutor: GitExecutor = async (workingDirectory, args) => {
+        if (args[0] === 'rev-parse'
+          && args[1] === '--verify'
+          && args[2] === '--end-of-options'
+          && args[3] === 'moving-ref^{commit}') {
+          return Buffer.from(`${verifiedSha}\n`);
+        }
+        if (args[0] === 'merge-base') mergeBaseArgs.push([...args]);
+        return api.runGitCommand(workingDirectory, args);
+      };
+
+      const scope = await api.resolveGitScope({
+        workingDirectory: repository,
+        selector: { requested_base: 'moving-ref', explicit_paths: [] },
+        gitExecutor: movingRefExecutor,
+      });
+
+      assert.equal(scope.base_ref, 'moving-ref');
+      assert.equal(scope.base_sha, verifiedSha);
+      assert.deepEqual(mergeBaseArgs, [['merge-base', verifiedSha, verifiedSha]]);
+    });
+  });
+
+  it('rejects missing or empty explicit-base verification before invoking merge-base', async () => {
+    await withRepository(async (repository, api) => {
+      for (const verification of ['missing', 'empty'] as const) {
+        let mergeBaseCalls = 0;
+        const invalidBaseExecutor: GitExecutor = async (workingDirectory, args) => {
+          if (args[0] === 'rev-parse'
+            && args[1] === '--verify'
+            && args[3] === 'missing-or-empty^{commit}') {
+            if (verification === 'missing') {
+              throw Object.assign(new Error('base is missing'), { code: 1 });
+            }
+            return Buffer.alloc(0);
+          }
+          if (args[0] === 'merge-base') mergeBaseCalls += 1;
+          return api.runGitCommand(workingDirectory, args);
+        };
+
+        await assert.rejects(
+          api.resolveGitScope({
+            workingDirectory: repository,
+            selector: { requested_base: 'missing-or-empty', explicit_paths: [] },
+            gitExecutor: invalidBaseExecutor,
+          }),
+          (error: unknown) => (error as { code?: unknown }).code === 'INVALID_BASE',
+        );
+        assert.equal(mergeBaseCalls, 0, verification);
+      }
     });
   });
 

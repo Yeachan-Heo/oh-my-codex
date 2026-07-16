@@ -88,7 +88,7 @@ describe('review persistence exported failure edges', () => {
     });
   });
 
-  it('publishes one hook journal record create-once and rejects paths outside its two schemas', async () => {
+  it('publishes activity and diagnostic hook journals create-once and rejects paths outside their schemas', async () => {
     await withPaths(async (_root, paths) => {
       const eventRef = 'event-1';
       const relativePath = `${REVIEW_ID}/activity/child-1/${createHash('sha256')
@@ -101,6 +101,14 @@ describe('review persistence exported failure edges', () => {
       assert.equal(await publishReviewHookJournalEntry(paths, input), true);
       assert.equal(await publishReviewHookJournalEntry(paths, input), false);
       assert.match(await readFile(join(paths.reviewRoot, relativePath), 'utf8'), /event-1/u);
+      const diagnosticPath = `${REVIEW_ID}/diagnostics/child-1/${createHash('sha256')
+        .update(eventRef, 'utf8').digest('hex')}.json`;
+      const diagnosticInput = {
+        ...input,
+        relative_path: diagnosticPath,
+      };
+      assert.equal(await publishReviewHookJournalEntry(paths, diagnosticInput), true);
+      assert.equal(await publishReviewHookJournalEntry(paths, diagnosticInput), false);
       await assert.rejects(publishReviewHookJournalEntry(paths, {
         ...input,
         relative_path: `${REVIEW_ID}/arbitrary.json`,

@@ -12,16 +12,23 @@ const ultragoalSkill = readFileSync(join(__dirname, '../../../skills/ultragoal/S
 const pipelineSkill = readFileSync(join(__dirname, '../../../skills/pipeline/SKILL.md'), 'utf-8');
 const skillsDocs = readFileSync(join(__dirname, '../../../docs/skills.html'), 'utf-8');
 const gettingStartedDocs = readFileSync(join(__dirname, '../../../docs/getting-started.html'), 'utf-8');
+const keywordDetector = readFileSync(join(__dirname, '../../../src/hooks/keyword-detector.ts'), 'utf-8');
+const codexNativeHook = readFileSync(join(__dirname, '../../../src/scripts/codex-native-hook.ts'), 'utf-8');
 
 describe('autopilot skill default Ultragoal contract', () => {
-  it('makes deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa the recommended/default contract', () => {
+  it('makes the primary chain and conditional code-review rework loop the recommended/default contract', () => {
     assert.match(autopilotSkill, /\$deep-interview\s*->\s*\$ralplan\s*->\s*\$ultragoal\s*\(\+ \$team if needed\)\s*->\s*\$code-review\s*->\s*\$ultraqa/);
+    assert.match(autopilotSkill, /\$code-review\s*->\s*`?rework`?\s*->\s*\$code-review/i);
+    assert.match(autopilotSkill, /"phase_cycle": \["deep-interview", "ralplan", "ultragoal", "rework", "code-review", "ultraqa"\]/);
+    assert.match(keywordDetector, /deep-interview -> ralplan -> ultragoal -> code-review -> rework -> code-review -> ultraqa/);
+    assert.match(codexNativeHook, /deep-interview -> ralplan -> ultragoal -> code-review -> rework -> code-review -> ultraqa/);
     assert.match(autopilotSkill, /recommended\/default contract/i);
     assert.match(autopilotSkill, /Ralph is a legacy\/explicit alternate execution loop only/i);
   });
 
-  it('returns non-clean code-review or ultraqa findings to ralplan', () => {
-    assert.match(autopilotSkill, /If `\$code-review` or `\$ultraqa` is not clean, Autopilot returns to `\$ralplan`/i);
+  it('routes implementation repair through rework and planning or QA findings through ralplan', () => {
+    assert.match(autopilotSkill, /implementation repair.*`\$code-review -> rework -> \$code-review`/i);
+    assert.match(autopilotSkill, /changes the plan\/requirements, or `\$ultraqa` is not clean, Autopilot returns to `\$ralplan`/i);
     assert.match(autopilotSkill, /COMMENT.*REQUEST CHANGES.*WATCH.*BLOCK/s);
     assert.match(autopilotSkill, /UltraQA finds issues.*transition back to Phase `ralplan`/s);
   });

@@ -17,6 +17,7 @@ export const INSTALLED_PACKAGE_SENTINELS = [
 
 export const INSTALLED_PACKAGE_TEST_FILES = [
   'dist/scripts/__tests__/smoke-packed-install.test.js',
+  'dist/scripts/__tests__/code-review-installed-contract.test.js',
   'dist/cli/__tests__/nested-help-routing.test.js',
   'dist/cli/__tests__/mcp-parity.test.js',
 ] as const;

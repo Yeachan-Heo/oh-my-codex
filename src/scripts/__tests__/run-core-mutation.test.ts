@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -65,6 +66,14 @@ describe('project-owned mutation runner', () => {
     for (const file of [
       'src/code-review/verdict.ts',
       'src/code-review/scope.ts',
+      'src/code-review/coordinator.ts',
+      'src/code-review/evidence.ts',
+      'src/code-review/capabilities.ts',
+      'src/code-review/persistence.ts',
+      'src/pipeline/orchestrator.ts',
+      'src/pipeline/stages/code-review.ts',
+      'src/pipeline/stages/rework.ts',
+      'src/pipeline/review-verdict.ts',
       'src/state/skill-active.ts',
       'src/state/workflow-transition.ts',
       'src/scripts/check-coverage.ts',
@@ -72,6 +81,65 @@ describe('project-owned mutation runner', () => {
     ]) {
       assert.ok(manifest.some((entry) => entry.target.file === file), `production manifest is missing ${file}`);
     }
+    for (const [file, functionName] of [
+      ['src/code-review/coordinator.ts', 'reconcileResultPublicationsTrusted'],
+      ['src/code-review/coordinator.ts', 'finalizeReview'],
+      ['src/code-review/evidence.ts', 'validateLaneResultEvidence'],
+      ['src/code-review/scope.ts', 'resolveBase'],
+      ['src/code-review/scope.ts', 'resolveFrozenCapabilityConfig'],
+      ['src/code-review/capabilities.ts', 'resolveTrustedEquivalents'],
+      ['src/code-review/capabilities.ts', 'deriveFrozenCapabilityConfigFromBaseFiles'],
+      ['src/code-review/persistence.ts', 'runDurableTransaction'],
+      ['src/code-review/persistence.ts', 'executePrepared'],
+      ['src/code-review/persistence.ts', 'recoverDurableTransactions'],
+      ['src/code-review/persistence.ts', 'recoverPendingReviewTransactions'],
+      ['src/pipeline/orchestrator.ts', 'runPipeline'],
+      ['src/pipeline/stages/code-review.ts', 'loadPersistedRuntimeArtifact'],
+      ['src/pipeline/stages/code-review.ts', 'validateCodeReviewStageArtifacts'],
+      ['src/pipeline/stages/code-review.ts', 'findSuccessorRuntimeArtifact'],
+      ['src/pipeline/stages/code-review.ts', 'suggestedNextPhase'],
+      ['src/pipeline/stages/rework.ts', 'isFreshReworkEvidence'],
+      ['src/pipeline/stages/rework.ts', 'validateFreshReworkEvidence'],
+      ['src/pipeline/review-verdict.ts', 'isCleanReviewVerdict'],
+    ] as const) {
+      assert.ok(
+        manifest.some((entry) => entry.target.file === file
+          && entry.target.functions.includes(functionName)),
+        `production manifest is missing ${file}#${functionName}`,
+      );
+    }
+  });
+
+  it('binds convergence and persistence mutation targets to their compiled regression suites', () => {
+    const orchestratorTarget = PRODUCTION_MUTATION_TARGETS.find((target) =>
+      target.file === 'src/pipeline/orchestrator.ts'
+      && target.classification === 'critical');
+    assert.ok(orchestratorTarget, 'pipeline orchestrator must be a critical mutation target');
+    assert.ok(orchestratorTarget.functions.includes('runPipeline'));
+    assert.ok(orchestratorTarget.operators?.includes('branch-removal'));
+    assert.ok(orchestratorTarget.operators?.includes('comparison-boundary'));
+    assert.deepEqual(orchestratorTarget.testFiles, ['dist/pipeline/__tests__/orchestrator.test.js']);
+
+    const persistenceTarget = PRODUCTION_MUTATION_TARGETS.find((target) =>
+      target.file === 'src/code-review/persistence.ts'
+      && target.classification === 'critical');
+    assert.ok(persistenceTarget, 'persistence transaction/recovery must be a critical mutation target');
+    for (const functionName of [
+      'runDurableTransaction',
+      'executePrepared',
+      'recoverDurableTransactions',
+      'recoverPendingReviewTransactions',
+    ]) {
+      assert.ok(persistenceTarget.functions.includes(functionName), `missing persistence target ${functionName}`);
+    }
+    assert.ok(persistenceTarget.operators?.includes('branch-removal'));
+    assert.ok(persistenceTarget.operators?.includes('return-replacement'));
+    assert.match(persistenceTarget.testNamePattern ?? '', /COMMITTED/);
+    assert.match(persistenceTarget.testNamePattern ?? '', /crash boundary/);
+    assert.deepEqual(persistenceTarget.testFiles, [
+      'dist/code-review/__tests__/persistence.test.js',
+      'dist/code-review/__tests__/persistence-edges.test.js',
+    ]);
   });
 
   it('applies each mutant to only its bounded source span', () => {
@@ -105,6 +173,72 @@ describe('project-owned mutation runner', () => {
   it('classifies a bounded hanging test process as timeout', async () => {
     const result = await runMutationTestProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 25);
     assert.equal(result.status, 'timeout');
+  });
+
+  it('covers both platform termination paths and the POSIX fallback on every host', async () => {
+    const hanging = ['-e', 'setInterval(() => {}, 1000)'];
+    const defaultWindowsPath = await runMutationTestProcess(process.execPath, hanging, 25, process.cwd(), {
+      platform: 'win32',
+    });
+    assert.equal(defaultWindowsPath.status, 'timeout');
+
+    let windowsTreeKillCalled = false;
+    const windowsPath = await runMutationTestProcess(process.execPath, hanging, 25, process.cwd(), {
+      platform: 'win32',
+      killWindowsProcessTree: (pid) => {
+        windowsTreeKillCalled = true;
+        process.kill(pid, 'SIGKILL');
+      },
+    });
+    assert.equal(windowsPath.status, 'timeout');
+    assert.equal(windowsTreeKillCalled, true);
+
+    const windowsFallback = await runMutationTestProcess(process.execPath, hanging, 25, process.cwd(), {
+      platform: 'win32',
+      killWindowsProcessTree: (_pid, fallback) => { fallback(); },
+    });
+    assert.equal(windowsFallback.status, 'timeout');
+
+    const windowsThrownFallback = await runMutationTestProcess(process.execPath, hanging, 25, process.cwd(), {
+      platform: 'win32',
+      killWindowsProcessTree: () => { throw new Error('simulated taskkill failure'); },
+    });
+    assert.equal(windowsThrownFallback.status, 'timeout');
+
+    const posixPath = await runMutationTestProcess(process.execPath, hanging, 25, process.cwd(), {
+      platform: 'linux',
+      killProcessGroup: (pid) => { process.kill(pid, 'SIGKILL'); },
+    });
+    assert.equal(posixPath.status, 'timeout');
+
+    const posixFallback = await runMutationTestProcess(process.execPath, hanging, 25, process.cwd(), {
+      platform: 'linux',
+      killProcessGroup: () => { throw new Error('simulated process-group failure'); },
+    });
+    assert.equal(posixFallback.status, 'timeout');
+  });
+
+  it('terminates the full spawned process tree on mutation timeout', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-mutation-process-tree-'));
+    const marker = join(root, 'orphan-survived');
+    const grandchild = [
+      "const { writeFileSync } = require('node:fs');",
+      `setTimeout(() => writeFileSync(${JSON.stringify(marker)}, 'alive'), 250);`,
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const parent = [
+      "const { spawn } = require('node:child_process');",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'ignore' });`,
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    try {
+      const result = await runMutationTestProcess(process.execPath, ['-e', parent], 50);
+      assert.equal(result.status, 'timeout');
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
+      assert.equal(existsSync(marker), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('classifies a passing test process as a surviving mutant', async () => {
@@ -209,6 +343,11 @@ describe('project-owned mutation runner', () => {
     assert.match(output.join(''), /"span"/);
     assert.match(output.join(''), /--test-name-pattern/);
     assert.match(output.join(''), /run-test-files/);
+    assert.match(output.join(''), /src\/pipeline\/orchestrator\.ts/);
+    assert.match(output.join(''), /dist\/pipeline\/__tests__\/orchestrator\.test\.js/);
+    assert.match(output.join(''), /src\/code-review\/persistence\.ts/);
+    assert.match(output.join(''), /dist\/code-review\/__tests__\/persistence\.test\.js/);
+    assert.match(output.join(''), /dist\/code-review\/__tests__\/persistence-edges\.test\.js/);
   });
 
   it('prints mutation summaries and reports execution errors through the executable entry point', async () => {

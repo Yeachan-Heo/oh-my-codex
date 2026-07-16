@@ -40,6 +40,7 @@ import {
   validateReviewTopology,
   validateTerminalReviewOutcome,
 } from './render.js';
+import { parseFrozenCapabilityConfig } from './capabilities.js';
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
@@ -136,6 +137,7 @@ export interface AcquireReviewLocksOptions {
   ownerProbe?: (owner: ReviewLockOwner) => ReviewLockOwnerStatus | Promise<ReviewLockOwnerStatus>;
   waitForChange?: (lockPath: string, remainingMs: number) => void | Promise<void>;
   onAcquired?: (name: ReviewLockName) => void;
+  beforeReclaimRename?: (lockPath: string) => void | Promise<void>;
   afterReclaimRename?: (lockPath: string, quarantinePath: string) => void | Promise<void>;
 }
 
@@ -526,8 +528,19 @@ async function publishLock(path: string, owner: ReviewLockOwner): Promise<boolea
 async function reclaimAbsentOwner(
   path: string,
   expectedNonce: string,
-  afterRename?: (lockPath: string, quarantinePath: string) => void | Promise<void>,
+  hooks: {
+    beforeRename?: (lockPath: string) => void | Promise<void>;
+    afterRename?: (lockPath: string, quarantinePath: string) => void | Promise<void>;
+  } = {},
 ): Promise<boolean> {
+  // Re-read immediately before reclaiming and only rename away a lock whose on-disk nonce still equals the
+  // one we probed as absent. A legitimate reclaimer can republish a live lock in the gap between our probe
+  // and this reclaim; renaming that live lock away would open an empty-path window a third acquirer could
+  // win, leaving two processes believing they hold the same lock plus an orphaned lock file. Fail closed
+  // (return false) so the caller re-observes and waits instead of breaking mutual exclusion.
+  const preRename = await readLockOwner(path);
+  if (preRename === null || preRename.nonce !== expectedNonce) return false;
+  await hooks.beforeRename?.(path);
   const quarantinePath = `${path}.reap-${process.pid}-${randomUUID()}`;
   try {
     await rename(path, quarantinePath);
@@ -535,7 +548,7 @@ async function reclaimAbsentOwner(
     if (isMissing(error)) return true;
     return false;
   }
-  await afterRename?.(path, quarantinePath);
+  await hooks.afterRename?.(path, quarantinePath);
   const movedOwner = await readLockOwner(quarantinePath);
   if (movedOwner?.nonce === expectedNonce) {
     await rm(quarantinePath, { force: true });
@@ -593,7 +606,10 @@ async function acquireSingleLock(
       const status = await ownerProbe(currentOwner);
       observedStatus = status;
       if (status === 'absent'
-        && await reclaimAbsentOwner(path, currentOwner.nonce, options.afterReclaimRename)) continue;
+        && await reclaimAbsentOwner(path, currentOwner.nonce, {
+          beforeRename: options.beforeReclaimRename,
+          afterRename: options.afterReclaimRename,
+        })) continue;
     }
 
     const remaining = deadline - now();
@@ -681,11 +697,14 @@ export async function publishReviewHookJournalEntry(
   const reviewId = validateUuid(input.review_id, 'review_id');
   const relativePath = validateRelativePersistencePath(input.relative_path);
   const activityPattern = new RegExp(`^${reviewId}/activity/[^/]{1,160}/[0-9a-f]{64}\\.json$`, 'u');
+  const diagnosticPattern = new RegExp(`^${reviewId}/diagnostics/[^/]{1,160}/[0-9a-f]{64}\\.json$`, 'u');
   const postToolPattern = new RegExp(
     `^${reviewId}/submissions/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/post-tool$`,
     'iu',
   );
-  if (!activityPattern.test(relativePath) && !postToolPattern.test(relativePath)) {
+  if (!activityPattern.test(relativePath)
+    && !diagnosticPattern.test(relativePath)
+    && !postToolPattern.test(relativePath)) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'hook journal target is invalid');
   }
   const locks = await acquireReviewLocks(paths, reviewId, ['journal']);
@@ -775,7 +794,7 @@ export interface DurableTransactionResult {
 
 export interface RunDurableTransactionOptions {
   crashAt?: DurableTransactionBoundary;
-  crashMode?: 'THROW' | 'SIGKILL';
+  crashMode?: 'THROW' | 'SIGKILL' | 'ABORT';
 }
 
 export interface DurableReviewPlanFactoryContext {
@@ -1267,7 +1286,7 @@ function validateReviewVerdictPayload(value: unknown): void {
 function validateScopePayload(value: unknown): void {
   const scope = requireStructuredPayload(value, [
     'selector', 'status', 'scope_hash', 'files', 'changed_lines', 'reasons',
-  ], ['base_ref', 'base_sha', 'head_sha'], 'review scope');
+  ], ['base_ref', 'base_sha', 'head_sha', 'frozen_capability_config'], 'review scope');
   const selector = requireStructuredPayload(scope.selector, ['explicit_paths'], ['requested_base'], 'scope selector');
   requirePayloadStringArray(selector.explicit_paths, 'scope explicit paths');
   if (selector.requested_base !== undefined) requirePayloadString(selector.requested_base, 'scope requested_base');
@@ -1296,6 +1315,13 @@ function validateScopePayload(value: unknown): void {
   }
   requireNonNegativeInteger(scope.changed_lines, 'scope changed_lines');
   validateReasonArray(scope.reasons, 'scope reasons');
+  if (scope.frozen_capability_config !== undefined) {
+    try {
+      parseFrozenCapabilityConfig(scope.frozen_capability_config);
+    } catch {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'scope frozen capability configuration is invalid');
+    }
+  }
   for (const key of ['base_ref', 'base_sha', 'head_sha'] as const) {
     if (scope[key] !== undefined) requirePayloadString(scope[key], `scope ${key}`);
   }
@@ -1786,20 +1812,25 @@ function validateTypedEffectPayload(
     return;
   }
   if (effect.name === 'approval') {
-    const expectedPath = `approvals/${idempotencyKey}/consumed`;
-    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE'
-      || effect.target.path !== expectedPath) {
+    if (effect.mode !== 'CREATE_ONCE_JSON' || effect.target.area !== 'REVIEW_STATE') {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'approval effect target is invalid');
     }
     const consumed = requireExactPayload(effect.payload, [
-      'schema_version', 'state', 'review_id', 'idempotency_key', 'consumed_at',
+      'schema_version', 'state', 'nonce', 'review_id', 'capability', 'source_ref',
+      'prepared_at', 'committed_at',
     ], 'approval');
-    if (consumed.schema_version !== 1 || consumed.state !== 'CONSUMED'
-      || validateUuid(consumed.review_id, 'approval review_id') !== reviewId
-      || validateUuid(consumed.idempotency_key, 'approval idempotency_key') !== idempotencyKey) {
+    const nonce = requirePayloadString(consumed.nonce, 'approval nonce');
+    const expectedPath = `approvals/consumptions/${createHash('sha256')
+      .update(nonce, 'utf8').digest('hex')}.json`;
+    if (effect.target.path !== expectedPath
+      || consumed.schema_version !== 1 || consumed.state !== 'COMMITTED'
+      || validateUuid(consumed.review_id, 'approval review_id') !== reviewId) {
       throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'approval identity conflicts');
     }
-    requirePayloadTimestamp(consumed.consumed_at, 'approval consumed_at');
+    requirePayloadEnum(consumed.capability, 'approval capability', ['LSP', 'AST'] as const);
+    requirePayloadString(consumed.source_ref, 'approval source_ref');
+    requirePayloadTimestamp(consumed.prepared_at, 'approval prepared_at');
+    requirePayloadTimestamp(consumed.committed_at, 'approval committed_at');
     return;
   }
   if (effect.name === 'lane') {
@@ -2033,6 +2064,44 @@ function validateCreatedIntentBinding(
   }
 }
 
+function validateEquivalentApprovalBinding(
+  effects: DurableTransactionEffect[],
+  reviewId: string,
+  operation: string,
+): void {
+  const approvals = effects.filter((effect) => effect.name === 'approval');
+  const reviews = effects.filter((effect) => effect.name === 'review');
+  const explicitEquivalents = reviews.length === 1
+    ? (reviews[0]!.payload as ReviewRecord).effective_config.accepted_equivalents
+      .filter((equivalent) => equivalent.source === 'EXPLICIT_USER')
+    : [];
+  if (approvals.length === 0) {
+    if ((operation === 'START_REVIEW' || operation === 'ACTIVATE_REVIEW_INTENT')
+      && explicitEquivalents.length > 0) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'explicit equivalents lack exact approval consumptions');
+    }
+    return;
+  }
+  if (reviews.length !== 1 || approvals.length !== explicitEquivalents.length) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'explicit equivalents lack exact approval consumptions');
+  }
+  const expected = new Set(explicitEquivalents.map((equivalent) => (
+    `${equivalent.capability}\0${equivalent.source_ref}`
+  )));
+  const observed = new Set<string>();
+  for (const effect of approvals) {
+    const payload = effect.payload as Record<string, unknown>;
+    if (payload.review_id !== reviewId) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'approval review identity conflicts');
+    }
+    const identity = `${String(payload.capability)}\0${String(payload.source_ref)}`;
+    if (!expected.has(identity) || observed.has(identity)) {
+      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'approval consumption conflicts with accepted equivalents');
+    }
+    observed.add(identity);
+  }
+}
+
 function validateConsumedResultInReview(
   review: ReviewRecord,
   proposalEffect: DurableTransactionEffect,
@@ -2242,6 +2311,7 @@ function validateDurablePlan(value: unknown): DurableTransactionPlan {
   validatePostToolProposalBinding(effects, idempotencyKey);
   validateActiveOverlayBinding(effects, journalScope, expectedRevision);
   validateCreatedIntentBinding(effects, journalScope, expectedRevision);
+  validateEquivalentApprovalBinding(effects, reviewId, value.operation);
   validateStopMarkerBinding(effects, reviewId);
   validateConsumptionTopology(effects, reviewId, idempotencyKey);
   if (effects.length > MAX_DURABLE_TRANSACTION_EFFECTS) {
@@ -2566,10 +2636,23 @@ function assertLocatorMatchesPrepared(
 
 function maybeCrash(boundary: DurableTransactionBoundary, options: RunDurableTransactionOptions): void {
   if (options.crashAt !== boundary) return;
+  if (options.crashMode === 'ABORT') process.abort();
   if (options.crashMode === 'SIGKILL' && process.platform !== 'win32') {
     process.kill(process.pid, 'SIGKILL');
   }
   throw new Error(`injected crash at ${boundary}`);
+}
+
+async function publishStartReceiptAtBoundary(
+  paths: ReviewPersistencePaths,
+  prepared: PreparedDurableTransaction,
+  committed: CommittedDurableTransaction,
+  options: RunDurableTransactionOptions,
+): Promise<void> {
+  if (prepared.journal_scope !== 'START') return;
+  maybeCrash('before:receipt', options);
+  await publishStartReceipt(paths, prepared, committed);
+  maybeCrash('after:receipt', options);
 }
 
 function targetPath(paths: ReviewPersistencePaths, effect: DurableTransactionEffect): string {
@@ -2623,7 +2706,7 @@ async function validateCurrentReviewState(
 
 async function validateReviewEffectCurrentState(
   paths: ReviewPersistencePaths,
-  intent: Pick<DurableTransactionPlan, 'review_id' | 'expected_revision' | 'effects'>,
+  intent: Pick<DurableTransactionPlan, 'review_id' | 'operation' | 'expected_revision' | 'effects'>,
   options: { appliedTransactionId?: string; requireApplied: boolean },
 ): Promise<void> {
   const effect = intent.effects.find((candidate) => candidate.mode === 'APPLY_REVIEW_REVISION');
@@ -2639,7 +2722,7 @@ async function validateReviewEffectCurrentState(
 
 function validateReviewOwnership(
   paths: ReviewPersistencePaths,
-  intent: Pick<DurableTransactionPlan, 'review_id' | 'effects'>,
+  intent: Pick<DurableTransactionPlan, 'review_id' | 'operation' | 'effects'>,
   current: ReviewRecord | undefined,
 ): void {
   const effect = intent.effects.find((candidate) => candidate.mode === 'APPLY_REVIEW_REVISION');
@@ -2652,6 +2735,11 @@ function validateReviewOwnership(
       || proposed.invocation_turn_id !== current.invocation_turn_id
     ))) {
     throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'review ownership conflicts');
+  }
+  if (current !== undefined
+    && !(intent.operation === 'ACTIVATE_REVIEW_INTENT' && current.status === 'CREATED')
+    && canonicalDigest(proposed.effective_config) !== canonicalDigest(current.effective_config)) {
+    throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'effective review configuration is immutable');
   }
   for (const postTool of intent.effects.filter((candidate) => candidate.name === 'post-tool')) {
     if (isPlainObject(postTool.payload)
@@ -3059,11 +3147,7 @@ async function executePrepared(
   if (committedValue !== undefined) {
     const committed = validateCommittedAgainstPrepared(committedValue, prepared);
     await validateCommittedReviewReplayState(paths, prepared);
-    if (prepared.journal_scope === 'START') {
-      maybeCrash('before:receipt', options);
-      await publishStartReceipt(paths, prepared, committed);
-      maybeCrash('after:receipt', options);
-    }
+    await publishStartReceiptAtBoundary(paths, prepared, committed, options);
     await cleanupLocator(paths, prepared);
     return { state: 'COMMITTED', response: committed.response };
   }
@@ -3078,14 +3162,7 @@ async function executePrepared(
   });
 
   maybeCrash('before:locator', options);
-  if (prepared.journal_scope === 'REVIEW') {
-    await publishLocator(paths, prepared);
-    const locator = await readJsonIfPresent(join(paths.pendingReviewTransactionsRoot, prepared.transaction_id));
-    if (locator === undefined) {
-      throw new ReviewPersistenceError('PERSISTENCE_FAILED', 'transaction recovery locator is missing');
-    }
-    assertLocatorMatchesPrepared(parseLocator(locator), prepared);
-  }
+  await publishLocator(paths, prepared);
   maybeCrash('after:locator', options);
 
   for (const name of DURABLE_EFFECT_ORDER) {
@@ -3108,11 +3185,7 @@ async function executePrepared(
   maybeCrash('before:committed', options);
   await createOnceMatching(files.committed, committed);
   maybeCrash('after:committed', options);
-  if (prepared.journal_scope === 'START') {
-    maybeCrash('before:receipt', options);
-    await publishStartReceipt(paths, prepared, committed);
-    maybeCrash('after:receipt', options);
-  }
+  await publishStartReceiptAtBoundary(paths, prepared, committed, options);
   maybeCrash('before:locator-cleanup', options);
   await cleanupLocator(paths, prepared);
   maybeCrash('after:locator-cleanup', options);

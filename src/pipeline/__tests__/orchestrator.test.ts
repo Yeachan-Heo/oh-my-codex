@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -15,6 +16,7 @@ import {
   createStrictAutopilotStages,
 } from '../orchestrator.js';
 import { createRalplanStage } from '../stages/ralplan.js';
+import { resolveGitScope, verifyScopeDrift } from '../../code-review/scope.js';
 import * as pipelineIndex from '../index.js';
 import type { PipelineConfig, PipelineStage, StageContext, StageResult } from '../types.js';
 
@@ -136,6 +138,163 @@ function cleanCodeReviewArtifact(): Record<string, unknown> {
   };
 }
 
+function reviewArtifact(options: {
+  reviewId: string;
+  revision?: number;
+  clean?: boolean;
+  scopeHash?: string;
+  finalizedAt?: string;
+  supersedesReviewId?: string;
+}): Record<string, unknown> {
+  const artifact = JSON.parse(JSON.stringify(cleanCodeReviewArtifact())) as Record<string, unknown>;
+  const clean = options.clean ?? true;
+  const scopeHash = options.scopeHash ?? 'a'.repeat(64);
+  artifact.review_id = options.reviewId;
+  artifact.revision = options.revision ?? 1;
+  artifact.status = clean ? 'FINALIZED' : 'BLOCKED';
+  artifact.updated_at = options.finalizedAt ?? '2026-07-15T00:01:00.000Z';
+  artifact.finalized_at = options.finalizedAt ?? '2026-07-15T00:01:00.000Z';
+  if (options.supersedesReviewId !== undefined) {
+    artifact.supersedes_review_id = options.supersedesReviewId;
+  }
+  const scope = artifact.scope as Record<string, unknown>;
+  scope.scope_hash = scopeHash;
+  const lanes = artifact.lanes as Array<Record<string, unknown>>;
+  for (const lane of lanes) lane.scope_hash = scopeHash;
+  const reviewer = lanes.find((lane) => lane.role === 'code-reviewer');
+  if (reviewer) {
+    reviewer.recommendation = clean ? 'APPROVE' : 'REQUEST CHANGES';
+    reviewer.findings = clean ? [] : [{
+      severity: 'HIGH',
+      title: 'Implementation remains incomplete',
+      body: 'The implementation evidence does not satisfy the review finding.',
+      file: 'src/example.ts',
+      start_line: 1,
+      fix: 'Apply and verify the requested rework.',
+    }];
+  }
+  artifact.verdict = {
+    recommendation: clean ? 'APPROVE' : 'REQUEST CHANGES',
+    architectural_status: 'CLEAR',
+    scope_status: 'FULL_SCOPE',
+    evidence_status: 'FULL_EVIDENCE',
+    rule_id: clean ? 'CLEAN_APPROVAL' : 'LANE_REQUEST_CHANGES',
+    reasons: clean ? ['ALL_REQUIRED_EVIDENCE_CLEAR'] : ['REVIEWER_REQUEST_CHANGES:reviewer-1'],
+    clean,
+  };
+  return artifact;
+}
+
+async function persistReviewArtifact(artifact: Record<string, unknown>): Promise<{
+  artifactPath: string;
+  artifactReviewId: string;
+  artifactSha256: string;
+}> {
+  const scope = await resolveGitScope({
+    workingDirectory: tempDir,
+    selector: { requested_base: 'HEAD', explicit_paths: [] },
+  });
+  artifact.scope = scope;
+  for (const lane of artifact.lanes as Array<Record<string, unknown>>) {
+    lane.scope_hash = scope.scope_hash;
+  }
+  const batch = (artifact.batches as Array<Record<string, unknown>>)[0];
+  if (batch) {
+    batch.files = scope.files.map((file) => file.path);
+    batch.changed_lines = scope.changed_lines;
+  }
+  const artifactPath = `.omx/reviews/${String(artifact.review_id)}.json`;
+  const raw = `${JSON.stringify(artifact, null, 2)}\n`;
+  await mkdir(join(tempDir, '.omx', 'reviews'), { recursive: true });
+  await writeFile(join(tempDir, artifactPath), raw);
+  assert.equal((await verifyScopeDrift(scope, { workingDirectory: tempDir })).matches, true);
+  return {
+    artifactPath,
+    artifactReviewId: String(artifact.review_id),
+    artifactSha256: createHash('sha256').update(raw).digest('hex'),
+  };
+}
+
+async function persistedStageArtifacts(artifact: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const persisted = await persistReviewArtifact(artifact);
+  const verdict = artifact.verdict as Record<string, unknown>;
+  return {
+    review_verdict: {
+      stage: 'code-review',
+      clean: verdict.clean,
+      recommendation: verdict.recommendation,
+      architectural_status: verdict.architectural_status,
+      artifact_path: persisted.artifactPath,
+      artifact_sha256: persisted.artifactSha256,
+    },
+    code_review_artifact: artifact,
+    code_review_artifact_identity: {
+      review_id: artifact.review_id,
+      revision: artifact.revision,
+      artifact_path: persisted.artifactPath,
+      artifact_sha256: persisted.artifactSha256,
+    },
+  };
+}
+
+async function persistReworkEvidence(
+  sourceReview: Record<string, unknown>,
+  reviewCycle = 1,
+): Promise<Record<string, unknown>> {
+  const executionId = '33333333-3333-4333-8333-333333333333';
+  const implementationIdentity = {
+    agent_role: 'executor',
+    thread_id: 'thread-executor',
+    produced_at: '2026-07-15T00:10:00.000Z',
+  };
+  const verificationIdentity = {
+    agent_role: 'test-engineer',
+    thread_id: 'thread-test',
+    produced_at: '2026-07-15T00:12:00.000Z',
+  };
+  const implementation = {
+    schema_version: 1,
+    artifact_kind: 'rework_implementation',
+    execution_id: executionId,
+    review_cycle: reviewCycle,
+    source_review: sourceReview,
+    source_identity: implementationIdentity,
+    changed_files: ['src/example.ts'],
+    summary: 'Applied the blocking review findings.',
+  };
+  const verification = {
+    schema_version: 1,
+    artifact_kind: 'rework_verification',
+    execution_id: executionId,
+    review_cycle: reviewCycle,
+    source_review: sourceReview,
+    source_identity: verificationIdentity,
+    checks: [{ command: 'npm test', exit_code: 0, source: 'local' }],
+  };
+  const reworkRoot = join(tempDir, '.omx', 'rework');
+  await mkdir(reworkRoot, { recursive: true });
+  const implementationRaw = `${JSON.stringify(implementation, null, 2)}\n`;
+  const verificationRaw = `${JSON.stringify(verification, null, 2)}\n`;
+  await writeFile(join(reworkRoot, 'implementation.json'), implementationRaw);
+  await writeFile(join(reworkRoot, 'verification.json'), verificationRaw);
+  return {
+    schema_version: 1,
+    review_cycle: reviewCycle,
+    source_review: sourceReview,
+    execution_id: executionId,
+    implementation_artifact: {
+      path: '.omx/rework/implementation.json',
+      sha256: createHash('sha256').update(implementationRaw).digest('hex'),
+      source_identity: implementationIdentity,
+    },
+    verification_artifact: {
+      path: '.omx/rework/verification.json',
+      sha256: createHash('sha256').update(verificationRaw).digest('hex'),
+      source_identity: verificationIdentity,
+    },
+  };
+}
+
 let tempDir: string;
 let savedOmxEnv: Pick<NodeJS.ProcessEnv, 'OMX_ROOT' | 'OMX_STATE_ROOT' | 'OMX_TEAM_STATE_ROOT' | 'OMX_SESSION_ID'>;
 
@@ -162,6 +321,14 @@ function restoreAmbientOmxEnv(): void {
 
 async function setup(): Promise<string> {
   tempDir = await mkdtemp(join(tmpdir(), 'omx-pipeline-test-'));
+  execFileSync('git', ['init', '-q'], { cwd: tempDir });
+  execFileSync('git', ['config', 'user.email', 'pipeline@example.invalid'], { cwd: tempDir });
+  execFileSync('git', ['config', 'user.name', 'Pipeline Test'], { cwd: tempDir });
+  await mkdir(join(tempDir, 'src'), { recursive: true });
+  await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 1;\n');
+  execFileSync('git', ['add', '--', 'src/example.ts'], { cwd: tempDir });
+  execFileSync('git', ['commit', '-qm', 'initial'], { cwd: tempDir });
+  await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 2;\n');
   return tempDir;
 }
 
@@ -231,11 +398,8 @@ describe('Pipeline Orchestrator', () => {
 
     it('advances the default code-review adapter to ultraqa only from its persisted final artifact', async () => {
       const artifact = cleanCodeReviewArtifact();
-      const artifactPath = `.omx/reviews/${String(artifact.review_id)}.json`;
-      const raw = `${JSON.stringify(artifact, null, 2)}\n`;
-      const artifactSha256 = createHash('sha256').update(raw).digest('hex');
-      await mkdir(join(tempDir, '.omx', 'reviews'), { recursive: true });
-      await writeFile(join(tempDir, artifactPath), raw);
+      const persisted = await persistReviewArtifact(artifact);
+      const { artifactPath, artifactSha256 } = persisted;
       const defaultConfig = createAutopilotPipelineConfig('consume final review', {
         cwd: tempDir,
         codeReviewArtifactPath: artifactPath,
@@ -281,7 +445,7 @@ describe('Pipeline Orchestrator', () => {
         ],
       });
 
-      assert.equal(result.status, 'completed');
+      assert.equal(result.status, 'completed', result.error ?? 'pipeline failed');
       assert.deepEqual(order, ['code-review', 'ultraqa']);
       const review = result.stageResults['code-review'].artifacts.review_verdict as Record<string, unknown>;
       assert.equal(review.clean, true);
@@ -298,7 +462,55 @@ describe('Pipeline Orchestrator', () => {
       );
     });
 
+    it('does not accept a self-described clean verdict without validated artifact identity', async () => {
+      let qaRuns = 0;
+      const result = await runPipeline({
+        name: 'self-described-clean-review-test',
+        task: 'reject self-described review verdict',
+        stages: [
+          makeStage('ralplan'),
+          {
+            name: 'code-review',
+            async run(): Promise<StageResult> {
+              return {
+                status: 'completed',
+                artifacts: {
+                  review_verdict: {
+                    clean: true,
+                    recommendation: 'APPROVE',
+                    architectural_status: 'CLEAR',
+                    stage: 'code-review',
+                    artifact_path: '.omx/reviews/99999999-9999-4999-8999-999999999999.json',
+                    artifact_sha256: '9'.repeat(64),
+                  },
+                  suggested_next_phase: 'ultraqa',
+                  return_to_ralplan_reason: null,
+                },
+                duration_ms: 0,
+              };
+            },
+          },
+          {
+            name: 'ultraqa',
+            async run(): Promise<StageResult> {
+              qaRuns += 1;
+              return {
+                status: 'completed',
+                artifacts: { qa_verdict: { stage: 'ultraqa', clean: true } },
+                duration_ms: 0,
+              };
+            },
+          },
+        ],
+        cwd: tempDir,
+        maxRalphIterations: 1,
+      });
 
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'code-review');
+      assert.equal(result.error, 'code_review_artifact_invalid_or_stale');
+      assert.equal(qaRuns, 0);
+    });
 
     it('returns to ralplan when code-review is not clean', async () => {
       const order: string[] = [];
@@ -325,6 +537,20 @@ describe('Pipeline Orchestrator', () => {
             order.push('code-review');
             reviewRuns += 1;
             const clean = reviewRuns > 1;
+            if (clean) {
+              const artifact = reviewArtifact({
+                reviewId: '33333333-3333-4333-8333-333333333333',
+                clean: true,
+              });
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...(await persistedStageArtifacts(artifact)),
+                  return_to_ralplan_reason: null,
+                },
+                duration_ms: 0,
+              };
+            }
             return {
               status: 'completed',
               artifacts: {
@@ -334,6 +560,7 @@ describe('Pipeline Orchestrator', () => {
                   clean,
                   stage: 'code-review',
                   artifact_path: '.omx/reviews/review-loop.json',
+                  artifact_sha256: '3'.repeat(64),
                 },
                 return_to_ralplan_reason: clean ? null : 'Review requested a plan update.',
               },
@@ -366,7 +593,7 @@ describe('Pipeline Orchestrator', () => {
         onStageTransition: (from, to) => transitions.push([from, to]),
       });
 
-      assert.equal(result.status, 'completed');
+      assert.equal(result.status, 'completed', result.error ?? 'pipeline failed');
       assert.deepEqual(order, ['ralplan', 'ralph', 'code-review', 'ralplan', 'ralph', 'code-review', 'ultraqa']);
       assert.ok(transitions.some(([from, to]) => from === 'code-review' && to === 'ralplan'));
 
@@ -379,8 +606,18 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(Object.prototype.hasOwnProperty.call(ext?.handoff_artifacts ?? {}, 'review_verdict'), false);
     });
 
-    it('routes implementation review findings to rework before returning to planning', async () => {
+    it('routes implementation findings through evidenced rework to a successor review', async () => {
       const order: string[] = [];
+      const firstArtifact = reviewArtifact({
+        reviewId: '11111111-1111-4111-8111-111111111111',
+        revision: 7,
+        clean: false,
+        finalizedAt: '2026-07-15T00:01:00.000Z',
+      });
+      const firstArtifacts = await persistedStageArtifacts(firstArtifact);
+      const firstReview = firstArtifacts.code_review_artifact_identity as Record<string, unknown>;
+      const reworkEvidence = await persistReworkEvidence(firstReview);
+      let reviewRuns = 0;
       const stages: PipelineStage[] = [
         {
           name: 'ralplan',
@@ -391,25 +628,44 @@ describe('Pipeline Orchestrator', () => {
         },
         {
           name: 'rework',
+          canSkip: (ctx) => ctx.artifacts['code-review'] === undefined,
           async run(): Promise<StageResult> {
             order.push('rework');
-            return { status: 'completed', artifacts: { implemented: true }, duration_ms: 0 };
+            await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 3;\n');
+            return {
+              status: 'completed',
+              artifacts: { rework_evidence: reworkEvidence },
+              duration_ms: 0,
+            };
           },
         },
         {
           name: 'code-review',
           async run(): Promise<StageResult> {
             order.push('code-review');
+            reviewRuns += 1;
+            const clean = reviewRuns > 1;
+            if (clean) {
+              const successorArtifact = reviewArtifact({
+                reviewId: '22222222-2222-4222-8222-222222222222',
+                clean: true,
+                finalizedAt: '2026-07-15T00:20:00.000Z',
+                supersedesReviewId: String(firstReview.review_id),
+              });
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...(await persistedStageArtifacts(successorArtifact)),
+                  suggested_next_phase: 'ultraqa',
+                  return_to_ralplan_reason: null,
+                },
+                duration_ms: 0,
+              };
+            }
             return {
               status: 'completed',
               artifacts: {
-                review_verdict: {
-                  recommendation: 'REQUEST CHANGES',
-                  architectural_status: 'CLEAR',
-                  clean: false,
-                  stage: 'code-review',
-                  artifact_path: '.omx/reviews/rework-needed.json',
-                },
+                ...firstArtifacts,
                 suggested_next_phase: 'rework',
                 return_to_ralplan_reason: 'Implementation finding requires rework.',
               },
@@ -421,7 +677,16 @@ describe('Pipeline Orchestrator', () => {
           name: 'ultraqa',
           async run(): Promise<StageResult> {
             order.push('ultraqa');
-            return { status: 'completed', artifacts: { qa_verdict: { stage: 'ultraqa', clean: true } }, duration_ms: 0 };
+            return {
+              status: 'completed',
+              artifacts: {
+                qa_verdict: {
+                  stage: 'ultraqa', clean: true, skipped: false,
+                  url: 'https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/4',
+                },
+              },
+              duration_ms: 0,
+            };
           },
         },
       ];
@@ -434,10 +699,334 @@ describe('Pipeline Orchestrator', () => {
         maxRalphIterations: 2,
       });
 
-      assert.equal(result.status, 'failed');
-      assert.deepEqual(order.slice(0, 4), ['ralplan', 'rework', 'code-review', 'rework']);
+      assert.equal(result.status, 'completed');
+      assert.deepEqual(order, ['ralplan', 'code-review', 'rework', 'code-review', 'ultraqa']);
       const ext = await readPipelineState(tempDir);
-      assert.equal(ext?.return_to_ralplan_reason, 'Implementation finding requires rework.');
+      assert.equal(ext?.return_to_ralplan_reason, null);
+    });
+
+    it('fails rework when fresh implementation and verification evidence is missing', async () => {
+      let reviewRuns = 0;
+      const blockingArtifacts = await persistedStageArtifacts(reviewArtifact({
+        reviewId: '44444444-4444-4444-8444-444444444444',
+        clean: false,
+      }));
+      const result = await runPipeline({
+        name: 'review-rework-evidence-test',
+        task: 'require rework evidence',
+        stages: [
+          makeStage('ralplan'),
+          {
+            name: 'rework',
+            canSkip: (ctx) => ctx.artifacts['code-review'] === undefined,
+            async run(): Promise<StageResult> {
+              return { status: 'completed', artifacts: { instruction: '$ultragoal fix' }, duration_ms: 0 };
+            },
+          },
+          {
+            name: 'code-review',
+            async run(): Promise<StageResult> {
+              reviewRuns += 1;
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...blockingArtifacts,
+                  suggested_next_phase: 'rework',
+                },
+                duration_ms: 0,
+              };
+            },
+          },
+        ],
+        cwd: tempDir,
+      });
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'rework');
+      assert.equal(result.error, 'rework_execution_evidence_missing_or_stale');
+      assert.equal(reviewRuns, 1);
+    });
+
+    it('rejects reuse of the blocking review artifact after evidenced rework', async () => {
+      const blockingArtifacts = await persistedStageArtifacts(reviewArtifact({
+        reviewId: '55555555-5555-4555-8555-555555555555',
+        revision: 3,
+        clean: false,
+      }));
+      const identity = blockingArtifacts.code_review_artifact_identity as Record<string, unknown>;
+      const reworkEvidence = await persistReworkEvidence(identity);
+      let reviewRuns = 0;
+      const result = await runPipeline({
+        name: 'review-successor-identity-test',
+        task: 'require successor review',
+        stages: [
+          makeStage('ralplan'),
+          {
+            name: 'rework',
+            canSkip: (ctx) => ctx.artifacts['code-review'] === undefined,
+            async run(): Promise<StageResult> {
+              return {
+                status: 'completed',
+                artifacts: { rework_evidence: reworkEvidence },
+                duration_ms: 0,
+              };
+            },
+          },
+          {
+            name: 'code-review',
+            async run(): Promise<StageResult> {
+              reviewRuns += 1;
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...blockingArtifacts,
+                  suggested_next_phase: 'rework',
+                },
+                duration_ms: 0,
+              };
+            },
+          },
+          makeStage('ultraqa', { artifacts: { qa_verdict: { clean: true } } }),
+        ],
+        cwd: tempDir,
+      });
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'code-review');
+      assert.equal(result.error, 'successor_review_evidence_missing_or_reused');
+      assert.equal(reviewRuns, 2);
+    });
+
+    it('rejects a correctly linked successor that is not newer than completed rework', async () => {
+      const blockingArtifacts = await persistedStageArtifacts(reviewArtifact({
+        reviewId: '77777777-7777-4777-8777-777777777777',
+        revision: 2,
+        clean: false,
+      }));
+      const blockingReview = blockingArtifacts.code_review_artifact_identity as Record<string, unknown>;
+      const reworkEvidence = await persistReworkEvidence(blockingReview);
+      let reviewRuns = 0;
+      const result = await runPipeline({
+        name: 'review-successor-scope-freshness-test',
+        task: 'require successor review to bind post-rework scope',
+        stages: [
+          makeStage('ralplan'),
+          {
+            name: 'rework',
+            canSkip: (ctx) => ctx.artifacts['code-review'] === undefined,
+            async run(): Promise<StageResult> {
+              return {
+                status: 'completed',
+                artifacts: { rework_evidence: reworkEvidence },
+                duration_ms: 0,
+              };
+            },
+          },
+          {
+            name: 'code-review',
+            async run(): Promise<StageResult> {
+              reviewRuns += 1;
+              const clean = reviewRuns > 1;
+              if (clean) {
+                const staleSuccessor = reviewArtifact({
+                  reviewId: '88888888-8888-4888-8888-888888888888',
+                  clean: true,
+                  finalizedAt: '2026-07-15T00:12:00.000Z',
+                  supersedesReviewId: String(blockingReview.review_id),
+                });
+                return {
+                  status: 'completed',
+                  artifacts: {
+                    ...(await persistedStageArtifacts(staleSuccessor)),
+                    suggested_next_phase: 'ultraqa',
+                    return_to_ralplan_reason: null,
+                  },
+                  duration_ms: 0,
+                };
+              }
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...blockingArtifacts,
+                  suggested_next_phase: 'rework',
+                  return_to_ralplan_reason: 'Implementation finding requires rework.',
+                },
+                duration_ms: 0,
+              };
+            },
+          },
+          makeStage('ultraqa', { artifacts: { qa_verdict: { stage: 'ultraqa', clean: true } } }),
+        ],
+        cwd: tempDir,
+        maxRalphIterations: 2,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'code-review');
+      assert.equal(result.error, 'successor_review_evidence_missing_or_reused');
+      assert.equal(reviewRuns, 2);
+    });
+
+    it('rejects a clean successor that does not supersede the blocking review', async () => {
+      const blockingArtifacts = await persistedStageArtifacts(reviewArtifact({
+        reviewId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        revision: 2,
+        clean: false,
+      }));
+      const blockingReview = blockingArtifacts.code_review_artifact_identity as Record<string, unknown>;
+      const reworkEvidence = await persistReworkEvidence(blockingReview);
+      let reviewRuns = 0;
+      const result = await runPipeline({
+        name: 'review-successor-linkage-test',
+        task: 'require successor review linkage',
+        stages: [
+          makeStage('ralplan'),
+          {
+            name: 'rework',
+            canSkip: (ctx) => ctx.artifacts['code-review'] === undefined,
+            async run(): Promise<StageResult> {
+              return {
+                status: 'completed',
+                artifacts: { rework_evidence: reworkEvidence },
+                duration_ms: 0,
+              };
+            },
+          },
+          {
+            name: 'code-review',
+            async run(): Promise<StageResult> {
+              reviewRuns += 1;
+              if (reviewRuns > 1) {
+                const unrelated = reviewArtifact({
+                  reviewId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+                  clean: true,
+                  finalizedAt: '2026-07-15T00:20:00.000Z',
+                });
+                return {
+                  status: 'completed',
+                  artifacts: {
+                    ...(await persistedStageArtifacts(unrelated)),
+                    suggested_next_phase: 'ultraqa',
+                    return_to_ralplan_reason: null,
+                  },
+                  duration_ms: 0,
+                };
+              }
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...blockingArtifacts,
+                  suggested_next_phase: 'rework',
+                  return_to_ralplan_reason: 'Implementation finding requires rework.',
+                },
+                duration_ms: 0,
+              };
+            },
+          },
+          makeStage('ultraqa', { artifacts: { qa_verdict: { stage: 'ultraqa', clean: true } } }),
+        ],
+        cwd: tempDir,
+        maxRalphIterations: 2,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'code-review');
+      assert.equal(result.error, 'successor_review_evidence_missing_or_reused');
+      assert.equal(reviewRuns, 2);
+    });
+
+    it('fails closed when a completed code-review omits its verdict', async () => {
+      let reviewRuns = 0;
+      const result = await runPipeline({
+        name: 'missing-review-verdict-test',
+        task: 'reject absent verdict',
+        stages: [makeStage('ralplan'), {
+          name: 'code-review',
+          async run(): Promise<StageResult> {
+            reviewRuns += 1;
+            if (reviewRuns > 1) throw new Error('code-review reran after the quality-gate limit');
+            return { status: 'completed', artifacts: {}, duration_ms: 0 };
+          },
+        }],
+        cwd: tempDir,
+        maxRalphIterations: 1,
+      });
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'code-review');
+      assert.equal(result.error, 'Autopilot quality gates were not clean after 1 cycle(s).');
+      assert.equal(reviewRuns, 1);
+    });
+
+    it('falls back to configured ralplan when a custom pipeline omits rework', async () => {
+      const order: string[] = [];
+      let reviewRuns = 0;
+      const result = await runPipeline({
+        name: 'review-rework-fallback-test',
+        task: 'avoid restarting an unsupported phase',
+        stages: [
+          makeStage('deep-interview', undefined, { canSkip: () => {
+            order.push('deep-interview');
+            return false;
+          } }),
+          {
+            name: 'ralplan',
+            async run(): Promise<StageResult> {
+              order.push('ralplan');
+              return { status: 'completed', artifacts: {}, duration_ms: 0 };
+            },
+          },
+          {
+            name: 'code-review',
+          async run(): Promise<StageResult> {
+            order.push('code-review');
+            reviewRuns += 1;
+            const clean = reviewRuns > 1;
+            if (clean) {
+              const artifact = reviewArtifact({
+                reviewId: '44444444-4444-4444-8444-444444444444',
+                clean: true,
+              });
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...(await persistedStageArtifacts(artifact)),
+                  suggested_next_phase: 'ultraqa',
+                  return_to_ralplan_reason: null,
+                },
+                duration_ms: 0,
+              };
+            }
+            return {
+                status: 'completed',
+                artifacts: {
+                  review_verdict: {
+                    stage: 'code-review',
+                    clean,
+                    recommendation: clean ? 'APPROVE' : 'REQUEST CHANGES',
+                    architectural_status: 'CLEAR',
+                    artifact_path: '.omx/reviews/custom-rework-fallback.json',
+                    artifact_sha256: '4'.repeat(64),
+                  },
+                  suggested_next_phase: clean ? 'ultraqa' : 'rework',
+                  return_to_ralplan_reason: clean ? null : 'Implementation finding requires rework.',
+                },
+                duration_ms: 0,
+              };
+            },
+          },
+          makeStage('ultraqa', {
+            artifacts: {
+              qa_verdict: {
+                stage: 'ultraqa', clean: true, skipped: false, summary: 'QA clean.',
+                url: 'https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/3',
+              },
+              return_to_ralplan_reason: null,
+            },
+          }),
+        ],
+        cwd: tempDir,
+        maxRalphIterations: 2,
+      });
+      assert.equal(result.status, 'completed', result.error ?? 'pipeline failed');
+      assert.deepEqual(order, ['deep-interview', 'ralplan', 'code-review', 'ralplan', 'code-review']);
     });
 
     it('threads return-loop review cycle into the rerun ralplan stage context', async () => {
@@ -512,6 +1101,10 @@ describe('Pipeline Orchestrator', () => {
     it('returns to ralplan rather than deep-interview after default quality-gate failures', async () => {
       const order: string[] = [];
       let qaRuns = 0;
+      const cleanReviewArtifacts = await persistedStageArtifacts(reviewArtifact({
+        reviewId: '55555555-5555-4555-8555-555555555555',
+        clean: true,
+      }));
       const stages: PipelineStage[] = [
         makeStage('deep-interview', undefined, {
           canSkip: () => {
@@ -529,7 +1122,7 @@ describe('Pipeline Orchestrator', () => {
         makeStage('ultragoal', { artifacts: { implemented: true } }),
         makeStage('code-review', {
           artifacts: {
-            review_verdict: { stage: 'code-review', recommendation: 'APPROVE', architectural_status: 'CLEAR', clean: true, artifact_path: '.omx/reviews/default-quality.json' },
+            ...cleanReviewArtifacts,
             return_to_ralplan_reason: null,
           },
         }),
@@ -575,19 +1168,29 @@ describe('Pipeline Orchestrator', () => {
     });
 
     it('fails after bounded non-clean code-review cycles', async () => {
+      let reviewRuns = 0;
       const stages: PipelineStage[] = [
         makeStage('ralplan'),
         makeStage('ralph'),
-        makeStage('code-review', {
-          artifacts: {
-            review_verdict: {
-              recommendation: 'REQUEST CHANGES',
-              architectural_status: 'WATCH',
-              clean: false,
-            },
-            return_to_ralplan_reason: 'Review still has findings.',
+        {
+          name: 'code-review',
+          async run(): Promise<StageResult> {
+            reviewRuns += 1;
+            if (reviewRuns > 2) throw new Error('code-review exceeded its configured cycle budget');
+            return {
+              status: 'completed',
+              artifacts: {
+                review_verdict: {
+                  recommendation: 'REQUEST CHANGES',
+                  architectural_status: 'WATCH',
+                  clean: false,
+                },
+                return_to_ralplan_reason: 'Review still has findings.',
+              },
+              duration_ms: 0,
+            };
           },
-        }),
+        },
       ];
 
       const result = await runPipeline({
@@ -601,6 +1204,7 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.status, 'failed');
       assert.equal(result.failedStage, 'code-review');
       assert.match(result.error ?? '', /Autopilot quality gates were not clean after 2 cycle/);
+      assert.equal(reviewRuns, 2);
     });
 
 
@@ -614,6 +1218,20 @@ describe('Pipeline Orchestrator', () => {
           async run(): Promise<StageResult> {
             reviewRuns += 1;
             const clean = reviewRuns > 1;
+            if (clean) {
+              const artifact = reviewArtifact({
+                reviewId: '66666666-6666-4666-8666-666666666666',
+                clean: true,
+              });
+              return {
+                status: 'completed',
+                artifacts: {
+                  ...(await persistedStageArtifacts(artifact)),
+                  return_to_ralplan_reason: null,
+                },
+                duration_ms: 0,
+              };
+            }
             return {
               status: 'completed',
               artifacts: {
@@ -623,6 +1241,7 @@ describe('Pipeline Orchestrator', () => {
                   architectural_status: clean ? 'CLEAR' : 'BLOCK',
                   clean,
                   artifact_path: clean ? '.omx/reviews/final-clean.json' : '.omx/reviews/stale-block.json',
+                  artifact_sha256: clean ? '6'.repeat(64) : '7'.repeat(64),
                 },
                 return_to_ralplan_reason: clean ? null : 'Stale BLOCK must be replaced after clean review.',
               },
@@ -768,6 +1387,9 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.stageResults['skippable'].status, 'skipped');
       assert.ok(!ran.includes('skippable'));
       assert.ok(ran.includes('after-skip'));
+      assert.equal(Object.hasOwn(result.artifacts, 'skippable'), false);
+      const ext = await readPipelineState(tempDir);
+      assert.equal(Object.hasOwn(ext?.handoff_artifacts ?? {}, 'skippable'), false);
     });
 
     it('materializes ralplan consensus handoff artifacts when ralplan is skipped', async () => {
@@ -1071,19 +1693,113 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(config.maxRalphIterations, 10);
       assert.equal(config.workerCount, 2);
       assert.equal(config.agentType, 'executor');
-      assert.deepEqual(config.stages.map((stage) => stage.name), ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa']);
+      assert.deepEqual(config.stages.map((stage) => stage.name), [
+        'deep-interview', 'ralplan', 'ultragoal', 'rework', 'code-review', 'ultraqa',
+      ]);
+    });
+
+    it('skips default rework initially and enables it for implementation review findings', async () => {
+      const rework = createStrictAutopilotStages().find((stage) => stage.name === 'rework');
+      assert.ok(rework);
+      const context: StageContext = {
+        task: 'fix review findings',
+        cwd: tempDir,
+        artifacts: {},
+      };
+      assert.equal(rework.canSkip?.(context), true);
+      context.artifacts['code-review'] = {
+        suggested_next_phase: 'rework',
+        review_verdict: { clean: false, recommendation: 'REQUEST CHANGES' },
+        code_review_artifact_identity: {
+          review_id: '77777777-7777-4777-8777-777777777777',
+          revision: 1,
+          artifact_path: '.omx/reviews/77777777-7777-4777-8777-777777777777.json',
+          artifact_sha256: '8'.repeat(64),
+        },
+      };
+      context.artifacts.review_cycle = 1;
+      assert.equal(rework.canSkip?.(context), false);
+      const result = await rework.run(context);
+      assert.equal(result.status, 'failed');
+      assert.equal(result.error, 'rework_execution_evidence_missing_or_stale');
+      assert.equal(result.artifacts.stage, 'rework');
+      assert.match(String(result.artifacts.instruction), /review findings/iu);
+    });
+
+    it('rediscovers the latest persisted review artifact on a successor code-review pass', async () => {
+      const firstReview = reviewArtifact({
+        reviewId: '11111111-1111-4111-8111-111111111111',
+        revision: 1,
+        clean: false,
+        finalizedAt: '2026-07-15T00:01:00.000Z',
+      });
+      const firstPersisted = await persistReviewArtifact(firstReview);
+      const codeReview = createStrictAutopilotStages(firstPersisted).find((stage) => stage.name === 'code-review');
+      assert.ok(codeReview);
+
+      const firstResult = await codeReview.run({
+        task: 'consume first review',
+        cwd: tempDir,
+        artifacts: { ultragoal: { implemented: true } },
+      });
+      assert.equal(
+        (firstResult.artifacts.code_review_artifact_identity as Record<string, unknown>).review_id,
+        firstReview.review_id,
+      );
+      assert.equal((firstResult.artifacts.review_verdict as Record<string, unknown>).clean, false);
+
+      const reworkEvidence = await persistReworkEvidence(
+        firstResult.artifacts.code_review_artifact_identity as Record<string, unknown>,
+      );
+      await writeFile(join(tempDir, 'src', 'example.ts'), 'export const value = 3;\n');
+
+      const successorReview = reviewArtifact({
+        reviewId: '22222222-2222-4222-8222-222222222222',
+        revision: 1,
+        clean: true,
+        finalizedAt: '2026-07-15T00:20:00.000Z',
+        supersedesReviewId: String(firstReview.review_id),
+      });
+      await persistReviewArtifact(reviewArtifact({
+        reviewId: '99999999-9999-4999-8999-999999999999',
+        clean: true,
+        finalizedAt: '2026-07-15T00:19:00.000Z',
+        supersedesReviewId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      }));
+      await persistReviewArtifact(successorReview);
+      await writeFile(join(tempDir, '.omx', 'reviews', 'not-a-review-artifact.txt'), 'ignored');
+
+      const successorResult = await codeReview.run({
+        task: 'consume successor review',
+        cwd: tempDir,
+        artifacts: {
+          review_cycle: 1,
+          'code-review': firstResult.artifacts,
+          rework: {
+            rework_evidence: reworkEvidence,
+          },
+        },
+      });
+
+      assert.equal(
+        (successorResult.artifacts.code_review_artifact_identity as Record<string, unknown>).review_id,
+        successorReview.review_id,
+      );
+      assert.equal((successorResult.artifacts.review_verdict as Record<string, unknown>).clean, true);
     });
 
 
 
     it('exposes strict default autopilot stages', () => {
-      assert.deepEqual(createStrictAutopilotStages().map((stage) => stage.name), ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa']);
+      assert.deepEqual(createStrictAutopilotStages().map((stage) => stage.name), [
+        'deep-interview', 'ralplan', 'ultragoal', 'rework', 'code-review', 'ultraqa',
+      ]);
     });
 
     it('exports strict default autopilot stages from the public pipeline index', () => {
       assert.deepEqual(
         pipelineIndex.createStrictAutopilotStages().map((stage) => stage.name),
-        ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa'],
+        ['deep-interview', 'ralplan', 'ultragoal', 'rework', 'code-review', 'ultraqa'],
       );
     });
 

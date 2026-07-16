@@ -3,7 +3,9 @@ import type {
   AcceptedEquivalent,
   AcceptedEquivalentRequest,
   EvidenceStatus,
+  FrozenCapabilityConfig,
   ReviewRecommendation,
+  ScopeManifest,
   ScopeFile,
 } from './contract.js';
 
@@ -47,29 +49,6 @@ export interface CapabilityEvaluation {
   evidence_status: EvidenceStatus;
   maximum_recommendation: ReviewRecommendation;
   reasons: string[];
-}
-
-/** Applicability derived by the coordinator from repository configuration at the frozen base commit. */
-export interface FrozenCapabilityConfig {
-  schema_version: 1;
-  typescript_javascript: {
-    compiler_or_typecheck: boolean;
-    lint: boolean;
-  };
-  rust: {
-    ast_backend: boolean;
-    clippy: boolean;
-  };
-  shell: {
-    parser: boolean;
-    lint: boolean;
-    rg: boolean;
-  };
-  structured_data: {
-    parser: boolean;
-    schema: boolean;
-    lint: boolean;
-  };
 }
 
 export interface BuildCapabilityPlanOptions {
@@ -183,6 +162,11 @@ const EMPTY_FROZEN_CAPABILITY_CONFIG: FrozenCapabilityConfig = {
   structured_data: { parser: false, schema: false, lint: false },
 };
 
+export interface FrozenBaseConfigFile {
+  path: string;
+  content?: string;
+}
+
 function byteCompare(left: string, right: string): number {
   return Buffer.from(left).compare(Buffer.from(right));
 }
@@ -208,7 +192,7 @@ function isExactBooleanRecord(
     && keys.every((key) => typeof value[key] === 'boolean');
 }
 
-function emptyFrozenCapabilityConfig(): FrozenCapabilityConfig {
+export function emptyFrozenCapabilityConfig(): FrozenCapabilityConfig {
   return {
     schema_version: 1,
     typescript_javascript: { ...EMPTY_FROZEN_CAPABILITY_CONFIG.typescript_javascript },
@@ -216,6 +200,51 @@ function emptyFrozenCapabilityConfig(): FrozenCapabilityConfig {
     shell: { ...EMPTY_FROZEN_CAPABILITY_CONFIG.shell },
     structured_data: { ...EMPTY_FROZEN_CAPABILITY_CONFIG.structured_data },
   };
+}
+
+function packageScripts(content: string | undefined): Record<string, string> {
+  if (content === undefined) return {};
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!isPlainObject(parsed) || !isPlainObject(parsed.scripts)) return {};
+    return Object.fromEntries(Object.entries(parsed.scripts)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  } catch {
+    return {};
+  }
+}
+
+/** Pure derivation over files read from one immutable Git tree. */
+export function deriveFrozenCapabilityConfigFromBaseFiles(
+  files: readonly FrozenBaseConfigFile[],
+): FrozenCapabilityConfig {
+  const config = emptyFrozenCapabilityConfig();
+  const paths = files.map((file) => file.path.replaceAll('\\', '/'));
+  const scripts = files
+    .filter((file) => posix.basename(file.path) === 'package.json')
+    .flatMap((file) => Object.entries(packageScripts(file.content)));
+  const scriptCommands = scripts.map(([, command]) => command);
+
+  config.typescript_javascript.compiler_or_typecheck = paths.some((path) =>
+    /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/iu.test(path))
+    || scripts.some(([name, command]) =>
+      /(?:^|:)(?:typecheck|type-check|check-types|types)(?:$|:)/iu.test(name)
+      || /(?:^|[\s;&|])(?:npx\s+)?(?:tsc|vue-tsc)(?:\s|$)/iu.test(command));
+  config.typescript_javascript.lint = paths.some((path) =>
+    /(?:^|\/)(?:eslint\.config\.[cm]?[jt]s|\.eslintrc(?:\.[^/]+)?|biome\.jsonc?|oxlint\.json)$/iu.test(path))
+    || scripts.some(([name, command]) =>
+      /(?:^|:)lint(?:$|:)/iu.test(name)
+      && /(?:^|[\s;&|])(?:npx\s+)?(?:eslint|biome|oxlint|next\s+lint)(?:\s|$)/iu.test(command));
+  config.rust.clippy = paths.some((path) => /(?:^|\/)\.?clippy\.toml$/iu.test(path))
+    || scriptCommands.some((command) => /(?:^|[\s;&|])cargo\s+clippy(?:\s|$)/iu.test(command));
+  const ownsShell = paths.some((path) => /\.(?:sh|bash|zsh)$/iu.test(path));
+  const ownsShellcheck = paths.some((path) => /(?:^|\/)\.shellcheckrc$/iu.test(path))
+    || scriptCommands.some((command) => /(?:^|[\s;&|])shellcheck(?:\s|$)/iu.test(command));
+  config.shell.parser = ownsShell;
+  config.shell.rg = ownsShell;
+  config.shell.lint = ownsShellcheck;
+  config.structured_data.lint = paths.some((path) => /(?:^|\/)biome\.jsonc?$/iu.test(path));
+  return config;
 }
 
 export function parseFrozenCapabilityConfig(value: unknown): FrozenCapabilityConfig {
@@ -333,10 +362,11 @@ function requiredCapabilities(
       return required;
     }
     case 'SHELL': {
-      const required: Capability[] = [];
-      if (config.shell.parser) required.push('COMPILER');
+      // Spec §7: the shell parser (COMPILER) and bounded rg (RG_FALLBACK) are unconditional for any
+      // in-scope shell file; only lint is "configured". Gating parser/rg on base-tree ownership would
+      // let a change that adds the repository's first shell script approve with zero diagnostics.
+      const required: Capability[] = ['COMPILER', 'RG_FALLBACK'];
       if (config.shell.lint) required.push('LINT');
-      if (config.shell.rg) required.push('RG_FALLBACK');
       return required;
     }
     case 'STRUCTURED_DATA': {
@@ -403,6 +433,15 @@ export function buildCapabilityPlan(
     capabilities,
     inherently_degraded: kindSet.has('UNKNOWN_TEXT'),
   };
+}
+
+export function buildCapabilityPlanForScope(
+  scope: ScopeManifest,
+  files: readonly ScopeFile[] = scope.files,
+): CapabilityPlan {
+  return buildCapabilityPlan(files, {
+    trustedFrozenConfig: scope.frozen_capability_config,
+  });
 }
 
 function failedEvaluation(reasons: string[]): CapabilityEvaluation {

@@ -8,11 +8,19 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { basename, dirname, relative, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
 import { validateFinalReviewArtifact } from '../../code-review/render.js';
 import type { FinalReviewArtifact } from '../../code-review/contract.js';
+import { verifyScopeDrift } from '../../code-review/scope.js';
+import { parseCodeReviewStageArtifacts } from '../review-verdict.js';
+import {
+  parseReviewArtifactIdentity,
+  reworkEvidenceCompletedAt,
+  validateFreshReworkEvidence,
+} from './rework.js';
 
 export interface CodeReviewStageOptions {
   /** Optional review recommendation injected by tests or runtime adapters. */
@@ -63,30 +71,41 @@ function isPathInside(parent: string, candidate: string): boolean {
   return child !== '' && !child.startsWith('..') && !child.startsWith('/') && !child.startsWith('\\');
 }
 
-async function loadPersistedRuntimeArtifact(
+export async function loadPersistedRuntimeArtifact(
   artifactPath: string,
-  options: CodeReviewStageOptions,
-  ctx: StageContext,
+  cwd: string,
+  expected?: { reviewId?: string; sha256?: string },
 ): Promise<RuntimeArtifact> {
-  const reviewsRoot = resolve(ctx.cwd, '.omx', 'reviews');
-  const absolutePath = resolve(ctx.cwd, artifactPath);
-  const displayPath = relative(resolve(ctx.cwd), absolutePath).replaceAll('\\', '/');
-  if (options.artifactReviewId === undefined
-    || options.artifactSha256 === undefined
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(options.artifactReviewId)
-    || !/^[0-9a-f]{64}$/u.test(options.artifactSha256)
-    || !isPathInside(reviewsRoot, absolutePath)
+  const reviewsRoot = resolve(cwd, '.omx', 'reviews');
+  const absolutePath = resolve(cwd, artifactPath);
+  const displayPath = relative(resolve(cwd), absolutePath).replaceAll('\\', '/');
+  if (!isPathInside(reviewsRoot, absolutePath)
     || dirname(absolutePath) !== reviewsRoot
-    || !/^[0-9a-f-]{36}\.json$/u.test(basename(absolutePath))) {
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/iu.test(basename(absolutePath))) {
     return { artifact: null, artifactPath: displayPath || artifactPath };
   }
   try {
+    const rootMetadata = await lstat(reviewsRoot);
+    const metadata = await lstat(absolutePath);
+    const resolvedReviewsRoot = await realpath(reviewsRoot);
+    const resolvedArtifactPath = await realpath(absolutePath);
+    if (!rootMetadata.isDirectory()
+      || rootMetadata.isSymbolicLink()
+      || !metadata.isFile()
+      || metadata.isSymbolicLink()
+      || metadata.size > 2 * 1024 * 1024
+      || dirname(resolvedArtifactPath) !== resolvedReviewsRoot) {
+      return { artifact: null, artifactPath: displayPath || artifactPath };
+    }
     const raw = await readFile(absolutePath);
     const artifactSha256 = createHash('sha256').update(raw).digest('hex');
     const artifact = validateFinalReviewArtifact(JSON.parse(raw.toString('utf8')) as unknown);
+    const scopeValid = await isReviewArtifactScopeCurrent(artifact, cwd);
     if (basename(absolutePath) !== `${artifact.review_id}.json`
-      || options.artifactReviewId !== artifact.review_id
-      || options.artifactSha256 !== artifactSha256) {
+      || (expected?.reviewId !== undefined && expected.reviewId !== artifact.review_id)
+      || (expected?.sha256 !== undefined && expected.sha256 !== artifactSha256)
+      || !reviewVerdictConsistent(artifact)
+      || !scopeValid) {
       return { artifact: null, artifactPath: displayPath || artifactPath };
     }
     return { artifact, artifactPath: displayPath, artifactSha256 };
@@ -96,10 +115,138 @@ async function loadPersistedRuntimeArtifact(
 }
 
 async function findRuntimeArtifact(options: CodeReviewStageOptions, ctx: StageContext): Promise<RuntimeArtifact> {
+  const successor = await findSuccessorRuntimeArtifact(ctx);
+  if (successor.artifact !== null) return successor;
+  if (hasSuccessorReworkEvidence(ctx)) {
+    return { artifact: null, artifactPath: MISSING_ARTIFACT_PATH };
+  }
   if (options.artifactPath !== undefined) {
-    return await loadPersistedRuntimeArtifact(options.artifactPath, options, ctx);
+    if (options.artifactReviewId === undefined
+      || options.artifactSha256 === undefined
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(options.artifactReviewId)
+      || !/^[0-9a-f]{64}$/u.test(options.artifactSha256)) {
+      return { artifact: null, artifactPath: options.artifactPath };
+    }
+    return await loadPersistedRuntimeArtifact(options.artifactPath, ctx.cwd, {
+      reviewId: options.artifactReviewId,
+      sha256: options.artifactSha256,
+    });
   }
   return { artifact: null, artifactPath: MISSING_ARTIFACT_PATH };
+}
+
+function reviewVerdictConsistent(artifact: FinalReviewArtifact): boolean {
+  if (artifact.status === 'FINALIZED') {
+    if (artifact.verdict.clean !== (
+      artifact.verdict.recommendation === 'APPROVE'
+      && artifact.verdict.architectural_status === 'CLEAR'
+    ) && artifact.verdict.rule_id !== 'NO_CHANGES') {
+      return false;
+    }
+  }
+  if (artifact.status === 'BLOCKED') {
+    return artifact.verdict.clean === false
+      && artifact.verdict.recommendation === 'REQUEST CHANGES';
+  }
+  return true;
+}
+
+export async function isReviewArtifactScopeCurrent(
+  artifact: FinalReviewArtifact,
+  cwd: string,
+): Promise<boolean> {
+  if (artifact.scope === undefined) return false;
+  try {
+    return (await verifyScopeDrift(artifact.scope, { workingDirectory: cwd })).matches;
+  } catch {
+    return false;
+  }
+}
+
+export async function validateCodeReviewStageArtifacts(
+  artifacts: unknown,
+  cwd: string,
+): Promise<FinalReviewArtifact | null> {
+  const parsed = parseCodeReviewStageArtifacts(artifacts);
+  if (parsed === null) return null;
+  const runtime = await loadPersistedRuntimeArtifact(parsed.identity.artifact_path, cwd, {
+    reviewId: parsed.identity.review_id,
+    sha256: parsed.identity.artifact_sha256,
+  });
+  return runtime.artifact !== null
+    && isDeepStrictEqual(runtime.artifact, parsed.artifact)
+    ? runtime.artifact
+    : null;
+}
+
+function hasSuccessorReworkEvidence(ctx: StageContext): boolean {
+  const rework = ctx.artifacts.rework;
+  return !!rework
+    && typeof rework === 'object'
+    && !Array.isArray(rework)
+    && Object.hasOwn(rework as Record<string, unknown>, 'rework_evidence');
+}
+
+async function findSuccessorRuntimeArtifact(ctx: StageContext): Promise<RuntimeArtifact> {
+  const rework = ctx.artifacts.rework;
+  if (!rework || typeof rework !== 'object' || Array.isArray(rework)) {
+    return { artifact: null, artifactPath: MISSING_ARTIFACT_PATH };
+  }
+  const evidence = (rework as Record<string, unknown>).rework_evidence;
+  const sourceReview = evidence && typeof evidence === 'object'
+    ? parseReviewArtifactIdentity((evidence as Record<string, unknown>).source_review)
+    : null;
+  const reviewCycle = typeof ctx.artifacts.review_cycle === 'number' ? ctx.artifacts.review_cycle : 0;
+  const priorReview = ctx.artifacts['code-review'];
+  const priorArtifact = priorReview && typeof priorReview === 'object' && !Array.isArray(priorReview)
+    ? (priorReview as Record<string, unknown>).code_review_artifact
+    : undefined;
+  const sourceReviewFinalizedAt = priorArtifact && typeof priorArtifact === 'object' && !Array.isArray(priorArtifact)
+    ? (priorArtifact as Record<string, unknown>).finalized_at
+    : undefined;
+  const validatedEvidence = sourceReview === null
+    ? null
+    : await validateFreshReworkEvidence(
+      evidence,
+      sourceReview,
+      reviewCycle,
+      ctx.cwd,
+      typeof sourceReviewFinalizedAt === 'string' ? sourceReviewFinalizedAt : undefined,
+    );
+  const completedAt = reworkEvidenceCompletedAt(validatedEvidence);
+  if (validatedEvidence === null || sourceReview === null || completedAt === null) {
+    return { artifact: null, artifactPath: MISSING_ARTIFACT_PATH };
+  }
+
+  const reviewsRoot = resolve(ctx.cwd, '.omx', 'reviews');
+  let entries: string[];
+  try {
+    entries = await readdir(reviewsRoot);
+  } catch {
+    return { artifact: null, artifactPath: MISSING_ARTIFACT_PATH };
+  }
+
+  const candidates: Array<RuntimeArtifact & { finalizedAtMs: number }> = [];
+  for (const entry of entries) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/iu.test(entry)) {
+      continue;
+    }
+    const artifactPath = `.omx/reviews/${entry}`;
+    const runtime = await loadPersistedRuntimeArtifact(artifactPath, ctx.cwd);
+    if (runtime.artifact === null || runtime.artifactSha256 === undefined) continue;
+    const finalizedAtMs = Date.parse(runtime.artifact.finalized_at);
+    if (runtime.artifact.status !== 'FINALIZED'
+      || runtime.artifact.supersedes_review_id !== sourceReview.review_id
+      || runtime.artifact.review_id === sourceReview.review_id
+      || runtime.artifact.verdict.clean !== true
+      || Number.isNaN(finalizedAtMs)
+      || finalizedAtMs <= Date.parse(completedAt)) {
+      continue;
+    }
+    candidates.push({ ...runtime, finalizedAtMs });
+  }
+  candidates.sort((left, right) => right.finalizedAtMs - left.finalizedAtMs);
+  return candidates[0] ?? { artifact: null, artifactPath: MISSING_ARTIFACT_PATH };
 }
 
 function suggestedNextPhase(artifact: FinalReviewArtifact | null): 'ultraqa' | 'rework' | 'ralplan' {
