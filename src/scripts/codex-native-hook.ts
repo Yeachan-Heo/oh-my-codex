@@ -4291,6 +4291,10 @@ function extractCommandLiteralAssignments(command: string): Map<string, string> 
       new RegExp(`\\bprintf\\b[^;\\n]*\\s-v\\s+${escapedName}\\b`),
       new RegExp(`\\b(?:read|unset)\\b[^;\\n]*\\b${escapedName}\\b`),
       new RegExp(`\\b(?:declare|typeset|local|export)\\b[^;\\n]*\\b${escapedName}(?:\\[[^\\]]+\\])?(?:\\b|\\s*(?:\\+?=))`),
+      new RegExp(`\\b(?:mapfile|readarray)\\b[^;\\n]*\\b${escapedName}\\b`),
+      new RegExp(`\\bgetopts\\b[^;\\n]*\\s${escapedName}\\b`),
+      new RegExp(`\\b(?:for|select)\\s+${escapedName}\\b`),
+      new RegExp(`\\$\\{${escapedName}(?::?[-+=?])`),
     ];
     if (/\beval\b|\|/.test(remaining) || mutationPatterns.some((pattern) => pattern.test(remaining))) {
       assignments.delete(name);

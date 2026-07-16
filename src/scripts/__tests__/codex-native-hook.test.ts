@@ -17091,6 +17091,12 @@ exit 0
 			for (const [name, command] of [
 				["printf-v rebind", 'SNAP=".omx/context/example.md"; printf -v SNAP %s src/leak.ts; printf x > "$SNAP"'],
 				["append rebind", 'SNAP=".omx/context"; SNAP+=/../../src/leak.ts; printf x > "$SNAP"'],
+				["mapfile rebind", 'SNAP=".omx/context/example.md"; mapfile -t SNAP <<< src/leak.ts; printf x > "$SNAP"'],
+				["readarray rebind", 'SNAP=".omx/context/example.md"; readarray -t SNAP <<< src/leak.ts; printf x > "$SNAP"'],
+				["getopts rebind", 'SNAP=".omx/context/example.md"; getopts x SNAP -x src/leak.ts; printf x > "$SNAP"'],
+				["for rebind", 'SNAP=".omx/context/example.md"; for SNAP in src/leak.ts; do printf x > "$SNAP"; done'],
+				["select rebind", 'SNAP=".omx/context/example.md"; select SNAP in src/leak.ts; do printf x > "$SNAP"; break; done'],
+				["parameter assignment rebind", 'SNAP=".omx/context/example.md"; : "${SNAP:=src/leak.ts}"; printf x > "$SNAP"'],
 				["context write then execute", "printf 'touch src/owned.ts\\n' > .omx/context/payload.txt; bash .omx/context/payload.txt"],
 				["late tmp binding execute", "printf 'touch src/owned.ts\\n' > .omx/tmp/payload.txt; S=.omx/tmp/payload.txt; bash \"$S\""],
 			] as const) {
