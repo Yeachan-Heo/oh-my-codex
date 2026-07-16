@@ -4356,8 +4356,8 @@ function maskQuotedRedirectMetacharsForCommandScan(command: string): string {
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
   const commandOutsideHeredocBodies = maskQuotedRedirectMetacharsForCommandScan(stripHeredocBodiesForCommandScan(command));
-  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^<>])(?:[0-9]*)(?:<>|>>|>\||>&|>)\s*(["']?)([^\s&|;<>]+)\1/g)) {
-    const candidate = safeString(match[2]).trim();
+  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^<>])(?:[0-9]*)(?:<>|>>|>\||>&|>)\s*(?:"([^"]*)"|'([^']*)'|([^\s&|;<>]+))/g)) {
+    const candidate = safeString(match[1] ?? match[2] ?? match[3]).trim();
     // >&2 and >&- duplicate or close a descriptor; only non-fd words open a file.
     if (candidate && candidate !== "-" && !/^\d+$/.test(candidate) && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
   }
@@ -8844,29 +8844,35 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
   if (toolName === "Bash") {
     if (collectOmxStateCommandOperations(command, "write").length > 0
       || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
-    if (/(?:^|[;&|(){}\n]\s*)(?:pushd|popd)(?:\s|$)/.test(command)
-      && commandHasDeepInterviewWriteIntent(command, 0, cwd)) return true;
     let effectiveCwd = cwd;
+    const directoryStack: string[] = [];
     for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
       const words = tokenizeShellWords(segment);
-      const changedCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
-      if (changedCwd !== null) {
-        const commandIndex = findWrappedCommandPositionIndex(words, 0);
-        const cdSegmentWrites = [
-          ...extractDeepInterviewCommandWriteTargets(segment),
-          ...extractConductorEditorWriteTargets(segment),
-          ...extractConductorInterpreterWrites(segment).flatMap((write) => write.targets),
-        ];
-        if (commandIndex === null || words.length !== commandIndex + 2 || cdSegmentWrites.length > 0) return true;
+      const commandIndex = findWrappedCommandPositionIndex(words, 0);
+      const commandName = commandIndex === null ? "" : basename(words[commandIndex] ?? "").toLowerCase();
+      if (commandName === "cd" || commandName === "pushd" || commandName === "popd") {
+        const expectedLength = commandName === "popd" ? commandIndex! + 1 : commandIndex! + 2;
+        if (words.length !== expectedLength) return true;
+        let changedCwd: string | null = null;
+        if (commandName === "popd") {
+          changedCwd = directoryStack.pop() ?? null;
+        } else {
+          changedCwd = resolveSimpleCdCommandCwd(effectiveCwd, ["cd", words[commandIndex! + 1] ?? ""]);
+          if (commandName === "pushd" && changedCwd !== null) directoryStack.push(effectiveCwd);
+        }
+        if (changedCwd === null) return true;
         try {
           const target = lstatSync(changedCwd);
           if (!target.isDirectory() || target.isSymbolicLink()) return true;
+          accessSync(changedCwd, fsConstants.X_OK);
         } catch {
           return true;
         }
         effectiveCwd = changedCwd;
         continue;
       }
+      const changedCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
+      if (changedCwd !== null) return true;
       const segmentWrites = [
         ...extractDeepInterviewCommandWriteTargets(segment),
         ...extractConductorEditorWriteTargets(segment),
@@ -8902,7 +8908,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   if (!activeState) return null;
 
   const toolName = safeString(payload.tool_name).trim();
-  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload)) {
+  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd)) {
     return buildPlanningStateScopeDeny(
       safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -9024,7 +9030,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   if (!activeState) return null;
 
   const toolName = safeString(payload.tool_name).trim();
-  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload)) {
+  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd)) {
     return buildPlanningStateScopeDeny(
       "Deep-interview",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -17906,13 +17912,13 @@ function buildConductorBashBlockedDetail(cwd: string, command: string): string {
     ?? "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata";
 }
 
-function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayload): boolean {
+function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayload, policyCwd: string): boolean {
   const input = safeObject(payload.tool_input);
   if (!input || !conductorStateWritePayloadHasExactSchema(input)) return false;
   const sessionId = readPayloadSessionId(payload);
   if (safeString(input.session_id).trim() !== sessionId) return false;
   if (!suppliedSessionAliasesMatch(input, sessionId)) return false;
-  if (safeString(input.workingDirectory).trim() === "" || resolve(safeString(input.workingDirectory)) !== resolve(safeString(payload.cwd))) return false;
+  if (safeString(input.workingDirectory).trim() === "" || resolve(safeString(input.workingDirectory)) !== resolve(policyCwd)) return false;
   return true;
 }
 
@@ -17986,7 +17992,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     if (toolName === "mcp__omx_state__state_clear") {
       blocked = true;
       blockedDetail = "Structured state_clear is not authorized while a Conductor workflow is active";
-    } else if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload)) {
+    } else if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, policyCwd)) {
       blocked = true;
       blockedDetail = "Structured state writes must use the canonical active-session payload schema";
     }

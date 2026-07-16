@@ -12009,6 +12009,37 @@ exit 0
 				);
 			}
 
+			for (const command of [
+				'printf x > "src/new file.ts"',
+				"printf x > 'src/another file.ts'",
+			]) {
+				const quotedRedirectWrite = await preToolUse({
+					hook_event_name: "PreToolUse", cwd, session_id: "sess-di-artifact", tool_name: "Bash", tool_input: { command },
+				});
+				assert.equal(quotedRedirectWrite.outputJson?.decision, "block", command);
+			}
+
+			const policySubdir = join(cwd, "nested-policy-cwd");
+			await mkdir(policySubdir, { recursive: true });
+			const previousOmxRootForPolicy = process.env.OMX_ROOT;
+			try {
+				process.env.OMX_ROOT = cwd;
+				const noncanonicalPolicyStateWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: policySubdir,
+					session_id: "sess-di-artifact",
+					thread_id: threadId,
+					agent_id: threadId,
+					tool_name: "mcp__omx_state__state_write",
+					tool_input: { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: policySubdir },
+				}, { cwd: policySubdir });
+				assert.equal(noncanonicalPolicyStateWrite.outputJson?.decision, "block");
+				assert.match(String(noncanonicalPolicyStateWrite.outputJson?.reason ?? ""), /canonical session and workingDirectory scope/);
+			} finally {
+				if (previousOmxRootForPolicy === undefined) delete process.env.OMX_ROOT;
+				else process.env.OMX_ROOT = previousOmxRootForPolicy;
+			}
+
 			for (const [name, toolInput] of [
 				["missing session", { mode: "deep-interview", active: true, workingDirectory: cwd }],
 				["missing cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact" }],
@@ -12113,6 +12144,18 @@ exit 0
 				}, { cwd });
 				assert.equal(allowedTeamBashProductWrite.outputJson, null);
 
+				const teamProductPushdWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-artifact",
+					tool_name: "Bash",
+					tool_input: { command: "pushd src; printf x > pushd-runtime.ts; popd" },
+				}, { cwd });
+				assert.equal(teamProductPushdWrite.outputJson, null);
+
+				const inaccessibleDir = join(cwd, "inaccessible-cwd");
+				await mkdir(inaccessibleDir, { recursive: true, mode: 0o000 });
+
 				const protectedStateAlias = join(cwd, "src", "team-state-alias.json");
 				await symlink(join(stateDir, "sessions", "sess-di-artifact", "deep-interview-state.json"), protectedStateAlias, "file");
 				const protectedStateDirectoryAlias = join(cwd, "state-directory-alias");
@@ -12137,6 +12180,9 @@ exit 0
 					["failed cd keeps canonical cwd", "Bash", { command: "cd definitely-missing; printf x > .omx/state/session.json" }],
 					["cd redirect mutates before transition", "Bash", { command: "cd src > .omx/state/session.json" }],
 					["pushd protected state", "Bash", { command: `pushd ${JSON.stringify(join(stateDir, "sessions", "sess-di-artifact"))}; printf x > ultragoal-state.json` }],
+					["builtin pushd protected state", "Bash", { command: `builtin pushd ${JSON.stringify(join(stateDir, "sessions", "sess-di-artifact"))}; printf x > ultragoal-state.json` }],
+					["command pushd protected state", "Bash", { command: `command pushd ${JSON.stringify(join(stateDir, "sessions", "sess-di-artifact"))}; printf x > ultragoal-state.json` }],
+					["inaccessible cd keeps canonical cwd", "Bash", { command: `cd ${JSON.stringify(inaccessibleDir)}; printf x > .omx/state/session.json` }],
 				] as const) {
 					const protectedTeamWrite = await dispatchCodexNativeHook({
 						hook_event_name: "PreToolUse",

@@ -1570,17 +1570,30 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       join(stateDir, 'sessions', sessionId, 'ultragoal-state.json'),
       JSON.stringify({ active: true, mode: 'ultragoal', current_phase: 'executing', session_id: sessionId }),
     );
-    writeFileSync(
-      join(stateDir, 'team', teamName, 'config.json'),
-      JSON.stringify({
-        name: teamName,
-        leader_pane_id: '%packed-leader',
-        workers: [{ name: 'worker-1', pane_id: '%packed-worker' }],
-      }),
-    );
+    const packedTeamAuthority = {
+      name: teamName,
+      leader_pane_id: '%packed-leader',
+      leader_cwd: smokeCwd,
+      team_state_root: stateDir,
+      workers: [{
+        name: 'worker-1',
+        pane_id: '%packed-worker',
+        working_dir: smokeCwd,
+        worktree_path: smokeCwd,
+        team_state_root: stateDir,
+      }],
+    };
+    for (const fileName of ['config.json', 'manifest.v2.json']) {
+      writeFileSync(join(stateDir, 'team', teamName, fileName), JSON.stringify(packedTeamAuthority));
+    }
     writeFileSync(
       join(stateDir, 'team', teamName, 'workers', 'worker-1', 'identity.json'),
-      JSON.stringify({ name: 'worker-1', pane_id: '%packed-worker' }),
+      JSON.stringify({
+        name: 'worker-1',
+        pane_id: '%packed-worker',
+        team_state_root: stateDir,
+        worktree_path: smokeCwd,
+      }),
     );
 
     const invokeAuthorizationProbe = (payload: Record<string, unknown>, env: NodeJS.ProcessEnv) => run(
@@ -1607,9 +1620,10 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       ...hookEnv,
       OMX_TEAM_WORKER: `${teamName}/worker-1`,
       OMX_TEAM_STATE_ROOT: stateDir,
+      OMX_TEAM_INTERNAL_WORKER: `${teamName}/worker-1`,
+      OMX_TEAM_LEADER_CWD: smokeCwd,
       TMUX_PANE: '%packed-worker',
     };
-    delete teamEnv.OMX_TEAM_INTERNAL_WORKER;
     const teamOutput = parseNativeHookSmokeOutput(
       'PreToolUse official Team root',
       String(invokeAuthorizationProbe(officialTeamRootPayload, teamEnv).stdout),
@@ -1668,10 +1682,11 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       actor: 'main-root' | 'native-child',
       probe: string,
       output: Record<string, unknown>,
+      expectedReason = actor === 'native-child' ? /OWNER_CONFIRMATION_REQUIRED/ : /Main-root Conductor mode is active/,
     ): void => requireNativeHookPermissionDeny(
       `PreToolUse ${actor} ${probe}`,
       output,
-      actor === 'native-child' ? /OWNER_CONFIRMATION_REQUIRED/ : /Main-root Conductor mode is active/,
+      expectedReason,
     );
     for (const actor of ['main-root', 'native-child'] as const) {
       for (const [probe, command] of [
@@ -1890,7 +1905,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
           tool_input: { command: 'PATH=/usr/bin:/bin gh issue create --title x --body y' },
         }, childEnv).stdout),
       ),
-      /OWNER_CONFIRMATION_REQUIRED/,
+      /Main-root Conductor mode is active/,
     );
     if (Object.keys(runActorProbe('main-root', 'finite cp metadata leaf control', 'Bash', {
       command: 'cp .omx/state/payload .omx/handoffs/run-1/payload',
@@ -3424,13 +3439,13 @@ PY`],
       'sessionless planning state write',
       'mcp__omx_state__state_write',
       { mode: 'ralplan', active: true, current_phase: 'planning' },
-    ));
+    ), /PROVENANCE_DENIED/);
     requireActorDeny('native-child', 'foreign planning state write', runActorProbe(
       'native-child',
       'foreign planning state write',
       'mcp__omx_state__state_write',
       { mode: 'ralplan', active: false, current_phase: 'complete', session_id: 'foreign-session' },
-    ));
+    ), /PROVENANCE_DENIED/);
     symlinkSync(join(smokeCwd, 'src'), join(smokeCwd, '.omx', 'drafts'));
     for (const actor of ['main-root', 'native-child'] as const) {
       const output = runActorProbe(actor, 'linked planning artifact redirect', 'Bash', {
