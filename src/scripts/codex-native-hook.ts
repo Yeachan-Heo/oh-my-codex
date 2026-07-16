@@ -17951,7 +17951,7 @@ function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayloa
   if (!canonicalSessionId) return false;
   if (safeString(input.session_id).trim() !== canonicalSessionId) return false;
   if (!suppliedSessionAliasesMatch(input, canonicalSessionId)) return false;
-  let nestedState = safeObject(input.state);
+  let nestedState = input.state === undefined ? null : safeObject(input.state);
   while (nestedState) {
     if (!suppliedSessionAliasesMatch(nestedState, canonicalSessionId)) return false;
     const nestedSessionId = safeString(nestedState.session_id).trim();
@@ -17960,7 +17960,7 @@ function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayloa
     if (nestedWorkingDirectory && resolve(nestedWorkingDirectory) !== resolve(policyCwd)) return false;
     const nestedMode = safeString(nestedState.mode).trim();
     if (nestedMode && nestedMode !== safeString(input.mode).trim()) return false;
-    nestedState = safeObject(nestedState.state);
+    nestedState = nestedState.state === undefined ? null : safeObject(nestedState.state);
   }
   if (safeString(input.workingDirectory).trim() === "" || resolve(safeString(input.workingDirectory)) !== resolve(policyCwd)) return false;
   return true;
