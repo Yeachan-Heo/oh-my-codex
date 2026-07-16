@@ -12133,7 +12133,7 @@ exit 0
 				};
 				await writeJson(join(teamRoot, "manifest.v2.json"), teamAuthority);
 				await writeJson(join(teamRoot, "config.json"), teamAuthority);
-				process.env.OMX_TEAM_WORKER = `${teamName}/${workerName}`;
+				process.env.OMX_TEAM_WORKER = `deep-display/${workerName}`;
 				process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/${workerName}`;
 				process.env.OMX_TEAM_STATE_ROOT = stateDir;
 				process.env.OMX_TEAM_LEADER_CWD = cwd;
@@ -17087,6 +17087,20 @@ exit 0
 				},
 			}, { cwd });
 			assert.equal(blockedReassignedRedirect.outputJson?.decision, "block");
+
+			const blockedLaterRebindRedirect = await dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "sess-di-var-redirect",
+				agent_id: "thread-di-var-redirect",
+				thread_id: "thread-di-var-redirect",
+				tool_name: "Bash",
+				tool_use_id: "tool-di-var-redirect-later-rebind",
+				tool_input: {
+					command: 'SNAP=".omx/context/example.md"; :; SNAP="src/leak.ts"; printf x > "$SNAP"',
+				},
+			}, { cwd });
+			assert.equal(blockedLaterRebindRedirect.outputJson?.decision, "block");
 
 			const blockedUnresolvedVarRedirect = await dispatchCodexNativeHook(
 				{

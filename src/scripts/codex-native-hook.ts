@@ -2607,13 +2607,9 @@ function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: s
 function readTeamWorkerEnvironment(): { teamName: string; workerName: string } | null {
   const internalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER));
   const externalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
-  if (
-    internalWorker
-    && externalWorker
-    && (internalWorker.teamName !== externalWorker.teamName || internalWorker.workerName !== externalWorker.workerName)
-  ) {
-    return null;
-  }
+  if (internalWorker && externalWorker && internalWorker.workerName !== externalWorker.workerName) return null;
+  // The public Team name is a display alias; only the session-scoped internal
+  // identity is authoritative for state-root/config/manifest validation.
   return internalWorker ?? externalWorker;
 }
 
@@ -4286,6 +4282,11 @@ function extractCommandLiteralAssignments(command: string): Map<string, string> 
       assignments.set(name, match[2] ?? match[3] ?? match[4] ?? "");
     }
     remaining = remaining.slice(safeString(match[0]).length);
+  }
+  for (const name of [...assignments.keys()]) {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const laterAssignment = new RegExp(`(?:^|[\\s;&|(){}])(?:export\\s+)?${escapedName}\\s*=`);
+    if (laterAssignment.test(remaining)) assignments.delete(name);
   }
   return assignments;
 }
