@@ -4460,7 +4460,7 @@ function conductorHeredocRedirectHasBoundedProducer(command: string, fullCommand
   if (openers.length !== 1 || !openers[0]?.quoted || extractDeepInterviewCommandRedirectTargets(command).length !== 1) return false;
   const words = tokenizeConductorShellWords(command);
   const commandIndex = skipShellCommandPositionPrefixWords(words, 0);
-  if (commandIndex !== 0 || splitShellCommandSegments(stripHeredocBodiesForCommandScan(fullCommand)).filter((segment) => segment.trim() !== "").length !== 1) return false;
+  if (commandIndex !== 0) return false;
   if (commandNameFromShellWord(words[commandIndex] ?? "") !== "cat" || conductorRedirectProducerMayBeShadowed(fullCommand, "cat")) return false;
   let sawHeredoc = false;
   let sawOutput = false;
@@ -8686,7 +8686,7 @@ function isAllowedDeepInterviewBashWrite(
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0
     && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && conductorCommandMayMutatePathResolution(command)) return false;
-  if (extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0)) return false;
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0 && !mutation.mainRootStructuredStateWrite && !mutation.mainRootStructuredOrchestrationMutation)) return false;
 
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target, sessionId))) return false;
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target, sessionId));
@@ -8795,7 +8795,7 @@ function isAllowedRalplanBashWrite(
     && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target, sessionId));
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && conductorCommandMayMutatePathResolution(command)) return false;
-  if (extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0)) return false;
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0 && !mutation.mainRootStructuredStateWrite && !mutation.mainRootStructuredOrchestrationMutation)) return false;
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0
     && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
 
