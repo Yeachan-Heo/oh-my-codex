@@ -9312,7 +9312,6 @@ async function resolvePreToolUseWriteActor(
   sessionId: string,
 ): Promise<PreToolUseWriteActor> {
   if (payloadHasConflictingIdentityAliases(payload)) return "provenance-conflict";
-  if (hasSubagentThreadSpawnProvenance(payload)) return "native-child";
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
   const session = trackingState?.sessions?.[sessionId];
   const payloadThreadId = readPayloadThreadId(payload);
@@ -9329,6 +9328,7 @@ async function resolvePreToolUseWriteActor(
     ? safeString(rootSessionState.native_session_id).trim()
     : "";
   if (!payloadAgentId && !payloadThreadId && leaderNativeSessionId && payloadSessionId === leaderNativeSessionId) return "main-root";
+  if (hasSubagentThreadSpawnProvenance(payload)) return "native-child";
 
   if (payloadHasOwnerIdentityClaim(payload)) return "native-child";
   if (!payloadAgentId && isTypedAgentRolePayload(payload)) return "native-child";
