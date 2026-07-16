@@ -4287,6 +4287,14 @@ function extractCommandLiteralAssignments(command: string): Map<string, string> 
     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const laterAssignment = new RegExp(`(?:^|[\\s;&|(){}])(?:export\\s+)?${escapedName}\\s*=`);
     if (laterAssignment.test(remaining)) assignments.delete(name);
+    const mutationPatterns = [
+      new RegExp(`\\bprintf\\b[^;\\n]*\\s-v\\s+${escapedName}\\b`),
+      new RegExp(`\\b(?:read|unset)\\b[^;\\n]*\\b${escapedName}\\b`),
+      new RegExp(`\\b(?:declare|typeset|local|export)\\b[^;\\n]*\\b${escapedName}(?:\\b|\\s*=)`),
+    ];
+    if (/\beval\b|\|/.test(remaining) || mutationPatterns.some((pattern) => pattern.test(remaining))) {
+      assignments.delete(name);
+    }
   }
   return assignments;
 }
@@ -8596,6 +8604,9 @@ function isAllowedDeepInterviewBashWrite(
   activeState?: Record<string, unknown>,
   sessionId = "",
 ): boolean {
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
+  if (extractDeepInterviewCommandWriteTargets(command).length > 0
+    && /(?:^|[;&|(){}\n]\s*)(?:bash|sh|zsh|node|nodejs|python|python3|ruby|perl|bun|tsx)(?:\s|$)/.test(stripHeredocBodiesForCommandScan(command))) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
     const stateWordIndex = words.indexOf("state");
@@ -8756,6 +8767,9 @@ function isAllowedRalplanBashWrite(
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
     && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target, sessionId));
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
+  if (targets.length > 0
+    && /(?:^|[;&|(){}\n]\s*)(?:bash|sh|zsh|node|nodejs|python|python3|ruby|perl|bun|tsx)(?:\s|$)/.test(stripHeredocBodiesForCommandScan(command))) return false;
 
   if (beadsCommand.present) {
     return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);

@@ -17102,6 +17102,24 @@ exit 0
 			}, { cwd });
 			assert.equal(blockedLaterRebindRedirect.outputJson?.decision, "block");
 
+			for (const [name, command] of [
+				["printf-v rebind", 'SNAP=".omx/context/example.md"; printf -v SNAP %s src/leak.ts; printf x > "$SNAP"'],
+				["context write then execute", "printf 'touch src/owned.ts\\n' > .omx/context/payload.txt; bash .omx/context/payload.txt"],
+				["late tmp binding execute", "printf 'touch src/owned.ts\\n' > .omx/tmp/payload.txt; S=.omx/tmp/payload.txt; bash \"$S\""],
+			] as const) {
+				const blockedDynamic = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-var-redirect",
+					agent_id: "thread-di-var-redirect",
+					thread_id: "thread-di-var-redirect",
+					tool_name: "Bash",
+					tool_use_id: `tool-di-var-redirect-${name}`,
+					tool_input: { command },
+				}, { cwd });
+				assert.equal(blockedDynamic.outputJson?.decision, "block", name);
+			}
+
 			const blockedUnresolvedVarRedirect = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "PreToolUse",
