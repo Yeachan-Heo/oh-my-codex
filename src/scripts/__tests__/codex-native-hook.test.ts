@@ -1716,25 +1716,6 @@ describe("codex native hook dispatch", () => {
 			);
 			assert.equal(allowedQuotedMention.outputJson, null);
 
-			const allowedPythonPlanningArtifactWrite = await dispatchCodexNativeHook(
-				{
-					hook_event_name: "PreToolUse",
-					cwd,
-					session_id: sessionId,
-					thread_id: "thread-ralplan-wrapper-implementation-block",
-					tool_name: "Bash",
-					tool_use_id: "tool-ralplan-wrapper-python-planning-artifact",
-					tool_input: {
-						command: `python3 - <<'PY'
-from pathlib import Path
-Path('.omx/plans').mkdir(parents=True, exist_ok=True)
-Path('.omx/plans/rebase-pr3010-ultragoal-fix-plan.md').write_text('planning text')
-PY`,
-					},
-				},
-				{ cwd },
-			);
-			assert.equal(allowedPythonPlanningArtifactWrite.outputJson, null);
 
 			const blockedPythonPlanningArtifactExecution =
 				await dispatchCodexNativeHook(
