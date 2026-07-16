@@ -2628,19 +2628,49 @@ async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> 
 
   const teamRoot = join(stateRoot, "team", workerContext.teamName);
   const identity = await readJsonIfExists(join(teamRoot, "workers", workerContext.workerName, "identity.json"));
-  const teamState = await readJsonIfExists(join(teamRoot, "manifest.v2.json"))
-    ?? await readJsonIfExists(join(teamRoot, "config.json"));
-  if (!identity || !teamState) return false;
+  const manifest = await readJsonIfExists(join(teamRoot, "manifest.v2.json"));
+  const config = await readJsonIfExists(join(teamRoot, "config.json"));
+  if (!identity || !manifest || !config) return false;
+
+  const canonicalStateRoot = resolve(stateRoot);
+  const canonicalCwd = resolve(cwd);
+  const canonicalLeaderCwd = resolve(safeString(process.env.OMX_TEAM_LEADER_CWD).trim() || cwd);
+  const pathMatches = (value: unknown, expected: string): boolean => {
+    const candidate = safeString(value).trim();
+    if (!candidate) return false;
+    try {
+      return resolve(candidate) === expected;
+    } catch {
+      return false;
+    }
+  };
+  const matchingWorker = (state: Record<string, unknown>): Record<string, unknown> | null => {
+    const workers = Array.isArray(state.workers) ? state.workers : [];
+    return workers
+      .map((candidate) => safeObject(candidate))
+      .find((candidate) => safeString(candidate.name).trim() === workerContext.workerName) ?? null;
+  };
+  const manifestWorker = matchingWorker(manifest);
+  const configWorker = matchingWorker(config);
+  if (!manifestWorker || !configWorker) return false;
   if (safeString(identity.name).trim() !== workerContext.workerName) return false;
   if (safeString(identity.pane_id).trim() !== currentPaneId) return false;
-  if (safeString(teamState.name).trim() !== workerContext.teamName) return false;
-  if (safeString(teamState.leader_pane_id).trim() === currentPaneId) return false;
-
-  const workers = Array.isArray(teamState.workers) ? teamState.workers : [];
-  const worker = workers
-    .map((candidate) => safeObject(candidate))
-    .find((candidate) => safeString(candidate.name).trim() === workerContext.workerName);
-  return Boolean(worker && safeString(worker.pane_id).trim() === currentPaneId);
+  if (!pathMatches(identity.team_state_root, canonicalStateRoot)) return false;
+  if (!pathMatches(identity.worktree_path, canonicalCwd)) return false;
+  for (const state of [manifest, config]) {
+    if (safeString(state.name).trim() !== workerContext.teamName) return false;
+    if (safeString(state.leader_pane_id).trim() === currentPaneId) return false;
+    if (!pathMatches(state.team_state_root, canonicalStateRoot)) return false;
+    if (!pathMatches(state.leader_cwd, canonicalLeaderCwd)) return false;
+  }
+  if (safeString(manifest.leader_pane_id).trim() !== safeString(config.leader_pane_id).trim()) return false;
+  for (const worker of [manifestWorker, configWorker]) {
+    if (safeString(worker.pane_id).trim() !== currentPaneId) return false;
+    if (!pathMatches(worker.team_state_root, canonicalStateRoot)) return false;
+    const workerCwd = safeString(worker.working_dir).trim() || safeString(worker.worktree_path).trim();
+    if (!pathMatches(workerCwd, canonicalCwd)) return false;
+  }
+  return true;
 }
 
 async function resolveTeamStateDirForWorkerContext(
@@ -3962,16 +3992,11 @@ function isProtectedPlanningStatePath(relativePath: string): boolean {
 function isRawProtectedPlanningStateCandidate(stateDir: string, cwd: string, rawPath: string): boolean {
   try {
     const absolutePath = resolve(cwd, rawPath);
-    const normalizedAbsolutePath = absolutePath.replace(/\\/g, "/");
-    const fileName = normalizeProtectedPlanningStateFileName(basename(absolutePath));
-    if (
-      PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName)
-      || normalizedAbsolutePath.includes("/.omx/state/sessions/")
-    ) return true;
     const relativePath = relative(resolve(stateDir), absolutePath).replace(/\\/g, "/");
-    if (!relativePath || relativePath.startsWith("../") || relativePath === "..") return false;
-    const components = relativePath.split("/").map(normalizeProtectedPlanningStateFileName);
-    return components[0] === "sessions";
+    if (relativePath.startsWith("../") || relativePath === "..") return false;
+    if (!relativePath) return true;
+    const canonicalRelativePath = relativePath ? `.omx/state/${relativePath}` : ".omx/state";
+    return isProtectedPlanningStatePath(canonicalRelativePath);
   } catch {
     return true;
   }
@@ -4319,7 +4344,7 @@ function maskQuotedRedirectMetacharsForCommandScan(command: string): string {
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
   const commandOutsideHeredocBodies = maskQuotedRedirectMetacharsForCommandScan(stripHeredocBodiesForCommandScan(command));
-  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^>])(?:[0-9]*)(?:>>|>\||>&|>)\s*(["']?)([^\s&|;<>]+)\1/g)) {
+  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^<>])(?:[0-9]*)(?:<>|>>|>\||>&|>)\s*(["']?)([^\s&|;<>]+)\1/g)) {
     const candidate = safeString(match[2]).trim();
     // >&2 and >&- duplicate or close a descriptor; only non-fd words open a file.
     if (candidate && candidate !== "-" && !/^\d+$/.test(candidate) && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
@@ -4474,7 +4499,7 @@ function conductorMetadataWriteSizesStayBounded(cwd: string, command: string): b
       }
     }
     const redirectScanSegment = maskQuotedRedirectMetacharsForCommandScan(segment);
-    for (const match of redirectScanSegment.matchAll(/(?:^|[^>])(?:[0-9]*)(>>|>\||>&|>)\s*(["']?)([^\s&|;<>]+)\2/g)) {
+    for (const match of redirectScanSegment.matchAll(/(?:^|[^<>])(?:[0-9]*)(<>|>>|>\||>&|>)\s*(["']?)([^\s&|;<>]+)\2/g)) {
       const operator = match[1] ?? "";
       const target = safeString(match[3]).trim();
       if (!target || target === "-" || /^\d+$/.test(target)) continue;
@@ -8245,7 +8270,7 @@ function hasExistingDurableDeepInterviewHandoffEvidence(cwd: string): boolean {
   return false;
 }
 
-function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string): boolean {
+function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, authoritativeSessionId: string): boolean {
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
   if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
@@ -8254,7 +8279,13 @@ function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string):
   const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
   if (stateWriteOperations.length !== 1 || stateWriteOperations[0]?.nested) return false;
   const stateWriteOperation = stateWriteOperations[0];
-  if (!stateWriteOperation || !readStateWriteInputPayload(cwd, canonicalCommand, command)) return false;
+  if (!stateWriteOperation) return false;
+  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
+  if (!payload
+    || safeString(payload.session_id).trim() !== authoritativeSessionId
+    || !suppliedSessionAliasesMatch(payload, authoritativeSessionId)
+    || safeString(payload.workingDirectory).trim() === ""
+    || resolve(safeString(payload.workingDirectory)) !== resolve(cwd)) return false;
   const usesInputFile = readStateWriteFlagValue(stateWriteOperation.args, "--input-file") !== undefined;
   if (usesInputFile && splitStateScanSegments(canonicalCommand).length !== 1) return false;
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0) return false;
@@ -8551,7 +8582,12 @@ function isAllowedDeepInterviewBashWrite(
   if (stateWriteOperations.length > 0) {
     const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
     const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-    if (!payload || safeString(payload.mode).trim().toLowerCase() !== "deep-interview") return false;
+    if (!payload
+      || safeString(payload.mode).trim().toLowerCase() !== "deep-interview"
+      || safeString(payload.session_id).trim() !== sessionId
+      || !suppliedSessionAliasesMatch(payload, sessionId)
+      || safeString(payload.workingDirectory).trim() === ""
+      || resolve(safeString(payload.workingDirectory)) !== resolve(cwd)) return false;
   }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
@@ -8671,7 +8707,7 @@ function isAllowedRalplanBashWrite(
   if (commandEndsPlanningPhase(cwd, command)) {
     return isAllowedRalplanTerminalStateWriteCommand(cwd, command, activeState, sessionId);
   }
-  if (isStandaloneParsedOmxStateWriteTransport(cwd, command)) return true;
+  if (isStandaloneParsedOmxStateWriteTransport(cwd, command, sessionId)) return true;
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
@@ -8755,6 +8791,47 @@ function buildPlanningActorWriteDeny(
   };
 }
 
+function buildTeamWorkerProtectedStateDeny(modeLabel: string, phase: string, toolName: string): Record<string, unknown> {
+  return {
+    decision: "block",
+    reason: `${modeLabel} is active (phase: ${phase}); authenticated Team-worker authority does not permit ${toolName} to mutate protected workflow state.`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext: "Team-worker product-write authority never includes clearing or rewriting protected Deep-interview, Ralplan, or Conductor state.",
+    },
+  };
+}
+
+function teamWorkerMutationTargetsProtectedWorkflowState(
+  payload: CodexHookPayload,
+  toolName: string,
+  command: string,
+  cwd: string,
+  stateDir: string,
+  policyCwd = cwd,
+): boolean {
+  const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName, cwd);
+  if (toolName === "mcp__omx_state__state_clear" || toolName === "mcp__omx_state__state_write") return true;
+  if (mutationTransport === "unknown" || mutationTransport === "state") return true;
+  if (toolName === "Bash") {
+    if (collectOmxStateCommandOperations(command, "write").length > 0
+      || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
+    const writes = [
+      ...extractDeepInterviewCommandWriteTargets(command),
+      ...extractConductorEditorWriteTargets(command),
+      ...extractConductorInterpreterWrites(command).flatMap((write) => write.targets),
+      ...extractConductorBashMutations(command, cwd, policyCwd).flatMap((mutation) => mutation.targets),
+    ];
+    if ((commandHasDeepInterviewWriteIntent(command, 0, cwd) || commandHasNestedCliMutationIntent(command))
+      && writes.length === 0) return true;
+    return writes.some((target) => isRawProtectedPlanningStateCandidate(stateDir, cwd, target));
+  }
+  if (mutationTransport !== "path") return false;
+  const candidates = collectImplementationToolPathCandidates(payload, toolName, readPreToolUsePathCandidates(payload));
+  return candidates.length === 0
+    || candidates.some((target) => isRawProtectedPlanningStateCandidate(stateDir, cwd, target));
+}
+
 
 async function buildRalplanPreToolUseBoundaryOutput(
   payload: CodexHookPayload,
@@ -8771,8 +8848,17 @@ async function buildRalplanPreToolUseBoundaryOutput(
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
-  const actor = await resolvePreToolUseWriteActor(payload, cwd, sessionId);
-  if (actor === "team-worker") return null;
+  const actor = await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId);
+  if (actor === "team-worker") {
+    if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, cwd, stateDir)) {
+      return buildTeamWorkerProtectedStateDeny(
+        safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
+        formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
+        toolName,
+      );
+    }
+    return null;
+  }
   const actorMutation = toolName === "Bash"
     ? commandHasDeepInterviewWriteIntent(command, 0, cwd)
       || collectOmxStateCommandOperations(command, "write").length > 0
@@ -8878,8 +8964,17 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
-  const actor = await resolvePreToolUseWriteActor(payload, cwd, sessionId);
-  if (actor === "team-worker") return null;
+  const actor = await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId);
+  if (actor === "team-worker") {
+    if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, cwd, stateDir)) {
+      return buildTeamWorkerProtectedStateDeny(
+        "Deep-interview",
+        formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
+        toolName,
+      );
+    }
+    return null;
+  }
   const actorMutation = toolName === "Bash"
     ? commandHasDeepInterviewWriteIntent(command, 0, cwd)
       || collectOmxStateCommandOperations(command, "write").length > 0
@@ -9067,6 +9162,7 @@ type PreToolUseWriteActor = "main-root" | "native-child" | "provenance-conflict"
 async function resolvePreToolUseWriteActor(
   payload: CodexHookPayload,
   cwd: string,
+  stateDir: string,
   sessionId: string,
 ): Promise<PreToolUseWriteActor> {
   if (payloadHasConflictingIdentityAliases(payload)) return "provenance-conflict";
@@ -9080,6 +9176,12 @@ async function resolvePreToolUseWriteActor(
   const trackerLeader = safeString(session?.leader_thread_id).trim();
   if (trackerLeader) leaderAnchors.add(trackerLeader);
   if (leaderAnchors.has(payloadAgentId) || leaderAnchors.has(payloadThreadId)) return "main-root";
+  const rootSessionState = await readRootSessionStateFromStateDir(stateDir).catch(() => null);
+  const payloadSessionId = readPayloadSessionId(payload);
+  const leaderNativeSessionId = rootSessionState && payloadMatchesSessionPointer(sessionId, rootSessionState)
+    ? safeString(rootSessionState.native_session_id).trim()
+    : "";
+  if (!payloadAgentId && !payloadThreadId && leaderNativeSessionId && payloadSessionId === leaderNativeSessionId) return "main-root";
 
   if (payloadHasOwnerIdentityClaim(payload)) return "native-child";
   if (!payloadAgentId && isTypedAgentRolePayload(payload)) return "native-child";
@@ -17772,7 +17874,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
   const activeState = await readActiveConductorStateForPreToolUse(payload, policyCwd, stateDir, resolvedSessionId);
   if (!activeState) return null;
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  const writeActor = await resolvePreToolUseWriteActor(payload, policyCwd, sessionId);
+  const writeActor = await resolvePreToolUseWriteActor(payload, policyCwd, stateDir, sessionId);
   if (writeActor === "provenance-conflict") {
     return buildConductorSessionProvenanceDeny(activeState, "payload identity aliases conflict");
   }
@@ -17840,12 +17942,14 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     blockedDetail = `${toolName || "unknown tool"} is not a recognized read-only or explicitly authorized Conductor mutation transport`;
   }
 
-  const teamWorkerProtectedStateTarget = toolName === "Bash" && [
-    ...extractDeepInterviewCommandWriteTargets(command),
-    ...extractConductorEditorWriteTargets(command),
-    ...extractConductorInterpreterWrites(command).flatMap((write) => write.targets),
-    ...extractConductorBashMutations(command, cwd, policyCwd).flatMap((mutation) => mutation.targets),
-  ].some((target) => isRawProtectedPlanningStateCandidate(stateDir, cwd, target));
+  const teamWorkerProtectedStateTarget = teamWorkerMutationTargetsProtectedWorkflowState(
+    payload,
+    toolName,
+    command,
+    cwd,
+    stateDir,
+    policyCwd,
+  );
   if (writeActor === "team-worker" && !teamWorkerProtectedStateTarget) return null;
   if (writeActor === "team-worker" && teamWorkerProtectedStateTarget && !blocked) {
     blocked = true;
