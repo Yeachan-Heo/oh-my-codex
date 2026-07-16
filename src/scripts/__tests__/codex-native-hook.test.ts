@@ -12034,6 +12034,15 @@ exit 0
 				if (previousOmxRootForPolicy === undefined) delete process.env.OMX_ROOT;
 				else process.env.OMX_ROOT = previousOmxRootForPolicy;
 			}
+			const blockedFilesystemMcpWrite = await preToolUse({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "sess-di-artifact",
+				tool_name: "mcp__filesystem__write_file",
+				tool_use_id: "tool-di-filesystem-write-outside",
+				tool_input: { path: "src/runtime.ts", content: "export {};\n" },
+			});
+			assert.equal(blockedFilesystemMcpWrite.outputJson?.decision, "block");
 
 			for (const [name, toolInput] of [
 				["missing session", { mode: "deep-interview", active: true, workingDirectory: cwd }],
@@ -12171,6 +12180,16 @@ exit 0
 					tool_input: { command: "pushd src; printf x > pushd-runtime.ts; popd" },
 				}, { cwd });
 				assert.equal(teamProductPushdWrite.outputJson, null);
+				const spawnedTeamChildWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-artifact",
+					tool_name: "Write",
+					tool_input: { file_path: "src/spawned-team-child.ts", content: "export {};\n" },
+					source: { subagent: { thread_spawn: { parent_thread_id: threadId } } },
+				}, { cwd });
+				assert.equal(spawnedTeamChildWrite.outputJson?.decision, "block");
+				assert.match(String(spawnedTeamChildWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
 
 				const inaccessibleDir = join(cwd, "inaccessible-cwd");
 				await mkdir(inaccessibleDir, { recursive: true, mode: 0o000 });
@@ -28825,7 +28844,7 @@ PY`,
           session_id: "019e-ralplan-live-root-unresolved-current",
           thread_id: "thread-ralplan-live-root-conflict",
           tool_name: "mcp__omx_state__state_write",
-          tool_input: { mode: "ralplan", active: false },
+          tool_input: { mode: "ralplan", active: true, current_phase: "critic-review" },
         },
         { cwd },
       );
