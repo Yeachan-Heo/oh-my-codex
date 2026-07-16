@@ -17090,6 +17090,7 @@ exit 0
 
 			for (const [name, command] of [
 				["printf-v rebind", 'SNAP=".omx/context/example.md"; printf -v SNAP %s src/leak.ts; printf x > "$SNAP"'],
+				["append rebind", 'SNAP=".omx/context"; SNAP+=/../../src/leak.ts; printf x > "$SNAP"'],
 				["context write then execute", "printf 'touch src/owned.ts\\n' > .omx/context/payload.txt; bash .omx/context/payload.txt"],
 				["late tmp binding execute", "printf 'touch src/owned.ts\\n' > .omx/tmp/payload.txt; S=.omx/tmp/payload.txt; bash \"$S\""],
 			] as const) {

@@ -4285,12 +4285,12 @@ function extractCommandLiteralAssignments(command: string): Map<string, string> 
   }
   for (const name of [...assignments.keys()]) {
     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const laterAssignment = new RegExp(`(?:^|[\\s;&|(){}])(?:export\\s+)?${escapedName}\\s*=`);
+    const laterAssignment = new RegExp(`(?:^|[\\s;&|(){}])(?:export\\s+)?${escapedName}(?:\\[[^\\]]+\\])?\\s*(?:\\+?=)`);
     if (laterAssignment.test(remaining)) assignments.delete(name);
     const mutationPatterns = [
       new RegExp(`\\bprintf\\b[^;\\n]*\\s-v\\s+${escapedName}\\b`),
       new RegExp(`\\b(?:read|unset)\\b[^;\\n]*\\b${escapedName}\\b`),
-      new RegExp(`\\b(?:declare|typeset|local|export)\\b[^;\\n]*\\b${escapedName}(?:\\b|\\s*=)`),
+      new RegExp(`\\b(?:declare|typeset|local|export)\\b[^;\\n]*\\b${escapedName}(?:\\[[^\\]]+\\])?(?:\\b|\\s*(?:\\+?=))`),
     ];
     if (/\beval\b|\|/.test(remaining) || mutationPatterns.some((pattern) => pattern.test(remaining))) {
       assignments.delete(name);
