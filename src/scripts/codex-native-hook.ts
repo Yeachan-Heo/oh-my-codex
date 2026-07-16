@@ -4300,6 +4300,12 @@ function extractCommandLiteralAssignments(command: string): Map<string, string> 
       assignments.delete(name);
     }
   }
+  const redirectControl = stripHeredocBodiesForCommandScan(remaining).trim();
+  for (const name of [...assignments.keys()]) {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const boundedCatRedirect = new RegExp(`^cat\\s+>\\s+"\\$(?:\\{${escapedName}\\}|${escapedName})"\\s+<<-?\\s*['"][^'"\\s]+['"]\\s*$`);
+    if (!boundedCatRedirect.test(redirectControl)) assignments.delete(name);
+  }
   return assignments;
 }
 

@@ -17090,6 +17090,7 @@ exit 0
 
 			for (const [name, command] of [
 				["printf-v rebind", 'SNAP=".omx/context/example.md"; printf -v SNAP %s src/leak.ts; printf x > "$SNAP"'],
+				["quoted printf-v rebind", 'SNAP=".omx/context/example.md"; printf -v \'SNAP\' %s src/leak.ts; printf x > "$SNAP"'],
 				["append rebind", 'SNAP=".omx/context"; SNAP+=/../../src/leak.ts; printf x > "$SNAP"'],
 				["mapfile rebind", 'SNAP=".omx/context/example.md"; mapfile -t SNAP <<< src/leak.ts; printf x > "$SNAP"'],
 				["readarray rebind", 'SNAP=".omx/context/example.md"; readarray -t SNAP <<< src/leak.ts; printf x > "$SNAP"'],
