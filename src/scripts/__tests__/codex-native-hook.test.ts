@@ -12103,6 +12103,15 @@ exit 0
 				}, { cwd });
 				assert.equal(allowedTeamProductWrite.outputJson, null);
 				await mkdir(join(cwd, "src"), { recursive: true });
+				const allowedTeamBashProductWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-artifact",
+					tool_name: "Bash",
+					tool_use_id: "tool-di-team-bash-product-write",
+					tool_input: { command: "cd src; printf x > runtime.ts" },
+				}, { cwd });
+				assert.equal(allowedTeamBashProductWrite.outputJson, null);
 
 				const protectedStateAlias = join(cwd, "src", "team-state-alias.json");
 				await symlink(join(stateDir, "sessions", "sess-di-artifact", "deep-interview-state.json"), protectedStateAlias, "file");

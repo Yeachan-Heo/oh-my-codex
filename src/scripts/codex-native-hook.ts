@@ -8844,17 +8844,29 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
   if (toolName === "Bash") {
     if (collectOmxStateCommandOperations(command, "write").length > 0
       || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
-    if (/(?:^|[;&|(){}\n]\s*)(?:cd|pushd|popd)(?:\s|$)/.test(command)
-      && (commandHasDeepInterviewWriteIntent(command, 0, cwd) || commandHasNestedCliMutationIntent(command))) return true;
-    const writes = [
-      ...extractDeepInterviewCommandWriteTargets(command),
-      ...extractConductorEditorWriteTargets(command),
-      ...extractConductorInterpreterWrites(command).flatMap((write) => write.targets),
-      ...extractConductorBashMutations(command, cwd, policyCwd).flatMap((mutation) => mutation.targets),
-    ];
-    if ((commandHasDeepInterviewWriteIntent(command, 0, cwd) || commandHasNestedCliMutationIntent(command))
-      && writes.length === 0) return true;
-    return writes.some(targetIsProtectedOrAliased);
+    let effectiveCwd = cwd;
+    for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+      const words = tokenizeShellWords(segment);
+      const changedCwd = resolveSimpleCdCommandCwd(effectiveCwd, words);
+      if (changedCwd !== null) {
+        effectiveCwd = changedCwd;
+        continue;
+      }
+      const segmentWrites = [
+        ...extractDeepInterviewCommandWriteTargets(segment),
+        ...extractConductorEditorWriteTargets(segment),
+        ...extractConductorInterpreterWrites(segment).flatMap((write) => write.targets),
+        ...extractConductorBashMutations(segment, effectiveCwd, policyCwd).flatMap((mutation) => mutation.targets),
+      ];
+      const segmentHasWriteIntent = commandHasDeepInterviewWriteIntent(segment, 0, effectiveCwd)
+        || commandHasNestedCliMutationIntent(segment);
+      if (segmentHasWriteIntent && segmentWrites.length === 0) return true;
+      for (const target of segmentWrites) {
+        const effectiveTarget = isAbsolute(target) ? target : resolve(effectiveCwd, target);
+        if (targetIsProtectedOrAliased(effectiveTarget)) return true;
+      }
+    }
+    return false;
   }
   if (mutationTransport !== "path") return false;
   const candidates = collectImplementationToolPathCandidates(payload, toolName, readPreToolUsePathCandidates(payload));
