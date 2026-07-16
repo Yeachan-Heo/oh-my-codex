@@ -11971,6 +11971,26 @@ exit 0
 			);
 			assert.equal(allowedWrite.outputJson, null);
 
+			for (const [toolName, toolInput] of [
+				["mcp__omx_wiki__wiki_delete", { path: ".omx/specs/deep-interview-demo.md" }],
+				["mcp__unknown__mutate", { target: ".omx/specs/deep-interview-demo.md" }],
+			] as const) {
+				const blockedUnknownTransport = await preToolUse({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-artifact",
+					tool_name: toolName,
+					tool_use_id: `tool-di-unknown-${toolName}`,
+					tool_input: toolInput,
+				});
+				assert.equal(blockedUnknownTransport.outputJson?.decision, "block", toolName);
+				assert.match(
+					String(blockedUnknownTransport.outputJson?.reason ?? ""),
+					/not a recognized read-only or explicitly authorized deep-interview mutation transport/,
+					toolName,
+				);
+			}
+
 			const allowedBash = await preToolUse(
 				{
 					hook_event_name: "PreToolUse",

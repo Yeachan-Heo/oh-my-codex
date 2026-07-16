@@ -8917,6 +8917,9 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
       const blockedPath = candidates.find((candidate) => !isAllowedDeepInterviewArtifactPath(cwd, candidate, sessionId));
       blockedDetail = describeImplementationToolBlock(toolName, blockedPath, candidates.length);
     }
+  } else if (mutationTransport === "unknown") {
+    blocked = true;
+    blockedDetail = `${toolName || "unknown tool"} is not a recognized read-only or explicitly authorized deep-interview mutation transport`;
   }
 
   if (!blocked) return null;
