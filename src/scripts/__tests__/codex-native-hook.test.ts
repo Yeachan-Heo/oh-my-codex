@@ -12014,6 +12014,10 @@ exit 0
 				"printf x > 'src/another file.ts'",
 				'printf x > .omx/context/"../../src/generated.ts"',
 				"printf x > .omx/context/'../../src/generated-single.ts'",
+				'printf x > ".omx/context/"../../src/generated-quote-first.ts',
+				"printf x > '.omx/context/'../../src/generated-single-quote-first.ts",
+				'TARGET="../../src/generated-expanded.ts"; printf x > .omx/context/"$TARGET"',
+				'printf x > .omx/context/"$(printf ../../src/generated-command.ts)"',
 			]) {
 				const quotedRedirectWrite = await preToolUse({
 					hook_event_name: "PreToolUse", cwd, session_id: "sess-di-artifact", tool_name: "Bash", tool_input: { command },
@@ -12051,6 +12055,9 @@ exit 0
 				["nested foreign owner alias", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { owner_omx_session_id: "foreign" } }],
 				["nested foreign cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { workingDirectory: join(cwd, "src") } }],
 				["nested conflicting mode", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { mode: "ralplan" } }],
+				["depth-two foreign session", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { state: { session_id: "native-di-artifact" } } }],
+				["depth-two foreign cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { state: { workingDirectory: join(cwd, "src") } } }],
+				["depth-two conflicting mode", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { state: { mode: "ralplan" } } }],
 			] as const) {
 				const invalidPlanningStateWrite = await preToolUse({
 					hook_event_name: "PreToolUse",
@@ -12110,7 +12117,7 @@ exit 0
 					name: workerName,
 					team_state_root: stateDir,
 					pane_id: workerPane,
-					worktree_path: cwd,
+					working_dir: cwd,
 				});
 				const teamAuthority = {
 					name: teamName,
@@ -12121,7 +12128,6 @@ exit 0
 						name: workerName,
 						pane_id: workerPane,
 						working_dir: cwd,
-						worktree_path: cwd,
 						team_state_root: stateDir,
 					}],
 				};
@@ -12245,7 +12251,7 @@ exit 0
 
 				for (const [name, path, invalidValue, restoreValue] of [
 					["config pane mismatch", join(teamRoot, "config.json"), { ...teamAuthority, workers: [{ ...teamAuthority.workers[0], pane_id: "%foreign" }] }, teamAuthority],
-					["identity root mismatch", join(teamRoot, "workers", workerName, "identity.json"), { name: workerName, pane_id: workerPane, team_state_root: join(cwd, "foreign-state"), worktree_path: cwd }, { name: workerName, pane_id: workerPane, team_state_root: stateDir, worktree_path: cwd }],
+					["identity root mismatch", join(teamRoot, "workers", workerName, "identity.json"), { name: workerName, pane_id: workerPane, team_state_root: join(cwd, "foreign-state"), working_dir: cwd }, { name: workerName, pane_id: workerPane, team_state_root: stateDir, working_dir: cwd }],
 					["config worktree mismatch", join(teamRoot, "config.json"), { ...teamAuthority, workers: [{ ...teamAuthority.workers[0], worktree_path: join(cwd, "foreign-worktree") }] }, teamAuthority],
 				] as const) {
 					await writeJson(path, invalidValue);

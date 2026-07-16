@@ -2656,7 +2656,7 @@ async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> 
   if (safeString(identity.name).trim() !== workerContext.workerName) return false;
   if (safeString(identity.pane_id).trim() !== currentPaneId) return false;
   if (!pathMatches(identity.team_state_root, canonicalStateRoot)) return false;
-  if (!pathMatches(identity.worktree_path, canonicalCwd)) return false;
+  if (!pathMatches(identity.worktree_path ?? identity.working_dir, canonicalCwd)) return false;
   for (const state of [manifest, config]) {
     if (safeString(state.name).trim() !== workerContext.teamName) return false;
     if (safeString(state.leader_pane_id).trim() === currentPaneId) return false;
@@ -4354,6 +4354,8 @@ function maskQuotedRedirectMetacharsForCommandScan(command: string): string {
 }
 
 function decodeStaticRedirectShellWord(raw: string): string | null {
+  const simpleVariable = raw.match(/^"?(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)"?$/);
+  if (simpleVariable && !raw.startsWith("'")) return safeString(simpleVariable[1]);
   let quote: "'" | '"' | null = null;
   let decoded = "";
   for (let index = 0; index < raw.length; index += 1) {
@@ -4373,7 +4375,7 @@ function decodeStaticRedirectShellWord(raw: string): string | null {
       index += 1;
       continue;
     }
-    if (!quote && (char === "$" || char === "`")) return null;
+    if ((char === "$" || char === "`") && quote !== "'") return null;
     decoded += char;
   }
   return quote ? null : decoded;
@@ -4382,8 +4384,8 @@ function decodeStaticRedirectShellWord(raw: string): string | null {
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
   const commandOutsideHeredocBodies = maskQuotedRedirectMetacharsForCommandScan(stripHeredocBodiesForCommandScan(command));
-  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^<>])(?:[0-9]*)(?:<>|>>|>\||>&|>)\s*(?:"([^"]*)"|'([^']*)'|([^\s&|;<>]+))/g)) {
-    const candidate = decodeStaticRedirectShellWord(safeString(match[1] ?? match[2] ?? match[3]).trim());
+  for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^<>])(?:[0-9]*)(?:<>|>>|>\||>&|>)\s*((?:"[^"]*"|'[^']*'|\\.|[^\s&|;<>])+)/g)) {
+    const candidate = decodeStaticRedirectShellWord(safeString(match[1]).trim());
     // >&2 and >&- duplicate or close a descriptor; only non-fd words open a file.
     if (candidate === null) {
       targets.push("<unresolved-redirect-target>");
@@ -4909,7 +4911,8 @@ function formatPlanningWriteBlockDetail(
 
 function isUnresolvedVariableTarget(target: string): boolean {
   const normalized = target.trim();
-  return /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
+  return target === "<unresolved-redirect-target>"
+    || /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(normalized);
 }
 
 function normalizeSameCommandScriptTarget(
@@ -17948,8 +17951,8 @@ function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayloa
   if (!canonicalSessionId) return false;
   if (safeString(input.session_id).trim() !== canonicalSessionId) return false;
   if (!suppliedSessionAliasesMatch(input, canonicalSessionId)) return false;
-  const nestedState = safeObject(input.state);
-  if (nestedState) {
+  let nestedState = safeObject(input.state);
+  while (nestedState) {
     if (!suppliedSessionAliasesMatch(nestedState, canonicalSessionId)) return false;
     const nestedSessionId = safeString(nestedState.session_id).trim();
     if (nestedSessionId && nestedSessionId !== canonicalSessionId) return false;
@@ -17957,6 +17960,7 @@ function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayloa
     if (nestedWorkingDirectory && resolve(nestedWorkingDirectory) !== resolve(policyCwd)) return false;
     const nestedMode = safeString(nestedState.mode).trim();
     if (nestedMode && nestedMode !== safeString(input.mode).trim()) return false;
+    nestedState = safeObject(nestedState.state);
   }
   if (safeString(input.workingDirectory).trim() === "" || resolve(safeString(input.workingDirectory)) !== resolve(policyCwd)) return false;
   return true;
@@ -20113,7 +20117,7 @@ export async function dispatchCodexNativeHook(
       && !readPayloadAgentId(payload)
       && !readPayloadThreadId(payload)
       && !payloadHasOwnerIdentityClaim(payload)
-      && await hasAuthoritativeTeamWorkerContext(policyCwd);
+      && await hasAuthoritativeTeamWorkerContext(cwd);
 
     if (
       guardedConductorState
