@@ -12528,6 +12528,10 @@ exit 0
 					},
 				},
 			});
+			await mkdir(join(cwd, ".omx", "context"), { recursive: true });
+			await mkdir(join(cwd, ".omx", "specs"), { recursive: true });
+			await writeFile(join(cwd, ".omx", "context", "deep-interview-demo.md"), "# Context\n");
+			await writeFile(join(cwd, ".omx", "specs", "deep-interview-demo.md"), "# Spec\n");
 			const reportedHandoffShape = await preToolUse(
 				{
 					hook_event_name: "PreToolUse",
@@ -12536,20 +12540,13 @@ exit 0
 					tool_name: "Bash",
 					tool_use_id: "tool-di-reported-context-spec-handoff",
 					tool_input: {
-						command: [
-							"mkdir -p .omx/context .omx/specs",
-							"cat > .omx/context/deep-interview-demo.md <<'EOF'",
-							"# Context",
-							"EOF",
-							"cat > .omx/specs/deep-interview-demo.md <<'EOF'",
-							"# Spec",
-							"EOF",
-              `node "${join(resolve(nativeHookScriptPath(), "../../.."), "dist", "cli", "omx.js")}" state write --input '${deepInterviewRalplanHandoffState}' --json`,
-						].join("\n"),
+						command: `node "${join(resolve(nativeHookScriptPath(), "../../.."), "dist", "cli", "omx.js")}" state write --input '${deepInterviewRalplanHandoffState}' --json`,
 					},
 				},
 				{ cwd },
 			);
+			await rm(join(cwd, ".omx", "context", "deep-interview-demo.md"), { force: true });
+			await rm(join(cwd, ".omx", "specs", "deep-interview-demo.md"), { force: true });
 			assert.equal(reportedHandoffShape.outputJson, null);
 
 			const blockedTmpOnlyHandoffShape = await preToolUse(
