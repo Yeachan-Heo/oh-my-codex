@@ -17099,6 +17099,8 @@ exit 0
 				["printf-v PATH shadowed cat", "printf -v PATH '%s' \"$PWD:$PATH\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
 				["shadowed printf producer", "printf(){ touch src/owned.ts; }; printf safe > .omx/context/literal.md"],
 				["shadowed echo producer", "alias echo='touch src/owned.ts'; echo safe > .omx/context/literal.md"],
+				["disabled printf builtin", "enable -n printf; printf safe > .omx/context/literal.md"],
+				["disabled echo builtin", "builtin enable -n echo; echo safe > .omx/context/literal.md"],
 				["shadowed sed mutation", "sed(){ touch src/owned.ts; }; sed -i 's/a/b/' .omx/context/literal.md"],
 				["compound unknown mutation", "./mutator; printf safe > .omx/context/literal.md"],
 			] as const) {

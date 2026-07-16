@@ -4444,6 +4444,7 @@ function conductorRedirectProducerMayBeShadowed(command: string, commandName: st
   if (safeString(process.env[`BASH_FUNC_${commandName}%%`]).trim() !== "") return true;
   if (conductorCommandMayMutatePathResolution(command)) return true;
   const source = stripHeredocBodiesForCommandScan(command);
+  if (/(?:^|[;|&(){}\n]\s*)(?:builtin\s+)?enable(?:\s|$)/.test(source)) return true;
   for (let index = 0; index < source.length; index += 1) {
     const definition = findShellFunctionDefinitionAt(source, index);
     if (!definition) continue;
