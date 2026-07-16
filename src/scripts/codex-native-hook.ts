@@ -8677,6 +8677,8 @@ function isAllowedDeepInterviewBashWrite(
   const targets = extractDeepInterviewCommandWriteTargets(command);
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0
     && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && /(?:^|[;|&(){}\n]\s*)PATH\s*=/.test(command)) return false;
+  if (extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0)) return false;
 
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target, sessionId))) return false;
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target, sessionId));
@@ -8784,6 +8786,8 @@ function isAllowedRalplanBashWrite(
   const hasAllowedTargets = targets.length > 0
     && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target, sessionId));
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && /(?:^|[;|&(){}\n]\s*)PATH\s*=/.test(command)) return false;
+  if (extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0)) return false;
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0
     && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
 
@@ -9248,6 +9252,13 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
   );
   if (deepInterviewState) {
     const conflictToolName = safeString(payload.tool_name).trim();
+    if (conflictToolName === "Bash") {
+      const conflictCommand = readPreToolUseCommand(payload);
+      if (
+        collectOmxStateCommandOperations(conflictCommand, "write").length > 0
+        || collectOmxStateCommandOperations(conflictCommand, "clear").length > 0
+      ) return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
+    }
     if (conflictToolName === "mcp__omx_state__state_clear" || conflictToolName === "mcp__omx_state__state_write") {
       return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
     }
@@ -9266,6 +9277,13 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
 
   const toolName = safeString(payload.tool_name).trim();
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
+  if (toolName === "Bash") {
+    const conflictCommand = readPreToolUseCommand(payload);
+    if (
+      collectOmxStateCommandOperations(conflictCommand, "write").length > 0
+      || collectOmxStateCommandOperations(conflictCommand, "clear").length > 0
+    ) return buildRalplanRootPointerConflictBlock(ralplanState);
+  }
   if (toolName === "mcp__omx_state__state_clear" || toolName === "mcp__omx_state__state_write") {
     return buildRalplanRootPointerConflictBlock(ralplanState);
   }

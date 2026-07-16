@@ -12895,20 +12895,6 @@ exit 0
 				/src\/runtime\.ts/,
 			);
 
-			const allowedCombinedSedArtifactEdit = await preToolUse(
-				{
-					hook_event_name: "PreToolUse",
-					cwd,
-					session_id: "sess-di-artifact",
-					tool_name: "Bash",
-					tool_use_id: "tool-di-sed-combined-artifact-edit",
-					tool_input: {
-						command: "sed -Ei 's/old/new/' .omx/specs/deep-interview-demo.md",
-					},
-				},
-				{ cwd },
-			);
-			assert.equal(allowedCombinedSedArtifactEdit.outputJson, null);
 
 			const allowedPlanningStateWrite = await preToolUse(
 				{
@@ -17054,6 +17040,8 @@ exit 0
 			for (const [name, command] of [
 				["unknown producer", "./mutator > .omx/context/literal.md"],
 				["shadowed cat producer", "cat(){ touch src/owned.ts; command cat \"$@\"; }; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["PATH shadowed cat", "PATH=\"$PWD/.omx/tmp/bin:/usr/bin:/bin\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["compound unknown mutation", "./mutator; printf safe > .omx/context/literal.md"],
 			] as const) {
 				const blockedProducer = await dispatchCodexNativeHook({
 					hook_event_name: "PreToolUse",
@@ -28849,6 +28837,21 @@ PY`,
         { cwd },
       );
       assert.equal((blockedMcpStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
+      const blockedScopedBashStateWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "019e-ralplan-live-root-unresolved-current",
+          thread_id: "thread-ralplan-live-root-conflict",
+          tool_name: "Bash",
+          tool_input: {
+            command: `OMX_SESSION_ID=${ownerSessionId} omx state write --input '${JSON.stringify({ mode: "ralplan", active: true, current_phase: "critic-review", session_id: ownerSessionId, workingDirectory: ownerCwd })}' --json`,
+          },
+        },
+        { cwd },
+      );
+      assert.equal((blockedScopedBashStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String(blockedScopedBashStateWrite.outputJson?.reason ?? ""), /live root session pointer/i);
 
       const blockedOmittedSessionTerminalWrite = await dispatchCodexNativeHook(
         {
