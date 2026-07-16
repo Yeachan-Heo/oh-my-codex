@@ -17053,9 +17053,36 @@ exit 0
 			assert.equal(allowedLiteralRedirect.outputJson, null);
 
 			for (const [name, command] of [
+				["printf builtin", "printf safe > .omx/context/printf.md"],
+				["echo builtin", "echo safe > .omx/context/echo.md"],
+				["colon builtin", ": > .omx/context/empty.md"],
+			] as const) {
+				const allowedBuiltinProducer = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-var-redirect",
+					agent_id: "thread-di-var-redirect",
+					thread_id: "thread-di-var-redirect",
+					tool_name: "Bash",
+					tool_use_id: `tool-di-redirect-producer-positive-${name}`,
+					tool_input: { command },
+				}, { cwd });
+				assert.equal(allowedBuiltinProducer.outputJson, null, name);
+			}
+
+			for (const [name, command] of [
 				["unknown producer", "./mutator > .omx/context/literal.md"],
 				["shadowed cat producer", "cat(){ touch src/owned.ts; command cat \"$@\"; }; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
-				["PATH shadowed cat", "PATH=\"$PWD/.omx/tmp/bin:/usr/bin:/bin\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["PATH assignment shadowed cat", "PATH=\"$PWD/.omx/tmp/bin:/usr/bin:/bin\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["exported PATH shadowed cat", "export PATH=\"$PWD:$PATH\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["quoted exported PATH shadowed cat", "export 'PATH=$PWD:$PATH'; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["env PATH shadowed cat", "env PATH=\"$PWD:$PATH\" cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["command-prefix PATH shadowed printf", "PATH=\"$PWD:$PATH\" printf safe > .omx/context/literal.md"],
+				["readonly PATH shadowed echo", "readonly PATH=\"$PWD:$PATH\"; echo safe > .omx/context/literal.md"],
+				["printf-v PATH shadowed cat", "printf -v PATH '%s' \"$PWD:$PATH\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["shadowed printf producer", "printf(){ touch src/owned.ts; }; printf safe > .omx/context/literal.md"],
+				["shadowed echo producer", "alias echo='touch src/owned.ts'; echo safe > .omx/context/literal.md"],
+				["shadowed sed mutation", "sed(){ touch src/owned.ts; }; sed -i 's/a/b/' .omx/context/literal.md"],
 				["compound unknown mutation", "./mutator; printf safe > .omx/context/literal.md"],
 			] as const) {
 				const blockedProducer = await dispatchCodexNativeHook({

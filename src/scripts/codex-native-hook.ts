@@ -4435,8 +4435,14 @@ function conductorRedirectTargetIsSafe(executionCwd: string, target: string, pol
   }
 }
 
+function conductorCommandMayMutatePathResolution(command: string): boolean {
+  const source = stripHeredocBodiesForCommandScan(command);
+  return /(?:^|[\s;|&(){}])(?:["']?PATH["']?\s*\+?=|(?:export|readonly|declare|typeset|local|env)\b[^;|&(){}\n]*["']?PATH["']?\s*\+?=|unset\s+(?:-[A-Za-z]+\s+)*["']?PATH["']?(?:\s|$)|printf\s+(?:-[A-Za-z]+\s+)*-v\s+["']?PATH["']?(?:\s|$)|read\s+(?:-[A-Za-z]+(?:\s+\S+)?\s+)*["']?PATH["']?(?:\s|$))/.test(source);
+}
+
 function conductorRedirectProducerMayBeShadowed(command: string, commandName: string): boolean {
   if (safeString(process.env[`BASH_FUNC_${commandName}%%`]).trim() !== "") return true;
+  if (conductorCommandMayMutatePathResolution(command)) return true;
   const source = stripHeredocBodiesForCommandScan(command);
   for (let index = 0; index < source.length; index += 1) {
     const definition = findShellFunctionDefinitionAt(source, index);
@@ -4454,6 +4460,7 @@ function conductorHeredocRedirectHasBoundedProducer(command: string, fullCommand
   if (openers.length !== 1 || !openers[0]?.quoted || extractDeepInterviewCommandRedirectTargets(command).length !== 1) return false;
   const words = tokenizeConductorShellWords(command);
   const commandIndex = skipShellCommandPositionPrefixWords(words, 0);
+  if (commandIndex !== 0 || splitShellCommandSegments(stripHeredocBodiesForCommandScan(fullCommand)).filter((segment) => segment.trim() !== "").length !== 1) return false;
   if (commandNameFromShellWord(words[commandIndex] ?? "") !== "cat" || conductorRedirectProducerMayBeShadowed(fullCommand, "cat")) return false;
   let sawHeredoc = false;
   let sawOutput = false;
@@ -4496,6 +4503,7 @@ function conductorMetadataRedirectsHaveBoundedProducers(command: string): boolea
     }
     const words = tokenizeConductorShellWords(segment);
     const commandIndex = skipShellCommandPositionPrefixWords(words, 0);
+    if (commandIndex !== 0) return false;
     const commandName = commandNameFromShellWord(words[commandIndex] ?? "");
     if (!new Set([":", "echo", "printf"]).has(commandName) || conductorRedirectProducerMayBeShadowed(command, commandName)) return false;
     const operands = collectConductorInvocationWords(words, commandIndex);
@@ -8677,7 +8685,7 @@ function isAllowedDeepInterviewBashWrite(
   const targets = extractDeepInterviewCommandWriteTargets(command);
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0
     && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
-  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && /(?:^|[;|&(){}\n]\s*)PATH\s*=/.test(command)) return false;
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && conductorCommandMayMutatePathResolution(command)) return false;
   if (extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0)) return false;
 
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target, sessionId))) return false;
@@ -8786,7 +8794,7 @@ function isAllowedRalplanBashWrite(
   const hasAllowedTargets = targets.length > 0
     && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target, sessionId));
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
-  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && /(?:^|[;|&(){}\n]\s*)PATH\s*=/.test(command)) return false;
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0 && conductorCommandMayMutatePathResolution(command)) return false;
   if (extractConductorBashMutations(command, cwd).some((mutation) => mutation.targets.length === 0)) return false;
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0
     && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
