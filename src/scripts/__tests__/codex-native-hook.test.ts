@@ -12012,6 +12012,8 @@ exit 0
 			for (const command of [
 				'printf x > "src/new file.ts"',
 				"printf x > 'src/another file.ts'",
+				'printf x > .omx/context/"../../src/generated.ts"',
+				"printf x > .omx/context/'../../src/generated-single.ts'",
 			]) {
 				const quotedRedirectWrite = await preToolUse({
 					hook_event_name: "PreToolUse", cwd, session_id: "sess-di-artifact", tool_name: "Bash", tool_input: { command },
@@ -12045,6 +12047,10 @@ exit 0
 				["missing cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact" }],
 				["foreign session", { mode: "deep-interview", active: true, session_id: "foreign", workingDirectory: cwd }],
 				["foreign cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: join(cwd, "src") }],
+				["nested foreign session", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { session_id: "native-di-artifact" } }],
+				["nested foreign owner alias", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { owner_omx_session_id: "foreign" } }],
+				["nested foreign cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { workingDirectory: join(cwd, "src") } }],
+				["nested conflicting mode", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { mode: "ralplan" } }],
 			] as const) {
 				const invalidPlanningStateWrite = await preToolUse({
 					hook_event_name: "PreToolUse",

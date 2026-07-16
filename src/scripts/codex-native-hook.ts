@@ -4353,13 +4353,43 @@ function maskQuotedRedirectMetacharsForCommandScan(command: string): string {
   return masked;
 }
 
+function decodeStaticRedirectShellWord(raw: string): string | null {
+  let quote: "'" | '"' | null = null;
+  let decoded = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (!quote && (char === "'" || char === '"')) {
+      quote = char;
+      continue;
+    }
+    if (quote && char === quote) {
+      quote = null;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      const next = raw[index + 1];
+      if (next === undefined) return null;
+      decoded += next;
+      index += 1;
+      continue;
+    }
+    if (!quote && (char === "$" || char === "`")) return null;
+    decoded += char;
+  }
+  return quote ? null : decoded;
+}
+
 function extractDeepInterviewCommandRedirectTargets(command: string): string[] {
   const targets: string[] = [];
   const commandOutsideHeredocBodies = maskQuotedRedirectMetacharsForCommandScan(stripHeredocBodiesForCommandScan(command));
   for (const match of commandOutsideHeredocBodies.matchAll(/(?:^|[^<>])(?:[0-9]*)(?:<>|>>|>\||>&|>)\s*(?:"([^"]*)"|'([^']*)'|([^\s&|;<>]+))/g)) {
-    const candidate = safeString(match[1] ?? match[2] ?? match[3]).trim();
+    const candidate = decodeStaticRedirectShellWord(safeString(match[1] ?? match[2] ?? match[3]).trim());
     // >&2 and >&- duplicate or close a descriptor; only non-fd words open a file.
-    if (candidate && candidate !== "-" && !/^\d+$/.test(candidate) && !isNullDeviceRedirectTarget(candidate)) targets.push(candidate);
+    if (candidate === null) {
+      targets.push("<unresolved-redirect-target>");
+    } else if (candidate && candidate !== "-" && !/^\d+$/.test(candidate) && !isNullDeviceRedirectTarget(candidate)) {
+      targets.push(candidate);
+    }
   }
   return targets;
 }
@@ -17918,6 +17948,16 @@ function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayloa
   if (!canonicalSessionId) return false;
   if (safeString(input.session_id).trim() !== canonicalSessionId) return false;
   if (!suppliedSessionAliasesMatch(input, canonicalSessionId)) return false;
+  const nestedState = safeObject(input.state);
+  if (nestedState) {
+    if (!suppliedSessionAliasesMatch(nestedState, canonicalSessionId)) return false;
+    const nestedSessionId = safeString(nestedState.session_id).trim();
+    if (nestedSessionId && nestedSessionId !== canonicalSessionId) return false;
+    const nestedWorkingDirectory = safeString(nestedState.workingDirectory).trim();
+    if (nestedWorkingDirectory && resolve(nestedWorkingDirectory) !== resolve(policyCwd)) return false;
+    const nestedMode = safeString(nestedState.mode).trim();
+    if (nestedMode && nestedMode !== safeString(input.mode).trim()) return false;
+  }
   if (safeString(input.workingDirectory).trim() === "" || resolve(safeString(input.workingDirectory)) !== resolve(policyCwd)) return false;
   return true;
 }
