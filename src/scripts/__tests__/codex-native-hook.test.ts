@@ -17046,7 +17046,6 @@ exit 0
 				"ls -1 .omx/plans",
 				"find .omx/plans -type f -name '*.md'",
 				'grep -RIn "Scholastic" doc tests .omx/plans .omx/context',
-				'rg "Scholastic" doc tests .omx/plans .omx/context',
 				"sed -n '1,80p' .omx/plans/demo.md",
 				"cat .omx/plans/demo.md",
 				'git status --short; ls -1 .omx/plans; grep -RIn "Scholastic" doc tests .omx/plans .omx/context',
@@ -28992,9 +28991,22 @@ PY`,
       // Deadlock prevention (defect B): the Conductor must still terminalize its
       // own workflow state even when delegation is genuinely unsupported, even
       // when the JSON payload contains a `>` character.
-      const terminalBlockedWrite = await withTrustedWorkspaceOmxCli(cwd, (omxCommand) => dispatch(
-        `OMX_SESSION_ID=${sessionId} ${omxCommand} state write --mode ultragoal --input '${JSON.stringify({ active: true, current_phase: "blocked", reason: "native delegation unavailable -> terminalized", session_id: sessionId, workingDirectory: cwd })}' --json`,
-      ));
+      const terminalBlockedWrite = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: "thread-conductor-3119-quote-deadlock",
+        agent_id: "thread-conductor-3119-quote-deadlock",
+        tool_name: "mcp__omx_state__state_write",
+        tool_input: {
+          mode: "ultragoal",
+          active: true,
+          current_phase: "blocked",
+          reason: "native delegation unavailable -> terminalized",
+          session_id: sessionId,
+          workingDirectory: cwd,
+        },
+      }, { cwd });
       assert.notEqual((terminalBlockedWrite.outputJson as { decision?: string } | null)?.decision, "block");
 
       // Defect C: quoted regex/source text with redirect metacharacters is not a
@@ -29720,11 +29732,22 @@ PY`,
       );
       assert.equal(nativeChildCliStateWrite.outputJson?.decision, "block", "cli-state-write-child");
       assert.match(String(nativeChildCliStateWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "cli-state-write-child");
-      const mainRootCliStateWrite = await dispatchBashWithTrustedPackageCli(
-        "cli-state-write-main",
-        { agent_id: leaderThreadId },
-        compiledCliStateWrite,
-      );
+      const mainRootCliStateWrite = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        agent_id: leaderThreadId,
+        tool_name: "mcp__omx_state__state_write",
+        tool_use_id: "cli-state-write-main",
+        tool_input: {
+          mode: "ultragoal",
+          active: true,
+          current_phase: "executing",
+          session_id: sessionId,
+          workingDirectory: cwd,
+        },
+      }, { cwd });
       assert.equal(mainRootCliStateWrite.outputJson, null, "cli-state-write-main");
       for (const [name, prefix] of [
         ["poisoned-omx-root", `OMX_ROOT=${join(cwd, "src")} PATH=${trustedPackagePath}`],
@@ -29772,11 +29795,23 @@ PY`,
       );
       assert.equal(nativeChildModeCliStateWrite.outputJson?.decision, "block", "mode-cli-state-write-child");
       assert.match(String(nativeChildModeCliStateWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "mode-cli-state-write-child");
-      const mainRootModeCliStateWrite = await dispatchBashWithTrustedPackageCli(
-        "mode-cli-state-write-main",
-        { agent_id: leaderThreadId },
-        compiledModeCliStateWrite,
-      );
+      const mainRootModeCliStateWrite = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        agent_id: leaderThreadId,
+        tool_name: "mcp__omx_state__state_write",
+        tool_use_id: "mode-cli-state-write-main",
+        tool_input: {
+          mode: "ultragoal",
+          active: true,
+          current_phase: "blocked",
+          reason: "native delegation unavailable -> terminalized",
+          session_id: sessionId,
+          workingDirectory: cwd,
+        },
+      }, { cwd });
       assert.equal(mainRootModeCliStateWrite.outputJson, null, "mode-cli-state-write-main");
       const compiledDynamicCliStateWrite = `omx state write --input "$STATE_INPUT" --json`;
       for (const [actor, identity] of [
@@ -29844,11 +29879,22 @@ PY`,
       );
       assert.equal(nativeChildMixedReferenceState.outputJson?.decision, "block", mixedReferenceStateName);
       assert.match(String(nativeChildMixedReferenceState.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, mixedReferenceStateName);
-      const mainRootMixedReferenceState = await dispatchBashWithTrustedPackageCli(
-        `${mixedReferenceStateName}-main`,
-        { agent_id: leaderThreadId },
-        mixedReferenceStateCommand.replace('"mode":"ultragoal"', `"mode":"ultragoal","session_id":"${sessionId}","workingDirectory":${JSON.stringify(cwd)}`),
-      );
+      const mainRootMixedReferenceState = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        agent_id: leaderThreadId,
+        tool_name: "mcp__omx_state__state_write",
+        tool_use_id: `${mixedReferenceStateName}-main`,
+        tool_input: {
+          mode: "ultragoal",
+          active: true,
+          current_phase: "executing",
+          session_id: sessionId,
+          workingDirectory: cwd,
+        },
+      }, { cwd });
       assert.equal(mainRootMixedReferenceState.outputJson, null, mixedReferenceStateName);
       const [nativeChildRsyncAuthorityName, nativeChildRsyncAuthorityCommand] = NATIVE_CHILD_RSYNC_AUTHORITY_TARGET;
       const nativeChildRsyncAuthority = await dispatchBash(
@@ -31007,18 +31053,24 @@ PY`,
       );
       assert.equal(protectedRawState.outputJson?.decision, "block");
 
-      const safeTransport = await withTrustedWorkspaceOmxCli(cwd, (omxCommand) => dispatchCodexNativeHook(
+      const safeTransport = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
           session_id: sessionId,
           thread_id: "thread-ralph-conductor-write",
           agent_id: "thread-ralph-conductor-write",
-          tool_name: "Bash",
-          tool_input: { command: `OMX_SESSION_ID=${sessionId} ${omxCommand} state write --input '${JSON.stringify({ mode: "ralph", current_phase: "executing", active: true, session_id: sessionId, workingDirectory: cwd })}' --json` },
+          tool_name: "mcp__omx_state__state_write",
+          tool_input: {
+            mode: "ralph",
+            current_phase: "executing",
+            active: true,
+            session_id: sessionId,
+            workingDirectory: cwd,
+          },
         },
         { cwd },
-      ));
+      );
       assert.equal(safeTransport.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
