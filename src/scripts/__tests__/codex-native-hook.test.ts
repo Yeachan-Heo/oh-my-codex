@@ -17074,6 +17074,20 @@ exit 0
 				"block",
 			);
 
+			const blockedReassignedRedirect = await dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "sess-di-var-redirect",
+				agent_id: "thread-di-var-redirect",
+				thread_id: "thread-di-var-redirect",
+				tool_name: "Bash",
+				tool_use_id: "tool-di-var-redirect-reassigned",
+				tool_input: {
+					command: 'SNAP="src/leak.ts"; cat > "$SNAP" <<\'EOF\'\ncontent\nEOF\nSNAP=".omx/context/example.md"',
+				},
+			}, { cwd });
+			assert.equal(blockedReassignedRedirect.outputJson?.decision, "block");
+
 			const blockedUnresolvedVarRedirect = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "PreToolUse",

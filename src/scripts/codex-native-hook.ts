@@ -4270,12 +4270,22 @@ function isNullDeviceRedirectTarget(target: string): boolean {
 // targets stay conservatively blocked.
 function extractCommandLiteralAssignments(command: string): Map<string, string> {
   const assignments = new Map<string, string>();
-  const pattern = /(?:^|[\n;&|(]|&&|\|\|)\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"$`]*)"|'([^']*)'|([^\s"'$`;&|<>]+))/g;
-  for (const match of command.matchAll(pattern)) {
+  const invalidNames = new Set<string>();
+  let remaining = command;
+  const leadingAssignment = /^\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"$`]*)"|'([^']*)'|([^\s"'$`;&|<>]+))\s*(?:[;\n]+|$)/;
+  while (remaining) {
+    const match = remaining.match(leadingAssignment);
+    if (!match) break;
     const name = safeString(match[1]).trim();
-    if (!name) continue;
-    const value = match[2] ?? match[3] ?? match[4] ?? "";
-    assignments.set(name, value);
+    if (!name || assignments.has(name) || invalidNames.has(name)) {
+      if (name) {
+        assignments.delete(name);
+        invalidNames.add(name);
+      }
+    } else {
+      assignments.set(name, match[2] ?? match[3] ?? match[4] ?? "");
+    }
+    remaining = remaining.slice(safeString(match[0]).length);
   }
   return assignments;
 }
