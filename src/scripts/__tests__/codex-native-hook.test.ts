@@ -12895,6 +12895,21 @@ exit 0
 				/src\/runtime\.ts/,
 			);
 
+			const allowedCombinedSedArtifactEdit = await preToolUse(
+				{
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-artifact",
+					tool_name: "Bash",
+					tool_use_id: "tool-di-sed-combined-artifact-edit",
+					tool_input: {
+						command: "sed -Ei 's/old/new/' .omx/specs/deep-interview-demo.md",
+					},
+				},
+				{ cwd },
+			);
+			assert.equal(allowedCombinedSedArtifactEdit.outputJson, null);
+
 
 			const allowedPlanningStateWrite = await preToolUse(
 				{
