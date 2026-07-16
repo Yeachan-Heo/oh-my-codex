@@ -8675,6 +8675,8 @@ function isAllowedDeepInterviewBashWrite(
   if (!commandHasDeepInterviewWriteIntent(command)) return true;
   if (hasUnresolvedConductorInterpreterWrite(command)) return false;
   const targets = extractDeepInterviewCommandWriteTargets(command);
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0
+    && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
 
   if (targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target, sessionId))) return false;
   return targets.length > 0 && targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target, sessionId));
@@ -8782,6 +8784,8 @@ function isAllowedRalplanBashWrite(
   const hasAllowedTargets = targets.length > 0
     && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target, sessionId));
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
+  if (extractDeepInterviewCommandRedirectTargets(command).length > 0
+    && !conductorMetadataRedirectsHaveBoundedProducers(command)) return false;
 
   if (beadsCommand.present) {
     return beadsCommand.allowed && (targets.length === 0 || hasAllowedTargets);
@@ -9149,7 +9153,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   ) {
     blocked = true;
     blockedDetail = `${toolName} would deactivate protected deep-interview planning state`;
-  } else if (PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) {
+  } else if (mutationTransport === "path") {
     const candidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
     blocked = candidates.length === 0
       || !candidates.every((candidate) => isAllowedDeepInterviewArtifactPath(cwd, candidate, sessionId));
@@ -9244,13 +9248,7 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
   );
   if (deepInterviewState) {
     const conflictToolName = safeString(payload.tool_name).trim();
-    if (
-      conflictToolName === "mcp__omx_state__state_clear"
-      || (
-        conflictToolName === "mcp__omx_state__state_write"
-        && isPlanningPhaseDeactivationPayload(normalizeStateWriteClassificationPayload(safeObject(payload.tool_input)))
-      )
-    ) {
+    if (conflictToolName === "mcp__omx_state__state_clear" || conflictToolName === "mcp__omx_state__state_write") {
       return buildDeepInterviewRootPointerConflictBlock(deepInterviewState);
     }
     if (blocksDeepInterviewImplementationWrite(payload, cwd, rootSessionId)) {
@@ -9268,6 +9266,9 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
 
   const toolName = safeString(payload.tool_name).trim();
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
+  if (toolName === "mcp__omx_state__state_clear" || toolName === "mcp__omx_state__state_write") {
+    return buildRalplanRootPointerConflictBlock(ralplanState);
+  }
   let blocked = false;
   if (toolName === "Bash") {
     const command = readPreToolUseCommand(payload);
@@ -9311,6 +9312,7 @@ async function resolvePreToolUseWriteActor(
   sessionId: string,
 ): Promise<PreToolUseWriteActor> {
   if (payloadHasConflictingIdentityAliases(payload)) return "provenance-conflict";
+  if (hasSubagentThreadSpawnProvenance(payload)) return "native-child";
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
   const session = trackingState?.sessions?.[sessionId];
   const payloadThreadId = readPayloadThreadId(payload);
@@ -20154,6 +20156,7 @@ export async function dispatchCodexNativeHook(
       && !readPayloadAgentId(payload)
       && !readPayloadThreadId(payload)
       && !payloadHasOwnerIdentityClaim(payload)
+      && !hasSubagentThreadSpawnProvenance(payload)
       && await hasAuthoritativeTeamWorkerContext(cwd);
 
     if (

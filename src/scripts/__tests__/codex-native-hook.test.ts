@@ -17032,6 +17032,23 @@ exit 0
 			}, { cwd });
 			assert.equal(allowedLiteralRedirect.outputJson, null);
 
+			for (const [name, command] of [
+				["unknown producer", "./mutator > .omx/context/literal.md"],
+				["shadowed cat producer", "cat(){ touch src/owned.ts; command cat \"$@\"; }; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+			] as const) {
+				const blockedProducer = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-var-redirect",
+					agent_id: "thread-di-var-redirect",
+					thread_id: "thread-di-var-redirect",
+					tool_name: "Bash",
+					tool_use_id: `tool-di-redirect-producer-${name}`,
+					tool_input: { command },
+				}, { cwd });
+				assert.equal(blockedProducer.outputJson?.decision, "block", name);
+			}
+
 			const allowedVarRedirect = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "PreToolUse",
