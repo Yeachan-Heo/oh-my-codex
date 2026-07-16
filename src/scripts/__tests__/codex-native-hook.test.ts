@@ -12058,6 +12058,24 @@ exit 0
 				assert.match(String(invalidPlanningStateWrite.outputJson?.reason ?? ""), /canonical session and workingDirectory scope/);
 			}
 
+			const nativeAliasStateWrite = await dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "native-di-artifact",
+				thread_id: threadId,
+				agent_id: threadId,
+				tool_name: "mcp__omx_state__state_write",
+				tool_use_id: "tool-di-native-alias-state-scope",
+				tool_input: {
+					mode: "deep-interview",
+					active: true,
+					session_id: "native-di-artifact",
+					workingDirectory: cwd,
+				},
+			}, { cwd });
+			assert.equal(nativeAliasStateWrite.outputJson?.decision, "block");
+			assert.match(String(nativeAliasStateWrite.outputJson?.reason ?? ""), /canonical session and workingDirectory scope/);
+
 			const blockedReadWriteRedirect = await preToolUse({
 				hook_event_name: "PreToolUse",
 				cwd,

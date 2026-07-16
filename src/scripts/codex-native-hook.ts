@@ -8908,7 +8908,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   if (!activeState) return null;
 
   const toolName = safeString(payload.tool_name).trim();
-  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd)) {
+  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd, sessionId)) {
     return buildPlanningStateScopeDeny(
       safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -9030,7 +9030,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   if (!activeState) return null;
 
   const toolName = safeString(payload.tool_name).trim();
-  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd)) {
+  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd, sessionId)) {
     return buildPlanningStateScopeDeny(
       "Deep-interview",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -17912,12 +17912,12 @@ function buildConductorBashBlockedDetail(cwd: string, command: string): string {
     ?? "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata";
 }
 
-function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayload, policyCwd: string): boolean {
+function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayload, policyCwd: string, canonicalSessionId: string): boolean {
   const input = safeObject(payload.tool_input);
   if (!input || !conductorStateWritePayloadHasExactSchema(input)) return false;
-  const sessionId = readPayloadSessionId(payload);
-  if (safeString(input.session_id).trim() !== sessionId) return false;
-  if (!suppliedSessionAliasesMatch(input, sessionId)) return false;
+  if (!canonicalSessionId) return false;
+  if (safeString(input.session_id).trim() !== canonicalSessionId) return false;
+  if (!suppliedSessionAliasesMatch(input, canonicalSessionId)) return false;
   if (safeString(input.workingDirectory).trim() === "" || resolve(safeString(input.workingDirectory)) !== resolve(policyCwd)) return false;
   return true;
 }
@@ -17992,7 +17992,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     if (toolName === "mcp__omx_state__state_clear") {
       blocked = true;
       blockedDetail = "Structured state_clear is not authorized while a Conductor workflow is active";
-    } else if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, policyCwd)) {
+    } else if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, policyCwd, sessionId)) {
       blocked = true;
       blockedDetail = "Structured state writes must use the canonical active-session payload schema";
     }
