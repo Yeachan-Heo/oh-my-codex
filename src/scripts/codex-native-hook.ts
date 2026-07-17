@@ -8936,7 +8936,8 @@ async function buildRalplanPreToolUseBoundaryOutput(
   cwd: string,
   stateDir: string,
   resolvedSessionId?: string,
-  authorityCwd = cwd,
+  executionCwd = cwd,
+  authorityCwd = executionCwd,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
@@ -8955,7 +8956,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
   const actor = await resolvePreToolUseWriteActor(payload, authorityCwd, stateDir, sessionId);
   if (actor === "team-worker") {
-    if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, cwd, stateDir)) {
+    if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, executionCwd, stateDir)) {
       return buildTeamWorkerProtectedStateDeny(
         safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
         formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -9059,7 +9060,8 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   cwd: string,
   stateDir: string,
   resolvedSessionId?: string,
-  authorityCwd = cwd,
+  executionCwd = cwd,
+  authorityCwd = executionCwd,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
@@ -9078,7 +9080,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
   const actor = await resolvePreToolUseWriteActor(payload, authorityCwd, stateDir, sessionId);
   if (actor === "team-worker") {
-    if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, cwd, stateDir)) {
+    if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, executionCwd, stateDir)) {
       return buildTeamWorkerProtectedStateDeny(
         "Deep-interview",
         formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -17846,7 +17848,7 @@ function isExactConductorMetadataRoot(cwd: string, target: string): boolean {
         };
       }
       const blockedTarget = mutation.targets.find((target) => (
-        !(target === ".omx/state" && (mutation.command === "mkdir" || mutation.command === "install"))
+        !(target === ".omx/state" && mutation.command === "mkdir")
         && !isAllowedConductorMetadataPath(policyCwd, target)
       ));
       if (blockedTarget) {
@@ -17940,7 +17942,7 @@ function isExactConductorMetadataRoot(cwd: string, target: string): boolean {
     if (
       target === ".omx/state"
       && matchingShellMutations.length > 0
-      && matchingShellMutations.every((mutation) => mutation.command === "mkdir" || mutation.command === "install")
+      && matchingShellMutations.every((mutation) => mutation.command === "mkdir")
     ) return false;
     if (isNormalizedShellTarget && isAllowedConductorMetadataPath(policyCwd, target)) return false;
     if (isAllowedConductorMetadataExecutionPath(cwd, policyCwd, target)) return false;
@@ -20062,6 +20064,7 @@ export async function dispatchCodexNativeHook(
     }
   } else if (hookEventName === "PreToolUse") {
     const identitylessTeamWorkerContext = !readPayloadAgentId(payload)
+      && !safeString(payload.agentId).trim()
       && !readPayloadThreadId(payload)
       && !payloadHasOwnerIdentityClaim(payload)
       && !hasSubagentThreadSpawnProvenance(payload)

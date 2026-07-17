@@ -12449,6 +12449,22 @@ exit 0
 					tool_input: { mode: "deep-interview", workingDirectory: cwd },
 				}, { cwd: detachedWorkerCwd });
 				assert.equal(detachedWorkerStateClear.outputJson?.decision, "block");
+				const detachedCamelIdentityWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					agentId: "untrusted-camel-child",
+					tool_name: "Write",
+					tool_input: { file_path: "src/camel-child.ts", content: "export {};\n" },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedCamelIdentityWrite.outputJson?.decision, "block");
+				await symlink(stateDir, join(detachedWorkerCwd, "state-link"));
+				const detachedWorkerStateAliasWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					tool_name: "Write",
+					tool_input: { file_path: `state-link/sessions/sess-di-artifact/deep-interview-state.json`, content: "{}\n" },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedWorkerStateAliasWrite.outputJson?.decision, "block");
 			} finally {
 				for (const [key, value] of Object.entries({
 					OMX_TEAM_WORKER: previousTeamEnv.worker,
@@ -32517,7 +32533,7 @@ PY`,
         "sed -Ei 's/old/new/' .omx/state/conductor-ledger.json",
         "cp src/source.ts .omx/state/source-copy.ts",
         "install src/source.ts -t .omx/state",
-        "install -d .omx/state .omx/handoffs/run-1",
+        "mkdir -p .omx/state .omx/handoffs/run-1",
         "rsync README.md .omx/state/readme.md",
         "xargs env printf safe </dev/null",
         "sed -i 's/old/new/' .omx/state/conductor-ledger.json .omx/handoffs/run-1/ledger.json",
