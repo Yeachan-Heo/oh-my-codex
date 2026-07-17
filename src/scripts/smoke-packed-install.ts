@@ -1963,7 +1963,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       session_id: leaderAgentId,
     }));
     mkdirSync(join(boxedPlanningStateDir, 'sessions', leaderAgentId), { recursive: true });
-    writeFileSync(join(boxedPlanningStateDir, 'session.json'), JSON.stringify({ session_id: leaderAgentId }));
+    writeFileSync(join(boxedPlanningStateDir, 'session.json'), JSON.stringify({ session_id: leaderAgentId, cwd: smokeCwd }));
     writeFileSync(join(boxedPlanningStateDir, 'sessions', leaderAgentId, 'skill-active-state.json'), JSON.stringify({
       active: true,
       skill: 'ralplan',
@@ -2015,7 +2015,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
 
     writeFileSync(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
     requireActorDeny('native-child', 'anchorless state write', runActorProbe('native-child', 'anchorless state write', 'mcp__omx_state__state_write', { mode: 'ultragoal', active: true }));
-    writeFileSync(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, native_session_id: leaderAgentId }));
+    writeFileSync(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, native_session_id: leaderAgentId, cwd: smokeCwd }));
 
     for (const [probe, toolName, toolInput] of [
       ['filesystem write', 'mcp__filesystem__write_file', { path: 'src/packed-mcp-write.ts', content: 'escaped' }],

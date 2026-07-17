@@ -3369,20 +3369,35 @@ async function resolvePreToolUseSessionBinding(
   };
 }
 
-function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): string {
+interface ConductorPolicyRootResolution {
+  cwd: string;
+  valid: boolean;
+  statePresent: boolean;
+}
+
+function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): ConductorPolicyRootResolution {
+  const statePresent = existsSync(join(stateDir, "session.json"))
+    || existsSync(join(stateDir, "sessions"));
+  let canonicalFallback: string;
+  try {
+    canonicalFallback = realpathSync(resolve(fallbackCwd));
+  } catch {
+    canonicalFallback = resolve(fallbackCwd);
+  }
   try {
     const canonicalStateDir = realpathSync(stateDir);
     const rootSession = readJsonSyncIfExists(join(canonicalStateDir, "session.json"));
     const recordedCwd = safeString(rootSession?.cwd ?? rootSession?.workingDirectory).trim();
-    if (recordedCwd) return realpathSync(resolve(recordedCwd));
+    if (recordedCwd) {
+      return { cwd: realpathSync(resolve(recordedCwd)), valid: true, statePresent };
+    }
+    if (canonicalStateDir === join(canonicalFallback, ".omx", "state")) {
+      return { cwd: canonicalFallback, valid: true, statePresent };
+    }
   } catch {
-    // Fall back to the execution cwd when the canonical state pointer is absent or unusable.
+    // An external state surface with an unusable pointer must not borrow execution-cwd authority.
   }
-  try {
-    return realpathSync(resolve(fallbackCwd));
-  } catch {
-    return resolve(fallbackCwd);
-  }
+  return { cwd: canonicalFallback, valid: !statePresent, statePresent };
 }
 
 
@@ -19650,7 +19665,8 @@ export async function dispatchCodexNativeHook(
   // Native hooks must use the exact pointer root selected for this dispatch.
   const pointerContext = resolveSessionPointerContext(cwd);
   const stateDir = pointerContext.baseStateDir;
-  const policyCwd = resolveConductorPolicyRoot(stateDir, cwd);
+  const policyRoot = resolveConductorPolicyRoot(stateDir, cwd);
+  const policyCwd = policyRoot.cwd;
 
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
   let skillState: SkillActiveState | null = null;
@@ -20098,6 +20114,12 @@ export async function dispatchCodexNativeHook(
       safeString(payload.tool_name).trim(),
       policyCwd,
     );
+    if (!policyRoot.valid && policyRoot.statePresent && mutationTransport !== "read-only") {
+      outputJson = buildConductorSessionProvenanceDeny(
+        { mode: "conductor", phase: "active" },
+        "the selected workflow state root has no usable canonical session cwd",
+      );
+    } else {
     const activeConductorState = sessionBinding.canonicalSessionId
       ? await readActiveConductorStateForPreToolUse(
         payload,
@@ -20214,6 +20236,7 @@ export async function dispatchCodexNativeHook(
         ?? await buildNativeSubagentCapacityCloseGuardOutput(payload, policyCwd, stateDir)
         ?? buildMalformedPreToolUseBlockTestOutput(payload)
         ?? buildNativePreToolUseOutput(payload);
+    }
     }
   } else if (hookEventName === "PostToolUse") {
     if (allowImplicitSessionSideEffects) {

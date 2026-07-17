@@ -12169,6 +12169,29 @@ exit 0
 				else process.env.OMX_ROOT = priorOmxRootForDisjoint;
 			}
 
+			await writeJson(join(boxedStateDir, "session.json"), {
+				session_id: "sess-di-boxed-policy",
+				cwd: join(cwd, "missing-policy-root"),
+			});
+			const priorOmxRootForInvalidPointer = process.env.OMX_ROOT;
+			try {
+				process.env.OMX_ROOT = boxedRoot;
+				const invalidPointerChildWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: disjointExecutionCwd,
+					session_id: "sess-di-boxed-policy",
+					thread_id: "agent-di-invalid-pointer-child",
+					agent_id: "agent-di-invalid-pointer-child",
+					tool_name: "Write",
+					tool_input: { file_path: "src/invalid-pointer-bypass.ts", content: "export {};\n" },
+				}, { cwd: disjointExecutionCwd });
+				assert.equal(invalidPointerChildWrite.outputJson?.decision, "block");
+				assert.match(String(invalidPointerChildWrite.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
+			} finally {
+				if (priorOmxRootForInvalidPointer === undefined) delete process.env.OMX_ROOT;
+				else process.env.OMX_ROOT = priorOmxRootForInvalidPointer;
+			}
+
 			const ancestorBox = join(cwd, "ancestor-box");
 			const boxedCheckout = join(ancestorBox, "worktree");
 			const ancestorStateDir = join(ancestorBox, ".omx", "state");
