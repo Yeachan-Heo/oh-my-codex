@@ -8286,7 +8286,7 @@ function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, 
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0) return false;
   if (extractConductorEditorWriteTargets(command).length > 0) return false;
   if (extractConductorInterpreterWrites(command).length > 0) return false;
-  if (classifyConductorExecutableRuntime(command, 0, cwd) !== null) return false;
+  if (classifyConductorExecutableRuntime(canonicalCommand, 0, cwd) !== null) return false;
   const mutations = extractConductorBashMutations(command, cwd);
   return mutations.length === 1 && mutations[0]?.mainRootStructuredStateWrite === true;
 }
