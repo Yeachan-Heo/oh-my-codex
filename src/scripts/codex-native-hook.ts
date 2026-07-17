@@ -20123,6 +20123,9 @@ export async function dispatchCodexNativeHook(
     );
     const rootSessionPointer = await readRootSessionStateFromStateDir(stateDir);
     const rootSessionId = safeString(rootSessionPointer?.session_id).trim();
+    const payloadPolicyCwd = rootSessionId !== "" && rootSessionId !== payloadSessionId
+      ? cwd
+      : policyCwd;
     const foreignRootNativeChildDeny = !sessionBinding.valid
       && payloadSessionId
       && rootSessionId !== ""
@@ -20133,7 +20136,7 @@ export async function dispatchCodexNativeHook(
         cwd,
         stateDir,
         payloadSessionId,
-        policyCwd,
+        payloadPolicyCwd,
       )
       : null;
     if (!policyRoot.valid && policyRoot.statePresent && mutationTransport !== "read-only") {
@@ -20178,7 +20181,7 @@ export async function dispatchCodexNativeHook(
       && policyRoot.externalStateRoot
       ? await readActiveConductorStateForPreToolUse(
         payload,
-        policyCwd,
+        payloadPolicyCwd,
         stateDir,
         payloadSessionId,
       )
@@ -20187,12 +20190,12 @@ export async function dispatchCodexNativeHook(
       && payloadSessionId
       && policyRoot.externalStateRoot
       ? await readActiveDeepInterviewStateForPreToolUse(
-        policyCwd,
+        payloadPolicyCwd,
         stateDir,
         payloadSessionId,
         "",
       ) ?? await readActiveRalplanStateForPreToolUse(
-        policyCwd,
+        payloadPolicyCwd,
         stateDir,
         payloadSessionId,
         "",
