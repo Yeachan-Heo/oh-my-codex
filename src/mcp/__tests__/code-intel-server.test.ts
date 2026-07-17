@@ -25,7 +25,7 @@ describe('mcp/code-intel-server module contract', () => {
       assert.ok(toolNames.includes(tool), `missing tool declaration: ${tool}`);
     }
 
-    assert.match(src, /const args = \['--noEmit', '--pretty', 'false'\]/);
+    assert.match(src, /const args = \['--noEmit', '--pretty', 'false', '--incremental', 'false'\]/);
     assert.match(src, /new Server\(\s*\{ name: 'omx-code-intel', version: '0\.1\.0' \}/);
   });
 
