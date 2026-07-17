@@ -11889,6 +11889,24 @@ exit 0
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
+	it("blocks filesystem MCP writes to protected workflow state without an active mode", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-filesystem-protected-state-"));
+		try {
+			for (const path of [".omx/state/session.json", ".omx/state/subagent-tracking.json"] as const) {
+				const result = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-filesystem-protected-state",
+					tool_name: "mcp__filesystem__write_file",
+					tool_input: { path, content: "{}\n" },
+				}, { cwd });
+				assert.equal(result.outputJson?.decision, "block", path);
+				assert.match(String(result.outputJson?.reason ?? ""), /Protected workflow state/);
+			}
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
 	it("allows canonical leader deep-interview artifact and state writes while blocking implementation Bash writes", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-pretool-deep-interview-artifact-"),

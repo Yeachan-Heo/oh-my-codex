@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -79,6 +79,27 @@ describe('mcp/code-intel-server module contract', () => {
       } else {
         process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START = previous;
       }
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('disables incremental build-info writes for tsc diagnostics', async () => {
+    const previous = process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START;
+    process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START = '1';
+    const projectDir = await mkdtemp(join(tmpdir(), 'omx-code-intel-incremental-'));
+    await writeFile(join(projectDir, 'tsconfig.json'), '{"compilerOptions":{"incremental":true}}\n');
+    try {
+      const { runTscDiagnostics } = await import(`../code-intel-server.js?incremental=${Date.now()}`);
+      let observedArgs: string[] = [];
+      await runTscDiagnostics('', projectDir, undefined, async (_command: string, args: string[]) => {
+        observedArgs = args;
+        return { stdout: '', stderr: '' };
+      });
+      assert.deepEqual(observedArgs.slice(0, 5), ['tsc', '--noEmit', '--pretty', 'false', '--incremental']);
+      assert.equal(observedArgs[5], 'false');
+    } finally {
+      if (previous === undefined) delete process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START;
+      else process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START = previous;
       await rm(projectDir, { recursive: true, force: true });
     }
   });
