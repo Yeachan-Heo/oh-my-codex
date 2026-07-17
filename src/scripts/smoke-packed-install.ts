@@ -459,8 +459,7 @@ function resolvePinnedCodexExecutable(
       );
     }
     seenPathEntries.add(pathEntry);
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) throw versionProbeDeadlineError();
+
 
     let pathEntryState = inspectCodexCandidate(pathEntry);
     if (pathEntryState.kind === 'absent') {
@@ -499,6 +498,8 @@ function resolvePinnedCodexExecutable(
       continue;
     }
 
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw versionProbeDeadlineError();
     const { result } = spawnPlatformCommandSync(executable, ['--version'], {
       cwd,
       env,

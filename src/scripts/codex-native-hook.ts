@@ -9298,6 +9298,8 @@ async function resolvePreToolUseWriteActor(
   sessionId: string,
 ): Promise<PreToolUseWriteActor> {
   if (payloadHasConflictingIdentityAliases(payload)) return "provenance-conflict";
+  const unofficialAgentId = safeString(payload.agentId).trim();
+  if (unofficialAgentId && !safeString(payload.agent_id).trim()) return "provenance-conflict";
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
   const session = trackingState?.sessions?.[sessionId];
   const payloadThreadId = readPayloadThreadId(payload);

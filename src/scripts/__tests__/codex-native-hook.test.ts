@@ -12452,6 +12452,7 @@ exit 0
 				const detachedCamelIdentityWrite = await dispatchCodexNativeHook({
 					hook_event_name: "PreToolUse",
 					cwd: detachedWorkerCwd,
+					session_id: "sess-di-artifact",
 					agentId: "untrusted-camel-child",
 					tool_name: "Write",
 					tool_input: { file_path: "src/camel-child.ts", content: "export {};\n" },
