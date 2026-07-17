@@ -29959,6 +29959,7 @@ PY`,
       delete process.env.OMX_SESSION_ID;
       process.env.GJC_SESSION_ID = sessionId;
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await mkdir(join(cwd, ".git"), { recursive: true });
       await mkdir(join(cwd, "src", "shared"), { recursive: true });
       await mkdir(join(cwd, "src", "state"), { recursive: true });
       await mkdir(join(cwd, ".omx", "state", "tmp"), { recursive: true });
