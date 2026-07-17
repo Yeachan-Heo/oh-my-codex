@@ -32198,6 +32198,26 @@ PY`,
 
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /team phase: team-exec/);
+
+      for (const [toolName, toolInput] of [
+        ["mcp__omx_state__state_write", {
+          mode: "team", active: false, current_phase: "complete", session_id: sessionId, workingDirectory: cwd,
+        }],
+        ["Bash", {
+          command: `omx state write --input '${JSON.stringify({ mode: "team", active: false, current_phase: "complete", session_id: sessionId, workingDirectory: cwd })}' --json`,
+        }],
+      ] as const) {
+        const deactivation = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-root-team-conductor-write",
+          tool_name: toolName,
+          tool_input: toolInput,
+        }, { cwd });
+        assert.equal(deactivation.outputJson?.decision, "block", toolName);
+        assert.match(String(deactivation.outputJson?.reason ?? ""), /preserve the canonical active Conductor guard|remain bound to the active Conductor session/);
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

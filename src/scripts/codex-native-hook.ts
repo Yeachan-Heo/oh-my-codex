@@ -8327,6 +8327,7 @@ function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, 
 }
 
 function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: string, authoritativeSessionId: string): boolean {
+  if (omxStateTransportHasUnsafeRuntimeWrapper(command)) return false;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
   if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
@@ -8468,6 +8469,7 @@ function isAllowedDeepInterviewTerminalStateWriteCommand(
   activeState: Record<string, unknown>,
   sessionId: string,
 ): boolean {
+  if (omxStateTransportHasUnsafeRuntimeWrapper(command)) return false;
   const rawWords = tokenizeShellWords(normalizeShellLineContinuations(command).trim());
   if (rawWords[0] !== "omx") return false;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
@@ -17979,6 +17981,17 @@ function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayloa
   return true;
 }
 
+function conductorStatePayloadPreservesActiveGuard(
+  input: Record<string, unknown> | null,
+  activeState: ActiveConductorState,
+): boolean {
+  if (!input || input.active !== true) return false;
+  if (safeString(input.mode).trim() !== activeState.mode) return false;
+  const phase = safeString(input.current_phase ?? input.currentPhase).trim().toLowerCase();
+  return phase !== "" && isNonTerminalPhase(phase);
+}
+
+
 function buildConductorSessionProvenanceDeny(
   activeState: ActiveConductorState,
   detail: string,
@@ -18037,6 +18050,18 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     const nativeChildMetadataControl = isNativeChildSafeConductorMetadataControl(cwd, command, policyCwd);
     const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd);
     blocked = !bashEvaluation.allowed;
+    const canonicalStateCommand = canonicalizeOmxStateTransportCommand(command);
+    const bashStateOperations = collectOmxStateCommandOperations(canonicalStateCommand, "write");
+    if (bashStateOperations.length > 0) {
+      const bashStatePayload = readStateWriteInputPayload(policyCwd, canonicalStateCommand, command);
+      if (
+        !isStandaloneParsedOmxStateWriteTransport(policyCwd, command, sessionId)
+        || !conductorStatePayloadPreservesActiveGuard(bashStatePayload, activeState)
+      ) {
+        blocked = true;
+        blockedDetail = "Bash state writes must preserve the canonical active Conductor guard";
+      }
+    }
     const safeExportedFunctionRead = !blocked
       && shellMutations.length === 0
       && /\b(?:export\s+(?:-[A-Za-z]*f[A-Za-z]*|--functions?)|(?:declare|typeset)\s+-[A-Za-z]*f[A-Za-z]*)\b/.test(command);
@@ -18046,12 +18071,19 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     if (blocked) blockedDetail = bashEvaluation.blockedDetail ?? buildConductorBashBlockedDetail(cwd, command);
   } else if (mutationTransport === "state") {
     nativeChildMutationAttempt = true;
+    const directStateInput = safeObject(payload.tool_input);
     if (toolName === "mcp__omx_state__state_clear") {
       blocked = true;
       blockedDetail = "Structured state_clear is not authorized while a Conductor workflow is active";
-    } else if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, policyCwd, sessionId)) {
+    } else if (
+      toolName === "mcp__omx_state__state_write"
+      && (
+        !directConductorStateWritePayloadHasExactSchema(payload, policyCwd, sessionId)
+        || !conductorStatePayloadPreservesActiveGuard(directStateInput, activeState)
+      )
+    ) {
       blocked = true;
-      blockedDetail = "Structured state writes must use the canonical active-session payload schema";
+      blockedDetail = "Structured state writes must preserve the canonical active Conductor guard";
     }
   } else if (mutationTransport === "orchestration") {
     nativeChildMutationAttempt = true;
