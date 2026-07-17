@@ -6245,6 +6245,10 @@ function unwrapOmxStateTransportCommandOnce(command: string): string | null {
 
 function omxStateTransportHasUnsafeRuntimeWrapper(command: string): boolean {
   let current = normalizeShellLineContinuations(command).trim();
+  const unsafeEnvironmentNames = new Set(["NODE_OPTIONS", ...CONDUCTOR_NODE_OUTPUT_ENVIRONMENT_NAMES]);
+  if ([...unsafeEnvironmentNames].some((name) => safeString(process.env[name]).trim() !== "")) return true;
+  const rawWords = tokenizeConductorShellWords(current);
+  if (rawWords.some((word) => isEnvironmentAssignmentWord(word) && unsafeEnvironmentNames.has(shellAssignmentName(word)))) return true;
   for (let passes = 0; passes < 8; passes += 1) {
     const words = tokenizeConductorShellWords(current);
     const runtimeIndex = words.findIndex((word) => {

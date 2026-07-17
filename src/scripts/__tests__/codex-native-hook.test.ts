@@ -16349,6 +16349,8 @@ exit 0
 				["node loader", `node --loader .omx/context/loader.mjs dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
 				["NODE_OPTIONS", `NODE_OPTIONS='--require .omx/context/preload.cjs' node dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
 				["bun preload", `bun --preload .omx/context/preload.ts dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+				["direct OMX NODE_OPTIONS", `NODE_OPTIONS='--require .omx/context/preload.cjs' omx state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+				["direct OMX coverage output", `NODE_V8_COVERAGE=src omx state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
 			] as const) {
 				const blockedRuntimePreload = await dispatchCodexNativeHook({
 					hook_event_name: "PreToolUse",
@@ -16359,6 +16361,23 @@ exit 0
 					tool_input: { command },
 				}, { cwd });
 				assert.equal(blockedRuntimePreload.outputJson?.decision, "block", name);
+			}
+
+			const previousNodeOptions = process.env.NODE_OPTIONS;
+			try {
+				process.env.NODE_OPTIONS = "--require .omx/context/preload.cjs";
+				const blockedInheritedRuntime = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-ralplan-input-file",
+					tool_name: "Bash",
+					tool_use_id: "tool-ralplan-inherited-node-options",
+					tool_input: { command: `omx state write --mode ralplan --input '${ralplanTerminalPayload}' --json` },
+				}, { cwd });
+				assert.equal(blockedInheritedRuntime.outputJson?.decision, "block");
+			} finally {
+				if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+				else process.env.NODE_OPTIONS = previousNodeOptions;
 			}
 
 			const blockedTerminalThenImplementationWrite =
