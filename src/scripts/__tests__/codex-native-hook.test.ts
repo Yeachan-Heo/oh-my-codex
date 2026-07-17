@@ -12474,6 +12474,13 @@ exit 0
 					tool_input: { command: `patch "$OMX_TEAM_STATE_ROOT/sessions/sess-di-artifact/deep-interview-state.json"` },
 				}, { cwd: detachedWorkerCwd });
 				assert.equal(detachedPatchState.outputJson?.decision, "block");
+				const detachedHeaderDrivenPatch = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					tool_name: "Bash",
+					tool_input: { command: "printf protected-diff | patch -p0" },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedHeaderDrivenPatch.outputJson?.decision, "block");
 				const detachedProductPatch = await dispatchCodexNativeHook({
 					hook_event_name: "PreToolUse",
 					cwd: detachedWorkerCwd,

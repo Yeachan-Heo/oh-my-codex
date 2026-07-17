@@ -8886,12 +8886,17 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
       const words = tokenizeShellWords(segment);
       const commandIndex = findWrappedCommandPositionIndex(words, 0);
       const commandName = commandIndex === null ? "" : basename(words[commandIndex] ?? "").toLowerCase();
-      if (new Set(["patch", "ed", "sponge", "setfacl", "setfattr", "chattr"]).has(commandName)) {
+      const protectedMutatorCommands = new Set(["patch", "ed", "sponge", "setfacl", "setfattr", "chattr"]);
+      if (
+        new Set(["xargs", "find"]).has(commandName)
+        && words.slice(commandIndex! + 1).some((word) => protectedMutatorCommands.has(basename(shellWordLiteral(word) ?? "").toLowerCase()))
+      ) return true;
+      if (protectedMutatorCommands.has(commandName)) {
         if (commandName !== "patch") return true;
         const operandWords = words.slice(commandIndex! + 1);
         if (operandWords.length !== 1) return true;
         const target = shellWordLiteral(operandWords[0] ?? "");
-        if (!target || /[$`*?\[\]{}]/.test(target)) return true;
+        if (!target || target.startsWith("-") || /[$`*?\[\]{}]/.test(target)) return true;
         if (targetIsProtectedOrAliased(isAbsolute(target) ? target : resolve(effectiveCwd, target))) return true;
         continue;
       }
