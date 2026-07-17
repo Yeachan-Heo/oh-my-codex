@@ -3866,6 +3866,7 @@ function normalizeProtectedPlanningStateFileName(fileName: string): string {
 
 function isProtectedPlanningStatePath(relativePath: string): boolean {
   if (relativePath !== ".omx/state" && !relativePath.startsWith(".omx/state/")) return false;
+  if (relativePath === ".omx/state") return true;
   const components = relativePath.split("/").map(normalizeProtectedPlanningStateFileName);
   const fileName = components.at(-1) ?? "";
   if (PROTECTED_PLANNING_STATE_FILE_NAMES.has(fileName)) return true;
@@ -17605,23 +17606,6 @@ function isNativeChildSafeConductorReferenceControl(words: string[], commandInde
 }
 
 
-function isNativeChildSafeConductorMetadataControl(cwd: string, command: string, rootCwd = cwd): boolean {
-  if (
-    commandInvokesApplyPatch(command)
-    || extractDeepInterviewCommandRedirectTargets(command).length > 0
-    || extractConductorEditorWriteTargets(command).length > 0
-    || extractConductorInterpreterWrites(command).length > 0
-    || /\btee\s+(?:-a\s+)?[^\s&|;]+/.test(command)
-  ) return false;
-  if (classifyConductorExecutableRuntime(command, 0, cwd) !== null) return false;
-  const mutations = extractConductorBashMutations(command, cwd, rootCwd);
-  return mutations.length > 0 && mutations.every((mutation) => (
-    mutation.nativeChildMetadataControl === true
-    && mutation.targets.length > 0
-    && mutation.targets.every((target) => isNativeChildSafeConductorMetadataTarget(rootCwd, target))
-  ));
-}
-
 interface ConductorStaticNestedBashExecution {
   command: string;
   functions: Map<string, string[]>;
@@ -18047,7 +18031,6 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 
   if (toolName === "Bash") {
     const shellMutations = extractConductorBashMutations(command, cwd, policyCwd);
-    const nativeChildMetadataControl = isNativeChildSafeConductorMetadataControl(cwd, command, policyCwd);
     const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd);
     blocked = !bashEvaluation.allowed;
     const canonicalStateCommand = canonicalizeOmxStateTransportCommand(command);
@@ -18066,7 +18049,6 @@ export async function buildConductorPreToolUseWriteGuardOutput(
       && shellMutations.length === 0
       && /\b(?:export\s+(?:-[A-Za-z]*f[A-Za-z]*|--functions?)|(?:declare|typeset)\s+-[A-Za-z]*f[A-Za-z]*)\b/.test(command);
     nativeChildMutationAttempt = (mutationTransport === "bash" || shellMutations.length > 0)
-      && !nativeChildMetadataControl
       && !safeExportedFunctionRead;
     if (blocked) blockedDetail = bashEvaluation.blockedDetail ?? buildConductorBashBlockedDetail(cwd, command);
   } else if (mutationTransport === "state") {
@@ -20153,7 +20135,9 @@ export async function dispatchCodexNativeHook(
               : "payload session identity is foreign or cannot be mapped to the active session",
         );
     } else {
-      const preToolUseSessionId = sessionBinding.valid ? sessionBinding.canonicalSessionId : "";
+      const preToolUseSessionId = sessionBinding.valid || preservesIdentitylessTeamWorkerExemption
+        ? sessionBinding.canonicalSessionId
+        : "";
       outputJson = buildNativeUnknownRolePreToolUseOutput(payload, policyCwd)
         ?? await buildDeepInterviewPreToolUseBoundaryOutput(
           payload,

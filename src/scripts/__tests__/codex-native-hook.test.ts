@@ -30574,13 +30574,19 @@ PY`,
       }
       const [mixedReferenceStateName, mixedReferenceStateCommand] = NATIVE_CHILD_MIXED_REFERENCE_STATE_WRITE;
       const referenceOnlyCommand = `chmod --reference=.omx/state/session.json .omx/state/reference-copy`;
-      for (const [actor, identity] of [
-        ["main", { agent_id: leaderThreadId }],
-        ["native-child", { agent_id: "agent-hook-native-reference-only" }],
-      ] as const) {
-        const referenceOnly = await dispatchBash(`${mixedReferenceStateName}-${actor}-reference-only`, identity, referenceOnlyCommand);
-        assert.equal(referenceOnly.outputJson, null, `${mixedReferenceStateName}-${actor}-reference-only`);
-      }
+      const mainReferenceOnly = await dispatchBash(
+        `${mixedReferenceStateName}-main-reference-only`,
+        { agent_id: leaderThreadId },
+        referenceOnlyCommand,
+      );
+      assert.equal(mainReferenceOnly.outputJson, null, `${mixedReferenceStateName}-main-reference-only`);
+      const childReferenceOnly = await dispatchBash(
+        `${mixedReferenceStateName}-native-child-reference-only`,
+        { agent_id: "agent-hook-native-reference-only" },
+        referenceOnlyCommand,
+      );
+      assert.equal(childReferenceOnly.outputJson?.decision, "block", `${mixedReferenceStateName}-native-child-reference-only`);
+      assert.match(String(childReferenceOnly.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
       const nativeChildMixedReferenceState = await dispatchBashWithTrustedPackageCli(
         `${mixedReferenceStateName}-child`,
         { agent_id: `agent-hook-native-${mixedReferenceStateName}` },
