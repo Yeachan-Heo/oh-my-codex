@@ -3372,7 +3372,12 @@ function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): stri
     if (basename(canonicalStateDir) !== "state" || basename(dirname(canonicalStateDir)) !== ".omx") {
       return resolve(fallbackCwd);
     }
-    return realpathSync(resolve(canonicalStateDir, "..", ".."));
+    const candidateRoot = realpathSync(resolve(canonicalStateDir, "..", ".."));
+    const canonicalFallback = realpathSync(resolve(fallbackCwd));
+    const fallbackRelative = relative(candidateRoot, canonicalFallback);
+    return fallbackRelative === "" || (!fallbackRelative.startsWith("..") && fallbackRelative !== "..")
+      ? candidateRoot
+      : canonicalFallback;
   } catch {
     return resolve(fallbackCwd);
   }
@@ -8925,7 +8930,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
     ? commandHasDeepInterviewWriteIntent(command, 0, cwd)
       || collectOmxStateCommandOperations(command, "write").length > 0
       || commandHasNestedCliMutationIntent(command)
-    : mutationTransport !== "read-only" && mutationTransport !== "orchestration";
+    : mutationTransport !== "read-only";
   if (actorMutation && (actor === "native-child" || actor === "provenance-conflict")) {
     return buildPlanningActorWriteDeny(
       safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
@@ -9047,7 +9052,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
     ? commandHasDeepInterviewWriteIntent(command, 0, cwd)
       || collectOmxStateCommandOperations(command, "write").length > 0
       || commandHasNestedCliMutationIntent(command)
-    : mutationTransport !== "read-only" && mutationTransport !== "orchestration";
+    : mutationTransport !== "read-only";
   if (actorMutation && (actor === "native-child" || actor === "provenance-conflict")) {
     return buildPlanningActorWriteDeny(
       "Deep-interview",

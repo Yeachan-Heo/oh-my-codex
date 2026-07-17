@@ -266,7 +266,7 @@ async function loadCodeIntelDescriptor(): Promise<McpCliDescriptor> {
 }
 
 async function loadWikiDescriptor(): Promise<McpCliDescriptor> {
-  const { buildWikiServerTools, handleWikiToolCall } = await importWithAutoStartDisabled(
+  const { buildWikiServerTools, handleWikiCliToolCall } = await importWithAutoStartDisabled(
     "OMX_WIKI_SERVER_DISABLE_AUTO_START",
     async () => await import("../mcp/wiki-server.js"),
   );
@@ -284,7 +284,7 @@ async function loadWikiDescriptor(): Promise<McpCliDescriptor> {
       delete: "wiki_delete",
       refresh: "wiki_refresh",
     },
-    handle: handleWikiToolCall,
+    handle: handleWikiCliToolCall,
   };
 }
 

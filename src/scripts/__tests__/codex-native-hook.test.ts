@@ -12078,6 +12078,60 @@ exit 0
 				tool_input: { path: "src/runtime.ts", content: "export {};\n" },
 			});
 			assert.equal(blockedFilesystemMcpWrite.outputJson?.decision, "block");
+			const blockedNativeChildOrchestration = await dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: "sess-di-artifact",
+				thread_id: "agent-di-orchestration-child",
+				agent_id: "agent-di-orchestration-child",
+				tool_name: "collaboration.spawn_agent",
+				tool_input: { agent_type: "executor", message: "mutate product state" },
+			}, { cwd });
+			assert.equal(blockedNativeChildOrchestration.outputJson?.decision, "block");
+			assert.match(String(blockedNativeChildOrchestration.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+
+			const boxedRoot = join(cwd, "external-omx-box");
+			const boxedStateDir = join(boxedRoot, ".omx", "state");
+			const boxedSessionDir = join(boxedStateDir, "sessions", "sess-di-boxed-policy");
+			await mkdir(boxedSessionDir, { recursive: true });
+			await writeJson(join(boxedStateDir, "session.json"), {
+				session_id: "sess-di-boxed-policy",
+				cwd,
+			});
+			await writeJson(join(boxedSessionDir, "deep-interview-state.json"), {
+				mode: "deep-interview",
+				active: true,
+				current_phase: "intent-first",
+				session_id: "sess-di-boxed-policy",
+				workingDirectory: cwd,
+			});
+			await writeJson(join(boxedSessionDir, "skill-active-state.json"), {
+				version: 1,
+				active: true,
+				skill: "deep-interview",
+				phase: "planning",
+				session_id: "sess-di-boxed-policy",
+				workingDirectory: cwd,
+				active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-boxed-policy" }],
+			});
+			const priorOmxRootForBox = process.env.OMX_ROOT;
+			try {
+				process.env.OMX_ROOT = boxedRoot;
+				const boxedPolicyChildWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-di-boxed-policy",
+					thread_id: "agent-di-boxed-child",
+					agent_id: "agent-di-boxed-child",
+					tool_name: "Write",
+					tool_input: { file_path: "src/boxed-policy-bypass.ts", content: "export {};\n" },
+				}, { cwd });
+				assert.equal(boxedPolicyChildWrite.outputJson?.decision, "block");
+				assert.match(String(boxedPolicyChildWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+			} finally {
+				if (priorOmxRootForBox === undefined) delete process.env.OMX_ROOT;
+				else process.env.OMX_ROOT = priorOmxRootForBox;
+			}
 
 			for (const [name, toolInput] of [
 				["missing session", { mode: "deep-interview", active: true, workingDirectory: cwd }],
@@ -13099,7 +13153,8 @@ exit 0
 					},
 					{ cwd },
 				);
-				assert.equal(allowedRuntimeUnrelatedWrite.outputJson, null);
+				assert.equal(allowedRuntimeUnrelatedWrite.outputJson?.decision, "block");
+				assert.match(String(allowedRuntimeUnrelatedWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
 			} finally {
 				if (typeof previousOmxRoot === "string")
 					process.env.OMX_ROOT = previousOmxRoot;

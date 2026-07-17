@@ -167,9 +167,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: buildWikiServerTools(),
 }));
 
-export async function handleWikiToolCall(request: {
+async function handleWikiToolCallWithOptions(request: {
   params: { name: string; arguments?: Record<string, unknown> };
-}) {
+}, options: { logReadOperations?: boolean } = {}) {
   const { name, arguments: args = {} } = request.params;
 
   try {
@@ -195,13 +195,13 @@ export async function handleWikiToolCall(request: {
           tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
           category: typeof args.category === 'string' ? args.category as WikiCategory : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
-          logQuery: false,
+          logQuery: options.logReadOperations === true,
         });
         return text(result);
       }
 
       case 'wiki_lint':
-        return text(lintWiki(root, undefined, { logLint: false }));
+        return text(lintWiki(root, undefined, { logLint: options.logReadOperations === true }));
 
       case 'wiki_add': {
         const title = String(args.title || '');
@@ -278,6 +278,18 @@ export async function handleWikiToolCall(request: {
   } catch (error) {
     return errorText((error as Error).message);
   }
+}
+
+export async function handleWikiToolCall(request: {
+  params: { name: string; arguments?: Record<string, unknown> };
+}) {
+  return handleWikiToolCallWithOptions(request);
+}
+
+export async function handleWikiCliToolCall(request: {
+  params: { name: string; arguments?: Record<string, unknown> };
+}) {
+  return handleWikiToolCallWithOptions(request, { logReadOperations: true });
 }
 
 server.setRequestHandler(CallToolRequestSchema, handleWikiToolCall);

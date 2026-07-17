@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const REQUIRED_TOOLS = [
   'lsp_diagnostics',
@@ -25,7 +26,7 @@ describe('mcp/code-intel-server module contract', () => {
       assert.ok(toolNames.includes(tool), `missing tool declaration: ${tool}`);
     }
 
-    assert.match(src, /const args = \['--noEmit', '--pretty', 'false', '--incremental', 'false'\]/);
+    assert.match(src, /const args = \['--noEmit', '--pretty', 'false', '--incremental', 'true', '--tsBuildInfoFile', tsBuildInfoFile\]/);
     assert.match(src, /new Server\(\s*\{ name: 'omx-code-intel', version: '0\.1\.0' \}/);
   });
 
@@ -83,7 +84,7 @@ describe('mcp/code-intel-server module contract', () => {
     }
   });
 
-  it('disables incremental build-info writes for tsc diagnostics', async () => {
+  it('redirects incremental build-info writes outside the workspace for tsc diagnostics', async () => {
     const previous = process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START;
     process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START = '1';
     const projectDir = await mkdtemp(join(tmpdir(), 'omx-code-intel-incremental-'));
@@ -96,7 +97,11 @@ describe('mcp/code-intel-server module contract', () => {
         return { stdout: '', stderr: '' };
       });
       assert.deepEqual(observedArgs.slice(0, 5), ['tsc', '--noEmit', '--pretty', 'false', '--incremental']);
-      assert.equal(observedArgs[5], 'false');
+      assert.equal(observedArgs[5], 'true');
+      assert.equal(observedArgs[6], '--tsBuildInfoFile');
+      assert.ok(observedArgs[7]);
+      assert.equal(resolve(observedArgs[7]!).startsWith(resolve(projectDir)), false);
+      assert.equal(existsSync(observedArgs[7]!), false);
     } finally {
       if (previous === undefined) delete process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START;
       else process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START = previous;

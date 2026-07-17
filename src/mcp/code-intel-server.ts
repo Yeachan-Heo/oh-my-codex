@@ -10,10 +10,11 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { execFile } from 'child_process';
-import { readFile, readdir } from 'fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'fs/promises';
 import { join, relative, extname, basename, resolve } from 'path';
 import { existsSync } from 'fs';
 import { promisify } from 'util';
+import { tmpdir } from 'os';
 import { autoStartStdioMcpServer } from './bootstrap.js';
 
 const execFileAsync = promisify(execFile);
@@ -100,10 +101,18 @@ export async function runTscDiagnostics(
     return { diagnostics: [], command: 'tsc skipped: no tsconfig found' };
   }
 
-  const args = ['--noEmit', '--pretty', 'false', '--incremental', 'false'];
+  const tempDir = await mkdtemp(join(tmpdir(), 'omx-code-intel-tsbuild-'));
+  const tsBuildInfoFile = join(tempDir, 'diagnostics.tsbuildinfo');
+  const args = ['--noEmit', '--pretty', 'false', '--incremental', 'true', '--tsBuildInfoFile', tsBuildInfoFile];
   args.push('--project', tsconfig);
 
-  const { stdout, stderr } = await runCommand('npx', ['tsc', ...args], { cwd: projectDir, timeout: 60000 });
+  let stdout = '';
+  let stderr = '';
+  try {
+    ({ stdout, stderr } = await runCommand('npx', ['tsc', ...args], { cwd: projectDir, timeout: 60000 }));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
   const output = stdout + '\n' + stderr;
   let diagnostics = parseTscOutput(output, projectDir);
 

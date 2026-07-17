@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { mcpParityCommand } from "../mcp-parity.js";
 import { writeSessionStart } from "../../hooks/session.js";
+import { getWikiDir } from "../../wiki/storage.js";
 
 const originalLog = console.log;
 
@@ -369,6 +370,8 @@ describe("mcpParityCommand", () => {
       ]);
       const queryResult = JSON.parse(logs.pop() || "[]") as Array<{ page?: { filename?: string } }>;
       assert.equal(queryResult[0]?.page?.filename, "runtime-notes.md");
+      const wikiLog = await readFile(join(getWikiDir(cwd), "log.md"), "utf8");
+      assert.match(wikiLog, /Query "sessionstart"/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
