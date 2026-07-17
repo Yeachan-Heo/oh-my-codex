@@ -3372,18 +3372,14 @@ async function resolvePreToolUseSessionBinding(
 function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): string {
   try {
     const canonicalStateDir = realpathSync(stateDir);
-    if (basename(canonicalStateDir) !== "state" || basename(dirname(canonicalStateDir)) !== ".omx") {
-      return resolve(fallbackCwd);
-    }
-    const canonicalFallback = realpathSync(resolve(fallbackCwd));
     const rootSession = readJsonSyncIfExists(join(canonicalStateDir, "session.json"));
     const recordedCwd = safeString(rootSession?.cwd ?? rootSession?.workingDirectory).trim();
-    if (!recordedCwd) return canonicalFallback;
-    const canonicalRecordedCwd = realpathSync(resolve(recordedCwd));
-    const fallbackRelative = relative(canonicalRecordedCwd, canonicalFallback);
-    return fallbackRelative === "" || (!fallbackRelative.startsWith("..") && fallbackRelative !== "..")
-      ? canonicalRecordedCwd
-      : canonicalFallback;
+    if (recordedCwd) return realpathSync(resolve(recordedCwd));
+  } catch {
+    // Fall back to the execution cwd when the canonical state pointer is absent or unusable.
+  }
+  try {
+    return realpathSync(resolve(fallbackCwd));
   } catch {
     return resolve(fallbackCwd);
   }

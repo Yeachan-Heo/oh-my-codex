@@ -3288,20 +3288,8 @@ PY`],
       ['wgetrc unset control', `export WGETRC=/dev/null; unset WGETRC; HOME=/dev/null wget --no-config --no-hsts -O - https://example.test/file`],
       ['cdpath explicit relative control', `CDPATH=src; cd ./src; wget --no-config --no-hsts -O - https://example.test/file`],
       ['cdpath pushd popd control', `CDPATH=src; pushd ./src; popd; wget --no-config --no-hsts -O - https://example.test/file`],
-      ['chmod reference separated metadata control', `chmod --reference .omx/state/reference-copy .omx/state/reference-copy`],
-      ['chown reference separated metadata control', `chown --reference .omx/state/reference-copy .omx/state/reference-copy`],
-      ['chgrp reference separated metadata control', `chgrp --reference .omx/state/reference-copy .omx/state/reference-copy`],
       ['python isolated metadata cwd control', `cd .omx/state && python3 -I -c "print('ok')"`],
-      ['reference metadata control', `chmod --reference=.omx/state/reference-copy .omx/state/reference-copy`],
-      ['chown reference metadata control', `chown --reference=.omx/state/reference-copy .omx/state/reference-copy`],
-      ['chgrp reference metadata control', `chgrp --reference=.omx/state/reference-copy .omx/state/reference-copy`],
       ['curl cluster stdout control', `curl -q -sD - -o - https://example.test/file`],
-      ['rsync metadata log control', `rsync --quiet --log-file=.omx/state/rsync.log .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
-      ['rsync metadata separated log control', `rsync --log-file .omx/state/rsync.log .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
-      ['nonrecursive rsync metadata', `rsync --compress --log-file=.omx/state/rsync-recursive.log .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
-      ['rsync metadata no log control', `rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
-      ['function unset rsync runtime control', `export RSYNC_PARTIAL_DIR=src/rsync-partials; clear(){ unset RSYNC_PARTIAL_DIR; }; clear; rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
-      ['rsync product source metadata control', `rsync README.md .omx/state/inbox/readme.md`],
       ['wget version control', `wget --no-config --no-hsts -V`],
       ['wget value option stdout control', `wget --no-config --no-hsts -t 1 -O - https://example.test/file`],
       ['wget help control', `wget --no-config --no-hsts --help`],
@@ -3321,11 +3309,6 @@ PY`],
       ['wget SSL key log unset control', `SSLKEYLOGFILE=src/wget-tls.keys env -u SSLKEYLOGFILE wget --no-config --no-hsts -O - https://example.test/file`],
       ['exported readonly child function control', `f(){ :; }; declare -frx f; bash -c 'f; wget --no-config --no-hsts -O - https://example.test/file'`],
       ['exported redefined child function control', `f(){ :; }; export -f f; f(){ :; }; bash -c 'f; wget --no-config --no-hsts -O - https://example.test/file'`],
-      ['cdpath rsync metadata control', `CDPATH=.omx; cd state; rsync --log-file=rsync-cdpath.log conductor-ledger.json inbox/rsync-cdpath-copy`],
-      ['pushd cdpath rsync metadata control', `CDPATH=.omx; pushd state; rsync --log-file=rsync-pushd.log conductor-ledger.json inbox/rsync-pushd-copy`],
-      ['cdpath prefix cd metadata control', `CDPATH=src cd state; rsync --log-file=../../.omx/state/rsync-prefix-cdpath.log ../../.omx/state/conductor-ledger.json ../../.omx/state/inbox/rsync-prefix-cdpath-copy`],
-      ['cdpath local function restores', `CDPATH=.omx; f(){ local CDPATH=src; cd shared; cd ../..; }; f; cd state; rsync --log-file=rsync-local-cdpath.log conductor-ledger.json inbox/rsync-local-cdpath-copy`],
-      ['cdpath nested local function restores', `CDPATH=.omx; f(){ local CDPATH=src; g(){ local CDPATH=.omx; cd state; cd ../..; }; g; cd shared; cd ../..; }; f; cd state; rsync --log-file=rsync-nested-local-cdpath.log conductor-ledger.json inbox/rsync-nested-local-cdpath-copy`],
       ['curl static head stdout', `curl -q --request HEAD https://example.test/file`],
       ['wget no proxy standalone stdout control', `wget --no-config --no-hsts --no-proxy -O - https://example.test/file`],
       ['wget quiet standalone stdout control', `wget --no-config --no-hsts -q -O - https://example.test/file`],
@@ -3351,6 +3334,24 @@ PY`],
           throw new Error(`native hook blocked semantic Node read-only operation: ${actor} ${probe}: ${JSON.stringify(output)}`);
         }
       }
+    }
+    for (const [probe, command] of [
+      ['chmod reference separated metadata mutation', `chmod --reference .omx/state/reference-copy .omx/state/reference-copy`],
+      ['chown reference metadata mutation', `chown --reference=.omx/state/reference-copy .omx/state/reference-copy`],
+      ['chgrp reference metadata mutation', `chgrp --reference=.omx/state/reference-copy .omx/state/reference-copy`],
+      ['rsync metadata mutation', `rsync .omx/state/conductor-ledger.json .omx/state/inbox/rsync-copy`],
+      ['rsync product source metadata mutation', `rsync README.md .omx/state/inbox/readme.md`],
+      ['cdpath rsync metadata mutation', `CDPATH=.omx; cd state; rsync --log-file=rsync-cdpath.log conductor-ledger.json inbox/rsync-cdpath-copy`],
+      ['pushd cdpath rsync metadata mutation', `CDPATH=.omx; pushd state; rsync --log-file=rsync-pushd.log conductor-ledger.json inbox/rsync-pushd-copy`],
+      ['cdpath prefix cd metadata mutation', `CDPATH=src cd state; rsync --log-file=../../.omx/state/rsync-prefix-cdpath.log ../../.omx/state/conductor-ledger.json ../../.omx/state/inbox/rsync-prefix-cdpath-copy`],
+      ['cdpath local function rsync mutation', `CDPATH=.omx; f(){ local CDPATH=src; cd shared; cd ../..; }; f; cd state; rsync --log-file=rsync-local-cdpath.log conductor-ledger.json inbox/rsync-local-cdpath-copy`],
+      ['cdpath nested local function rsync mutation', `CDPATH=.omx; f(){ local CDPATH=src; g(){ local CDPATH=.omx; cd state; cd ../..; }; g; cd shared; cd ../..; }; f; cd state; rsync --log-file=rsync-nested-local-cdpath.log conductor-ledger.json inbox/rsync-nested-local-cdpath-copy`],
+    ] as const) {
+      const mainRootOutput = runActorProbe('main-root', probe, 'Bash', { command });
+      if (Object.keys(mainRootOutput).length !== 0) {
+        throw new Error(`packed main-root metadata mutation should remain allowed: ${probe}: ${JSON.stringify(mainRootOutput)}`);
+      }
+      requireActorDeny('native-child', probe, runActorProbe('native-child', probe, 'Bash', { command }));
     }
     for (const actor of ['main-root', 'native-child'] as const) {
       const output = runActorProbe(

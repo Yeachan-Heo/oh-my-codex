@@ -12148,6 +12148,27 @@ exit 0
 				else process.env.OMX_ROOT = priorOmxRootForBox;
 			}
 
+			const disjointExecutionCwd = join(cwd, "disjoint-external-checkout");
+			await mkdir(join(disjointExecutionCwd, "src"), { recursive: true });
+			const priorOmxRootForDisjoint = process.env.OMX_ROOT;
+			try {
+				process.env.OMX_ROOT = boxedRoot;
+				const disjointChildWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: disjointExecutionCwd,
+					session_id: "sess-di-boxed-policy",
+					thread_id: "agent-di-disjoint-child",
+					agent_id: "agent-di-disjoint-child",
+					tool_name: "Write",
+					tool_input: { file_path: "src/disjoint-policy-bypass.ts", content: "export {};\n" },
+				}, { cwd: disjointExecutionCwd });
+				assert.equal(disjointChildWrite.outputJson?.decision, "block");
+				assert.match(String(disjointChildWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+			} finally {
+				if (priorOmxRootForDisjoint === undefined) delete process.env.OMX_ROOT;
+				else process.env.OMX_ROOT = priorOmxRootForDisjoint;
+			}
+
 			const ancestorBox = join(cwd, "ancestor-box");
 			const boxedCheckout = join(ancestorBox, "worktree");
 			const ancestorStateDir = join(ancestorBox, ".omx", "state");
@@ -29112,7 +29133,7 @@ PY`,
         cwd: ownerCwd,
       });
 
-      const allowedForeignDraft = await dispatchCodexNativeHook(
+      const blockedForeignDraft = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
           cwd,
@@ -29125,7 +29146,8 @@ PY`,
         },
         { cwd },
       );
-      assert.equal(allowedForeignDraft.outputJson, null);
+      assert.equal(blockedForeignDraft.outputJson?.decision, "block");
+      assert.match(String(blockedForeignDraft.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
 
       const result = await dispatchCodexNativeHook(
         {
@@ -29141,8 +29163,7 @@ PY`,
 
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal(result.outputJson?.decision, "block");
-      assert.match(String(result.outputJson?.reason ?? ""), /live root session pointer/i);
-      assert.match(String(result.outputJson?.reason ?? ""), /failing closed/i);
+      assert.match(String(result.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
 
       const blockedMcpStateClear = await dispatchCodexNativeHook(
         {
@@ -29183,7 +29204,7 @@ PY`,
         { cwd },
       );
       assert.equal((blockedScopedBashStateWrite.outputJson as { decision?: string } | null)?.decision, "block");
-      assert.match(String(blockedScopedBashStateWrite.outputJson?.reason ?? ""), /live root session pointer/i);
+      assert.match(String(blockedScopedBashStateWrite.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
 
       const blockedOmittedSessionTerminalWrite = await dispatchCodexNativeHook(
         {
