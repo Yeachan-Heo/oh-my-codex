@@ -30016,7 +30016,7 @@ PY`,
       await symlink(join(cwd, "src", "runtime.ts"), join(stateDir, "curl-glob-1.log"));
       await writeFile(join(stateDir, "conductor-ledger.json"), "{}\n", "utf-8");
       await writeFile(join(stateDir, "reference-copy"), "metadata reference target\n", "utf-8");
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: leaderThreadId, cwd });
       await writeJson(join(stateDir, "subagent-tracking.json"), {
         schemaVersion: 1,
         sessions: {
