@@ -17837,7 +17837,10 @@ function evaluateConductorBashWrite(
           blockedDetail: `Bash ${mutation.command} mutation target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata`,
         };
       }
-      const blockedTarget = mutation.targets.find((target) => !isAllowedConductorMetadataPath(policyCwd, target));
+      const blockedTarget = mutation.targets.find((target) => (
+        !(target === ".omx/state" && (mutation.command === "mkdir" || mutation.command === "install"))
+        && !isAllowedConductorMetadataPath(policyCwd, target)
+      ));
       if (blockedTarget) {
         return {
           allowed: false,
@@ -17924,6 +17927,12 @@ function evaluateConductorBashWrite(
   }
   const blockedTarget = targets.find((target) => {
     const isNormalizedShellTarget = shellMutations.some((mutation) => mutation.targets.includes(target));
+    const matchingShellMutations = shellMutations.filter((mutation) => mutation.targets.includes(target));
+    if (
+      target === ".omx/state"
+      && matchingShellMutations.length > 0
+      && matchingShellMutations.every((mutation) => mutation.command === "mkdir" || mutation.command === "install")
+    ) return false;
     if (isNormalizedShellTarget && isAllowedConductorMetadataPath(policyCwd, target)) return false;
     if (isAllowedConductorMetadataExecutionPath(cwd, policyCwd, target)) return false;
     return !(nestedTargetAliases.get(target) ?? []).some((normalized) => isAllowedConductorMetadataPath(policyCwd, normalized));
