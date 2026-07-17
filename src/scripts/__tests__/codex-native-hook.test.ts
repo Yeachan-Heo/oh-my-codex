@@ -17110,6 +17110,8 @@ exit 0
 				["escaped declared command cache producer", "declare BASH\\_CMDS[cat]=.omx/context/evil; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
 				["nameref command cache producer", "declare -n cache=BASH_CMDS; declare 'cache[cat]=.omx/context/evil'; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
 				["wrapped declared command cache producer", "command builtin declare 'BASH_CMDS[cat]=.omx/context/evil'; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["fragmented wrapped command cache producer", "builtin d'e'clare \"BASH_C\"\"MDS[cat]=.omx/context/evil\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["fragmented wrapped PATH producer", "command t'y'peset 'PA'\"TH[0]=.omx/context\"; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
 				["assigned command cache producer", "BASH_CMDS[printf]=.omx/context/evil; printf safe > .omx/context/literal.md"],
 				["subscripted PATH producer", "declare 'PATH[0]=.omx/context'; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
 				["unset command cache producer", "unset 'BASH_CMDS[printf]'; printf safe > .omx/context/literal.md"],

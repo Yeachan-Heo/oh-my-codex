@@ -4445,7 +4445,7 @@ function conductorCommandMayChangeProducerResolution(command: string, depth = 0)
   for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
     const words = tokenizeConductorShellWords(segment);
     const commandIndex = skipShellCommandPositionPrefixWords(words, 0);
-    if (new Set(["enable", "hash", "declare", "typeset", "readonly", "local", "export", "unset", "read"]).has(commandNameFromShellWord(words[commandIndex] ?? ""))) return true;
+    if (new Set(["enable", "hash", "declare", "typeset", "readonly", "local", "export", "unset", "read", "builtin", "command"]).has(commandNameFromShellWord(words[commandIndex] ?? ""))) return true;
   }
   const invokedFunctionBodies = extractInvokedShellFunctionBodiesForStateScan(command);
   if (invokedFunctionBodies.length > 0) {
