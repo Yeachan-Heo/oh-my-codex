@@ -9110,7 +9110,7 @@ function buildRawProtectedWorkflowStatePathOutput(
   stateDir: string,
 ): Record<string, unknown> | null {
   const toolName = safeString(payload.tool_name).trim();
-  if (!PLANNING_MODE_IMPLEMENTATION_TOOL_NAMES.has(toolName)) return null;
+  if (classifyPreToolUseMutationTransport(payload, toolName, cwd) !== "path") return null;
   const candidates = collectImplementationToolPathCandidates(payload, toolName, readPreToolUsePathCandidates(payload));
   const protectedPath = candidates.find((candidate) => isRawProtectedPlanningStateCandidate(stateDir, cwd, candidate));
   if (protectedPath === undefined) return null;

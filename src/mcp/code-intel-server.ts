@@ -100,7 +100,7 @@ export async function runTscDiagnostics(
     return { diagnostics: [], command: 'tsc skipped: no tsconfig found' };
   }
 
-  const args = ['--noEmit', '--pretty', 'false'];
+  const args = ['--noEmit', '--pretty', 'false', '--incremental', 'false'];
   args.push('--project', tsconfig);
 
   const { stdout, stderr } = await runCommand('npx', ['tsc', ...args], { cwd: projectDir, timeout: 60000 });
