@@ -515,6 +515,7 @@ function resolvePinnedCodexExecutable(
       continue;
     }
     if (isNodeErrorWithCode(result.error, 'ETIMEDOUT')) {
+      if (remainingMs <= CODEX_APP_SERVER_TIMEOUTS.versionProbeMs) throw versionProbeDeadlineError();
       observed.push(`${executable}: version probe timed out after ${CODEX_APP_SERVER_TIMEOUTS.versionProbeMs}ms and was force-terminated`);
       continue;
     }
