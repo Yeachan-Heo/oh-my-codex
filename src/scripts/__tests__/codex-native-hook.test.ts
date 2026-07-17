@@ -12192,6 +12192,31 @@ exit 0
 				else process.env.OMX_ROOT = priorOmxRootForInvalidPointer;
 			}
 
+			await writeJson(join(boxedStateDir, "session.json"), {
+				session_id: "sess-di-boxed-policy",
+				native_session_id: "native-di-boxed-policy",
+				cwd,
+				pid: 2147483647,
+			});
+			const priorOmxRootForStalePointer = process.env.OMX_ROOT;
+			try {
+				process.env.OMX_ROOT = boxedRoot;
+				const staleMatchingPointerWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: disjointExecutionCwd,
+					session_id: "sess-di-boxed-policy",
+					thread_id: "agent-di-stale-pointer-child",
+					agent_id: "agent-di-stale-pointer-child",
+					tool_name: "Write",
+					tool_input: { file_path: "src/stale-pointer-bypass.ts", content: "export {};\n" },
+				}, { cwd: disjointExecutionCwd });
+				assert.equal(staleMatchingPointerWrite.outputJson?.decision, "block");
+				assert.match(String(staleMatchingPointerWrite.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
+			} finally {
+				if (priorOmxRootForStalePointer === undefined) delete process.env.OMX_ROOT;
+				else process.env.OMX_ROOT = priorOmxRootForStalePointer;
+			}
+
 			const ancestorBox = join(cwd, "ancestor-box");
 			const boxedCheckout = join(ancestorBox, "worktree");
 			const ancestorStateDir = join(ancestorBox, ".omx", "state");

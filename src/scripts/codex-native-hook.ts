@@ -3373,6 +3373,7 @@ interface ConductorPolicyRootResolution {
   cwd: string;
   valid: boolean;
   statePresent: boolean;
+  externalStateRoot: boolean;
 }
 
 function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): ConductorPolicyRootResolution {
@@ -3389,15 +3390,21 @@ function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): Cond
     const rootSession = readJsonSyncIfExists(join(canonicalStateDir, "session.json"));
     const recordedCwd = safeString(rootSession?.cwd ?? rootSession?.workingDirectory).trim();
     if (recordedCwd) {
-      return { cwd: realpathSync(resolve(recordedCwd)), valid: true, statePresent };
+      const canonicalRecordedCwd = realpathSync(resolve(recordedCwd));
+      return {
+        cwd: canonicalRecordedCwd,
+        valid: true,
+        statePresent,
+        externalStateRoot: canonicalStateDir !== join(canonicalRecordedCwd, ".omx", "state"),
+      };
     }
     if (canonicalStateDir === join(canonicalFallback, ".omx", "state")) {
-      return { cwd: canonicalFallback, valid: true, statePresent };
+      return { cwd: canonicalFallback, valid: true, statePresent, externalStateRoot: false };
     }
   } catch {
     // An external state surface with an unusable pointer must not borrow execution-cwd authority.
   }
-  return { cwd: canonicalFallback, valid: !statePresent, statePresent };
+  return { cwd: canonicalFallback, valid: !statePresent, statePresent, externalStateRoot: statePresent };
 }
 
 
@@ -20114,11 +20121,28 @@ export async function dispatchCodexNativeHook(
       safeString(payload.tool_name).trim(),
       policyCwd,
     );
+    const rootSessionPointer = await readRootSessionStateFromStateDir(stateDir);
+    const rootSessionId = safeString(rootSessionPointer?.session_id).trim();
+    const foreignRootNativeChildDeny = !sessionBinding.valid
+      && payloadSessionId
+      && rootSessionId !== ""
+      && rootSessionId !== payloadSessionId
+      && mutationTransport !== "read-only"
+      ? await buildConductorPreToolUseWriteGuardOutput(
+        payload,
+        cwd,
+        stateDir,
+        payloadSessionId,
+        policyCwd,
+      )
+      : null;
     if (!policyRoot.valid && policyRoot.statePresent && mutationTransport !== "read-only") {
       outputJson = buildConductorSessionProvenanceDeny(
         { mode: "conductor", phase: "active" },
         "the selected workflow state root has no usable canonical session cwd",
       );
+    } else if (foreignRootNativeChildDeny) {
+      outputJson = foreignRootNativeChildDeny;
     } else {
     const activeConductorState = sessionBinding.canonicalSessionId
       ? await readActiveConductorStateForPreToolUse(
@@ -20149,12 +20173,9 @@ export async function dispatchCodexNativeHook(
         ).trim() || "active",
       }
       : null;
-    const rootSessionPointer = await readRootSessionStateFromStateDir(stateDir);
-    const rootSessionId = safeString(rootSessionPointer?.session_id).trim();
     const payloadScopedConductorState = !sessionBinding.valid
       && payloadSessionId
-      && rootSessionId !== ""
-      && rootSessionId !== payloadSessionId
+      && policyRoot.externalStateRoot
       ? await readActiveConductorStateForPreToolUse(
         payload,
         policyCwd,
@@ -20162,8 +20183,32 @@ export async function dispatchCodexNativeHook(
         payloadSessionId,
       )
       : null;
+    const payloadScopedPlanningState = !sessionBinding.valid
+      && payloadSessionId
+      && policyRoot.externalStateRoot
+      ? await readActiveDeepInterviewStateForPreToolUse(
+        policyCwd,
+        stateDir,
+        payloadSessionId,
+        "",
+      ) ?? await readActiveRalplanStateForPreToolUse(
+        policyCwd,
+        stateDir,
+        payloadSessionId,
+        "",
+      )
+      : null;
+    const payloadScopedPlanningGuard: ActiveConductorState | null = payloadScopedPlanningState
+      ? {
+        mode: safeString(payloadScopedPlanningState.mode).trim().toLowerCase() || "planning",
+        phase: safeString(
+          payloadScopedPlanningState.current_phase ?? payloadScopedPlanningState.currentPhase,
+        ).trim() || "active",
+      }
+      : null;
     const guardedConductorState = activeConductorState
       ?? payloadScopedConductorState
+      ?? payloadScopedPlanningGuard
       ?? canonicalPlanningGuard;
     const preservesIdentitylessTeamWorkerExemption = sessionBinding.missing
       && !payloadHasConflictingIdentityAliases(payload)
