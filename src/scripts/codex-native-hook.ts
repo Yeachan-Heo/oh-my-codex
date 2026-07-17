@@ -4441,11 +4441,19 @@ function conductorCommandMayMutatePathResolution(command: string): boolean {
   return new RegExp(`(?:^|[\\s;|&(){}])(?:${resolutionVariable}\\s*\\+?=|(?:export|readonly|declare|typeset|local|env)\\b[^;|&(){}\\n]*${resolutionVariable}\\s*\\+?=|unset\\s+(?:-[A-Za-z]+\\s+)*${resolutionVariable}(?:\\s|$)|printf\\s+(?:-[A-Za-z]+\\s+)*-v\\s+${resolutionVariable}(?:\\s|$)|read\\s+(?:-[A-Za-z]+(?:\\s+\\S+)?\\s+)*${resolutionVariable}(?:\\s|$))`).test(source);
 }
 
-function conductorCommandMayChangeProducerResolution(command: string): boolean {
+function conductorCommandMayChangeProducerResolution(command: string, depth = 0): boolean {
   for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
     const words = tokenizeConductorShellWords(segment);
     const commandIndex = skipShellCommandPositionPrefixWords(words, 0);
     if (new Set(["enable", "hash", "declare", "typeset", "readonly", "local", "export", "unset", "read"]).has(commandNameFromShellWord(words[commandIndex] ?? ""))) return true;
+  }
+  const invokedFunctionBodies = extractInvokedShellFunctionBodiesForStateScan(command);
+  if (invokedFunctionBodies.length > 0) {
+    if (depth >= CONDUCTOR_BASH_MAX_NESTING_DEPTH) return true;
+    if (invokedFunctionBodies.some((body) =>
+      conductorCommandMayMutatePathResolution(body)
+      || conductorCommandMayChangeProducerResolution(body, depth + 1)
+    )) return true;
   }
   return false;
 }

@@ -17207,6 +17207,9 @@ exit 0
 				["for rebind", 'SNAP=".omx/context/example.md"; for SNAP in src/leak.ts; do printf x > "$SNAP"; done'],
 				["select rebind", 'SNAP=".omx/context/example.md"; select SNAP in src/leak.ts; do printf x > "$SNAP"; break; done'],
 				["parameter assignment rebind", 'SNAP=".omx/context/example.md"; : "${SNAP:=src/leak.ts}"; printf x > "$SNAP"'],
+				["function hash producer", "poison(){ hash -p /tmp/evil cat; }; poison; cat > .omx/context/example.md <<'EOF'\nx\nEOF"],
+				["function enable producer", "poison(){ enable -f /tmp/evil.so cat; }; poison; cat > .omx/context/example.md <<'EOF'\nx\nEOF"],
+				["function cache binding producer", "poison(){ declare BASH_CMDS[cat]=/tmp/evil; }; poison; cat > .omx/context/example.md <<'EOF'\nx\nEOF"],
 				["context write then execute", "printf 'touch src/owned.ts\\n' > .omx/context/payload.txt; bash .omx/context/payload.txt"],
 				["late tmp binding execute", "printf 'touch src/owned.ts\\n' > .omx/tmp/payload.txt; S=.omx/tmp/payload.txt; bash \"$S\""],
 			] as const) {
