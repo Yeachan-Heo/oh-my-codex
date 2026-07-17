@@ -11,7 +11,7 @@ description: Guide on using oh-my-codex plugin
 
 | When You... | I Automatically... |
 |-------------|-------------------|
-| Give me a complex task | Parallelize and delegate to specialist agents |
+| Give me a complex task | Start with one capable owner and adapt to the task shape |
 | Ask me to plan something | Start a planning interview |
 | Need something done completely | Persist until verified complete |
 | Work on UI/frontend | Activate design sensibility |
@@ -26,9 +26,11 @@ You can include these words naturally in your request for explicit control:
 | **ralph** | Persistence mode | "ralph: fix all the bugs" |
 | **ralplan** | Iterative planning | "ralplan this feature" |
 | **ulw** | Max parallelism | "ulw refactor the API" |
+| **team** | Coordinated independent lanes | "team: implement the approved plan" |
+| **eco** | Reduce context, stages, fan-out, and model cost | "eco: fix the routine lint errors" |
 | **plan** | Planning interview | "plan the new endpoints" |
 
-**ralph includes ultrawork:** When you activate ralph mode, it automatically includes ultrawork's parallel execution. No need to combine keywords.
+Ralph starts with one owner for persistence. Use Ultrawork or Team explicitly when the work has independent lanes that benefit from coordination.
 
 ## Stopping Things
 
@@ -76,8 +78,8 @@ Analyze your oh-my-codex usage and get tailored recommendations to improve your 
 1. Reads token tracking from `~/.omx/state/token-tracking.jsonl`
 2. Reads session history from `.omx/state/session-history.json`
 3. Analyzes agent usage patterns
-4. Identifies underutilized features
-5. Recommends configuration changes
+4. Correlates observed task shape with execution mode, reviewer yield, retries, and outcomes
+5. Recommends changes only when task-shape and outcome evidence supports them
 
 ### Step 1: Gather Data
 
@@ -119,38 +121,88 @@ fi
 ```bash
 if [[ "$HAS_TOKENS" == "true" ]]; then
   echo ""
+  echo "TOKEN USAGE BY BILLING CATEGORY:"
+  jq -rs '
+    def stream_key:
+      if .session_id != null then ["session", .session_id] | @json
+      elif .thread_id != null then ["thread", .thread_id] | @json
+      else ["legacy", (.project // "unknown")] | @json
+      end;
+    def total($field):
+      reduce .[] as $record ({};
+        ($record | stream_key) as $stream
+        | if $record[$field] == null then .
+          elif ($record[$field + "_cumulative"] // false) then
+            .[$stream] = $record[$field]
+          else
+            .[$stream] = ((.[$stream] // 0) + $record[$field])
+          end
+      )
+      | ([.[]] | add // 0);
+    {
+      input_tokens: total("input_tokens"),
+      cached_input_tokens: total("cached_input_tokens"),
+      uncached_input_tokens: total("uncached_input_tokens"),
+      output_tokens: total("output_tokens"),
+      reasoning_output_tokens: total("reasoning_output_tokens")
+    }
+    | to_entries[]
+    | "\(.key): \(.value)"
+  ' "$TOKEN_FILE"
+
+  echo ""
   echo "TOP AGENTS BY USAGE:"
-  cat "$TOKEN_FILE" | jq -r '.agentName // "main"' | sort | uniq -c | sort -rn | head -10
+  jq -r '.agent // "main"' "$TOKEN_FILE" | sort | uniq -c | sort -rn | head -10
 
   echo ""
   echo "MODEL DISTRIBUTION:"
-  cat "$TOKEN_FILE" | jq -r '.modelName' | sort | uniq -c | sort -rn
+  jq -r '.model // "unknown"' "$TOKEN_FILE" | sort | uniq -c | sort -rn
 fi
 ```
 
+Each new ledger record carries a cumulative/delta flag for every token field.
+Step 2 replaces cumulative snapshots within each session and adds delta values;
+use the exact fallback order: `session_id` → `thread_id` → project. Records
+written before these flags existed cannot be disambiguated after the fact, so
+missing flags retain the legacy additive interpretation. Old cumulative
+snapshots may therefore remain overcounted; use a post-upgrade ledger segment
+when exact historical totals are required.
+
+Keep these five ledger fields separate in the report. `input_tokens` is the
+overall input count; `cached_input_tokens` and `uncached_input_tokens` explain
+its cache split and must not be added to it as extra input. Keep
+`reasoning_output_tokens` distinct from ordinary `output_tokens` so billing
+weights can be applied without hiding the source categories.
+
 ### Step 3: Generate Recommendations
 
-Based on patterns found, output recommendations:
+Base recommendations on observed task shape and outcome evidence, not zero-usage counts alone:
 
-**If high Opus usage (>40%) and no ecomode:**
-- "Consider using ecomode for routine tasks to save tokens"
+- Recommend Team only when repeated tasks show two or more independent owned lanes.
+- Recommend a reviewer when risk-matched findings changed outcomes, not merely when reviewer usage is zero.
+- Prefer the model with the best accepted outcome per billable-equivalent token; cheap per-call price is not sufficient.
 
-**If no team usage:**
-- "Try /team for coordinated review workflows"
+**If routine, bounded tasks repeatedly use high-cost models without better outcomes:**
+- "Consider ecomode for this recurring task shape; its successful runs have not needed broad context or high-tier review"
 
-**If no security-reviewer usage:**
-- "Use security-reviewer after auth/API changes"
+**If independent lanes repeatedly serialize and increase elapsed time:**
+- "Consider Team for this task shape because the history shows independent lanes with clear ownership"
+
+**If security-sensitive changes show review findings or weak verification:**
+- "Add a security reviewer for this risk surface because prior outcome evidence shows reviewer yield"
 
 **If defaultExecutionMode not set:**
 - "Set defaultExecutionMode in /omx-setup for consistent behavior"
 
+Do not recommend Team or any reviewer merely because its usage count is zero. Absence of usage is not evidence that another stage will improve outcomes.
+
 ### Step 4: Output Report
 
 Format a summary with:
-- Token summary (total, by model)
+- Token summary with separate input, cached input, uncached input, output, and reasoning output totals
 - Top agents used
-- Underutilized features
-- Personalized recommendations
+- Task shapes and observed outcomes
+- Evidence-backed recommendations
 
 ### Example Output
 
@@ -159,6 +211,11 @@ Format a summary with:
 
 TOKEN SUMMARY:
 - Total records: 1,234
+- input_tokens: 8,420,000
+- cached_input_tokens: 6,310,000
+- uncached_input_tokens: 2,110,000
+- output_tokens: 740,000
+- reasoning_output_tokens: 185,000
 - By Reasoning Effort: high 45%, medium 40%, low 15%
 
 TOP AGENTS:
@@ -166,14 +223,15 @@ TOP AGENTS:
 2. architect (89 uses)
 3. explore (67 uses)
 
-UNDERUTILIZED FEATURES:
-- ecomode: 0 uses (could save ~30% on routine tasks)
-- team: 0 uses (great for coordinated workflows)
+TASK-SHAPE EVIDENCE:
+- 18 bounded maintenance runs completed with one owner
+- 4 multi-module runs had independent lanes but executed sequentially
+- Security review found actionable issues on 3 of 5 auth-boundary changes
 
 RECOMMENDATIONS:
-1. Set defaultExecutionMode: "ecomode" to save tokens
-2. Try /team for PR review workflows
-3. Use explore agent before architect to save context
+1. Use ecomode for bounded maintenance runs to reduce context and stage count
+2. Use Team for the recurring independent multi-module lanes
+3. Keep security review scoped to auth-boundary changes, where it has demonstrated yield
 ```
 
 ### Graceful Degradation

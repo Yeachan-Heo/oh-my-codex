@@ -33,6 +33,9 @@ $ralplan --interactive "task description"
 - If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the consensus-planning flow is grounded.
 - Right-size implementation steps and PRD story counts to the actual scope; do not default to exactly five steps when the task is clearly smaller or larger.
 - Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, or preference-dependent.
+- For substantive behavior changes, require one observable tracer and the modules crossed before implementation is decomposed.
+- Give each changed module a module contract card covering responsibility, public inputs/outputs/errors, invariants, allowed dependencies, focused tests, and frozen contracts.
+- Require the verification ladder: changed-module tests -> boundary contract/integration tests -> tracer acceptance -> broad regression/CI.
 
 This skill invokes the Plan skill in consensus mode:
 
@@ -43,6 +46,7 @@ $plan --consensus --interactive <arguments>
 
 The consensus workflow:
 1. **Planner** creates initial plan and a compact **RALPLAN-DR summary** before review:
+   - Modular Tracer Contract for behavior changes: observable behavior, modules crossed, module contract cards, frozen scope, and verification ladder
    - Principles (3-5)
    - Decision Drivers (top 3)
    - Viable Options (>=2) with bounded pros/cons

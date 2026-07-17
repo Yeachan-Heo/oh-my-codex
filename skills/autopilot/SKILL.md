@@ -4,12 +4,12 @@ description: Full autonomous execution from idea to working code
 ---
 
 <Purpose>
-Autopilot takes a brief product idea and autonomously handles the full lifecycle: requirements analysis, technical design, planning, parallel implementation, QA cycling, and multi-perspective validation. It produces working, verified code from a 2-3 line description.
+Autopilot takes a product idea or approved artifact and autonomously carries it to working, verified code. It adapts requirements, planning, execution, QA, and validation effort to the task instead of requiring parallel implementation and every reviewer on every run.
 </Purpose>
 
 <Use_When>
 - User wants end-to-end autonomous execution from an idea to working code
-- User says "autopilot", "auto pilot", "autonomous", "build me", "create me", "make me", "full auto", "handle it all", or "I want a/an..."
+- User says "autopilot", "auto pilot", "autonomous", "build me", "create me", "make me", "full auto", or "handle it all"
 - Task requires multiple phases: planning, coding, testing, and validation
 - User wants hands-off execution and is willing to let the system run to completion
 </Use_When>
@@ -23,14 +23,17 @@ Autopilot takes a brief product idea and autonomously handles the full lifecycle
 </Do_Not_Use_When>
 
 <Why_This_Exists>
-Most non-trivial software tasks require coordinated phases: understanding requirements, designing a solution, implementing in parallel, testing, and validating quality. Autopilot orchestrates all of these phases automatically so the user can describe what they want and receive working code without managing each step.
+Most non-trivial software tasks require coordinated phases: understanding requirements, designing a solution, implementing the smallest owned execution shape, testing, and validating quality. Autopilot orchestrates these phases automatically while reusing approved artifacts and adding parallel lanes or reviewers only when task shape and risk justify them.
 </Why_This_Exists>
 
 <Execution_Policy>
 - Each phase must complete before the next begins
-- Parallel execution is used within phases where possible (Phase 2 and Phase 4)
+- Reuse an approved spec or implementation plan instead of regenerating equivalent artifacts
+- Use one planning owner by default; add a critic or specialist only when ambiguity, reversibility, or risk requires independent challenge
+- Execute solo for one owned lane; parallelize only independent lanes with explicit ownership and merge boundaries
+- Select a risk-matched reviewer set from the surfaces changed; reviewer count is not a completion metric
 - QA cycles repeat up to 5 times; if the same error persists 3 times, stop and report the fundamental issue
-- Validation requires approval from all reviewers; rejected items get fixed and re-validated
+- Validation requires approval from all selected risk-matched reviewers; rejected items get fixed and re-validated
 - Cancel with `/cancel` at any time; progress is preserved for resume
 - If a deep-interview spec exists, use it as high-clarity phase input instead of re-expanding from scratch
 - If input is too vague for reliable expansion, offer/trigger `$deep-interview` first
@@ -56,33 +59,34 @@ Most non-trivial software tasks require coordinated phases: understanding requir
    - Carry the snapshot path into autopilot artifacts/state so all phases share grounded context.
 
 1. **Phase 0 - Expansion**: Turn the user's idea into a detailed spec
-   - If `.omx/specs/deep-interview-*.md` exists for this task: reuse it and skip redundant expansion work
+   - If an approved spec or `.omx/specs/deep-interview-*.md` exists for this task: reuse the approved spec and skip redundant expansion work
    - If prompt is highly vague: route to `$deep-interview` for Socratic ambiguity-gated clarification
-   - Analyst (THOROUGH tier): Extract requirements
-   - Architect (THOROUGH tier): Create technical specification
+   - If no approved artifact exists, assign one planning owner to extract requirements and create the technical specification
    - Output: `.omx/plans/autopilot-spec.md`
 
 2. **Phase 1 - Planning**: Create an implementation plan from the spec
-   - Architect (THOROUGH tier): Create plan (direct mode, no interview)
-   - Critic (THOROUGH tier): Validate plan
+   - Keep one planning owner for a clear, reversible task
+   - Add a critic or specialist only for consequential ambiguity, broad contracts, security, or hard-to-reverse decisions
    - Output: `.omx/plans/autopilot-impl.md`
 
-3. **Phase 2 - Execution**: Implement the plan using Ralph + Ultrawork
+3. **Phase 2 - Execution**: Implement the plan using Ralph, adding Ultrawork only when justified
+   - Execute solo for one owned lane
    - LOW-tier executor/search roles: Simple tasks
    - STANDARD-tier executor roles: Standard tasks
    - THOROUGH-tier executor/architect roles: Complex tasks
-   - Run independent tasks in parallel
+   - Run independent tasks in parallel only when ownership and integration boundaries are explicit
 
 4. **Phase 3 - QA**: Cycle until all tests pass (UltraQA mode)
    - Build, lint, test, fix failures
    - Repeat up to 5 cycles
    - Stop early if the same error repeats 3 times (indicates a fundamental issue)
 
-5. **Phase 4 - Validation**: Multi-perspective review in parallel
-   - Architect: Functional completeness
-   - Security-reviewer: Vulnerability check
-   - Code-reviewer: Quality review
-   - All must approve; fix and re-validate on rejection
+5. **Phase 4 - Validation**: Risk-matched review
+   - Always verify functional completeness with fresh executable evidence
+   - Add an architect for architectural or shared public contract risk
+   - Add a security-reviewer for trust-boundary, auth, secret, or input-handling risk
+   - Add a code-reviewer when change breadth or weak executable oracles warrant an independent quality review
+   - Selected reviewers must approve; fix and re-validate on rejection
 
 6. **Phase 5 - Cleanup**: Clear all mode state via OMX MCP tools on successful completion
    - `state_clear({mode: "autopilot"})`
@@ -94,9 +98,7 @@ Most non-trivial software tasks require coordinated phases: understanding requir
 
 <Tool_Usage>
 - Before first MCP tool use, call `ToolSearch("mcp")` to discover deferred MCP tools
-- Use `ask_codex` with `agent_role: "architect"` for Phase 4 architecture validation
-- Use `ask_codex` with `agent_role: "security-reviewer"` for Phase 4 security review
-- Use `ask_codex` with `agent_role: "code-reviewer"` for Phase 4 quality review
+- Use `ask_codex` with the selected risk-matched reviewer role when Phase 4 needs independent validation
 - Agents form their own analysis first, then consult Codex for cross-validation
 - If ToolSearch finds no MCP tools or Codex is unavailable, proceed without it -- never block on external tools
 </Tool_Usage>
@@ -156,8 +158,8 @@ Why bad: This is an exploration/brainstorming request. Respond conversationally 
 </Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
-- [ ] All 5 phases completed (Expansion, Planning, Execution, QA, Validation)
-- [ ] All validators approved in Phase 4
+- [ ] Expansion and planning completed or satisfied by reused approved artifacts; execution, QA, and validation completed
+- [ ] All selected risk-matched reviewers approved in Phase 4
 - [ ] Tests pass (verified with fresh test run output)
 - [ ] Build succeeds (verified with fresh build output)
 - [ ] State files cleaned up
@@ -206,10 +208,12 @@ deep-interview -> ralplan -> autopilot
 ## Pipeline Orchestrator (v0.8+)
 
 Autopilot can be driven by the configurable pipeline orchestrator (`src/pipeline/`), which
-sequences stages through a uniform `PipelineStage` interface:
+sequences the smallest justified stage set through a uniform `PipelineStage` interface:
 
 ```
-RALPLAN (consensus planning) -> team-exec (Codex CLI workers) -> ralph-verify (architect verification)
+approved spec/plan reuse -> solo execution -> fresh executable verification
+                         -> Team/Ultrawork only for independent lanes
+                         -> architect review only when risk triggers it
 ```
 
 Pipeline configuration options:

@@ -51,8 +51,44 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 - Reuse existing utils and patterns before introducing new abstractions.
 - No new dependencies without explicit request.
 - Keep diffs small, reviewable, and reversible.
-- Run lint, typecheck, tests, and static analysis after changes.
+- Run relevant lint, typecheck, tests, and static analysis for the changed surface; documentation-only and exploratory artifact work uses its applicable render, parse, link, or provenance checks instead of unrelated engineering suites.
 - Final reports must include changed files, simplifications made, and remaining risks.
+
+## AI-assisted engineering defaults
+- Start from existing context before designing: read the relevant repo docs, AGENTS/CONTEXT files, ADRs, and wiki indexes before changing behavior.
+- Name the public interface and the user/caller-visible behavior before writing tests or implementation.
+- Use modular tracer bullets: before substantive implementation, name the modules crossed and freeze each changed module's responsibility, public contract, invariants, allowed dependencies, and focused tests.
+- Prefer tracer-bullet vertical slices over layer-only delivery. A slice should prove one narrow path through the real architecture and be demoable or verifiable on its own.
+- Use TDD one behavior at a time: write one RED test, confirm it fails for a behavioral reason, write the minimum GREEN implementation, then refactor only while tests stay green.
+- Test through public interfaces and owned seams. Mock only at system boundaries when the feedback loop is affordable.
+- Verify from narrow to broad: changed-module tests -> boundary contract/integration tests -> tracer acceptance -> broad regression/CI. Stop at the first failing layer.
+- For substantive AI-authored tests, separate test-author, implementer, and verifier authority where practical; implementers must not weaken acceptance tests without explicit controller review.
+- Update glossary, wiki, CONTEXT files, or ADRs when a domain term or hard-to-reverse trade-off is settled.
+- Before changing agent or skill guidance, audit recent session calls and trace active surfaces to their owned source/template; do not treat generated plugin caches as durable sources.
+- Route these workflow entry points through the user-owned unprefixed workflow overlays: `writing-plans`, `test-driven-development`, and `subagent-driven-development`; use `executing-plans`, `dispatching-parallel-agents`, and `verification-before-completion` for their execution phases.
+- `writing-plans` and `dispatching-parallel-agents` load their matching namespaced Superpowers skills for upstream process details.
+- `test-driven-development`, `subagent-driven-development`, `executing-plans`, and `verification-before-completion` are standalone owned policy; do not recursively enter their cached namespaced workflows when the owned overlay is active.
+
+### Lean execution default
+- Route bounded coding to one capable owner.
+- Before broad exploration, estimate task shape as `local | cross-file | repository`, risk, and confidence using at most one cheap probe; execute the smallest reliable path; expand one boundary at a time only when focused verification fails or confidence drops, reusing evidence already collected.
+- Before substantive edits, name caller-visible behaviour, owning module/public interface, invalidating assumptions and cheap probes, acceptance command, and one thin tracer.
+- Escalate only for independent lanes, security/auth/data/destructive/shared-contract risk, weak machine oracles, unexpected scope expansion, or failed grounded acceptance.
+- Re-localise when the same failure repeats twice, a second patch relies on the same unverified premise, or about five recovery actions fail to reduce uncertainty.
+
+### Proportional assurance and execution shape
+- Assurance level and execution shape are separate decisions: choose direct artifact, bounded change, standard behaviour, or full assurance from risk and oracle strength; choose solo, serial, or independent parallel execution from dependency shape and concrete benefit.
+- Use the direct artifact route for bounded article copy, wiki notes, exploratory mockups, slides, and similar non-runtime work: edit the owned artifact, inspect the actual rendered or previewed result, and stop when the requested surface is verified.
+- `superpowers:brainstorming` applies when product or design intent is materially unresolved, or when the user asks to explore alternatives before creating behaviour. It does not apply to a bounded direct artifact request when the target, requested adjustment, constraints, and acceptance surface are already specified; an explicit user request for brainstorming remains authoritative.
+- For a text-only visual-artifact edit that cannot affect layout or behaviour, a focused source or DOM assertion is sufficient unless the user asks to inspect rendered output. “Show the changed surface” does not by itself request rendered output: quote or link the changed source/DOM unless the user explicitly asks for a screenshot, preview, browser, rendered, or visual result, or the edit can affect appearance. When rendered acceptance applies and the primary renderer is unavailable, try one bounded fallback; if that also fails, report the visual-verification gap and stop. Do not cascade across Playwright, Browser, and Computer Use merely because a renderer is unavailable.
+- Add only relevant artifact controls: provenance for consequential factual claims; parse/build/link checks for structured content; reference comparison for fidelity work; accessibility/privacy/brand checks when required; native structure/editability checks for documents and decks; and explicit authority before publication or external writes.
+- File count is not a router. Multiple simple artifacts can remain direct; a one-file migration, auth change, destructive action, secrets/personal-data path, hardware-dependent behaviour, compatibility-sensitive contract, or weak oracle can require full assurance.
+- Local observable behaviour changes retain one right-reason RED/GREEN cycle or an existing right-reason failing reproduction. Discovering a hard-risk boundary jumps directly to the required assurance level; exploration scope may still expand one boundary at a time.
+
+### Child context and independent authority
+- Give child agents a compact task packet: objective, behaviour, constraints/non-goals, owned paths, evidence/unknowns, acceptance command, and return shape.
+- Do not use an all-turn fork from a mature task by default; use no inherited turns or a small recent-turn bound when supported.
+- For substantive AI-authored behaviour, keep RED author, implementer, and verifier in separate contexts; give the RED author and verifier fresh context. Freeze the right-reason RED oracle; the implementer must not weaken it.
 
 ---
 
@@ -135,7 +171,7 @@ The `deep-interview` skill is the Socratic deep interview workflow and includes 
 | Keyword(s) | Skill | Action |
 |-------------|-------|--------|
 | "ralph", "don't stop", "must complete", "keep going" | `$ralph` | Read `./.codex/skills/ralph/SKILL.md`, execute persistence loop |
-| "autopilot", "build me", "I want a" | `$autopilot` | Read `./.codex/skills/autopilot/SKILL.md`, execute autonomous pipeline |
+| "autopilot", "build me" | `$autopilot` | Read `./.codex/skills/autopilot/SKILL.md`, execute autonomous pipeline |
 | "ultrawork", "ulw", "parallel" | `$ultrawork` | Read `./.codex/skills/ultrawork/SKILL.md`, execute parallel agents |
 | "ultraqa" | `$ultraqa` | Read `./.codex/skills/ultraqa/SKILL.md`, run QA cycling workflow |
 | "analyze", "investigate" | `$analyze` | Read `./.codex/skills/analyze/SKILL.md`, run deep analysis |
@@ -153,6 +189,7 @@ The `deep-interview` skill is the Socratic deep interview workflow and includes 
 
 Detection rules:
 - Keywords are case-insensitive and match anywhere in the user message.
+- Implicit keyword matches require affirmative invocation intent; negated or mention-only occurrences do not activate a mode. Explicit `$name` invocations remain authoritative.
 - Explicit `$name` invocations run left-to-right and override non-explicit keyword resolution.
 - If multiple non-explicit keywords match, use the most specific match.
 - If the user explicitly invokes `$name`, run those explicit invocations left-to-right before considering non-explicit keyword routing.
@@ -269,17 +306,18 @@ Parallelization:
 - If correctness depends on retrieval, diagnostics, tests, or other tools, continue using them until the task is grounded and verified.
 
 Anti-slop workflow:
-- Cleanup/refactor/deslop work still follows the same `$deep-interview` -> `$ralplan` -> `$team`/`$ralph` path; use `$ai-slop-cleaner` as a bounded helper inside the chosen execution lane, not as a competing top-level workflow.
+- Route cleanup/refactor/deslop work proportionally: use the active solo, serial, or parallel execution lane that the task already earns, and use `$ai-slop-cleaner` as a bounded helper rather than forcing interview, consensus planning, Team, or Ralph for every cleanup.
 - Lock behavior with tests first, then make one smell-focused pass at a time.
 - Prefer deletion, reuse, and boundary repair over new layers.
 - Keep writer/reviewer pass separation for cleanup plans and approvals.
 
 Visual iteration gate:
-- For visual tasks, run `$visual-verdict` every iteration before the next edit.
-- Persist verdict JSON in `.omx/state/{scope}/ralph-progress.json`.
+- Run `$visual-verdict` before the next edit only for visual fidelity work that has both a generated screenshot and at least one reference image.
+- For exploratory mockups without a reference, inspect and show the rendered artifact directly; do not manufacture a numeric fidelity gate.
+- When `$visual-verdict` applies, persist verdict JSON in `.omx/state/{scope}/ralph-progress.json`.
 
 Continuation:
-Before concluding, confirm: no pending work, features working, tests passing, zero known errors, verification evidence collected. If not, continue.
+Before concluding, confirm: no pending in-scope work, the requested surface works, tests pass where tests apply, no known attributable errors remain, and fresh applicable verification evidence was collected. If not, continue.
 
 Ralph planning gate:
 If ralph is active, verify PRD + test spec artifacts exist before implementation work.

@@ -205,6 +205,45 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has("don't assume"));
     assert.ok(registryKeywords.has('interview me'));
   });
+
+  it('does not treat ordinary desire phrasing as an autopilot command', () => {
+    const registryKeywords = new Set(KEYWORD_TRIGGER_DEFINITIONS.map((v) => v.keyword.toLowerCase()));
+    assert.equal(registryKeywords.has('i want a'), false);
+  });
+});
+
+describe('proportional implicit keyword routing', () => {
+  it('keeps an ordinary article adjustment out of autopilot', () => {
+    assert.equal(detectPrimaryKeyword('I want a paragraph shortened in this article'), null);
+  });
+
+  it('preserves explicit and unmistakable autopilot intent', () => {
+    assert.equal(detectPrimaryKeyword('$autopilot build the approved application')?.skill, 'autopilot');
+    assert.equal(detectPrimaryKeyword('build me a CLI tool for release notes')?.skill, 'autopilot');
+  });
+
+  it('does not activate parallel execution from negation or mention-only prose', () => {
+    assert.equal(detectPrimaryKeyword('Do not run these edits in parallel'), null);
+    assert.equal(detectPrimaryKeyword('The plan discusses parallel execution as a rejected option'), null);
+  });
+
+  it('still activates parallel execution from a direct request', () => {
+    assert.equal(detectPrimaryKeyword('Run these independent tasks in parallel')?.skill, 'ultrawork');
+  });
+
+  it('does not activate team mode when the request explicitly rejects it', () => {
+    assert.equal(detectPrimaryKeyword('Do not use team mode for this task'), null);
+  });
+
+  it('distinguishes a stop condition from a cancellation request', () => {
+    assert.equal(detectPrimaryKeyword('The workflow has a stop condition after three failures'), null);
+    assert.equal(detectPrimaryKeyword('Please stop now')?.skill, 'cancel');
+  });
+
+  it('distinguishes mention-only analysis language from an analysis request', () => {
+    assert.equal(detectPrimaryKeyword('The word analyze appears in the routing table'), null);
+    assert.equal(detectPrimaryKeyword('Please analyze this workflow')?.skill, 'analyze');
+  });
 });
 
 describe('keyword detector skill-active-state lifecycle', () => {
@@ -436,7 +475,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: 'I want a starter API',
+        text: 'build me a starter API',
         nowIso: '2026-02-26T00:00:00.000Z',
       });
 

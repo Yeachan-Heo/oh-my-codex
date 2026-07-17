@@ -223,6 +223,17 @@ describe('task-size-detector', () => {
     });
 
     describe('small task classification', () => {
+      const localParaphrases = [
+        'Adjust the label returned by renderBadge; its public contract and callers stay unchanged.',
+        'Correct the delimiter chosen by parseHeader without touching its callers.',
+      ];
+
+      for (const text of localParaphrases) {
+        it(`classifies paraphrased local scope as small: ${text}`, () => {
+          assert.equal(classifyTaskSize(text).size, 'small');
+        });
+      }
+
       it('classifies short prompt as small', () => {
         const result = classifyTaskSize('Fix the typo in the README.');
         assert.equal(result.size, 'small');
@@ -255,6 +266,17 @@ describe('task-size-detector', () => {
     });
 
     describe('large task classification', () => {
+      const hiddenCouplingParaphrases = [
+        'Change the shared identity representation while keeping consumers, stored records, and compatibility boundaries aligned.',
+        'A status value flows through callers, persisted records, and compatibility boundaries that must continue to agree.',
+      ];
+
+      for (const text of hiddenCouplingParaphrases) {
+        it(`classifies paraphrased hidden coupling as large: ${text}`, () => {
+          assert.equal(classifyTaskSize(text).size, 'large');
+        });
+      }
+
       it('classifies prompt with large signals as large', () => {
         const result = classifyTaskSize(
           'Refactor the authentication module to support OAuth2 and clean up the token management'

@@ -34,6 +34,13 @@ Tests are executable documentation of expected behavior. These rules exist becau
 5) Run all tests after changes to verify no regressions.
 </explore>
 
+<modular_tracer_contract>
+- Test public module contracts deeply: responsibility, inputs/outputs/errors, invariants, and dependency boundaries. Avoid coupling focused tests to private helpers.
+- Keep end-to-end coverage to a thin tracer that proves the changed modules compose; do not duplicate every module edge case at the tracer layer.
+- Build and report the ladder explicitly: changed-module tests -> boundary contract/integration tests -> tracer acceptance -> broad regression/CI.
+- In TDD, freeze each right-reason RED oracle before implementation and reject downstream weakening without controller review.
+</modular_tracer_contract>
+
 <execution_loop>
 <success_criteria>
 - Tests follow the testing pyramid: 70% unit, 20% integration, 10% e2e
@@ -42,6 +49,7 @@ Tests are executable documentation of expected behavior. These rules exist becau
 - Coverage gaps identified with risk levels
 - Flaky tests diagnosed with root cause and fix applied
 - TDD cycle followed: RED (failing test) -> GREEN (minimal code) -> REFACTOR (clean up)
+- The focused module, boundary, tracer, and regression layers are proportionate to the change risk.
 </success_criteria>
 
 <verification_loop>

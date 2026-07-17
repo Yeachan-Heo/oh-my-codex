@@ -20,7 +20,7 @@ describe('anti-slop workflow surfaces', () => {
       assert.match(content, /Lock existing behavior with regression tests/i);
       assert.match(content, /Prefer deletion over addition/i);
       assert.match(content, /No new dependencies without explicit request/i);
-      assert.match(content, /Run lint, typecheck, tests, and static analysis/i);
+      assert.match(content, /Run relevant lint, typecheck, tests, and static analysis for the changed surface/i);
       assert.match(content, /\$ai-slop-cleaner/);
       assert.match(content, /writer\/reviewer pass separation/i);
     }

@@ -1,15 +1,24 @@
 ---
 name: ecomode
-description: Token-efficient model routing modifier
+description: Resource-efficient context, stage, fan-out, and model routing modifier
 ---
 
 # Ecomode Skill
 
-Token-efficient model routing. This is a **MODIFIER**, not a standalone execution mode.
+Resource-efficient execution. This is a **MODIFIER**, not a standalone execution mode.
 
 ## What Ecomode Does
 
-Overrides default model selection to prefer cheaper tiers:
+Ecomode reduces total interaction cost and rework, not merely model price:
+
+- Carry compact context packets containing only the task, owned surfaces, constraints, and current evidence
+- Reuse approved artifacts instead of regenerating specs, plans, or repository summaries
+- Use minimal fan-out: start with one capable owner and add agents only for independent work or a demonstrated authority need
+- Collapse redundant stages when an approved artifact already satisfies their output contract
+- Reduce interaction count by batching related checks and handing off grounded evidence once
+- Stop and re-localise repeated failures before they create more rework
+
+It also overrides default model selection to prefer cheaper tiers:
 
 | Default Tier | Ecomode Override |
 |--------------|------------------|
@@ -21,7 +30,7 @@ Overrides default model selection to prefer cheaper tiers:
 
 - **Persistence**: Use `ralph` for "don't stop until done"
 - **Parallel Execution**: Use `ultrawork` for parallel agents
-- **Delegation Enforcement**: Always active via core orchestration
+- **Orchestration Policy**: Core ownership and safety rules remain active, but delegation is conditional on independent work or a demonstrated authority need
 
 ## Combining Ecomode with Other Modes
 
@@ -30,12 +39,14 @@ Ecomode is a modifier that combines with execution modes:
 | Combination | Effect |
 |-------------|--------|
 | `eco ralph` | Ralph loop with cheaper agents |
-| `eco ultrawork` | Parallel execution with cheaper agents |
-| `eco autopilot` | Full autonomous with cost optimization |
+| `eco ultrawork` | Independent parallel lanes with compact context packets |
+| `eco autopilot` | Adaptive autonomous execution with artifact and stage reuse |
 
 ## Ecomode Routing Rules
 
 **ALWAYS prefer lower tiers. Only escalate when task genuinely requires it.**
+
+Model tier is the final routing decision, after reducing context size, stage count, interaction count, and unnecessary fan-out.
 
 | Decision | Rule |
 |----------|------|
@@ -67,11 +78,11 @@ delegate(role="architect", tier="STANDARD", task="...")
 delegate(role="planner", tier="THOROUGH", task="...")
 ```
 
-## Delegation Enforcement
+## Conditional Delegation
 
-Ecomode maintains all delegation rules from core protocol with cost-optimized routing:
+When delegation is warranted, Ecomode maintains core ownership rules with cost-optimized routing:
 
-| Action | Delegate To | Model |
+| Delegated action | Route To | Model |
 |--------|-------------|-------|
 | Code changes | executor | LOW / STANDARD |
 | Analysis | architect | LOW |
@@ -83,11 +94,13 @@ Long-running commands (install, build, test) run in background. Maximum 20 concu
 
 ## Token Savings Tips
 
-1. **Batch similar tasks** to one agent instead of spawning many
-2. **Use explore (LOW tier)** for file discovery, not architect
-3. **Prefer LOW-tier executor routing** for simple changes - only upgrade if it fails
-4. **Use writer (LOW tier)** for all documentation tasks
-5. **Avoid THOROUGH-tier agents** unless the task genuinely requires deep reasoning
+1. **Reuse approved artifacts** so phases do not rediscover settled context
+2. **Send compact context** rather than full conversation history when a bounded packet is enough
+3. **Batch similar checks** to reduce interaction count without hiding distinct failures
+4. **Use minimal fan-out** and add a second owner only for an independent lane or fresh authority requirement
+5. **Use explore (LOW tier)** for file discovery, not architect
+6. **Prefer LOW-tier executor routing** for simple changes - only upgrade if it fails or risk requires it
+7. **Avoid THOROUGH-tier agents** unless the task genuinely requires deep reasoning
 
 ## Disabling Ecomode
 

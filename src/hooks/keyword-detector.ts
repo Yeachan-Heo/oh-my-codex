@@ -188,9 +188,18 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['team', 'swarm']);
+const KEYWORDS_REQUIRING_INTENT = new Set([
+  'team',
+  'swarm',
+  'parallel',
+  'analyze',
+  'investigate',
+  'cancel',
+  'stop',
+  'abort',
+]);
 
-const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
+const IMPLICIT_INTENT_PATTERNS: Record<string, RegExp[]> = {
   team: [
     /(?:^|[^\w])\$(?:team)\b/i,
     /\/prompts:team\b/i,
@@ -203,7 +212,45 @@ const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
     /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?swarm\b/i,
     /\bswarm\s+(?:mode|orchestration|workflow|agents?)\b/i,
   ],
+  parallel: [
+    /(?:^|[.!?]\s*)(?:please\s+)?(?:run|execute|work|do|handle|process)\b[^.!?\n]{0,80}\bin parallel\b/i,
+    /\b(?:use|enable|start|launch|invoke|activate)\s+(?:a\s+|an\s+|the\s+)?parallel(?:\s+(?:mode|workflow|execution|agents?))?\b/i,
+    /(?:^|[.!?]\s*)parallel\s+(?:mode|workflow|execution|agents?)\b/i,
+  ],
+  analyze: [
+    /(?:^|[.!?]\s*)(?:please\s+)?analyze\b/i,
+    /\b(?:please|kindly)\s+analyze\b/i,
+    /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?analyze\b/i,
+  ],
+  investigate: [
+    /(?:^|[.!?]\s*)(?:please\s+)?investigate\b/i,
+    /\b(?:please|kindly)\s+investigate\b/i,
+    /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?investigate\b/i,
+  ],
+  cancel: [
+    /(?:^|[.!?]\s*)(?:please\s+)?cancel\b/i,
+    /\b(?:please|kindly)\s+cancel\b/i,
+    /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?cancel\b/i,
+  ],
+  stop: [
+    /(?:^|[.!?]\s*)(?:please\s+)?stop\b/i,
+    /\b(?:please|kindly)\s+stop\b/i,
+    /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?stop\b/i,
+  ],
+  abort: [
+    /(?:^|[.!?]\s*)(?:please\s+)?abort\b/i,
+    /\b(?:please|kindly)\s+abort\b/i,
+    /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?abort\b/i,
+  ],
 };
+
+function hasNegatedIntent(text: string, keyword: string): boolean {
+  const escaped = escapeRegex(keyword);
+  return new RegExp(
+    `\\b(?:do\\s+not|don't|dont|never|without|avoid)\\b[^.!?\\n]{0,80}\\b${escaped}\\b`,
+    'i',
+  ).test(text);
+}
 
 function hasExplicitPromptsInvocation(text: string): boolean {
   return /(?:^|\s)\/prompts:[\w.-]+(?=[\s.,!?;:]|$)/i.test(text);
@@ -246,9 +293,10 @@ function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
 }
 
 function hasIntentContextForKeyword(text: string, keyword: string): boolean {
-  if (!KEYWORDS_REQUIRING_INTENT.has(keyword.toLowerCase())) return true;
-  const k = keyword.toLowerCase() as 'team' | 'swarm';
-  return TEAM_SWARM_INTENT_PATTERNS[k].some((pattern) => pattern.test(text));
+  const normalized = keyword.toLowerCase();
+  if (!KEYWORDS_REQUIRING_INTENT.has(normalized)) return true;
+  if (hasNegatedIntent(text, normalized)) return false;
+  return (IMPLICIT_INTENT_PATTERNS[normalized] ?? []).some((pattern) => pattern.test(text));
 }
 
 /**

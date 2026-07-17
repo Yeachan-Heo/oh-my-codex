@@ -55,7 +55,10 @@ Team mode should carry its own parallel delivery + verification lanes without
 requiring a separate linked Ralph launch up front.
 
 - **Canonical launch:** use plain `omx team ...` / `$team ...` for coordinated workers.
+- **Module ownership:** dispatch parallel lanes only after stable module contracts name responsibility, public interfaces, invariants, allowed dependencies, and focused tests.
+- **Shared hotspots:** keep shared contracts and schemas serialized under one writer; parallel workers consume them but do not redefine them independently.
 - **Verification ownership:** keep one lane focused on tests, regression coverage, and evidence before shutdown.
+- **Verification order:** changed-module tests -> boundary contract/integration tests -> tracer acceptance -> broad regression/CI.
 - **Escalation:** start a separate `omx ralph ...` / `$ralph ...` only when a later manual follow-up still needs a persistent single-owner fix/verification loop.
 - **Deprecation:** `omx team ralph ...` has been removed. Use plain `omx team ...` for team execution or run `omx ralph ...` separately when you explicitly want a later Ralph loop.
 
@@ -121,6 +124,7 @@ When `$team` is used as a follow-up mode from ralplan, carry forward the approve
 - state the recommended headcount and role counts
 - state the suggested reasoning level for each lane when available
 - explain why each lane exists (delivery, verification, specialist support)
+- carry the plan's module contract card, frozen scope, and tracer acceptance into every worker task packet
 - include an explicit launch hint (`omx team N "<task>"` / `$team N "<task>"`) for the coordinated team run; mention a later separate Ralph follow-up only when genuinely needed
 - if the ideal role is unavailable, choose the closest role from the roster and say so
 

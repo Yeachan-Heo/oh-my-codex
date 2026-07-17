@@ -39,6 +39,9 @@ Jumping into code without understanding requirements leads to rework, scope cree
 - Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints
 - If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the plan is grounded
 - Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, or preference-dependent
+- For substantive behavior changes, every plan names one observable tracer and the modules crossed before implementation is decomposed.
+- Every changed module gets a module contract card covering responsibility, public inputs/outputs/errors, invariants, allowed dependencies, focused tests, and frozen contracts.
+- Plans verify from narrow to broad: changed-module tests -> boundary contract/integration tests -> tracer acceptance -> broad regression/CI.
 </Execution_Policy>
 
 <Steps>
@@ -124,6 +127,7 @@ Jumping into code without understanding requirements leads to rework, scope cree
 Every plan includes:
 - Requirements Summary
 - Acceptance Criteria (testable)
+- Modular Tracer Contract (observable behavior, modules crossed, module contract cards, frozen scope, and non-goals) when the work changes behavior
 - Implementation Steps (with file references)
 - Adaptive step count sized to the actual scope (not a fixed five-step template)
 - Risks and Mitigations

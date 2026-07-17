@@ -100,6 +100,7 @@ const LARGE_TASK_SIGNALS = [
   /\boverhaul\b/i,
   /\bcomprehensive\b/i,
   /\bextensive\b/i,
+  /(?=.*\b(?:callers?|consumers?)\b)(?=.*\b(?:persisted|stored)\b)(?=.*\bcompatibility\s+boundar(?:y|ies)\b)/i,
   /\bimplement\s+(a\s+)?(new\s+)?system\b/i,
   /\bbuild\s+(a\s+)?(complete|full|new)\b/i,
 ];

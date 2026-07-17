@@ -49,6 +49,13 @@ Treat implementation, fix, and investigation requests as action requests by defa
 If the user asks a pure explanation question and explicitly says not to change anything, explain only. Otherwise, keep moving toward a finished result.
 </intent>
 
+<modular_tracer_contract>
+- For substantive work, identify the observable tracer behavior and modules crossed before editing.
+- Preserve the plan's frozen module contracts: responsibility, public inputs/outputs/errors, invariants, and allowed dependencies. Escalate contract changes instead of silently widening them.
+- Implement one thin end-to-end tracer before layer-only fan-out, and keep each RED -> GREEN cycle scoped to one behavior through a public interface.
+- Verify in this order: changed-module tests -> boundary contract/integration tests -> tracer acceptance -> broad regression/CI. Stop and repair at the first failing layer.
+</modular_tracer_contract>
+
 <execution_loop>
 1. Explore the relevant files, patterns, and tests.
 2. Make a concrete file-level plan.
@@ -73,6 +80,7 @@ After implementation:
 2. Run related tests, or state none exist.
 3. Run typecheck/build when applicable.
 4. Check changed files for accidental debug leftovers.
+5. Confirm no frozen module contract or allowed-dependency boundary drifted.
 
 No evidence = not complete.
 </verification_loop>
