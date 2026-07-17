@@ -12393,6 +12393,41 @@ exit 0
 					assert.equal(mismatchWrite.outputJson?.decision, "block", name);
 					await writeJson(path, restoreValue);
 				}
+
+				const detachedWorkerName = "worker-2";
+				const detachedWorkerPane = "%78";
+				const detachedWorkerCwd = join(cwd, "worker-checkout");
+				await mkdir(join(teamRoot, "workers", detachedWorkerName), { recursive: true });
+				await mkdir(detachedWorkerCwd, { recursive: true });
+				await writeJson(join(teamRoot, "workers", detachedWorkerName, "identity.json"), {
+					name: detachedWorkerName,
+					pane_id: detachedWorkerPane,
+					team_state_root: stateDir,
+					working_dir: detachedWorkerCwd,
+				});
+				const detachedAuthority = {
+					...teamAuthority,
+					workers: [...teamAuthority.workers, {
+						name: detachedWorkerName,
+						pane_id: detachedWorkerPane,
+						team_state_root: stateDir,
+						worktree_path: detachedWorkerCwd,
+						working_dir: detachedWorkerCwd,
+					}],
+				};
+				await writeJson(join(teamRoot, "config.json"), detachedAuthority);
+				await writeJson(join(teamRoot, "manifest.v2.json"), detachedAuthority);
+				process.env.OMX_TEAM_WORKER = `deep-display/${detachedWorkerName}`;
+				process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/${detachedWorkerName}`;
+				process.env.TMUX_PANE = detachedWorkerPane;
+				const detachedWorkerProductWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					session_id: "sess-di-artifact",
+					tool_name: "Write",
+					tool_input: { file_path: "src/detached-worker.ts", content: "export {};\n" },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedWorkerProductWrite.outputJson, null);
 			} finally {
 				for (const [key, value] of Object.entries({
 					OMX_TEAM_WORKER: previousTeamEnv.worker,

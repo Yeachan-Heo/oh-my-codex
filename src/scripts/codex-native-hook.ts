@@ -3372,13 +3372,14 @@ function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): stri
     if (basename(canonicalStateDir) !== "state" || basename(dirname(canonicalStateDir)) !== ".omx") {
       return resolve(fallbackCwd);
     }
-    const candidateRoot = realpathSync(resolve(canonicalStateDir, "..", ".."));
     const canonicalFallback = realpathSync(resolve(fallbackCwd));
-    const fallbackRelative = relative(candidateRoot, canonicalFallback);
-    const candidateIsCheckoutRoot = existsSync(join(candidateRoot, ".git"));
-    return candidateRoot === canonicalFallback
-      || (candidateIsCheckoutRoot && fallbackRelative !== "" && !fallbackRelative.startsWith("..") && fallbackRelative !== "..")
-      ? candidateRoot
+    const rootSession = readJsonSyncIfExists(join(canonicalStateDir, "session.json"));
+    const recordedCwd = safeString(rootSession?.cwd ?? rootSession?.workingDirectory).trim();
+    if (!recordedCwd) return canonicalFallback;
+    const canonicalRecordedCwd = realpathSync(resolve(recordedCwd));
+    const fallbackRelative = relative(canonicalRecordedCwd, canonicalFallback);
+    return fallbackRelative === "" || (!fallbackRelative.startsWith("..") && fallbackRelative !== "..")
+      ? canonicalRecordedCwd
       : canonicalFallback;
   } catch {
     return resolve(fallbackCwd);
@@ -8901,6 +8902,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   cwd: string,
   stateDir: string,
   resolvedSessionId?: string,
+  authorityCwd = cwd,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
@@ -8917,7 +8919,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
-  const actor = await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId);
+  const actor = await resolvePreToolUseWriteActor(payload, authorityCwd, stateDir, sessionId);
   if (actor === "team-worker") {
     if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, cwd, stateDir)) {
       return buildTeamWorkerProtectedStateDeny(
@@ -9023,6 +9025,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   cwd: string,
   stateDir: string,
   resolvedSessionId?: string,
+  authorityCwd = cwd,
 ): Promise<Record<string, unknown> | null> {
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
   const threadId = readPayloadThreadId(payload);
@@ -9039,7 +9042,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   const command = readPreToolUseCommand(payload);
   const pathCandidates = readPreToolUsePathCandidates(payload);
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
-  const actor = await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId);
+  const actor = await resolvePreToolUseWriteActor(payload, authorityCwd, stateDir, sessionId);
   if (actor === "team-worker") {
     if (teamWorkerMutationTargetsProtectedWorkflowState(payload, toolName, command, cwd, stateDir)) {
       return buildTeamWorkerProtectedStateDeny(
@@ -17975,7 +17978,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
   const activeState = await readActiveConductorStateForPreToolUse(payload, policyCwd, stateDir, resolvedSessionId);
   if (!activeState) return null;
   const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
-  const writeActor = await resolvePreToolUseWriteActor(payload, policyCwd, stateDir, sessionId);
+  const writeActor = await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId);
   if (writeActor === "provenance-conflict") {
     return buildConductorSessionProvenanceDeny(activeState, "payload identity aliases conflict");
   }
@@ -20097,12 +20100,14 @@ export async function dispatchCodexNativeHook(
           policyCwd,
           stateDir,
           preToolUseSessionId,
+          cwd,
         )
         ?? await buildRalplanPreToolUseBoundaryOutput(
           payload,
           policyCwd,
           stateDir,
           preToolUseSessionId,
+          cwd,
         )
         ?? await buildPlanningRootPointerConflictPreToolUseOutput(
           payload,
