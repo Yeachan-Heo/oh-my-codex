@@ -19717,6 +19717,7 @@ export async function dispatchCodexNativeHook(
       stopReason: "session_pointer_unusable",
       reason: `OMX cannot authorize Stop while the selected session pointer is ${pointer.status}; repair the pointer evidence before continuing.`,
     };
+  let allowUnmatchedStopExit = false;
   let canonicalSessionId = safeString(currentSessionState?.session_id).trim();
   if (promptTurnContext?.status === "authorized") {
     canonicalSessionId = promptTurnContext.authorization.targetSessionId;
@@ -19837,6 +19838,8 @@ export async function dispatchCodexNativeHook(
           reason: `OMX cannot authorize Stop for unmatched session id ${stopPayloadSessionId}; the selected session pointer remains authoritative.`,
         };
       }
+      allowUnmatchedStopExit = stopAuthorizationFailure.stopReason === "session_scope_unmatched"
+        && !existsSync(join(stateDir, "sessions", stopPayloadSessionId));
     } else if (stopCanonicalSessionId) {
       canonicalSessionId = stopCanonicalSessionId;
     }
@@ -20303,6 +20306,8 @@ export async function dispatchCodexNativeHook(
         skipRalphStopBlock: isSubagentStop,
         skipAutoNudge: isSubagentStop,
       }) ?? await buildCompletedGoalCleanupStopOutput(payload, cwd);
+    } else if (allowUnmatchedStopExit) {
+      outputJson = null;
     } else {
       const failure = stopAuthorizationFailure ?? {
         stopReason: "session_pointer_unusable",
