@@ -3018,11 +3018,12 @@ PY`],
         );
       }
     }
-    const mixedReferenceStateCommand = `chmod --reference=.omx/state/session.json .omx/state/reference-copy; OMX_SESSION_ID=${sessionId} omx state write --input '${JSON.stringify({ mode: "ultragoal", session_id: sessionId, workingDirectory: smokeCwd })}' --json`;
-    const mainRootMixedReferenceStateProbe = runActorProbeResult('main-root', 'native child mixed reference state write main', 'Bash', { command: mixedReferenceStateCommand }, { PATH: packedNpmPath });
-    if (Object.keys(mainRootMixedReferenceStateProbe.output).length !== 0) {
-      throw new Error(`packed main-root mixed reference/state command should retain metadata allowance: ${JSON.stringify(mainRootMixedReferenceStateProbe.output)}\nactual stdout:\n${mainRootMixedReferenceStateProbe.stdout}`);
-    }
+    const mixedReferenceStateCommand = `chmod --reference=.omx/state/session.json .omx/state/reference-copy; OMX_SESSION_ID=${sessionId} omx state write --input '${JSON.stringify({ mode: "ultragoal", active: true, current_phase: "executing", session_id: sessionId, workingDirectory: smokeCwd })}' --json`;
+    requireActorDeny(
+      "main-root",
+      "native child mixed reference state write main",
+      runActorProbe("main-root", "native child mixed reference state write main", "Bash", { command: mixedReferenceStateCommand }, { PATH: packedNpmPath }),
+    );
     requireActorDeny(
       'native-child',
       'native child mixed reference state write native child',
