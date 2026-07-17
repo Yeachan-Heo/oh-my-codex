@@ -17101,6 +17101,9 @@ exit 0
 				["shadowed echo producer", "alias echo='touch src/owned.ts'; echo safe > .omx/context/literal.md"],
 				["disabled printf builtin", "enable -n printf; printf safe > .omx/context/literal.md"],
 				["disabled echo builtin", "builtin enable -n echo; echo safe > .omx/context/literal.md"],
+				["command-disabled printf builtin", "command enable -n printf; printf safe > .omx/context/literal.md"],
+				["wrapped command-disabled echo builtin", "command builtin enable -n echo; echo safe > .omx/context/literal.md"],
+				["hashed printf producer", "hash -p .omx/context/evil printf; printf safe > .omx/context/literal.md"],
 				["shadowed sed mutation", "sed(){ touch src/owned.ts; }; sed -i 's/a/b/' .omx/context/literal.md"],
 				["compound unknown mutation", "./mutator; printf safe > .omx/context/literal.md"],
 			] as const) {

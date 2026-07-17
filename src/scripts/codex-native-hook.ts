@@ -4440,11 +4440,20 @@ function conductorCommandMayMutatePathResolution(command: string): boolean {
   return /(?:^|[\s;|&(){}])(?:["']?PATH["']?\s*\+?=|(?:export|readonly|declare|typeset|local|env)\b[^;|&(){}\n]*["']?PATH["']?\s*\+?=|unset\s+(?:-[A-Za-z]+\s+)*["']?PATH["']?(?:\s|$)|printf\s+(?:-[A-Za-z]+\s+)*-v\s+["']?PATH["']?(?:\s|$)|read\s+(?:-[A-Za-z]+(?:\s+\S+)?\s+)*["']?PATH["']?(?:\s|$))/.test(source);
 }
 
+function conductorCommandMayChangeProducerResolution(command: string): boolean {
+  for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
+    const words = tokenizeConductorShellWords(segment);
+    const commandIndex = skipShellCommandPositionPrefixWords(words, 0);
+    if (new Set(["enable", "hash"]).has(commandNameFromShellWord(words[commandIndex] ?? ""))) return true;
+  }
+  return false;
+}
+
 function conductorRedirectProducerMayBeShadowed(command: string, commandName: string): boolean {
   if (safeString(process.env[`BASH_FUNC_${commandName}%%`]).trim() !== "") return true;
   if (conductorCommandMayMutatePathResolution(command)) return true;
   const source = stripHeredocBodiesForCommandScan(command);
-  if (/(?:^|[;|&(){}\n]\s*)(?:builtin\s+)?enable(?:\s|$)/.test(source)) return true;
+  if (conductorCommandMayChangeProducerResolution(source)) return true;
   for (let index = 0; index < source.length; index += 1) {
     const definition = findShellFunctionDefinitionAt(source, index);
     if (!definition) continue;
