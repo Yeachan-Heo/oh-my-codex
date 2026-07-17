@@ -7,23 +7,16 @@ The `ralplan -> ultragoal` transition requires durable Architect and Critic appr
 Each review artifact used by the gate must include:
 
 - `agent_role`: `architect` or `critic`
-- `provenance_kind`: `native_subagent` (routing-capable surface) or `omx_adapted` (a `role_routing_unavailable` surface, e.g. the Codex App `spawn_agent` tool with no `agent_type` parameter)
+- `provenance_kind`: `native_subagent` from a routing-capable surface; `omx_adapted` is rejected on the documented Codex 0.144.5 boundary
 - `session_id`: the current transition session id, unless supplied by the transition context
 - `thread_id`: the native subagent thread id for that review lane
 - `tracker_path`: `.omx/state/subagent-tracking.json`
 
 The Architect and Critic reviews must approve in order and must refer to distinct native subagent threads.
 
-## OMX-adapted provenance (role_routing_unavailable surfaces)
+## Unsupported adapted provenance
 
-When the native tool exposes no `agent_type` routing, OMX cannot pass a native role. The gate then accepts an `omx_adapted` lane only when ALL of the following hold, so provenance is never faked by a prompt label:
-
-- a scoped, unexpired `role_routing_unavailable` marker (`native-subagent-role-routing.json`) exists for the transition `cwd`/`session_id`;
-- the tracked child thread's ledger `role` equals the review artifact `agent_role` and its `provenance_kind` is `omx_adapted` (bound from a pre-recorded, installed-role-validated role intent, not from artifact text);
-- both review threads are completed and distinct;
-- strict Architect-before-Critic order is proven from tracker timestamps (architect `completed_at` strictly before critic `first_seen_at`/`started_at`); missing or artifact-only order is rejected.
-
-A review artifact that claims `native_subagent` provenance over an `omx_adapted` ledger thread is rejected.
+When the native tool reports `role_routing_unavailable`, Ralplan must fail its explicit preflight before review work. The consensus gate rejects `omx_adapted` review artifacts even when legacy tracker journals or `native-subagent-role-routing.json` markers remain after an upgrade. Prompt labels, task-name carriers, markers, pending intents, and historical adapted ledger records do not grant review authority. Typed `native_subagent` lanes remain subject to the tracker, completion, distinct-thread, role, and strict Architect-before-Critic checks below.
 
 ## Required tracker schema
 

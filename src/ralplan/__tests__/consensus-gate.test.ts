@@ -1403,7 +1403,7 @@ describe('ralplan consensus gate state roots', () => {
     }
   });
 
-  it('accepts tracker-backed OMX-adapted Architect and Critic lanes only with valid ledger order and scoped routing evidence', async () => {
+  it('rejects tracker-backed OMX-adapted Architect and Critic lanes even with valid legacy marker evidence', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-consensus-adapted-ok-'));
     const sessionId = 'sess-adapted-consensus-ok';
     try {
@@ -1417,8 +1417,9 @@ describe('ralplan consensus gate state roots', () => {
         value: consensus,
       }], { cwd, sessionId });
 
-      assert.equal(gate.complete, true);
-      assert.equal(gate.blockedReason, null);
+      assert.equal(gate.complete, false);
+      assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /unsupported omx_adapted provenance/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1435,7 +1436,7 @@ describe('ralplan consensus gate state roots', () => {
 
       assert.equal(gate.complete, false);
       assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
-      assert.match(gate.blockedDetails?.join(' ') ?? '', /tracker review order is missing.*critic first_seen_at/i);
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /unsupported omx_adapted provenance/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1460,7 +1461,7 @@ describe('ralplan consensus gate state roots', () => {
 
       assert.equal(gate.complete, false);
       assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
-      assert.match(gate.blockedDetails?.join(' ') ?? '', /tracker review order is reversed/i);
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /unsupported omx_adapted provenance/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1478,7 +1479,7 @@ describe('ralplan consensus gate state roots', () => {
 
       assert.equal(gate.complete, false);
       assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
-      assert.match(gate.blockedDetails?.join(' ') ?? '', /thread-architect has role=critic, expected architect/);
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /unsupported omx_adapted provenance/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1498,7 +1499,7 @@ describe('ralplan consensus gate state roots', () => {
 
       assert.equal(gate.complete, false);
       assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
-      assert.match(gate.blockedDetails?.join(' ') ?? '', /distinct tracker threads/);
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /unsupported omx_adapted provenance/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1516,7 +1517,7 @@ describe('ralplan consensus gate state roots', () => {
 
       assert.equal(gate.complete, false);
       assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
-      assert.match(gate.blockedDetails?.join(' ') ?? '', /lacks scoped role_routing_unavailable evidence/);
+      assert.match(gate.blockedDetails?.join(' ') ?? '', /unsupported omx_adapted provenance/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

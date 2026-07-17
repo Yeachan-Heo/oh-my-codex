@@ -174,18 +174,18 @@ describe('leader conductor contract', () => {
     assert.equal(markerEvidence.evidenceSummary, marker.evidence);
   });
 
-  it('renders role-routing guidance that proceeds without terminal wording', () => {
+  it('renders role-routing guidance that fails closed without adapted authority', () => {
     const guidance = buildRoleRoutingUnavailableGuidance({
       status: 'role_routing_unavailable',
       source: 'persisted_role_routing_marker',
       evidenceSummary: 'spawn tool accepted no native role routing',
     });
-    assert.match(guidance, /PROCEED/);
-    assert.match(guidance, /role-intent ledger/);
+    assert.match(guidance, /omx ralplan preflight --json/);
+    assert.match(guidance, /unsupported_documented_leader_proof/);
+    assert.match(guidance, /Do not fabricate agent_type/);
+    assert.doesNotMatch(guidance, /PROCEED|role-intent ledger/);
     assert.match(guidance, /Evidence: spawn tool accepted no native role routing/);
-    assert.doesNotMatch(guidance, /blocked\/cancelled\/failed/);
-    assert.doesNotMatch(guidance, /terminalize/);
-    assert.doesNotMatch(LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK, /blocked\/cancelled\/failed|terminalize/);
+    assert.match(LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK, /reviewed alternative workflow/);
   });
 
   it('recognizes namespaced collaboration spawn tools and rejects near-miss names (#3119)', () => {

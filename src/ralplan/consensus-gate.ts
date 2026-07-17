@@ -1,9 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE,
-  readRoleRoutingMarker,
-} from '../subagents/role-routing-marker.js';
 import { subagentTrackingPath } from '../subagents/tracker.js';
 import { getBaseStateDir, resolveWorkingDirectoryForState } from '../state/paths.js';
 
@@ -738,8 +734,6 @@ function buildTrackerBackedNativeConsensusDiagnostic(
   const currentSessionId = currentTransitionSessionId(evidence, options);
   const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
   const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
-  const adaptedLane = evidence.ralplan_architect_review?.provenance_kind === 'omx_adapted'
-    || evidence.ralplan_critic_review?.provenance_kind === 'omx_adapted';
 
   return {
     expected_schema: [
@@ -749,9 +743,6 @@ function buildTrackerBackedNativeConsensusDiagnostic(
       'both threads have completed_at; any recorded role identity must exactly match its review agent_role (native uses role or mode)',
       'architect and critic thread IDs are distinct',
       'architect completed_at is strictly before critic first_seen_at or started_at in the tracker ledger',
-      ...(adaptedLane ? [
-        `${NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE} contains unexpired evidence scoped to this cwd and session`,
-      ] : []),
     ],
     current_session_id: currentSessionId || null,
     tracker_path: trackerPath,
@@ -771,15 +762,10 @@ function buildTrackerBackedNativeConsensusDiagnostic(
     ),
     distinct_thread_ids: architectThreadId && criticThreadId ? architectThreadId !== criticThreadId : null,
     pair_problem: evaluation.pairProblem,
-    remediation: adaptedLane
-      ? [
-        'Re-run native or OMX-adapted ralplan Architect/Critic reviews.',
-        'Repair the review artifact so agent_role, provenance_kind, session_id, thread_id, and tracker_path point to completed tracker threads in the current session.',
-      ]
-      : [
-        'Re-run native ralplan Architect/Critic reviews.',
-        'Or repair the review artifact so agent_role, provenance_kind, session_id, thread_id, and tracker_path point to completed native subagent threads in the current tracker.',
-      ],
+    remediation: [
+      'Re-run typed native ralplan Architect/Critic reviews on a surface with installed agent_type routing.',
+      'Legacy OMX-adapted evidence is unsupported and cannot satisfy this gate.',
+    ],
     docs: 'docs/contracts/ralplan-consensus-gate.md',
   };
 }
@@ -825,12 +811,8 @@ function trackerBackedNativeReviewPairProblem(
 ): string | null {
   const architectThreadId = nativeReviewThreadId(evidence.ralplan_architect_review);
   const criticThreadId = nativeReviewThreadId(evidence.ralplan_critic_review);
-  const adaptedLane = evidence.ralplan_architect_review?.provenance_kind === 'omx_adapted'
-    || evidence.ralplan_critic_review?.provenance_kind === 'omx_adapted';
   if (architectThreadId && criticThreadId && architectThreadId === criticThreadId) {
-    return adaptedLane
-      ? 'architect and critic reviews must reference distinct tracker threads'
-      : 'architect and critic reviews must reference distinct native subagent tracker threads';
+    return 'architect and critic reviews must reference distinct native subagent tracker threads';
   }
 
   const transitionSessionId = typeof options.sessionId === 'string' ? options.sessionId.trim() : '';
@@ -838,16 +820,14 @@ function trackerBackedNativeReviewPairProblem(
   const criticSessionId = transitionSessionId || nativeReviewSessionId(evidence.ralplan_critic_review);
   if (!architectSessionId || !criticSessionId) return null;
   if (architectSessionId !== criticSessionId) {
-    return adaptedLane
-      ? `architect and critic reviews must resolve to the same tracker session; architect session_id=${architectSessionId}, critic session_id=${criticSessionId}`
-      : `architect and critic reviews must resolve to the same native subagent tracker session; architect session_id=${architectSessionId}, critic session_id=${criticSessionId}`;
+    return `architect and critic reviews must resolve to the same native subagent tracker session; architect session_id=${architectSessionId}, critic session_id=${criticSessionId}`;
   }
   return trackerBackedReviewOrderProblem(
     architectSessionId,
     architectThreadId,
     criticThreadId,
     snapshot,
-    adaptedLane ? 'OMX-adapted' : 'native subagent',
+    'native subagent',
   );
 }
 
@@ -895,12 +875,14 @@ function trackerBackedNativeReviewProblem(
   options: RalplanNativeSubagentConsensusOptions,
   snapshot: TrackerSnapshot | null,
 ): string | null {
-  const provenanceKind = review?.provenance_kind;
+  if (review?.provenance_kind === 'omx_adapted') {
+    return `${agentRole} review uses unsupported omx_adapted provenance`;
+  }
   return trackerBackedReviewProblem(
     review,
     agentRole,
     options,
-    provenanceKind === 'omx_adapted' ? 'omx_adapted' : 'native_subagent',
+    'native_subagent',
     snapshot,
   );
 }
@@ -931,9 +913,6 @@ function trackerBackedReviewProblem(
   if (trackerPath && !trackerPath.endsWith('subagent-tracking.json')) issues.push(`${agentRole} review tracker_path=${trackerPath} is not subagent-tracking.json`);
   const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
   if (!cwd) issues.push(`${agentRole} review cannot resolve cwd for tracker lookup`);
-  if (provenanceKind === 'omx_adapted' && !hasScopedRoleRoutingUnavailableEvidence(cwd, sessionId)) {
-    issues.push(`${agentRole} review lacks scoped role_routing_unavailable evidence for session ${sessionId || 'missing'}`);
-  }
 
   if (issues.length > 0) return issues.join('; ');
   if (!snapshot) return `${agentRole} review cannot resolve tracker snapshot`;
@@ -948,13 +927,6 @@ function trackerBackedReviewProblem(
   );
 }
 
-function hasScopedRoleRoutingUnavailableEvidence(cwd: string, sessionId: string): boolean {
-  if (!cwd || !sessionId) return false;
-  return uniquePaths([
-    getBaseStateDir(cwd),
-    localBaseStateDir(cwd),
-  ]).some((baseStateDir) => readRoleRoutingMarker(baseStateDir, { cwd, sessionId }) !== null);
-}
 
 function trackerThreadProblem(
   tracking: Record<string, unknown> | null,

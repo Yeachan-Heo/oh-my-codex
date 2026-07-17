@@ -18,22 +18,14 @@ import {
 } from "../state/skill-active.js";
 import {
   isTrustedSubagentThread,
-  OMX_ADAPTED_PROVENANCE,
-  attestLeaderThread,
   readSubagentSessionSummary,
   readSubagentSessionLedger,
   readSubagentTrackingState,
-  readSubagentTrackingStateStrict,
-  recordSubagentTurn,
   recordSubagentTurnForSession,
   resolveInstalledRoleName,
 } from "../subagents/tracker.js";
-import {
-  bindAndPublishAdaptedRole,
-  NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS,
-  recoverAdaptedRoleBindings,
-} from "../subagents/adapted-role-binding.js";
 import { readRoleRoutingMarker, writeRoleRoutingMarker } from "../subagents/role-routing-marker.js";
+import { evaluateCodex01445PreToolUse } from "../ralplan/documented-leader-preflight.js";
 import {
   resolveCanonicalTeamStateRoot,
   resolveWorkerNotifyTeamStateRootPath,
@@ -478,12 +470,6 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
   }
 }
 
-function reportRoleRoutingBindingFailure(error: unknown): void {
-  console.error(
-    `[omx] SECURITY: native adapted role binding did not complete; retained binding will be recovered: ${error instanceof Error ? error.message : String(error)}`,
-  );
-}
-
 async function recordNativeSubagentSessionStart(
   cwd: string,
   canonicalSessionId: string,
@@ -498,75 +484,29 @@ async function recordNativeSubagentSessionStart(
     canonicalSessionId.trim(),
     parentThreadId,
   ].filter(Boolean))];
-  let adaptedRoleIntent: {
-    role: string;
-    provenanceKind: typeof OMX_ADAPTED_PROVENANCE;
-  } | null = null;
 
-  if (!metadata.agentRole && correlationSessionId && parentThreadId) {
-    try {
-      const bound = bindAndPublishAdaptedRole(
-        cwd,
-        getBaseStateDir(cwd),
-        {
-          correlationSessionId,
-          parentThreadId,
-          correlationToken: metadata.correlationToken,
-        },
-        (state, intent) => {
-          let next = state;
-          for (const sessionId of trackingSessionIds) {
-            if (parentThreadId && parentThreadId !== childThreadId) {
-              next = recordSubagentTurn(next, {
-                sessionId,
-                threadId: parentThreadId,
-                kind: "leader",
-              });
-            }
-            next = recordSubagentTurn(next, {
-              sessionId,
-              threadId: childThreadId,
-              kind: "subagent",
-              ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
-              mode: intent.role,
-              role: intent.role,
-              provenanceKind: intent.provenanceKind,
-            });
-          }
-          return next;
-        },
-      );
-      adaptedRoleIntent = bound ? { role: bound.role, provenanceKind: OMX_ADAPTED_PROVENANCE } : null;
-    } catch (error) {
-      reportRoleRoutingBindingFailure(error);
-      throw error;
-    }
-  }
-
-  if (!adaptedRoleIntent) {
-    for (const sessionId of trackingSessionIds) {
-      if (parentThreadId && parentThreadId !== childThreadId) {
-        await recordSubagentTurnForSession(cwd, {
-          sessionId,
-          threadId: parentThreadId,
-          kind: "leader",
-        }).catch(() => {});
-      }
+  for (const sessionId of trackingSessionIds) {
+    if (parentThreadId && parentThreadId !== childThreadId) {
       await recordSubagentTurnForSession(cwd, {
         sessionId,
-        threadId: childThreadId,
-        kind: "subagent",
-        ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
-        mode: metadata.agentRole,
+        threadId: parentThreadId,
+        kind: "leader",
       }).catch(() => {});
     }
-    refreshNativeSubagentRoleRoutingMarker(
-      cwd,
-      getBaseStateDir(cwd),
-      correlationSessionId,
-      parentThreadId,
-    );
+    await recordSubagentTurnForSession(cwd, {
+      sessionId,
+      threadId: childThreadId,
+      kind: "subagent",
+      ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
+      mode: metadata.agentRole,
+    }).catch(() => {});
   }
+  refreshNativeSubagentRoleRoutingMarker(
+    cwd,
+    getBaseStateDir(cwd),
+    correlationSessionId,
+    parentThreadId,
+  );
   await appendToLog(cwd, {
     event: "subagent_session_start",
     session_id: canonicalSessionId,
@@ -2450,7 +2390,7 @@ function buildAdditionalContextMessage(
   const prompt = classification.originalText;
   if (!prompt) return null;
   const promptPriorityMessage = buildPromptPriorityMessage(prompt);
-  if (payload && isTypedAgentRolePayload(payload)) {
+  if (payload && isTypedAgentRolePayload(payload, cwd)) {
     return promptPriorityMessage;
   }
   const teamMode = readTeamModeConfig(cwd);
@@ -3438,31 +3378,6 @@ function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): stri
   }
 }
 
-// #3181 leader bootstrap accepts only a single, self-consistent native thread binding.
-// `readPayloadThreadId` remains precedence-based for compatibility at ordinary call sites;
-// this stricter predicate is intentionally limited to the attestation boundary.
-function hasUnambiguousNativeLeaderThreadBinding(payload: CodexHookPayload, nativeSessionId: string): boolean {
-  const expected = nativeSessionId.trim();
-  if (!expected) return false;
-  const directThreadIds = ["thread_id", "threadId"] as const;
-  if (!directThreadIds.some((key) => safeString(payload[key]).trim() === expected)) return false;
-  return (["owner_codex_thread_id", ...directThreadIds] as const)
-    .every((key) => !Object.prototype.hasOwnProperty.call(payload, key) || safeString(payload[key]).trim() === expected);
-}
-
-function hasOnlyEmptyLeaderRoleCarriers(payload: CodexHookPayload): boolean {
-  const aliases = (carrier: Record<string, unknown>): boolean => [
-    "agent_role",
-    "agentRole",
-    "agent_type",
-    "agentType",
-  ].every((key) => !Object.prototype.hasOwnProperty.call(carrier, key)
-    || (typeof carrier[key] === "string" && carrier[key].trim() === ""));
-  const source = safeObject(payload.source);
-  const subagent = safeObject(source.subagent);
-  const threadSpawn = safeObject(subagent.thread_spawn);
-  return aliases(payload) && aliases(subagent) && aliases(threadSpawn);
-}
 
 function readPayloadAgentRole(payload: CodexHookPayload): string {
   const directRole = safeString(
@@ -3496,54 +3411,26 @@ function readRequestedSpawnRole(payload: CodexHookPayload): string {
   ).trim().toLowerCase();
 }
 
-function isTypedAgentRolePayload(payload: CodexHookPayload): boolean {
+function isTypedAgentRolePayload(payload: CodexHookPayload, cwd: string): boolean {
   const agentRole = readPayloadAgentRole(payload);
-  return agentRole !== "" && resolveInstalledRoleName(agentRole) !== null;
+  return agentRole !== "" && resolveInstalledRoleName(agentRole, undefined, cwd) !== null;
 }
 
-// #3181: detect a runtime-set native subagent PreToolUse. The runtime sets
-// source.subagent.thread_spawn (not agent-controlled tool arguments), so the mere
-// STRUCTURAL PRESENCE of that carrier — even if its parent id is blank, malformed, or
-// null — marks a child/subagent turn that must never be attested as the session leader.
-// This is a negative security decision, so it fails closed on any present carrier rather
-// than requiring a well-formed parent id.
-function hasSubagentThreadSpawnProvenance(payload: CodexHookPayload): boolean {
-  const source = payload.source;
-  if (!source || typeof source !== "object") return false;
-  const subagent = (source as Record<string, unknown>).subagent;
-  if (!subagent || typeof subagent !== "object") return false;
-  return Object.prototype.hasOwnProperty.call(subagent, "thread_spawn");
-}
 
-// #3181: positive counter-evidence guard. A thread durably tracked as a subagent in ANY
-// session must never be attested as a leader, even if the current payload lacks typed-role
-// or thread_spawn provenance. This closes the source-less/untyped child escalation where a
-// child recorded at its SessionStart later self-promotes via a source-less PreToolUse.
-async function isThreadTrackedAsSubagent(cwd: string, threadId: string): Promise<boolean> {
-  const id = threadId.trim();
-  if (!id) return false;
-  // Strict read: an unreadable/corrupt tracker fails closed (treated as "is a subagent")
-  // so corrupt evidence cannot let a source-less child reconcile/attest as leader.
-  const read = await readSubagentTrackingStateStrict(cwd);
-  if (!read.ok) return true;
-  for (const session of Object.values(read.state.sessions)) {
-    if (session.threads?.[id]?.kind === "subagent") return true;
-  }
-  return false;
-}
 
 function buildNativeUnknownRolePreToolUseOutput(
   payload: CodexHookPayload,
+  cwd: string,
 ): Record<string, unknown> | null {
   const requestedRole = readRequestedSpawnRole(payload);
-  if (!requestedRole || resolveInstalledRoleName(requestedRole) !== null) return null;
+  if (!requestedRole || resolveInstalledRoleName(requestedRole, undefined, cwd) !== null) return null;
   return {
     decision: "block",
     reason: "Native typed-subagent dispatch denied: supplied agent_type/agent_role is unknown or not installed.",
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
-        "Use an installed OMX role for native agent_type/agent_role dispatch. On a role-routing-unavailable surface, record a validated OMX adapted role intent before spawning without fabricating agent_type.",
+        "Use an installed OMX role for native agent_type/agent_role dispatch. When the surface reports role_routing_unavailable, do not fabricate agent_type; run `omx ralplan preflight --json` before Ralplan planning, state, HUD, runtime, or delegation work and stop on `unsupported_documented_leader_proof`.",
     },
   };
 }
@@ -3663,7 +3550,7 @@ function refreshNativeSubagentRoleRoutingMarker(
   writeRoleRoutingMarker(stateDir, {
     ...marker,
     observed_at: new Date(nowMs).toISOString(),
-    expires_at: new Date(nowMs + NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_TTL_MS).toISOString(),
+    expires_at: new Date(nowMs + 60 * 60_000).toISOString(),
   });
 }
 
@@ -9350,6 +9237,13 @@ interface ActiveConductorState {
 
 
 type PreToolUseWriteActor = "main-root" | "native-child" | "provenance-conflict" | "team-worker";
+function hasSubagentThreadSpawnProvenance(payload: CodexHookPayload): boolean {
+  const source = payload.source;
+  if (!source || typeof source !== "object") return false;
+  const subagent = (source as Record<string, unknown>).subagent;
+  return Boolean(subagent && typeof subagent === "object" && Object.prototype.hasOwnProperty.call(subagent, "thread_spawn"));
+}
+
 
 async function resolvePreToolUseWriteActor(
   payload: CodexHookPayload,
@@ -9377,7 +9271,7 @@ async function resolvePreToolUseWriteActor(
   if (hasSubagentThreadSpawnProvenance(payload)) return "native-child";
 
   if (payloadHasOwnerIdentityClaim(payload)) return "native-child";
-  if (!payloadAgentId && isTypedAgentRolePayload(payload)) return "native-child";
+  if (!payloadAgentId && isTypedAgentRolePayload(payload, cwd)) return "native-child";
   if (payloadAgentId || payloadThreadId) return "native-child";
   return (await hasAuthoritativeTeamWorkerContext(cwd)) ? "team-worker" : "native-child";
 }
@@ -19636,6 +19530,19 @@ export async function dispatchCodexNativeHook(
 ): Promise<NativeHookDispatchResult> {
   const hookEventName = readHookEventName(payload);
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
+  if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
+    const denial = evaluateCodex01445PreToolUse(payload, {
+      resolveInstalledRoleName: (role) => resolveInstalledRoleName(role, undefined, cwd),
+    });
+    if (denial) {
+      return {
+        hookEventName,
+        omxEventName: mapCodexHookEventToOmxEvent(hookEventName),
+        skillState: null,
+        outputJson: denial,
+      };
+    }
+  }
   if (hookEventName === "PostCompact" && process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE === "1") {
     return {
       hookEventName,
@@ -19643,11 +19550,6 @@ export async function dispatchCodexNativeHook(
       skillState: null,
       outputJson: null,
     };
-  }
-  try {
-    recoverAdaptedRoleBindings(cwd, getBaseStateDir(cwd));
-  } catch {
-    // Recovery is best-effort for unrelated hook events.
   }
   if (hookEventName === "Stop" && !hasNativeStopRuntimeSurface(cwd)) {
     return {
@@ -19836,7 +19738,7 @@ export async function dispatchCodexNativeHook(
   let eventSessionId = canonicalSessionId || nativeSessionId || undefined;
   let sessionIdForState: string | null = canonicalSessionId || null;
   let outputJson: Record<string, unknown> | null = null;
-  const typedAgentRolePayload = isTypedAgentRolePayload(payload);
+  const typedAgentRolePayload = isTypedAgentRolePayload(payload, cwd);
   const isSubagentPromptSubmit = hookEventName === "UserPromptSubmit"
     ? typedAgentRolePayload || await isNativeSubagentHook(
       cwd,
@@ -20088,58 +19990,6 @@ export async function dispatchCodexNativeHook(
       };
     }
   } else if (hookEventName === "PreToolUse") {
-    // #3181 Phase-1 (PreToolUse): this hook fires before the shell tool call that runs
-    // the first in-turn `omx ralplan role-intent write`. A positively-provenanced
-    // leader-shaped turn may bootstrap an absent canonical pointer, or attest the
-    // already SessionStart-reconciled canonical session. Never reconcile, replace, or
-    // attest a usable pointer whose captured native binding does not exactly match.
-    const canonicalNativeSessionId = currentSessionState
-      ? normalizeSessionId(currentSessionState.native_session_id)
-      : null;
-    const hasPositiveLeaderProvenance = allowImplicitSessionSideEffects
-      && nativeSessionId
-      && hasUnambiguousNativeLeaderThreadBinding(payload, nativeSessionId)
-      && hasOnlyEmptyLeaderRoleCarriers(payload)
-      && !hasSubagentThreadSpawnProvenance(payload)
-      && !(await isThreadTrackedAsSubagent(cwd, nativeSessionId));
-    if (hasPositiveLeaderProvenance && pointer.status === "absent") {
-      try {
-        const ownerOmxSessionId = await resolveVerifiedOwnerOmxSessionId();
-        const sessionState = await reconcileNativeSessionStart(cwd, nativeSessionId, {
-          context: pointerContext,
-          pid: options.sessionOwnerPid ?? resolveSessionOwnerPid(payload),
-          ...options.sessionStartOptions,
-          ...(ownerOmxSessionId ? { ownerOmxSessionId, ownerAliasVerified: true } : {}),
-        });
-        const bootstrapSessionId = safeString(sessionState.session_id).trim();
-        const bootstrapLeaderThreadId = safeString(sessionState.native_session_id).trim() || nativeSessionId;
-        if (bootstrapSessionId && bootstrapLeaderThreadId) {
-          canonicalSessionId = bootstrapSessionId;
-          attestLeaderThread(cwd, {
-            sessionId: bootstrapSessionId,
-            leaderThreadId: bootstrapLeaderThreadId,
-            source: 'native-pretooluse',
-          });
-        }
-      } catch {
-        // Best-effort bootstrap; PreToolUse must never fail on this.
-      }
-    } else if (
-      hasPositiveLeaderProvenance
-      && pointer.status === "usable"
-      && currentSessionState
-      && canonicalNativeSessionId === nativeSessionId
-      && canonicalSessionId
-    ) {
-      // SessionStart established this native binding but intentionally did not attest.
-      // Attest only the existing canonical session; reconciliation here could replace a
-      // foreign/stale pointer before the mismatch checks above reject it.
-      attestLeaderThread(cwd, {
-        sessionId: canonicalSessionId,
-        leaderThreadId: nativeSessionId,
-        source: 'native-pretooluse',
-      });
-    }
     const sessionBinding = await resolvePreToolUseSessionBinding(policyCwd, stateDir, payload);
     const payloadSessionId = readPayloadSessionId(payload);
     const rootPointerConflict = await readLiveRootSessionPointerConflict(stateDir, payloadSessionId);
@@ -20222,7 +20072,7 @@ export async function dispatchCodexNativeHook(
           policyCwd,
         )
         : null;
-      outputJson = buildNativeUnknownRolePreToolUseOutput(payload)
+      outputJson = buildNativeUnknownRolePreToolUseOutput(payload, policyCwd)
         ?? nativeChildDeny
         ?? buildConductorSessionProvenanceDeny(
           guardedConductorState,
@@ -20234,7 +20084,7 @@ export async function dispatchCodexNativeHook(
         );
     } else {
       const preToolUseSessionId = sessionBinding.valid ? sessionBinding.canonicalSessionId : "";
-      outputJson = buildNativeUnknownRolePreToolUseOutput(payload)
+      outputJson = buildNativeUnknownRolePreToolUseOutput(payload, policyCwd)
         ?? await buildDeepInterviewPreToolUseBoundaryOutput(
           payload,
           policyCwd,

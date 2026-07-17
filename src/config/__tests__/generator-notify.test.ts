@@ -87,8 +87,8 @@ describe('config generator', () => {
       assert.match(toml, /when the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work/i);
       assert.match(toml, /role_routing_unavailable/i);
       assert.match(toml, /do not fabricate `agent_type`/i);
-      assert.match(toml, /OMX adapted role-pass protocol/i);
-      assert.match(toml, /pre-validated role intent in the OMX subagent ledger/i);
+      assert.match(toml, /omx ralplan preflight --json/i);
+      assert.match(toml, /unsupported_documented_leader_proof/i);
       assert.match(toml, /never fake the role via a prompt label/i);
       assert.match(toml, /Treat installed prompts as narrower execution surfaces under AGENTS\.md authority/);
       assert.match(toml, new RegExp(`^developer_instructions = "${OMX_DEVELOPER_INSTRUCTIONS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"$`, 'm'));

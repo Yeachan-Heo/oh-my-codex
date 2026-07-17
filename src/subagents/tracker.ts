@@ -43,14 +43,6 @@ export interface TrackedSubagentThread {
 export interface TrackedSubagentSession {
   session_id: string;
   leader_thread_id?: string;
-  // #3181: durable native-hook leader attestation. The native hook (SessionStart/
-  // PreToolUse) writes these when it reconciles the canonical session pointer so a
-  // fresh in-turn `role-intent write` can authenticate the leader before the
-  // turn-completion notify path would otherwise seed tracker activity. The CLI reads
-  // `leader_thread_id` as the attested leader and MUST NOT infer it from a native
-  // session id or a caller-supplied `--parent-thread`.
-  leader_attested_at?: string;
-  leader_attest_source?: string;
   updated_at: string;
   threads: Record<string, TrackedSubagentThread>;
 }
@@ -142,12 +134,12 @@ export function subagentTrackingPath(cwd: string): string {
 }
 
 
-export function resolveInstalledRoleName(role: string, codexHomeOverride?: string): string | null {
+export function resolveInstalledRoleName(role: string, codexHomeOverride?: string, projectRootOverride?: string): string | null {
   const normalizedRole = role.trim().toLowerCase();
   if (!normalizedRole) return null;
   if (KNOWN_TYPED_AGENT_ROLES.has(normalizedRole)) return normalizedRole;
 
-  for (const agentsDir of [codexAgentsDir(codexHomeOverride), projectCodexAgentsDir()]) {
+  for (const agentsDir of [codexAgentsDir(codexHomeOverride), projectCodexAgentsDir(projectRootOverride)]) {
     try {
       for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
@@ -349,12 +341,6 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
 
     const sessionCandidate = rawSession as TrackedSubagentSession;
     const leaderThreadId = typeof sessionCandidate.leader_thread_id === 'string' ? sessionCandidate.leader_thread_id.trim() || undefined : undefined;
-    const leaderAttestedAt = typeof sessionCandidate.leader_attested_at === 'string' && sessionCandidate.leader_attested_at.trim().length > 0
-      ? sessionCandidate.leader_attested_at.trim()
-      : undefined;
-    const leaderAttestSource = typeof sessionCandidate.leader_attest_source === 'string' && sessionCandidate.leader_attest_source.trim().length > 0
-      ? sessionCandidate.leader_attest_source.trim()
-      : undefined;
     const updatedAt =
       typeof sessionCandidate.updated_at === 'string' && sessionCandidate.updated_at.trim().length > 0
         ? sessionCandidate.updated_at
@@ -363,8 +349,6 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
     sessions[sessionId] = {
       session_id: sessionId,
       leader_thread_id: leaderThreadId,
-      ...(leaderAttestedAt ? { leader_attested_at: leaderAttestedAt } : {}),
-      ...(leaderAttestSource ? { leader_attest_source: leaderAttestSource } : {}),
       updated_at: updatedAt,
       threads,
     };
@@ -766,27 +750,7 @@ function readSubagentTrackingStateSync(cwd: string): SubagentTrackingState {
   }
 }
 
-// #3181: strict readers for the leader-attestation security decision. A missing file is a
-// legitimate empty state (fresh turn), but an existing file that fails to read/parse must
-// NOT be silently treated as empty — that would let corrupt/unreadable subagent evidence
-// be bypassed. Callers making a security decision (attest vs deny) use these.
-function readSubagentTrackingStateSyncStrict(cwd: string): { ok: true; state: SubagentTrackingState } | { ok: false } {
-  const path = subagentTrackingPath(cwd);
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch (error) {
-    // Only a genuine ENOENT (no file) is a clean empty state. Any other read/access error
-    // (permissions, I/O, ELOOP, …) must fail closed rather than be treated as empty.
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { ok: true, state: createSubagentTrackingState() };
-    return { ok: false };
-  }
-  try {
-    return { ok: true, state: normalizeSubagentTrackingState(JSON.parse(raw)) };
-  } catch {
-    return { ok: false };
-  }
-}
+// Strict reads preserve fail-closed behavior for security-sensitive tracker decisions.
 
 export async function readSubagentTrackingStateStrict(cwd: string): Promise<{ ok: true; state: SubagentTrackingState } | { ok: false }> {
   const path = subagentTrackingPath(cwd);
@@ -804,14 +768,6 @@ export async function readSubagentTrackingStateStrict(cwd: string): Promise<{ ok
   }
 }
 
-function threadIsTrackedAsSubagent(state: SubagentTrackingState, threadId: string): boolean {
-  const id = threadId.trim();
-  if (!id) return false;
-  for (const session of Object.values(state.sessions)) {
-    if (session.threads[id]?.kind === 'subagent') return true;
-  }
-  return false;
-}
 
 function writeSubagentTrackingStateSync(
   cwd: string,
@@ -1009,270 +965,6 @@ export function recordPendingRoleIntent(
   });
 }
 
-export type LeaderBootstrapFailureReason =
-  | 'unknown_role'
-  | 'invalid_correlation_token'
-  | 'invalid_origin'
-  | 'single_flight_conflict'
-  | 'native_anchor_unavailable'
-  | 'native_anchor_mismatch';
-
-/**
- * #3181 Phase 1 carrier write. Durably attest the authenticated leader thread for a
- * session from native-hook-reconciled metadata. Idempotent and fail-closed: it seeds
- * `leader_thread_id` + `leader_attested_at` + `leader_attest_source` only when the
- * session has no conflicting leader already. A different existing leader is NEVER
- * overwritten (returns `native_anchor_mismatch`) so a stale/foreign leader cannot be
- * replaced from a later turn. Authority for `leaderThreadId` is the caller's native
- * payload thread; it must never be derived from a native session id.
- */
-export function attestLeaderThread(
-  cwd: string,
-  input: { sessionId: string; leaderThreadId: string; source: string; nowMs?: number },
-): { ok: true; alreadyAttested: boolean } | { ok: false; reason: 'native_anchor_unavailable' | 'native_anchor_mismatch' } {
-  const sessionId = input.sessionId.trim();
-  const leaderThreadId = input.leaderThreadId.trim();
-  const source = input.source.trim() || 'native';
-  if (!sessionId || !leaderThreadId) return { ok: false, reason: 'native_anchor_unavailable' };
-  const nowMs = normalizeNowMs(input.nowMs);
-  const nowIso = new Date(nowMs).toISOString();
-  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
-    // Strict read under the lock: an unreadable/corrupt tracker denies attestation
-    // (fail closed) rather than silently reading empty.
-    const read = readSubagentTrackingStateSyncStrict(cwd);
-    if (!read.ok) return { ok: false, reason: 'native_anchor_unavailable' as const };
-    const state = read.state;
-    // Atomic positive counter-evidence: a thread tracked as a subagent in ANY session is
-    // never attested as a leader. Checked under the same lock as the write so a concurrent
-    // child record cannot race in between a caller's pre-check and this attestation.
-    if (threadIsTrackedAsSubagent(state, leaderThreadId)) {
-      return { ok: false, reason: 'native_anchor_mismatch' as const };
-    }
-    const existing = state.sessions[sessionId];
-    const existingLeader = existing?.leader_thread_id?.trim();
-    if (existingLeader && existingLeader !== leaderThreadId) {
-      return { ok: false, reason: 'native_anchor_mismatch' as const };
-    }
-    if (existing && existingLeader === leaderThreadId && existing.leader_attested_at) {
-      return { ok: true, alreadyAttested: true };
-    }
-    const session: TrackedSubagentSession = existing
-      ? { ...existing }
-      : { session_id: sessionId, updated_at: nowIso, threads: {} };
-    session.leader_thread_id = leaderThreadId;
-    session.leader_attested_at = nowIso;
-    session.leader_attest_source = source;
-    session.updated_at = nowIso;
-    state.sessions = { ...state.sessions, [sessionId]: session };
-    context.assertOwnership();
-    writeSubagentTrackingStateSync(cwd, state, context.publish);
-    return { ok: true, alreadyAttested: false };
-  });
-}
-
-/**
- * #3181 Phase 2. Single tracker-locked publish that self-heals the leader thread record
- * from a durable native attestation and records the pending role intent in the same
- * operation, closing the previous verify-then-record TOCTOU window. Fail-closed:
- * requires a durable attested leader for the session (`native_anchor_unavailable`
- * otherwise) and requires `parentThreadId` to equal the attested `leader_thread_id`
- * (`native_anchor_mismatch` otherwise). `leaderThreadId` is never inferred from a
- * native session id. Duplicate same-identity intents reuse the original receipt
- * (idempotent), never a second leader or a second intent.
- */
-export function ensureLeaderAndRecordIntent(
-  cwd: string,
-  input: {
-    role: string;
-    sessionId: string;
-    parentThreadId: string;
-    correlationToken: string;
-    ttlMs?: number;
-    nowMs?: number;
-  },
-): { ok: true; intent: PendingRoleIntent; reused: boolean } | { ok: false; reason: LeaderBootstrapFailureReason } {
-  const role = resolveInstalledRoleName(input.role);
-  if (!role) return { ok: false, reason: 'unknown_role' };
-  const correlationToken = input.correlationToken;
-  if (!isCanonicalCorrelationToken(correlationToken)) {
-    return { ok: false, reason: 'invalid_correlation_token' };
-  }
-  const nowMs = normalizeNowMs(input.nowMs);
-  const sessionId = input.sessionId.trim();
-  const parentThreadId = input.parentThreadId.trim();
-  const canonicalOrigin = canonicalizeOriginCwd(cwd);
-  if (canonicalOrigin === null) return { ok: false, reason: 'invalid_origin' };
-  const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
-  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
-    // Strict read under the lock: an unreadable/corrupt tracker fails closed rather than
-    // being treated as empty state.
-    const read = readSubagentTrackingStateSyncStrict(cwd);
-    if (!read.ok) return { ok: false, reason: 'native_anchor_unavailable' as const };
-    const state = read.state;
-    const session = state.sessions[sessionId];
-    const attestedLeader = session?.leader_thread_id?.trim();
-    // Fail closed unless a durable native attestation established the leader anchor.
-    if (!session || !attestedLeader || !session.leader_attested_at) {
-      return { ok: false, reason: 'native_anchor_unavailable' as const };
-    }
-    if (parentThreadId !== attestedLeader) {
-      return { ok: false, reason: 'native_anchor_mismatch' as const };
-    }
-    // Symmetric subagent exclusion: independent of which writer won the tracker lock, a
-    // leader thread that is ALSO recorded as a subagent in ANY session (even a different
-    // one) must never receive an adapted role intent. Re-scanned here under the intent-write
-    // lock so a cross-session child record committed after attestation cannot slip through.
-    if (threadIsTrackedAsSubagent(state, attestedLeader)) {
-      return { ok: false, reason: 'native_anchor_mismatch' as const };
-    }
-
-    // Single-flight, role-agnostic (preserves recordPendingRoleIntent's invariant): a
-    // live/bound own intent for the same (session, parent) blocks a second live intent.
-    // Same-identity (same role) retries reuse the original receipt (idempotent); a
-    // different-role request for the same live parent returns single_flight_conflict
-    // rather than creating a second ambiguous intent.
-    const all = state.pending_role_intents;
-    const liveOwnIntent = all.find((intent) => (
-      isOwn(intent)
-      && intent.session_id === sessionId
-      && intent.parent_thread_id === parentThreadId
-      && (intent.binding_state === 'bound' || !isExpiredPendingRoleIntent(intent, nowMs))
-    ));
-    if (liveOwnIntent) {
-      if (liveOwnIntent.role === role) {
-        return { ok: true, intent: liveOwnIntent, reused: true };
-      }
-      return { ok: false, reason: 'single_flight_conflict' };
-    }
-
-    // Self-heal the leader thread record so leader-anchor consumers see kind:"leader".
-    const nowIso = new Date(nowMs).toISOString();
-    const nextSession: TrackedSubagentSession = { ...session, threads: { ...session.threads } };
-    const existingLeaderThread = nextSession.threads[attestedLeader];
-    if (!existingLeaderThread || existingLeaderThread.kind !== 'leader') {
-      nextSession.threads[attestedLeader] = {
-        ...(existingLeaderThread ?? {}),
-        thread_id: attestedLeader,
-        kind: 'leader',
-        first_seen_at: existingLeaderThread?.first_seen_at ?? nowIso,
-        last_seen_at: nowIso,
-        turn_count: existingLeaderThread?.turn_count ?? 0,
-      };
-    }
-    nextSession.updated_at = nowIso;
-
-    const ttlMs = typeof input.ttlMs === 'number' && Number.isFinite(input.ttlMs) ? input.ttlMs : 10 * 60_000;
-    const intent: PendingRoleIntent = {
-      role,
-      session_id: sessionId,
-      parent_thread_id: parentThreadId,
-      correlation_token: correlationToken,
-      created_at: nowIso,
-      expires_at: new Date(nowMs + ttlMs).toISOString(),
-      ...(canonicalOrigin ? { origin_cwd: canonicalOrigin } : {}),
-    };
-    state.sessions = { ...state.sessions, [sessionId]: nextSession };
-    state.pending_role_intents = [...all.filter((candidate) => !shouldPruneExpired(candidate)), intent];
-    context.assertOwnership();
-    writeSubagentTrackingStateSync(cwd, state, context.publish);
-    return { ok: true, intent, reused: false };
-  });
-}
-
-export type NativeLeaderIntentFailureReason = LeaderBootstrapFailureReason | 'parent_not_active_leader';
-
-/**
- * #3181 legacy/native fallback, made atomic and positive-provenance-only. When no durable
- * attestation exists, an in-turn role intent may still be authorized ONLY against the
- * tracker leader_thread_id — the positively-provenanced leader thread set by a real
- * recorded leader turn (notify) or by PreToolUse attestation (gated when the caller has a
- * usable current pointer). It deliberately does NOT trust the reconciled session.json
- * native_session_id, which an ambiguous/malformed-child SessionStart can set. This is the
- * strict tracker-locked replacement for the former CLI "activeLeaderThreadIds +
- * recordPendingRoleIntent" fallback: it validates the leader anchor AND rejects any
- * all-session subagent counter-evidence under the same lock as the intent write, so a
- * subagent record landing after a pre-check (or a PreToolUse attestation that lost its
- * race) can never be downgraded into an unvalidated legacy authorization. Fail-closed:
- * unreadable/corrupt tracker → native_anchor_unavailable; parent not the tracker leader →
- * parent_not_active_leader; parent tracked as a subagent anywhere → native_anchor_mismatch.
- */
-export function recordNativeLeaderIntent(
-  cwd: string,
-  input: {
-    role: string;
-    sessionId: string;
-    parentThreadId: string;
-    allowTrackerLeader: boolean;
-    correlationToken: string;
-    ttlMs?: number;
-    nowMs?: number;
-  },
-): { ok: true; intent: PendingRoleIntent; reused: boolean } | { ok: false; reason: NativeLeaderIntentFailureReason } {
-  const role = resolveInstalledRoleName(input.role);
-  if (!role) return { ok: false, reason: 'unknown_role' };
-  const correlationToken = input.correlationToken;
-  if (!isCanonicalCorrelationToken(correlationToken)) {
-    return { ok: false, reason: 'invalid_correlation_token' };
-  }
-  const nowMs = normalizeNowMs(input.nowMs);
-  const sessionId = input.sessionId.trim();
-  const parentThreadId = input.parentThreadId.trim();
-  const canonicalOrigin = canonicalizeOriginCwd(cwd);
-  if (canonicalOrigin === null) return { ok: false, reason: 'invalid_origin' };
-  const { isOwn, shouldPruneExpired } = pendingRoleIntentPredicates(cwd, canonicalOrigin, nowMs);
-  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
-    const read = readSubagentTrackingStateSyncStrict(cwd);
-    if (!read.ok) return { ok: false, reason: 'native_anchor_unavailable' as const };
-    const state = read.state;
-
-    // Positive-provenance leader anchor ONLY: the tracker leader_thread_id is set by a real
-    // recorded leader turn (notify) or by PreToolUse attestation. It is intentionally NOT
-    // the reconciled session.json native_session_id, which an ambiguous/malformed-child
-    // SessionStart can set without positively classifying a root — trusting that pointer
-    // would re-open false-leader adoption. A malformed child never obtains a tracker leader
-    // thread, so it fails closed here.
-    const trackerLeader = input.allowTrackerLeader ? state.sessions[sessionId]?.leader_thread_id?.trim() : undefined;
-    if (!parentThreadId || !trackerLeader || parentThreadId !== trackerLeader) {
-      return { ok: false, reason: 'parent_not_active_leader' as const };
-    }
-    // Atomic all-session subagent exclusion: a parent thread recorded as a subagent in ANY
-    // session is never a valid leader, even if it matches the tracker leader anchor.
-    if (threadIsTrackedAsSubagent(state, parentThreadId)) {
-      return { ok: false, reason: 'native_anchor_mismatch' as const };
-    }
-
-    // Role-agnostic single-flight (same contract as recordPendingRoleIntent).
-    const all = state.pending_role_intents;
-    const liveOwnIntent = all.find((intent) => (
-      isOwn(intent)
-      && intent.session_id === sessionId
-      && intent.parent_thread_id === parentThreadId
-      && (intent.binding_state === 'bound' || !isExpiredPendingRoleIntent(intent, nowMs))
-    ));
-    if (liveOwnIntent) {
-      if (liveOwnIntent.role === role) {
-        return { ok: true, intent: liveOwnIntent, reused: true };
-      }
-      return { ok: false, reason: 'single_flight_conflict' };
-    }
-
-    const nowIso = new Date(nowMs).toISOString();
-    const ttlMs = typeof input.ttlMs === 'number' && Number.isFinite(input.ttlMs) ? input.ttlMs : 10 * 60_000;
-    const intent: PendingRoleIntent = {
-      role,
-      session_id: sessionId,
-      parent_thread_id: parentThreadId,
-      correlation_token: correlationToken,
-      created_at: nowIso,
-      expires_at: new Date(nowMs + ttlMs).toISOString(),
-      ...(canonicalOrigin ? { origin_cwd: canonicalOrigin } : {}),
-    };
-    state.pending_role_intents = [...all.filter((candidate) => !shouldPruneExpired(candidate)), intent];
-    context.assertOwnership();
-    writeSubagentTrackingStateSync(cwd, state, context.publish);
-    return { ok: true, intent, reused: false };
-  });
-}
 
 export function bindPendingRoleIntentUnderLock(
   cwd: string,
@@ -1609,11 +1301,6 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
   normalized.sessions[sessionId] = {
     session_id: sessionId,
     ...(leaderThreadId ? { leader_thread_id: leaderThreadId } : {}),
-    // #3181: preserve the durable native leader attestation across ordinary turn writes.
-    // Dropping these would let a normal child SessionStart/bind erase authentication and
-    // silently downgrade later role-intent writes to the legacy (non-atomic) path.
-    ...(existingSession.leader_attested_at ? { leader_attested_at: existingSession.leader_attested_at } : {}),
-    ...(existingSession.leader_attest_source ? { leader_attest_source: existingSession.leader_attest_source } : {}),
     updated_at: timestamp,
     threads,
   };

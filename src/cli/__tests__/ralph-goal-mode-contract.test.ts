@@ -29,9 +29,9 @@ describe('ralph goal mode integration contract', () => {
     assert.match(ralphSkill, /When the native surface exposes `agent_type` role routing, set `agent_type` to an installed OMX role and never omit it for OMX work/);
     assert.match(ralphSkill, /role_routing_unavailable/);
     assert.match(ralphSkill, /do not fabricate `agent_type`/);
-    assert.match(ralphSkill, /OMX adapted role-pass protocol/);
-    assert.match(ralphSkill, /pre-validated role intent in the OMX subagent ledger/);
-    assert.match(ralphSkill, /never fake the role via a prompt label/);
+    assert.match(ralphSkill, /omx ralplan preflight --json/);
+    assert.match(ralphSkill, /unsupported_documented_leader_proof/);
+    assert.match(ralphSkill, /prompt labels/);
     assert.doesNotMatch(ralphSkill, /delegate\(role=/);
     assert.doesNotMatch(ralphSkill, /delegate\(executor/);
     assert.doesNotMatch(ralphSkill, /tier="/);

@@ -1928,11 +1928,8 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.match(config, /role_routing_unavailable/i);
 					assert.match(config, /do not fabricate `agent_type`/i);
-					assert.match(config, /OMX adapted role-pass protocol/i);
-					assert.match(
-						config,
-						/pre-validated role intent in the OMX subagent ledger/i,
-					);
+					assert.match(config, /omx ralplan preflight --json/i);
+					assert.match(config, /unsupported_documented_leader_proof/i);
 					assert.match(config, /never fake the role via a prompt label/i);
 					assert.doesNotMatch(config, /Native subagents live in \.codex\/agents/);
 					assert.doesNotMatch(config, /Treat installed prompts as narrower execution surfaces/);
@@ -2110,7 +2107,7 @@ describe("omx setup install mode behavior", () => {
 						/When the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work/i,
 					);
 					assert.match(config, /role_routing_unavailable/i);
-					assert.match(config, /OMX adapted role-pass protocol/i);
+					assert.match(config, /omx ralplan preflight --json/i);
 					assert.equal(
 						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
 						1,

@@ -145,10 +145,9 @@ export const LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK = [
 
 export const LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK = [
   'Native role routing is unavailable in this environment.',
-  'PROCEED with adapted role-specific consensus using the exposed spawn tool.',
-  'Record role identity via the OMX adapted role-intent ledger.',
-  'Keep unknown-role validation loud.',
-  'Continue the workflow without claiming native typed-subagent provenance.',
+  'Do not fabricate agent_type or use adapted role intents, task-name carriers, markers, or prompt labels as authority.',
+  'Before Ralplan planner, reviewer, HUD, runtime, or delegation work, run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`.',
+  'Use a surface with installed typed agent_type routing or a reviewed alternative workflow.',
 ].join(' ');
 
 function supportRecord(value: unknown): Record<string, unknown> | null {

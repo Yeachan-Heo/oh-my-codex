@@ -265,6 +265,16 @@ const CODEX_EVENT_LABELS: Readonly<Record<string, string>> = {
 
 const PINNED_CODEX_VERSION = '0.142.5';
 const PINNED_CODEX_VERSION_OUTPUT = `codex-cli ${PINNED_CODEX_VERSION}`;
+
+/** Sanitized Codex 0.144.5 PreToolUse shape: documented fields only, with no pointer or tracker state. */
+export const PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE = Object.freeze({
+  hook_event_name: 'PreToolUse',
+  session_id: 'packed-01445-session',
+  turn_id: 'packed-01445-turn',
+  tool_name: 'Bash',
+  tool_use_id: 'packed-01445-tool',
+  tool_input: { command: 'omx ralplan role-intent write --role architect --parent-thread "$CODEX_THREAD_ID" --json' },
+} as const);
 const CODEX_APP_SERVER_MAX_STDOUT_FRAME_LENGTH = 1_048_576;
 
 type JsonRecord = Record<string, unknown>;
@@ -1464,6 +1474,15 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
   for (const [index, file] of g2bFiles.entries()) if (Buffer.compare(readFileSync(file), g2bBefore[index]!) !== 0) throw new Error(`packed G2b negated prompt mutated terminal state ${file}`);
   if (stopDecision(g2bCwd, g2bEnv, g2bPayload) === 'block') throw new Error('packed G2b negated prompt blocked Stop');
   for (const [index, file] of g2bFiles.entries()) if (Buffer.compare(readFileSync(file), g2bBefore[index]!) !== 0) throw new Error(`packed G2b negated prompt mutated terminal state after Stop ${file}`);
+
+  const g2cCwd = join(smokeCwd, 'g2c-01445');
+  mkdirSync(g2cCwd, { recursive: true });
+  const g2cPayload = { ...PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, cwd: g2cCwd };
+  const g2cResult = invoke(g2cCwd, buildPackedRegressionEnvironment({ name: 'g2c-01445' }), g2cPayload);
+  const g2cStdout = String(g2cResult.stdout || '');
+  const g2cExpected = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan."}}\n';
+  if (g2cStdout !== g2cExpected) throw new Error('packed Codex 0.144.5 fixture returned unexpected PreToolUse bytes');
+  if (existsSync(join(g2cCwd, '.omx', 'state'))) throw new Error('packed Codex 0.144.5 fixture created pointer or tracker state');
 }
 
   const globalNodeModules = resolveGlobalNodeModules(prefixDir);
@@ -3478,16 +3497,16 @@ PY`],
       throw new Error('native hook blocked a positively classified native-child read-only operation');
     }
 
-    // #3181: exercise the installed hook and installed CLI as separate processes. This
-    // stays hermetic and bounded: no model, app-server, or network surface is involved.
-    const roleIntentCwd = join(smokeCwd, 'issue-3181-role-intent');
+    // #3194: the installed Codex 0.144.5 documented surface fails closed before
+    // authority state or an adapted role intent can be created.
+    const roleIntentCwd = join(smokeCwd, 'issue-3194-role-intent');
     const roleIntentHome = join(roleIntentCwd, 'home');
     const roleIntentCodexHome = join(roleIntentCwd, 'codex-home');
-    const roleIntentNativeSessionId = 'packed-issue-3181-native-leader';
+    const roleIntentNativeSessionId = 'synthetic-3194-session';
     mkdirSync(roleIntentHome, { recursive: true });
     mkdirSync(roleIntentCodexHome, { recursive: true });
     const roleIntentEnvironment = {
-      ...buildPackedRegressionEnvironment({ name: 'issue-3181-role-intent' }),
+      ...buildPackedRegressionEnvironment({ name: 'issue-3194-role-intent' }),
       HOME: roleIntentHome,
       CODEX_HOME: roleIntentCodexHome,
     };
@@ -3497,14 +3516,9 @@ PY`],
       input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: roleIntentCwd, session_id: roleIntentNativeSessionId }),
     });
     validateHookStdout('SessionStart', String(sessionStartResult.stdout || ''));
-    const sessionStartTracking: { sessions?: Record<string, { leader_attested_at?: string }> } = existsSync(join(roleIntentCwd, '.omx', 'state', 'subagent-tracking.json'))
-      ? JSON.parse(readFileSync(join(roleIntentCwd, '.omx', 'state', 'subagent-tracking.json'), 'utf-8')) as {
-        sessions?: Record<string, { leader_attested_at?: string }>;
-      }
-      : {};
-    if (sessionStartTracking.sessions?.[roleIntentNativeSessionId]?.leader_attested_at) {
-      throw new Error('installed #3181 SessionStart must not attest a leader');
-    }
+    const trackingPath = join(roleIntentCwd, '.omx', 'state', 'subagent-tracking.json');
+    if (existsSync(trackingPath)) throw new Error('installed #3194 SessionStart unexpectedly created tracker authority');
+
     const preToolUseResult = run(process.execPath, [realpathSync(hookScript)], {
       cwd: roleIntentCwd,
       env: roleIntentEnvironment,
@@ -3512,53 +3526,29 @@ PY`],
         hook_event_name: 'PreToolUse',
         cwd: roleIntentCwd,
         session_id: roleIntentNativeSessionId,
-        thread_id: roleIntentNativeSessionId,
+        turn_id: 'synthetic-3194-turn',
         tool_name: 'Bash',
-        tool_use_id: 'packed-issue-3181-pretooluse',
+        tool_use_id: 'synthetic-3194-tool',
         tool_input: { command: 'omx ralplan role-intent write --role architect --parent-thread "$CODEX_THREAD_ID" --json' },
       }),
     });
-    validateHookStdout('PreToolUse', String(preToolUseResult.stdout || ''));
-    const roleIntentTracking = JSON.parse(readFileSync(join(roleIntentCwd, '.omx', 'state', 'subagent-tracking.json'), 'utf-8')) as {
-      sessions?: Record<string, { leader_thread_id?: string; leader_attested_at?: string; leader_attest_source?: string }>;
-      pending_role_intents?: Array<{ role?: string; correlation_token?: string }>;
-    };
-    const roleIntentLeader = roleIntentTracking.sessions?.[roleIntentNativeSessionId];
-    if (
-      roleIntentLeader?.leader_thread_id !== roleIntentNativeSessionId
-      || !roleIntentLeader.leader_attested_at
-      || roleIntentLeader.leader_attest_source !== 'native-pretooluse'
-    ) {
-      throw new Error('installed #3181 PreToolUse did not attest the canonical native leader with native-pretooluse provenance');
+    const preToolUseExpected = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan."}}\n';
+    if (String(preToolUseResult.stdout || '') !== preToolUseExpected) {
+      throw new Error('installed #3194 PreToolUse did not emit the exact unsupported denial');
     }
-    const roleIntentCliResult = run(process.execPath, [realpathSync(join(packageRoot, 'dist', 'cli', 'omx.js')), 'ralplan', 'role-intent', 'write', '--role', 'architect', '--parent-thread', roleIntentNativeSessionId, '--json'], {
+    if (existsSync(trackingPath)) throw new Error('installed #3194 PreToolUse unexpectedly created tracker authority');
+
+    const roleIntentCliResult = spawnSync(process.execPath, [realpathSync(join(packageRoot, 'dist', 'cli', 'omx.js')), 'ralplan', 'role-intent', 'write', '--role', 'architect', '--parent-thread', roleIntentNativeSessionId, '--json'], {
       cwd: roleIntentCwd,
       env: roleIntentEnvironment,
+      encoding: 'utf-8',
+      stdio: 'pipe',
     });
-    if (roleIntentCliResult.status !== 0) throw new Error(`installed #3181 role-intent CLI failed: ${String(roleIntentCliResult.stderr || '')}`);
-    const roleIntentReceipt = JSON.parse(String(roleIntentCliResult.stdout || '{}')) as {
-      ok?: boolean;
-      intent?: { role?: string; correlation_token?: string };
-      spawn_task_name?: string;
-    };
-    const finalRoleIntentTracking = JSON.parse(readFileSync(join(roleIntentCwd, '.omx', 'state', 'subagent-tracking.json'), 'utf-8')) as {
-      pending_role_intents?: Array<{ role?: string; correlation_token?: string }>;
-    };
-    if (!roleIntentReceipt.ok || roleIntentReceipt.intent?.role !== 'architect' || !roleIntentReceipt.intent.correlation_token) {
-      throw new Error('installed #3181 role-intent CLI did not authorize an Architect receipt');
+    if (roleIntentCliResult.status === 0) throw new Error('installed #3194 role-intent CLI unexpectedly authorized an Architect receipt');
+    if (String(roleIntentCliResult.stdout || '') !== '{"ok":false,"reason":"unsupported_documented_leader_proof"}\n') {
+      throw new Error('installed #3194 role-intent CLI returned an unexpected denial');
     }
-    const spawnTaskName = roleIntentReceipt.spawn_task_name || '';
-    if (!/^omx_role_intent_[a-z0-9_]+$/.test(spawnTaskName)) {
-      throw new Error('installed #3181 role-intent CLI returned an invalid App-compatible spawn_task_name');
-    }
-    if (
-      finalRoleIntentTracking.pending_role_intents?.length !== 1
-      || finalRoleIntentTracking.pending_role_intents[0]?.role !== 'architect'
-      || finalRoleIntentTracking.pending_role_intents[0]?.correlation_token !== roleIntentReceipt.intent.correlation_token
-      || !spawnTaskName.endsWith(roleIntentReceipt.intent.correlation_token)
-    ) {
-      throw new Error('installed #3181 must leave exactly one correlated Architect pending intent/receipt');
-    }
+    if (existsSync(trackingPath)) throw new Error('installed #3194 role-intent CLI unexpectedly created tracker authority');
 
     for (const [caseIndex, testCase] of PACKED_INSTALL_NATIVE_HOOK_REGRESSION_PROMPTS.entries()) {
       const caseCwd = join(smokeCwd, testCase.name);

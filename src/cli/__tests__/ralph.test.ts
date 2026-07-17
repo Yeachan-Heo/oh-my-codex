@@ -290,9 +290,9 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /never omit `agent_type` for generic OMX work/);
     assert.match(instructions, /role_routing_unavailable/);
     assert.match(instructions, /do not fabricate `agent_type`/);
-    assert.match(instructions, /OMX adapted role-pass protocol/);
-    assert.match(instructions, /pre-validated role intent in the OMX subagent ledger/);
-    assert.match(instructions, /never fake the role via a prompt label/);
+    assert.match(instructions, /omx ralplan preflight --json/);
+    assert.match(instructions, /unsupported_documented_leader_proof/);
+    assert.match(instructions, /never fake the role via a prompt label/i);
     assert.match(instructions, /use `reasoning_effort` instead of `tier`/);
     assert.match(instructions, /LOW -> `low`/);
     assert.match(instructions, /STANDARD -> `medium`/);

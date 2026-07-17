@@ -32985,116 +32985,13 @@ describe("#3118 native role contract", () => {
 		});
 	});
 
-	it("binds a matching task_name marker from every App session-meta carrier (#3118)", async () => {
+	it("does not revive adapted roles from App task_name carriers or pending intents (#3118, #3194)", async () => {
 		for (const taskNameCarrier of ["thread_spawn", "subagent", "payload"] as const) {
-			await withIsolatedNativeRoleState(`adapted-bind-${taskNameCarrier}`, async (cwd, stateDir) => {
-				const canonicalSessionId = `sess-3118-adapted-bind-${taskNameCarrier}`;
-				const parentThreadId = `thread-3118-adapted-parent-${taskNameCarrier}`;
-				const childSessionId = `thread-3118-adapted-child-${taskNameCarrier}`;
-				const correlationToken = "11111111111111111111111100003118";
-				await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
-				await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
-				assert.equal(
-					recordPendingRoleIntent(cwd, {
-						role: "architect",
-						sessionId: canonicalSessionId,
-						parentThreadId,
-						correlationToken,
-					}).ok,
-					true,
-				);
-
-				await startUntypedNativeChild(cwd, {
-					childSessionId,
-					parentThreadId,
-					taskName: buildRoleIntentSpawnTaskName(correlationToken),
-					taskNameCarrier,
-				});
-
-				const child = await readNativeRoleChild(stateDir, canonicalSessionId, childSessionId);
-				assert.equal(child?.mode, "architect", taskNameCarrier);
-				assert.equal(child?.role, "architect", taskNameCarrier);
-				assert.equal(child?.provenance_kind, "omx_adapted", taskNameCarrier);
-				assert.equal(
-					existsSync(join(stateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)),
-					true,
-					taskNameCarrier,
-				);
-				assert.ok(
-					readRoleRoutingMarker(stateDir, {
-						cwd,
-						sessionId: canonicalSessionId,
-						parentThreadId,
-					}),
-				);
-			});
-		}
-	});
-
-	it("uses the first structurally present task_name carrier without falling through invalid higher-priority values (#3118)", async () => {
-		const scenarios: Array<{
-			name: string;
-			taskNames: (taskName: string) => Partial<Record<TaskNameCarrier, unknown>>;
-			binds: boolean;
-		}> = [
-			{
-				name: "empty-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: "", subagent: taskName }),
-				binds: false,
-			},
-			{
-				name: "null-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: null, subagent: taskName }),
-				binds: false,
-			},
-			{
-				name: "array-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: [taskName] }),
-				binds: false,
-			},
-			{
-				name: "object-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: { taskName } }),
-				binds: false,
-			},
-			{
-				name: "leading-whitespace-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: ` ${taskName}` }),
-				binds: false,
-			},
-			{
-				name: "trailing-whitespace-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: `${taskName} ` }),
-				binds: false,
-			},
-			{
-				name: "number-thread-spawn",
-				taskNames: () => ({ thread_spawn: 3118 }),
-				binds: false,
-			},
-			{
-				name: "malformed-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: "not_a_marker", subagent: taskName }),
-				binds: false,
-			},
-			{
-				name: "subagent-after-absent-thread-spawn",
-				taskNames: (taskName) => ({ subagent: taskName }),
-				binds: true,
-			},
-			{
-				name: "valid-thread-spawn",
-				taskNames: (taskName) => ({ thread_spawn: taskName, subagent: "not_a_marker" }),
-				binds: true,
-			},
-		];
-
-		for (const scenario of scenarios) {
-			await withIsolatedNativeRoleState(`task-name-precedence-${scenario.name}`, async (cwd, stateDir) => {
-				const canonicalSessionId = `sess-3118-task-name-${scenario.name}`;
-				const parentThreadId = `thread-3118-task-name-${scenario.name}`;
-				const childSessionId = `child-3118-task-name-${scenario.name}`;
-				const correlationToken = "22222222222222222222222200003118";
+			await withIsolatedNativeRoleState(`adapted-disabled-${taskNameCarrier}`, async (cwd, stateDir) => {
+				const canonicalSessionId = `sess-3194-adapted-disabled-${taskNameCarrier}`;
+				const parentThreadId = `thread-3194-adapted-parent-${taskNameCarrier}`;
+				const childSessionId = `thread-3194-adapted-child-${taskNameCarrier}`;
+				const correlationToken = "11111111111111111111111100003194";
 				await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
 				await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
 				assert.equal(recordPendingRoleIntent(cwd, {
@@ -33107,56 +33004,17 @@ describe("#3118 native role contract", () => {
 				await startUntypedNativeChild(cwd, {
 					childSessionId,
 					parentThreadId,
-					taskNames: scenario.taskNames(buildRoleIntentSpawnTaskName(correlationToken)),
+					taskName: buildRoleIntentSpawnTaskName(correlationToken),
+					taskNameCarrier,
 				});
 
 				const child = await readNativeRoleChild(stateDir, canonicalSessionId, childSessionId);
-				assert.equal(child?.role, scenario.binds ? "architect" : undefined, scenario.name);
-				assert.equal(child?.provenance_kind, scenario.binds ? "omx_adapted" : undefined, scenario.name);
-				assert.equal(
-					(await readSubagentTrackingState(cwd)).pending_role_intents.length,
-					scenario.binds ? 0 : 1,
-					scenario.name,
-				);
+				assert.equal(child?.role, undefined, taskNameCarrier);
+				assert.equal(child?.provenance_kind, undefined, taskNameCarrier);
+				assert.equal((await readSubagentTrackingState(cwd)).pending_role_intents.length, 1, taskNameCarrier);
+				assert.equal(existsSync(join(stateDir, NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE)), false, taskNameCarrier);
 			});
 		}
-	});
-
-	it("binds an Architect then Critic through App-compatible task_name carriers (#3118)", async () => {
-		await withIsolatedNativeRoleState("architect-critic-app-carriers", async (cwd, stateDir) => {
-			const canonicalSessionId = "sess-3118-architect-critic-app-carriers";
-			const parentThreadId = "thread-3118-architect-critic-app-carriers-parent";
-			await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
-			await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: parentThreadId });
-
-			const bindAdaptedRole = async (
-				role: "architect" | "critic",
-				correlationToken: string,
-				childSessionId: string,
-			): Promise<void> => {
-				const taskName = buildRoleIntentSpawnTaskName(correlationToken);
-				assert.match(taskName, /^[a-z0-9_]+$/);
-				assert.equal(
-					recordPendingRoleIntent(cwd, {
-						role,
-						sessionId: canonicalSessionId,
-						parentThreadId,
-						correlationToken,
-					}).ok,
-					true,
-				);
-				await startUntypedNativeChild(cwd, { childSessionId, parentThreadId, taskName });
-
-				const child = await readNativeRoleChild(stateDir, canonicalSessionId, childSessionId);
-				assert.equal(child?.mode, role);
-				assert.equal(child?.role, role);
-				assert.equal(child?.provenance_kind, "omx_adapted");
-				assert.ok(readRoleRoutingMarker(stateDir, { cwd, sessionId: canonicalSessionId, parentThreadId }));
-			};
-
-			await bindAdaptedRole("architect", "33333333333333333333333300003118", "thread-3118-app-architect-child");
-			await bindAdaptedRole("critic", "44444444444444444444444400003118", "thread-3118-app-critic-child");
-		});
 	});
 
 	it("fails closed on a present non-marker task_name without falling back to agent_nickname (#3118)", async () => {

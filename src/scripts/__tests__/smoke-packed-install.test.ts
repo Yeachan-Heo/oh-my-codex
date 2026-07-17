@@ -16,6 +16,7 @@ import {
   MANAGED_CODEX_HOOK_EVENTS,
   PACKED_INSTALL_NATIVE_HOOK_SMOKE_EVENTS,
   PACKED_INSTALL_NATIVE_HOOK_REGRESSION_PROMPTS,
+  PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE,
   PACKED_INSTALL_SMOKE_CORE_COMMANDS,
   appendForeignHookGroups,
   appendDisplayOrderStableForeignHookGroups,
@@ -66,6 +67,22 @@ test('packed install smoke retains narrow boot commands and adds the isolated li
     PACKED_INSTALL_SMOKE_CORE_COMMANDS.some((argv) => argv.includes('sparkshell')),
     true,
   );
+});
+
+test('packed 0.144.5 fixture is sanitized, pointer-free, and kept separate from the 0.142.5 lifecycle pin', () => {
+  assert.deepEqual(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, {
+    hook_event_name: 'PreToolUse',
+    session_id: 'packed-01445-session',
+    turn_id: 'packed-01445-turn',
+    tool_name: 'Bash',
+    tool_use_id: 'packed-01445-tool',
+    tool_input: { command: 'omx ralplan role-intent write --role architect --parent-thread "$CODEX_THREAD_ID" --json' },
+  });
+  assert.equal(Object.hasOwn(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, 'tracker'), false);
+  assert.equal(Object.hasOwn(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, 'session_pointer'), false);
+  assert.equal(Object.hasOwn(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, 'cwd'), false);
+  assert.equal(Object.hasOwn(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, 'thread_id'), false);
+  assert.equal(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE.session_id.includes('-'), true);
 });
 
 test('packed lifecycle keeps the pinned newline-delimited Codex app-server envelopes literal', () => {
