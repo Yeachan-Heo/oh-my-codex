@@ -12217,6 +12217,50 @@ exit 0
 				else process.env.OMX_ROOT = priorOmxRootForStalePointer;
 			}
 
+			const foreignSharedRoot = join(cwd, "foreign-shared-root");
+			const foreignSharedStateDir = join(foreignSharedRoot, ".omx", "state");
+			const payloadSessionId = "sess-di-shared-payload";
+			const payloadSessionDir = join(foreignSharedStateDir, "sessions", payloadSessionId);
+			await mkdir(payloadSessionDir, { recursive: true });
+			await writeJson(join(foreignSharedStateDir, "session.json"), { session_id: "sess-di-shared-foreign-root", cwd });
+			await writeJson(join(payloadSessionDir, "skill-active-state.json"), {
+				version: 1, active: true, skill: "deep-interview", phase: "planning", session_id: payloadSessionId,
+				workingDirectory: disjointExecutionCwd,
+				active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: payloadSessionId }],
+			});
+			await writeJson(join(payloadSessionDir, "deep-interview-state.json"), {
+				active: true, mode: "deep-interview", current_phase: "intent-first", session_id: payloadSessionId,
+				workingDirectory: disjointExecutionCwd,
+			});
+			const priorOmxRootForForeignShared = process.env.OMX_ROOT;
+			try {
+				process.env.OMX_ROOT = foreignSharedRoot;
+				const foreignSharedChildWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse", cwd: disjointExecutionCwd, session_id: payloadSessionId,
+					thread_id: "agent-di-shared-payload-child", agent_id: "agent-di-shared-payload-child", tool_name: "Write",
+					tool_input: { file_path: "src/foreign-shared-bypass.ts", content: "export {};\n" },
+				}, { cwd: disjointExecutionCwd });
+				assert.equal(foreignSharedChildWrite.outputJson?.decision, "block");
+				assert.match(String(foreignSharedChildWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED|PROVENANCE_DENIED/);
+
+				await writeJson(join(payloadSessionDir, "skill-active-state.json"), {
+					version: 1, active: false, skill: "deep-interview", phase: "complete", session_id: payloadSessionId,
+					workingDirectory: disjointExecutionCwd, active_skills: [],
+				});
+				await writeJson(join(payloadSessionDir, "deep-interview-state.json"), {
+					active: false, mode: "deep-interview", current_phase: "complete", session_id: payloadSessionId,
+					workingDirectory: disjointExecutionCwd,
+				});
+				const terminalForeignSharedWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse", cwd: disjointExecutionCwd, session_id: payloadSessionId, tool_name: "Edit",
+					tool_input: { file_path: "src/terminal-allowed.ts" },
+				}, { cwd: disjointExecutionCwd });
+				assert.equal(terminalForeignSharedWrite.outputJson, null);
+			} finally {
+				if (priorOmxRootForForeignShared === undefined) delete process.env.OMX_ROOT;
+				else process.env.OMX_ROOT = priorOmxRootForForeignShared;
+			}
+
 			const ancestorBox = join(cwd, "ancestor-box");
 			const boxedCheckout = join(ancestorBox, "worktree");
 			const ancestorStateDir = join(ancestorBox, ".omx", "state");
