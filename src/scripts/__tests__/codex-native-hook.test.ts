@@ -30754,8 +30754,8 @@ PY`,
 
       const unofficialCamelCaseAgentId = await dispatchWrite({ agentId: "agent-hook-native-camel-case", agent_role: "executor" });
       assert.equal(unofficialCamelCaseAgentId.outputJson?.decision, "block");
-      assert.match(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
-      assert.doesNotMatch(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
+      assert.match(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /PROVENANCE_DENIED/);
+      assert.doesNotMatch(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /Main-root/);
       const leaderValuedCamelCaseAgentId = await dispatchBash(
         "leader-valued-camel-case-agent-id",
         { agentId: leaderThreadId },

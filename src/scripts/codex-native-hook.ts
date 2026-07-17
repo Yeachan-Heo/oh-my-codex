@@ -18066,8 +18066,6 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 
   if (toolName === "Bash") {
     const shellMutations = extractConductorBashMutations(command, cwd, policyCwd);
-    const nativeChildMetadataControl = shellMutations.length > 0
-      && shellMutations.every((mutation) => mutation.nativeChildMetadataControl === true);
     const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd);
     blocked = !bashEvaluation.allowed;
     const canonicalStateCommand = canonicalizeOmxStateTransportCommand(command);
@@ -18086,7 +18084,6 @@ export async function buildConductorPreToolUseWriteGuardOutput(
       && shellMutations.length === 0
       && /\b(?:export\s+(?:-[A-Za-z]*f[A-Za-z]*|--functions?)|(?:declare|typeset)\s+-[A-Za-z]*f[A-Za-z]*)\b/.test(command);
     nativeChildMutationAttempt = (mutationTransport === "bash" || shellMutations.length > 0)
-      && !nativeChildMetadataControl
       && !safeExportedFunctionRead;
     if (blocked) blockedDetail = bashEvaluation.blockedDetail ?? buildConductorBashBlockedDetail(cwd, command);
   } else if (mutationTransport === "state") {
