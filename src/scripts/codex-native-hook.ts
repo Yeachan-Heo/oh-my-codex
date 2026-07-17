@@ -8877,6 +8877,7 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
   if (toolName === "mcp__omx_state__state_clear" || toolName === "mcp__omx_state__state_write") return true;
   if (mutationTransport === "unknown" || mutationTransport === "state") return true;
   if (toolName === "Bash") {
+    if (/\b(?:patch|ed|sponge|setfacl|setfattr|chattr)\b/i.test(command)) return true;
     if (collectOmxStateCommandOperations(command, "write").length > 0
       || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
     let effectiveCwd = cwd;
@@ -9300,6 +9301,8 @@ async function resolvePreToolUseWriteActor(
   if (payloadHasConflictingIdentityAliases(payload)) return "provenance-conflict";
   const unofficialAgentId = safeString(payload.agentId).trim();
   if (unofficialAgentId && !safeString(payload.agent_id).trim()) return "provenance-conflict";
+  const unofficialThreadId = safeString(payload.threadId).trim();
+  if (unofficialThreadId && !safeString(payload.thread_id).trim()) return "provenance-conflict";
   const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
   const session = trackingState?.sessions?.[sessionId];
   const payloadThreadId = readPayloadThreadId(payload);
@@ -20067,6 +20070,7 @@ export async function dispatchCodexNativeHook(
   } else if (hookEventName === "PreToolUse") {
     const identitylessTeamWorkerContext = !readPayloadAgentId(payload)
       && !safeString(payload.agentId).trim()
+      && !safeString(payload.threadId).trim()
       && !readPayloadThreadId(payload)
       && !payloadHasOwnerIdentityClaim(payload)
       && !hasSubagentThreadSpawnProvenance(payload)

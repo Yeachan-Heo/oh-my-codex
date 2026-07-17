@@ -12458,6 +12458,22 @@ exit 0
 					tool_input: { file_path: "src/camel-child.ts", content: "export {};\n" },
 				}, { cwd: detachedWorkerCwd });
 				assert.equal(detachedCamelIdentityWrite.outputJson?.decision, "block");
+				const detachedCamelThreadWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					session_id: "sess-di-artifact",
+					threadId: "thread-di-artifact",
+					tool_name: "Write",
+					tool_input: { file_path: "src/camel-thread.ts", content: "export {};\n" },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedCamelThreadWrite.outputJson?.decision, "block");
+				const detachedPatchState = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					tool_name: "Bash",
+					tool_input: { command: `patch "$OMX_TEAM_STATE_ROOT/sessions/sess-di-artifact/deep-interview-state.json"` },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedPatchState.outputJson?.decision, "block");
 				await symlink(stateDir, join(detachedWorkerCwd, "state-link"));
 				const detachedWorkerStateAliasWrite = await dispatchCodexNativeHook({
 					hook_event_name: "PreToolUse",
