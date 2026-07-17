@@ -17830,6 +17830,11 @@ function evaluateConductorBashWrite(
     };
   }
 
+function isExactConductorMetadataRoot(cwd: string, target: string): boolean {
+  const relativeTarget = normalizeRepoRelativePath(cwd, target);
+  return Boolean(relativeTarget && CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES.includes(relativeTarget as (typeof CONDUCTOR_ORCHESTRATION_METADATA_PREFIXES)[number]));
+}
+
   const shellMutations = extractConductorBashMutations(normalizedCommand, cwd, policyCwd);
   if (shellMutations.length > 0) {
     for (const mutation of shellMutations) {
@@ -17928,6 +17933,7 @@ function evaluateConductorBashWrite(
       blockedDetail: "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata",
     };
   }
+  const createsMetadataDirectories = /\binstall\b/.test(normalizedCommand) && /(?:^|\s)-[^\s]*d|(?:^|\s)--directory(?:\s|$)/.test(normalizedCommand);
   const blockedTarget = targets.find((target) => {
     const isNormalizedShellTarget = shellMutations.some((mutation) => mutation.targets.includes(target));
     const matchingShellMutations = shellMutations.filter((mutation) => mutation.targets.includes(target));
@@ -17938,6 +17944,7 @@ function evaluateConductorBashWrite(
     ) return false;
     if (isNormalizedShellTarget && isAllowedConductorMetadataPath(policyCwd, target)) return false;
     if (isAllowedConductorMetadataExecutionPath(cwd, policyCwd, target)) return false;
+    if (createsMetadataDirectories && isExactConductorMetadataRoot(policyCwd, target)) return false;
     return !(nestedTargetAliases.get(target) ?? []).some((normalized) => isAllowedConductorMetadataPath(policyCwd, normalized));
   });
   if (blockedTarget) {
