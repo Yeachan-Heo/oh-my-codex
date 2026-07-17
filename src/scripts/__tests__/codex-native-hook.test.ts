@@ -17106,6 +17106,10 @@ exit 0
 				["repeated command-disabled printf builtin", "command command enable -n printf; printf safe > .omx/context/literal.md"],
 				["option-wrapped command-disabled printf builtin", "command -- enable -n printf; printf safe > .omx/context/literal.md"],
 				["hashed printf producer", "hash -p .omx/context/evil printf; printf safe > .omx/context/literal.md"],
+				["declared command cache producer", "declare 'BASH_CMDS[cat]=.omx/context/evil'; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["assigned command cache producer", "BASH_CMDS[printf]=.omx/context/evil; printf safe > .omx/context/literal.md"],
+				["subscripted PATH producer", "declare 'PATH[0]=.omx/context'; cat > .omx/context/literal.md <<'EOF'\ncontent\nEOF"],
+				["unset command cache producer", "unset 'BASH_CMDS[printf]'; printf safe > .omx/context/literal.md"],
 				["shadowed sed mutation", "sed(){ touch src/owned.ts; }; sed -i 's/a/b/' .omx/context/literal.md"],
 				["compound unknown mutation", "./mutator; printf safe > .omx/context/literal.md"],
 			] as const) {

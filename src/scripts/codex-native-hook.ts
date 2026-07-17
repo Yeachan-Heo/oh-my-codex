@@ -4437,7 +4437,8 @@ function conductorRedirectTargetIsSafe(executionCwd: string, target: string, pol
 
 function conductorCommandMayMutatePathResolution(command: string): boolean {
   const source = stripHeredocBodiesForCommandScan(command);
-  return /(?:^|[\s;|&(){}])(?:["']?PATH["']?\s*\+?=|(?:export|readonly|declare|typeset|local|env)\b[^;|&(){}\n]*["']?PATH["']?\s*\+?=|unset\s+(?:-[A-Za-z]+\s+)*["']?PATH["']?(?:\s|$)|printf\s+(?:-[A-Za-z]+\s+)*-v\s+["']?PATH["']?(?:\s|$)|read\s+(?:-[A-Za-z]+(?:\s+\S+)?\s+)*["']?PATH["']?(?:\s|$))/.test(source);
+  const resolutionVariable = `["']?(?:PATH|BASH_CMDS)(?:\\[[^\\]\\r\\n]+\\])?["']?`;
+  return new RegExp(`(?:^|[\\s;|&(){}])(?:${resolutionVariable}\\s*\\+?=|(?:export|readonly|declare|typeset|local|env)\\b[^;|&(){}\\n]*${resolutionVariable}\\s*\\+?=|unset\\s+(?:-[A-Za-z]+\\s+)*${resolutionVariable}(?:\\s|$)|printf\\s+(?:-[A-Za-z]+\\s+)*-v\\s+${resolutionVariable}(?:\\s|$)|read\\s+(?:-[A-Za-z]+(?:\\s+\\S+)?\\s+)*${resolutionVariable}(?:\\s|$))`).test(source);
 }
 
 function conductorCommandMayChangeProducerResolution(command: string): boolean {
