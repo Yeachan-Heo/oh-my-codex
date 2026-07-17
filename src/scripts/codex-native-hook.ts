@@ -3375,7 +3375,9 @@ function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): stri
     const candidateRoot = realpathSync(resolve(canonicalStateDir, "..", ".."));
     const canonicalFallback = realpathSync(resolve(fallbackCwd));
     const fallbackRelative = relative(candidateRoot, canonicalFallback);
-    return fallbackRelative === "" || (!fallbackRelative.startsWith("..") && fallbackRelative !== "..")
+    const candidateIsCheckoutRoot = existsSync(join(candidateRoot, ".git"));
+    return candidateRoot === canonicalFallback
+      || (candidateIsCheckoutRoot && fallbackRelative !== "" && !fallbackRelative.startsWith("..") && fallbackRelative !== "..")
       ? candidateRoot
       : canonicalFallback;
   } catch {

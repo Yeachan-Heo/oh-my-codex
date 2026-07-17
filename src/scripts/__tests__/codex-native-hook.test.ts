@@ -12032,6 +12032,7 @@ exit 0
 				assert.equal(quotedRedirectWrite.outputJson?.decision, "block", command);
 			}
 
+			await mkdir(join(cwd, ".git"), { recursive: true });
 			const policySubdir = join(cwd, "nested-policy-cwd");
 			await mkdir(policySubdir, { recursive: true });
 			const previousOmxRootForPolicy = process.env.OMX_ROOT;
@@ -12131,6 +12132,35 @@ exit 0
 			} finally {
 				if (priorOmxRootForBox === undefined) delete process.env.OMX_ROOT;
 				else process.env.OMX_ROOT = priorOmxRootForBox;
+			}
+
+			const ancestorBox = join(cwd, "ancestor-box");
+			const boxedCheckout = join(ancestorBox, "worktree");
+			const ancestorStateDir = join(ancestorBox, ".omx", "state");
+			const ancestorSessionDir = join(ancestorStateDir, "sessions", "sess-di-ancestor-box");
+			await mkdir(boxedCheckout, { recursive: true });
+			await mkdir(ancestorSessionDir, { recursive: true });
+			await writeJson(join(ancestorStateDir, "session.json"), { session_id: "sess-di-ancestor-box", cwd: boxedCheckout });
+			await writeJson(join(ancestorSessionDir, "deep-interview-state.json"), {
+				mode: "deep-interview", active: true, current_phase: "intent-first", session_id: "sess-di-ancestor-box", workingDirectory: boxedCheckout,
+			});
+			await writeJson(join(ancestorSessionDir, "skill-active-state.json"), {
+				version: 1, active: true, skill: "deep-interview", phase: "planning", session_id: "sess-di-ancestor-box", workingDirectory: boxedCheckout,
+				active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-ancestor-box" }],
+			});
+			const priorOmxRootForAncestorBox = process.env.OMX_ROOT;
+			try {
+				process.env.OMX_ROOT = ancestorBox;
+				const ancestorBoxChildWrite = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse", cwd: boxedCheckout, session_id: "sess-di-ancestor-box",
+					thread_id: "agent-di-ancestor-box-child", agent_id: "agent-di-ancestor-box-child", tool_name: "Write",
+					tool_input: { file_path: "src/ancestor-box-bypass.ts", content: "export {};\n" },
+				}, { cwd: boxedCheckout });
+				assert.equal(ancestorBoxChildWrite.outputJson?.decision, "block");
+				assert.match(String(ancestorBoxChildWrite.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
+			} finally {
+				if (priorOmxRootForAncestorBox === undefined) delete process.env.OMX_ROOT;
+				else process.env.OMX_ROOT = priorOmxRootForAncestorBox;
 			}
 
 			for (const [name, toolInput] of [
