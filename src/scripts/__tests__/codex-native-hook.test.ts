@@ -12474,6 +12474,22 @@ exit 0
 					tool_input: { command: `patch "$OMX_TEAM_STATE_ROOT/sessions/sess-di-artifact/deep-interview-state.json"` },
 				}, { cwd: detachedWorkerCwd });
 				assert.equal(detachedPatchState.outputJson?.decision, "block");
+				const detachedProductPatch = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					session_id: "sess-di-artifact",
+					tool_name: "Bash",
+					tool_input: { command: "patch src/product.ts" },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedProductPatch.outputJson, null);
+				const detachedPatchMention = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					session_id: "sess-di-artifact",
+					tool_name: "Bash",
+					tool_input: { command: "printf '%s\\n' patch" },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedPatchMention.outputJson, null);
 				await symlink(stateDir, join(detachedWorkerCwd, "state-link"));
 				const detachedWorkerStateAliasWrite = await dispatchCodexNativeHook({
 					hook_event_name: "PreToolUse",

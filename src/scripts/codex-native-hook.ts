@@ -8877,7 +8877,6 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
   if (toolName === "mcp__omx_state__state_clear" || toolName === "mcp__omx_state__state_write") return true;
   if (mutationTransport === "unknown" || mutationTransport === "state") return true;
   if (toolName === "Bash") {
-    if (/\b(?:patch|ed|sponge|setfacl|setfattr|chattr)\b/i.test(command)) return true;
     if (collectOmxStateCommandOperations(command, "write").length > 0
       || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
     let effectiveCwd = cwd;
@@ -8886,6 +8885,22 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
       const words = tokenizeShellWords(segment);
       const commandIndex = findWrappedCommandPositionIndex(words, 0);
       const commandName = commandIndex === null ? "" : basename(words[commandIndex] ?? "").toLowerCase();
+      if (new Set(["patch", "ed", "sponge", "setfacl", "setfattr", "chattr"]).has(commandName)) {
+        const operands = words.slice(commandIndex! + 1)
+          .map((word) => shellWordLiteral(word))
+          .filter((word): word is string => Boolean(word) && !word.startsWith("-"));
+        if (operands.length === 0) {
+          if (targetIsProtectedOrAliased(effectiveCwd)) return true;
+          continue;
+        }
+        if (operands.some((target) => {
+          const expandedTarget = target.replace(/^\$\{?OMX_TEAM_STATE_ROOT\}?/, stateDir);
+          return targetIsProtectedOrAliased(isAbsolute(expandedTarget) ? expandedTarget : resolve(effectiveCwd, expandedTarget));
+        })) {
+          return true;
+        }
+        continue;
+      }
       if (commandName === "cd" || commandName === "pushd" || commandName === "popd") {
         const expectedLength = commandName === "popd" ? commandIndex! + 1 : commandIndex! + 2;
         if (words.length !== expectedLength) return true;
