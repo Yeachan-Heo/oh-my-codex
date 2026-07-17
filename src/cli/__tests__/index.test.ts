@@ -2756,6 +2756,10 @@ describe("project launch scope helpers", () => {
           'trusted_hash = "sha256:setup-owned"',
           "# End OMX-owned Codex hook trust state",
           "",
+          "# User-owned project trust source must remain external during launch repair.",
+          `[projects."${wd}"] # retained external ownership`,
+          'trust_level = "trusted"',
+          "",
           "# OMX-synced Codex project trust state (from runtime CODEX_HOME)",
           `[projects."${wd}"]`,
           'trust_level = "trusted"',
@@ -2793,6 +2797,13 @@ describe("project launch scope helpers", () => {
       );
       assert.ok(runtimeConfig.includes(`[projects."${wd}"]`));
       assert.ok(repairedProjectConfig.includes(`[projects."${wd}"]`));
+      assert.match(repairedProjectConfig, /User-owned project trust source must remain external/);
+      assert.match(repairedProjectConfig, new RegExp(`^${escapeRegExp(`[projects."${wd}"]`)} # retained external ownership$`, "m"));
+      assert.equal(
+        countMatches(repairedProjectConfig, new RegExp(`^${escapeRegExp(`[projects."${wd}"]`)}(?:\\s|$)`, "gm")),
+        1,
+        "launch repair must remove only the marker-owned duplicate before the runtime mirror is written",
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

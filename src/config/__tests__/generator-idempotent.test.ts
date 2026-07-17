@@ -15,9 +15,11 @@ import {
   hasExactOmxSeededBehavioralDefaultsPair,
   mergeConfig,
   repairConfigIfNeeded,
+  repairProjectScopeTrustStateForLaunch,
   stripExistingOmxBlocks,
   stripManagedCodexHookTrustState,
   stripOmxFeatureFlags,
+  syncProjectScopeTrustStateFromRuntime,
   upsertManagedCodexHookTrustState,
   stripOmxSeededBehavioralDefaults,
 } from "../generator.js";
@@ -32,6 +34,10 @@ import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../omx-first-party-mcp.js";
 /** Count occurrences of a pattern in text */
 function count(text: string, pattern: RegExp): number {
   return (text.match(pattern) ?? []).length;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function writeSetupGeneratedHookTrustFixture(wd: string): Promise<{
@@ -2702,6 +2708,367 @@ describe("config generator idempotency (#384)", () => {
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+});
+
+describe("project trust sync ownership reconciliation (#3199)", () => {
+  const markerStart = "# OMX-synced Codex project trust state (from runtime CODEX_HOME)";
+  const markerEnd = "# End OMX-synced Codex project trust state";
+
+  it("retains an equal external project family byte-for-byte and removes only its fenced duplicate", () => {
+    const key = "/tmp/외부.project";
+    const external = `[projects."${key}"] # retain this spelling\ntrust_level = "trusted"\n\n[projects."${key}".child]\nanswer = 42\n`;
+    const durable = `${external}\n${markerStart}\n[projects."${key}"]\ntrust_level = "trusted"\n\n[projects."${key}".child]\nanswer = 42\n${markerEnd}\n`;
+    const runtime = `[projects."${key}"]\ntrust_level = "trusted"\n\n[projects."${key}".child]\nanswer = 42\n`;
+
+    const synced = syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json");
+    assert.equal(synced, external);
+    assert.deepEqual(TOML.parse(synced), TOML.parse(external));
+    assert.equal(syncProjectScopeTrustStateFromRuntime(synced, runtime, "/tmp/hooks.json"), synced);
+    assert.equal(syncProjectScopeTrustStateFromRuntime(synced, runtime, "/tmp/hooks.json"), synced);
+  });
+
+  it("fails closed atomically for mismatched, nested, and ambiguous project source", () => {
+    const runtime = '[projects."/tmp/a"]\ntrust_level = "trusted"\n\n[projects."/tmp/b"]\ntrust_level = "trusted"\n';
+    const mismatch = '[projects."/tmp/a"]\ntrust_level = "untrusted"\n';
+    assert.equal(syncProjectScopeTrustStateFromRuntime(mismatch, runtime, "/tmp/hooks.json"), mismatch);
+    const nested = '[projects."/tmp/a"]\n[projects."/tmp/a".child]\nvalue = "x"\n';
+    assert.equal(syncProjectScopeTrustStateFromRuntime("", nested, "/tmp/hooks.json"), "");
+    const duplicateMarker = `${markerStart}\n${markerEnd}\n${markerStart}\n${markerEnd}\n`;
+    assert.equal(syncProjectScopeTrustStateFromRuntime(duplicateMarker, runtime, "/tmp/hooks.json"), duplicateMarker);
+  });
+
+  it("preserves BOM and hook-only marker state through launch repair", () => {
+    const hook = "/tmp/hooks.json:pre_tool_use:0:0";
+    const runtime = `[hooks.state."${hook}"]\ntrusted_hash = "sha256:ok"\n`;
+    const bom = `\uFEFF# non-ascii: 외부\r\n`;
+    const synced = syncProjectScopeTrustStateFromRuntime(bom, runtime, "/tmp/hooks.json");
+    assert.ok(synced.startsWith("\uFEFF# non-ascii: 외부\r\n"));
+    assert.ok(synced.includes(`${markerStart}\r\n`));
+    assert.doesNotThrow(() => TOML.parse(synced.slice(1)));
+    assert.equal(repairProjectScopeTrustStateForLaunch(synced, "/tmp/hooks.json"), synced);
+  });
+
+  it("preserves unrelated external tables and distinguishes quoted dotted keys from dotted paths", () => {
+    const target = "org.example/project";
+    const external = [
+      "# user-owned leading comment",
+      `[projects.'${target}']`,
+      'trust_level = "trusted" # user-owned trailing comment',
+      "",
+      '[projects."other.key"]',
+      'trust_level = "untrusted"',
+      "",
+      "[user.section]",
+      'note = "keep"',
+      "",
+    ].join("\n");
+    const runtime = `[projects."${target}"]\ntrust_level = "trusted"\n`;
+    const synced = syncProjectScopeTrustStateFromRuntime(external, runtime, "/tmp/hooks.json");
+    assert.equal(synced, external);
+    assert.equal((TOML.parse(synced) as { projects: Record<string, unknown> }).projects["other.key"] !== undefined, true);
+  });
+
+  it("normal sync removes semantically empty markers while launch repair leaves them untouched", () => {
+    const empty = `${markerStart}\n${markerEnd}\n`;
+    assert.equal(syncProjectScopeTrustStateFromRuntime(empty, "", "/tmp/hooks.json"), "\n");
+    const comments = `${markerStart}\n# OMX payload comment\n\n${markerEnd}\n`;
+    assert.equal(syncProjectScopeTrustStateFromRuntime(comments, "", "/tmp/hooks.json"), "\n");
+    assert.equal(repairProjectScopeTrustStateForLaunch(comments, "/tmp/hooks.json"), comments);
+    const hook = "/tmp/hooks.json:post_tool_use:0:0";
+    const runtime = `[hooks.state."${hook}"]\ntrusted_hash = "sha256:hook"\n`;
+    const hookOnly = syncProjectScopeTrustStateFromRuntime(comments, runtime, "/tmp/hooks.json");
+    assert.ok(hookOnly.includes(markerStart));
+    assert.match(hookOnly, new RegExp(`^\\[hooks\\.state\\."${escapeRegExp(hook)}"\\]$`, "m"));
+    assert.equal(syncProjectScopeTrustStateFromRuntime(hookOnly, runtime, "/tmp/hooks.json"), hookOnly);
+  });
+
+  it("keeps project and hook mutation atomic across runtime shape and multi-key failures", () => {
+    const hook = "/tmp/hooks.json:pre_tool_use:0:0";
+    const hookRuntime = `[hooks.state."${hook}"]\ntrusted_hash = "sha256:hook"\n`;
+    const nonRecord = `projects = "invalid"\n\n${hookRuntime}`;
+    assert.equal(syncProjectScopeTrustStateFromRuntime("# durable\n", nonRecord, "/tmp/hooks.json"), "# durable\n");
+    const mixed = `${hookRuntime}\n[projects."/safe"]\ntrust_level = "trusted"\n\n[projects."/unsafe"]\n[projects."/unsafe".child]\nvalue = "nested"\n`;
+    const durable = '[projects."/unsafe"]\ntrust_level = "untrusted"\n';
+    assert.equal(syncProjectScopeTrustStateFromRuntime(durable, mixed, "/tmp/hooks.json"), durable);
+    const absentProjects = syncProjectScopeTrustStateFromRuntime("", hookRuntime, "/tmp/hooks.json");
+    assert.match(absentProjects, /hooks\.state/);
+    const emptyProjects = syncProjectScopeTrustStateFromRuntime("", `projects = {}\n\n${hookRuntime}`, "/tmp/hooks.json");
+    assert.match(emptyProjects, /hooks\.state/);
+  });
+
+  it("accepts nested external retention but refuses nested rendering and malformed project forms", () => {
+    const nested = '[projects."/nested"]\ntrust_level = "trusted"\n\n[projects."/nested".child]\nvalue = "x"\n';
+    assert.equal(syncProjectScopeTrustStateFromRuntime(nested, nested, "/tmp/hooks.json"), nested);
+    assert.equal(syncProjectScopeTrustStateFromRuntime("", nested, "/tmp/hooks.json"), "");
+    for (const unsafe of [
+      'projects = { "/inline" = { trust_level = "trusted" } }\n',
+      '[projects]\n"/dotted".trust_level = "trusted"\n',
+      '[[projects."/array"]]\ntrust_level = "trusted"\n',
+      '[projects."/bad"\ntrust_level = "trusted"\n',
+    ]) {
+      assert.equal(syncProjectScopeTrustStateFromRuntime(unsafe, '[projects."/bad"]\ntrust_level = "trusted"\n', "/tmp/hooks.json"), unsafe);
+    }
+  });
+
+  it("fails closed for equal external state with parent-only dotted or inline nested marker bodies", () => {
+    const external = '[projects."/nested"]\nchild.value = "x"\n';
+    const runtime = '[projects."/nested"]\n[projects."/nested".child]\nvalue = "x"\n';
+    const inlineExternal = '[projects."/nested"]\nchild = { value = "x" }\n';
+    const inlineRuntime = '[projects."/nested"]\n[projects."/nested".child]\nvalue = "x"\n';
+    for (const [outside, source] of [
+      [external, external],
+      [inlineExternal, inlineExternal],
+    ]) {
+      const durable = `${outside}\n${markerStart}\n${source}${markerEnd}\n`;
+      assert.equal(
+        syncProjectScopeTrustStateFromRuntime(durable, source === external ? runtime : inlineRuntime, "/tmp/hooks.json"),
+        durable,
+      );
+      assert.equal(repairProjectScopeTrustStateForLaunch(durable, "/tmp/hooks.json"), durable);
+    }
+  });
+
+  it("fails closed for implicit nested runtime and external sources before any hook mutation", () => {
+    const hook = "/tmp/hooks.json:post_tool_use:0:0";
+    const hookRuntime = `[hooks.state."${hook}"]\ntrusted_hash = "sha256:hook"\n`;
+    const durable = '# durable bytes\n';
+    for (const runtime of [
+      '[projects."/dotted"]\nchild.value = "x"\n',
+      '[projects."/inline"]\nchild = { value = "x" }\n',
+    ]) {
+      assert.equal(
+        syncProjectScopeTrustStateFromRuntime(durable, `${runtime}\n${hookRuntime}`, "/tmp/hooks.json"),
+        durable,
+      );
+    }
+
+    for (const external of [
+      '[projects."/dotted"]\nchild.value = "x"\n',
+      '[projects."/inline"]\nchild = { value = "x" }\n',
+    ]) {
+      assert.equal(
+        syncProjectScopeTrustStateFromRuntime(external, `${external}\n${hookRuntime}`, "/tmp/hooks.json"),
+        external,
+      );
+    }
+  });
+
+  it("preserves managed marker headers and assignments with inline comments exactly", () => {
+    const hook = "/tmp/hooks.json:pre_tool_use:0:0";
+    const runtime = `[projects."/commented"]\ntrust_level = "trusted"\n\n[hooks.state."${hook}"]\ntrusted_hash = "sha256:hook"\n`;
+    for (const managedLine of [
+      '[projects."/commented"] # user-owned header comment',
+      'trust_level = "trusted" # user-owned assignment comment',
+    ]) {
+      const durable = `${markerStart}\n${managedLine}\n${managedLine.startsWith("[") ? 'trust_level = "trusted"' : '[projects."/commented"]'}\n${markerEnd}\n`;
+      assert.equal(syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json"), durable);
+      assert.equal(repairProjectScopeTrustStateForLaunch(durable, "/tmp/hooks.json"), durable);
+    }
+    const inlineMarker = `${markerStart} # user-owned marker comment\n${markerEnd}\n`;
+    assert.equal(syncProjectScopeTrustStateFromRuntime(inlineMarker, runtime, "/tmp/hooks.json"), inlineMarker);
+  });
+
+  it("fails closed rather than moving comments before or between table assignments", () => {
+    const durable = [
+      markerStart,
+      '[projects."/commented"]',
+      "# before trust level",
+      'trust_level = "trusted"',
+      "# between assignments",
+      'approval = "trusted"',
+      markerEnd,
+      "",
+    ].join("\n");
+    const runtime = '[projects."/commented"]\ntrust_level = "trusted"\napproval = "trusted"\n';
+
+    assert.equal(syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json"), durable);
+    assert.equal(repairProjectScopeTrustStateForLaunch(durable, "/tmp/hooks.json"), durable);
+  });
+
+  it("fails closed for noncanonical runtime and marker project source forms", () => {
+    const canonical = '[projects."/safe"]\ntrust_level = "trusted"\n';
+    const runtimeForms = [
+      'projects = { "/inline" = { trust_level = "trusted" } }\n',
+      '[projects]\n"/dotted".trust_level = "trusted"\n',
+      '[projects]\n"/implicit" = { trust_level = "trusted" }\n',
+    ];
+    for (const runtime of runtimeForms) {
+      assert.equal(syncProjectScopeTrustStateFromRuntime("# durable\n", runtime, "/tmp/hooks.json"), "# durable\n");
+    }
+    for (const payload of runtimeForms) {
+      const durable = `${markerStart}\n${payload}${markerEnd}\n`;
+      assert.equal(syncProjectScopeTrustStateFromRuntime(durable, canonical, "/tmp/hooks.json"), durable);
+    }
+    const malformed = `${markerStart}\n[projects."/bad"\ntrust_level = "trusted"\n${markerEnd}\n`;
+    const noncontiguous = '[projects."/safe"]\ntrust_level = "trusted"\n\n[user]\nkeep = true\n\n[projects."/safe".child]\nvalue = "x"\n';
+    const multiline = 'note = """\n[projects."/not-a-header"]\n"""\n';
+    assert.equal(syncProjectScopeTrustStateFromRuntime(malformed, canonical, "/tmp/hooks.json"), malformed);
+    assert.equal(syncProjectScopeTrustStateFromRuntime(noncontiguous, noncontiguous, "/tmp/hooks.json"), noncontiguous);
+    const multilineSynced = syncProjectScopeTrustStateFromRuntime(multiline, canonical, "/tmp/hooks.json");
+    assert.match(multilineSynced, /^note = """\n\[projects\."\/not-a-header"\]\n"""$/m);
+    assert.equal(syncProjectScopeTrustStateFromRuntime(multilineSynced, canonical, "/tmp/hooks.json"), multilineSynced);
+  });
+
+  it("preserves zero and multiple durable trailing newlines without accumulating separators", () => {
+    const runtime = '[projects."/eol"]\ntrust_level = "trusted"\n';
+    for (const trailingEols of ["", "\n\n\n", "\r\n\n\r\n"]) {
+      const durable = `# external${trailingEols}`;
+      const synced = syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json");
+      const replaced = syncProjectScopeTrustStateFromRuntime(synced, runtime, "/tmp/hooks.json");
+      const removed = syncProjectScopeTrustStateFromRuntime(replaced, "", "/tmp/hooks.json");
+      assert.equal(synced.match(/(?:\r\n|\n)*$/)?.[0], trailingEols);
+      assert.equal(replaced, synced);
+      assert.equal(removed, durable);
+    }
+  });
+
+  it("repairs an equal external-and-fenced project duplicate without moving external bytes", () => {
+    const external = '# before external\n[projects."/repair"]\ntrust_level = "trusted"\n';
+    const durable = `${external}\n${markerStart}\n[projects."/repair"]\ntrust_level = "trusted"\n${markerEnd}\n`;
+    const repaired = repairProjectScopeTrustStateForLaunch(durable, "/tmp/hooks.json");
+    assert.equal(repaired, external);
+    assert.doesNotThrow(() => TOML.parse(repaired));
+  });
+
+  it("preserves BOM and escaped project keys through second and third sync", () => {
+    const key = '__omx_project_sync_probe__\\"quoted';
+    const runtime = `[projects."${key.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]\ntrust_level = "trusted"\n`;
+    const first = syncProjectScopeTrustStateFromRuntime("\uFEFF# é\n", runtime, "/tmp/hooks.json");
+    const second = syncProjectScopeTrustStateFromRuntime(first, runtime, "/tmp/hooks.json");
+    const third = syncProjectScopeTrustStateFromRuntime(second, runtime, "/tmp/hooks.json");
+    const projects = (TOML.parse(third.slice(1)) as { projects: Record<string, unknown> }).projects;
+    assert.equal(second, first);
+    assert.equal(third, first);
+    assert.deepEqual(Object.keys(projects), [key]);
+    assert.equal(syncProjectScopeTrustStateFromRuntime("# x\uFEFF\n", runtime, "/tmp/hooks.json"), "# x\uFEFF\n");
+    assert.equal(syncProjectScopeTrustStateFromRuntime("\uFEFF\uFEFF# x\n", runtime, "/tmp/hooks.json"), "\uFEFF\uFEFF# x\n");
+  });
+  it("fails closed for unsupported marker tables and assignments", () => {
+    const runtime = '[projects."/safe"]\ntrust_level = "trusted"\n';
+    for (const unsupported of [
+      '[omx_unknown]\nvalue = true\n',
+      'unknown_managed_assignment = true\n',
+    ]) {
+      const durable = `${markerStart}\n${unsupported}${markerEnd}\n`;
+      assert.equal(syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json"), durable);
+      assert.equal(repairProjectScopeTrustStateForLaunch(durable, "/tmp/hooks.json"), durable);
+    }
+  });
+
+  it("fails closed for descendant-only and hook-interleaved marker project families", () => {
+    const hook = "/tmp/hooks.json:post_tool_use:0:0";
+    const external = [
+      '[projects."/safe"]',
+      'trust_level = "trusted"',
+      "",
+      '[projects."/safe".child]',
+      'value = "nested"',
+      "",
+    ].join("\n");
+    const runtime = `${external}[hooks.state."${hook}"]\ntrusted_hash = "sha256:hook"\n`;
+    const descendantOnly = `${external}${markerStart}\n[projects."/safe".child]\nvalue = "nested"\n${markerEnd}\n`;
+    const hookInterleaved = `${external}${markerStart}\n[projects."/safe"]\ntrust_level = "trusted"\n\n[hooks.state."${hook}"]\ntrusted_hash = "sha256:hook"\n\n[projects."/safe".child]\nvalue = "nested"\n${markerEnd}\n`;
+
+    for (const durable of [descendantOnly, hookInterleaved]) {
+      assert.equal(syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json"), durable);
+      assert.equal(repairProjectScopeTrustStateForLaunch(durable, "/tmp/hooks.json"), durable);
+    }
+  });
+
+  it("inserts new runtime project and hook tables before the trailing owned payload gap", () => {
+    const hook = "/tmp/hooks.json:post_tool_use:0:0";
+    const durable = [
+      markerStart,
+      '[projects."/existing"]',
+      'trust_level = "trusted"',
+      "# trailing owned gap",
+      "",
+      markerEnd,
+      "",
+    ].join("\n");
+    const runtime = [
+      '[projects."/existing"]',
+      'trust_level = "trusted"',
+      "",
+      '[projects."/new"]',
+      'trust_level = "trusted"',
+      "",
+      `[hooks.state."${hook}"]`,
+      'trusted_hash = "sha256:hook"',
+      "",
+    ].join("\n");
+    const expected = [
+      markerStart,
+      '[projects."/existing"]',
+      'trust_level = "trusted"',
+      '[projects."/new"]',
+      'trust_level = "trusted"',
+      `[hooks.state."${hook}"]`,
+      'trusted_hash = "sha256:hook"',
+      "# trailing owned gap",
+      "",
+      markerEnd,
+      "",
+    ].join("\n");
+
+    const synced = syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json");
+    assert.equal(synced, expected);
+    assert.equal(syncProjectScopeTrustStateFromRuntime(synced, runtime, "/tmp/hooks.json"), synced);
+  });
+
+  it("preserves owned payload gaps while removing first, middle, and last project duplicates", () => {
+    const hook = "/tmp/hooks.json:post_tool_use:0:0";
+    const external = [
+      '[projects."/first"]',
+      'trust_level = "trusted"',
+      "",
+      '[projects."/middle"]',
+      'trust_level = "trusted"',
+      "",
+      '[projects."/last"]',
+      'trust_level = "trusted"',
+      "",
+    ].join("\n");
+    const runtime = `${external}[hooks.state."${hook}"]\ntrusted_hash = "sha256:hook"\n`;
+    const durable = [
+      external,
+      markerStart,
+      "# before first",
+      '[projects."/first"]',
+      'trust_level = "trusted"',
+      "# between first and middle",
+      '[projects."/middle"]',
+      'trust_level = "trusted"',
+      "# between middle and hook",
+      `[hooks.state."${hook}"]`,
+      'trusted_hash = "sha256:hook"',
+      "# between hook and last",
+      '[projects."/last"]',
+      'trust_level = "trusted"',
+      "# after last",
+      markerEnd,
+      "",
+    ].join("\n");
+    const expected = [
+      external,
+      markerStart,
+      "# before first",
+      "# between first and middle",
+      "# between middle and hook",
+      `[hooks.state."${hook}"]`,
+      'trusted_hash = "sha256:hook"',
+      "# between hook and last",
+      "# after last",
+      markerEnd,
+      "",
+    ].join("\n");
+
+    const synced = syncProjectScopeTrustStateFromRuntime(durable, runtime, "/tmp/hooks.json");
+    assert.equal(synced, expected);
+    assert.equal(syncProjectScopeTrustStateFromRuntime(synced, runtime, "/tmp/hooks.json"), synced);
+    assert.doesNotThrow(() => TOML.parse(synced));
   });
 
 });
