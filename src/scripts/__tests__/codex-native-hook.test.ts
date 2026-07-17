@@ -12442,6 +12442,13 @@ exit 0
 					tool_input: { file_path: "src/detached-worker.ts", content: "export {};\n" },
 				}, { cwd: detachedWorkerCwd });
 				assert.equal(detachedWorkerProductWrite.outputJson, null);
+				const detachedWorkerStateClear = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd: detachedWorkerCwd,
+					tool_name: "mcp__omx_state__state_clear",
+					tool_input: { mode: "deep-interview", workingDirectory: cwd },
+				}, { cwd: detachedWorkerCwd });
+				assert.equal(detachedWorkerStateClear.outputJson?.decision, "block");
 			} finally {
 				for (const [key, value] of Object.entries({
 					OMX_TEAM_WORKER: previousTeamEnv.worker,
@@ -30700,6 +30707,13 @@ PY`,
       assert.equal(unofficialCamelCaseAgentId.outputJson?.decision, "block");
       assert.match(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
       assert.doesNotMatch(String(unofficialCamelCaseAgentId.outputJson?.reason ?? ""), /Main-root|PROVENANCE_DENIED/);
+      const leaderValuedCamelCaseAgentId = await dispatchBash(
+        "leader-valued-camel-case-agent-id",
+        { agentId: leaderThreadId },
+        "chmod --reference=.omx/state/session.json .omx/state/reference-copy",
+      );
+      assert.equal(leaderValuedCamelCaseAgentId.outputJson?.decision, "block");
+      assert.doesNotMatch(String(leaderValuedCamelCaseAgentId.outputJson?.reason ?? ""), /Main-root/);
 
       const agentTypeOnly = await dispatchWrite({ agent_type: "writer" });
       assert.equal(agentTypeOnly.outputJson?.decision, "block");

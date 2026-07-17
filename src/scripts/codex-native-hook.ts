@@ -3336,7 +3336,7 @@ function readPayloadThreadId(payload: CodexHookPayload): string {
 }
 
 function readPayloadAgentId(payload: CodexHookPayload): string {
-  return payloadAliasValues(payload, ["agent_id", "agentId"])[0] ?? "";
+  return safeString(payload.agent_id).trim();
 }
 interface PreToolUseSessionBinding {
   canonicalSessionId: string;
@@ -3348,8 +3348,11 @@ async function resolvePreToolUseSessionBinding(
   cwd: string,
   stateDir: string,
   payload: CodexHookPayload,
+  allowSharedTeamRoot = false,
 ): Promise<PreToolUseSessionBinding> {
-  const currentSession = await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
+  const currentSession = allowSharedTeamRoot
+    ? await readRootSessionStateFromStateDir(stateDir).catch(() => null)
+    : await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
   const canonicalSessionId = safeString(currentSession?.session_id).trim();
   const aliases = payloadAliasValues(payload, ["session_id", "sessionId"]);
   const knownAliases = new Set([
@@ -20051,7 +20054,17 @@ export async function dispatchCodexNativeHook(
       };
     }
   } else if (hookEventName === "PreToolUse") {
-    const sessionBinding = await resolvePreToolUseSessionBinding(policyCwd, stateDir, payload);
+    const identitylessTeamWorkerContext = !readPayloadAgentId(payload)
+      && !readPayloadThreadId(payload)
+      && !payloadHasOwnerIdentityClaim(payload)
+      && !hasSubagentThreadSpawnProvenance(payload)
+      && await hasAuthoritativeTeamWorkerContext(cwd);
+    const sessionBinding = await resolvePreToolUseSessionBinding(
+      policyCwd,
+      stateDir,
+      payload,
+      identitylessTeamWorkerContext,
+    );
     const payloadSessionId = readPayloadSessionId(payload);
     const rootPointerConflict = await readLiveRootSessionPointerConflict(stateDir, payloadSessionId);
     const mutationTransport = classifyPreToolUseMutationTransport(
@@ -20106,11 +20119,7 @@ export async function dispatchCodexNativeHook(
       ?? canonicalPlanningGuard;
     const preservesIdentitylessTeamWorkerExemption = sessionBinding.missing
       && !payloadHasConflictingIdentityAliases(payload)
-      && !readPayloadAgentId(payload)
-      && !readPayloadThreadId(payload)
-      && !payloadHasOwnerIdentityClaim(payload)
-      && !hasSubagentThreadSpawnProvenance(payload)
-      && await hasAuthoritativeTeamWorkerContext(cwd);
+      && identitylessTeamWorkerContext;
 
     if (
       guardedConductorState
