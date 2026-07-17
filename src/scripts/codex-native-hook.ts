@@ -4741,6 +4741,7 @@ const READ_ONLY_PRETOOLUSE_MCP_CONTRACT = {
   ],
   codeIntel: [
     "mcp__omx_code_intel__lsp_diagnostics",
+    "mcp__omx_code_intel__lsp_servers",
     "mcp__omx_code_intel__lsp_diagnostics_directory",
     "mcp__omx_code_intel__lsp_document_symbols",
     "mcp__omx_code_intel__lsp_workspace_symbols",
@@ -8886,19 +8887,12 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
       const commandIndex = findWrappedCommandPositionIndex(words, 0);
       const commandName = commandIndex === null ? "" : basename(words[commandIndex] ?? "").toLowerCase();
       if (new Set(["patch", "ed", "sponge", "setfacl", "setfattr", "chattr"]).has(commandName)) {
-        const operands = words.slice(commandIndex! + 1)
-          .map((word) => shellWordLiteral(word))
-          .filter((word): word is string => Boolean(word) && !word.startsWith("-"));
-        if (operands.length === 0) {
-          if (targetIsProtectedOrAliased(effectiveCwd)) return true;
-          continue;
-        }
-        if (operands.some((target) => {
-          const expandedTarget = target.replace(/^\$\{?OMX_TEAM_STATE_ROOT\}?/, stateDir);
-          return targetIsProtectedOrAliased(isAbsolute(expandedTarget) ? expandedTarget : resolve(effectiveCwd, expandedTarget));
-        })) {
-          return true;
-        }
+        if (commandName !== "patch") return true;
+        const operandWords = words.slice(commandIndex! + 1);
+        if (operandWords.length !== 1) return true;
+        const target = shellWordLiteral(operandWords[0] ?? "");
+        if (!target || /[$`*?\[\]{}]/.test(target)) return true;
+        if (targetIsProtectedOrAliased(isAbsolute(target) ? target : resolve(effectiveCwd, target))) return true;
         continue;
       }
       if (commandName === "cd" || commandName === "pushd" || commandName === "popd") {
