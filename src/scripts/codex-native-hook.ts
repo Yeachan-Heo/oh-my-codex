@@ -4108,6 +4108,8 @@ function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
     input.sourcePath,
     input.destination_path,
     input.destinationPath,
+    input.source,
+    input.destination,
     ...(Array.isArray(input.paths) ? input.paths : []),
   ];
   return [...new Set(candidates.map((candidate) => safeString(candidate).trim()).filter(Boolean))];

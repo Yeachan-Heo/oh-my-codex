@@ -1556,11 +1556,11 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
     symlinkSync(join(smokeCwd, 'src', 'dangling-target.ts'), join(smokeCwd, '.omx', 'state', 'inbox', 'dangling'));
     writeFileSync(
       join(smokeCwd, '.omx', 'state', 'session.json'),
-      JSON.stringify({ session_id: sessionId, native_session_id: leaderAgentId }),
+      JSON.stringify({ session_id: sessionId, native_session_id: leaderAgentId, cwd: smokeCwd }),
     );
     writeFileSync(
       join(stateDir, 'session.json'),
-      JSON.stringify({ session_id: sessionId, native_session_id: leaderAgentId }),
+      JSON.stringify({ session_id: sessionId, native_session_id: leaderAgentId, cwd: smokeCwd }),
     );
     writeFileSync(
       join(stateDir, 'subagent-tracking.json'),

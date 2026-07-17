@@ -11903,6 +11903,20 @@ exit 0
 				assert.equal(result.outputJson?.decision, "block", path);
 				assert.match(String(result.outputJson?.reason ?? ""), /Protected workflow state/);
 			}
+			for (const [source, destination] of [
+				[".omx/state/session.json", ".omx/state/session.saved"],
+				["src/session.json", ".omx/state/session.json"],
+			] as const) {
+				const result = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-filesystem-protected-state",
+					tool_name: "mcp__filesystem__move_file",
+					tool_input: { source, destination },
+				}, { cwd });
+				assert.equal(result.outputJson?.decision, "block", `${source} -> ${destination}`);
+				assert.match(String(result.outputJson?.reason ?? ""), /Protected workflow state/);
+			}
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
