@@ -4175,13 +4175,19 @@ PY`,
       assert.equal(foreignStop.outputJson?.stopReason, "session_pointer_unusable");
       assert.equal(existsSync(join(foreignCwd, ".omx", "state", "native-stop-state.json")), false);
 
+      const conflictingPointerPath = join(conflictingCwd, ".omx", "state", "session.json");
+      const conflictingPointerBeforeStop = await readFile(conflictingPointerPath, "utf-8");
       const unmatchedStop = await dispatchCodexNativeHook({
         hook_event_name: "Stop",
         cwd: conflictingCwd,
         session_id: "native-unmatched-stop-3138",
       }, { cwd: conflictingCwd });
-      assert.equal(unmatchedStop.outputJson?.decision, "block");
-      assert.equal(unmatchedStop.outputJson?.stopReason, "session_scope_unmatched");
+      assert.equal(unmatchedStop.outputJson, null);
+      assert.equal(await readFile(conflictingPointerPath, "utf-8"), conflictingPointerBeforeStop);
+      assert.equal(
+        existsSync(join(conflictingCwd, ".omx", "state", "sessions", "native-unmatched-stop-3138")),
+        false,
+      );
       assert.equal(existsSync(join(conflictingCwd, ".omx", "state", "native-stop-state.json")), false);
     } finally {
       if (typeof previousSessionId === "string") process.env.OMX_SESSION_ID = previousSessionId;
