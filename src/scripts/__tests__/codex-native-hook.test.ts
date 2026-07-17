@@ -16341,6 +16341,26 @@ exit 0
 			);
 			assert.equal(allowedModeFlagTerminal.outputJson, null);
 
+			const ralplanTerminalPayload = JSON.stringify({ active: false, current_phase: "complete", session_id: "sess-ralplan-input-file", workingDirectory: cwd });
+			for (const [name, command] of [
+				["node require", `node --require .omx/context/preload.cjs dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+				["node attached require", `node -r.omx/context/preload.cjs dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+				["node import", `node --import=.omx/context/preload.mjs dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+				["node loader", `node --loader .omx/context/loader.mjs dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+				["NODE_OPTIONS", `NODE_OPTIONS='--require .omx/context/preload.cjs' node dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+				["bun preload", `bun --preload .omx/context/preload.ts dist/cli/omx.js state write --mode ralplan --input '${ralplanTerminalPayload}' --json`],
+			] as const) {
+				const blockedRuntimePreload = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					session_id: "sess-ralplan-input-file",
+					tool_name: "Bash",
+					tool_use_id: `tool-ralplan-runtime-preload-${name}`,
+					tool_input: { command },
+				}, { cwd });
+				assert.equal(blockedRuntimePreload.outputJson?.decision, "block", name);
+			}
+
 			const blockedTerminalThenImplementationWrite =
 				await dispatchCodexNativeHook(
 					{

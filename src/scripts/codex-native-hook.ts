@@ -6243,6 +6243,26 @@ function unwrapOmxStateTransportCommandOnce(command: string): string | null {
   return null;
 }
 
+function omxStateTransportHasUnsafeRuntimeWrapper(command: string): boolean {
+  let current = normalizeShellLineContinuations(command).trim();
+  for (let passes = 0; passes < 8; passes += 1) {
+    const words = tokenizeConductorShellWords(current);
+    const runtimeIndex = words.findIndex((word) => {
+      const commandName = commandNameFromShellWord(word);
+      return isNodeInterpreterCommandWord(commandName) || commandName === "bun" || commandName === "tsx";
+    });
+    if (runtimeIndex >= 0) {
+      const commandName = commandNameFromShellWord(words[runtimeIndex] ?? "");
+      if (nodeCommandHasPreloadExecution(words, runtimeIndex)) return true;
+      return !isOmxCliEntryPath(words[runtimeIndex + 1] ?? "", commandName);
+    }
+    const next = unwrapOmxStateTransportCommandOnce(current);
+    if (!next || next === current) return false;
+    current = next.trim();
+  }
+  return true;
+}
+
 function canonicalizeOmxStateTransportCommand(command: string): string {
   let current = normalizeShellLineContinuations(command).trim();
   for (let passes = 0; passes < 8; passes += 1) {
@@ -8276,6 +8296,7 @@ function hasExistingDurableDeepInterviewHandoffEvidence(cwd: string): boolean {
 }
 
 function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, authoritativeSessionId: string): boolean {
+  if (omxStateTransportHasUnsafeRuntimeWrapper(command)) return false;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
   if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
@@ -8508,6 +8529,7 @@ function isAllowedRalplanTerminalStateWriteCommand(
   activeState: Record<string, unknown>,
   sessionId: string,
 ): boolean {
+  if (omxStateTransportHasUnsafeRuntimeWrapper(command)) return false;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
   if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
