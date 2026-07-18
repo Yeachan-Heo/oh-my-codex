@@ -132,6 +132,26 @@ async function writeLiveNativeMappedSessionState(
 	}
 }
 
+async function writeLiveNativeSessionOwnerSidecar(
+	cwd: string,
+	stateDir: string,
+	sessionId: string,
+): Promise<void> {
+	const selected = JSON.parse(
+		await readFile(join(stateDir, "session.json"), "utf-8"),
+	) as Record<string, unknown>;
+	await writeJson(
+		join(stateDir, "sessions", sessionId, "session-owner.json"),
+		{
+			...selected,
+			session_id: sessionId,
+			native_session_id: sessionId,
+			started_at: new Date().toISOString(),
+			cwd,
+		},
+	);
+}
+
 async function writeSessionSkillActiveState(
 	stateDir: string,
 	sessionId: string,
@@ -4193,6 +4213,113 @@ PY`,
       if (typeof previousPath === "string") process.env.PATH = previousPath;
       else delete process.env.PATH;
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("authorizes a live unmatched Stop from its exact session owner sidecar without changing the selected pointer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-sidecar-stop-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const selectedSessionId = "native-selected-owner";
+      const independentSessionId = "native-independent-owner";
+      await writeSessionStart(cwd, selectedSessionId, {
+        nativeSessionId: selectedSessionId,
+        pid: process.pid,
+      });
+      await writeLiveNativeSessionOwnerSidecar(cwd, stateDir, independentSessionId);
+      const pointerBefore = await readFile(join(stateDir, "session.json"), "utf-8");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: independentSessionId,
+          thread_id: independentSessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the unmatched sidecar session workflow as the Stop blocker", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-sidecar-skill-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const selectedSessionId = "native-selected-skill";
+      const independentSessionId = "native-independent-skill";
+      await writeSessionStart(cwd, selectedSessionId, {
+        nativeSessionId: selectedSessionId,
+        pid: process.pid,
+      });
+      await writeLiveNativeSessionOwnerSidecar(cwd, stateDir, independentSessionId);
+      await writeSessionSkillActiveState(stateDir, independentSessionId, "ralplan", "planning");
+      await writeJson(
+        join(stateDir, "sessions", independentSessionId, "ralplan-state.json"),
+        {
+          active: true,
+          current_phase: "planning",
+          session_id: independentSessionId,
+          workingDirectory: cwd,
+        },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: independentSessionId,
+          thread_id: independentSessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.stopReason ?? ""), /^skill_ralplan_planning_/);
+      assert.notEqual(result.outputJson?.stopReason, "session_scope_unmatched");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a live parent sidecar when a nested selected pointer is stale-dead", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-sidecar-stale-root-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const parentSessionId = "native-live-parent";
+      await writeSessionStart(cwd, parentSessionId, {
+        nativeSessionId: parentSessionId,
+        pid: process.pid,
+      });
+      await writeLiveNativeSessionOwnerSidecar(cwd, stateDir, parentSessionId);
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: "native-dead-nested",
+        native_session_id: "native-dead-nested",
+        started_at: "2026-01-01T00:00:00.000Z",
+        cwd,
+        pid: 999_999,
+        platform: process.platform,
+      });
+      const pointerBefore = await readFile(join(stateDir, "session.json"), "utf-8");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: parentSessionId,
+          thread_id: parentSessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 
