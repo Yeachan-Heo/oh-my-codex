@@ -4356,6 +4356,48 @@ PY`,
     );
   });
 
+  it("lets exact-session terminal run-state shadow stale unmatched mode state", async () => {
+    await withIndependentStopFixture(
+      "terminal-run-state",
+      async ({ cwd, stateDir, sessionId }) => {
+        const modePath = join(
+          stateDir,
+          "sessions",
+          sessionId,
+          "autopilot-state.json",
+        );
+        const runPath = join(
+          stateDir,
+          "sessions",
+          sessionId,
+          "run-state.json",
+        );
+        await writeJson(modePath, {
+          active: true,
+          mode: "autopilot",
+          current_phase: "executing",
+          session_id: sessionId,
+          workingDirectory: cwd,
+        });
+        await writeJson(runPath, {
+          version: 1,
+          active: false,
+          mode: "autopilot",
+          outcome: "finish",
+          lifecycle_outcome: "finished",
+          current_phase: "complete",
+          completed_at: "2026-07-18T00:00:00.000Z",
+          updated_at: "2026-07-18T00:00:00.000Z",
+        });
+        return [modePath, runPath];
+      },
+      (result) => {
+        assert.equal(result.omxEventName, "stop");
+        assert.equal(result.outputJson, null);
+      },
+    );
+  });
+
   it("keeps invalid unmatched Stop session ids fail-closed", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-invalid-unmatched-stop-"));
     try {
