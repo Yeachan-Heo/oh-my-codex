@@ -344,6 +344,23 @@ function parseSingleJsonStdout(stdout: string): Record<string, unknown> {
   return JSON.parse(trimmed) as Record<string, unknown>;
 }
 
+const OVERSIZED_STDIN_SYSTEM_MESSAGE = 'OMX native hook rejected oversized stdin JSON before parsing; maxBytes=1048576.';
+
+function buildExactBytePluginHookPayload(eventName: 'PreToolUse' | 'PostToolUse', sessionId: string, byteLength: number): string {
+  const base = JSON.stringify({ hook_event_name: eventName, session_id: sessionId, unicode: '😀é', padding: '' });
+  const paddingBytes = byteLength - Buffer.byteLength(base, 'utf8');
+  assert.ok(paddingBytes >= 0);
+  const payload = JSON.stringify({ hook_event_name: eventName, session_id: sessionId, unicode: '😀é', padding: 'x'.repeat(paddingBytes) });
+  assert.equal(Buffer.byteLength(payload, 'utf8'), byteLength);
+  assert.notEqual(payload.length, Buffer.byteLength(payload, 'utf8'));
+  return payload;
+}
+
+function oversizedToolHookOutput(eventName: 'PreToolUse' | 'PostToolUse'): Record<string, unknown> {
+  return eventName === 'PreToolUse'
+    ? { systemMessage: OVERSIZED_STDIN_SYSTEM_MESSAGE, hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: OVERSIZED_STDIN_SYSTEM_MESSAGE } }
+    : { continue: false, stopReason: 'native_hook_stdin_oversized', systemMessage: OVERSIZED_STDIN_SYSTEM_MESSAGE };
+}
 async function withPluginCacheCopy<T>(run: (cachePluginRoot: string, cacheRoot: string) => Promise<T>): Promise<T> {
   const cacheRoot = await mkdtemp(join(tmpdir(), 'omx-plugin-hook-cache-'));
   const cachePluginRoot = join(cacheRoot, pluginName, 'local');
@@ -533,6 +550,17 @@ describe('official Codex plugin layout', () => {
       assert.equal(oversizedUserPrompt.status, 0, oversizedUserPrompt.stderr || oversizedUserPrompt.stdout);
       assert.equal(oversizedUserPrompt.stdout, '');
       await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+      for (const eventName of ['PreToolUse', 'PostToolUse'] as const) {
+        const result = runPluginNativeHook(
+          cachePluginRoot,
+          buildExactBytePluginHookPayload(eventName, `plain-${eventName}`, 1024 * 1024 + 1),
+          { OMX_ENTRY_PATH: '', OMX_CODEX_LAUNCH_ID: '', OMX_NATIVE_HOOK_COMMAND: commandPath },
+        );
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.equal(result.stdout, '');
+        await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+      }
+
 
       const oversizedStop = runPluginNativeHook(
         cachePluginRoot,
@@ -601,6 +629,16 @@ describe('official Codex plugin layout', () => {
       assert.equal(nestedPlainCodex.status, 0, nestedPlainCodex.stderr || nestedPlainCodex.stdout);
       assert.equal(nestedPlainCodex.stdout, '');
       await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+      for (const eventName of ['PreToolUse', 'PostToolUse'] as const) {
+        const result = runPluginNativeHook(
+          cachePluginRoot,
+          buildExactBytePluginHookPayload(eventName, `nested-${eventName}`, 1024 * 1024 + 1),
+          inheritedEnv,
+        );
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.equal(result.stdout, '');
+        await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+      }
     });
   });
 
@@ -1211,6 +1249,59 @@ head -c 1100000 /dev/zero | tr '\0' x
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    });
+  });
+
+  it('delegates exact UTF-8 under-limit plugin tool-hook input and locally rejects only oversized owned input', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const capturePath = join(cacheRoot, 'captured-stdin.json');
+      const sentinelPath = join(cacheRoot, 'delegated.txt');
+      const commandPath = join(cacheRoot, 'capture-tool-hook.mjs');
+      const launcherPath = join(cacheRoot, process.platform === 'win32' ? 'capture-tool-hook.cmd' : 'capture-tool-hook.sh');
+      await writeFile(commandPath, `import { writeFileSync } from 'node:fs';
+const chunks = [];
+process.stdin.on('data', (chunk) => chunks.push(chunk));
+process.stdin.on('end', () => {
+  writeFileSync(process.env.CAPTURE_PATH, Buffer.concat(chunks));
+  writeFileSync(process.env.SENTINEL_PATH, 'delegated');
+  process.stdout.write('{}\\n');
+});
+`, 'utf-8');
+      if (process.platform === 'win32') {
+        await writeFile(launcherPath, `@echo off\r\n"${process.execPath}" "${commandPath}" %*\r\n`, 'utf-8');
+      } else {
+        await writeFile(launcherPath, `#!/bin/sh\nexec "${process.execPath}" "${commandPath}" "$@"\n`, 'utf-8');
+        await chmod(launcherPath, 0o755);
+      }
+      for (const eventName of ['PreToolUse', 'PostToolUse'] as const) {
+        const sessionId = `owned-${eventName.toLowerCase()}-😀é`;
+        for (const byteLength of [1024 * 1024 - 1, 1024 * 1024]) {
+          const input = buildExactBytePluginHookPayload(eventName, sessionId, byteLength);
+          const result = runPluginNativeHook(cachePluginRoot, input, {
+            OMX_CODEX_LAUNCH_ID: `owned-${eventName}-${byteLength}`,
+            OMX_NATIVE_HOOK_COMMAND: launcherPath,
+            CAPTURE_PATH: capturePath,
+            SENTINEL_PATH: sentinelPath,
+          });
+          assert.equal(result.status, 0, result.stderr || result.stdout);
+          assert.equal(result.stdout, '{}\n');
+          assert.deepEqual(await readFile(capturePath), Buffer.from(input));
+          await rm(capturePath, { force: true });
+          await rm(sentinelPath, { force: true });
+        }
+        const input = buildExactBytePluginHookPayload(eventName, sessionId, 1024 * 1024 + 1);
+        const result = runPluginNativeHook(cachePluginRoot, input, {
+          OMX_CODEX_LAUNCH_ID: `owned-oversized-${eventName}`,
+          OMX_NATIVE_HOOK_COMMAND: launcherPath,
+          CAPTURE_PATH: capturePath,
+          SENTINEL_PATH: sentinelPath,
+        });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.equal(result.stderr, '');
+        assert.deepEqual(parseSingleJsonStdout(result.stdout), oversizedToolHookOutput(eventName));
+        await assert.rejects(readFile(sentinelPath, 'utf-8'), { code: 'ENOENT' });
+        await assert.rejects(readFile(capturePath), { code: 'ENOENT' });
+      }
     });
   });
 

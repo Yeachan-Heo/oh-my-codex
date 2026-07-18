@@ -241,6 +241,25 @@ function writeOversizedStopNoop() {
   process.exitCode = 0;
 }
 
+function writeOversizedToolHookOutput(eventName) {
+  const systemMessage = 'OMX native hook rejected oversized stdin JSON before parsing; maxBytes=1048576.';
+  const output = eventName === 'PreToolUse'
+    ? {
+      systemMessage,
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: systemMessage,
+      },
+    }
+    : {
+      continue: false,
+      stopReason: 'native_hook_stdin_oversized',
+      systemMessage,
+    };
+  process.stdout.write(`${JSON.stringify(output)}\n`);
+  process.exitCode = 0;
+}
 function writeCompactFallback() {
   process.exitCode = 0;
 }
@@ -438,6 +457,11 @@ async function main() {
         return;
       }
       writeOversizedStopNoop();
+      return;
+    }
+    const eventName = extractTopLevelHookEventName(input.toString('utf8'));
+    if (eventName === 'PreToolUse' || eventName === 'PostToolUse') {
+      writeOversizedToolHookOutput(eventName);
       return;
     }
     console.error(`[oh-my-codex] ${message}`);

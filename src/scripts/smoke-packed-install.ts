@@ -1508,6 +1508,43 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       });
       validateHookStdout(eventName, result.stdout as string);
     }
+    const pluginHookScript = join(packageRoot, 'plugins', 'oh-my-codex', 'hooks', 'codex-native-hook.mjs');
+    const pluginChildScript = join(smokeCwd, 'packed-plugin-oversized-child.mjs');
+    const pluginLauncher = join(smokeCwd, process.platform === 'win32' ? 'packed-plugin-oversized.cmd' : 'packed-plugin-oversized.sh');
+    writeFileSync(pluginChildScript, `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.OMX_PLUGIN_SENTINEL, 'delegated');\nprocess.stdout.write('{}\\n');\n`);
+    if (process.platform === 'win32') {
+      writeFileSync(pluginLauncher, `@echo off\r\n"${process.execPath}" "${pluginChildScript}" %*\r\n`);
+    } else {
+      writeFileSync(pluginLauncher, `#!/bin/sh\nexec "${process.execPath}" "${pluginChildScript}" "$@"\n`, { mode: 0o755 });
+    }
+    for (const eventName of ['PreToolUse', 'PostToolUse'] as const) {
+      const launchId = eventName === 'PreToolUse' ? 'packed-plugin-oversized-pre' : 'packed-plugin-oversized-post';
+      const sessionId = `${launchId}-session`;
+      const sentinel = join(smokeCwd, `${launchId}.sentinel`);
+      const base = JSON.stringify({ hook_event_name: eventName, session_id: sessionId, unicode: '😀é', padding: '' });
+      const input = JSON.stringify({ hook_event_name: eventName, session_id: sessionId, unicode: '😀é', padding: 'x'.repeat(1_048_577 - Buffer.byteLength(base, 'utf8')) });
+      if (Buffer.byteLength(input, 'utf8') !== 1_048_577 || input.length === Buffer.byteLength(input, 'utf8')) {
+        throw new Error(`packed plugin ${eventName} oversized fixture did not prove UTF-8 byte sizing`);
+      }
+      const result = run(process.execPath, [realpathSync(pluginHookScript)], {
+        cwd: smokeCwd,
+        env: {
+          ...process.env,
+          OMX_ENTRY_PATH: join(packageRoot, 'dist', 'cli', 'omx.js'),
+          OMX_CODEX_LAUNCH_ID: launchId,
+          OMX_NATIVE_HOOK_COMMAND: pluginLauncher,
+          OMX_PLUGIN_SENTINEL: sentinel,
+        },
+        input,
+      });
+      const systemMessage = 'OMX native hook rejected oversized stdin JSON before parsing; maxBytes=1048576.';
+      const expected = eventName === 'PreToolUse'
+        ? { systemMessage, hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: systemMessage } }
+        : { continue: false, stopReason: 'native_hook_stdin_oversized', systemMessage };
+      if (result.status !== 0 || String(result.stderr) !== '' || String(result.stdout) !== `${JSON.stringify(expected)}\n` || existsSync(sentinel)) {
+        throw new Error(`packed plugin ${eventName} oversized stdin did not return the native-equivalent local response without delegation`);
+      }
+    }
     for (const input of [
       '{"hook_event_name":"PreToolUse",',
       `{"hook_event_name":"PreToolUse","transcript":"${'x'.repeat(1_048_577)}"}`,

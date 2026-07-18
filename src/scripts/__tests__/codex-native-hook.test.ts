@@ -130,6 +130,25 @@ function runNativeHookCliResult(
 	});
 }
 
+const OVERSIZED_STDIN_SYSTEM_MESSAGE = "OMX native hook rejected oversized stdin JSON before parsing; maxBytes=1048576.";
+
+function buildExactByteHookPayload(eventName: "PreToolUse" | "PostToolUse", byteLength: number): string {
+	const base = JSON.stringify({
+		hook_event_name: eventName,
+		session_id: `native-${eventName.toLowerCase()}-😀é`,
+		padding: "",
+	});
+	const paddingBytes = byteLength - Buffer.byteLength(base, "utf8");
+	assert.ok(paddingBytes >= 0);
+	const payload = JSON.stringify({
+		hook_event_name: eventName,
+		session_id: `native-${eventName.toLowerCase()}-😀é`,
+		padding: "x".repeat(paddingBytes),
+	});
+	assert.equal(Buffer.byteLength(payload, "utf8"), byteLength);
+	assert.notEqual(payload.length, Buffer.byteLength(payload, "utf8"));
+	return payload;
+}
 async function writeJson(path: string, value: unknown): Promise<void> {
 	await mkdir(dirname(path), { recursive: true }).catch(() => {});
 	await writeFile(path, JSON.stringify(value, null, 2));
@@ -2101,6 +2120,34 @@ PY`,
 			assert.equal(existsSync(join(cwd, ".omx", "logs")), false);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("accepts exact UTF-8 byte-limit PreToolUse and PostToolUse payloads and rejects only larger input", () => {
+		for (const eventName of ["PreToolUse", "PostToolUse"] as const) {
+			for (const byteLength of [MAX_NATIVE_STDIN_JSON_BYTES - 1, MAX_NATIVE_STDIN_JSON_BYTES]) {
+				const result = runNativeHookCliResult(buildExactByteHookPayload(eventName, byteLength));
+				assert.equal(result.status, 0, result.stderr || result.stdout);
+				assert.doesNotMatch(result.stdout, /native_hook_stdin_oversized/);
+			}
+			const result = runNativeHookCliResult(buildExactByteHookPayload(eventName, MAX_NATIVE_STDIN_JSON_BYTES + 1));
+			assert.equal(result.status, 0, result.stderr || result.stdout);
+			assert.equal(result.stderr, "");
+			const expected = eventName === "PreToolUse"
+				? {
+					systemMessage: OVERSIZED_STDIN_SYSTEM_MESSAGE,
+					hookSpecificOutput: {
+						hookEventName: "PreToolUse",
+						permissionDecision: "deny",
+						permissionDecisionReason: OVERSIZED_STDIN_SYSTEM_MESSAGE,
+					},
+				}
+				: {
+					continue: false,
+					stopReason: "native_hook_stdin_oversized",
+					systemMessage: OVERSIZED_STDIN_SYSTEM_MESSAGE,
+				};
+			assert.deepEqual(parseSingleJsonStdout(result.stdout), expected);
 		}
 	});
 
