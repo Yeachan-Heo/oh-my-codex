@@ -20,11 +20,13 @@ import {
   readSessionPointer,
   readSessionState,
   readUsableSessionState,
+  readNativeSessionOwner,
   reconcileNativeSessionStart,
   recoverSessionPointerLock,
   resetSessionMetrics,
   resolveSessionPointerContext,
   writeSessionEnd,
+  writeNativeSessionOwner,
   updateDetachedSessionMetadata,
   writeSessionStart,
   type LaunchSessionBinding,
@@ -1504,6 +1506,238 @@ describe('session pointer transaction', () => {
         const persisted = await readSessionState(cwd);
         assert.equal(persisted?.session_id, 'native-first');
         assert.equal(persisted?.owner_omx_session_id, 'omx-owner');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps native session owner sidecars isolated and rejects live cross-process reuse', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-sidecar-'));
+    try {
+      await withPointerDependencies({ probePid: () => 'alive' }, async () => {
+        const first = await writeNativeSessionOwner(
+          cwd,
+          'native-owner-a',
+          { pid: 11, platform: 'win32' },
+        );
+        const second = await writeNativeSessionOwner(
+          cwd,
+          'native-owner-b',
+          { pid: 22, platform: 'win32' },
+        );
+        assert.equal(first.pid, 11);
+        assert.equal(second.pid, 22);
+        const firstPath = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-a',
+          'session-owner.json',
+        );
+        const secondPath = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-b',
+          'session-owner.json',
+        );
+        assert.equal(
+          (JSON.parse(await readFile(firstPath, 'utf-8')) as SessionState).pid,
+          11,
+        );
+        assert.equal(
+          (JSON.parse(await readFile(secondPath, 'utf-8')) as SessionState).pid,
+          22,
+        );
+        await writeNativeSessionOwner(cwd, 'native-owner-current', {
+          pid: process.pid,
+        });
+        assert.equal(
+          (await readNativeSessionOwner(cwd, 'native-owner-current'))?.pid,
+          process.pid,
+        );
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-a',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects owner sidecars recorded for another platform', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-platform-'));
+    try {
+      const ownerDir = join(
+        cwd,
+        '.omx',
+        'state',
+        'sessions',
+        'native-owner-platform',
+      );
+      await mkdir(ownerDir, { recursive: true });
+      const ownerPath = join(ownerDir, 'session-owner.json');
+      const forgedPlatform: NodeJS.Platform = process.platform === 'win32'
+        ? 'darwin'
+        : 'win32';
+      await writeFile(ownerPath, JSON.stringify({
+        session_id: 'native-owner-platform',
+        native_session_id: 'native-owner-platform',
+        started_at: new Date().toISOString(),
+        cwd,
+        pid: process.pid,
+        platform: forgedPlatform,
+      }), 'utf-8');
+      const before = await readFile(ownerPath, 'utf-8');
+
+      assert.equal(await readNativeSessionOwner(cwd, 'native-owner-platform'), null);
+      await assert.rejects(
+        writeNativeSessionOwner(cwd, 'native-owner-platform', {
+          pid: process.pid,
+        }),
+        (error: unknown) => isSessionPointerLaunchAbort(error)
+          && error.code === 'session_pointer_owner_conflict',
+      );
+      assert.equal(await readFile(ownerPath, 'utf-8'), before);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces only stale-dead owner evidence and preserves malformed evidence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-recovery-'));
+    try {
+      await withPointerDependencies({
+        probePid: (pid) => pid === 11 ? 'dead' : 'alive',
+      }, async () => {
+        await writeNativeSessionOwner(
+          cwd,
+          'native-owner-recovery',
+          { pid: 11, platform: 'win32' },
+        );
+        const recovered = await writeNativeSessionOwner(
+          cwd,
+          'native-owner-recovery',
+          { pid: 22, platform: 'win32' },
+        );
+        assert.equal(recovered.pid, 22);
+
+        const malformedDir = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-malformed',
+        );
+        await mkdir(malformedDir, { recursive: true });
+        const malformedPath = join(malformedDir, 'session-owner.json');
+        await writeFile(malformedPath, '{ malformed', 'utf-8');
+        assert.equal(await readNativeSessionOwner(cwd, 'native-owner-malformed'), null);
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-malformed',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_unusable'
+            && error.pointerStatus === 'malformed',
+        );
+
+        const forgedDir = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-forged',
+        );
+        await mkdir(forgedDir, { recursive: true });
+        const forgedPath = join(forgedDir, 'session-owner.json');
+        await writeFile(forgedPath, JSON.stringify({
+          session_id: 'native-owner-other',
+          native_session_id: 'native-owner-other',
+          started_at: new Date().toISOString(),
+          cwd,
+          pid: 22,
+          platform: 'win32',
+        }), 'utf-8');
+        const forgedBefore = await readFile(forgedPath, 'utf-8');
+        assert.equal(await readNativeSessionOwner(cwd, 'native-owner-forged'), null);
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-forged',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+        assert.equal(await readFile(forgedPath, 'utf-8'), forgedBefore);
+
+        const missingCwdDir = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-missing-cwd',
+        );
+        await mkdir(missingCwdDir, { recursive: true });
+        const missingCwdPath = join(missingCwdDir, 'session-owner.json');
+        await writeFile(missingCwdPath, JSON.stringify({
+          session_id: 'native-owner-missing-cwd',
+          native_session_id: 'native-owner-missing-cwd',
+          started_at: new Date().toISOString(),
+          pid: 22,
+          platform: 'win32',
+        }), 'utf-8');
+        const missingCwdBefore = await readFile(missingCwdPath, 'utf-8');
+        assert.equal(await readNativeSessionOwner(cwd, 'native-owner-missing-cwd'), null);
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-missing-cwd',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+        assert.equal(await readFile(missingCwdPath, 'utf-8'), missingCwdBefore);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects cross-process native reconciliation while preserving the live selected pointer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-cross-process-selected-'));
+    try {
+      await withPointerDependencies({ probePid: () => 'alive' }, async () => {
+        await writeSessionStart(cwd, 'native-selected-a', {
+          nativeSessionId: 'native-selected-a',
+          pid: 11,
+          platform: 'win32',
+        });
+        const context = resolveSessionPointerContext(cwd);
+        const before = await readFile(context.sessionPath, 'utf-8');
+        await assert.rejects(
+          reconcileNativeSessionStart(
+            cwd,
+            'native-selected-b',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+        assert.equal(await readFile(context.sessionPath, 'utf-8'), before);
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });

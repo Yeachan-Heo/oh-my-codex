@@ -218,6 +218,7 @@ export interface BoundFinalizationReport {
 }
 
 const SESSION_FILE = 'session.json';
+const SESSION_OWNER_FILE = 'session-owner.json';
 const HISTORY_FILE = 'session-history.jsonl';
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SESSION_POINTER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
@@ -247,6 +248,30 @@ export function resolveSessionPointerContext(cwd: string): SessionPointerContext
     rootSource,
     sessionPath: pointerPath,
     lockPath: `${pointerPath}.lock`,
+  };
+}
+
+function resolveNativeSessionOwnerContext(
+  cwd: string,
+  nativeSessionId: string,
+): SessionPointerContext {
+  const root = resolveSessionPointerContext(cwd);
+  const normalized = normalizeSessionId(nativeSessionId);
+  if (!normalized) {
+    throw resolvedAbort(root, {
+      code: 'session_pointer_io_failure',
+      operation: 'pointer-classify',
+      lockPath: root.lockPath,
+      reason: 'A valid native session ID is required for owner evidence.',
+    });
+  }
+  const baseStateDir = join(root.baseStateDir, 'sessions', normalized);
+  const sessionPath = join(baseStateDir, SESSION_OWNER_FILE);
+  return {
+    ...root,
+    baseStateDir,
+    sessionPath,
+    lockPath: `${sessionPath}.lock`,
   };
 }
 
@@ -2152,6 +2177,77 @@ export function finalizeBoundOnce(
   return finalization;
 }
 
+
+function nativeSessionOwnerTransition(
+  nativeSessionId: string,
+  options: SessionStartOptions,
+): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
+  return (pointer, context) => {
+    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+      throw unusablePointerAbort(context, nativeSessionId, pointer);
+    }
+    const pid = resolvePid(options);
+    const platform = options.platform ?? process.platform;
+    const linuxIdentity = sessionIdentityFor(pid, platform);
+    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    if (existing && (
+      normalizeSessionId(existing.session_id) !== nativeSessionId
+      || normalizeSessionId(existing.native_session_id) !== nativeSessionId
+      || existing.platform !== platform
+      || !isSessionStateAuthoritativeForCwd(existing, context.cwd)
+      || !sameProcessIdentity(existing, pid, platform, linuxIdentity)
+    )) {
+      throw ownerConflictAbort(context, nativeSessionId, existing);
+    }
+    return createSessionState(context.cwd, context.baseStateDir, nativeSessionId, pid, platform, linuxIdentity, {
+      nativeSessionId,
+      startedAt: existing?.started_at,
+      tmuxSessionName: options.tmuxSessionName ?? existing?.tmux_session_name,
+      tmuxPaneId: options.tmuxPaneId ?? existing?.tmux_pane_id,
+    });
+  };
+}
+
+export async function writeNativeSessionOwner(
+  cwd: string,
+  nativeSessionId: string,
+  options: SessionStartOptions = {},
+): Promise<SessionState> {
+  const normalized = normalizeSessionId(nativeSessionId);
+  const context = resolveNativeSessionOwnerContext(cwd, nativeSessionId);
+  const result = await writePointerTransaction(
+    cwd,
+    normalized,
+    { context },
+    NATIVE_POINTER_TIMEOUT_MS,
+    nativeSessionOwnerTransition(normalized ?? nativeSessionId, options),
+    (state) => state,
+  );
+  return result.value;
+}
+
+export async function readNativeSessionOwner(
+  cwd: string,
+  nativeSessionId: string,
+): Promise<SessionState | null> {
+  const normalized = normalizeSessionId(nativeSessionId);
+  if (!normalized) return null;
+  try {
+    const context = resolveNativeSessionOwnerContext(cwd, normalized);
+    const pointer = await readSessionPointer(
+      context,
+    );
+    const state = pointer.status === 'usable' ? pointer.state : undefined;
+    return state?.session_id === normalized
+      && state.native_session_id === normalized
+      && state.platform === process.platform
+      && isSessionStateAuthoritativeForCwd(state, context.cwd)
+      ? state
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 function reconcileNativeTransition(
   nativeSessionId: string,

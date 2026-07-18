@@ -18601,6 +18601,7 @@ async function readBlockingSkillForStop(
   sessionId: string,
   threadId: string,
   requiredSkill?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<{ skill: string; phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string } | null> {
   const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
   const visibleEntries = canonicalState ? listActiveSkills(canonicalState) : [];
@@ -18619,7 +18620,7 @@ async function readBlockingSkillForStop(
     const modeSnapshot = getRunContinuationSnapshot(modeState);
     if (modeSnapshot?.terminal === true) continue;
 
-    if (await shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
+    if (!options.sessionScopedOnly && await shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
       cwd,
       stateDir,
       skill,
@@ -19353,11 +19354,21 @@ async function buildSkillStopOutput(
   stateDir: string,
   sessionId: string,
   threadId: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
-  const blocker = await readBlockingSkillForStop(cwd, stateDir, sessionId, threadId);
+  const blocker = await readBlockingSkillForStop(
+    cwd,
+    stateDir,
+    sessionId,
+    threadId,
+    undefined,
+    options,
+  );
   if (!blocker) return null;
 
-  const subagentSummary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
+  const subagentSummary = options.sessionScopedOnly
+    ? null
+    : await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
   const activeSubagentCount = subagentSummary?.activeSubagentThreadIds.length ?? 0;
 
   if (blocker.skill === "ralplan") {
@@ -19491,7 +19502,13 @@ async function buildStopHookOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
-  options: { skipAutoNudge?: boolean; skipRalphStopBlock?: boolean; canonicalSessionId?: string; teamWorkerOnly?: boolean } = {},
+  options: {
+    skipAutoNudge?: boolean;
+    skipRalphStopBlock?: boolean;
+    canonicalSessionId?: string;
+    teamWorkerOnly?: boolean;
+    sessionScopedOnly?: boolean;
+  } = {},
 ): Promise<Record<string, unknown> | null> {
   if (isStopExempt(payload)) {
     return null;
@@ -19534,6 +19551,16 @@ async function buildStopHookOutput(
     ?? await resolveInternalSessionIdForPayload(cwd, sessionId);
   const threadId = readPayloadThreadId(payload);
   const suppressParentWorkflowStop = shouldSuppressParentWorkflowStopForSideConversation(payload);
+  if (options.sessionScopedOnly) {
+    if (!canonicalSessionId || suppressParentWorkflowStop) return null;
+    return await buildSkillStopOutput(
+      cwd,
+      stateDir,
+      canonicalSessionId,
+      threadId,
+      { sessionScopedOnly: true },
+    );
+  }
   if (canonicalSessionId) {
     await reconcileStaleRootSkillActiveStateForStop(cwd, stateDir, canonicalSessionId);
     if (await hasAuthoritativeInactiveSkillStopState(cwd, stateDir, "ralplan", canonicalSessionId, threadId)) {
@@ -20655,11 +20682,17 @@ export async function dispatchCodexNativeHook(
     if (declaredTeamWorkerStopOnly) {
       outputJson = await buildStopHookOutput(payload, cwd, stateDir, { teamWorkerOnly: true });
     } else if (allowImplicitSessionSideEffects) {
-      outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
+      const stopOutput = await buildStopHookOutput(payload, cwd, stateDir, {
         canonicalSessionId: canonicalSessionId || undefined,
         skipRalphStopBlock: isSubagentStop,
         skipAutoNudge: isSubagentStop,
-      }) ?? await buildCompletedGoalCleanupStopOutput(payload, cwd);
+        sessionScopedOnly: !allowGlobalSideEffects,
+      });
+      outputJson = stopOutput ?? (
+        allowGlobalSideEffects
+          ? await buildCompletedGoalCleanupStopOutput(payload, cwd)
+          : null
+      );
     } else {
       const failure = stopAuthorizationFailure ?? {
         stopReason: "session_pointer_unusable",
