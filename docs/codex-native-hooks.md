@@ -69,6 +69,28 @@ Setup-owned trust state is limited to those generated wrapper identities; user h
 | wiki session capture | none | `session-end` | runtime-fallback | Wiki session-log capture runs from the existing runtime session-end cleanup path, not from a native Codex hook |
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 
+## Stop: unmatched root-session read-only boundary
+
+A native root `Stop` with a valid payload session ID that does not match a
+usable selected `session.json` pointer evaluates blockers only from
+`.omx/state/sessions/<payload-session-id>/`. The approved blockers are
+autopilot, ultrawork, ultraqa, Team, a pending deep-interview question, and
+ralplan. An exact-session terminal `run-state.json` may suppress stale blocker
+state; if no blocker remains, the turn may stop. Payload prose, transcripts,
+and side-conversation heuristics cannot bypass this evaluation.
+
+The unmatched path does not promote the payload ID to global or selected
+authority. It has no root workflow fallback, canonical Team-phase lookup,
+reconciliation, Stop signatures, locks, HUD or mode mutation, plugin dispatch,
+completed-goal cleanup, or pointer write, delete, or repair. Invalid IDs and
+unusable selected pointers remain fail-closed, and Ralph is excluded.
+
+The one root-read exception is classification-only:
+`.omx/state/subagent-tracking.json` may be read to recognize a known native
+child and preserve its existing Stop path. Tracker data is never blocker,
+ownership, pointer, cleanup, or lifecycle authority, and this path creates no
+marker or sidecar. Issue #3202 stale-dead cleanup remains separate.
+
 
 ## PreToolUse: conductor and native-child write boundary
 

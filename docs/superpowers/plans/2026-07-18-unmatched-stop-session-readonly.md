@@ -4,7 +4,18 @@
 
 **Goal:** Let an unmatched native Codex root session finish a turn by evaluating only its own session-scoped Stop blockers, without creating ownership state or mutating the selected pointer and root state.
 
-**Architecture:** Keep the existing full Stop pipeline for payloads that match the usable selected pointer. Route a valid unmatched payload session through a `sessionScopedOnly` branch that reuses the existing autopilot, ultrawork, ultraqa, team, deep-interview, and ralplan blocker builders with every root fallback and mutation disabled. Leave stale-dead pointer cleanup, lock recovery, SessionStart, subagent handling, and issue #3202 unchanged.
+**Architecture:** Keep the existing full Stop pipeline for payloads that match the usable selected pointer. Route a valid unmatched payload session through a `sessionScopedOnly` branch that reuses the existing autopilot, ultrawork, ultraqa, team, deep-interview, and ralplan blocker builders with every root workflow fallback and mutation disabled. The dispatcher may read root subagent tracking only to classify a known native child and preserve its existing Stop path. Leave stale-dead pointer cleanup, lock recovery, SessionStart, and issue #3202 unchanged.
+
+### Approved implementation clarification (2026-07-18)
+
+- Builder-level tracker reads remain forbidden in `sessionScopedOnly`; the
+  dispatcher may read root `subagent-tracking.json` only for native-child
+  classification. Tracker data is never blocker, ownership, pointer, cleanup,
+  or lifecycle authority, and no marker or sidecar is added.
+- Terminal suppression reads `run-state.json` directly from the exact payload
+  session directory, with no root fallback.
+- Payload prose, transcript text, and side-conversation heuristics cannot
+  bypass unmatched root blocker evaluation.
 
 **Tech Stack:** TypeScript, Node.js built-in test runner, existing OMX session/mode state helpers, Biome, npm.
 
@@ -175,7 +186,7 @@ async function withIndependentStopFixture(
 Add near the existing issue #3138 Stop assertions:
 
 ```ts
-it("allows an unmatched root Stop without reading or mutating selected root state", async () => {
+it("allows an unmatched root Stop without importing or mutating selected root workflow state", async () => {
   await withIndependentStopFixture(
     "ordinary",
     async () => [],
@@ -466,8 +477,11 @@ const rootCanonicalState = options.sessionScopedOnly
   );
 ```
 
-Do not change the terminal-run check, autopilot question-wait check, continuation
-test, or output construction around these substitutions.
+Preserve the terminal-run semantics, but in `sessionScopedOnly` read
+`run-state.json` directly through
+`getStateFilePath("run-state.json", cwd, normalizedSessionId)` instead of the
+root-aware reader. Do not change the autopilot question-wait check,
+continuation test, or output construction around these substitutions.
 
 - [ ] **Step 2: Make Team use only session `team-state.json` and its coarse phase**
 
@@ -509,8 +523,8 @@ if (options.sessionScopedOnly) {
 ```
 
 Remove the later duplicate `const coarsePhase = teamState.current_phase;`.
-Leave the terminal-run check and the matched-session canonical team-directory
-and phase handling unchanged.
+Use the same direct exact-session terminal-run read described above. Leave the
+matched-session canonical team-directory and phase handling unchanged.
 
 - [ ] **Step 3: Make deep-interview and ralplan read-only**
 
@@ -543,7 +557,9 @@ if (
 ```
 
 Add the option to `buildSkillStopOutput()`, forward it to
-`readBlockingSkillForStop()`, and avoid root subagent-tracker reads:
+`readBlockingSkillForStop()`, and keep builder-level root tracker reads
+disabled. Dispatcher-level read-only native-child classification remains the
+sole exception:
 
 ```ts
 const blocker = await readBlockingSkillForStop(
@@ -581,7 +597,7 @@ Immediately after computing `canonicalSessionId`, `threadId`, and
 
 ```ts
 if (options.sessionScopedOnly) {
-  if (!canonicalSessionId || suppressParentWorkflowStop) return null;
+  if (!canonicalSessionId) return null;
 
   for (const mode of ["autopilot", "ultrawork", "ultraqa"] as const) {
     const modeOutput = await buildModeBasedStopOutput(
@@ -767,7 +783,7 @@ git add src/scripts/codex-native-hook.ts
 git commit \
   -m "Let unmatched native sessions stop without pointer ownership" \
   -m "Use the explicit payload session only as an exact read scope, while retaining the full pipeline for selected sessions and the existing fail-closed pointer boundaries." \
-  -m $'Constraint: The unmatched branch may read only exact session state and must perform no root, pointer, lock, plugin, or lifecycle mutation.\nRejected: Owner sidecars | no persisted identity is required for a read-only caller-local decision.\nConfidence: high\nScope-risk: narrow\nReversibility: clean\nDirective: Do not add root fallback or completed-goal cleanup to sessionScopedOnly Stop.\nTested: Focused unmatched Stop regressions and complete codex-native-hook test file.\nNot-tested: Full repository suite remains for final verification.'
+  -m $'Constraint: Unmatched blocker evaluation may read exact session state only; the root subagent tracker is allowed solely for read-only native-child classification.\nRejected: Owner sidecars | no persisted identity is required for a read-only caller-local decision.\nConfidence: high\nScope-risk: narrow\nReversibility: clean\nDirective: Do not use root tracker data for blocker, ownership, pointer, cleanup, or lifecycle decisions.\nTested: Focused unmatched Stop regressions and complete codex-native-hook test file.\nNot-tested: Full repository suite remains for final verification.'
 ```
 
 ### Task 3: Document the operator-visible boundary
@@ -786,14 +802,22 @@ A native root `Stop` whose valid payload session ID does not match the usable
 selected `session.json` pointer is evaluated only against
 `.omx/state/sessions/<payload-session-id>/`. This narrow path may return
 session-pinned autopilot, ultrawork, ultraqa, Team, pending deep-interview
-question, or ralplan continuation output. If none applies, the turn may stop.
+question, or ralplan continuation output. Exact-session terminal
+`run-state.json` may suppress stale blockers; if none applies, the turn may
+stop. Payload prose, transcript text, and side-conversation heuristics cannot
+bypass this evaluation.
 
 The unmatched path does not promote the payload ID to selected or global
 authority. It does not dispatch hook plugins, read root workflow fallback,
-persist Stop signatures, reconcile state, mutate HUD or modes, acquire locks,
-or write/delete/repair the selected pointer. Invalid payload IDs and unusable
-selected pointers remain fail-closed. Native subagent Stop handling retains
-its existing path.
+use canonical Team phase, persist Stop signatures, reconcile state, mutate HUD
+or modes, acquire locks, run completed-goal cleanup, or write/delete/repair the
+selected pointer. Invalid payload IDs and unusable selected pointers remain
+fail-closed, and Ralph is excluded.
+
+The dispatcher may read root `subagent-tracking.json` only to classify a known
+native child and preserve its existing Stop path. Tracker data is never
+blocker, ownership, pointer, cleanup, or lifecycle authority, and no marker or
+sidecar is added.
 
 This rule does not change wrapper-owned stale-dead pointer archive/cleanup;
 that lifecycle remains tracked separately by issue #3202.

@@ -26,17 +26,21 @@ archival, locking, or stale evidence.
 
 ## Decision
 
-Treat an unmatched native `Stop` as a strictly session-scoped, read-only
-decision.
+Treat an unmatched native root `Stop` as a strictly session-scoped, read-only
+decision after native-child classification.
 
-The payload session ID is only a lookup scope for:
+For blocker evaluation, the payload session ID is only a lookup scope for:
 
 ```text
 .omx/state/sessions/<payload-session-id>/
 ```
 
 It does not become selected-pointer authority, root-state authority, or
-permission to mutate lifecycle state.
+permission to mutate lifecycle state. The dispatcher may additionally read
+root `subagent-tracking.json` only to recognize a known native child and
+preserve its existing Stop path. That tracker is not blocker, ownership,
+pointer, cleanup, or lifecycle authority and does not create a marker or
+sidecar.
 
 ## Behavior
 
@@ -51,10 +55,15 @@ pipeline unchanged.
 When a usable selected pointer exists but does not match the payload session:
 
 1. Validate the payload session ID with the existing session-ID validator.
-2. Use it only as the exact session directory lookup key.
-3. Evaluate existing session-pinned blockers without root fallback.
-4. Return the first applicable blocker.
-5. If no session-pinned blocker applies, allow `Stop`.
+2. Read root `subagent-tracking.json` only to classify a known native child;
+   if matched, preserve the existing native-child Stop path.
+3. Otherwise use the ID only as the exact session directory lookup key.
+4. Read terminal `run-state.json` directly from that exact session so terminal
+   truth can suppress stale blocker state.
+5. Evaluate existing session-pinned blockers without root fallback. Payload
+   prose, transcript text, and side-conversation heuristics cannot bypass this
+   root blocker evaluation.
+6. Return the first applicable blocker, or allow `Stop` when none applies.
 
 The first implementation is limited to these currently proven session-safe
 blockers:
@@ -93,15 +102,19 @@ The unmatched branch must not:
 - persist root `native-stop-state.json` signatures;
 - update HUD, mode, team, release-readiness, or lifecycle state;
 - inspect or promote neighboring session directories.
+- use root `subagent-tracking.json` for anything except read-only native-child
+  classification.
 
 The selected pointer and all root-scoped files must remain byte-identical.
 
 ## Security model
 
 The native payload session ID is not promoted to global ownership. Even if a
-caller supplies another valid session ID, the unmatched branch can only read
-that exact session directory and return a decision to the caller. It cannot
-change the selected session, the referenced session, or any global state.
+caller supplies another valid session ID, blocker evaluation can only read
+that exact session directory and return a decision to the caller. The
+dispatcher-only tracker classification exception cannot supply blocker or
+ownership authority. Neither path can change the selected session, the
+referenced session, or any global state.
 
 The existing session-ID validator prevents path traversal. Removing all writes
 from this branch keeps the authority granted to the payload narrower than the
@@ -125,10 +138,13 @@ Regression coverage must prove:
 1. An unmatched root session with no scoped blocker may stop.
 2. Each named session-pinned workflow still blocks its own unmatched session.
 3. A blocker belonging to the selected or another session is ignored.
-4. `session.json` and representative root state files remain byte-identical.
-5. No new root or session files are created by unmatched `Stop`.
-6. Invalid session IDs and unusable selected pointers remain blocked.
-7. Matched selected-session and native-subagent behavior remains unchanged.
+4. Exact-session terminal `run-state.json` suppresses stale blocker state.
+5. Payload text and side-conversation heuristics do not bypass blockers.
+6. Root tracker reads only preserve an already-known native child's Stop path.
+7. `session.json` and representative root state files remain byte-identical.
+8. No new root or session files, markers, or sidecars are created.
+9. Invalid session IDs and unusable selected pointers remain blocked.
+10. Matched selected-session and native-subagent behavior remains unchanged.
 
 Use a table-driven test for the named workflow blockers and one focused
 side-effect assertion shared by those cases.
