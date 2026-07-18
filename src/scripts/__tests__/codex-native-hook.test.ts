@@ -3720,6 +3720,15 @@ PY`,
       assert.equal(sessionState.session_id, "sess-start-1");
       assert.equal(sessionState.native_session_id, "sess-start-1");
       assert.equal(sessionState.pid, 43210);
+      const ownerState = JSON.parse(
+        await readFile(
+          join(cwd, ".omx", "state", "sessions", "sess-start-1", "session-owner.json"),
+          "utf-8",
+        ),
+      ) as { session_id?: string; native_session_id?: string; pid?: number };
+      assert.equal(ownerState.session_id, "sess-start-1");
+      assert.equal(ownerState.native_session_id, "sess-start-1");
+      assert.equal(ownerState.pid, 43210);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
