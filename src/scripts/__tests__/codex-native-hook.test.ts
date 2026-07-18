@@ -135,6 +135,245 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 	await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+interface IndependentStopFixture {
+	cwd: string;
+	stateDir: string;
+	sessionId: string;
+	threadId: string;
+}
+
+async function withIndependentStopFixture(
+	suffix: string,
+	arrange: (fixture: IndependentStopFixture) => Promise<string[]>,
+	verify: (
+		result: Awaited<ReturnType<typeof dispatchCodexNativeHook>>,
+	) => Promise<void> | void,
+): Promise<void> {
+	const cwd = await mkdtemp(
+		join(tmpdir(), `omx-native-hook-independent-stop-${suffix}-`),
+	);
+	const stateDir = join(cwd, ".omx", "state");
+	const selectedSessionId = `selected-${suffix}`;
+	const neighborSessionId = `neighbor-${suffix}`;
+	const sessionId = `independent-${suffix}`;
+	const threadId = `thread-${suffix}`;
+	const snapshotTree = async (
+		directory: string,
+		prefix = "",
+	): Promise<string[]> => {
+		const snapshot: string[] = [];
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+			snapshot.push(`${entry.isDirectory() ? "directory" : "file"}:${relativePath}`);
+			if (entry.isDirectory()) {
+				snapshot.push(
+					...(await snapshotTree(join(directory, entry.name), relativePath)),
+				);
+			}
+		}
+		return snapshot.sort();
+	};
+
+	try {
+		await writeSessionStart(cwd, selectedSessionId, {
+			nativeSessionId: selectedSessionId,
+			pid: process.pid,
+		});
+		const rootSkillPath = join(stateDir, "skill-active-state.json");
+		const rootAutopilotPath = join(stateDir, "autopilot-state.json");
+		const rootStopPath = join(stateDir, "native-stop-state.json");
+		const neighborModePath = join(
+			stateDir,
+			"sessions",
+			neighborSessionId,
+			"autopilot-state.json",
+		);
+		await writeJson(rootSkillPath, {
+			active: true,
+			skill: "autopilot",
+			phase: "executing",
+			session_id: selectedSessionId,
+			active_skills: [
+				{
+					active: true,
+					skill: "autopilot",
+					phase: "executing",
+					session_id: selectedSessionId,
+				},
+			],
+		});
+		await writeJson(rootAutopilotPath, {
+			active: true,
+			mode: "autopilot",
+			current_phase: "executing",
+			session_id: selectedSessionId,
+			workingDirectory: cwd,
+		});
+		await writeJson(rootStopPath, {
+			sessions: {
+				[selectedSessionId]: {
+					signature: "selected-session-sentinel",
+				},
+			},
+		});
+		await writeJson(neighborModePath, {
+			active: true,
+			mode: "autopilot",
+			current_phase: "executing",
+			session_id: neighborSessionId,
+			workingDirectory: cwd,
+		});
+
+		const arrangedPaths = await arrange({ cwd, stateDir, sessionId, threadId });
+		const watchedPaths = [
+			join(stateDir, "session.json"),
+			rootSkillPath,
+			rootAutopilotPath,
+			rootStopPath,
+			neighborModePath,
+			...arrangedPaths,
+		];
+		const watchedBytes = new Map(
+			await Promise.all(
+				watchedPaths.map(async (path) => [path, await readFile(path)] as const),
+			),
+		);
+		const treeBefore = await snapshotTree(stateDir);
+
+		const result = await dispatchCodexNativeHook(
+			{
+				hook_event_name: "Stop",
+				cwd,
+				session_id: sessionId,
+				thread_id: threadId,
+			},
+			{ cwd },
+		);
+
+		await verify(result);
+		assert.deepEqual(await snapshotTree(stateDir), treeBefore);
+		for (const [path, bytes] of watchedBytes) {
+			assert.deepEqual(await readFile(path), bytes, path);
+		}
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
+}
+
+interface IndependentStopBlocker {
+	name: string;
+	expectedStopReason: string;
+	arrange: (fixture: IndependentStopFixture) => Promise<string[]>;
+}
+
+const independentStopBlockers: IndependentStopBlocker[] = [
+	...(["autopilot", "ultrawork", "ultraqa"] as const).map(
+		(mode): IndependentStopBlocker => ({
+			name: mode,
+			expectedStopReason: `${mode}_executing`,
+			arrange: async ({ cwd, stateDir, sessionId }) => {
+				const path = join(stateDir, "sessions", sessionId, `${mode}-state.json`);
+				await writeJson(path, {
+					active: true,
+					mode,
+					current_phase: "executing",
+					session_id: sessionId,
+					workingDirectory: cwd,
+				});
+				return [path];
+			},
+		}),
+	),
+	{
+		name: "team",
+		expectedStopReason: "team_team-exec",
+		arrange: async ({ stateDir, sessionId, threadId }) => {
+			const path = join(stateDir, "sessions", sessionId, "team-state.json");
+			await writeJson(path, {
+				active: true,
+				mode: "team",
+				team_name: "independent-team",
+				current_phase: "team-exec",
+				session_id: sessionId,
+				owner_codex_thread_id: threadId,
+			});
+			return [path];
+		},
+	},
+	{
+		name: "deep-interview",
+		expectedStopReason: "deep_interview_question_required",
+		arrange: async ({ stateDir, sessionId, threadId }) => {
+			const skillPath = join(
+				stateDir,
+				"sessions",
+				sessionId,
+				"skill-active-state.json",
+			);
+			const detailPath = join(
+				stateDir,
+				"sessions",
+				sessionId,
+				"deep-interview-state.json",
+			);
+			await writeJson(skillPath, {
+				active: true,
+				skill: "deep-interview",
+				phase: "intent-first",
+				session_id: sessionId,
+				thread_id: threadId,
+			});
+			await writeJson(detailPath, {
+				active: true,
+				mode: "deep-interview",
+				phase: "intent-first",
+				session_id: sessionId,
+				thread_id: threadId,
+				question_enforcement: {
+					obligation_id: "independent-question",
+					source: "omx-question",
+					status: "pending",
+					requested_at: "2026-07-18T00:00:00.000Z",
+				},
+			});
+			return [skillPath, detailPath];
+		},
+	},
+	{
+		name: "ralplan",
+		expectedStopReason: "skill_ralplan_planning_continue_artifact",
+		arrange: async ({ stateDir, sessionId, threadId }) => {
+			const skillPath = join(
+				stateDir,
+				"sessions",
+				sessionId,
+				"skill-active-state.json",
+			);
+			const detailPath = join(
+				stateDir,
+				"sessions",
+				sessionId,
+				"ralplan-state.json",
+			);
+			await writeJson(skillPath, {
+				active: true,
+				skill: "ralplan",
+				phase: "planning",
+				session_id: sessionId,
+				thread_id: threadId,
+			});
+			await writeJson(detailPath, {
+				active: true,
+				mode: "ralplan",
+				current_phase: "planning",
+				session_id: sessionId,
+				thread_id: threadId,
+			});
+			return [skillPath, detailPath];
+		},
+	},
+];
+
 async function writeCanonicalLeaderFixture(
 	stateDir: string,
 	sessionId: string,
@@ -4105,6 +4344,62 @@ PY`,
     }
   });
 
+  it("allows an unmatched root Stop without reading or mutating selected root state", async () => {
+    await withIndependentStopFixture(
+      "ordinary",
+      async () => [],
+      (result) => {
+        assert.equal(result.omxEventName, "stop");
+        assert.equal(result.outputJson, null);
+      },
+    );
+  });
+
+  it("keeps invalid unmatched Stop session ids fail-closed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-invalid-unmatched-stop-"));
+    try {
+      await writeSessionStart(cwd, "selected-valid-stop", {
+        nativeSessionId: "selected-valid-stop",
+        pid: process.pid,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "../foreign",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "session_scope_unmatched");
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "foreign")),
+        false,
+      );
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "sessions", "foreign")),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  for (const blocker of independentStopBlockers) {
+    it(`uses only the unmatched session ${blocker.name} Stop blocker`, async () => {
+      await withIndependentStopFixture(
+        blocker.name,
+        blocker.arrange,
+        (result) => {
+          assert.equal(result.outputJson?.decision, "block");
+          assert.equal(result.outputJson?.stopReason, blocker.expectedStopReason);
+        },
+      );
+    });
+  }
+
   it("issue #3138 converges owner-env terminal write and native Stop on one canonical scope", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-hook-3138-"));
     const fakeBinDir = join(root, "fake-bin");
@@ -4339,8 +4634,7 @@ PY`,
         cwd: conflictingCwd,
         session_id: "native-unmatched-stop-3138",
       }, { cwd: conflictingCwd });
-      assert.equal(unmatchedStop.outputJson?.decision, "block");
-      assert.equal(unmatchedStop.outputJson?.stopReason, "session_scope_unmatched");
+      assert.equal(unmatchedStop.outputJson, null);
       assert.equal(existsSync(join(conflictingCwd, ".omx", "state", "native-stop-state.json")), false);
     } finally {
       if (typeof previousSessionId === "string") process.env.OMX_SESSION_ID = previousSessionId;
@@ -24289,7 +24583,7 @@ PY`,
     }
   });
 
-  it("fails closed on Stop when a session-scoped team id is not bound to session.json", async () => {
+  it("uses a session-scoped team blocker when its id is not bound to session.json", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-session-mismatch-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -24320,8 +24614,7 @@ PY`,
 
       assert.equal(result.omxEventName, "stop");
       assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "session_scope_unmatched");
-      assert.match(String(result.outputJson?.reason ?? ""), /sess-live-team/);
+      assert.equal(result.outputJson?.stopReason, "team_team-exec");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -26219,7 +26512,7 @@ PY`,
     }
   });
 
-  it("fails closed on Stop when a session-scoped Ralph id is not bound to session.json", async () => {
+  it("does not import unsupported Ralph blockers into unmatched Stop", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralph-session-mismatch-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -26241,9 +26534,7 @@ PY`,
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "session_scope_unmatched");
-      assert.match(String(result.outputJson?.reason ?? ""), /sess-live-ralph/);
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
