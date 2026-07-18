@@ -261,6 +261,25 @@ Native and notify leader turns classify provenance once and pass an immutable au
 
 Rejected turns perform no activation, continuation, steering, plugin, HUD, pane, timestamp, or neighboring-session mutation. They may append one redacted `prompt_session_provenance_rejected` diagnostic under the already-selected state root; the record contains the reason and producer but no raw session/thread identifiers, prompt text, environment value, or foreign path. `PreToolUse`, `Stop`, SessionStart reconciliation, and authoritative-root selection retain their existing contracts.
 
+## Stop: session owner provenance
+
+Native root `SessionStart` records process-bound owner evidence under
+`.omx/state/sessions/<native-session-id>/session-owner.json`. The singleton
+`.omx/state/session.json` remains the backward-compatible selected pointer,
+but a different live process cannot replace it.
+
+When a `Stop` payload does not match a usable selected pointer, or the selected
+pointer is stale-dead, OMX reads only the payload session's exact owner sidecar.
+Usable PID, Linux start-tick, command-line, cwd, and session-id evidence
+authorizes only that session's scoped workflow checks. Root/global hook side
+effects remain suppressed, the selected pointer is not rewritten, and missing,
+dead, reused, malformed, foreign, forged, or indeterminate evidence stays
+fail-closed. A foreign, malformed, or identity-indeterminate selected pointer
+also remains fail-closed.
+
+Native `Stop` ends one assistant turn rather than the Codex process, so a
+successful `Stop` does not delete owner evidence.
+
 ## UserPromptSubmit: triage advisory context
 
 `UserPromptSubmit` can now emit triage advisory context alongside keyword context. When no keyword matches, the triage layer classifies the prompt and may inject an advisory prompt-routing context string — this is advisory prompt-routing context that does not activate a skill or workflow by itself; it adds a developer-context hint the model may follow. Light advisory destinations include repo-local `explore`, narrow-edit `executor`, visual `designer`, and external documentation/reference `researcher`; researcher routing is for official-doc, version-compatibility, source-backed, or external lookup requests, does not override local anchors or implementation-shaped prompts, and still writes only prompt-routing state. Keywords remain the deterministic control surface: a matched keyword always takes precedence over triage output, and users can suppress triage injection per prompt with phrases such as `no workflow`, `just chat`, or `plain answer`.
