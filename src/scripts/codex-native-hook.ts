@@ -2832,7 +2832,15 @@ async function readModeStateWithStopSource(
   mode: "autopilot" | "ultrawork" | "ultraqa",
   cwd: string,
   sessionId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<{ state: Record<string, unknown>; path: string } | null> {
+  if (options.sessionScopedOnly) {
+    const normalizedSessionId = safeString(sessionId).trim();
+    if (!normalizedSessionId) return null;
+    const path = getStateFilePath(`${mode}-state.json`, cwd, normalizedSessionId);
+    const state = await readJsonIfExists(path);
+    return state ? { state, path } : null;
+  }
   const paths = await getAuthoritativeActiveStatePaths(mode, cwd, sessionId?.trim() || undefined).catch(() => [] as string[]);
   const path = paths[0];
   if (!path) return null;
@@ -2902,6 +2910,7 @@ async function buildModeBasedStopOutput(
   mode: "autopilot" | "ultrawork" | "ultraqa",
   cwd: string,
   sessionId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
   if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, mode)) {
     return null;
@@ -2909,10 +2918,12 @@ async function buildModeBasedStopOutput(
   if (mode === "autopilot" && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
     return null;
   }
-  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId);
+  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId, options);
   const state = sourcedState?.state ?? null;
   if (!state || !shouldContinueRun(state)) return null;
-  const rootCanonicalState = await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
+  const rootCanonicalState = options.sessionScopedOnly
+    ? null
+    : await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
   const canonicalDisagreement = rootCanonicalState
     ? canonicalStopDisagreement(state, rootCanonicalState, mode, sessionId)
     : "canonical_state_missing";
@@ -3249,6 +3260,7 @@ async function readTeamModeStateForStop(
   stateDir: string,
   sessionId?: string,
   threadId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<TeamModeStateForStop | null> {
   const normalizedSessionId = safeString(sessionId).trim();
   if (!normalizedSessionId) return null;
@@ -3259,6 +3271,7 @@ async function readTeamModeStateForStop(
       ? { state: scopedState, scope: "session" }
       : null;
   }
+  if (options.sessionScopedOnly) return null;
 
   const rootState = await readJsonIfExists(join(stateDir, "team-state.json"));
   if (rootState?.active !== true) return null;
@@ -3273,21 +3286,37 @@ async function readTeamModeStateForStop(
   return { state: rootState, scope: "root" };
 }
 
-async function buildTeamStopOutput(cwd: string, sessionId?: string, threadId?: string): Promise<Record<string, unknown> | null> {
+async function buildTeamStopOutput(
+  cwd: string,
+  sessionId?: string,
+  threadId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
+): Promise<Record<string, unknown> | null> {
   if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "team")) {
     return null;
   }
-  const teamStateForStop = await readTeamModeStateForStop(cwd, getBaseStateDir(cwd), sessionId, threadId);
+  const teamStateForStop = await readTeamModeStateForStop(
+    cwd,
+    getBaseStateDir(cwd),
+    sessionId,
+    threadId,
+    options,
+  );
   if (!teamStateForStop || teamStateForStop.state.active !== true) return null;
   const teamState = teamStateForStop.state;
   const teamName = safeString(teamState.team_name).trim();
+  const coarsePhase = teamState.current_phase;
+  if (options.sessionScopedOnly) {
+    return isNonTerminalPhase(coarsePhase)
+      ? buildTeamStopOutputForPhase(teamName, formatPhase(coarsePhase))
+      : null;
+  }
   if (teamName) {
     const canonicalTeamDir = join(resolveCanonicalTeamStateRoot(cwd), "team", teamName);
     if (!existsSync(canonicalTeamDir)) {
       return null;
     }
   }
-  const coarsePhase = teamState.current_phase;
   const canonicalPhaseState = teamName ? await readTeamPhase(teamName, cwd) : null;
   if (teamStateForStop.scope === "root" && !canonicalPhaseState) return null;
   const canonicalPhase = canonicalPhaseState?.current_phase ?? coarsePhase;
@@ -18961,8 +18990,11 @@ async function buildDeepInterviewQuestionStopOutput(
   stateDir: string,
   sessionId: string,
   threadId: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<{ output: Record<string, unknown>; obligationId: string } | null> {
-  await reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords(cwd, sessionId);
+  if (!options.sessionScopedOnly) {
+    await reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords(cwd, sessionId);
+  }
   if (await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
     return null;
   }
@@ -19553,6 +19585,30 @@ async function buildStopHookOutput(
   const suppressParentWorkflowStop = shouldSuppressParentWorkflowStopForSideConversation(payload);
   if (options.sessionScopedOnly) {
     if (!canonicalSessionId || suppressParentWorkflowStop) return null;
+    for (const mode of ["autopilot", "ultrawork", "ultraqa"] as const) {
+      const modeOutput = await buildModeBasedStopOutput(
+        mode,
+        cwd,
+        canonicalSessionId,
+        { sessionScopedOnly: true },
+      );
+      if (modeOutput) return modeOutput;
+    }
+    const teamOutput = await buildTeamStopOutput(
+      cwd,
+      canonicalSessionId,
+      threadId,
+      { sessionScopedOnly: true },
+    );
+    if (teamOutput) return teamOutput;
+    const deepInterviewQuestionOutput = await buildDeepInterviewQuestionStopOutput(
+      cwd,
+      stateDir,
+      canonicalSessionId,
+      threadId,
+      { sessionScopedOnly: true },
+    );
+    if (deepInterviewQuestionOutput) return deepInterviewQuestionOutput.output;
     return await buildSkillStopOutput(
       cwd,
       stateDir,
