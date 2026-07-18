@@ -32581,7 +32581,9 @@ PY`,
 
   it("blocks non-shell direct writes in Main-root conductor states", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-bash-mutations-"));
+    const previousPath = process.env.PATH;
     try {
+      process.env.PATH = `${dirname(process.execPath)}:/usr/bin:/bin`;
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-bash-mutations";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
@@ -32672,6 +32674,8 @@ PY`,
         assert.equal(result.outputJson, null, command);
       }
     } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       await rm(cwd, { recursive: true, force: true });
     }
   });
