@@ -1234,9 +1234,13 @@ async function readCanonicalTerminalRunStateForStop(
   cwd: string,
   sessionId: string | undefined,
   mode: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
-  if (!safeString(sessionId).trim()) return null;
-  const runState = await readRunState(cwd, sessionId).catch(() => null);
+  const normalizedSessionId = safeString(sessionId).trim();
+  if (!normalizedSessionId) return null;
+  const runState = options.sessionScopedOnly
+    ? await readJsonIfExists(getStateFilePath("run-state.json", cwd, normalizedSessionId))
+    : await readRunState(cwd, normalizedSessionId).catch(() => null);
   const runRecord = runState as unknown as Record<string, unknown> | null;
   return shouldHonorCanonicalTerminalRunState(runRecord, mode) ? runRecord : null;
 }
@@ -2803,7 +2807,15 @@ async function readModeStateWithStopSource(
   mode: "autopilot" | "ultrawork" | "ultraqa",
   cwd: string,
   sessionId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<{ state: Record<string, unknown>; path: string } | null> {
+  if (options.sessionScopedOnly) {
+    const normalizedSessionId = safeString(sessionId).trim();
+    if (!normalizedSessionId) return null;
+    const path = getStateFilePath(`${mode}-state.json`, cwd, normalizedSessionId);
+    const state = await readJsonIfExists(path);
+    return state ? { state, path } : null;
+  }
   const paths = await getAuthoritativeActiveStatePaths(mode, cwd, sessionId?.trim() || undefined).catch(() => [] as string[]);
   const path = paths[0];
   if (!path) return null;
@@ -2873,17 +2885,20 @@ async function buildModeBasedStopOutput(
   mode: "autopilot" | "ultrawork" | "ultraqa",
   cwd: string,
   sessionId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
-  if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, mode)) {
+  if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, mode, options)) {
     return null;
   }
   if (mode === "autopilot" && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
     return null;
   }
-  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId);
+  const sourcedState = await readModeStateWithStopSource(mode, cwd, sessionId, options);
   const state = sourcedState?.state ?? null;
   if (!state || !shouldContinueRun(state)) return null;
-  const rootCanonicalState = await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
+  const rootCanonicalState = options.sessionScopedOnly
+    ? null
+    : await readRawSkillActiveState(getSkillActiveStatePathsForStateDir(getBaseStateDir(cwd)).rootPath);
   const canonicalDisagreement = rootCanonicalState
     ? canonicalStopDisagreement(state, rootCanonicalState, mode, sessionId)
     : "canonical_state_missing";
@@ -3195,6 +3210,7 @@ async function readTeamModeStateForStop(
   stateDir: string,
   sessionId?: string,
   threadId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<TeamModeStateForStop | null> {
   const normalizedSessionId = safeString(sessionId).trim();
   if (!normalizedSessionId) return null;
@@ -3205,6 +3221,7 @@ async function readTeamModeStateForStop(
       ? { state: scopedState, scope: "session" }
       : null;
   }
+  if (options.sessionScopedOnly) return null;
 
   const rootState = await readJsonIfExists(join(stateDir, "team-state.json"));
   if (rootState?.active !== true) return null;
@@ -3219,21 +3236,31 @@ async function readTeamModeStateForStop(
   return { state: rootState, scope: "root" };
 }
 
-async function buildTeamStopOutput(cwd: string, sessionId?: string, threadId?: string): Promise<Record<string, unknown> | null> {
-  if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "team")) {
+async function buildTeamStopOutput(
+  cwd: string,
+  sessionId?: string,
+  threadId?: string,
+  options: { sessionScopedOnly?: boolean } = {},
+): Promise<Record<string, unknown> | null> {
+  if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "team", options)) {
     return null;
   }
-  const teamStateForStop = await readTeamModeStateForStop(cwd, getBaseStateDir(cwd), sessionId, threadId);
+  const teamStateForStop = await readTeamModeStateForStop(cwd, getBaseStateDir(cwd), sessionId, threadId, options);
   if (!teamStateForStop || teamStateForStop.state.active !== true) return null;
   const teamState = teamStateForStop.state;
   const teamName = safeString(teamState.team_name).trim();
+  const coarsePhase = teamState.current_phase;
+  if (options.sessionScopedOnly) {
+    return isNonTerminalPhase(coarsePhase)
+      ? buildTeamStopOutputForPhase(teamName, formatPhase(coarsePhase))
+      : null;
+  }
   if (teamName) {
     const canonicalTeamDir = join(resolveCanonicalTeamStateRoot(cwd), "team", teamName);
     if (!existsSync(canonicalTeamDir)) {
       return null;
     }
   }
-  const coarsePhase = teamState.current_phase;
   const canonicalPhaseState = teamName ? await readTeamPhase(teamName, cwd) : null;
   if (teamStateForStop.scope === "root" && !canonicalPhaseState) return null;
   const canonicalPhase = canonicalPhaseState?.current_phase ?? coarsePhase;
@@ -18397,6 +18424,7 @@ async function readBlockingSkillForStop(
   sessionId: string,
   threadId: string,
   requiredSkill?: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<{ skill: string; phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string } | null> {
   const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
   const visibleEntries = canonicalState ? listActiveSkills(canonicalState) : [];
@@ -18405,7 +18433,7 @@ async function readBlockingSkillForStop(
     : [...SKILL_STOP_BLOCKERS];
 
   for (const skill of candidateSkills) {
-    const terminalRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, skill);
+    const terminalRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, skill, options);
     if (terminalRunState) continue;
 
     const modeState = await readStopSessionPinnedState(`${skill}-state.json`, cwd, sessionId, stateDir);
@@ -18415,7 +18443,7 @@ async function readBlockingSkillForStop(
     const modeSnapshot = getRunContinuationSnapshot(modeState);
     if (modeSnapshot?.terminal === true) continue;
 
-    if (await shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
+    if (!options.sessionScopedOnly && await shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
       cwd,
       stateDir,
       skill,
@@ -18756,8 +18784,11 @@ async function buildDeepInterviewQuestionStopOutput(
   stateDir: string,
   sessionId: string,
   threadId: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<{ output: Record<string, unknown>; obligationId: string } | null> {
-  await reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords(cwd, sessionId);
+  if (!options.sessionScopedOnly) {
+    await reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords(cwd, sessionId);
+  }
   if (await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
     return null;
   }
@@ -19149,11 +19180,14 @@ async function buildSkillStopOutput(
   stateDir: string,
   sessionId: string,
   threadId: string,
+  options: { sessionScopedOnly?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
-  const blocker = await readBlockingSkillForStop(cwd, stateDir, sessionId, threadId);
+  const blocker = await readBlockingSkillForStop(cwd, stateDir, sessionId, threadId, undefined, options);
   if (!blocker) return null;
 
-  const subagentSummary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
+  const subagentSummary = options.sessionScopedOnly
+    ? null
+    : await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
   const activeSubagentCount = subagentSummary?.activeSubagentThreadIds.length ?? 0;
 
   if (blocker.skill === "ralplan") {
@@ -19287,7 +19321,12 @@ async function buildStopHookOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
-  options: { skipAutoNudge?: boolean; skipRalphStopBlock?: boolean; canonicalSessionId?: string } = {},
+  options: {
+    skipAutoNudge?: boolean;
+    skipRalphStopBlock?: boolean;
+    canonicalSessionId?: string;
+    sessionScopedOnly?: boolean;
+  } = {},
 ): Promise<Record<string, unknown> | null> {
   if (isStopExempt(payload)) {
     return null;
@@ -19298,6 +19337,40 @@ async function buildStopHookOutput(
     ?? await resolveInternalSessionIdForPayload(cwd, sessionId);
   const threadId = readPayloadThreadId(payload);
   const suppressParentWorkflowStop = shouldSuppressParentWorkflowStopForSideConversation(payload);
+  if (options.sessionScopedOnly) {
+    if (!canonicalSessionId || suppressParentWorkflowStop) return null;
+    for (const mode of ["autopilot", "ultrawork", "ultraqa"] as const) {
+      const modeOutput = await buildModeBasedStopOutput(
+        mode,
+        cwd,
+        canonicalSessionId,
+        { sessionScopedOnly: true },
+      );
+      if (modeOutput) return modeOutput;
+    }
+    const teamOutput = await buildTeamStopOutput(
+      cwd,
+      canonicalSessionId,
+      threadId,
+      { sessionScopedOnly: true },
+    );
+    if (teamOutput) return teamOutput;
+    const deepInterviewQuestionOutput = await buildDeepInterviewQuestionStopOutput(
+      cwd,
+      stateDir,
+      canonicalSessionId,
+      threadId,
+      { sessionScopedOnly: true },
+    );
+    if (deepInterviewQuestionOutput) return deepInterviewQuestionOutput.output;
+    return buildSkillStopOutput(
+      cwd,
+      stateDir,
+      canonicalSessionId,
+      threadId,
+      { sessionScopedOnly: true },
+    );
+  }
   if (canonicalSessionId) {
     await reconcileStaleRootSkillActiveStateForStop(cwd, stateDir, canonicalSessionId);
     if (await hasAuthoritativeInactiveSkillStopState(cwd, stateDir, "ralplan", canonicalSessionId, threadId)) {
@@ -19711,6 +19784,7 @@ export async function dispatchCodexNativeHook(
     await mkdir(stateDir, { recursive: true });
   }
   let allowImplicitSessionSideEffects = pointer.status === "usable" || pointer.status === "absent" || promptTurnContext?.status === "authorized";
+  let sessionScopedStopOnly = false;
   let stopAuthorizationFailure: { stopReason: string; reason: string } | null = allowImplicitSessionSideEffects
     ? null
     : {
@@ -19829,13 +19903,20 @@ export async function dispatchCodexNativeHook(
       pointer.status === "absent",
     );
     if (stopPayloadSessionId && !stopCanonicalSessionId) {
-      canonicalSessionId = "";
-      allowImplicitSessionSideEffects = false;
-      if (!stopAuthorizationFailure) {
-        stopAuthorizationFailure = {
-          stopReason: "session_scope_unmatched",
-          reason: `OMX cannot authorize Stop for unmatched session id ${stopPayloadSessionId}; the selected session pointer remains authoritative.`,
-        };
+      const normalizedStopPayloadSessionId = normalizeSessionId(stopPayloadSessionId);
+      if (pointer.status === "usable" && normalizedStopPayloadSessionId && !stopAuthorizationFailure) {
+        canonicalSessionId = normalizedStopPayloadSessionId;
+        allowImplicitSessionSideEffects = false;
+        sessionScopedStopOnly = true;
+      } else {
+        canonicalSessionId = "";
+        allowImplicitSessionSideEffects = false;
+        if (!stopAuthorizationFailure) {
+          stopAuthorizationFailure = {
+            stopReason: "session_scope_unmatched",
+            reason: `OMX cannot authorize Stop for unmatched session id ${stopPayloadSessionId}; the selected session pointer remains authoritative.`,
+          };
+        }
       }
     } else if (stopCanonicalSessionId) {
       canonicalSessionId = stopCanonicalSessionId;
@@ -19876,7 +19957,11 @@ export async function dispatchCodexNativeHook(
         )),
     )).some(Boolean)
     : false;
-  if (isSubagentStop && stopAuthorizationFailure?.stopReason === "session_scope_unmatched") {
+  if (
+    isSubagentStop
+    && (sessionScopedStopOnly || stopAuthorizationFailure?.stopReason === "session_scope_unmatched")
+  ) {
+    sessionScopedStopOnly = false;
     canonicalSessionId = normalizeSessionId(readPayloadSessionId(payload)) ?? "";
     allowImplicitSessionSideEffects = true;
     stopAuthorizationFailure = null;
@@ -20297,7 +20382,12 @@ export async function dispatchCodexNativeHook(
     }
     outputJson = buildNativePostToolUseOutput(payload);
   } else if (hookEventName === "Stop") {
-    if (allowImplicitSessionSideEffects) {
+    if (sessionScopedStopOnly) {
+      outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
+        canonicalSessionId,
+        sessionScopedOnly: true,
+      });
+    } else if (allowImplicitSessionSideEffects) {
       outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
         canonicalSessionId: canonicalSessionId || undefined,
         skipRalphStopBlock: isSubagentStop,
