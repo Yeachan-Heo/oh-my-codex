@@ -1436,6 +1436,7 @@ function nativeSessionOwnerTransition(
     if (existing && (
       normalizeSessionId(existing.session_id) !== nativeSessionId
       || normalizeSessionId(existing.native_session_id) !== nativeSessionId
+      || !isSessionStateAuthoritativeForCwd(existing, context.cwd)
       || !sameProcessIdentity(existing, pid, platform, linuxIdentity)
     )) {
       throw ownerConflictAbort(context, nativeSessionId, existing);
@@ -1474,12 +1475,14 @@ export async function readNativeSessionOwner(
   const normalized = normalizeSessionId(nativeSessionId);
   if (!normalized) return null;
   try {
+    const context = resolveNativeSessionOwnerContext(cwd, normalized);
     const pointer = await readSessionPointer(
-      resolveNativeSessionOwnerContext(cwd, normalized),
+      context,
     );
     const state = pointer.status === 'usable' ? pointer.state : undefined;
     return state?.session_id === normalized
       && state.native_session_id === normalized
+      && isSessionStateAuthoritativeForCwd(state, context.cwd)
       ? state
       : null;
   } catch {

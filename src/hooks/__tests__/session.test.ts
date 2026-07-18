@@ -1216,6 +1216,35 @@ describe('session pointer transaction', () => {
             && error.code === 'session_pointer_owner_conflict',
         );
         assert.equal(await readFile(forgedPath, 'utf-8'), forgedBefore);
+
+        const missingCwdDir = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-missing-cwd',
+        );
+        await mkdir(missingCwdDir, { recursive: true });
+        const missingCwdPath = join(missingCwdDir, 'session-owner.json');
+        await writeFile(missingCwdPath, JSON.stringify({
+          session_id: 'native-owner-missing-cwd',
+          native_session_id: 'native-owner-missing-cwd',
+          started_at: new Date().toISOString(),
+          pid: 22,
+          platform: 'win32',
+        }), 'utf-8');
+        const missingCwdBefore = await readFile(missingCwdPath, 'utf-8');
+        assert.equal(await readNativeSessionOwner(cwd, 'native-owner-missing-cwd'), null);
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-missing-cwd',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+        assert.equal(await readFile(missingCwdPath, 'utf-8'), missingCwdBefore);
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });

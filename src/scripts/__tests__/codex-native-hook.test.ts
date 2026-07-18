@@ -4237,6 +4237,16 @@ PY`,
       });
       await writeLiveNativeSessionOwnerSidecar(cwd, stateDir, independentSessionId);
       const pointerBefore = await readFile(join(stateDir, "session.json"), "utf-8");
+      const rootGoalPath = join(cwd, ".omx", "ultragoal", "goals.json");
+      await writeJson(rootGoalPath, {
+        version: 1,
+        aggregateCompletion: {
+          status: "complete",
+          completedAt: "2026-05-20T00:00:00.000Z",
+        },
+        goals: [{ id: "G001-done", status: "complete", objective: "Done" }],
+      });
+      const rootGoalBefore = await readFile(rootGoalPath, "utf-8");
 
       const result = await dispatchCodexNativeHook(
         {
@@ -4244,12 +4254,17 @@ PY`,
           cwd,
           session_id: independentSessionId,
           thread_id: independentSessionId,
+          last_user_message:
+            "get_goal reports a completed Codex goal still attached to this thread; do not call create_goal until cleanup is explicit.",
+          last_assistant_message:
+            "I am starting another run now; create_goal payload follows.",
         },
         { cwd },
       );
 
       assert.equal(result.outputJson, null);
       assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+      assert.equal(await readFile(rootGoalPath, "utf-8"), rootGoalBefore);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
