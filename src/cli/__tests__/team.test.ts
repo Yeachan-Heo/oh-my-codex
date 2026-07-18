@@ -2456,6 +2456,7 @@ describe('teamCommand status', () => {
 
   it('returns pane ids and sparkshell hint in JSON mode', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-json-'));
+    const workerPaneId = '%1073741824';
     const previousCwd = process.cwd();
     const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     const logs: string[] = [];
@@ -2490,7 +2491,7 @@ describe('teamCommand status', () => {
       config.workers[0]!.assigned_tasks = ['1', 'extra-2'];
       config.leader_pane_id = '%30';
       config.hud_pane_id = '%31';
-      config.workers[0]!.pane_id = '%41';
+      config.workers[0]!.pane_id = workerPaneId;
       config.workers[0]!.working_dir = '/tmp/pane-json-team/worker-1';
       config.workers[0]!.worktree_repo_root = '/tmp/pane-json-team/repo';
       config.workers[0]!.team_state_root = '/tmp/pane-json-team/.omx/state';
@@ -2765,13 +2766,13 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.panes?.recommended_inspect_team_phase_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/phase.json` });
       assert.deepEqual(payload.panes?.recommended_inspect_team_monitor_snapshot_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/monitor-snapshot.json` });
       assert.deepEqual(payload.panes?.recommended_inspect_team_summary_snapshot_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/summary-snapshot.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_panes, { 'worker-1': '%41' });
-      assert.equal(payload.panes?.recommended_inspect_command, 'omx sparkshell --tmux-pane %41 --tail-lines 400');
-      assert.deepEqual(payload.panes?.recommended_inspect_commands, ['omx sparkshell --tmux-pane %41 --tail-lines 400']);
-      assert.equal(payload.panes?.recommended_inspect_summary, 'target=worker-1 pane=%41 cli=claude role=executor alive=false turn_count=5 turns_without_progress=0 reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %41 --tail-lines 400');
+      assert.deepEqual(payload.panes?.recommended_inspect_panes, { 'worker-1': workerPaneId });
+      assert.equal(payload.panes?.recommended_inspect_command, `omx sparkshell --tmux-pane ${workerPaneId} --tail-lines 400`);
+      assert.deepEqual(payload.panes?.recommended_inspect_commands, [`omx sparkshell --tmux-pane ${workerPaneId} --tail-lines 400`]);
+      assert.equal(payload.panes?.recommended_inspect_summary, `target=worker-1 pane=${workerPaneId} cli=claude role=executor alive=false turn_count=5 turns_without_progress=0 reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane ${workerPaneId} --tail-lines 400`);
       assert.deepEqual(payload.panes?.recommended_inspect_items, [{
         target: 'worker-1',
-        pane_id: '%41',
+        pane_id: workerPaneId,
         worker_cli: 'claude',
         role: 'executor',
         index: 1,
@@ -2835,16 +2836,16 @@ describe('teamCommand status', () => {
         team_phase_path: `${expectedWd}/.omx/state/team/pane-json-team/phase.json`,
         team_monitor_snapshot_path: `${expectedWd}/.omx/state/team/pane-json-team/monitor-snapshot.json`,
         team_summary_snapshot_path: `${expectedWd}/.omx/state/team/pane-json-team/summary-snapshot.json`,
-        command: 'omx sparkshell --tmux-pane %41 --tail-lines 400',
+        command: `omx sparkshell --tmux-pane ${workerPaneId} --tail-lines 400`,
       }]);
       assert.equal(payload.panes?.leader_pane_id, '%30');
       assert.equal(payload.panes?.hud_pane_id, '%31');
-      assert.deepEqual(payload.panes?.worker_panes, { 'worker-1': '%41' });
+      assert.deepEqual(payload.panes?.worker_panes, { 'worker-1': workerPaneId });
       assert.equal(payload.panes?.sparkshell_hint, 'omx sparkshell --tmux-pane <pane-id> --tail-lines 400');
       assert.deepEqual(payload.panes?.sparkshell_commands, {
         leader: 'omx sparkshell --tmux-pane %30 --tail-lines 400',
         hud: 'omx sparkshell --tmux-pane %31 --tail-lines 400',
-        'worker-1': 'omx sparkshell --tmux-pane %41 --tail-lines 400',
+        'worker-1': `omx sparkshell --tmux-pane ${workerPaneId} --tail-lines 400`,
       });
     } finally {
       if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
