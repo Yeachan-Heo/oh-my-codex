@@ -147,6 +147,7 @@ export type SessionPointerLaunchAbort =
   | ResolvedSessionPointerAbort;
 
 const SESSION_FILE = 'session.json';
+const SESSION_OWNER_FILE = 'session-owner.json';
 const HISTORY_FILE = 'session-history.jsonl';
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SESSION_POINTER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
@@ -212,6 +213,30 @@ function resolvedAbort(
     pointerPath: context.sessionPath,
     rootSource: context.rootSource,
   }) as ResolvedSessionPointerAbort;
+}
+
+function resolveNativeSessionOwnerContext(
+  cwd: string,
+  nativeSessionId: string,
+): SessionPointerContext {
+  const root = resolveSessionPointerContext(cwd);
+  const normalized = normalizeSessionId(nativeSessionId);
+  if (!normalized) {
+    throw resolvedAbort(root, {
+      code: 'session_pointer_io_failure',
+      operation: 'pointer-classify',
+      lockPath: root.lockPath,
+      reason: 'A valid native session ID is required for owner evidence.',
+    });
+  }
+  const baseStateDir = join(root.baseStateDir, 'sessions', normalized);
+  const sessionPath = join(baseStateDir, SESSION_OWNER_FILE);
+  return {
+    ...root,
+    baseStateDir,
+    sessionPath,
+    lockPath: `${sessionPath}.lock`,
+  };
 }
 
 class SessionPointerLaunchAbortError extends Error {
@@ -670,6 +695,20 @@ function resolvePid(options: SessionStartOptions): number {
 
 function sessionIdentityFor(pid: number, platform: NodeJS.Platform): LinuxProcessIdentity | null {
   return platform === 'linux' ? readLinuxProcessIdentity(pid) : null;
+}
+
+function sameProcessIdentity(
+  existing: SessionState,
+  pid: number,
+  platform: NodeJS.Platform,
+  linuxIdentity: LinuxProcessIdentity | null,
+): boolean {
+  if (existing.pid !== pid) return false;
+  if (platform !== 'linux') return true;
+  if (!linuxIdentity || existing.pid_start_ticks !== linuxIdentity.startTicks) return false;
+  const expected = normalizeCmdline(existing.pid_cmdline);
+  const current = normalizeCmdline(linuxIdentity.cmdline);
+  return !expected || expected === current;
 }
 
 function currentOwnerAlias(state: SessionState): string | undefined {
@@ -1382,6 +1421,72 @@ export async function writeSessionStart(
   return result.value;
 }
 
+function nativeSessionOwnerTransition(
+  nativeSessionId: string,
+  options: SessionStartOptions,
+): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
+  return (pointer, context) => {
+    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+      throw unusablePointerAbort(context, nativeSessionId, pointer);
+    }
+    const pid = resolvePid(options);
+    const platform = options.platform ?? process.platform;
+    const linuxIdentity = sessionIdentityFor(pid, platform);
+    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    if (existing && (
+      normalizeSessionId(existing.session_id) !== nativeSessionId
+      || normalizeSessionId(existing.native_session_id) !== nativeSessionId
+      || !sameProcessIdentity(existing, pid, platform, linuxIdentity)
+    )) {
+      throw ownerConflictAbort(context, nativeSessionId, existing);
+    }
+    return createSessionState(context.cwd, nativeSessionId, pid, platform, linuxIdentity, {
+      nativeSessionId,
+      startedAt: existing?.started_at,
+      tmuxSessionName: options.tmuxSessionName ?? existing?.tmux_session_name,
+      tmuxPaneId: options.tmuxPaneId ?? existing?.tmux_pane_id,
+    });
+  };
+}
+
+export async function writeNativeSessionOwner(
+  cwd: string,
+  nativeSessionId: string,
+  options: SessionStartOptions = {},
+): Promise<SessionState> {
+  const normalized = normalizeSessionId(nativeSessionId);
+  const context = resolveNativeSessionOwnerContext(cwd, nativeSessionId);
+  const result = await writePointerTransaction(
+    cwd,
+    normalized,
+    { context },
+    NATIVE_POINTER_TIMEOUT_MS,
+    nativeSessionOwnerTransition(normalized ?? nativeSessionId, options),
+    (state) => state,
+  );
+  return result.value;
+}
+
+export async function readNativeSessionOwner(
+  cwd: string,
+  nativeSessionId: string,
+): Promise<SessionState | null> {
+  const normalized = normalizeSessionId(nativeSessionId);
+  if (!normalized) return null;
+  try {
+    const pointer = await readSessionPointer(
+      resolveNativeSessionOwnerContext(cwd, normalized),
+    );
+    const state = pointer.status === 'usable' ? pointer.state : undefined;
+    return state?.session_id === normalized
+      && state.native_session_id === normalized
+      ? state
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 interface NativeReconcileTransition {
   state: SessionState;
   replacementLog?: Record<string, unknown>;
@@ -1415,6 +1520,9 @@ function reconcileNativeTransition(
 
     const existingNativeSessionId = normalizeSessionId(existing.native_session_id);
     if (existingNativeSessionId && existingNativeSessionId !== nativeSessionId) {
+      if (!sameProcessIdentity(existing, pid, platform, linuxIdentity)) {
+        throw ownerConflictAbort(context, nativeSessionId, existing);
+      }
       const ownerOmxSessionId = getOmxLaunchSessionId(existing);
       return {
         state: createSessionState(context.cwd, nativeSessionId, pid, platform, linuxIdentity, {

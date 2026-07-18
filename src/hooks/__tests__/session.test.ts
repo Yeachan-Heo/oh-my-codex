@@ -11,12 +11,14 @@ import {
   __setSessionPointerTransactionDependenciesForTests,
   isSessionPointerLaunchAbort,
   isSessionStale,
+  readNativeSessionOwner,
   readSessionPointer,
   readSessionState,
   readUsableSessionState,
   reconcileNativeSessionStart,
   resetSessionMetrics,
   resolveSessionPointerContext,
+  writeNativeSessionOwner,
   writeSessionEnd,
   writeSessionStart,
   type SessionState,
@@ -308,17 +310,14 @@ describe('session lifecycle manager', () => {
         nativeSessionId: 'codex-native-old',
       });
 
-      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-new', {
-        pid: 54321,
-        platform: 'win32',
-      });
+      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-new');
 
       assert.equal(reconciled.session_id, 'codex-native-new');
       assert.equal(reconciled.native_session_id, 'codex-native-new');
       assert.equal(reconciled.previous_native_session_id, 'codex-native-old');
       assert.equal(reconciled.owner_omx_session_id, 'omx-old-session');
       assert.match(reconciled.native_session_switched_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
-      assert.equal(reconciled.pid, 54321);
+      assert.equal(reconciled.pid, process.pid);
 
       const persisted = await readSessionState(cwd);
       assert.equal(persisted?.session_id, 'codex-native-new');
@@ -477,15 +476,12 @@ describe('session lifecycle manager', () => {
         nativeSessionId: 'codex-native-old',
       });
 
-      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-new', {
-        pid: 54321,
-        platform: 'win32',
-      });
+      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-new');
 
       assert.equal(reconciled.session_id, 'codex-native-new');
       assert.equal(reconciled.native_session_id, 'codex-native-new');
       assert.equal(reconciled.previous_native_session_id, undefined);
-      assert.equal(reconciled.pid, 54321);
+      assert.equal(reconciled.pid, process.pid);
 
       const persisted = await readSessionState(cwd);
       assert.equal(persisted?.session_id, 'codex-native-new');
@@ -1112,6 +1108,141 @@ describe('session pointer transaction', () => {
         });
         assert.equal(replacement.session_id, 'native-second');
         assert.equal(replacement.owner_omx_session_id, 'omx-owner');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps native session owner sidecars isolated and rejects live cross-process reuse', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-sidecar-'));
+    try {
+      await withPointerDependencies({ probePid: () => 'alive' }, async () => {
+        const first = await writeNativeSessionOwner(
+          cwd,
+          'native-owner-a',
+          { pid: 11, platform: 'win32' },
+        );
+        const second = await writeNativeSessionOwner(
+          cwd,
+          'native-owner-b',
+          { pid: 22, platform: 'win32' },
+        );
+        assert.equal(first.pid, 11);
+        assert.equal(second.pid, 22);
+        assert.equal((await readNativeSessionOwner(cwd, 'native-owner-a'))?.pid, 11);
+        assert.equal((await readNativeSessionOwner(cwd, 'native-owner-b'))?.pid, 22);
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-a',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces only stale-dead owner evidence and preserves malformed evidence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-recovery-'));
+    try {
+      await withPointerDependencies({
+        probePid: (pid) => pid === 11 ? 'dead' : 'alive',
+      }, async () => {
+        await writeNativeSessionOwner(
+          cwd,
+          'native-owner-recovery',
+          { pid: 11, platform: 'win32' },
+        );
+        const recovered = await writeNativeSessionOwner(
+          cwd,
+          'native-owner-recovery',
+          { pid: 22, platform: 'win32' },
+        );
+        assert.equal(recovered.pid, 22);
+
+        const malformedDir = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-malformed',
+        );
+        await mkdir(malformedDir, { recursive: true });
+        const malformedPath = join(malformedDir, 'session-owner.json');
+        await writeFile(malformedPath, '{ malformed', 'utf-8');
+        assert.equal(await readNativeSessionOwner(cwd, 'native-owner-malformed'), null);
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-malformed',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_unusable'
+            && error.pointerStatus === 'malformed',
+        );
+
+        const forgedDir = join(
+          cwd,
+          '.omx',
+          'state',
+          'sessions',
+          'native-owner-forged',
+        );
+        await mkdir(forgedDir, { recursive: true });
+        const forgedPath = join(forgedDir, 'session-owner.json');
+        await writeFile(forgedPath, JSON.stringify({
+          session_id: 'native-owner-other',
+          native_session_id: 'native-owner-other',
+          started_at: new Date().toISOString(),
+          cwd,
+          pid: 22,
+          platform: 'win32',
+        }), 'utf-8');
+        const forgedBefore = await readFile(forgedPath, 'utf-8');
+        assert.equal(await readNativeSessionOwner(cwd, 'native-owner-forged'), null);
+        await assert.rejects(
+          writeNativeSessionOwner(
+            cwd,
+            'native-owner-forged',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+        assert.equal(await readFile(forgedPath, 'utf-8'), forgedBefore);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects cross-process native reconciliation while preserving the live selected pointer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-cross-process-selected-'));
+    try {
+      await withPointerDependencies({ probePid: () => 'alive' }, async () => {
+        await writeSessionStart(cwd, 'native-selected-a', {
+          nativeSessionId: 'native-selected-a',
+          pid: 11,
+          platform: 'win32',
+        });
+        const context = resolveSessionPointerContext(cwd);
+        const before = await readFile(context.sessionPath, 'utf-8');
+        await assert.rejects(
+          reconcileNativeSessionStart(
+            cwd,
+            'native-selected-b',
+            { pid: 22, platform: 'win32' },
+          ),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+        assert.equal(await readFile(context.sessionPath, 'utf-8'), before);
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
