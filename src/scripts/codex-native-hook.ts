@@ -19338,7 +19338,7 @@ async function buildStopHookOutput(
   const threadId = readPayloadThreadId(payload);
   const suppressParentWorkflowStop = shouldSuppressParentWorkflowStopForSideConversation(payload);
   if (options.sessionScopedOnly) {
-    if (!canonicalSessionId || suppressParentWorkflowStop) return null;
+    if (!canonicalSessionId) return null;
     for (const mode of ["autopilot", "ultrawork", "ultraqa"] as const) {
       const modeOutput = await buildModeBasedStopOutput(
         mode,

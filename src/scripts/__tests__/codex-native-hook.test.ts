@@ -246,6 +246,7 @@ async function withIndependentStopFixture(
 				cwd,
 				session_id: sessionId,
 				thread_id: threadId,
+				last_assistant_message: "Reference context only.",
 			},
 			{ cwd },
 		);
