@@ -4,7 +4,8 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, dirname, join, posix, resolve, win32 } from "path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "path";
+
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
@@ -6750,6 +6751,7 @@ function canonicalizePathForRunDirMatch(p: string): string {
   }
 }
 
+
 async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFileRef[]> {
   const runsRoot = resolveMadmaxRunsRoot(process.env);
   const registryPath = join(runsRoot, "registry.jsonl");
@@ -6771,16 +6773,14 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
 
     try {
       if (
-        canonicalizePathForRunDirMatch(sourceCwd) !== canonicalCwd &&
-        (!worktreeCwd || canonicalizePathForRunDirMatch(worktreeCwd) !== canonicalCwd)
+        canonicalizePathForRunDirMatch(sourceCwd) !== canonicalCwd
+        && (!worktreeCwd || canonicalizePathForRunDirMatch(worktreeCwd) !== canonicalCwd)
       ) return;
       const resolvedRunDir = resolve(runDir);
       if (
         resolvedRunDir !== canonicalRunsRoot
         && !resolvedRunDir.startsWith(`${canonicalRunsRoot}/`)
-      ) {
-        return;
-      }
+      ) return;
       runDirs.add(resolvedRunDir);
     } catch {
       return;
@@ -6845,6 +6845,65 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
   return refs.sort((a, b) => a.mode.localeCompare(b.mode));
 }
 
+async function listAuthorizedHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFileRef[]> {
+  const runsRoot = resolveMadmaxRunsRoot(process.env);
+  const activeDir = join(runsRoot, MADMAX_DETACHED_ACTIVE_DIR);
+  const canonicalCwd = canonicalizePathForRunDirMatch(cwd);
+  let canonicalRunsRoot: string;
+  try {
+    canonicalRunsRoot = realpathSync(resolve(runsRoot));
+  } catch {
+    return [];
+  }
+
+  const candidates: Array<{ runDir: string; sessionId: string }> = [];
+  const files = await readdir(activeDir).catch(() => [] as string[]);
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const record = readMadmaxDetachedActiveRecord(join(activeDir, file));
+    if (!record || file !== `${record.context_key}.json`) continue;
+    if (!isReusableMadmaxDetachedActiveRecord(record)) continue;
+    if (
+      canonicalizePathForRunDirMatch(record.source_cwd) !== canonicalCwd
+      && (!record.worktree_cwd || canonicalizePathForRunDirMatch(record.worktree_cwd) !== canonicalCwd)
+    ) continue;
+    if (!record.session_id) continue;
+
+    let canonicalRunDir: string;
+    try {
+      canonicalRunDir = realpathSync(resolve(record.run_dir));
+    } catch {
+      continue;
+    }
+    const runRelative = relative(canonicalRunsRoot, canonicalRunDir);
+    if (runRelative === ".." || runRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(runRelative)) {
+      continue;
+    }
+
+    const stateDir = join(canonicalRunDir, ".omx", "state");
+    try {
+      const session = JSON.parse(await readFile(join(stateDir, "session.json"), "utf-8")) as Record<string, unknown>;
+      if (session.session_id !== record.session_id) continue;
+    } catch {
+      continue;
+    }
+    candidates.push({ runDir: canonicalRunDir, sessionId: record.session_id });
+  }
+
+  if (candidates.length !== 1) return [];
+  const [{ runDir, sessionId }] = candidates;
+  const sessionDir = join(runDir, ".omx", "state", "sessions", sessionId);
+  const stateFiles = await readdir(sessionDir).catch(() => [] as string[]);
+  return stateFiles
+    .filter((file) => file.endsWith("-state.json") && file !== "session.json")
+    .map((file) => ({
+      mode: file.slice(0, -"-state.json".length),
+      path: join(sessionDir, file),
+      scope: "session" as const,
+    }))
+    .sort((a, b) => a.mode.localeCompare(b.mode));
+}
+
 async function cancelModes(args: string[] = []): Promise<void> {
   const { writeFile, readFile } = await import("fs/promises");
   const cwd = process.cwd();
@@ -6907,7 +6966,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
       && !hasActiveWorkflowMode(states)
       && !hasPreferredSessionStateFiles
     ) {
-      const runDirStates = await loadStates(await listHookVisibleRunDirStateRefs(cwd));
+      const runDirStates = await loadStates(await listAuthorizedHookVisibleRunDirStateRefs(cwd));
       if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
     }
 
