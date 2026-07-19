@@ -3043,7 +3043,6 @@ if (command !== "launch" && command !== "resume") {
       return;
     }
 
-    activateMadmaxIsolationIfNeeded(command, launchArgs, process.cwd(), process.env);
 
     switch (command) {
       case "__detached-session-leader": {
@@ -5791,6 +5790,7 @@ async function runCodex(
         if (Date.now() >= readyDeadline) throw new DetachedLaunchSafetyError("barrier-release", new Error("detached leader readiness timed out"), detachedPreflight.report);
         blockMs(20);
       }
+      rmSync(releaseMarkerPath, { force: true });
       if (attachStep) execTmuxFileSync(attachStep.args, { stdio: "inherit" });
       return { postLaunchHandledExternally: true };
     };
@@ -6022,7 +6022,6 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (bytes === ownedRecord.bytes && digest === ownedRecord.digest) rmSync(activeRecordPath, { force: true });
     }
-    if (payload.readyPath) rmSync(payload.readyPath, { force: true });
   } catch (error) {
     const finalization = await finalizeBoundOnce(binding, "detached-pre-release-failure", payload.cwd).catch(() => undefined);
     if (finalization?.finalized && ownedRecord) {
@@ -6032,7 +6031,6 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
         if (bytes === ownedRecord.bytes && digest === ownedRecord.digest) rmSync(activeRecordPath, { force: true });
       } catch {}
     }
-    if (payload.readyPath) rmSync(payload.readyPath, { force: true });
     throw error;
   } finally {
     await closeLaunchSessionBindingOnce(binding);

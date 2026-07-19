@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -90,6 +90,21 @@ async function createGitRepo(wd: string): Promise<string> {
 async function writeExecutable(path: string, content: string): Promise<void> {
   await writeFile(path, content);
   await chmod(path, 0o755);
+}
+async function wrapFakeTmuxWithDetachedLeader(fakeTmuxPath: string): Promise<void> {
+  const implementationPath = `${fakeTmuxPath}.impl`;
+  await rename(fakeTmuxPath, implementationPath);
+  await writeExecutable(fakeTmuxPath, `#!/bin/sh
+output=$(${JSON.stringify(implementationPath)} "$@")
+status=$?
+printf '%s' "$output"
+if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
+  for last_arg do :; done
+  pane=$(printf '%s' "$output" | sed -n '1p')
+  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+fi
+exit "$status"
+`);
 }
 
 async function createLaunchFixture(
@@ -884,17 +899,20 @@ exit 0
       const second = runOmx(wd, ['--madmax', '--tmux'], baseEnv);
       if (shouldSkipForSpawnPermissions(second.error)) return;
       assert.equal(second.status, 0, second.error || second.stderr || second.stdout);
-      assert.doesNotMatch(second.stderr, /madmax detached launch already active/);
+      assert.match(second.stderr, /madmax detached launch already active for this context/);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
-      assert.equal(existsSync(join(runs, 'active-detached', 'boxed-context-under-test.json')), false);
+      assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 1);
+      const activeRecord = await readFile(join(runs, 'active-detached', 'boxed-context-under-test.json'), 'utf-8');
+      assert.match(activeRecord, /"leader_pid"/);
+      assert.match(activeRecord, /"base_state_root"/);
+      assert.match(activeRecord, /"lifecycle_phase": "ready"/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('keeps boxed runtime identity in leader launch environment without outer active records', async () => {
+  it('records boxed runtime identity in the leader-owned active record', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-worktree-detached-'));
     try {
       const repo = await createGitRepo(wd);
@@ -963,7 +981,13 @@ exit 0
       if (shouldSkipForSpawnPermissions(result.error)) return;
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
 
-      assert.deepEqual(await readdir(join(runs, 'active-detached')), []);
+      const activeFiles = await readdir(join(runs, 'active-detached'));
+      assert.equal(activeFiles.length, 1);
+      const activeRecord = JSON.parse(await readFile(join(runs, 'active-detached', activeFiles[0]!), 'utf-8')) as { source_cwd: string; worktree_cwd?: string; leader_pid?: number; lifecycle_phase?: string };
+      const worktreePath = join(dirname(repo), `${basename(repo)}.omx-worktrees`, 'launch-detached');
+      assert.equal(normalizeDarwinTmpPath(activeRecord.source_cwd), normalizeDarwinTmpPath(worktreePath));
+      assert.equal(typeof activeRecord.leader_pid, 'number');
+      assert.equal(activeRecord.lifecycle_phase, 'ready');
       const tmuxLog = normalizeDarwinTmpPath(await readFile(tmuxLogPath, 'utf-8'));
       assert.match(tmuxLog, /__detached-session-leader/);
       assert.match(tmuxLog, /-e OMXBOX_ACTIVE=1/);
@@ -1106,7 +1130,7 @@ exit 0
         registryEntries[1]!.detached_launch_context,
         'independent launches must get distinct active-detached lock identities',
       );
-      assert.deepEqual(await readdir(join(runs, 'active-detached')), []);
+      assert.equal((await readdir(join(runs, 'active-detached'))).length, 2);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
@@ -1210,6 +1234,7 @@ exit 0
 `,
       );
       await chmod(fakeTmuxPath, 0o755);
+      await wrapFakeTmuxWithDetachedLeader(fakeTmuxPath);
 
       const result = runOmx(
         wd,
@@ -1300,6 +1325,7 @@ case "$1" in
       TERMINFO=/tmp/server-terminfo \
       TERMINFO_DIRS=/tmp/server-terminfo-dirs \
       TERMCAP=server-termcap \
+      nohup /bin/sh -c "$last" </dev/null >/tmp/omx-test-provider-leader.log 2>&1 &
     printf '%%12\n'
     exit 0
     ;;
@@ -1581,6 +1607,7 @@ exit 0
 `,
       );
       await chmod(fakeTmuxPath, 0o755);
+      await wrapFakeTmuxWithDetachedLeader(fakeTmuxPath);
 
       const result = runOmx(
         wd,
@@ -1653,6 +1680,7 @@ exit 1
 `,
       );
       await chmod(fakeTmuxPath, 0o755);
+      await wrapFakeTmuxWithDetachedLeader(fakeTmuxPath);
 
       const result = runOmx(
         wd,
@@ -1745,6 +1773,7 @@ exit 0
 `,
       );
       await chmod(fakeTmuxPath, 0o755);
+      await wrapFakeTmuxWithDetachedLeader(fakeTmuxPath);
 
       const result = runOmx(
         wd,
@@ -1902,6 +1931,7 @@ exit 0
 `,
       );
       await chmod(fakeTmuxPath, 0o755);
+      await wrapFakeTmuxWithDetachedLeader(fakeTmuxPath);
 
       const result = runOmx(
         wd,
@@ -1993,6 +2023,7 @@ exit 0
 `,
       );
       await chmod(fakeTmuxPath, 0o755);
+      await wrapFakeTmuxWithDetachedLeader(fakeTmuxPath);
 
       const result = runOmx(
         wd,
@@ -2065,7 +2096,8 @@ exit 0
       assert.equal(exitCode, 0);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), false);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'detached-active-record.json')), false);
-      assert.equal(existsSync(readyPath), false);
+      assert.equal(existsSync(readyPath), true);
+      await rm(readyPath, { force: true });
       assert.match(await readFile(join(wd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'), new RegExp(sessionId));
     } finally {
       await rm(wd, { recursive: true, force: true });
