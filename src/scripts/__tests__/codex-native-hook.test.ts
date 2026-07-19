@@ -35,6 +35,7 @@ import {
 	resolveSessionOwnerPidFromAncestry,
 } from "../codex-native-hook.js";
 import { writeSessionStart } from "../../hooks/session.js";
+import { neutralizeOwnedRoutingRalplan } from '../../ralplan/documented-leader-preflight.js';
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 import { executeStateOperation } from "../../state/operations.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../../hud/constants.js";
@@ -3925,6 +3926,26 @@ PY`,
     }
   });
 
+  it('does not advertise a neutralized Ralplan seed in SessionStart context', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-native-hook-neutralized-ralplan-'));
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    try {
+      const sessionId = 'neutralized-session';
+      await writeSessionStart(cwd, sessionId);
+      const directory = join(cwd, '.omx', 'state', 'sessions', sessionId);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, 'ralplan-state.json'), JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'planning', started_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId }));
+      await writeFile(join(directory, 'skill-active-state.json'), JSON.stringify({ version: 1, active: true, skill: 'ralplan', keyword: '$RALPLAN', phase: 'planning', activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', source: 'keyword-detector', session_id: sessionId, initialized_mode: 'ralplan', initialized_state_path: `.omx/state/sessions/${sessionId}/ralplan-state.json`, active_skills: [{ skill: 'ralplan', active: true, phase: 'planning', activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId }] }));
+      process.env.OMX_SESSION_ID = sessionId;
+      assert.equal(await neutralizeOwnedRoutingRalplan(cwd), true);
+      const result = await dispatchCodexNativeHook({ hook_event_name: 'SessionStart', cwd, session_id: sessionId }, { cwd });
+      const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput?.additionalContext ?? '');
+      assert.doesNotMatch(context, /- ralplan phase:/);
+    } finally {
+      previousSessionId === undefined ? delete process.env.OMX_SESSION_ID : process.env.OMX_SESSION_ID = previousSessionId;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   it("reconciles native SessionStart on Windows EPERM with one degraded-durability warning", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-start-windows-eperm-"));
     const originalWrite = process.stderr.write;

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { readModeState } from '../../modes/base.js';
 import { readSkillActiveState } from '../../state/skill-active.js';
+import { recordSkillActivation } from '../../hooks/keyword-detector.js';
 import {
   UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE, UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE,
   evaluateCodex01445PreToolUse, neutralizeOwnedRoutingRalplan, parseCodex01445AdaptedRoleIntentCommand,
@@ -26,7 +27,7 @@ describe('Codex 0.144.5 adapted role-intent preflight', () => {
 });
 
 interface Fixture { cwd: string; sessionId: string; directory: string; ralplanPath: string; skillPath: string; ralplan: Buffer; skill: Buffer; }
-function clear(): void { delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail; delete RALPLAN_NEUTRALIZE_TEST_SEAM.random; delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync; }
+function clear(): void { delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail; delete RALPLAN_NEUTRALIZE_TEST_SEAM.random; delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync; delete RALPLAN_NEUTRALIZE_TEST_SEAM.afterPin; delete RALPLAN_NEUTRALIZE_TEST_SEAM.onError; }
 async function fixture(): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-generation-')); const sessionId = 'owned-session';
   const directory = join(cwd, '.omx', 'state', 'sessions', sessionId); const ralplanPath = join(directory, 'ralplan-state.json'); const skillPath = join(directory, 'skill-active-state.json');
@@ -151,5 +152,42 @@ describe('documented leader immutable neutralization generation', () => {
     await writeFile(dataPath, `${JSON.stringify(data)}\n`);
     await visibleNeutralized(f);
     await originals(f);
+  }));
+  for (const keyword of ['$RALPLAN', '$oh-my-codex:ralplan', '$OH-MY-CODEX:RALPLAN', 'CONSENSUS PLAN'] as const) {
+    it(`neutralizes the real producer's normalized Ralplan keyword ${keyword}`, async () => withFixture(async (f) => {
+      const activated = await recordSkillActivation({ stateDir: join(f.cwd, '.omx', 'state'), sourceCwd: f.cwd, sessionId: f.sessionId, threadId: 'thread', turnId: 'turn', text: keyword, nowIso: '2026-01-01T00:00:00.000Z' });
+      assert.ok(activated);
+      assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await visibleNeutralized(f);
+    }));
+  }
+  it('rejects an unrelated explicit keyword without publishing an overlay', async () => withFixture(async (f) => {
+    const skill = JSON.parse(await readFile(f.skillPath, 'utf8')); skill.keyword = '$team'; await writeFile(f.skillPath, JSON.stringify(skill));
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); assert.equal((await generations(f)).length, 0);
+  }));
+  for (const [target, field, value] of [
+    ['ralplan', 'session_id', 'pointer-alias'],
+    ['skill', 'session_id', 'pointer-alias'],
+    ['entry', 'session_id', 'pointer-alias'],
+    ['ralplan', 'thread_id', 'different-thread'],
+    ['skill', 'turn_id', 'different-turn'],
+    ['entry', 'owner_codex_session_id', 'different-owner'],
+  ] as const) {
+    it(`rejects pair identity mismatch in ${target}.${field}`, async () => withFixture(async (f) => {
+      const ralplan = JSON.parse(await readFile(f.ralplanPath, 'utf8')); const skill = JSON.parse(await readFile(f.skillPath, 'utf8'));
+      const state = target === 'ralplan' ? ralplan : target === 'skill' ? skill : skill.active_skills[0]; state[field] = value;
+      await Promise.all([writeFile(f.ralplanPath, JSON.stringify(ralplan)), writeFile(f.skillPath, JSON.stringify(skill))]);
+      assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); assert.equal((await generations(f)).length, 0);
+      await mintCommittedGeneration(f); assert.equal((await readModeState('ralplan', f.cwd))?.active, true);
+    }));
+  }
+  it('pins the session directory before a parent-path swap', async () => withFixture(async (f) => {
+    const parked = `${f.directory}-parked`; const foreign = join(f.cwd, 'foreign-session');
+    await mkdir(foreign); await writeFile(join(foreign, 'ralplan-state.json'), 'foreign-ralplan'); await writeFile(join(foreign, 'skill-active-state.json'), 'foreign-skill');
+    const before = await Promise.all([readFile(join(foreign, 'ralplan-state.json')), readFile(join(foreign, 'skill-active-state.json'))]);
+    RALPLAN_NEUTRALIZE_TEST_SEAM.afterPin = async () => { await rename(f.directory, parked); await symlink(foreign, f.directory); };
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true);
+    assert.deepEqual(await Promise.all([readFile(join(foreign, 'ralplan-state.json')), readFile(join(foreign, 'skill-active-state.json'))]), before);
+    assert.equal((await readdir(foreign)).some((name) => name.startsWith('.ralplan-neutralization-')), false);
+    assert.ok((await readdir(parked)).some((name) => name.startsWith('.ralplan-neutralization-')));
   }));
 });
