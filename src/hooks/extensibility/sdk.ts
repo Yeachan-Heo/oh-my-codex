@@ -10,6 +10,7 @@ interface HookPluginSdkOptions {
   pluginName: string;
   event: HookEventEnvelope;
   sideEffectsEnabled?: boolean;
+  stateRoot?: string;
 }
 
 export function createHookPluginSdk(options: HookPluginSdkOptions): HookPluginSdk {
@@ -22,7 +23,7 @@ export function createHookPluginSdk(options: HookPluginSdkOptions): HookPluginSd
     }),
     log: createHookPluginLogger(options.cwd, pluginName, options.event),
     state: createHookPluginStateApi(options.cwd, pluginName),
-    omx: createHookPluginOmxApi(options.cwd),
+    omx: createHookPluginOmxApi(options.cwd, options.stateRoot, options.event.session_id),
   };
 }
 

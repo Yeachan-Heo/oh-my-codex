@@ -1403,7 +1403,7 @@ describe('teamCommand shutdown --force parsing', () => {
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(
         join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({ session_id: 'sess-team-shutdown-state' }),
+        JSON.stringify({ session_id: 'sess-team-shutdown-state', cwd: wd, state_root: join(wd, '.omx', 'state') }),
       );
       await initTeamState(
         'team-shutdown-mode-state',

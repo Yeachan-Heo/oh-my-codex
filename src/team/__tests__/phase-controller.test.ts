@@ -61,6 +61,28 @@ describe('phase-controller', () => {
     assert.ok(next.transitions.some((t) => t.from === 'complete' && t.to === 'team-exec'));
   });
 
+  it('does not reopen a phase after terminal epoch begins', () => {
+    const terminal = {
+      current_phase: 'complete' as const,
+      max_fix_attempts: 3,
+      current_fix_attempt: 0,
+      transitions: [],
+      updated_at: '2026-07-19T00:00:00.000Z',
+      terminal_epoch: '2026-07-19T00:00:00.000Z',
+      terminal_reason: 'shutdown_gate_passed',
+      final_task_counts: {
+        total: 1,
+        pending: 0,
+        blocked: 0,
+        in_progress: 0,
+        completed: 1,
+        failed: 0,
+      },
+    };
+
+    assert.deepEqual(reconcilePhaseStateForMonitor(terminal, 'team-exec'), terminal);
+  });
+
   it('moves team-exec to team-verify when verification is pending', () => {
     const next = reconcilePhaseStateForMonitor(
       {

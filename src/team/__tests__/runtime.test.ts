@@ -16,6 +16,7 @@ import {
   readTeamConfig,
   saveTeamConfig,
   listMailboxMessages,
+  sendDirectMessage,
   listDispatchRequests,
   transitionDispatchRequest,
   updateWorkerHeartbeat,
@@ -26,6 +27,8 @@ import {
   transitionTaskStatus,
   readWorkerStatus,
   writeWorkerStatus,
+  readTeamPhase,
+  writeTeamPhase,
 } from '../state.js';
 import {
   monitorTeam,
@@ -45,6 +48,7 @@ import {
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   type TeamRuntime,
   setDetachedSessionDestroyAfterJournalHookForTest,
+  setTerminalEpochStartedHookForTest,
 } from '../runtime.js';
 import {
   resolveAgentReasoningEffort,
@@ -657,6 +661,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setTerminalEpochStartedHookForTest(null);
   if (typeof ORIGINAL_OMX_TEAM_STATE_ROOT === 'string') process.env.OMX_TEAM_STATE_ROOT = ORIGINAL_OMX_TEAM_STATE_ROOT;
   else delete process.env.OMX_TEAM_STATE_ROOT;
 });
@@ -7021,6 +7026,158 @@ exec "${realGit}" "$@"
     }
   });
 
+  it('follow-up created before terminal epoch blocks shutdown without starting the epoch', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-terminal-before-'));
+    try {
+      await initTeamState('team-terminal-before', 'terminal boundary before test', 'executor', 1, cwd);
+      await createTask(
+        'team-terminal-before',
+        { subject: 'valid follow-up', description: 'must block shutdown', status: 'pending' },
+        cwd,
+      );
+
+      await assert.rejects(
+        () => shutdownTeam('team-terminal-before', cwd),
+        /shutdown_gate_blocked:pending=1,blocked=0,in_progress=0,failed=0/,
+      );
+
+      const phase = await readTeamPhase('team-terminal-before', cwd);
+      assert.equal(phase?.terminal_epoch, undefined);
+      assert.equal(phase?.terminal_reason, undefined);
+      assert.equal((await readTask('team-terminal-before', '1', cwd))?.status, 'pending');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('terminal epoch rejects duplicate late assignment and task creation without stale delivery', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-terminal-after-'));
+    let releaseEpoch!: () => void;
+    let observeEpoch!: () => void;
+    const epochObserved = new Promise<void>((resolve) => { observeEpoch = resolve; });
+    const epochRelease = new Promise<void>((resolve) => { releaseEpoch = resolve; });
+    try {
+      await initTeamState('team-terminal-after', 'terminal boundary after test', 'executor', 1, cwd);
+      const task = await createTask(
+        'team-terminal-after',
+        { subject: 'forced follow-up', description: 'must not leak after epoch', status: 'pending' },
+        cwd,
+      );
+      await markDetachedSessionAbsent('team-terminal-after', cwd);
+
+      let capturedReason: string | undefined;
+      let capturedCounts: Record<string, number> | undefined;
+      setTerminalEpochStartedHookForTest(async (_teamName, _cwd, phase) => {
+        capturedReason = phase.terminal_reason;
+        capturedCounts = phase.final_task_counts;
+        observeEpoch();
+        await epochRelease;
+      });
+
+      const shutdown = shutdownWithoutTmuxSession('team-terminal-after', cwd, { force: true });
+      await epochObserved;
+
+      const attempts = await Promise.allSettled([
+        assignTask('team-terminal-after', 'worker-1', task.id, cwd),
+        assignTask('team-terminal-after', 'worker-1', task.id, cwd),
+        createTask(
+          'team-terminal-after',
+          { subject: 'too late', description: 'must require continuation', status: 'pending' },
+          cwd,
+        ),
+      ]);
+      const diagnostics = attempts.map((attempt) => {
+        assert.equal(attempt.status, 'rejected');
+        return String((attempt as PromiseRejectedResult).reason?.message ?? (attempt as PromiseRejectedResult).reason);
+      });
+      assert.equal(new Set(diagnostics).size, 1);
+      assert.match(
+        diagnostics[0] ?? '',
+        /^team_continuation_required:terminal_epoch=.*:reason=forced_shutdown:action=reopen_or_start_continuation$/,
+      );
+      assert.equal(capturedReason, 'forced_shutdown');
+      assert.deepEqual(capturedCounts, {
+        total: 1,
+        pending: 1,
+        blocked: 0,
+        in_progress: 0,
+        completed: 0,
+        failed: 0,
+      });
+      assert.equal((await readTask('team-terminal-after', task.id, cwd))?.status, 'pending');
+      assert.equal((await listMailboxMessages('team-terminal-after', 'worker-1', cwd)).length, 0);
+      assert.equal((await listDispatchRequests('team-terminal-after', cwd, { kind: 'inbox' })).length, 0);
+
+      releaseEpoch();
+      await shutdown;
+    } finally {
+      releaseEpoch?.();
+      setTerminalEpochStartedHookForTest(null);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('terminal watcher phase rejects assignment with one continuation diagnostic', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-terminal-watcher-'));
+    try {
+      await initTeamState('team-terminal-watcher', 'terminal watcher test', 'executor', 1, cwd);
+      const task = await createTask(
+        'team-terminal-watcher',
+        { subject: 'late watcher work', description: 'worker has exited', status: 'pending' },
+        cwd,
+      );
+      const staleMessage = await sendDirectMessage(
+        'team-terminal-watcher',
+        'leader-fixed',
+        'worker-1',
+        'stale follow-up assignment',
+        cwd,
+      );
+      await updateWorkerHeartbeat('team-terminal-watcher', 'worker-1', {
+        pid: process.pid,
+        alive: true,
+        last_turn_at: new Date().toISOString(),
+        turn_count: 1,
+      }, cwd);
+      const phase = await readTeamPhase('team-terminal-watcher', cwd);
+      assert.ok(phase);
+      await writeTeamPhase('team-terminal-watcher', {
+        ...phase!,
+        current_phase: 'complete',
+        updated_at: '2026-07-19T00:00:00.000Z',
+        terminal_epoch: '2026-07-19T00:00:00.000Z',
+        terminal_reason: 'shutdown_gate_passed',
+        final_task_counts: {
+          total: 1,
+          pending: 1,
+          blocked: 0,
+          in_progress: 0,
+          completed: 0,
+          failed: 0,
+        },
+      }, cwd);
+
+      await assert.rejects(
+        () => assignTask('team-terminal-watcher', 'worker-1', task.id, cwd),
+        (error: unknown) => {
+          assert.equal(
+            (error as Error).message,
+            'team_continuation_required:terminal_epoch=2026-07-19T00:00:00.000Z:reason=shutdown_gate_passed:action=reopen_or_start_continuation',
+          );
+          return true;
+        },
+      );
+      await monitorTeam('team-terminal-watcher', cwd);
+      assert.equal((await readTask('team-terminal-watcher', task.id, cwd))?.status, 'pending');
+      const mailbox = await listMailboxMessages('team-terminal-watcher', 'worker-1', cwd);
+      assert.equal(mailbox.length, 1);
+      assert.equal(mailbox[0]?.message_id, staleMessage.message_id);
+      assert.equal(mailbox[0]?.notified_at, undefined);
+      assert.equal((await listDispatchRequests('team-terminal-watcher', cwd, { kind: 'inbox' })).length, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   it('shutdownTeam honors governance cleanup override when active tasks remain', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-override-'));
     try {

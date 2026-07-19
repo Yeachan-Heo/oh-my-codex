@@ -203,6 +203,7 @@ export type HookDispatchSummary = HookDispatchResult;
 
 export interface HookDispatchOptions {
   cwd?: string;
+  stateRoot?: string;
   event?: HookEventEnvelope;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;

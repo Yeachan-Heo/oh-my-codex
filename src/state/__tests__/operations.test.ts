@@ -866,7 +866,7 @@ describe('state operations directory initialization', () => {
       const sessionId = 'sess-clear';
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }, null, 2));
       await writeFile(
         join(stateDir, 'deep-interview-state.json'),
         JSON.stringify({ active: true, mode: 'deep-interview', current_phase: 'legacy-root' }, null, 2),
@@ -992,7 +992,7 @@ describe('state operations directory initialization', () => {
       const sessionId = 'sess-terminal-implicit';
       const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(wd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: join(wd, '.omx', 'state') }, null, 2));
       await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
         active: true,
         current_phase: 'deep-interview',
@@ -5338,7 +5338,7 @@ describe('state operations directory initialization', () => {
       const sessionId = 'sess-resume-root-fallback';
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }, null, 2));
       await writeFile(
         join(stateDir, 'ralph-state.json'),
         JSON.stringify({

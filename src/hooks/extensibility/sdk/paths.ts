@@ -23,6 +23,6 @@ export function hookPluginLogPath(cwd: string, now = new Date()): string {
   return join(omxRoot(cwd), 'logs', `hooks-${day}.jsonl`);
 }
 
-export function omxRootStateFilePath(cwd: string, fileName: string): string {
-  return join(omxRoot(cwd), 'state', fileName);
+export function omxRootStateFilePath(cwd: string, fileName: string, stateRoot?: string): string {
+  return join(stateRoot ?? join(omxRoot(cwd), 'state'), fileName);
 }

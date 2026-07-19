@@ -14,6 +14,7 @@ import {
   getAllSessionScopedStatePaths,
   getReadScopedStateFilePaths,
   readCurrentSessionId,
+  readSessionMetadataFromBaseStateDir,
   resolveRuntimeStateScope,
   resolveStateScope,
   resolveWritableStateScope,
@@ -157,6 +158,173 @@ describe('state paths', () => {
       else delete process.env.OMX_STATE_ROOT;
       if (typeof prevTeamRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;
+    }
+  });
+
+  it('uses the ancestor session pointer matching OMX_SESSION_ID as the authoritative root', async () => {
+    const parent = await mkRealTemp('omx-state-authority-parent-');
+    const nested = join(parent, 'nested', 'project');
+    const parentState = join(parent, '.omx', 'state');
+    const nestedState = join(nested, '.omx', 'state');
+    try {
+      await mkdir(parentState, { recursive: true });
+      await mkdir(nestedState, { recursive: true });
+      await writeFile(join(parentState, 'session.json'), JSON.stringify({ session_id: 'sess-parent', cwd: parent, state_root: parentState }));
+      await writeFile(join(nestedState, 'session.json'), JSON.stringify({ session_id: 'sess-nested', cwd: nested }));
+      process.env.OMX_SESSION_ID = 'sess-parent';
+
+      assert.deepEqual(getBaseStateDirWithSource(nested), {
+        baseStateDir: parentState,
+        rootSource: 'session-authority',
+      });
+      const writable = await resolveWritableStateScope(nested);
+      assert.equal(writable.stateDir, join(parentState, 'sessions', 'sess-parent'));
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a live legacy ancestor pointer when its inferred root matches exactly', async () => {
+    const parent = await mkRealTemp('omx-state-authority-legacy-');
+    const nested = join(parent, 'nested');
+    const parentState = join(parent, '.omx', 'state');
+    try {
+      await mkdir(parentState, { recursive: true });
+      await mkdir(nested, { recursive: true });
+      await writeFile(join(parentState, 'session.json'), JSON.stringify({ session_id: 'sess-legacy', cwd: parent }));
+      process.env.OMX_SESSION_ID = 'sess-legacy';
+
+      assert.deepEqual(getBaseStateDirWithSource(nested), {
+        baseStateDir: parentState,
+        rootSource: 'session-authority',
+      });
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects pointers whose persisted or inferred root does not own the selected base', async () => {
+    const cwd = await mkRealTemp('omx-state-pointer-root-owner-');
+    const selectedState = join(cwd, 'selected-state');
+    const claimedState = join(cwd, 'claimed-state');
+    try {
+      await mkdir(selectedState, { recursive: true });
+      await writeFile(join(selectedState, 'session.json'), JSON.stringify({
+        session_id: 'sess-mismatch',
+        cwd,
+        state_root: claimedState,
+      }));
+      assert.equal(await readSessionMetadataFromBaseStateDir(cwd, selectedState), undefined);
+
+      await writeFile(join(selectedState, 'session.json'), JSON.stringify({ session_id: 'sess-legacy-explicit', cwd }));
+      assert.equal(await readSessionMetadataFromBaseStateDir(cwd, selectedState), undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails explicitly when multiple ancestor pointers claim the same session authority', async () => {
+    const parent = await mkRealTemp('omx-state-authority-conflict-');
+    const nested = join(parent, 'nested');
+    const parentState = join(parent, '.omx', 'state');
+    const nestedState = join(nested, '.omx', 'state');
+    try {
+      await mkdir(parentState, { recursive: true });
+      await mkdir(nestedState, { recursive: true });
+      await writeFile(join(parentState, 'session.json'), JSON.stringify({ session_id: 'sess-conflict', cwd: parent, state_root: parentState }));
+      await writeFile(join(nestedState, 'session.json'), JSON.stringify({ session_id: 'sess-conflict', cwd: nested, state_root: nestedState }));
+      process.env.OMX_SESSION_ID = 'sess-conflict';
+
+      assert.throws(
+        () => getBaseStateDirWithSource(nested),
+        new RegExp(`Conflicting authoritative state roots.*${parentState}.*${nestedState}|Conflicting authoritative state roots.*${nestedState}.*${parentState}`),
+      );
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a dead matching ancestor session pointer', async () => {
+    const parent = await mkRealTemp('omx-state-authority-dead-');
+    const nested = join(parent, 'nested');
+    const parentState = join(parent, '.omx', 'state');
+    try {
+      await mkdir(parentState, { recursive: true });
+      await mkdir(nested, { recursive: true });
+      await writeFile(join(parentState, 'session.json'), JSON.stringify({
+        session_id: 'sess-dead',
+        cwd: parent,
+        pid: 2_147_483_647,
+      }));
+      process.env.OMX_SESSION_ID = 'sess-dead';
+
+      assert.deepEqual(getBaseStateDirWithSource(nested), {
+        baseStateDir: join(nested, '.omx', 'state'),
+        rootSource: 'cwd-default',
+      });
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('does not discover ancestor authority outside OMX_MCP_WORKDIR_ROOTS', async () => {
+    const parent = await mkRealTemp('omx-state-authority-allowlist-');
+    const nested = join(parent, 'nested');
+    const parentState = join(parent, '.omx', 'state');
+    try {
+      await mkdir(parentState, { recursive: true });
+      await mkdir(nested, { recursive: true });
+      await writeFile(join(parentState, 'session.json'), JSON.stringify({ session_id: 'sess-outside', cwd: parent }));
+      process.env.OMX_SESSION_ID = 'sess-outside';
+      process.env.OMX_MCP_WORKDIR_ROOTS = nested;
+
+      assert.deepEqual(getBaseStateDirWithSource(nested), {
+        baseStateDir: join(nested, '.omx', 'state'),
+        rootSource: 'cwd-default',
+      });
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('does not select an in-allowlist state symlink that escapes the allowed root', async () => {
+    const parent = await mkRealTemp('omx-state-authority-symlink-');
+    const nested = join(parent, 'nested');
+    const outsideState = join(parent, 'outside-state');
+    try {
+      await mkdir(join(nested, '.omx'), { recursive: true });
+      await mkdir(outsideState, { recursive: true });
+      await writeFile(join(outsideState, 'session.json'), JSON.stringify({ session_id: 'sess-symlink', cwd: nested }));
+      await symlink(outsideState, join(nested, '.omx', 'state'), process.platform === 'win32' ? 'junction' : 'dir');
+      process.env.OMX_SESSION_ID = 'sess-symlink';
+      process.env.OMX_MCP_WORKDIR_ROOTS = nested;
+
+      assert.throws(
+        () => getBaseStateDirWithSource(nested),
+        /State root .* is outside allowed roots \(OMX_MCP_WORKDIR_ROOTS\)/,
+      );
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects OMX_ROOT and OMX_STATE_ROOT whose appended state directory escapes the allowlist', async () => {
+    const parent = await mkRealTemp('omx-state-override-symlink-');
+    const allowed = join(parent, 'allowed');
+    const outsideState = join(parent, 'outside-state');
+    try {
+      await mkdir(join(allowed, '.omx'), { recursive: true });
+      await mkdir(outsideState, { recursive: true });
+      await symlink(outsideState, join(allowed, '.omx', 'state'), process.platform === 'win32' ? 'junction' : 'dir');
+      process.env.OMX_MCP_WORKDIR_ROOTS = allowed;
+      process.env.OMX_ROOT = allowed;
+      assert.throws(() => getBaseStateDirWithSource(allowed), /State root .* is outside allowed roots/);
+
+      delete process.env.OMX_ROOT;
+      process.env.OMX_STATE_ROOT = allowed;
+      assert.throws(() => getBaseStateDirWithSource(allowed), /State root .* is outside allowed roots/);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
     }
   });
 
@@ -472,6 +640,7 @@ describe('state paths', () => {
         session_id: 'native-id',
         native_session_id: 'native-id',
         owner_omx_session_id: 'omx-owner-id',
+        owner_codex_session_id: 'codex-owner-id',
         cwd: wd,
       }));
       process.env.OMX_SESSION_ID = 'omx-owner-id';
@@ -486,6 +655,15 @@ describe('state paths', () => {
       assert.equal(runtimeScope.sessionId, 'native-id');
       assert.equal(runtimeScope.stateDir, join(stateDir, 'sessions', 'native-id'));
       assert.equal(runtimeScope.source, 'native-alias');
+
+      process.env.OMX_SESSION_ID = 'codex-owner-id';
+      assert.equal(await readCurrentSessionId(wd), 'native-id');
+      const codexScope = await resolveStateScope(wd);
+      assert.equal(codexScope.sessionId, 'native-id');
+      assert.equal(codexScope.stateDir, join(stateDir, 'sessions', 'native-id'));
+      const codexRuntimeScope = await resolveRuntimeStateScope(wd);
+      assert.equal(codexRuntimeScope.sessionId, 'native-id');
+      assert.equal(codexRuntimeScope.stateDir, join(stateDir, 'sessions', 'native-id'));
     } finally {
       if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
       else delete process.env.OMX_SESSION_ID;
@@ -503,6 +681,7 @@ describe('state paths', () => {
         session_id: 'native-id',
         native_session_id: 'native-id',
         owner_omx_session_id: 'omx-owner-id',
+        owner_codex_session_id: 'codex-owner-id',
         cwd: wd,
       }));
 
@@ -510,6 +689,10 @@ describe('state paths', () => {
       assert.equal(scope.sessionId, 'native-id');
       assert.equal(scope.stateDir, join(stateDir, 'sessions', 'native-id'));
       assert.notEqual(scope.stateDir, join(stateDir, 'sessions', 'omx-owner-id'));
+
+      const codexScope = await resolveStateScope(wd, 'codex-owner-id');
+      assert.equal(codexScope.sessionId, 'native-id');
+      assert.equal(codexScope.stateDir, join(stateDir, 'sessions', 'native-id'));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -563,6 +746,7 @@ describe('state paths', () => {
       await writeFile(join(teamStateRoot, 'session.json'), JSON.stringify({
         session_id: 'sess-team-current',
         cwd: wd,
+        state_root: teamStateRoot,
       }));
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, '.omx', 'state', 'session.json'), JSON.stringify({
@@ -690,10 +874,18 @@ describe('state paths', () => {
           session_id: 'sess-canonical',
           native_session_id: 'native-alias',
           owner_omx_session_id: 'omx-owner-alias',
+          owner_codex_session_id: 'codex-owner-alias',
           cwd: wd,
         }));
         process.env.OMX_SESSION_ID = 'omx-owner-alias';
 
+        assert.deepEqual(await resolveWritableStateScope(wd), {
+          source: 'session',
+          sessionId: 'sess-canonical',
+          stateDir: join(stateDir, 'sessions', 'sess-canonical'),
+        });
+
+        process.env.OMX_SESSION_ID = 'codex-owner-alias';
         assert.deepEqual(await resolveWritableStateScope(wd), {
           source: 'session',
           sessionId: 'sess-canonical',

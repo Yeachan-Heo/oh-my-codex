@@ -105,6 +105,7 @@ export function reconcilePhaseStateForMonitor(
 ): TeamPhaseState {
   const now = new Date().toISOString();
   const base = persisted ?? defaultPersistedPhaseState();
+  if (base.terminal_epoch) return base;
   if (base.current_phase === target) {
     return {
       ...base,
