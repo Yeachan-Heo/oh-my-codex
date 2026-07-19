@@ -2402,6 +2402,7 @@ describe('teamCommand status', () => {
   it('prints pane ids and raw inspect hints when tmux panes are recorded', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-panes-'));
     const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
     const logs: string[] = [];
     const originalLog = console.log;
     try {
@@ -2525,6 +2526,20 @@ describe('teamCommand status', () => {
         manifestPath,
         `${JSON.stringify(manifest, null, 2)}\n`,
       );
+      const tmuxPath = join(wd, 'tmux');
+      await writeFile(tmuxPath, `#!/bin/sh
+if [ "$1" = "display-message" ]; then
+  case "$4" in
+    %21) printf '%%21\\t1\\t101\\t${config.tmux_pane_owner_id}\\n' ;;
+    %22) printf '%%22\\t1\\t102\\t${config.tmux_pane_owner_id}\\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+`);
+      await chmod(tmuxPath, 0o755);
+      process.env.PATH = `${wd}:${previousPath ?? ''}`;
 
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-team']));
@@ -2548,6 +2563,8 @@ describe('teamCommand status', () => {
       const modelInspectOutput = logs.join('\n');
       assert.match(modelInspectOutput, /inspect_summary: [\s\S]*command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
     } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
       console.log = originalLog;
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -2640,6 +2657,15 @@ describe('teamCommand status', () => {
         manifestPath,
         `${JSON.stringify(manifest, null, 2)}\n`,
       );
+      const tmuxPath = join(wd, 'tmux');
+      await writeFile(tmuxPath, `#!/bin/sh
+if [ "$1" = "display-message" ] && [ "$4" = "%41" ]; then
+  printf '%%41\\t1\\t201\\t${config.tmux_pane_owner_id}\\n'
+  exit 0
+fi
+exit 1
+`);
+      await chmod(tmuxPath, 0o755);
 
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-json-team', '--json']));
