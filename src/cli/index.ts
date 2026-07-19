@@ -6868,7 +6868,15 @@ async function cancelModes(args: string[] = []): Promise<void> {
       return loaded;
     };
 
-    const preferredRefs = await listModeStateFilesWithScopePreference(cwd, writableScope.sessionId);
+    const preferredRefs: ModeStateFileRef[] = writableScope.source === "root"
+      ? (await readdir(writableScope.stateDir).catch(() => [] as string[]))
+        .filter((file) => file.endsWith("-state.json") && file !== "session.json")
+        .map((file) => ({
+          mode: file.slice(0, -"-state.json".length),
+          path: join(writableScope.stateDir, file),
+          scope: "root" as const,
+        }))
+      : await listModeStateFilesWithScopePreference(cwd, writableScope.sessionId);
     const hasPreferredSessionStateFiles = preferredRefs.some((ref) => ref.scope === "session");
     let states = await loadStates(preferredRefs);
     // Once writable ownership resolves to a session, cancellation may only write

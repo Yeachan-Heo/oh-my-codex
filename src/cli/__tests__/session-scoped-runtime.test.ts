@@ -142,6 +142,33 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('keeps root cancellation authoritative despite ambient session aliases', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-root-ambient-session-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const foreignSession = 'foreign-ambient-session';
+      const rootPath = join(stateDir, 'team-state.json');
+      const foreignPath = join(stateDir, 'sessions', foreignSession, 'ralplan-state.json');
+      const rootState = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
+      const foreignState = JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'executing' }, null, 2);
+      await mkdir(dirname(foreignPath), { recursive: true });
+      await writeFile(rootPath, rootState);
+      await writeFile(foreignPath, foreignState);
+
+      for (const environmentName of ['CODEX_SESSION_ID', 'SESSION_ID']) {
+        await writeFile(rootPath, rootState);
+        const cancelResult = runOmxWithEnv(wd, { [environmentName]: foreignSession }, 'cancel');
+        assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+        assert.match(cancelResult.stdout, /Cancelled: team/);
+        assert.doesNotMatch(cancelResult.stdout, /Cancelled: ralplan/);
+        assert.equal(JSON.parse(await readFile(rootPath, 'utf-8')).active, false);
+        assert.equal(await readFile(foreignPath, 'utf-8'), foreignState);
+      }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when owned session state is malformed', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-malformed-owner-'));
     try {
