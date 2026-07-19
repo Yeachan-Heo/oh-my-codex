@@ -3545,6 +3545,9 @@ export function isWorkerAlive(
   hudPaneId?: string,
 ): boolean {
   if (hasExplicitWorkerPaneId(workerPaneId)) {
+    if (hudPaneId?.trim() && workerPaneId === hudPaneId.trim()) {
+      throw new Error(`tmux worker pane is HUD target: ${workerPaneId}`);
+    }
     if (typeof expectedPanePid !== 'number' || !Number.isSafeInteger(expectedPanePid) || expectedPanePid <= 0) return true;
     if (typeof expectedTeamOwnerId !== 'string' || expectedTeamOwnerId.trim() === '') return true;
     const proof = requireExactWorkerPaneLivenessIdentity(workerPaneId, expectedPanePid, expectedTeamOwnerId, hudPaneId);

@@ -7511,6 +7511,14 @@ esac
             /worker pane is HUD target/,
           );
           assert.throws(
+            () => isWorkerAlive('ignored-session', 5, '%55', undefined, 'team:liveness', '%55'),
+            /worker pane is HUD target/,
+          );
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 5, '%55', 55, undefined, '%55'),
+            /worker pane is HUD target/,
+          );
+          assert.throws(
             () => getWorkerPanePid('ignored-session', 5, '%55', 55, 'team:liveness', '%55'),
             /worker pane is HUD target/,
           );
