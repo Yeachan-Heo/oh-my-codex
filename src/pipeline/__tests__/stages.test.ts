@@ -128,7 +128,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(result.status, 'failed');
     assert.equal((result.artifacts as Record<string, unknown>).stage, 'ralplan');
     assert.ok((result.artifacts as Record<string, unknown>).instruction);
-    assert.equal(result.error, 'ralplan_planning_artifacts_missing');
+    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
   });
 
   it('canSkip returns false when no plans directory exists', () => {
@@ -179,7 +179,7 @@ describe('RALPLAN Stage', () => {
     }));
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'ralplan_planning_artifacts_missing');
+    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
     assert.equal((result.artifacts as Record<string, unknown>).planningComplete, false);
   });
 
@@ -595,7 +595,7 @@ describe('RALPLAN Stage', () => {
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'ralplan_consensus_evidence_missing');
+    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
     assert.equal(gate.complete, false);
     assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
   });
@@ -626,7 +626,7 @@ describe('RALPLAN Stage', () => {
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'ralplan_consensus_evidence_missing');
+    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
     assert.equal(gate.complete, false);
     assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
     assert.ok(gate.ralplan_architect_review);
@@ -667,7 +667,7 @@ describe('RALPLAN Stage', () => {
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'ralplan_consensus_evidence_missing');
+    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
     assert.equal(gate.complete, false);
     assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
   });

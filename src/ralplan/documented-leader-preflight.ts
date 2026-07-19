@@ -124,7 +124,10 @@ export const RALPLAN_NEUTRALIZE_TEST_SEAM: {
   fail?: (point: TransactionPoint) => void | Promise<void>;
   random?: () => Buffer;
   beforePublish?: (index: number) => void | Promise<void>;
+  beforePublishRename?: (index: number) => void | Promise<void>;
   beforeRollback?: (index: number) => void | Promise<void>;
+  beforeRollbackRename?: (index: number) => void | Promise<void>;
+  beforeCleanupRemoval?: (index: number) => void | Promise<void>;
   directorySync?: (phase: DirectorySyncPhase) => void | Promise<void>;
 } = {};
 
@@ -145,6 +148,7 @@ interface PublishedFile {
   path: string;
   stat: Stats;
   next: Buffer;
+  original: Buffer;
   backup: string;
 }
 
@@ -181,20 +185,35 @@ async function stillPinned(file: PinnedFile): Promise<boolean> {
   }
 }
 
-function ordinaryRoutingSeed(state: Record<string, unknown>, ownerIds: Set<string>, kind: 'ralplan' | 'skill'): boolean {
-  if (hasContradictoryRoutingOwner(state, ownerIds)
-    || state.active !== true
-    || state.completed_at !== undefined
-    || state.cancelled_at !== undefined
-    || state.ralplan_consensus_gate !== undefined) return false;
+function hasOnlyFields(state: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(state).every((field) => allowed.includes(field));
+}
 
+function ordinaryRoutingSeed(state: Record<string, unknown>, ownerIds: Set<string>, kind: 'ralplan' | 'skill'): boolean {
+  if (hasContradictoryRoutingOwner(state, ownerIds) || state.active !== true || state.source !== 'keyword-detector') return false;
+
+  const ownerFields = ['session_id', 'owner_omx_session_id', 'owner_codex_session_id'];
   if (kind === 'ralplan') {
-    return state.mode === 'ralplan'
-      && state.current_phase === 'planning'
-      && state.planning_complete !== true
-      && !(typeof state.iteration === 'number' && state.iteration > 0);
+    return hasOnlyFields(state, ['active', 'source', 'mode', 'current_phase', ...ownerFields])
+      && state.mode === 'ralplan'
+      && state.current_phase === 'planning';
   }
-  return state.active_skill === 'ralplan' || state.skill === 'ralplan' || state.mode === 'ralplan';
+
+  if (!hasOnlyFields(state, ['active', 'source', 'skill', 'phase', 'current_phase', 'active_skills', ...ownerFields])
+    || state.skill !== 'ralplan'
+    || state.phase !== 'planning'
+    || state.current_phase !== 'planning'
+    || !Array.isArray(state.active_skills)
+    || state.active_skills.length !== 1) return false;
+
+  const [entry] = state.active_skills;
+  return Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)
+    && hasOnlyFields(entry as Record<string, unknown>, ['skill', 'active', 'phase', 'current_phase', ...ownerFields])
+    && (entry as Record<string, unknown>).skill === 'ralplan'
+    && (entry as Record<string, unknown>).active === true
+    && (entry as Record<string, unknown>).phase === 'planning'
+    && (entry as Record<string, unknown>).current_phase === 'planning'
+    && !hasContradictoryRoutingOwner(entry as Record<string, unknown>, ownerIds));
 }
 
 async function fault(point: TransactionPoint): Promise<void> {
@@ -206,10 +225,12 @@ function temporaryPath(directory: string, label: string): string {
   return join(directory, `.${label}.${random().toString('hex')}`);
 }
 
-async function createStaged(directory: string, label: string, bytes: Buffer): Promise<StagedFile> {
+async function createStaged(directory: string, label: string, bytes: Buffer, staged: StagedFile[]): Promise<StagedFile> {
   await fault('temp-create');
   const path = temporaryPath(directory, label);
   const handle = await open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+  const created = { path, bytes, stat: await handle.stat() };
+  staged.push(created);
   try {
     await fault('temp-write');
     await handle.writeFile(bytes);
@@ -222,7 +243,8 @@ async function createStaged(directory: string, label: string, bytes: Buffer): Pr
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || !(await readFile(path)).equals(bytes)) {
     throw new Error('staged state changed before use');
   }
-  return { path, bytes, stat };
+  created.stat = stat;
+  return created;
 }
 
 async function stagedStillOwned(file: StagedFile): Promise<boolean> {
@@ -297,16 +319,25 @@ async function rollbackPublished(directory: string, published: PublishedFile[], 
         const file = published[index];
         await RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollback?.(index);
         await fault('rollback');
+        const current = await pinRegularState(file.path);
+        if (current?.bytes.equals(file.original)) {
+          restored = true;
+          continue;
+        }
         const backup = staged.find((candidate) => candidate.path === file.backup);
         if (!await publishedStillOwned(file) || !backup || !await stagedStillOwned(backup)) {
           throw new Error('foreign replacement during rollback');
         }
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollbackRename?.(index);
+        if (!await publishedStillOwned(file) || !await stagedStillOwned(backup)) {
+          throw new Error('state changed immediately before rollback');
+        }
         await rename(backup.path, file.path);
         removeStaged(staged, backup.path);
-        published.splice(index, 1);
         restored = true;
       }
       if (restored) await syncDirectory(directory, 'rollback');
+      published.splice(0, published.length);
       return true;
     } catch {
       if (attempt + 1 === MAX_ROLLBACK_ATTEMPTS) return false;
@@ -351,15 +382,13 @@ export async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolea
     const next = [neutralized(ralplan.state, 'ralplan'), neutralized(skill.state, 'skill')];
     const backups: StagedFile[] = [];
     for (let index = 0; index < originals.length; index += 1) {
-      const backup = await createStaged(directory, `ralplan-recovery-${index}`, originals[index].bytes);
+      const backup = await createStaged(directory, `ralplan-recovery-${index}`, originals[index].bytes, staged);
       backups.push(backup);
-      staged.push(backup);
     }
     const replacements: StagedFile[] = [];
     for (let index = 0; index < next.length; index += 1) {
-      const replacement = await createStaged(directory, `ralplan-next-${index}`, next[index]);
+      const replacement = await createStaged(directory, `ralplan-next-${index}`, next[index], staged);
       replacements.push(replacement);
-      staged.push(replacement);
     }
     await syncDirectory(directory, 'prepare');
 
@@ -368,11 +397,15 @@ export async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolea
       if (!await stillPinned(originals[index])) throw new Error('canonical state changed before publish');
       await fault(index === 0 ? 'first-publish' : 'second-publish');
       if (!await stagedStillOwned(replacements[index])) throw new Error('replacement temporary changed before publish');
+      await RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublishRename?.(index);
+      if (!await stillPinned(originals[index]) || !await stagedStillOwned(replacements[index])) {
+        throw new Error('state changed immediately before publish');
+      }
       await rename(replacements[index].path, originals[index].path);
       removeStaged(staged, replacements[index].path);
       const stat = await lstat(originals[index].path);
       if (stat.isSymbolicLink() || !stat.isFile() || !(await readFile(originals[index].path)).equals(next[index])) throw new Error('published state changed');
-      published.push({ path: originals[index].path, stat, next: next[index], backup: backups[index].path });
+      published.push({ path: originals[index].path, stat, next: next[index], original: originals[index].bytes, backup: backups[index].path });
     }
 
     await syncDirectory(directory, 'publish');
@@ -381,14 +414,17 @@ export async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolea
     committed = true;
 
     try {
-      for (const backup of backups) {
+      for (const [index, backup] of backups.entries()) {
         await fault('cleanup');
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.beforeCleanupRemoval?.(index);
         if (!await removeOwnedStaged(backup)) throw new Error('recovery temporary changed before cleanup');
         removeStaged(staged, backup.path);
       }
       await syncDirectory(directory, 'cleanup');
     } catch {
-      // The durable canonical pair is already committed. Recovery-file cleanup is best effort.
+      // A foreign replacement or unsynced cleanup is an uncertainty signal, never a successful preflight.
+      preserveRecoveryFiles = true;
+      return false;
     }
     return true;
   } catch {

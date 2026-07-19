@@ -93,7 +93,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
               ralplanConsensusGate: consensusGate,
             },
             duration_ms: Date.now() - startTime,
-            error: runtimeResult.error ?? (consensusComplete ? undefined : 'ralplan_consensus_evidence_missing'),
+            error: runtimeResult.error ?? (consensusComplete ? undefined : consensusGate.blockedReason ?? 'ralplan_consensus_evidence_missing'),
           };
         }
 
@@ -109,11 +109,12 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
         const completed = planningComplete && consensusComplete;
         const error = completed
           ? undefined
-          : consensusComplete && !planningComplete
-            ? 'ralplan_planning_artifacts_missing_after_consensus'
-            : planningComplete && !consensusComplete
-              ? 'ralplan_consensus_evidence_missing'
-              : 'ralplan_planning_artifacts_missing';
+          : consensusGate.blockedReason
+            ?? (consensusComplete && !planningComplete
+              ? 'ralplan_planning_artifacts_missing_after_consensus'
+              : planningComplete && !consensusComplete
+                ? 'ralplan_consensus_evidence_missing'
+                : 'ralplan_planning_artifacts_missing');
 
         return {
           status: completed ? 'completed' : 'failed',

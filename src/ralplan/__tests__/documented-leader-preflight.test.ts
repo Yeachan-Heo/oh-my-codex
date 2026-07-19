@@ -72,7 +72,10 @@ function clearNeutralizeSeam(): void {
   delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail;
   delete RALPLAN_NEUTRALIZE_TEST_SEAM.random;
   delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublish;
+  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublishRename;
   delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollback;
+  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollbackRename;
+  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforeCleanupRemoval;
   delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync;
 }
 
@@ -90,19 +93,20 @@ async function makeRoutingFixture(): Promise<RoutingFixture> {
   }));
   await writeFile(ralplanPath, JSON.stringify({
     active: true,
+    source: 'keyword-detector',
     mode: 'ralplan',
     current_phase: 'planning',
     session_id: sessionId,
   }, null, 2));
   await writeFile(skillPath, JSON.stringify({
     active: true,
+    source: 'keyword-detector',
     skill: 'ralplan',
     phase: 'planning',
     current_phase: 'planning',
     session_id: sessionId,
     active_skills: [
-      { skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning' },
-      { skill: 'team', active: true, phase: 'executing' },
+      { skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning', session_id: sessionId },
     ],
   }, null, 2));
   return {
@@ -335,6 +339,69 @@ describe('#3194 documented leader preflight neutralization transaction', () => {
       assert.equal(await readFile(recoveryPath, 'utf8'), 'foreign recovery before rollback');
       assert.equal((JSON.parse(await readFile(fixture.ralplanPath, 'utf8')) as Record<string, unknown>).active, false);
       assert.deepEqual(await readFile(fixture.skillPath), fixture.originalSkill);
+    });
+  });
+
+  it('does not overwrite a foreign canonical replacement in the decisive publish window', async () => {
+    await withFixture(async (fixture) => {
+      RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublishRename = async (index) => {
+        if (index === 0) {
+          await rm(fixture.ralplanPath);
+          await writeFile(fixture.ralplanPath, 'foreign-after-final-publish-check');
+        }
+      };
+      assert.equal(await neutralize(fixture), false);
+      assert.equal(await readFile(fixture.ralplanPath, 'utf8'), 'foreign-after-final-publish-check');
+      assert.deepEqual(await readFile(fixture.skillPath), fixture.originalSkill);
+    });
+  });
+
+  it('does not overwrite foreign recovery bytes in the decisive rollback window', async () => {
+    await withFixture(async (fixture) => {
+      const randomValues = [Buffer.alloc(24, 21), Buffer.alloc(24, 22), Buffer.alloc(24, 23), Buffer.alloc(24, 24)];
+      const recoveryPath = join(fixture.sessionDir, `.ralplan-recovery-0.${randomValues[0].toString('hex')}`);
+      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => randomValues.shift() ?? Buffer.alloc(24, 25);
+      RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => {
+        if (point === 'second-publish') throw new Error('force rollback');
+      };
+      RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollbackRename = async () => {
+        await rm(recoveryPath);
+        await writeFile(recoveryPath, 'foreign-after-final-rollback-check');
+      };
+      assert.equal(await neutralize(fixture), false);
+      assert.equal(await readFile(recoveryPath, 'utf8'), 'foreign-after-final-rollback-check');
+    });
+  });
+
+  it('does not delete a foreign recovery replacement in the decisive cleanup window', async () => {
+    await withFixture(async (fixture) => {
+      const randomValues = [Buffer.alloc(24, 31), Buffer.alloc(24, 32), Buffer.alloc(24, 33), Buffer.alloc(24, 34)];
+      const recoveryPath = join(fixture.sessionDir, `.ralplan-recovery-0.${randomValues[0].toString('hex')}`);
+      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => randomValues.shift() ?? Buffer.alloc(24, 35);
+      RALPLAN_NEUTRALIZE_TEST_SEAM.beforeCleanupRemoval = async (index) => {
+        if (index === 0) {
+          await rm(recoveryPath);
+          await writeFile(recoveryPath, 'foreign-after-final-cleanup-check');
+        }
+      };
+      assert.equal(await neutralize(fixture), false);
+      assert.equal(await readFile(recoveryPath, 'utf8'), 'foreign-after-final-cleanup-check');
+      await assertNeutralizedPair(fixture);
+    });
+  });
+
+  it('rejects a mixed Team routing record without changing either visible state', async () => {
+    await withFixture(async (fixture) => {
+      const mixed = JSON.parse(await readFile(fixture.skillPath, 'utf8')) as Record<string, unknown>;
+      mixed.active_skills = [
+        { skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning', session_id: fixture.sessionId },
+        { skill: 'team', active: true, phase: 'executing', current_phase: 'executing', session_id: fixture.sessionId },
+      ];
+      await writeFile(fixture.skillPath, JSON.stringify(mixed, null, 2));
+      const beforeSkill = await readFile(fixture.skillPath);
+      await neutralize(fixture);
+      assert.deepEqual(await readFile(fixture.ralplanPath), fixture.originalRalplan);
+      assert.deepEqual(await readFile(fixture.skillPath), beforeSkill);
     });
   });
 

@@ -466,6 +466,7 @@ describe('CLI session-scoped state parity', () => {
       const sessionId = 'sess-proven-owner';
       const sessionDir = join(stateDir, 'sessions', sessionId);
       const ralplanPath = join(sessionDir, 'ralplan-state.json');
+      const sessionSkillPath = join(sessionDir, 'skill-active-state.json');
       const rootTeamPath = join(stateDir, 'team-state.json');
       const rootSkillPath = join(stateDir, 'skill-active-state.json');
       const rootStopPath = join(stateDir, 'native-stop-state.json');
@@ -477,9 +478,19 @@ describe('CLI session-scoped state parity', () => {
       await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
       await writeFile(ralplanPath, JSON.stringify({
         active: true,
+        source: 'keyword-detector',
         mode: 'ralplan',
         session_id: sessionId,
         current_phase: 'planning',
+      }, null, 2));
+      await writeFile(sessionSkillPath, JSON.stringify({
+        active: true,
+        source: 'keyword-detector',
+        skill: 'ralplan',
+        phase: 'planning',
+        current_phase: 'planning',
+        session_id: sessionId,
+        active_skills: [{ skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning', session_id: sessionId }],
       }, null, 2));
       await writeFile(rootTeamPath, rootTeam);
       await writeFile(rootSkillPath, rootSkill);
@@ -492,9 +503,14 @@ describe('CLI session-scoped state parity', () => {
         ok: false,
         reason: 'unsupported_documented_leader_proof',
       });
-      const state = JSON.parse(await readFile(ralplanPath, 'utf-8'));
+      const [state, skillState] = await Promise.all([
+        readFile(ralplanPath, 'utf-8').then(JSON.parse),
+        readFile(sessionSkillPath, 'utf-8').then(JSON.parse),
+      ]);
       assert.equal(state.active, false);
       assert.equal(state.current_phase, 'cancelled');
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.current_phase, 'cancelled');
       assert.equal(await readFile(rootTeamPath, 'utf-8'), rootTeam);
       assert.equal(await readFile(rootSkillPath, 'utf-8'), rootSkill);
       assert.equal(await readFile(rootStopPath, 'utf-8'), rootStop);
