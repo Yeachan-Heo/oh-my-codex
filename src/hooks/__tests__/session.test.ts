@@ -1254,7 +1254,10 @@ describe('session pointer transaction', () => {
       const syncedCwd = join(cwd, 'synced');
       await mkdir(syncedCwd);
       warningCwd = syncedCwd;
-      await writeSessionStart(syncedCwd, 'sess-synced-start', { platform: 'win32' });
+      await writeSessionStart(syncedCwd, 'sess-synced-start', {
+        platform: 'win32',
+        regularFileSync: async () => {},
+      });
       assert.deepEqual(warnings, []);
       const failedCwd = join(cwd, 'failed');
       await mkdir(failedCwd);
