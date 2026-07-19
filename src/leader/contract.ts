@@ -106,6 +106,11 @@ export interface NativeSubagentSupportEvidence {
   observedAt?: string;
   expiresAt?: string;
 }
+export type NativeSubagentResultDisposition =
+  | { kind: 'success'; evidenceSummary: string }
+  | { kind: 'capacity'; evidenceSummary: string }
+  | { kind: 'unsupported'; reason: Exclude<NativeSubagentUnsupportedReason, 'agent_thread_limit_reached'>; evidenceSummary: string }
+  | { kind: 'unknown'; evidenceSummary: string };
 
 export interface RoleRoutingUnavailableMarker {
   schema_version: 1;
@@ -166,6 +171,78 @@ function supportBoolean(value: unknown): boolean | null {
 
 function supportArray(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
+}
+function stringifySupportValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === undefined || value === null) return '';
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function parseSupportRecord(value: unknown): Record<string, unknown> | null {
+  const direct = supportRecord(value);
+  if (direct) return direct;
+  if (typeof value !== 'string') return null;
+  try {
+    return supportRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function nativeSubagentFailureDisposition(evidence: string): NativeSubagentResultDisposition | null {
+  if (/\bagent thread limit reached\b/i.test(evidence)) {
+    return { kind: 'capacity', evidenceSummary: evidence };
+  }
+  if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) {
+    return { kind: 'unsupported', reason: 'native_subagents_unsupported', evidenceSummary: evidence };
+  }
+  if (/\bmulti_agent_v1\b/i.test(evidence) && /\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(evidence)) {
+    return { kind: 'unsupported', reason: 'multi_agent_v1_unavailable', evidenceSummary: evidence };
+  }
+  if (/\b(?:unknown tool|tool not found|not enabled|disabled|unavailable|unsupported)\b/i.test(evidence)) {
+    return { kind: 'unsupported', reason: 'multi_agent_v1_unavailable', evidenceSummary: evidence };
+  }
+  return null;
+}
+
+export function parseNativeSubagentResultDisposition(
+  toolName: string,
+  value: unknown,
+): NativeSubagentResultDisposition {
+  const evidenceSummary = stringifySupportValue(value).replace(/\s+/g, ' ').trim();
+  if (toolName && !isNativeSubagentResultToolName(toolName)) {
+    return { kind: 'unknown', evidenceSummary };
+  }
+  const record = parseSupportRecord(value);
+  if (record) {
+    const status = supportString(record.status).toLowerCase();
+    const explicitFailure = record.success === false
+      || record.ok === false
+      || record.is_error === true
+      || record.isError === true
+      || (record.error !== undefined && record.error !== null && record.error !== '')
+      || ['error', 'failed', 'failure', 'unsupported', 'unavailable'].includes(status);
+    const explicitSuccess = record.success === true
+      || record.ok === true
+      || record.is_error === false
+      || record.isError === false
+      || ['ok', 'success', 'succeeded', 'completed', 'finished'].includes(status);
+    if (explicitFailure) {
+      return nativeSubagentFailureDisposition(evidenceSummary)
+        ?? { kind: 'unknown', evidenceSummary };
+    }
+    if (explicitSuccess) return { kind: 'success', evidenceSummary };
+    return { kind: 'unknown', evidenceSummary };
+  }
+
+  if (toolName && !isNativeSubagentSpawnToolName(toolName)) return { kind: 'unknown', evidenceSummary };
+
+  return nativeSubagentFailureDisposition(evidenceSummary)
+    ?? { kind: 'unknown', evidenceSummary };
 }
 
 function isNativeSubagentUnsupportedReason(value: unknown): value is NativeSubagentUnsupportedReason {
@@ -283,6 +360,12 @@ const NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN = /(?:^|\.)spawn_agent$/;
 // alias. The suffix anchor keeps `respawn_agent`/`spawn_agentx` from matching.
 export function isNativeSubagentSpawnToolName(name: string): boolean {
   return NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN.test(name) || name === 'task';
+}
+
+const NATIVE_SUBAGENT_RESULT_TOOL_PATTERN = /(?:^|\.)(?:spawn_agent|list_agents|followup_task|wait_agent)$/;
+
+export function isNativeSubagentResultToolName(name: string): boolean {
+  return NATIVE_SUBAGENT_RESULT_TOOL_PATTERN.test(name) || name === 'task';
 }
 
 function availableToolsEvidence(payload: Record<string, unknown> | null): NativeSubagentSupportEvidence | null {

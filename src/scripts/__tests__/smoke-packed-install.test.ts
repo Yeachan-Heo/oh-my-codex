@@ -48,6 +48,7 @@ import {
   assertGeneratedTrustMatchesCodex,
   managedCodexHooksByEvent,
 } from '../smoke-packed-install.js';
+import { parseNativeSubagentResultDisposition } from '../../leader/contract.js';
 
 function createFakeCodexAppServer(
   onRequest: (request: Record<string, unknown>, child: EventEmitter & Record<string, unknown>) => void,
@@ -95,6 +96,22 @@ test('packed 0.144.5 fixture is sanitized, pointer-free, and kept separate from 
   assert.equal(Object.hasOwn(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, 'cwd'), false);
   assert.equal(Object.hasOwn(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, 'thread_id'), false);
   assert.equal(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE.session_id.includes('-'), true);
+});
+
+test('packed plugin collaboration success stays authoritative over unrelated child prose', () => {
+  const packedResponse = JSON.stringify({
+    success: true,
+    status: 'completed',
+    output: 'Packed/plugin child succeeded; an optional adapter was unavailable, unsupported, and not found.',
+  });
+  for (const toolName of [
+    'collaboration.spawn_agent',
+    'collaboration.list_agents',
+    'collaboration.followup_task',
+    'collaboration.wait_agent',
+  ]) {
+    assert.equal(parseNativeSubagentResultDisposition(toolName, packedResponse).kind, 'success', toolName);
+  }
 });
 
 test('packed lifecycle keeps the pinned newline-delimited Codex app-server envelopes literal', () => {

@@ -24,6 +24,7 @@ import {
   isUnsupportedNativeSubagentEvidenceForScope,
   type RoleRoutingUnavailableMarker,
   resolveNativeSubagentSupportStatus,
+  parseNativeSubagentResultDisposition,
   NATIVE_SPAWN_TASK_NAME_PATTERN,
   ROLE_INTENT_SPAWN_TASK_NAME_PREFIX,
   ROLE_INTENT_CORRELATION_TOKEN_PATTERN,
@@ -239,6 +240,67 @@ describe('leader conductor contract', () => {
       }).reason,
       'agent_thread_limit_reached',
     );
+  });
+
+  it('parses structured collaboration dispositions without child-output prose poisoning', () => {
+    for (const toolName of [
+      'collaboration.spawn_agent',
+      'collaboration.list_agents',
+      'collaboration.followup_task',
+      'collaboration.wait_agent',
+    ]) {
+      const disposition = parseNativeSubagentResultDisposition(toolName, {
+        success: true,
+        status: 'completed',
+        output: 'Child report: the optional plugin is unavailable, unsupported, and not found.',
+      });
+      assert.equal(disposition.kind, 'success', toolName);
+    }
+    assert.equal(parseNativeSubagentResultDisposition('collaboration.wait_agent', {
+      success: true,
+      status: 'completed',
+      error: null,
+      output: 'Child says optional support is unavailable.',
+    }).kind, 'success');
+  });
+
+  it('handles contradictory structured result fields deterministically', () => {
+    assert.equal(parseNativeSubagentResultDisposition('collaboration.wait_agent', {
+      success: true,
+      status: 'failed',
+      error: 'agent thread limit reached',
+    }).kind, 'capacity');
+    assert.equal(parseNativeSubagentResultDisposition('collaboration.followup_task', {
+      success: true,
+      status: 'failed',
+      error: 'unknown tool is unavailable',
+    }).kind, 'unsupported');
+  });
+
+  it('limits legacy prose classification to spawn results', () => {
+    assert.equal(
+      parseNativeSubagentResultDisposition('multi_agent_v1.spawn_agent', 'unknown tool is unavailable').kind,
+      'unsupported',
+    );
+    for (const toolName of [
+      'collaboration.list_agents',
+      'collaboration.followup_task',
+      'collaboration.wait_agent',
+    ]) {
+      assert.equal(
+        parseNativeSubagentResultDisposition(toolName, 'successful child output says a dependency is unavailable').kind,
+        'unknown',
+        toolName,
+      );
+    }
+  });
+
+  it('ignores structured failure prose from provably unrelated tools', () => {
+    assert.equal(parseNativeSubagentResultDisposition('Bash', {
+      success: false,
+      status: 'failed',
+      error: 'optional plugin is unsupported and unavailable',
+    }).kind, 'unknown');
   });
 
   it('recognizes scoped unsupported native blocker evidence and renders blocker guidance', () => {
