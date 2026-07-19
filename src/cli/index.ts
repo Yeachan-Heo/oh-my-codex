@@ -2834,7 +2834,6 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
     transition("D7");
     ownedRecord = await deps.publishActiveRecord(inertSession, pane);
     transition("D9");
-    transition("D9");
     await deps.releaseBarrier();
     released = true;
     transition("D10");
@@ -6113,23 +6112,37 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       ...(process.platform === "win32" ? {} : { detached: true }),
     });
     let escalation: NodeJS.Timeout | undefined;
-    const signalChildTree = (signal: NodeJS.Signals): void => {
+    const signalChildTree = (signal: NodeJS.Signals, force = false): void => {
       if (!child.pid) return;
       try {
-        if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(child.pid), "/T", ...(force ? ["/F"] : [])], { stdio: "ignore" });
         else process.kill(-child.pid, signal);
       } catch {}
     };
     const forward = (signal: NodeJS.Signals): void => {
       signalChildTree(signal);
-      if (!escalation) { escalation = setTimeout(() => signalChildTree("SIGKILL"), 5_000); escalation.unref(); }
+      if (!escalation) { escalation = setTimeout(() => signalChildTree("SIGKILL", true), 5_000); escalation.unref(); }
     };
     process.once("SIGINT", () => forward("SIGINT"));
     process.once("SIGTERM", () => forward("SIGTERM"));
     process.once("SIGHUP", () => forward("SIGHUP"));
-    const code = await new Promise<number | null>((resolveChild, rejectChild) => { child.once("error", rejectChild); child.once("exit", resolveChild); });
+    const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveChild, rejectChild) => {
+      child.once("error", rejectChild);
+      child.once("exit", (code, signal) => resolveChild({ code, signal }));
+    });
     if (escalation) clearTimeout(escalation);
-    process.exitCode = code ?? 1;
+    if (process.platform !== "win32" && child.pid) {
+      const treeDeadline = Date.now() + 5_000;
+      while (true) {
+        try {
+          process.kill(-child.pid, 0);
+          if (Date.now() >= treeDeadline) { signalChildTree("SIGKILL", true); break; }
+          await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        } catch { break; }
+      }
+    }
+    const signalExitCodes: Partial<Record<NodeJS.Signals, number>> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGKILL: 137 };
+    process.exitCode = outcome.code ?? (outcome.signal ? signalExitCodes[outcome.signal] ?? 1 : 1);
     await postLaunch(payload.cwd, payload.sessionId, binding, payload.codexHomeOverride, payload.preLaunchOptions.enableNotifyFallbackAuthority, payload.projectLocalCodexHomeForCleanup);
     if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
       version: 1, kind: "terminal", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
@@ -6142,19 +6155,27 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       if (bytes === ownedRecord.bytes && digest === ownedRecord.digest) rmSync(activeRecordPath, { force: true });
     }
   } catch (error) {
-    if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
-      version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
-      leaderPid: process.pid, error: error instanceof Error ? error.message : String(error),
-    });
-    const finalization = await finalizeBoundOnce(binding, "detached-pre-release-failure", payload.cwd).catch(() => undefined);
-    if (finalization?.finalized && ownedRecord) {
+    let failure: unknown = error;
+    let finalized = false;
+    try {
+      await postLaunch(payload.cwd, payload.sessionId, binding, payload.codexHomeOverride, payload.preLaunchOptions.enableNotifyFallbackAuthority, payload.projectLocalCodexHomeForCleanup);
+      finalized = true;
+      await cleanupRuntimeCodexHome(payload.runtimeCodexHomeForCleanup, payload.projectLocalCodexHomeForCleanup);
+    } catch (lifecycleError) {
+      failure = new AggregateError([error, lifecycleError], "detached leader failure finalization did not complete");
+    }
+    if (finalized && ownedRecord) {
       try {
         const bytes = readFileSync(activeRecordPath, "utf-8");
         const digest = createHash("sha256").update(bytes).digest("hex");
         if (bytes === ownedRecord.bytes && digest === ownedRecord.digest) rmSync(activeRecordPath, { force: true });
       } catch {}
     }
-    throw error;
+    if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
+      version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
+      leaderPid: process.pid, error: failure instanceof Error ? failure.message : String(failure),
+    });
+    throw failure;
   } finally {
     await closeLaunchSessionBindingOnce(binding);
   }
