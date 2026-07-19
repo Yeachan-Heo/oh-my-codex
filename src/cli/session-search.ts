@@ -1,11 +1,14 @@
 import { buildSessionFrictionReport, type SessionFrictionReport, type SessionFrictionOptions } from '../session-history/friction.js';
 import { searchSessionHistory, type SessionSearchReport, type SessionSearchOptions } from '../session-history/search.js';
+import { inspectSessionPointerLock, recoverSessionPointerLock } from '../hooks/session.js';
 
 const HELP = `omx session - Search and summarize local session history
 
 Usage:
   omx session search <query> [options]
   omx session friction [options]
+  omx session lock inspect [--cwd <path>] [--json]
+  omx session lock recover [--cwd <path>] [--json]
 
 Options for search:
   --limit <n>          Maximum results to return (default: 10)
@@ -35,6 +38,20 @@ Examples:
 
 const HELP_TOKENS = new Set(['--help', '-h', 'help']);
 
+const LOCK_HELP = `omx session lock - Inspect or safely recover the selected session-pointer lock
+
+Usage:
+  omx session lock inspect [--cwd <path>] [--json]
+  omx session lock recover [--cwd <path>] [--json]
+
+Options:
+  --cwd <path>  Resolve the session pointer for this working directory
+  --json        Emit structured JSON
+  -h, --help    Show this help
+
+Recovery quarantines only canonical or token-consistent temporary owner evidence
+whose process is definitely dead. There is no force mode.`;
+
 export interface ParsedSessionSearchArgs {
   options: SessionSearchOptions;
   json: boolean;
@@ -43,6 +60,38 @@ export interface ParsedSessionSearchArgs {
 export interface ParsedSessionFrictionArgs {
   options: SessionFrictionOptions;
   json: boolean;
+}
+
+export interface ParsedSessionLockArgs {
+  cwd: string;
+  json: boolean;
+}
+
+export function parseSessionLockArgs(args: string[], defaultCwd = process.cwd()): ParsedSessionLockArgs {
+  let cwd = defaultCwd;
+  let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === '--json') {
+      json = true;
+      continue;
+    }
+    if (token === '--cwd') {
+      const next = args[index + 1];
+      if (!next || next.startsWith('-')) throw new Error('Missing value after --cwd.');
+      cwd = next;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--cwd=')) {
+      const value = token.slice('--cwd='.length);
+      if (!value) throw new Error('Missing value after --cwd=.');
+      cwd = value;
+      continue;
+    }
+    throw new Error(`Unknown session lock option: ${token}`);
+  }
+  return { cwd, json };
 }
 
 function parsePositiveInteger(value: string, flag: string): number {
@@ -174,7 +223,6 @@ export function parseSessionFrictionArgs(args: string[]): ParsedSessionFrictionA
   return { options, json };
 }
 
-
 function formatReport(report: SessionSearchReport): string {
   if (report.results.length === 0) {
     return `No session history matches for "${report.query}". Searched ${report.searched_files} transcript(s).`;
@@ -225,7 +273,6 @@ function formatFrictionReport(report: SessionFrictionReport): string {
   return lines.join('\n');
 }
 
-
 export async function sessionCommand(args: string[]): Promise<void> {
   const subcommand = args[0];
   if (!subcommand || HELP_TOKENS.has(subcommand)) {
@@ -233,12 +280,39 @@ export async function sessionCommand(args: string[]): Promise<void> {
     return;
   }
 
-  if (subcommand !== 'search' && subcommand !== 'friction') {
+  if (subcommand !== 'search' && subcommand !== 'friction' && subcommand !== 'lock') {
     throw new Error(`Unknown session subcommand: ${subcommand}\n${HELP}`);
   }
 
   if (args.slice(1).some((token) => HELP_TOKENS.has(token))) {
-    console.log(HELP.trim());
+    console.log(subcommand === 'lock' ? LOCK_HELP : HELP.trim());
+    return;
+  }
+
+  if (subcommand === 'lock') {
+    const operation = args[1];
+    if (operation !== 'inspect' && operation !== 'recover') {
+      throw new Error(`${operation ? `Unknown session lock operation: ${operation}` : 'Missing session lock operation.'}\n${LOCK_HELP}`);
+    }
+    const parsed = parseSessionLockArgs(args.slice(2));
+    const result = operation === 'inspect'
+      ? await inspectSessionPointerLock(parsed.cwd)
+      : await recoverSessionPointerLock(parsed.cwd);
+    if (parsed.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`Session pointer lock: ${result.status}`);
+      console.log(`path: ${result.lockPath}`);
+      console.log(`evidence: ${result.evidenceSource}`);
+      console.log(`safe to recover: ${result.safeToRecover ? 'yes' : 'no'}`);
+      if ('action' in result) console.log(`action: ${result.action}`);
+      if ('reason' in result && result.reason) console.log(`reason: ${result.reason}`);
+      if ('nextSteps' in result && Array.isArray(result.nextSteps)) {
+        for (const step of result.nextSteps) console.log(`next: ${step}`);
+      }
+      if ('quarantinePath' in result && result.quarantinePath) console.log(`quarantine: ${result.quarantinePath}`);
+    }
+    if (operation === 'recover' && 'action' in result && result.action === 'blocked') process.exitCode = 2;
     return;
   }
 

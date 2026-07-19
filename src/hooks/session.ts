@@ -7,6 +7,7 @@
  */
 import {
   appendFile,
+  lstat as nodeLstat,
   mkdir as nodeMkdir,
   open,
   readFile as nodeReadFile,
@@ -141,7 +142,7 @@ export interface ResolvedSessionPointerAbort extends SessionPointerAbortBase {
   lockPath?: string;
   rootSource: StateRootSource;
   pointerStatus?: UnusableSessionPointerStatus;
-  lockOwnerStatus?: 'live' | 'dead' | 'reused' | 'identity-indeterminate' | 'missing' | 'malformed';
+  lockOwnerStatus?: 'live' | 'dead' | 'reused' | 'identity-indeterminate' | 'missing' | 'malformed' | 'ambiguous';
   primaryOperation?: Exclude<
     SessionPointerTransactionOperation,
     'pointer-context-resolve' | 'precommit-cleanup' | 'lock-release'
@@ -307,6 +308,7 @@ export interface SessionPointerFsDependencies {
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   readdir(path: string): Promise<string[]>;
   readFile(path: string, encoding: 'utf8'): Promise<string>;
+  lstat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean }>;
   writeFile(path: string, data: string, options?: { mode?: number; flag?: string }): Promise<void>;
   openAndSync(
     path: string,
@@ -338,6 +340,7 @@ const defaultFsDependencies: SessionPointerFsDependencies = {
   },
   readdir: async (path) => await nodeReaddir(path),
   readFile: async (path, encoding) => await nodeReadFile(path, encoding),
+  lstat: async (path) => await nodeLstat(path),
   writeFile: async (path, data, options) => {
     await nodeWriteFile(path, data, options);
   },
@@ -738,7 +741,34 @@ interface SessionPointerLockOwnerV1 {
   created_at: string;
 }
 
-type LockOwnerStatus = 'live' | 'dead' | 'reused' | 'identity-indeterminate' | 'missing' | 'malformed';
+type LockOwnerStatus = 'live' | 'dead' | 'reused' | 'identity-indeterminate' | 'missing' | 'malformed' | 'ambiguous';
+
+interface LockOwnerInspection {
+  status: LockOwnerStatus | 'absent';
+  owner?: SessionPointerLockOwnerV1;
+  source: 'canonical' | 'temporary' | 'directory' | 'none';
+  entries: string[];
+}
+
+export interface SessionPointerLockInspection {
+  cwd: string;
+  pointerPath: string;
+  lockPath: string;
+  status: LockOwnerStatus | 'absent';
+  evidenceSource: LockOwnerInspection['source'];
+  safeToRecover: boolean;
+  entries: string[];
+  owner?: Pick<SessionPointerLockOwnerV1, 'pid' | 'platform' | 'created_at'>;
+}
+
+export interface SessionPointerLockRecoveryResult extends SessionPointerLockInspection {
+  action: 'absent' | 'blocked' | 'quarantined' | 'raced';
+  recovered: boolean;
+  quarantinePath?: string;
+  reasonCode?: 'lock_not_definitely_dead' | 'quarantine_destination_exists';
+  reason?: string;
+  nextSteps?: string[];
+}
 
 function parseLockOwner(raw: string): SessionPointerLockOwnerV1 | null {
   try {
@@ -763,20 +793,10 @@ function isValidToken(value: unknown): value is string {
   return typeof value === 'string' && SESSION_POINTER_TOKEN_PATTERN.test(value);
 }
 
-async function inspectLockOwner(lockPath: string): Promise<{
+function classifyLockOwner(owner: SessionPointerLockOwnerV1): {
   status: LockOwnerStatus;
-  owner?: SessionPointerLockOwnerV1;
-}> {
-  let raw: string;
-  try {
-    raw = await transactionDependencies.fs.readFile(join(lockPath, 'owner.json'), 'utf8');
-  } catch (error) {
-    return isNotFound(error) ? { status: 'missing' } : { status: 'identity-indeterminate' };
-  }
-
-  const owner = parseLockOwner(raw);
-  if (!owner) return { status: 'malformed' };
-
+  owner: SessionPointerLockOwnerV1;
+} {
   let pidStatus: PidProbeResult;
   try {
     pidStatus = transactionDependencies.probePid(owner.pid);
@@ -807,6 +827,188 @@ async function inspectLockOwner(lockPath: string): Promise<{
     return { status: 'identity-indeterminate', owner };
   }
   return { status: 'live', owner };
+}
+
+async function inspectLockOwner(lockPath: string): Promise<LockOwnerInspection> {
+  let lockStat: Awaited<ReturnType<SessionPointerFsDependencies['lstat']>>;
+  try {
+    lockStat = await transactionDependencies.fs.lstat(lockPath);
+  } catch (error) {
+    return isNotFound(error)
+      ? { status: 'absent', source: 'none', entries: [] }
+      : { status: 'identity-indeterminate', source: 'directory', entries: [] };
+  }
+  if (lockStat.isSymbolicLink() || !lockStat.isDirectory()) {
+    return { status: 'ambiguous', source: 'directory', entries: [] };
+  }
+
+  let entries: string[];
+  try {
+    entries = await transactionDependencies.fs.readdir(lockPath);
+  } catch (error) {
+    return isNotFound(error)
+      ? { status: 'absent', source: 'none', entries: [] }
+      : { status: 'identity-indeterminate', source: 'directory', entries: [] };
+  }
+
+  if (entries.includes('owner.json')) {
+    if (entries.length !== 1) return { status: 'ambiguous', source: 'directory', entries };
+    const ownerPath = join(lockPath, 'owner.json');
+    let ownerStat: Awaited<ReturnType<SessionPointerFsDependencies['lstat']>>;
+    try {
+      ownerStat = await transactionDependencies.fs.lstat(ownerPath);
+    } catch (error) {
+      return isNotFound(error)
+        ? { status: 'absent', source: 'none', entries }
+        : { status: 'identity-indeterminate', source: 'canonical', entries };
+    }
+    if (ownerStat.isSymbolicLink() || !ownerStat.isFile()) {
+      return { status: 'ambiguous', source: 'canonical', entries };
+    }
+    let canonicalRaw: string;
+    try {
+      canonicalRaw = await transactionDependencies.fs.readFile(ownerPath, 'utf8');
+    } catch (error) {
+      return isNotFound(error)
+        ? { status: 'absent', source: 'none', entries }
+        : { status: 'identity-indeterminate', source: 'canonical', entries };
+    }
+    const owner = parseLockOwner(canonicalRaw);
+    if (!owner) return { status: 'malformed', source: 'canonical', entries };
+    return { ...classifyLockOwner(owner), source: 'canonical', entries };
+  }
+
+  if (entries.length === 0) return { status: 'missing', source: 'directory', entries };
+  if (entries.length !== 1) return { status: 'ambiguous', source: 'directory', entries };
+
+  const evidenceFileName = entries[0];
+  const match = /^owner\.([A-Za-z0-9_-]{16,128})\.tmp$/.exec(evidenceFileName);
+  if (!match) return { status: 'ambiguous', source: 'directory', entries };
+
+  const temporaryPath = join(lockPath, evidenceFileName);
+  let temporaryStat: Awaited<ReturnType<SessionPointerFsDependencies['lstat']>>;
+  try {
+    temporaryStat = await transactionDependencies.fs.lstat(temporaryPath);
+  } catch (error) {
+    return isNotFound(error)
+      ? { status: 'absent', source: 'none', entries }
+      : { status: 'identity-indeterminate', source: 'temporary', entries };
+  }
+  if (temporaryStat.isSymbolicLink() || !temporaryStat.isFile()) {
+    return { status: 'ambiguous', source: 'temporary', entries };
+  }
+
+  let temporaryRaw: string;
+  try {
+    temporaryRaw = await transactionDependencies.fs.readFile(temporaryPath, 'utf8');
+  } catch (error) {
+    // The publisher may have atomically promoted the temporary evidence after
+    // readdir. Re-enter acquisition so the canonical state is inspected afresh.
+    return isNotFound(error)
+      ? { status: 'absent', source: 'none', entries }
+      : { status: 'identity-indeterminate', source: 'temporary', entries };
+  }
+  const owner = parseLockOwner(temporaryRaw);
+  if (!owner || owner.token !== match[1]) return { status: 'malformed', source: 'temporary', entries };
+  return { ...classifyLockOwner(owner), source: 'temporary', entries };
+}
+
+interface DeadLockQuarantineResult {
+  outcome: 'quarantined' | 'raced' | 'destination-exists';
+  quarantinePath: string;
+}
+
+async function quarantineDeadLock(lockPath: string, owner: SessionPointerLockOwnerV1): Promise<DeadLockQuarantineResult> {
+  // Every recovery of the same immutable owner targets the same retained,
+  // non-empty directory. Once one rename succeeds, a stale contender cannot
+  // rename a successor lock over that destination on supported filesystems.
+  const quarantinePath = `${lockPath}.recovery-${owner.token}`;
+  try {
+    await transactionDependencies.fs.rename(lockPath, quarantinePath);
+    return { outcome: 'quarantined', quarantinePath };
+  } catch (error) {
+    if (isNotFound(error)) return { outcome: 'raced', quarantinePath };
+    if (isAlreadyExists(error) || errorCode(error) === 'ENOTEMPTY') {
+      return { outcome: 'destination-exists', quarantinePath };
+    }
+    try {
+      const destinationStat = await transactionDependencies.fs.lstat(quarantinePath);
+      if (!destinationStat.isSymbolicLink() && destinationStat.isDirectory()) {
+        const retainedEntries = await transactionDependencies.fs.readdir(quarantinePath);
+        if (retainedEntries.length > 0) return { outcome: 'destination-exists', quarantinePath };
+      }
+    } catch {
+      // Preserve the original rename failure when the destination cannot be
+      // positively identified as retained, non-empty quarantine evidence.
+    }
+    throw error;
+  }
+}
+
+function publicLockInspection(
+  context: SessionPointerContext,
+  inspection: LockOwnerInspection,
+): SessionPointerLockInspection {
+  return {
+    cwd: context.cwd,
+    pointerPath: context.sessionPath,
+    lockPath: context.lockPath,
+    status: inspection.status,
+    evidenceSource: inspection.source,
+    safeToRecover: inspection.status === 'dead' && Boolean(inspection.owner),
+    entries: inspection.entries,
+    ...(inspection.owner
+      ? { owner: { pid: inspection.owner.pid, platform: inspection.owner.platform, created_at: inspection.owner.created_at } }
+      : {}),
+  };
+}
+
+/** Inspect only the selected session-pointer lock; never mutates lock or pointer state. */
+export async function inspectSessionPointerLock(cwd: string): Promise<SessionPointerLockInspection> {
+  const context = resolveSessionPointerContext(cwd);
+  return publicLockInspection(context, await inspectLockOwner(context.lockPath));
+}
+
+/** Safely quarantine only a lock whose canonical or temporary owner is definitely dead. */
+export async function recoverSessionPointerLock(cwd: string): Promise<SessionPointerLockRecoveryResult> {
+  const context = resolveSessionPointerContext(cwd);
+  const inspection = await inspectLockOwner(context.lockPath);
+  const result = publicLockInspection(context, inspection);
+  if (inspection.status === 'absent') return { ...result, action: 'absent', recovered: false };
+  if (inspection.status !== 'dead' || !inspection.owner) {
+    return {
+      ...result,
+      action: 'blocked',
+      recovered: false,
+      reasonCode: 'lock_not_definitely_dead',
+      reason: `Lock evidence is ${inspection.status}; safe recovery requires a definitely dead owner.`,
+      nextSteps: [
+        `Inspect the resolved lock path with: omx session lock inspect --cwd ${JSON.stringify(context.cwd)} --json`,
+        'Evidence was preserved. No force recovery is available.',
+      ],
+    };
+  }
+  const quarantine = await quarantineDeadLock(context.lockPath, inspection.owner);
+  if (quarantine.outcome === 'raced') return { ...result, action: 'raced', recovered: false };
+  if (quarantine.outcome === 'destination-exists') {
+    const current = await inspectLockOwner(context.lockPath);
+    if (current.status !== 'dead' || current.owner?.token !== inspection.owner.token) {
+      return { ...publicLockInspection(context, current), action: 'raced', recovered: false, quarantinePath: quarantine.quarantinePath };
+    }
+    return {
+      ...result,
+      action: 'blocked',
+      recovered: false,
+      quarantinePath: quarantine.quarantinePath,
+      reasonCode: 'quarantine_destination_exists',
+      reason: 'The deterministic quarantine destination already exists while the same dead lock remains canonical.',
+      nextSteps: [
+        `Inspect the resolved lock path with: omx session lock inspect --cwd ${JSON.stringify(context.cwd)} --json`,
+        'Existing lock and quarantine evidence were preserved. No force recovery is available.',
+      ],
+    };
+  }
+  return { ...result, action: 'quarantined', recovered: true, quarantinePath: quarantine.quarantinePath };
 }
 
 interface HeldPointerLock {
@@ -949,6 +1151,33 @@ async function acquirePointerLock(
       }
 
       const owner = await inspectLockOwner(context.lockPath);
+      if (owner.status === 'absent') continue;
+      if (owner.status === 'dead' && owner.owner) {
+        try {
+          const recovery = await quarantineDeadLock(context.lockPath, owner.owner);
+          if (recovery.outcome === 'quarantined' || recovery.outcome === 'raced') continue;
+          const current = await inspectLockOwner(context.lockPath);
+          if (current.status !== 'dead' || current.owner?.token !== owner.owner.token) continue;
+          throw resolvedAbort(context, {
+            code: 'session_pointer_lock_recovery_required',
+            operation: 'lock-acquire',
+            ...(candidateSessionId ? { candidateSessionId } : {}),
+            lockPath: context.lockPath,
+            lockOwnerStatus: 'dead',
+            reason: `Session pointer lock recovery is blocked by retained quarantine evidence: ${recovery.quarantinePath}`,
+          });
+        } catch (recoveryError) {
+          if (isSessionPointerLaunchAbort(recoveryError)) throw recoveryError;
+          throw resolvedAbort(context, {
+            code: 'session_pointer_io_failure',
+            operation: 'lock-acquire',
+            ...(candidateSessionId ? { candidateSessionId } : {}),
+            lockPath: context.lockPath,
+            reason: `Unable to quarantine definitely dead session pointer lock: ${errorMessage(recoveryError)}`,
+            cause: recoveryError,
+          });
+        }
+      }
       if (owner.status !== 'live') {
         throw resolvedAbort(context, {
           code: 'session_pointer_lock_recovery_required',
