@@ -1,4 +1,8 @@
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
+import { readFile } from 'fs/promises';
+import { cancelMode } from '../modes/base.js';
+import { getStatePath, normalizeSessionId, resolveWritableStateScope } from '../mcp/state-paths.js';
+
 
 
 export const RALPLAN_HELP = `omx ralplan - RALPLAN consensus support commands
@@ -24,6 +28,8 @@ export interface RalplanCommandDependencies {
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
   resolveInstalledRoleName?: typeof resolveInstalledRoleName;
+  neutralizeOwnedRoutingRalplan?: (cwd: string) => Promise<boolean>;
+
 
 }
 
@@ -40,6 +46,8 @@ export async function ralplanCommand(
   if (args[0] === 'preflight') {
     const json = args.length === 2 && args[1] === '--json';
     if ((args.length !== 1 && !json)) throw new Error(`Unknown ralplan preflight argument: ${args.slice(1).join(' ')}`);
+    await (deps.neutralizeOwnedRoutingRalplan ?? neutralizeOwnedRoutingRalplan)(process.cwd());
+
     const failure = { ok: false, reason: 'unsupported_documented_leader_proof' as const };
     if (json) stdout(JSON.stringify(failure));
     else stderr('ralplan preflight failed: unsupported_documented_leader_proof');
@@ -59,6 +67,29 @@ export async function ralplanCommand(
     stdout,
     stderr,
   );
+}
+
+async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolean> {
+  const ownerSessionId = normalizeSessionId(process.env.OMX_SESSION_ID);
+  if (!ownerSessionId) return false;
+  try {
+    const scope = await resolveWritableStateScope(cwd);
+    if (scope.source !== 'session' || scope.sessionId !== ownerSessionId) return false;
+    const state = JSON.parse(await readFile(getStatePath('ralplan', cwd, ownerSessionId), 'utf-8')) as Record<string, unknown>;
+    if (
+      state.active !== true
+      || state.mode !== 'ralplan'
+      || state.session_id !== ownerSessionId
+      || state.current_phase !== 'planning'
+      || state.planning_complete === true
+      || state.ralplan_consensus_gate !== undefined
+      || (typeof state.iteration === 'number' && state.iteration > 0)
+    ) return false;
+    await cancelMode('ralplan', cwd);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseRoleIntentWriteArgs(args: string[]): ParsedRoleIntentWriteArgs {

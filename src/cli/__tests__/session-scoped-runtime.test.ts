@@ -25,7 +25,15 @@ function cleanOmxEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   ]) {
     delete env[name];
   }
-  return { ...env, ...overrides };
+  return {
+    ...env,
+    ...(overrides.FAKE_TMUX_SESSION_NAME ? {
+      FAKE_TMUX_PANE_PID: '4242',
+      FAKE_TMUX_INTERNAL_SESSION_ID: '$1',
+      FAKE_TMUX_SESSION_CREATED: '100',
+    } : {}),
+    ...overrides,
+  };
 }
 
 function runOmx(cwd: string, ...args: string[]) {
@@ -50,12 +58,19 @@ async function createFakeTmuxBin(root: string): Promise<string> {
   await mkdir(binDir, { recursive: true });
   await writeFile(tmuxPath, `#!/bin/sh
 case "$1" in
-  has-session) exit 0 ;;
-  show-options) printf '%s\\n' "$FAKE_OMX_SESSION_ID" ;;
-  display-message) printf '%s\\n' "$FAKE_TMUX_SESSION_NAME" ;;
+  list-panes)
+    count=0
+    if [ -n "$FAKE_TMUX_COUNTER_FILE" ] && [ -f "$FAKE_TMUX_COUNTER_FILE" ]; then count=$(cat "$FAKE_TMUX_COUNTER_FILE"); fi
+    count=$((count + 1))
+    if [ -n "$FAKE_TMUX_COUNTER_FILE" ]; then printf '%s' "$count" > "$FAKE_TMUX_COUNTER_FILE"; fi
+    created="$FAKE_TMUX_SESSION_CREATED"
+    if [ "$FAKE_TMUX_REPLACE_AFTER_FIRST" = "1" ] && [ "$count" -gt 1 ]; then created=$((created + 1)); fi
+    printf '%%42\\t0\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$FAKE_TMUX_PANE_PID" "$FAKE_TMUX_SESSION_NAME" "$FAKE_TMUX_INTERNAL_SESSION_ID" "$created" "$FAKE_OMX_SESSION_ID"
+    ;;
   *) exit 1 ;;
 esac
 `);
+
   await chmod(tmuxPath, 0o755);
   return binDir;
 }
@@ -67,6 +82,8 @@ async function writeActiveRunRecord(options: {
   runDir: string;
   sessionId: string;
   tmuxSessionName: string;
+  worktreeCwd?: string;
+
 }): Promise<void> {
   const activeDir = join(options.runsRoot, 'active-detached');
   await mkdir(activeDir, { recursive: true });
@@ -75,11 +92,16 @@ async function writeActiveRunRecord(options: {
     context_key: options.contextKey,
     created_at: '2026-07-19T00:00:00.000Z',
     source_cwd: options.sourceCwd,
+    ...(options.worktreeCwd ? { worktree_cwd: options.worktreeCwd } : {}),
+
     argv: ['--madmax'],
     run_dir: options.runDir,
     tmux_session_name: options.tmuxSessionName,
     session_id: options.sessionId,
     tmux_pane_id: '%42',
+    tmux_internal_session_id: '$1',
+    tmux_session_created: '100',
+    tmux_pane_pid: 4242,
   }, null, 2));
 }
 
@@ -324,6 +346,36 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('neutralizes exact-owner routing-only Ralplan before preflight denial', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralplan-preflight-owner-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-proven-owner';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const ralplanPath = join(sessionDir, 'ralplan-state.json');
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(ralplanPath, JSON.stringify({
+        active: true,
+        mode: 'ralplan',
+        session_id: sessionId,
+        current_phase: 'planning',
+      }, null, 2));
+
+      const preflightResult = runOmxWithEnv(wd, { OMX_SESSION_ID: sessionId }, 'ralplan', 'preflight', '--json');
+      assert.equal(preflightResult.status, 1, preflightResult.stderr || preflightResult.stdout);
+      assert.deepEqual(JSON.parse(preflightResult.stdout), {
+        ok: false,
+        reason: 'unsupported_documented_leader_proof',
+      });
+      const state = JSON.parse(await readFile(ralplanPath, 'utf-8'));
+      assert.equal(state.active, false);
+      assert.equal(state.current_phase, 'cancelled');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('status does not report a root fallback mode as active after current-session clear', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-session-clear-fallback-'));
     try {
@@ -465,6 +517,160 @@ describe('CLI session-scoped state parity', () => {
       await rm(wd, { recursive: true, force: true });
       await rm(runsRoot, { recursive: true, force: true });
       await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects nested session-directory and state-file symlink escapes', async () => {
+    if (process.platform === 'win32') return;
+    for (const kind of ['session-dir', 'state-file'] as const) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-cli-nested-${kind}-owner-`));
+      const runsRoot = await mkdtemp(join(tmpdir(), `omx-cli-nested-${kind}-runs-`));
+      const outsideRoot = await mkdtemp(join(tmpdir(), `omx-cli-nested-${kind}-outside-`));
+      try {
+        const sessionId = `sess-nested-${kind}`;
+        const tmuxSessionName = `omx-nested-${kind}`;
+        const runDir = join(runsRoot, `run-nested-${kind}`);
+        const stateDir = join(runDir, '.omx', 'state');
+        const sessionDir = join(stateDir, 'sessions', sessionId);
+        const outsideStatePath = join(outsideRoot, 'autopilot-state.json');
+        const state = JSON.stringify({ active: true, mode: 'autopilot', current_phase: 'executing' }, null, 2);
+        const fakeBin = await createFakeTmuxBin(wd);
+        await mkdir(join(stateDir, 'sessions'), { recursive: true });
+        await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+        await writeFile(outsideStatePath, state);
+        if (kind === 'session-dir') {
+          await symlink(outsideRoot, sessionDir, 'dir');
+        } else {
+          await mkdir(sessionDir, { recursive: true });
+          await symlink(outsideStatePath, join(sessionDir, 'autopilot-state.json'));
+        }
+        await writeActiveRunRecord({ runsRoot, contextKey: `nested-${kind}`, sourceCwd: wd, runDir, sessionId, tmuxSessionName });
+
+        const cancelResult = runOmxWithEnv(wd, {
+          OMX_RUNS_DIR: runsRoot,
+          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          FAKE_OMX_SESSION_ID: sessionId,
+          FAKE_TMUX_SESSION_NAME: tmuxSessionName,
+        }, 'cancel');
+        assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+        assert.match(cancelResult.stdout, /No active modes to cancel\./);
+        assert.equal(await readFile(outsideStatePath, 'utf-8'), state);
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+        await rm(runsRoot, { recursive: true, force: true });
+        await rm(outsideRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('revalidates frozen tmux incarnation immediately before mutation', async () => {
+    if (process.platform === 'win32') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-toctou-owner-'));
+    const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-toctou-runs-'));
+    try {
+      const sessionId = 'sess-run-toctou';
+      const tmuxSessionName = 'omx-run-toctou';
+      const runDir = join(runsRoot, 'run-toctou');
+      const stateDir = join(runDir, '.omx', 'state');
+      const statePath = join(stateDir, 'sessions', sessionId, 'autopilot-state.json');
+      const state = JSON.stringify({ active: true, mode: 'autopilot', current_phase: 'executing' }, null, 2);
+      const counterPath = join(wd, 'tmux-count');
+      const fakeBin = await createFakeTmuxBin(wd);
+      await mkdir(dirname(statePath), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(statePath, state);
+      await writeActiveRunRecord({ runsRoot, contextKey: 'toctou-run', sourceCwd: wd, runDir, sessionId, tmuxSessionName });
+
+      const cancelResult = runOmxWithEnv(wd, {
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        FAKE_OMX_SESSION_ID: sessionId,
+        FAKE_TMUX_SESSION_NAME: tmuxSessionName,
+        FAKE_TMUX_COUNTER_FILE: counterPath,
+        FAKE_TMUX_REPLACE_AFTER_FIRST: '1',
+      }, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.equal(await readFile(statePath, 'utf-8'), state);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('denies the entire run transaction when one candidate state is malformed', async () => {
+    if (process.platform === 'win32') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-malformed-owner-'));
+    const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-malformed-runs-'));
+    try {
+      const sessionId = 'sess-run-malformed';
+      const tmuxSessionName = 'omx-run-malformed';
+      const runDir = join(runsRoot, 'run-malformed');
+      const stateDir = join(runDir, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const validPath = join(sessionDir, 'ralplan-state.json');
+      const malformedPath = join(sessionDir, 'autopilot-state.json');
+      const validState = JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'executing' }, null, 2);
+      const malformedState = '{"active":true';
+      const fakeBin = await createFakeTmuxBin(wd);
+      await mkdir(sessionDir, { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(validPath, validState);
+      await writeFile(malformedPath, malformedState);
+      await writeActiveRunRecord({ runsRoot, contextKey: 'malformed-run', sourceCwd: wd, runDir, sessionId, tmuxSessionName });
+
+      const cancelResult = runOmxWithEnv(wd, {
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        FAKE_OMX_SESSION_ID: sessionId,
+        FAKE_TMUX_SESSION_NAME: tmuxSessionName,
+      }, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.equal(await readFile(validPath, 'utf-8'), validState);
+      assert.equal(await readFile(malformedPath, 'utf-8'), malformedState);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the authorized run session for force native-stop cleanup', async () => {
+    if (process.platform === 'win32') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-force-owner-'));
+    const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-force-runs-'));
+    try {
+      const sessionId = 'sess-run-force';
+      const tmuxSessionName = 'omx-run-force';
+      const runDir = join(runsRoot, 'run-force');
+      const stateDir = join(runDir, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const modePath = join(sessionDir, 'autopilot-state.json');
+      const stopPath = join(sessionDir, 'native-stop-state.json');
+      const fakeBin = await createFakeTmuxBin(wd);
+      await mkdir(sessionDir, { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(modePath, JSON.stringify({ active: true, mode: 'autopilot', current_phase: 'executing' }));
+      await writeFile(stopPath, JSON.stringify({ sessions: { [sessionId]: { pending: true }, foreign: { pending: true } } }, null, 2));
+      await writeActiveRunRecord({ runsRoot, contextKey: 'force-run', sourceCwd: wd, runDir, sessionId, tmuxSessionName });
+
+      const cancelResult = runOmxWithEnv(wd, {
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        FAKE_OMX_SESSION_ID: sessionId,
+        FAKE_TMUX_SESSION_NAME: tmuxSessionName,
+      }, 'cancel', '--force');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled: autopilot/);
+      const stopState = JSON.parse(await readFile(stopPath, 'utf-8'));
+      assert.deepEqual(stopState.sessions, { foreign: { pending: true } });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runsRoot, { recursive: true, force: true });
     }
   });
 
@@ -651,25 +857,22 @@ describe('CLI session-scoped state parity', () => {
 
       await mkdir(runSessionDir, { recursive: true });
       await mkdir(join(worktree, '.omx', 'state'), { recursive: true });
-      await mkdir(join(runsRoot, 'active-detached'), { recursive: true });
+
       await writeFile(join(runStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
       await writeFile(join(runSessionDir, 'autopilot-state.json'), JSON.stringify({
         active: true,
         mode: 'autopilot',
         current_phase: 'deep-interview',
       }, null, 2));
-      await writeFile(join(runsRoot, 'active-detached', 'ctx-worktree-alias.json'), `${JSON.stringify({
-        version: 1,
-        context_key: 'ctx-worktree-alias',
-        created_at: '2026-06-10T12:17:51.000Z',
-        source_cwd: wd,
-        worktree_cwd: worktree,
-        argv: ['--madmax', '--worktree', '--tmux'],
-        run_dir: runDir,
-        tmux_session_name: 'omx-detached',
-        session_id: sessionId,
-        tmux_pane_id: '%42',
-      })}\n`);
+      await writeActiveRunRecord({
+        runsRoot,
+        contextKey: 'ctx-worktree-alias',
+        sourceCwd: wd,
+        worktreeCwd: worktree,
+        runDir,
+        sessionId,
+        tmuxSessionName: 'omx-detached',
+      });
 
       const statusResult = runOmxWithEnv(worktree, { OMX_RUNS_DIR: runsRoot }, 'status');
       assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);

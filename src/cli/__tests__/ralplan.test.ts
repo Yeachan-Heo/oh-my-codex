@@ -17,14 +17,27 @@ async function invoke(args: string[], deps: RalplanCommandDependencies = {}) {
 }
 
 describe('#3194 ralplan CLI unsupported-only surface', () => {
-  it('fails the explicit adapted-surface preflight without mutating Ralplan state', async () => {
+  it('fails the explicit adapted-surface preflight without unproven mutation', async () => {
     let resolved = false;
+    let neutralized = false;
     const result = await invoke(['preflight', '--json'], {
       resolveInstalledRoleName: () => { resolved = true; return 'architect'; },
+      neutralizeOwnedRoutingRalplan: async () => { neutralized = false; return false; },
     });
     assert.equal(result.exitCode, 1);
     assert.equal(resolved, false);
+    assert.equal(neutralized, false);
     assert.deepEqual(result.stderr, []);
+    assert.deepEqual(JSON.parse(result.stdout.join('\n')), { ok: false, reason: 'unsupported_documented_leader_proof' });
+  });
+
+  it('neutralizes proven-owner routing state before returning the same denial', async () => {
+    let neutralized = false;
+    const result = await invoke(['preflight', '--json'], {
+      neutralizeOwnedRoutingRalplan: async () => { neutralized = true; return true; },
+    });
+    assert.equal(result.exitCode, 1);
+    assert.equal(neutralized, true);
     assert.deepEqual(JSON.parse(result.stdout.join('\n')), { ok: false, reason: 'unsupported_documented_leader_proof' });
   });
   it('validates malformed arguments before resolving a role', async () => {

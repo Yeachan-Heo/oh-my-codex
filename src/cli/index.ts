@@ -1630,34 +1630,7 @@ function clearDetachedTmuxSessionHistoryIfUnattached(
   }
 }
 
-function readTmuxSessionInstanceId(sessionName: string): string | null {
-  try {
-    return execTmuxFileSync(
-      ["show-options", "-qv", "-t", sessionName, OMX_INSTANCE_OPTION],
-      {
-        stdio: ["ignore", "pipe", "ignore"],
-        encoding: "utf-8",
-      },
-    ).trim();
-  } catch {
-    return null;
-  }
-}
 
-function tmuxPaneBelongsToSession(paneId: string, sessionName: string): boolean {
-  try {
-    const paneSessionName = execTmuxFileSync(
-      ["display-message", "-p", "-t", paneId, "#{session_name}"],
-      {
-        stdio: ["ignore", "pipe", "ignore"],
-        encoding: "utf-8",
-      },
-    ).trim();
-    return paneSessionName === sessionName;
-  } catch {
-    return false;
-  }
-}
 
 function buildDetachedHistoryPruneHookCommand(leaderPaneId: string): string {
   // The leader pane can be gone by the time the hook fires (e.g. crashed
@@ -2410,6 +2383,10 @@ interface MadmaxDetachedActiveRecord {
   tmux_session_name: string;
   session_id?: string;
   tmux_pane_id?: string;
+  tmux_internal_session_id?: string;
+  tmux_session_created?: string;
+  tmux_pane_pid?: number;
+
 }
 
 function resolveMadmaxRunsRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -2519,6 +2496,10 @@ function readMadmaxDetachedActiveRecord(
       tmux_session_name: parsed.tmux_session_name,
       ...(typeof parsed.session_id === "string" ? { session_id: parsed.session_id } : {}),
       ...(typeof parsed.tmux_pane_id === "string" ? { tmux_pane_id: parsed.tmux_pane_id } : {}),
+      ...(typeof parsed.tmux_internal_session_id === "string" ? { tmux_internal_session_id: parsed.tmux_internal_session_id } : {}),
+      ...(typeof parsed.tmux_session_created === "string" ? { tmux_session_created: parsed.tmux_session_created } : {}),
+      ...(typeof parsed.tmux_pane_pid === "number" ? { tmux_pane_pid: parsed.tmux_pane_pid } : {}),
+
       ...(typeof parsed.worktree_cwd === "string" ? { worktree_cwd: parsed.worktree_cwd } : {}),
     };
   } catch {
@@ -2526,25 +2507,51 @@ function readMadmaxDetachedActiveRecord(
   }
 }
 
-function isReusableMadmaxDetachedActiveRecord(
-  record: MadmaxDetachedActiveRecord,
-): boolean {
-  if (!detachedTmuxSessionExists(record.tmux_session_name)) return false;
-  if (!record.session_id || !record.tmux_pane_id) return false;
-  if (readTmuxSessionInstanceId(record.tmux_session_name) !== record.session_id) {
-    return false;
-  }
-  return tmuxPaneBelongsToSession(record.tmux_pane_id, record.tmux_session_name);
+interface MadmaxDetachedRuntimeBinding {
+  paneId: string;
+  panePid: number;
+  sessionName: string;
+  internalSessionId: string;
+  sessionCreated: string;
+  omxInstanceId: string;
 }
 
-function detachedTmuxSessionExists(sessionName: string): boolean {
+function queryMadmaxDetachedRuntimeBinding(record: MadmaxDetachedActiveRecord): MadmaxDetachedRuntimeBinding | null {
+  if (!record.tmux_pane_id || !record.session_id) return null;
   try {
-    execTmuxFileSync(["has-session", "-t", sessionName], { stdio: "ignore" });
-    return true;
+    const output = execTmuxFileSync([
+      "list-panes", "-a", "-F",
+      "#{pane_id}\t#{pane_dead}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{@omx_instance_id}",
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    let binding: MadmaxDetachedRuntimeBinding | null = null;
+    const seen = new Set<string>();
+    for (const line of output.split("\n").filter(Boolean)) {
+      const fields = line.split("\t");
+      if (fields.length !== 7) return null;
+      const [paneId, dead, panePidRaw, sessionName, internalSessionId, sessionCreated, omxInstanceId] = fields;
+      const panePid = Number(panePidRaw);
+      if (!/^%[0-9]+$/.test(paneId) || seen.has(paneId) || (dead !== "0" && dead !== "1")
+        || !Number.isSafeInteger(panePid) || panePid <= 0 || !sessionName
+        || !/^\$[0-9]+$/.test(internalSessionId) || !/^[0-9]+$/.test(sessionCreated)) return null;
+      seen.add(paneId);
+      if (paneId !== record.tmux_pane_id) continue;
+      if (dead !== "0" || sessionName !== record.tmux_session_name || omxInstanceId !== record.session_id) return null;
+      binding = { paneId, panePid, sessionName, internalSessionId, sessionCreated, omxInstanceId };
+    }
+    return binding;
   } catch {
-    return false;
+    return null;
   }
 }
+
+function isReusableMadmaxDetachedActiveRecord(record: MadmaxDetachedActiveRecord): boolean {
+  const binding = queryMadmaxDetachedRuntimeBinding(record);
+  return !!binding
+    && binding.panePid === record.tmux_pane_pid
+    && binding.internalSessionId === record.tmux_internal_session_id
+    && binding.sessionCreated === record.tmux_session_created;
+}
+
 
 function readMadmaxDetachedLockOwner(lockPath: string): MadmaxDetachedLockOwner | null {
   try {
@@ -5683,21 +5690,31 @@ function runCodex(
             if (leaderPaneId) {
               detachedLeaderPaneId = leaderPaneId;
               setDetachedTmuxSessionHistoryLimit(sessionName, leaderPaneId);
-              if (activeRecordPath && contextKey) {
-                writeMadmaxDetachedActiveRecord(activeRecordPath, {
-                  version: 1,
-                  context_key: contextKey,
-                  created_at: new Date().toISOString(),
-                  source_cwd: runtimeContext?.sourceCwd ?? process.env.OMX_SOURCE_CWD ?? cwd,
-                  ...(runtimeContext?.worktreeCwd ? { worktree_cwd: runtimeContext.worktreeCwd } : {}),
-                  argv: args,
-                  run_dir: runtimeContext?.omxRoot ?? process.env.OMX_ROOT ?? cwd,
-                  tmux_session_name: sessionName,
-                  session_id: sessionId,
-                  tmux_pane_id: leaderPaneId,
-                });
-              }
+
               writeDetachedSessionBinding(leaderPaneId);
+            }
+          }
+          if (step.name === "tag-session" && detachedLeaderPaneId && activeRecordPath && contextKey) {
+            const record: MadmaxDetachedActiveRecord = {
+              version: 1,
+              context_key: contextKey,
+              created_at: new Date().toISOString(),
+              source_cwd: runtimeContext?.sourceCwd ?? process.env.OMX_SOURCE_CWD ?? cwd,
+              ...(runtimeContext?.worktreeCwd ? { worktree_cwd: runtimeContext.worktreeCwd } : {}),
+              argv: args,
+              run_dir: runtimeContext?.omxRoot ?? process.env.OMX_ROOT ?? cwd,
+              tmux_session_name: sessionName,
+              session_id: sessionId,
+              tmux_pane_id: detachedLeaderPaneId,
+            };
+            const binding = queryMadmaxDetachedRuntimeBinding(record);
+            if (binding) {
+              writeMadmaxDetachedActiveRecord(activeRecordPath, {
+                ...record,
+                tmux_internal_session_id: binding.internalSessionId,
+                tmux_session_created: binding.sessionCreated,
+                tmux_pane_pid: binding.panePid,
+              });
             }
           }
           if (step.name === "split-and-capture-hud-pane") {
@@ -6845,7 +6862,19 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
   return refs.sort((a, b) => a.mode.localeCompare(b.mode));
 }
 
-async function listAuthorizedHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFileRef[]> {
+interface AuthorizedRunStateSelection {
+  refs: ModeStateFileRef[];
+  sessionId: string;
+  record: MadmaxDetachedActiveRecord;
+}
+
+function isCanonicalPathWithin(parent: string, child: string, allowEqual = false): boolean {
+  const rel = relative(parent, child);
+  if (rel === "") return allowEqual;
+  return rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(rel);
+}
+
+async function selectAuthorizedHookVisibleRunDirState(cwd: string): Promise<AuthorizedRunStateSelection | null> {
   const runsRoot = resolveMadmaxRunsRoot(process.env);
   const activeDir = join(runsRoot, MADMAX_DETACHED_ACTIVE_DIR);
   const canonicalCwd = canonicalizePathForRunDirMatch(cwd);
@@ -6853,55 +6882,60 @@ async function listAuthorizedHookVisibleRunDirStateRefs(cwd: string): Promise<Mo
   try {
     canonicalRunsRoot = realpathSync(resolve(runsRoot));
   } catch {
-    return [];
+    return null;
   }
 
-  const candidates: Array<{ runDir: string; sessionId: string }> = [];
+  const candidates: Array<{ sessionDir: string; sessionId: string; record: MadmaxDetachedActiveRecord }> = [];
+
   const files = await readdir(activeDir).catch(() => [] as string[]);
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     const record = readMadmaxDetachedActiveRecord(join(activeDir, file));
     if (!record || file !== `${record.context_key}.json`) continue;
+    if (!record.session_id || normalizeSessionId(record.session_id) !== record.session_id) continue;
     if (!isReusableMadmaxDetachedActiveRecord(record)) continue;
     if (
       canonicalizePathForRunDirMatch(record.source_cwd) !== canonicalCwd
       && (!record.worktree_cwd || canonicalizePathForRunDirMatch(record.worktree_cwd) !== canonicalCwd)
     ) continue;
-    if (!record.session_id) continue;
 
-    let canonicalRunDir: string;
     try {
-      canonicalRunDir = realpathSync(resolve(record.run_dir));
-    } catch {
-      continue;
-    }
-    const runRelative = relative(canonicalRunsRoot, canonicalRunDir);
-    if (runRelative === ".." || runRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(runRelative)) {
-      continue;
-    }
-
-    const stateDir = join(canonicalRunDir, ".omx", "state");
-    try {
+      const canonicalRunDir = realpathSync(resolve(record.run_dir));
+      if (!isCanonicalPathWithin(canonicalRunsRoot, canonicalRunDir)) continue;
+      const stateDir = realpathSync(join(canonicalRunDir, ".omx", "state"));
+      if (!isCanonicalPathWithin(canonicalRunDir, stateDir)) continue;
       const session = JSON.parse(await readFile(join(stateDir, "session.json"), "utf-8")) as Record<string, unknown>;
       if (session.session_id !== record.session_id) continue;
+      const sessionDir = realpathSync(join(stateDir, "sessions", record.session_id));
+      if (!isCanonicalPathWithin(stateDir, sessionDir)) continue;
+      candidates.push({ sessionDir, sessionId: record.session_id, record });
     } catch {
       continue;
     }
-    candidates.push({ runDir: canonicalRunDir, sessionId: record.session_id });
   }
 
-  if (candidates.length !== 1) return [];
-  const [{ runDir, sessionId }] = candidates;
-  const sessionDir = join(runDir, ".omx", "state", "sessions", sessionId);
+  if (candidates.length !== 1) return null;
+  const [{ sessionDir, sessionId, record }] = candidates;
+  const refs: ModeStateFileRef[] = [];
   const stateFiles = await readdir(sessionDir).catch(() => [] as string[]);
-  return stateFiles
-    .filter((file) => file.endsWith("-state.json") && file !== "session.json")
-    .map((file) => ({
-      mode: file.slice(0, -"-state.json".length),
-      path: join(sessionDir, file),
-      scope: "session" as const,
-    }))
-    .sort((a, b) => a.mode.localeCompare(b.mode));
+  for (const file of stateFiles) {
+    if (!file.endsWith("-state.json") || file === "session.json") continue;
+    const path = join(sessionDir, file);
+    try {
+      const fileStat = lstatSync(path);
+      if (!fileStat.isFile() || fileStat.isSymbolicLink()) return null;
+      const canonicalFile = realpathSync(path);
+      if (!isCanonicalPathWithin(sessionDir, canonicalFile)) return null;
+      refs.push({
+        mode: file.slice(0, -"-state.json".length),
+        path: canonicalFile,
+        scope: "session",
+      });
+    } catch {
+      return null;
+    }
+  }
+  return { refs: refs.sort((a, b) => a.mode.localeCompare(b.mode)), sessionId, record };
 }
 
 async function cancelModes(args: string[] = []): Promise<void> {
@@ -6928,8 +6962,9 @@ async function cancelModes(args: string[] = []): Promise<void> {
           parsedState = JSON.parse(content) as Record<string, unknown>;
         } catch (err) {
           logCliOperationFailure(err);
-          continue;
+          throw new Error(`Refusing partial cancellation because ${ref.path} is malformed.`, { cause: err });
         }
+
         loaded.set(ref.mode, {
           path: ref.path,
           scope: ref.scope,
@@ -6949,6 +6984,8 @@ async function cancelModes(args: string[] = []): Promise<void> {
         }))
       : await listModeStateFilesWithScopePreference(cwd, writableScope.sessionId);
     const hasPreferredSessionStateFiles = preferredRefs.some((ref) => ref.scope === "session");
+    let runSelection: AuthorizedRunStateSelection | null = null;
+
     let states = await loadStates(preferredRefs);
     // Once writable ownership resolves to a session, cancellation may only write
     // that exact session directory. Root entries remain compatibility reads and
@@ -6966,11 +7003,17 @@ async function cancelModes(args: string[] = []): Promise<void> {
       && !hasActiveWorkflowMode(states)
       && !hasPreferredSessionStateFiles
     ) {
-      const runDirStates = await loadStates(await listAuthorizedHookVisibleRunDirStateRefs(cwd));
-      if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
+      runSelection = await selectAuthorizedHookVisibleRunDirState(cwd);
+      if (runSelection) {
+        const runDirStates = await loadStates(runSelection.refs);
+        if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
+        else runSelection = null;
+      }
     }
 
-    const currentSessionId = writableScope.sessionId ?? "";
+
+    const currentSessionId = writableScope.sessionId ?? runSelection?.sessionId ?? "";
+
     const changed = new Set<string>();
     const reported = new Set<string>();
 
@@ -7024,11 +7067,20 @@ async function cancelModes(args: string[] = []): Promise<void> {
       }
     }
 
+    const assertRunAuthority = (): void => {
+      if (runSelection && !isReusableMadmaxDetachedActiveRecord(runSelection.record)) {
+        throw new Error("Refusing cancellation because detached run authority changed.");
+      }
+    };
+
     for (const [mode, entry] of states.entries()) {
       if (!changed.has(mode)) continue;
+      assertRunAuthority();
+
       await writeFile(entry.path, JSON.stringify(entry.state, null, 2));
     }
     if (force && currentSessionId) {
+      assertRunAuthority();
       const stopStateEntries = [...states.entries()].filter(([mode]) => mode === "native-stop");
       for (const [, entry] of stopStateEntries) {
         const sessions = entry.state.sessions && typeof entry.state.sessions === "object" && !Array.isArray(entry.state.sessions)
