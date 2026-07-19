@@ -7479,6 +7479,7 @@ case "$1" in
       %53) printf '%%53\t0\t53\t\n' ;;
       %54) printf '%%54\t1\t54\t\n' ;;
       %55) printf '%%55\t0\t55\tteam:liveness\n' ;;
+      %56) printf '%%56\t1\t56\tteam:liveness\n' ;;
       *) exit 2 ;;
     esac
     ;;
@@ -7506,6 +7507,7 @@ esac
             /worker pane incarnation changed.*missing/,
           );
           assert.equal(isWorkerAlive('ignored-session', 4, '%54', 54, 'team:liveness'), false);
+          assert.equal(isWorkerAlive('ignored-session', 6, '%56', undefined, 'team:liveness'), false);
           assert.throws(
             () => isWorkerAlive('ignored-session', 5, '%55', 55, 'team:liveness', '%55'),
             /worker pane is HUD target/,
@@ -7669,7 +7671,7 @@ esac
 `,
       async ({ logPath }) => {
         assert.equal(getWorkerPanePid('ignored-session', 1, '%1'), null);
-        assert.equal(isWorkerAlive('ignored-session', 1, '%1'), true);
+        assert.equal(isWorkerAlive('ignored-session', 1, '%1'), false);
         assert.equal(isWorkerPaneOpen('ignored-session', 1, '%1'), false);
         await assert.rejects(() => sendToWorker('ignored-session', 1, 'check inbox', '%1'), /not proven live/);
         await killWorker('ignored-session', 1, '%1');
