@@ -104,10 +104,22 @@ async function createLaunchFixture(
   await mkdir(fakeBin, { recursive: true });
   await writeExecutable(
     join(fakeBin, 'codex'),
-    '#!/bin/sh\nprintf \'fake-codex:%s\\n\' "$*"\n',
+    '#!/bin/sh\nprintf \'fake-codex:%s\\n\' "$*"\nsleep 1\n',
   );
   await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
-  await writeExecutable(join(fakeBin, 'tmux'), tmuxScript(tmuxLogPath));
+  const tmuxImpl = join(fakeBin, 'tmux-impl');
+  await writeExecutable(tmuxImpl, tmuxScript(tmuxLogPath));
+  await writeExecutable(join(fakeBin, 'tmux'), `#!/bin/sh
+output=$(${JSON.stringify(tmuxImpl)} "$@")
+status=$?
+printf '%s' "$output"
+if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
+  for last_arg do :; done
+  pane=$(printf '%s' "$output" | sed -n '1p')
+  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+fi
+exit "$status"
+`);
 
   return {
     tmuxLogPath,
@@ -2010,4 +2022,53 @@ exit 0
   });
 
 
+  it('keeps finalization authority in the real detached leader process through child exit', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-detached-leader-process-'));
+    const home = join(wd, 'home');
+    const fakeChild = join(wd, 'fake-codex.sh');
+    const childReady = join(wd, 'child-ready');
+    const childRelease = join(wd, 'child-release');
+    const readyPath = join(wd, '.omx', 'runtime', 'detached-release', 'ready');
+    const omxBin = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'cli', 'omx.js');
+    const sessionId = 'omx-detached-leader-process';
+    try {
+      await mkdir(home, { recursive: true });
+      await writeExecutable(fakeChild, `#!/bin/sh\nprintf ready > ${JSON.stringify(childReady)}\nwhile [ ! -f ${JSON.stringify(childRelease)} ]; do sleep 0.02; done\nexit 0\n`);
+      const payload = Buffer.from(JSON.stringify({
+        cwd: wd,
+        sessionName: 'omx-detached-leader-process',
+        sessionId,
+        codexCmd: fakeChild,
+        readyPath,
+      })).toString('base64url');
+      const leader = spawn(process.execPath, [omxBin, '__detached-session-leader', payload], {
+        cwd: wd,
+        env: buildRunOmxEnv({
+          HOME: home,
+          TMUX: '/tmp/fake-tmux,1,0',
+          TMUX_PANE: '%3202',
+          OMX_AUTO_UPDATE: '0',
+          OMX_NOTIFY_FALLBACK: '0',
+          OMX_HOOK_DERIVED_SIGNALS: '0',
+        }),
+        stdio: ['ignore', 'inherit', 'inherit'],
+      });
+      await waitForPath(childReady);
+      assert.equal(existsSync(readyPath), true);
+      assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), true);
+      assert.equal(existsSync(join(wd, '.omx', 'state', 'detached-active-record.json')), true);
+      await writeFile(childRelease, 'release\n');
+      const exitCode = await new Promise<number | null>((resolveExit, rejectExit) => {
+        leader.once('error', rejectExit);
+        leader.once('exit', resolveExit);
+      });
+      assert.equal(exitCode, 0);
+      assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), false);
+      assert.equal(existsSync(join(wd, '.omx', 'state', 'detached-active-record.json')), false);
+      assert.equal(existsSync(readyPath), false);
+      assert.match(await readFile(join(wd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'), new RegExp(sessionId));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

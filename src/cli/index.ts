@@ -764,6 +764,9 @@ export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
   if (firstArg === "resume") {
     return { command: "resume", launchArgs: args.slice(1) };
   }
+  if (firstArg === "__detached-session-leader") {
+    return { command: firstArg, launchArgs: args.slice(1) };
+  }
   return { command: firstArg, launchArgs: [] };
 }
 
